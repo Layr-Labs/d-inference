@@ -12,6 +12,8 @@ no submodule pin changes.
 | `darkbloom-cluster-worker` | One rank of a two-Mac resident session. Launched by `darkbloom cluster worker-owner`, never by hand in serving. |
 | `darkbloom-cluster-collective-check` | Both ranks run it with the same arguments. It initializes the strict JACCL backend and verifies reductions and point-to-point transfers byte for byte. No model, no weights. |
 | `darkbloom-cluster-stage-check` | One Mac, one rank, the real artifact, no collective. Runs the verified loader for that rank's layer range, releases it, and reports memory before, loaded and after. |
+| `darkbloom-cluster-reference` | One Mac, both stages, the real artifact, no collective. Runs a request through stage 0 and stage 1 in one process and writes a reference report. |
+| `darkbloom-cluster-pair-check` | No MLX. Writes a request, runs it on rank 0 (this Mac) and rank 1 (the second Mac over SSH), and compares a pair report with a reference report. |
 
 `Sources/DarkbloomClusterWorker`: `WorkerMain.swift` is the entry point.
 `Startup/` parses startup and bootstrap arguments; `Capabilities/` serves
@@ -72,6 +74,122 @@ bytes after release. Exit status is 0 only if the model object was released.
 It refuses to run with a cluster transport environment set. It shows nothing
 about membership, transport or generation.
 
+## Comparing a pair with one Mac
+
+A two-Mac run is judged against a single Mac running the same request through
+the same two stages. Three steps: write a request, run it on one Mac, run it on
+the pair; then compare. Reports name roles (`single host`, `rank 0 local`,
+`rank 1 remote`) and the chip in each role; no report contains an address, a
+host name or a user name. A report file is never overwritten.
+
+```sh
+# 1. The request: fixed text through the artifact's own tokenizer, in its chat
+#    format with thinking disabled. --prompt-tokens repeats and cuts the text's
+#    tokens to an exact prompt length. Stop IDs default to none, so the run
+#    always produces --output-count tokens.
+darkbloom-cluster-pair-check request --model-dir /ABS/MODEL --user-text-file prompt.txt \
+  --prompt-tokens 4096 --chunk-size 512 --output-count 64 --output request.json
+
+# 2. Single-host reference, on either Mac, at the cut the pair will use.
+env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 \
+  darkbloom-cluster-reference --model-dir /ABS/MODEL --request request.json \
+  --stage-cut 4 --report reference-cut4.json
+
+# 3. The pair. Run on the Mac that is rank 0; it starts rank 1 over SSH.
+darkbloom-cluster-pair-check run --request request.json --stage-cut 4 --report pair-cut4.json \
+  --remote-ssh SSH_DESTINATION \
+  --local-worker /ABS/darkbloom-cluster-worker --remote-worker /ABS/darkbloom-cluster-worker \
+  --local-model-dir /ABS/MODEL --remote-model-dir /ABS/MODEL \
+  --local-rdma-device rdma_enX --remote-rdma-device rdma_enY \
+  --coordinator RANK0_LINK_IPV4:PORT --progress-timeout-ms 20000
+
+# 4. Degree of agreement.
+darkbloom-cluster-pair-check compare --reference reference-cut4.json --candidate pair-cut4.json
+```
+
+**Reference.** It admits each rank as its worker would, loads both stages
+through the verified loader with the worker's allocator policy, and for every
+frame runs stage 0, copies the residual into a fresh allocation (the pair moves
+those bytes over the link), runs stage 1 and applies the pair's greedy
+selection. The report holds the selected token IDs; for every token the four
+largest logits of its row and the row's digest; the complete final row; and
+every state entry's digest. It also records load and frame times, memory
+before, loaded and after release, and the decoded output. Exit status is 0
+only if both stage models were released. Each run also drives the pair's own
+per-rank capture and checks that the two records it produces, the ones a
+recording worker writes, read back and join into the same evidence.
+
+**Pair run.** Before launching anything the driver hashes the worker and the
+`mlx.metallib` beside it on both Macs and refuses to continue unless both pairs
+are identical; it also refuses if a worker from that path is already running.
+It asks each worker to describe its runtime for that Mac's `config.json` and
+`manifest.json` and requires equal answers. It then writes the same device
+matrix on both sides (under `--local-scratch-dir` / `--remote-scratch-dir`,
+default `/tmp`), sets `JACCL_RANK`, `JACCL_IBV_DEVICES`, `JACCL_COORDINATOR`,
+the three arithmetic variables and, if given, `JACCL_PROGRESS_TIMEOUT_MS`, and
+starts rank 0, then rank 1. Each worker's lifetime is a deadline on its own
+Mac's clock, computed there; reservation deadlines are translated to that
+clock. The request itself is driven by `ClusterWorkerPair`.
+
+`--preflight-only yes` stops after those inspections: it reports the hashes,
+the chips, the selected plan and that no worker is running, and launches
+nothing.
+
+By default the workers run with `--evidence-directory`, which makes each rank
+write its selected history and state digests, and rank 1 the final row, to a
+file the driver collects afterwards. That is the only way to see rank 1's
+tokens or any logits: the worker protocol reports tokens from rank 0 alone.
+`--evidence none` runs the serving path and yields rank 0's tokens only.
+
+The driver never signals a worker. After a completed request it sends
+`shutdown`, waits for `shutdownComplete` and for the process to exit. On any
+failure it cancels the request, closes each worker's input and waits for the
+process to end by itself: a worker that loses its input releases its model and
+exits, and one blocked in a native call ends at its lifetime. A failed run can
+therefore take up to `--lifetime-seconds` (default 240, at most 300); use a
+short lifetime for first attempts. Interrupting the driver (Ctrl-C) or closing
+its terminal does not reach the workers: they ignore both, see their input end
+and exit the same way. The report gives each rank's exit status
+and the number of worker processes left on each Mac. For rank 1 the status is
+the one `ssh` relays; 255 means the SSH connection itself failed.
+
+The second Mac needs the worker and `mlx.metallib` in one directory (the driver
+hashes both) and the artifact. Copy `mlx-swift-lm_MLXLMCommon.bundle` and
+`mlx-swift_Cmlx.bundle` from the build output beside them as well: on the build
+Mac the reference runs from a directory holding only the binary and
+`mlx.metallib`, but there a missing bundle can still be found in the build
+directory, so that run does not show they are unnecessary elsewhere.
+
+**Verdict.** `compare` prints whether the request identities match, how many
+tokens agree and the first index that differs, the largest absolute difference
+in the final row, how many state entries differ, and one of:
+
+| Verdict | Meaning |
+|---|---|
+| `exact` | Tokens, frame count, committed frontier, the final row's bytes and every recorded state entry are equal |
+| `tokensEqualLogitsDiffer` | Every token is equal; the final row or a state entry is not bit-identical |
+| `divergedAtNearTie` | At the first different token, the reference's own gap between its choice and the candidate's is within `--near-tie-ulps` (default 4) units in the last place of its top logit |
+| `diverged` | The first different token was not a near tie, or cannot be shown to be one |
+| `incomparable` | Not the same request, or equal tokens with no final row to settle the first two verdicts |
+
+Two different chips are not expected to be bit-identical, so anything but
+`diverged` and `incomparable` can be an acceptable result; read the numbers.
+`--allow-cut-difference yes` compares two runs of one request at different
+cuts. `--require exact,tokensEqualLogitsDiffer` turns the verdict into an exit
+status. `--model-dir` adds the decoded text around a divergence.
+
+Tests (no model, no second Mac; two copies of a fake worker stand in for the
+two Macs and rank 1 is reached through `/bin/sh -c` in place of `ssh`):
+
+```sh
+# Without SwiftPM or MLX, in about half a minute.
+bash libs/darkbloom-cluster-worker/Tests/QualificationChecks/run.sh
+
+# The same tests in the package, after the test build under Checks above.
+swift test --package-path libs/darkbloom-cluster-worker --skip-build \
+  --triple arm64-apple-macosx26.2 --filter DarkbloomClusterQualificationTests
+```
+
 ## Two-rank transport check
 
 Each Mac needs RDMA enabled (`rdma_ctl status`), an active port
@@ -114,5 +232,8 @@ load deadline for the worker).
 - `--prefill-schedule` accepts `serial_v1` and `one_chunk_lookahead_v1`;
   omission means serial. `--describe-runtime` advertises the supported
   schedules; capability metadata does not report readiness or available memory.
+- `--evidence-directory` is for qualification only. It selects the recording
+  entry of the same resident runtime; the installed owner never passes it.
+  `--uptime-nanoseconds` prints the clock worker deadlines are expressed in.
 - Neither a worker build nor a pipe fixture qualifies remote ownership, model
   correctness, external TTFT, or production serving.

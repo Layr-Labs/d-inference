@@ -1,0 +1,287 @@
+import Foundation
+
+/// One Mac's side of a pair run.
+public struct PairSide: Equatable, Sendable {
+    public var modelDirectory: String
+    public var workerPath: String
+    public var rdmaDevice: String
+    public var scratchDirectory: String
+
+    public init(modelDirectory: String, workerPath: String, rdmaDevice: String, scratchDirectory: String) {
+        self.modelDirectory = modelDirectory; self.workerPath = workerPath
+        self.rdmaDevice = rdmaDevice; self.scratchDirectory = scratchDirectory
+    }
+}
+
+/// Every input of a pair run, validated before anything is launched. Values
+/// that reach a shell are restricted to characters that need no quoting, and
+/// are single-quoted anyway.
+public struct PairConfiguration: Sendable {
+    public static let roles = ["rank 0 local", "rank 1 remote"]
+    public static let peerIDs = ["rank0-local", "rank1-remote"]
+    public static let arithmeticEnvironment = [
+        ("DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "128"), ("DARKBLOOM_BF16_WEIGHTS", "1"), ("MLX_ENABLE_TF32", "1"),
+    ]
+
+    public var request: QualificationRequest
+    public var stageCut: Int
+    public var local: PairSide
+    public var remote: PairSide
+    /// Argument vector that runs its final argument, a shell command string, on
+    /// the second Mac: `/usr/bin/ssh` with its options and destination.
+    public var remoteTransport: [String]
+    /// Rank 0's own address on the link and a free port; rank 0 listens there.
+    public var coordinator: String
+    public var prefillSchedule: String
+    public var recording: Bool
+    public var lifetimeSeconds: Int
+    public var startupSeconds: Int
+    public var requestSeconds: Int
+    public var rankOneDelaySeconds: Double
+    public var progressTimeoutMilliseconds: Int?
+    /// Inspect both sides and stop: hashes, running workers, runtime
+    /// description and the selected cut. Nothing is launched or written.
+    public var preflightOnly: Bool
+    public var membershipEpoch: UUID
+    /// Strings that must never appear in a report (destination, addresses, names).
+    public var sensitive: [String]
+
+    public init(request: QualificationRequest, stageCut: Int, local: PairSide, remote: PairSide,
+                remoteTransport: [String], coordinator: String, prefillSchedule: String = "serial_v1",
+                recording: Bool = true, lifetimeSeconds: Int = 240, startupSeconds: Int = 120,
+                requestSeconds: Int = 100, rankOneDelaySeconds: Double = 2, progressTimeoutMilliseconds: Int? = nil,
+                preflightOnly: Bool = false, membershipEpoch: UUID = UUID(), sensitive: [String] = []) throws {
+        self.request = request; self.stageCut = stageCut; self.local = local; self.remote = remote
+        self.remoteTransport = remoteTransport; self.coordinator = coordinator
+        self.prefillSchedule = prefillSchedule; self.recording = recording
+        self.lifetimeSeconds = lifetimeSeconds; self.startupSeconds = startupSeconds
+        self.requestSeconds = requestSeconds; self.rankOneDelaySeconds = rankOneDelaySeconds
+        self.progressTimeoutMilliseconds = progressTimeoutMilliseconds; self.preflightOnly = preflightOnly
+        self.membershipEpoch = membershipEpoch; self.sensitive = sensitive
+        try validate()
+    }
+
+    /// `ssh` with options that make it a quiet, non-interactive pipe which ends
+    /// by itself when the link dies. Later `-o` values do not override earlier
+    /// ones, so the caller's options come first.
+    public static func sshTransport(destination: String, options: [String]) throws -> [String] {
+        guard isDestination(destination) else {
+            throw QualificationError("SSH destination must be [user@]host using letters, digits, '.', '_', '-'")
+        }
+        guard options.allSatisfy(isSSHOption) else {
+            throw QualificationError("SSH options must be Key=Value without spaces or shell characters")
+        }
+        let fixed = ["BatchMode=yes", "RequestTTY=no", "ForwardAgent=no", "ForwardX11=no", "ClearAllForwardings=yes",
+            "PermitLocalCommand=no", "ControlMaster=no", "ControlPath=none", "ConnectTimeout=10",
+            "ServerAliveInterval=5", "ServerAliveCountMax=3"]
+        return ["/usr/bin/ssh", "-T"] + (options + fixed).flatMap { ["-o", $0] } + ["--", destination]
+    }
+
+    static func isPath(_ value: String) -> Bool {
+        value.hasPrefix("/") && value.utf8.count <= 1024 && value.count > 1
+            && value.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 47, 95].contains($0) }
+            && value.split(separator: "/", omittingEmptySubsequences: false).dropFirst().allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+    static func isDevice(_ value: String) -> Bool {
+        (1...63).contains(value.utf8.count) && !value.hasPrefix("-")
+            && value.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 95].contains($0) }
+    }
+    static func isDestination(_ value: String) -> Bool {
+        let parts = value.split(separator: "@", omittingEmptySubsequences: false)
+        return (1...2).contains(parts.count) && value.utf8.count <= 320 && parts.allSatisfy { part in
+            !part.isEmpty && !part.hasPrefix("-") && part.utf8.allSatisfy {
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 95].contains($0)
+            }
+        }
+    }
+    static func isSSHOption(_ value: String) -> Bool {
+        let parts = value.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 && !parts[0].isEmpty && !parts[1].isEmpty && value.utf8.count <= 1100
+            && parts[0].utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) }
+            && parts[1].utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+                || [37, 43, 44, 45, 46, 47, 58, 64, 95].contains($0) }
+    }
+    /// The runtime's rule: a canonical unicast IPv4 address and a port.
+    static func isCoordinator(_ value: String) -> Bool {
+        func decimal(_ text: Substring, _ maximum: Int) -> Int? {
+            guard !text.isEmpty, text.utf8.allSatisfy({ (48...57).contains($0) }),
+                  let number = Int(text), number <= maximum, String(number) == text else { return nil }
+            return number
+        }
+        let endpoint = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard endpoint.count == 2, let port = decimal(endpoint[1], 65_535), port > 0 else { return false }
+        let octets = endpoint[0].split(separator: ".", omittingEmptySubsequences: false)
+        let numbers = octets.compactMap { decimal($0, 255) }
+        return octets.count == 4 && numbers.count == 4 && numbers[0] > 0 && numbers[0] < 224
+    }
+
+    public func validate() throws {
+        func require(_ condition: Bool, _ message: String) throws {
+            guard condition else { throw QualificationError("Pair configuration: " + message) }
+        }
+        try request.validate()
+        try require(QualificationRequest.supportedCuts.contains(stageCut), "stage cut must be 4, 8, 12 or 16")
+        for (name, side) in [("local", local), ("remote", remote)] {
+            try require(Self.isPath(side.modelDirectory), "\(name) model directory must be an absolute path of letters, digits, '.', '_', '-', '/'")
+            try require(Self.isPath(side.workerPath), "\(name) worker must be an absolute path of letters, digits, '.', '_', '-', '/'")
+            try require(Self.isPath(side.scratchDirectory), "\(name) scratch directory must be an absolute path of letters, digits, '.', '_', '-', '/'")
+            try require(Self.isDevice(side.rdmaDevice), "\(name) RDMA device must be a device name such as rdma_en5")
+        }
+        try require(Self.isCoordinator(coordinator), "coordinator must be IPV4:PORT with a unicast address")
+        try require(["serial_v1", "one_chunk_lookahead_v1"].contains(prefillSchedule), "unknown prefill schedule")
+        try require((10...300).contains(lifetimeSeconds), "lifetime must be 10...300 seconds")
+        try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
+        try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
+        try require((0...30).contains(rankOneDelaySeconds), "rank 1 delay must be 0...30 seconds")
+        try require(progressTimeoutMilliseconds.map { (1000...600_000).contains($0) } ?? true, "progress timeout must be 1000...600000 ms")
+        try require(!remoteTransport.isEmpty && remoteTransport[0].hasPrefix("/")
+            && remoteTransport.allSatisfy { !$0.isEmpty && !$0.utf8.contains(0) && $0.utf8.count <= 2048 },
+            "remote transport must be an absolute executable and its arguments")
+    }
+
+    func side(_ rank: Int) -> PairSide { rank == 0 ? local : remote }
+    func transport(_ rank: Int) -> [String] { rank == 0 ? ["/bin/sh", "-c"] : remoteTransport }
+
+    /// Row i, column j: the device rank i uses to reach rank j. Both Macs must
+    /// read the same bytes; the runtime compares their digest before loading.
+    public var deviceMatrix: String { "[[null,\"\(local.rdmaDevice)\"],[\"\(remote.rdmaDevice)\",null]]\n" }
+
+    func runDirectory(_ rank: Int) -> String {
+        "\(side(rank).scratchDirectory)/darkbloom-pair-\(membershipEpoch.uuidString.lowercased())/rank\(rank)"
+    }
+    func evidencePath(_ rank: Int) -> String { "\(runDirectory(rank))/evidence/\(request.requestID).json" }
+
+    static func quoted(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    /// What the transport runs: `sh -c` gets the script as is; the remote
+    /// login shell gets one quoted `sh -c` command.
+    func command(_ rank: Int, script: String) -> [String] {
+        transport(rank) + [rank == 0 ? script : "/bin/sh -c " + Self.quoted(script)]
+    }
+
+    /// Hashes, hardware and any worker already running from this path.
+    func inspectionScript(_ rank: Int) -> String {
+        let worker = Self.quoted(side(rank).workerPath)
+        return """
+        set -eu
+        W=\(worker)
+        D=$(/usr/bin/dirname "$W")
+        printf 'worker=%s\\n' "$(/usr/bin/shasum -a 256 "$W" | /usr/bin/cut -d ' ' -f 1)"
+        printf 'metallib=%s\\n' "$(/usr/bin/shasum -a 256 "$D/mlx.metallib" | /usr/bin/cut -d ' ' -f 1)"
+        printf 'chip=%s\\n' "$(/usr/sbin/sysctl -n machdep.cpu.brand_string)"
+        printf 'os=%s\\n' "$(/usr/bin/sw_vers -productVersion)"
+        \(Self.runningScript)
+        """
+    }
+
+    func runningScript(_ rank: Int) -> String {
+        "set -eu\nW=\(Self.quoted(side(rank).workerPath))\n\(Self.runningScript)"
+    }
+
+    /// Processes whose executable is exactly this worker. Counting, no signal.
+    private static let runningScript = """
+        printf 'running=%s\\n' "$(/bin/ps -axo comm= | /usr/bin/awk -v w="$W" '$0 == w { n++ } END { print n + 0 }')"
+        """
+
+    func capabilityScript(_ rank: Int, workerSHA256: String) -> String {
+        let side = side(rank)
+        return "exec \(Self.quoted(side.workerPath)) --describe-runtime --config \(Self.quoted(side.modelDirectory + "/config.json"))"
+            + " --manifest \(Self.quoted(side.modelDirectory + "/manifest.json")) --expected-executable-sha256 \(workerSHA256)"
+    }
+
+    func evidenceScript(_ rank: Int) -> String {
+        "exec /usr/bin/head -c \(PairEvidence.maximumBytes + 1) \(Self.quoted(evidencePath(rank)))"
+    }
+
+    /// Writes the device matrix, turns the remaining lifetime into this Mac's
+    /// own uptime deadline and replaces itself with the worker. The first
+    /// stderr line reports the worker's process ID and that clock. Interrupt
+    /// and hangup are ignored from here on, and stay ignored in the worker: an
+    /// interrupted driver must not take a loaded worker down with it. The
+    /// worker then sees its input end and exits by itself.
+    func launchScript(_ rank: Int, artifactSHA256: String, configurationSHA256: String, workerSHA256: String) -> String {
+        let side = side(rank), run = runDirectory(rank)
+        var environment = [("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), ("LANG", "C"), ("LC_ALL", "C")]
+            + Self.arithmeticEnvironment
+            + [("JACCL_RANK", String(rank)), ("JACCL_COORDINATOR", coordinator)]
+        if let progressTimeoutMilliseconds {
+            environment.append(("JACCL_PROGRESS_TIMEOUT_MS", String(progressTimeoutMilliseconds)))
+        }
+        var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
+            "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
+            "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
+            "--peer0-id", Self.peerIDs[0], "--peer0-build-sha256", workerSHA256,
+            "--peer1-id", Self.peerIDs[1], "--peer1-build-sha256", workerSHA256]
+        if prefillSchedule != "serial_v1" { arguments += ["--prefill-schedule", prefillSchedule] }
+        let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")
+        let evidence = recording ? " --evidence-directory \"$RUN/evidence\"" : ""
+        return """
+        set -eu
+        umask 077
+        W=\(Self.quoted(side.workerPath))
+        RUN=\(Self.quoted(run))
+        /bin/mkdir -p "$RUN/evidence"
+        set -C
+        printf '%s\\n' \(Self.quoted(String(deviceMatrix.dropLast()))) > "$RUN/devices.json"
+        set +C
+        NOW=$("$W" --uptime-nanoseconds)
+        DEADLINE=$((NOW + \(lifetimeSeconds)000000000))
+        trap '' INT HUP
+        echo "\(PairLaunchPreamble.marker) pid=$$ uptime=$NOW deadline=$DEADLINE" >&2
+        exec /usr/bin/env -i \(fixed) JACCL_IBV_DEVICES="$RUN/devices.json" "$W" \
+        \(arguments.map(Self.quoted).joined(separator: " ")) --deadline-uptime-nanoseconds "$DEADLINE"\(evidence)
+        """
+    }
+}
+
+/// The launch script's first stderr line.
+struct PairLaunchPreamble: Equatable {
+    static let marker = "darkbloom-pair-launch-v1"
+    let processID: Int32
+    let uptimeNanoseconds: UInt64
+    let deadlineUptimeNanoseconds: UInt64
+
+    init?(line: String) {
+        let fields = line.split(separator: " ")
+        guard fields.count == 4, fields[0] == Self.marker else { return nil }
+        func value(_ field: Substring, _ name: String) -> Substring? {
+            field.hasPrefix(name + "=") ? field.dropFirst(name.count + 1) : nil
+        }
+        guard let pid = value(fields[1], "pid").flatMap({ Int32($0) }), pid > 1,
+              let uptime = value(fields[2], "uptime").flatMap({ UInt64($0) }),
+              let deadline = value(fields[3], "deadline").flatMap({ UInt64($0) }), deadline > uptime else { return nil }
+        processID = pid; uptimeNanoseconds = uptime; deadlineUptimeNanoseconds = deadline
+    }
+}
+
+/// Removes anything that identifies a Mac, a person or a network from text
+/// that came from a tool: configured strings first, then address and
+/// home-directory shapes.
+public struct PairRedactor: Sendable {
+    private let replacements: [(String, String)]
+
+    public init(sensitive: [String]) {
+        var values = Set<String>()
+        for item in sensitive {
+            values.insert(item)
+            for part in item.split(whereSeparator: { $0 == "@" || $0 == ":" }) { values.insert(String(part)) }
+        }
+        values.insert(NSUserName()); values.insert(ProcessInfo.processInfo.hostName)
+        if let short = ProcessInfo.processInfo.hostName.split(separator: ".").first { values.insert(String(short)) }
+        // Longest first, so a name is not left half-replaced by a part of itself.
+        replacements = values.filter { $0.count >= 3 }.sorted { $0.count > $1.count }.map { ($0, "<redacted>") }
+    }
+
+    public func callAsFunction(_ text: String) -> String {
+        var result = text
+        for (needle, replacement) in replacements { result = result.replacingOccurrences(of: needle, with: replacement) }
+        for (pattern, replacement) in [
+            (#"/(Users|home)/[^/\s:'"]+"#, "/$1/<user>"),
+            (#"\b\d{1,3}(\.\d{1,3}){3}\b"#, "<ipv4>"),
+            (#"\b[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){3,7}\b"#, "<address>"),
+        ] {
+            result = result.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        return result
+    }
+}

@@ -35,9 +35,20 @@ swift build --package-path "$worker_package_dir" --scratch-path "$scratch_path" 
 binary_dir="$(swift build --package-path "$worker_package_dir" --scratch-path "$scratch_path" \
   -c release --show-bin-path --triple arm64-apple-macosx26.2)"
 binary="$binary_dir/$product"
+# The pair driver is control only: it must link no MLX at all, so it has no
+# JACCL backend to verify and needs no Metal library beside it.
+case "$product" in
+  darkbloom-cluster-pair-check) links_mlx=0 ;;
+  *) links_mlx=1 ;;
+esac
 # Read all of nm's output: an early-exiting match would fail the pipeline.
-if [[ "$(nm -a "$binary" | grep -c 'JACCLGroup')" == 0 ]]; then
-  echo 'Product linked a JACCL stub; it is not a native RDMA build' >&2
+if [[ "$links_mlx" == 1 ]]; then
+  if [[ "$(nm -a "$binary" | grep -c 'JACCLGroup')" == 0 ]]; then
+    echo 'Product linked a JACCL stub; it is not a native RDMA build' >&2
+    exit 1
+  fi
+elif [[ "$(nm -a "$binary" | grep -c -e 'JACCLGroup' -e 'mlx_array_')" != 0 ]]; then
+  echo 'Control-only product links MLX' >&2
   exit 1
 fi
 build_version="$(/usr/bin/xcrun vtool -show-build "$binary")"
@@ -54,6 +65,10 @@ if ! printf '%s\n' "$build_version" | /usr/bin/awk '
   exit 1
 fi
 printf '%s\n' "$build_version" >&2
+if [[ "$links_mlx" == 0 ]]; then
+  printf '%s\n' "$binary"
+  exit 0
+fi
 destination_metallib="$binary_dir/mlx.metallib"
 if [[ -L "$destination_metallib" || ( -e "$destination_metallib" && ! -f "$destination_metallib" ) ]]; then
   echo 'Refusing a linked or nonregular metallib destination' >&2

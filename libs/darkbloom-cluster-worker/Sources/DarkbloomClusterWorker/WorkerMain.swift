@@ -10,6 +10,12 @@ import Foundation
                 try WorkerCapabilityCommand.run(arguments: arguments)
                 Darwin.exit(0)
             }
+            if arguments == ["--uptime-nanoseconds"] {
+                // The clock every worker deadline is expressed in, for a launcher
+                // on another Mac that must translate a remaining duration.
+                print(DispatchTime.now().uptimeNanoseconds)
+                Darwin.exit(0)
+            }
             let now = DispatchTime.now().uptimeNanoseconds
             let configuration = try WorkerConfiguration(arguments: arguments, now: now)
             let deadline = configuration.load.deadlineUptimeNanoseconds
@@ -27,7 +33,9 @@ import Foundation
             try ProcessDeadline.arm(uptimeNanoseconds: deadline, status: 124)
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
             try pipes.check()
-            let runtime = try NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap)
+            let runtime: any WorkerRuntime = try configuration.evidenceDirectory.map {
+                try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0)
+            } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap)
             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()
             alarm(0)
             Darwin.exit(0)

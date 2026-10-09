@@ -7,16 +7,19 @@ enum WorkerFailure: Error { case invalid(String) }
 struct WorkerConfiguration {
     let load: QwenResidentLoadConfiguration
     let bootstrap: WorkerBootstrapConfiguration?
+    /// Qualification only: selects the recording runtime and its sidecar directory.
+    let evidenceDirectory: String?
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
-        let optionalNames: Set<String> = ["--prefill-schedule"]
-        let counts = [names.count, names.count + 1, names.count + WorkerBootstrapConfiguration.names.count,
-                      names.count + WorkerBootstrapConfiguration.names.count + 1].map { $0 * 2 }
+        let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory"]
+        let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
+            (0...optionalNames.count).map { (required + $0) * 2 }
+        }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory and optional complete bootstrap triple")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -51,6 +54,15 @@ struct WorkerConfiguration {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")
         }
         bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
+        if let directory = fields["--evidence-directory"] {
+            let components = directory.split(separator: "/", omittingEmptySubsequences: false)
+            guard directory.hasPrefix("/"), directory.utf8.count <= 1024, components.count > 1,
+                  components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  !directory.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
+                throw WorkerFailure.invalid("Worker evidence directory must be a normalized absolute path")
+            }
+        }
+        evidenceDirectory = fields["--evidence-directory"]
         let peers = try (0...1).map { index -> ClusterWorkerPeer in
             let label = fields["--peer\(index)-id"]!
             guard label.utf8.count <= 128, label.utf8.allSatisfy({ (33...126).contains($0) }) else {

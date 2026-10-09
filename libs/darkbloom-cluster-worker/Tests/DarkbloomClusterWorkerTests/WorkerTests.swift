@@ -148,6 +148,60 @@ final class WorkerTests: XCTestCase {
         XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--rank", "1"], now: 100))
     }
 
+    func testEvidenceDirectoryIsOptionalAndMustBeNormalized() throws {
+        let args = ["--model-dir", "/invented/model", "--rank", "1", "--stage-cut", "4",
+            "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
+            "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+            "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+            "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+            "--deadline-uptime-nanoseconds", "300000000100"]
+        // A serving launch names no evidence directory and gets none.
+        XCTAssertNil(try WorkerConfiguration(arguments: args, now: 100).evidenceDirectory)
+        let recording = try WorkerConfiguration(arguments: args + ["--evidence-directory", "/private/run/evidence"], now: 100)
+        XCTAssertEqual(recording.evidenceDirectory, "/private/run/evidence")
+        XCTAssertEqual(recording.load.prefillSchedule, .serial)
+        let both = try WorkerConfiguration(arguments: args + ["--prefill-schedule", "one_chunk_lookahead_v1",
+            "--evidence-directory", "/private/run/evidence"], now: 100)
+        XCTAssertEqual(both.evidenceDirectory, "/private/run/evidence"); XCTAssertEqual(both.load.prefillSchedule, .oneChunkLookahead)
+        for path in ["relative/evidence", "/private/../evidence", "/private//evidence", "/private/evidence/", "/", ""] {
+            XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--evidence-directory", path], now: 100), path)
+        }
+        XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--evidence-directory", "/a", "--evidence-directory", "/b"], now: 100))
+    }
+
+    func testEvidenceSinkWritesEachRequestOncePrivatelyAndRefusesLinks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("worker-evidence-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sink = try WorkerEvidenceSink(path: root.path)
+        let id = UUID(), bytes = Data(repeating: 0x61, count: 150_001)
+        let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        try sink.publish(bytes, requestID: id, deadline: deadline)
+        let file = root.appendingPathComponent(WorkerEvidenceSink.fileName(id))
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+        var info = stat()
+        XCTAssertTrue(lstat(file.path, &info) == 0 && info.st_mode & 0o077 == 0)
+        // Never replaced: not by the same sink, not by a second one.
+        XCTAssertThrowsError(try sink.publish(Data([1]), requestID: id, deadline: deadline))
+        XCTAssertThrowsError(try WorkerEvidenceSink(path: root.path).publish(Data([2]), requestID: id, deadline: deadline))
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+        let expired = UUID()
+        XCTAssertThrowsError(try sink.publish(Data([1]), requestID: expired, deadline: 1))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(WorkerEvidenceSink.fileName(expired)).path))
+        XCTAssertThrowsError(try sink.publish(Data(), requestID: UUID(), deadline: deadline))
+        XCTAssertThrowsError(try sink.publish(Data(count: WorkerEvidenceSink.maximumBytes + 1), requestID: UUID(), deadline: deadline))
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        XCTAssertThrowsError(try WorkerEvidenceSink(path: link.path))
+        let linked = UUID()
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(WorkerEvidenceSink.fileName(linked)), withDestinationURL: file)
+        XCTAssertThrowsError(try sink.publish(Data([1]), requestID: linked, deadline: deadline))
+        let open = root.appendingPathComponent("public")
+        try FileManager.default.createDirectory(at: open, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+        XCTAssertThrowsError(try WorkerEvidenceSink(path: open.path))
+        XCTAssertThrowsError(try WorkerEvidenceSink(path: root.appendingPathComponent("missing").path))
+    }
+
     func testBothRankPathsRetireThenShutdown() throws {
         for rank in [0, 1] {
             let h = try Harness(rank: rank), id = UUID()

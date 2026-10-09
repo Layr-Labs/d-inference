@@ -14,7 +14,11 @@ func (r *Registry) newAutopilotControl(c *modelAutopilotController) autopilotcon
 		BeginReservation: func(now time.Time) (autopilotcontrol.Reservation[*Provider], bool) {
 			return r.beginAutopilotReservation(c, now)
 		},
-		Flush: r.flushAutopilotEvents, Refresh: c.refreshControlLeases,
+		Flush: r.flushAutopilotEvents,
+		Refresh: func(time.Time) {
+			r.refreshMachineAutopilotPolicy()
+			c.refreshControlLeases(time.Now())
+		},
 		Watchdogs: func(now time.Time) { r.markAutopilotWatchdogs(c.config, now) },
 		Retry:     r.retryAutopilotCommands,
 		Paused:    c.paused.Load, Pause: func() { c.paused.Store(true) },
@@ -28,7 +32,7 @@ func (r *Registry) newAutopilotControl(c *modelAutopilotController) autopilotcon
 			c.lastSummary = summary
 			r.mu.Unlock()
 			if r.logger != nil {
-				r.logger.Info("model autopilot tick", "duration_ms", float64(time.Since(started).Microseconds())/1000, "observe_only", summary.ObserveOnly, "opted_in", summary.OptedIn, "pending", summary.Pending, "uncertain", summary.Uncertain, "proposed", summary.Proposed, "issued", summary.Issued, "excluded", summary.Excluded, "models", summary.Models)
+				r.logger.Info("model autopilot tick", "duration_ms", float64(time.Since(started).Microseconds())/1000, "observe_only", summary.ObserveOnly, "opted_in", summary.OptedIn, "live_cohort", summary.LiveCohort, "live_active", summary.LiveActive, "shadow", summary.Shadow, "pending", summary.Pending, "uncertain", summary.Uncertain, "proposed", summary.Proposed, "live_proposed", summary.LiveProposed, "shadow_proposed", summary.ShadowProposed, "issued", summary.Issued, "excluded", summary.Excluded, "models", summary.Models)
 			}
 		},
 	})

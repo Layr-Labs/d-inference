@@ -1,5 +1,7 @@
 version: "1.1"
 created: "2026-05-14"
+# Autopilot cohort payout and repair boundaries reviewed 2026-10-08 in T-055
+# and T-060. This does not re-verify unrelated historical entries.
 # Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.
 # Upcoming frozen legacy MDM policy documented 2026-10-04, not a production
 # activation claim or a revalidation of the older threat entries. Cohort gates
@@ -3277,13 +3279,15 @@ threats:
       A queued request may outlive a grant, credential revocation, endpoint replacement
       or policy change. Selection-time authorization and a public snapshot are insufficient.
     adversaries: [ADV-001, ADV-003]
-    affected_assets: [A-001, A-015, A-016]
+    affected_assets: [A-001, A-009, A-015, A-016]
     affected_files:
       - coordinator/appattest/verify.go
       - coordinator/appattest/service/authorizer.go
       - coordinator/registry/app_attest_authorization.go
       - coordinator/registry/app_attest_presenter.go
       - coordinator/registry/inference_authorization.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/api/provider/autopilot_rewards.go
     mitigations:
       - description: >
           Verified transcript/credential/counter and current account/session/endpoint
@@ -3293,6 +3297,13 @@ threats:
       - description: >
           Explicit credential revocation denies matching live presenters and retained
           grant keys across both paths; failed storage reads never extend readiness.
+        status: implemented
+      - description: >
+          Autopilot reward qualification evaluates the lease interval at the original
+          server receive time while retaining current binding, policy, revocation
+          and privacy checks. A grant accepted during delayed frame processing cannot
+          retroactively qualify an earlier UTC day. Consent journaling preserves that
+          original timestamp through deferred baseline materialization and retries.
         status: implemented
       - description: Committed in-flight frames and already delivered plaintext cannot be recalled.
         status: accepted
@@ -3344,6 +3355,10 @@ threats:
       An operator may rotate credentials, reinstall, create new accounts or inflate
       app-origin hardware claims. Verified aliases identify known continuity, not a
       globally unique physical Mac or an Apple-certified RAM entitlement.
+      Autopilot's cohort fallback can pay a new machine with little or no personal
+      inference history. Provider-origin inventory and connected-session evidence
+      do not prove useful work or prevent an operator from enrolling unlinkable
+      identities to draw multiple cohort floors.
     adversaries: [ADV-001]
     affected_assets: [A-009, A-015]
     affected_files:
@@ -3351,13 +3366,32 @@ threats:
       - coordinator/store/machine_continuity.go
       - coordinator/store/machine_floor_settlement.go
       - coordinator/payments/baserewards/machine_candidates.go
+      - coordinator/registry/autopilot_reward_snapshot.go
+      - coordinator/store/postgres/autopilot_rewards_cohort_peers.go
+      - coordinator/store/postgres/autopilot_rewards_uptime.go
+      - coordinator/store/postgres/autopilot_rewards_settlement.go
+      - coordinator/store/memory/autopilot_rewards_settlement.go
     mitigations:
       - description: >
           Protocol3 binds hardware and the verification key; authenticated associations,
           canonical settlement identity, overlapping-uptime union and account/pool caps
           prevent known duplicate sessions from multiplying base floors.
         status: implemented
+      - description: >
+          Autopilot rejects provisional or ambiguous ownership, unions known machine
+          sessions for uptime, freezes the original baseline and atomically records
+          one finalized payment per canonical machine/day against a shared pool cap.
+          Historical qualification and missing cohort evidence fail closed. These
+          controls bound known duplicate claims, not unlinkable physical identities.
+        status: implemented
       - description: Deliberate unlinkable identities and false capacity require separate abuse policy/qualification.
+        status: open
+      - description: >
+          Autopilot has no minimum personal served-work requirement, cohort-size
+          threshold beyond one eligible peer, or per-account payout cap. Those
+          abuse controls and independent
+          validation of provider-origin inventory need a separate product policy;
+          the current global pool cap only bounds aggregate loss.
         status: open
     open_findings: []
     severity: high
@@ -3543,3 +3577,42 @@ threats:
       Run the marker tests after every schema change; check each new column that
       holds user-chosen text, a device identifier or a location against
       coordinator/internal/store/erasure/rules.go (docs/developer/personal-data.md).
+
+  - id: T-060
+    trust_boundary: TB-006
+    stride: Tampering
+    title: Compromised reward administration funds or restores unjustified floors
+    description: >
+      An attacker with administrator authorization, or an administrator relying on
+      false historical evidence, can raise the Autopilot pool cap or restore an
+      unknown baseline. The supplied evidence string records the asserted source;
+      it is not independent proof that the earnings or original opt-in existed.
+    adversaries: [ADV-003]
+    affected_assets: [A-009]
+    affected_files:
+      - coordinator/api/autopilot_handlers.go
+      - coordinator/api/autopilot/rewards.go
+      - coordinator/store/postgres/autopilot_rewards.go
+      - coordinator/store/postgres/autopilot_rewards_pool.go
+    mitigations:
+      - description: >
+          The routes require authentication and administrator authorization, accept
+          bounded strict payloads and return no-store responses. Configured
+          per-account financial rate limits apply except to shared admin-key
+          requests, which bypass them. Restoration requires an unknown baseline, bounded nonempty
+          evidence and a first-opt-in time no later than the first observation;
+          an already frozen baseline cannot be replaced. Pool reductions cannot
+          invalidate money already spent, and settlement still enforces the cap.
+        status: implemented
+      - description: >
+          Independent approval of funding and historical evidence, plus an
+          actor-attributed audit history for every cap and restoration change,
+          remain operator controls; the stored baseline evidence alone does not
+          provide those guarantees.
+        status: open
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Verify unauthorized and malformed requests fail, frozen baselines cannot be
+      overwritten and concurrent settlement cannot overspend; independently review
+      every cap increase and baseline repair before enabling payments.

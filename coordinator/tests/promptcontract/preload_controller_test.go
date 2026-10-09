@@ -45,8 +45,8 @@ func TestPreloadControllerGatesCatalogAndChildGenerations(t *testing.T) {
 	defer client.Close()
 	provisioner := catalog.New()
 	provisioner.Replace([]catalog.Status{
-		{ModelID: "model-a", ArtifactReady: true, PromptContractID: contractA},
-		{ModelID: "model-b", ArtifactReady: true, PromptContractID: contractA},
+		{ModelID: "model-a", ArtifactReady: true, PromptContractID: contractA, ModelAggregateSHA256: strings.Repeat("e", 64)},
+		{ModelID: "model-b", ArtifactReady: true, PromptContractID: contractA, ModelAggregateSHA256: strings.Repeat("e", 64)},
 	})
 	supervisor := &preloadChildFixture{status: preload.ChildStatus{Running: true, Ready: true, ChildGeneration: 1}}
 	controller, err := preload.New(provisioner, supervisor, client, preload.PreloadControllerConfig{})
@@ -72,7 +72,7 @@ func TestPreloadControllerGatesCatalogAndChildGenerations(t *testing.T) {
 			controller.Status(), preloadCalls.Load())
 	}
 
-	generation := provisioner.Replace([]catalog.Status{{ModelID: "model-c", PromptContractID: contractB}})
+	generation := provisioner.Replace([]catalog.Status{{ModelID: "model-c", PromptContractID: contractB, ModelAggregateSHA256: strings.Repeat("e", 64)}})
 	if controller.ReadyFor(contractA) || controller.ReadyFor(contractB) {
 		t.Fatal("pending catalog generation remained ready")
 	}
@@ -104,7 +104,7 @@ func TestPreloadControllerBacksOffDeterministicFailures(t *testing.T) {
 	client := sidecar.NewClient(sidecar.ClientConfig{SocketPath: socket, MaxPreloadIDs: 8})
 	defer client.Close()
 	provisioner := catalog.New()
-	provisioner.Replace([]catalog.Status{{ModelID: "model", ArtifactReady: true, PromptContractID: contractID}})
+	provisioner.Replace([]catalog.Status{{ModelID: "model", ArtifactReady: true, PromptContractID: contractID, ModelAggregateSHA256: strings.Repeat("e", 64)}})
 	supervisor := &preloadChildFixture{status: preload.ChildStatus{Running: true, Ready: true, ChildGeneration: 1}}
 	controller, err := preload.New(provisioner, supervisor, client, preload.PreloadControllerConfig{
 		FailureBackoffMin: 40 * time.Millisecond,

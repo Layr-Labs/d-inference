@@ -20,7 +20,8 @@ func managedProviderState(p *production.Provider, owner *autopilotstate.State, a
 		models = append(models, m.ID)
 	}
 	state := &protocol.ModelAutopilotState{Protocol: protocol.ModelAutopilotProtocol, Active: true, SessionID: p.ID, Revision: "test", SelectedModels: models, Enabled: true, CachedOnly: true, ActiveCommandID: active, MaxModelSlots: 3}
-	owner.AcceptControl(state, protocol.ModelAutopilotControl{Revision: "test", ExpiresAtMS: until.UnixMilli()})
+	owner.AcceptControl(state, protocol.ModelAutopilotControl{Enabled: true, Revision: "test", ExpiresAtMS: until.UnixMilli()})
+	owner.AcknowledgeControl(state, p.ID, time.Now())
 	return state
 }
 

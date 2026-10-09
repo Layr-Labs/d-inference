@@ -59,7 +59,27 @@ func TestUsageTotalsAndSeriesBackends(t *testing.T) {
 				t.Fatalf("UsageCountSince(future) = %d, %v", n, err)
 			}
 
-			buckets, err := s.UsageTimeSeries(time.Now().Add(-time.Hour), time.Now().Add(time.Minute), time.Minute)
+			records := s.UsageRecords()
+			if len(records) != 3 {
+				t.Fatalf("usage records = %d, want 3", len(records))
+			}
+			until := records[0].Timestamp
+			for _, record := range records[1:] {
+				if record.Timestamp.After(until) {
+					until = record.Timestamp
+				}
+			}
+			// The upper bound is exclusive and future bounds are clamped to now.
+			// Advance past the stored timestamps at PostgreSQL's microsecond precision.
+			until = until.Add(time.Microsecond)
+			deadline := time.Now().Add(time.Second)
+			for !time.Now().After(until) {
+				if time.Now().After(deadline) {
+					t.Fatalf("clock did not advance past usage upper bound %s", until)
+				}
+				time.Sleep(time.Microsecond)
+			}
+			buckets, err := s.UsageTimeSeries(start, until, time.Minute)
 			if err != nil {
 				t.Fatalf("UsageTimeSeries: %v", err)
 			}

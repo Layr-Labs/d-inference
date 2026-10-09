@@ -167,7 +167,7 @@ func (s *Owner) handoffQueuedProvider(in providerdispatch.Input, provider *regis
 	// The queued reservation may have been increased by the top-up; do not
 	// overwrite pr.ReservedMicroUSD. Bound the write by the absolute first-token
 	// clock so a blocked writer cannot outlive the request's remaining budget.
-	writeCtx, cancelWrite := firstcontent.FirstTokenWriteContext(in.Request.Context(), firstcontent.TimingReceivedAt(in.Timing), in.Deadline)
+	writeCtx, cancelWrite := firstcontent.FirstTokenWriteContextForPending(in.Request.Context(), firstcontent.TimingReceivedAt(in.Timing), in.Deadline, pr)
 	pr.Profile.Mark(registry.StampWriteSubmitted)
 	_, writeErr := accounting.WriteQueued(writeCtx, provider, pr,
 		providerwire.FrameBuilder(requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr))

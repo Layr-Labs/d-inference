@@ -21,20 +21,21 @@ func IsRewardLedgerType(t LedgerEntryType) bool {
 type LedgerEntryType string
 
 const (
-	LedgerDeposit        LedgerEntryType = "deposit"             // consumer funds account
-	LedgerCharge         LedgerEntryType = "charge"              // consumer pays for inference
-	LedgerPayout         LedgerEntryType = "payout"              // provider credited for serving
-	LedgerPlatformFee    LedgerEntryType = "platform_fee"        // Darkbloom platform cut
-	LedgerWithdrawal     LedgerEntryType = "withdrawal"          // on-chain withdrawal
-	LedgerReferralReward LedgerEntryType = "referral_reward"     // referrer earns 5% of collected consumer token spend
-	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"      // Stripe checkout deposit
-	LedgerStripePayout   LedgerEntryType = "stripe_payout"       // user-initiated bank/card withdrawal via Stripe Connect
-	LedgerInviteCredit   LedgerEntryType = "invite_credit"       // invite code redemption
-	LedgerRefund         LedgerEntryType = "refund"              // reservation refund (request failed before inference)
-	LedgerAdminCredit    LedgerEntryType = "admin_credit"        // admin-granted non-withdrawable credit
-	LedgerAdminReward    LedgerEntryType = "admin_reward"        // admin-granted withdrawable reward
-	LedgerMigration      LedgerEntryType = "migration"           // balance moved between account identities (e.g. legacy key re-keying)
-	LedgerFloorDraw      LedgerEntryType = "provider_floor_draw" // base-rewards epoch base income (additive)
+	LedgerAutopilotFloor LedgerEntryType = "autopilot_floor_topup" // separate pool; counted once through its base_reward earning
+	LedgerDeposit        LedgerEntryType = "deposit"               // consumer funds account
+	LedgerCharge         LedgerEntryType = "charge"                // consumer pays for inference
+	LedgerPayout         LedgerEntryType = "payout"                // provider credited for serving
+	LedgerPlatformFee    LedgerEntryType = "platform_fee"          // Darkbloom platform cut
+	LedgerWithdrawal     LedgerEntryType = "withdrawal"            // on-chain withdrawal
+	LedgerReferralReward LedgerEntryType = "referral_reward"       // referrer earns 5% of collected consumer token spend
+	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"        // Stripe checkout deposit
+	LedgerStripePayout   LedgerEntryType = "stripe_payout"         // user-initiated bank/card withdrawal via Stripe Connect
+	LedgerInviteCredit   LedgerEntryType = "invite_credit"         // invite code redemption
+	LedgerRefund         LedgerEntryType = "refund"                // reservation refund (request failed before inference)
+	LedgerAdminCredit    LedgerEntryType = "admin_credit"          // admin-granted non-withdrawable credit
+	LedgerAdminReward    LedgerEntryType = "admin_reward"          // admin-granted withdrawable reward
+	LedgerMigration      LedgerEntryType = "migration"             // balance moved between account identities (e.g. legacy key re-keying)
+	LedgerFloorDraw      LedgerEntryType = "provider_floor_draw"   // base-rewards epoch base income (additive)
 )
 
 // LedgerEntry is a single balance-changing event.

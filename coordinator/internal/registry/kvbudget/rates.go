@@ -53,8 +53,7 @@ func (p *RateTable) Set(model string, rate int64) {
 	p.count++
 }
 
-// Get returns the recorded rate for model, or 0 when no budget slot
-// reported one (the same "map miss ⇒ 0" every consumer relied on).
+// Get returns the recorded rate for model, or 0 when absent.
 func (p *RateTable) Get(model string) int64 {
 	for i := 0; i < p.Len() && i < InlineRates; i++ {
 		if p.inline[i].model == model {
@@ -69,5 +68,13 @@ func (p *RateTable) Get(model string) int64 {
 	return 0
 }
 
-// RateFor returns the clamped reported rate for model, or zero if absent.
+// RateFor returns the reported rate or an explicitly supplied cold estimate.
 func (p *Budget) RateFor(model string) int64 { return p.rates.Get(model) }
+
+// AddColdRate prices absent-model charges without creating or widening a grant.
+// A legacy pool remains in token mode, and a provider-reported rate always wins.
+func (p *Budget) AddColdRate(model string, rate int64) {
+	if rate = ClampRate(rate); p.ByteMode && rate > 0 && p.RateFor(model) == 0 {
+		p.rates.Set(model, rate)
+	}
+}

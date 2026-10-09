@@ -15,10 +15,11 @@ func (r *Race) Run(ctx context.Context, primary, backup RaceAttempt) RaceResult 
 	provider, pr := primary.Provider, primary.Pending
 	backupProvider, backupPR := backup.Provider, backup.Pending
 
-	raceDeadline := r.config.Clock.Timer(r.config.Clock.Wait(r.config.Deadline - r.config.SpeculativeAt))
+	raceDeadline := r.config.Clock.Timer(r.config.Clock.RaceWait(pr, backupPR, r.config.Deadline-r.config.SpeculativeAt))
 	// One-shot extension: when the race deadline expires but a racer
 	// has shown liveness (preamble received), the race continues up to
 	// leftover first-token budget (capped by preambleContentTimeout).
+	defer func() { raceDeadline.Stop() }()
 	raceExtended := false
 	// Preamble chunks from the backup are buffered separately:
 	// held chunks must never mix providers.
@@ -29,6 +30,7 @@ func (r *Race) Run(ctx context.Context, primary, backup RaceAttempt) RaceResult 
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(pr, chunk, &r.result.Attempt.HeldChunks) {
+				r.config.Clock.RearmExpiredRace(&raceDeadline, pr, backupPR)
 				// Preamble only: the primary hasn't proven it can
 				// generate; keep the backup racing for first content.
 				if completedAt, empty := backupPR.OnTimeEmptyCompletionIngress(); empty &&
@@ -78,6 +80,7 @@ func (r *Race) Run(ctx context.Context, primary, backup RaceAttempt) RaceResult 
 
 		case chunk, ok := <-backupPR.ChunkCh:
 			if ok && firstcontent.HoldPreContentBoilerplate(backupPR, chunk, &backup.HeldChunks) {
+				r.config.Clock.RearmExpiredRace(&raceDeadline, pr, backupPR)
 				// Backup preamble doesn't win the race: first CONTENT does.
 				if completedAt, empty := pr.OnTimeEmptyCompletionIngress(); empty &&
 					!backupPR.ContentIngressAtOrBefore(completedAt) {
@@ -258,6 +261,9 @@ func (r *Race) Run(ctx context.Context, primary, backup RaceAttempt) RaceResult 
 				r.result.Outcome = Committed
 				return r.finish(Committed)
 			}
+			if result, expired := r.expireBoundRacer(ctx, r.result.Attempt, backup); expired {
+				return result
+			}
 			if pr.FirstContentIngressArrivedByDeadline() ||
 				backupPR.FirstContentIngressArrivedByDeadline() {
 				continue
@@ -269,7 +275,7 @@ func (r *Race) Run(ctx context.Context, primary, backup RaceAttempt) RaceResult 
 				// preambleContentTimeout (zero bytes have reached the
 				// client; a genuine cold load would have signalled
 				// AcceptedCh).
-				ext := r.config.Clock.Wait(firstcontent.PreambleContentTimeout)
+				ext := r.config.Clock.RaceWait(pr, backupPR, firstcontent.PreambleContentTimeout)
 				if ext > firstcontent.PreambleContentTimeout {
 					ext = firstcontent.PreambleContentTimeout
 				}
@@ -300,14 +306,14 @@ func (r *Race) Run(ctx context.Context, primary, backup RaceAttempt) RaceResult 
 			// (shape-keyed) trips its cooldown.
 			// Attribute each provider's complete initial+racing interval. The
 			// prior extension-only check missed stalls split across phases.
-			if firstcontent.ProviderAttemptAttributableStall(pr, r.config.Deadline) {
+			if firstcontent.ProviderAttemptAttributableStall(pr, r.config.Clock.ForPending(pr).Duration(r.config.Deadline)) {
 				r.deps.Effects.RecordError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			if firstcontent.ProviderAttemptAttributableStall(
-				backupPR, r.config.Deadline-r.config.SpeculativeAt) {
+				backupPR, r.config.Clock.ForPending(backupPR).Duration(r.config.Deadline-r.config.SpeculativeAt)) {
 				r.deps.Effects.RecordError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
 			}
-			r.deps.Registry.RecordWarmPoolTTFTMiss(r.config.Model, r.config.Deadline)
+			r.deps.Registry.RecordWarmPoolTTFTMiss(r.config.Model, r.config.Clock.ForPending(pr).Duration(r.config.Deadline))
 			r.recordTimeout(backupPR)
 			r.exclude(provider)
 			r.exclude(backupProvider)

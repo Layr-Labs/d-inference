@@ -311,6 +311,27 @@ struct QwenVLMTargetExtractionTests {
                 == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
+    @Test("short demanded capture requires the actual dense paged SSD store and keeps its floor")
+    func shortDemandedCaptureRequiresDensePagedSSD() async throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+        let fixture = try SSDHybridCheckpointTestFixture(paged: true)
+        defer { fixture.remove() }
+        let store = try fixture.makeStore()
+        defer { store.close() }
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: store) == store.config.minEffectiveTokens)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: moe, backend: .paged, store: store) == nil)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .contiguous, store: store) == nil)
+        #expect(EngineV2Factory.demandedShortCheckpointMinimumTokens(
+            model: dense, backend: .paged, store: nil) == nil)
+        await store.closeAndWait()
+    }
+
     @Test("benchmark resolution uses the same extracted Qwen target")
     func benchmarkServingModelUsesQwenExtraction() throws {
         let configData = qwenTargetFixtureJSON()
@@ -522,7 +543,7 @@ struct QwenVLMTargetExtractionTests {
                 fp16KVBytesPerToken: 256,
                 maxContextLength: 2_048,
                 defaultMaxTokens: 32),
-            kvBytesCapacity: 8 << 20,
+            kvBytesCapacity: 2 << 30, // Logical grant covers fixed state and the serving KV floor.
             maxConcurrentRequests: 2,
             kvBudget: nil,
             weightHash: String(repeating: "a", count: 64),
@@ -554,7 +575,7 @@ struct QwenVLMTargetExtractionTests {
         let modelID = "tiny-qwen-hybrid"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
-        let slotBytes = 8 << 20
+        let slotBytes = 2 << 30 // Logical grant for minimum KV + fixed state, not an allocation.
         let bankBytes = 1 << 20
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(mtpLayers: 0, fullAttentionInterval: 2))
@@ -710,7 +731,7 @@ struct QwenVLMTargetExtractionTests {
             ? "qwen3.5-35b-a3b" : "EigenLabs/Qwen3.8-27B-4bit-mtp"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
-        let slotBytes = 8 << 20
+        let slotBytes = 2 << 30 // Logical grant for minimum KV + fixed state, not an allocation.
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("complete-checkpoint-seam-\(UUID().uuidString)", isDirectory: true)
         defer {

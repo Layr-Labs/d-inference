@@ -27,7 +27,8 @@ import (
 //     "recreate" error, and legacy manual payout schedules are healed.
 //  2. Compute fee (Instant: 1.5%, $0.50 min; Standard: free).
 //  3. Debit the ledger by the GROSS amount.
-//  4. transfers.create — on failure the ledger is re-credited.
+//  4. transfers.create — low platform funding queues the reserved amount;
+//     other definitive failures re-credit the ledger.
 //     Standard: done; Stripe's automatic daily payout sweeps the connected
 //     balance to the user's bank in their local currency.
 //     Instant: payouts.create to the debit card; if it fails, the instant
@@ -199,14 +200,15 @@ func (s *Owner) HandleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	debitRef := "stripe_withdraw:" + withdrawalID
 
 	wd := &store.StripeWithdrawal{
-		ID:              withdrawalID,
-		AccountID:       user.AccountID,
-		StripeAccountID: user.StripeAccountID,
-		AmountMicroUSD:  grossMicroUSD,
-		FeeMicroUSD:     feeMicroUSD,
-		NetMicroUSD:     netMicroUSD,
-		Method:          method,
-		Status:          "pending",
+		ID:                withdrawalID,
+		AccountID:         user.AccountID,
+		StripeAccountID:   user.StripeAccountID,
+		AmountMicroUSD:    grossMicroUSD,
+		FeeMicroUSD:       feeMicroUSD,
+		NetMicroUSD:       netMicroUSD,
+		Method:            method,
+		Status:            "pending",
+		TransferStartedAt: time.Now(),
 	}
 	// One store transaction debits both balance columns (preventing the
 	// inflation bug where a plain Debit eats non-withdrawable credits and a
@@ -225,242 +227,8 @@ func (s *Owner) HandleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist a definitive rejection before refunding. Recovery can retry the
-	// atomic credit/flag update without ever resending a rejected transfer.
-	markFailedRefund := func(reason string) bool {
-		repo, ok := store.As[store.StripeSettlementStore](s.billing.Store())
-		if !ok {
-			return false
-		}
-		if err := repo.RecordStripeTransferRejection(withdrawalID, reason); err != nil {
-			s.logger.Error("stripe payout: persist rejection failed; manual reconciliation required", "withdrawal_id", withdrawalID, "error", err)
-			return false
-		}
-		_, err := repo.RefundRejectedStripeWithdrawal(withdrawalID)
-		if err != nil {
-			s.logger.Error("stripe payout: refund pending recovery", "withdrawal_id", withdrawalID, "error", err)
-		}
-		return err == nil
-	}
-
-	// Step 2: transfer USD from platform balance to the connected account.
-	// Retried through retryAmbiguousStripe: the idempotency key makes a
-	// replay after a transport blip return the original transfer instead of
-	// creating a second one.
-	transfer, err := retryAmbiguousStripe(func() (*billing.Transfer, error) {
-		return s.billing.StripeConnect().CreateTransfer(billing.CreateTransferParams{
-			DestinationAccountID: user.StripeAccountID,
-			AmountCents:          netCents,
-			IdempotencyKey:       "wd-tr-" + withdrawalID,
-			Description:          "Darkbloom credit withdrawal",
-		})
-	})
-	if err != nil && !billing.IsDefinitiveAPIErr(err) {
-		// AMBIGUOUS outcome: Stripe never answered, so the idempotent
-		// request may have been accepted with the response lost. If it was,
-		// the daily sweep will still deliver the money — refunding here
-		// would pay the user twice. Park the row in "pending" (no refund):
-		// if the transfer landed, ops sees the stuck-pending reconciler
-		// alert and completes the row from the Stripe dashboard via the
-		// idempotency key; if it didn't, the same alert drives the refund.
-		wd.FailureReason = "transfer_create_unconfirmed: " + err.Error()
-		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous transfer"); uerr != nil {
-			s.logger.Error("stripe payout: persist ambiguous-transfer state failed",
-				"error", uerr, "withdrawal_id", withdrawalID)
-		}
-		s.logger.Error("stripe payout: transfer outcome UNCONFIRMED — no refund issued, verify against Stripe dashboard",
-			"error", err, "withdrawal_id", withdrawalID, "idempotency_key", "wd-tr-"+withdrawalID)
-		httpx.WriteJSON(w, http.StatusBadGateway, httpx.ErrorResponse("stripe_error",
-			"we couldn't confirm the transfer with Stripe — your withdrawal is on hold and nothing was refunded; it will complete or be resolved automatically, contact support if it doesn't update within 24 hours"))
-		return
-	}
-	if err != nil {
-		refunded := markFailedRefund(err.Error())
-		s.logger.Error("stripe payout: transfer failed", "error", err, "withdrawal_id", withdrawalID)
-		refundNote := "your balance was refunded"
-		if !refunded {
-			refundNote = "the refund to your balance is pending — contact support if it doesn't appear shortly"
-		}
-
-		// Classify permanent account problems (races with the pre-check) so
-		// the user gets an actionable error instead of a raw Stripe message.
-		switch {
-		case billing.IsAccountGoneErr(err):
-			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); perr != nil {
-				s.logger.Error("stripe payout: unlink gone account failed", "error", perr)
-			}
-			httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("stripe_account_gone",
-				"your Stripe payout account no longer exists — "+refundNote+"; set up payouts again from the billing page"))
-		case billing.IsServiceAgreementErr(err):
-			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, user.StripeAccountID,
-				stripeStatusRestricted, "", "", "", false); perr != nil {
-				s.logger.Error("stripe payout: persist restricted status failed", "error", perr)
-			}
-			httpx.WriteJSON(w, http.StatusConflict, httpx.ErrorResponse("stripe_account_recreate_required",
-				"your payout account can't receive transfers in your country — "+refundNote+"; re-run payout setup from the billing page to recreate it"))
-		default:
-			httpx.WriteJSON(w, http.StatusBadGateway, httpx.ErrorResponse("stripe_error",
-				"failed to transfer funds ("+refundNote+"): "+err.Error()))
-		}
-		return
-	}
-	wd.TransferID = transfer.ID
-	wd.Status = "transferred"
-	if err := s.persistWithdrawalUpdate(wd, "transfer_id"); err != nil {
-		// Transfer succeeded but we lost track of it: the row is stuck
-		// "pending" with no transfer_id, invisible to the webhook matcher and
-		// sweep reconciler. Money is in the connected account and the daily
-		// auto-payout still delivers it — don't refund (double-credit). The
-		// reconciler's stale-pending alert surfaces the row for ops.
-		s.logger.Error("stripe payout: persist transfer_id failed after retries — row stuck pending, funds deliver via sweep",
-			"error", err, "withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
-	}
-
-	// Step 3 (standard): nothing to do. The connected account is on Stripe's
-	// automatic daily payout schedule, which sweeps the balance to the user's
-	// bank in their local currency. We deliberately do NOT create a manual
-	// payout here: manual payouts require the balance to already be available
-	// (transfers to `recipient` accounts take +24h) and must be denominated in
-	// the connected account's settlement currency — Stripe converts cross-
-	// border transfers, so a hardcoded USD payout fails for any non-USD
-	// account. The sweep handles both; the payout.paid webhook marks the row.
-	if method == "standard" {
-		s.logger.Info("stripe payout: transferred (auto-payout will deliver)",
-			"withdrawal_id", withdrawalID,
-			"account", user.AccountID[:min(8, len(user.AccountID))]+"...",
-			"gross_micro_usd", grossMicroUSD,
-			"net_micro_usd", netMicroUSD,
-		)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"status":            "transferred",
-			"withdrawal_id":     withdrawalID,
-			"transfer_id":       transfer.ID,
-			"amount_usd":        formatUSD(grossMicroUSD),
-			"fee_usd":           formatUSD(feeMicroUSD),
-			"net_usd":           formatUSD(netMicroUSD),
-			"method":            method,
-			"eta":               etaForMethod(method, acct.Country),
-			"message":           sweepDeliveryMessage(acct.Country),
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
-		})
-		return
-	}
-
-	// Step 3 (instant): create the Stripe Instant Payout from the connected
-	// account to the user's debit card. Instant payouts are USD/debit-card
-	// only, which the InstantEligible gate above guarantees. Idempotent —
-	// ambiguous transport failures are retried with the same key.
-	payout, err := retryAmbiguousStripe(func() (*billing.Payout, error) {
-		return s.billing.StripeConnect().CreatePayout(billing.CreatePayoutParams{
-			OnBehalfOfAccountID: user.StripeAccountID,
-			AmountCents:         netCents,
-			Method:              method,
-			IdempotencyKey:      "wd-po-" + withdrawalID,
-			Description:         "Darkbloom credit withdrawal",
-		})
-	})
-	if err != nil && !billing.IsDefinitiveAPIErr(err) {
-		// AMBIGUOUS outcome: the payout may exist with its ID lost in
-		// flight. If it does, the user IS getting instant delivery — so do
-		// NOT refund the instant fee, and don't guess a terminal state. The
-		// row keeps its transfer and no payout ID; if the payout landed,
-		// its paid webhook won't match (unmatched non-automatic payouts are
-		// ignored) and no sweep will fire on the emptied balance, so the
-		// 48h reconciler alert surfaces the row for ops to settle via the
-		// idempotency key. If it didn't land, the daily sweep delivers and
-		// completes the row; ops refunds the fee from the same alert trail.
-		wd.FailureReason = "instant_payout_unconfirmed: " + err.Error()
-		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous payout"); uerr != nil {
-			s.logger.Error("stripe payout: persist ambiguous-payout state failed",
-				"error", uerr, "withdrawal_id", withdrawalID)
-		}
-		s.logger.Error("stripe payout: instant payout outcome UNCONFIRMED — fee NOT refunded, verify against Stripe dashboard",
-			"error", err, "withdrawal_id", withdrawalID, "transfer_id", transfer.ID,
-			"idempotency_key", "wd-po-"+withdrawalID)
-		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
-			"status":            "transferred",
-			"withdrawal_id":     withdrawalID,
-			"transfer_id":       transfer.ID,
-			"amount_usd":        formatUSD(grossMicroUSD),
-			"fee_usd":           formatUSD(feeMicroUSD),
-			"net_usd":           formatUSD(netMicroUSD),
-			"method":            method,
-			"message":           "we couldn't confirm your instant payout with Stripe — if it went through, funds reach your card in ~30 minutes; otherwise the daily payout delivers them and support will refund the instant fee, contact support if nothing arrives within 24 hours",
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
-		})
-		return
-	}
-	if err != nil {
-		// Transfer succeeded — funds are in the connected account and the
-		// daily auto-payout will deliver them via the standard rail. We do
-		// NOT refund the principal (that would double-credit), but we DO
-		// refund the instant fee: the user isn't getting instant delivery.
-		wd.FailureReason = "instant_payout_create_failed: " + err.Error()
-		// Reference-idempotent: shares its ledger ref with the webhook
-		// fee-refund path, so no interleaving pays the fee twice — a later
-		// transfer.reversed re-checks the same reference.
-		feeRefunded := feeMicroUSD == 0
-		if feeMicroUSD > 0 &&
-			s.creditRefundOnceWithRetry(user.AccountID, feeMicroUSD, "stripe_withdraw_fee:"+withdrawalID, withdrawalID) {
-			feeRefunded = true
-			wd.FeeRefunded = true
-			wd.FailureReason += " (instant fee refunded)"
-		}
-		if uerr := s.persistWithdrawalUpdate(wd, "payout failure"); uerr != nil {
-			s.logger.Error("stripe payout: persist payout failure failed",
-				"error", uerr, "withdrawal_id", withdrawalID)
-		}
-		s.logger.Error("stripe payout: create instant payout failed", "error", err,
-			"withdrawal_id", withdrawalID, "transfer_id", transfer.ID)
-		msg := "instant payout unavailable — the fee was refunded and funds will arrive via the standard daily payout"
-		if !feeRefunded {
-			msg = "instant payout unavailable — funds will arrive via the standard daily payout; the instant-fee refund is pending, contact support if it doesn't appear shortly"
-		}
-		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
-			"status":            "transferred",
-			"withdrawal_id":     withdrawalID,
-			"transfer_id":       transfer.ID,
-			"amount_usd":        formatUSD(grossMicroUSD),
-			"fee_usd":           formatUSD(feeMicroUSD),
-			"net_usd":           formatUSD(netMicroUSD),
-			"method":            method,
-			"message":           msg,
-			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
-		})
-		return
-	}
-	wd.PayoutID = payout.ID
-	if err := s.persistWithdrawalUpdate(wd, "payout_id"); err != nil {
-		// Payout succeeded but we couldn't persist the ID. Webhook will
-		// arrive with the payout ID — without the index entry the sweep
-		// matcher will still reconcile it by connected account. Log loudly
-		// so ops can double-check via the Stripe dashboard.
-		s.logger.Error("stripe payout: persist payout_id failed after retries",
-			"error", err, "withdrawal_id", withdrawalID,
-			"transfer_id", transfer.ID, "payout_id", payout.ID)
-	}
-
-	s.logger.Info("stripe payout: created",
-		"withdrawal_id", withdrawalID,
-		"account", user.AccountID[:min(8, len(user.AccountID))]+"...",
-		"method", method,
-		"gross_micro_usd", grossMicroUSD,
-		"fee_micro_usd", feeMicroUSD,
-		"net_micro_usd", netMicroUSD,
-	)
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"status":            "submitted",
-		"withdrawal_id":     withdrawalID,
-		"transfer_id":       transfer.ID,
-		"payout_id":         payout.ID,
-		"amount_usd":        formatUSD(grossMicroUSD),
-		"fee_usd":           formatUSD(feeMicroUSD),
-		"net_usd":           formatUSD(netMicroUSD),
-		"method":            method,
-		"eta":               etaForMethod(method, acct.Country),
-		"arrival_unix":      payout.ArrivalDate,
-		"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
-	})
+	result := s.dispatchStripeWithdrawal(wd, acct.Country)
+	httpx.WriteJSON(w, result.status, result.body)
 }
 
 // retryAmbiguousStripe retries fn while it fails with a non-definitive error

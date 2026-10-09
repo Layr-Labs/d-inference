@@ -41,6 +41,9 @@ func startBackgroundLoops(ctx context.Context, srv *api.Server, reg *registry.Re
 	if br := srv.BaseRewards(); br != nil {
 		saferun.Go(logger, "base_rewards_settlement", func() { br.Run(ctx) })
 	}
+	if rewards := srv.AutopilotRewards(); rewards != nil {
+		saferun.Go(logger, "autopilot_rewards_settlement", func() { rewards.Run(ctx) })
+	}
 
 	// Stripe payout reconciler: heals connected accounts stuck on a legacy
 	// manual payout schedule and alerts on withdrawals stuck in "transferred".

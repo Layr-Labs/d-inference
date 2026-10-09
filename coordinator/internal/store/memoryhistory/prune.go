@@ -26,9 +26,39 @@ func (s *State) Prune(maxEntries int) {
 		s.LedgerEntries = append([]store.LedgerEntry(nil), s.LedgerEntries[n-maxEntries:]...)
 	}
 	if n := len(s.ProviderEarnings); n > maxEntries {
+		for _, earning := range s.ProviderEarnings[:n-maxEntries] {
+			if earning.Model == "base_reward" || earning.AmountMicroUSD == 0 {
+				continue
+			}
+			source := EarningSource{earning.AccountID, earning.ProviderID, earning.ProviderKey}
+			if prior, ok := s.EarningsPrunedThrough[source]; !ok || earning.CreatedAt.After(prior) {
+				s.EarningsPrunedThrough[source] = earning.CreatedAt
+			}
+		}
 		s.ProviderEarnings = append([]store.ProviderEarning(nil), s.ProviderEarnings[n-maxEntries:]...)
 	}
 	if n := len(s.ProviderSessions); n > maxEntries {
+		for _, session := range s.ProviderSessions[:n-maxEntries] {
+			if session.AccountID != "" && session.ProviderKey != "" {
+				s.ProviderKeysPruned[session.AccountID] = true
+			}
+			window := SessionUptimeWindow{AccountID: session.AccountID, Start: session.ConnectedAt}
+			if session.DisconnectedAt != nil {
+				window.End = *session.DisconnectedAt
+				if graceEnd := session.LastSeen.Add(90 * time.Second); graceEnd.Before(window.End) {
+					window.End = graceEnd
+				}
+			}
+			if prior, exists := s.ProviderUptimePruned[session.SessionID]; exists {
+				if prior.Start.Before(window.Start) {
+					window.Start = prior.Start
+				}
+				if prior.End.IsZero() || !window.End.IsZero() && prior.End.After(window.End) {
+					window.End = prior.End
+				}
+			}
+			s.ProviderUptimePruned[session.SessionID] = window
+		}
 		s.ProviderSessions = append([]store.ProviderSession(nil), s.ProviderSessions[n-maxEntries:]...)
 	}
 	if n := len(s.LogReports); n > maxEntries {

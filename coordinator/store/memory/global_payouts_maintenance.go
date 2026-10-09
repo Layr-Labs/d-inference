@@ -8,14 +8,14 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func (s *MemoryStore) RecordGlobalPayoutRejection(id string, attempt int, code string) error {
+func (s *MemoryStore) RecordGlobalPayoutRejection(id string, attempt int, code string, leaseUntil time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.globalPayouts[id]
 	if !ok {
 		return store.ErrNotFound
 	}
-	if err := shared.RecordGlobalRejection(&p, attempt, code); err != nil {
+	if err := shared.RecordGlobalRejection(&p, attempt, code, leaseUntil); err != nil {
 		return err
 	}
 	s.globalPayouts[id] = p

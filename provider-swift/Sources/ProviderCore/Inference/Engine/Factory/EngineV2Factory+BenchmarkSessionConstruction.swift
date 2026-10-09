@@ -17,6 +17,7 @@ extension EngineV2Factory {
         mtpAcceptanceConfig: String = "exact",
         assistantDirectory: URL? = nil,
         gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production,
         useProductionKVGrant: Bool = false,
         kvBudget: GlobalKVCacheBudget? = nil,
         kvBackendConfig: String = "auto",
@@ -30,7 +31,8 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
             mtpEnabled: mtpEnabled, mtpAcceptanceConfig: mtpAcceptanceConfig,
             assistantDirectory: assistantDirectory,
-            gemmaMTPVerification: gemmaMTPVerification, useProductionKVGrant: useProductionKVGrant,
+            gemmaMTPVerification: gemmaMTPVerification, checkpointPartition: checkpointPartition,
+            useProductionKVGrant: useProductionKVGrant,
             kvBudget: kvBudget, kvBackendConfig: kvBackendConfig, requirePersistentKey: requirePersistentKey,
             persistentTestNamespace: persistentTestNamespace, environment: environment,
             memorySnapshotForTesting: {
@@ -49,6 +51,7 @@ extension EngineV2Factory {
         mtpAcceptanceConfig: String = "exact",
         assistantDirectory: URL? = nil,
         gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition = .production,
         useProductionKVGrant: Bool = false,
         kvBudget: GlobalKVCacheBudget? = nil,
         kvBackendConfig: String = "auto",
@@ -68,6 +71,7 @@ extension EngineV2Factory {
                 kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
                 mtpEnabled: mtpEnabled, assistantDirectory: assistantDirectory,
                 gemmaMTPVerification: gemmaMTPVerification, mtpAcceptanceConfig: mtpAcceptanceConfig,
+                checkpointPartition: checkpointPartition,
                 useProductionKVGrant: useProductionKVGrant,
                 kvBudget: kvBudget, kvBackendConfig: kvBackendConfig, requirePersistentKey: requirePersistentKey,
                 persistentTestNamespace: persistentTestNamespace, environment: environment,
@@ -105,6 +109,7 @@ extension EngineV2Factory {
         maxConcurrentRequests: Int, mtpEnabled: Bool,
         assistantDirectory: URL?, gemmaMTPVerification: EngineV2BenchmarkMTPVerification?,
         mtpAcceptanceConfig: String,
+        checkpointPartition: EngineV2BenchmarkCheckpointPartition,
         useProductionKVGrant: Bool, kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String, requirePersistentKey: Bool,
         persistentTestNamespace: SSDPersistentTestKeyNamespace?, environment: [String: String],
@@ -147,6 +152,7 @@ extension EngineV2Factory {
                 nativeMiMoOperatorReserveBytes != nil,
                 useProductionKVGrant, kvBudget == nil, assistantDirectory == nil,
                 gemmaMTPVerification == nil, persistentTestNamespace == nil,
+                checkpointPartition == .production,
                 !PrefixCachePolicy.isEnabled(modelId: modelId, environment: effectiveEnvironment),
                 !PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment) else {
                 throw MiMoV26ServingLoadError.nativeOwnerMismatch
@@ -220,7 +226,8 @@ extension EngineV2Factory {
                 mtpAcceptanceConfigByModel: [modelId: mtpAcceptanceConfig],
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
-                assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification),
+                assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification,
+                    checkpointPartition: checkpointPartition),
                 environment: effectiveEnvironment,
                 persistentTestNamespace: persistentTestNamespace)
         } catch {

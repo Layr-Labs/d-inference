@@ -119,7 +119,7 @@ func TestGlobalRecipientResetAndPausedCutoverNeverFallBackToConnect(t *testing.T
 	}
 }
 
-func TestGlobalFundingShortfallIncludesFeesAndDoesNotDebit(t *testing.T) {
+func TestGlobalFundingShortfallIncludesFeesAndQueuesReservedEarnings(t *testing.T) {
 	s, st, u, f := globalOnlyFixture(t)
 	f.country, f.currency = "us", "usd"
 	if w := globalAPIRequest(t, s, u, "/v1/billing/stripe/onboard", `{"country":"US"}`); w.Code != 200 {
@@ -142,11 +142,11 @@ func TestGlobalFundingShortfallIncludesFeesAndDoesNotDebit(t *testing.T) {
 	defer remote.Close()
 	s.Billing().GlobalPayouts().BaseURL = remote.URL
 	w = globalAPIRequest(t, s, u, "/v1/billing/withdraw/stripe", `{"amount_usd":"10.00","quote_id":"`+quote.ID+`"}`)
-	if w.Code != 503 || !strings.Contains(w.Body.String(), "payout_funding_unavailable") {
+	if w.Code != 202 || !strings.Contains(w.Body.String(), `"status":"queued"`) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if st.GetBalance(u.AccountID) != 20_000_000 || f.creates != 0 {
-		t.Fatal("unfunded payout moved money")
+	if st.GetBalance(u.AccountID) != 10_000_000 || st.GetWithdrawableBalance(u.AccountID) != 10_000_000 || f.creates != 0 {
+		t.Fatal("unfunded payout did not reserve earnings without sending money")
 	}
 }
 

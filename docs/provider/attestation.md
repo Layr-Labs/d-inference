@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -21,6 +21,10 @@ legacy-MDM membership; [shared-device cleanup](../architecture/account-erasure.m
 retains another live account's device evidence. Unshared APNs tokens and pending
 challenges are removed from the coordinator's runtime cache too; stale replies
 cannot restore them ([identity cleanup](../architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
+
+Autopilot earnings-floor qualification is a separate historical check: a new
+authorization does not qualify a declaration received before that grant. See
+the [reward policy](../reference/pricing-model.md#autopilot-rewards).
 
 ## Read current verification in the dashboard
 

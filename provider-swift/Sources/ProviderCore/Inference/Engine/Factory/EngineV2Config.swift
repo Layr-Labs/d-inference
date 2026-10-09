@@ -218,6 +218,7 @@ public enum EngineV2Factory {
                     environment: runtimePolicyEnvironment),
                 kvBytesPerToken: charges.kvBytesPerToken,
                 fixedRequestBytes: charges.fixedRequestBytes,
+                admissionWatermarkFraction: build.admissionWatermarkFraction,
                 auxiliaryBytesPerToken: charges.auxiliaryBytesPerToken,
                 auxiliaryTokenGranularity: charges.auxiliaryTokenGranularity,
                 auxiliaryTokenAllocationPadding: charges.auxiliaryTokenAllocationPadding,

@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-08
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -51,11 +51,26 @@ header comment and `enum SSDBlockStore`).
 | File-name tag | `HMAC-SHA256(K_lookup, "dbkv3-name-v1" ‖ u64le(len(salt)) ‖ salt ‖ chainHash)`, truncated to `truncatedTagLength = 16` bytes; full tag authenticated in metadata | `SSDLookupKeys.swift` |
 | Window sidecar tags | `"dbkv3-window-v1"`, `"dbkv3-window-base-v1"` domains (format only; `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` off; no restore consumer) | `SSDLookupKeys.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift` |
 | Temp files | `tempMarker = "darkbloom-tmp"`, crash-orphan TTL `crashTempTTLSeconds = 3600` | `SSDBlockStore.swift` |
-| Symlink defence | Descriptor-based no-follow I/O and path guard | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockPathGuard.swift` |
+| Path safety | Descriptor-relative no-follow traversal; nonblocking final read/touch opens followed by regular-file validation | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockPathGuard.swift` |
+
+Read and touch open the final entry with `O_NONBLOCK` before descriptor-based
+regular-file validation. Replacing a cache entry with a FIFO cannot make
+these opens wait for a writer. Invalid targets are rejected; normal file
+reads and timestamp updates retain their existing behavior. Epoch metadata
+reads use the same helper. This is local filesystem availability hardening,
+not a change to authentication, encryption, retention or cache identity
+(`SSDNoFollowIO.swift`, `openRegularFileForReading`, `touchRegularFile`;
+`SSDCacheEpochStore.swift`, `readRecord`).
 
 A disk observer sees the lookup tag, the weight hash, the layout epoch, block
 shape descriptors and `createdAt`; never raw chain hashes, token ids or counts,
 scope values, or request ids (`SSDBlockStore.swift` header).
+
+A confirmed missing parent directory is file absence, not corruption. The
+resident-preflight regression creates actual malformed DBK3 files: equal or
+shorter SSD matches must avoid reading them, while a longer match must reject
+the malformed data. Missing-parent status and typed `ENOENT` reads have separate
+coverage (`SSDNoFollowIOSpecialFileTests`, `EngineV2BridgeTests`).
 
 ## Bounded attention-block staging
 
@@ -88,10 +103,10 @@ and MTP codec. No public header field exposes those token boundaries
 | Encrypted manifest | `maximumEncodedBytes = 1 << 20`; validated before allocation | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointContract.swift` |
 | Tensor segment | `maximumSegmentBytes = 4 << 20`; logical segments stream through authenticated DBK3 chunks | `CompleteCheckpointContract.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore+Streaming.swift` |
 | Initial read admission | Metadata-only candidate match precedes any file read. Shared mode reserves `ioScratchBytes = 20 << 20` once in the provider ledger; its native IO lease does not duplicate that charge. Contiguous compatibility keeps its existing two-ledger path | `SSDHybridCheckpointStore+Read.swift` (`stage`), `EngineV2+CompleteCheckpoint.swift` (`reserveCompleteCheckpointReadScratch`) |
-| Import admission | Authenticate manifest → allocation-free import plan → native per-buffer destination, scratch and metadata admission → bounded whole-file read. Shared native ownership is separate from provider host IO | `SSDHybridCheckpointStore+Read.swift` (`readCheckpoint`), `CompleteCheckpointCodec.swift` (`allocate`) |
+| Import admission | Authenticate manifest → allocation-free import plan → native per-buffer destination, scratch and metadata admission → bounded whole-file read. Shared native ownership is separate from provider host IO | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `CompleteCheckpointImportPlan.swift` (`allocate`) |
 | Idle state | Metadata index only; no resident tensor bank or persistent slot carve | `SSDHybridCheckpointStore.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`isMemoryEnabled`) |
 | Imported lifetime | Single-use staged state retains native owners through aliases. Paged adoption replaces temporary staging with the full request promise and actual backing; recurrent/MTP auxiliary state has its own charge | `CompleteCheckpointTransfer.swift` |
-| Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+Read.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
+| Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
 | Durable ready | Only supplied actual input checkpoint after committed write and engine donor/export retirement; requires request mode echo | `SSDHybridCheckpointStore+Write.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEvidenceSequencer.swift` |
 | Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; native `mimo_v2` additionally binds its `DARKBLOOM_MIMO_` controls. Changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
@@ -112,6 +127,31 @@ attention snapshots and their optional unused window sidecar remain separate.
 Validation artifacts, source scopes and model-measurement limits are linked from
 [the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
 Earlier resident-cache measurements do not establish SSD latency or restart reuse.
+
+### Bounded shorter complete-checkpoint fallback
+
+These rules apply to complete AR and native-block imports, not attention-block
+suffix compaction. They do not raise capture/read caps or infer a shorter
+checkpoint from a longer file.
+
+| Contract | Bound / behavior | Code |
+|---|---|---|
+| Retry authority | At most one strictly shorter indexed endpoint after an authenticated import plan's typed `CBv2KVError.capacityExhausted`, a typed native-block pre-allocation reservation refusal, or the provider's pre-allocation destination-peak refusal | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`) |
+| No retry | AR allocation refusal without a native retirement receipt, initial scratch/host authority refusal, arithmetic overflow, unknown/generic allocation or post-materialization failure, policy, corruption, cancellation, close, epoch drift or same-ID replacement | `SSDHybridCheckpointStore+ReadAttempt.swift` (`ReadControl`, `readAttempt`), `SSDHybridCheckpointStore+Read.swift` (`readIsCurrent`) |
+| First attempt | Existing candidate size/estimated-time and per-file plaintext limits remain unchanged; the new meter only records first-attempt reads and elapsed time | `SSDCheckpointReadBudget.swift` (`beforeRead`, `checkTime`) |
+| Retry raw-byte ceiling | The original `maxReadBytes`, less the already-spent first manifest probe; the retry's own manifest probe and whole-file read share that remainder. Every header/framing span is charged before allocation/read, plus a conservative one-byte EOF allowance. Partial OS reads do not grant another allowance | `SSDCheckpointReadBudget.swift` (`beginRetry`, `beforeRead`), `SSDBlockStore.swift` (`readExactly`), `SSDBlockStore+Streaming.swift` (`readStreaming`) |
+| Retry time checks | The original start plus `maxStageMillis`, including first-attempt work, file waits and refunds. Remaining time must also admit the candidate's existing estimated cost. Checks are cooperative, including awaited file-access/refund/native work: they do not impose a timer on those waits, preempt an OS/native operation, or guarantee return/cancellation at `maxStageMillis`. The original request cancellation remains authoritative; elapsed time is rechecked before further retry work and publication | `SSDCheckpointReadBudget.swift` (`beginRetry`, `checkTime`), `SSDHybridCheckpointStore+ReadAttempt.swift` (`readAttempt`) |
+| Retirement and identity | Failed import/plan aliases unwind, scratch/native owners retire and the original host refund completes before another reservation. One continuous logical registration atomically changes file access; lifecycle invalidation cannot resurrect it or erase its replacement | `SSDHybridCheckpointStore+Read.swift` (`stageTransfer`), `SSDCheckpointStageReservation.swift` (`waitForRefund`) |
+
+The pinned AR `CompleteCheckpointImportPlan.allocate` API may retain its charged
+manifest on queued native retirement after capacity refusal. It exposes no
+tracking discriminator or completion receipt, so this refusal remains cold;
+provider host refund does not authorize a shorter attempt. Native-block typed
+reservation refusals unwind synchronously. Plan-creation and provider destination
+peak refusals retain the bounded retry. Future SDK changes must establish actual
+retirement completion before expanding this authority. The successful shorter
+file still requires full authenticated metadata, manifest, payload and EOF, then
+ordinary native adoption. A staged endpoint alone is not a hit or saved usage.
 
 ## Identity binding
 
@@ -193,13 +233,33 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | Maintenance sweep | `SSDWholeRootMaintainer`, `intervalSeconds = 60`: TTL expiry, budget eviction, crash-temp cleanup | `SSDPrefixCacheFactory.swift` (`startWholeRootMaintenance`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` |
 | TTL | `defaultTTLSeconds = 1800`, `maxTTLSeconds = 1800`, sliding on hit. Raising either needs the sign-off recorded in `docs/threat-model.yaml` (T-041, SEC-035) | `SSDPrefixCachePolicy.swift` |
 | Daily write cap | `defaultMaxWriteBytesPerDay = 750 * 1_000_000_000` | `SSDPrefixCachePolicy.swift` |
-| Complete-checkpoint repeat reserve | Demand gate first: a not-yet-durable checkpoint is written only when the coordinator's `cache_repeated_prefix_tokens >= minEffectiveTokens` or the local `SSDCheckpointDemand` history has seen the tag within the cache TTL; otherwise it settles `skipped_novel` with no bytes written and no write budget charged. Without a hint (older coordinator, standalone/local serving) the legacy write-every-checkpoint behavior stays (`SSDCheckpointDemand.admitsWrite`, `SSDHybridCheckpointStore.demandRefusal`). Admitted novel checkpoint tags use a 90% burst/refill sub-budget; tags observed again within the cache TTL can use the full shared budget. Both debit the original total cap; unlimited mode stays unlimited. The 4,096-entry volatile tag history is an admission input as well as a priority signal; durable duplicates authenticate and bypass both the gate and write consumption. Novel-share exhaustion reports `write_priority_limited`; total-budget exhaustion remains `write_rate_limited`. | `SSDCheckpointDemand.swift`, `SSDHybridCheckpointStore+DemandAdmission.swift`, `SSDHybridCheckpointStore+Write.swift`, `SSDWriteRateLimiter.swift` |
+| Complete-checkpoint repeat reserve | Demand gate first: a not-yet-durable checkpoint is written only when the coordinator's `cache_repeated_prefix_tokens >= minEffectiveTokens` or the local `SSDCheckpointDemand` history has seen the tag within the cache TTL; otherwise it settles `skipped_novel` with no bytes written and no write budget charged. Without a hint (older coordinator, standalone/local serving) the legacy write-every-checkpoint behavior stays (`SSDCheckpointDemand.admitsWrite`, `SSDHybridCheckpointStore.donationWritePolicy`). Admitted novel checkpoint tags use a 90% burst/refill sub-budget. A checkpoint whose own position is covered by the authenticated `cache_repeated_prefix_tokens` hint, or whose tag was observed again locally within the cache TTL, can use the full shared budget. Merely satisfying the donation floor does not classify a deeper unique extension as repeated. Both debit the original total cap; unlimited mode stays unlimited. The 4,096-entry volatile tag history is an admission input as well as a priority signal; durable duplicates authenticate and bypass both the gate and write consumption. Novel-share exhaustion reports `write_priority_limited`; total-budget exhaustion remains `write_rate_limited`. | `SSDCheckpointDemand.swift`, `SSDHybridCheckpointStore+DemandAdmission.swift`, `SSDHybridCheckpointStore+Write.swift`, `SSDWriteRateLimiter.swift` |
 | Complete-checkpoint maintenance | Per-file removals run under the store's `removalLock` (`performIndexedRemoval`): unlink plus index and accounting update, serialized with other removals, refused once the store is closed or no longer owns its epoch. Whole-root external deletion reconciles missing index entries before the barrier lifts. Targeted eviction and corrupt-file removal update only their known index entries, avoiding a full filesystem scan per victim. No per-file removal rotates the model epoch; the coordinator learns of a removed checkpoint through the next lookup miss, or a hit at a shorter boundary, on that provider. A reader that finds its file gone reports `miss_absent` without counting corruption. Whole-root maintenance brackets a removal only through a registered store that still owns its root (`ownsEvictionRoot`); if every registered store for the root is closed or disowned it uses the unloaded-root path, so TTL expiry and budget eviction never wait for a disowned store to close. | `SSDHybridCheckpointStore+Maintenance.swift`, `performExternalDestructiveChange`, `reconcileExternalRemovals` |
+| Owned retirement coordination | Capacity/TTL and active-owner whole-root retirement acquire the store removal lock, validate the durable epoch/binding and try the shared per-file lease without waiting. A busy renamed-but-not-indexed file is skipped; its writer commits the index before releasing that lease. Survivor identity and sequence are unchanged. | `SSDOwnedEntryRetirement.swift`, `SSDCacheEpochStore.performOwnedRetirement`, `SSDDiskBudget.retireActiveEntries` |
+| Epoch record read failure | Owned retirement and whole-root rotation reread the persisted record first. A failed no-follow parent open, status probe, descriptor stat or read (EACCES, EIO, EBUSY and the like) proves nothing about the record: that operation is refused, nothing is written, the first such failure after a successful read is logged, and the store keeps its epoch; the next owned operation rereads and proceeds once the record matches. Sequence issue also refuses without disowning. Confirmed absence (the record is replaced by rename, never unlinked), an unsafe parent, an observed symlink, directory or other non-regular entry, or a read record that is unparseable, oversized or names another schema, epoch or binding disowns the store permanently. | `SSDCacheEpochStore.swift` (`performOwnedRetirement`, `performOwnedDestructiveChange`), `SSDNoFollowIO.swift` (`checkedRegularFileStatus`, `openRegularFileForReading`) |
 | Low-disk write stop | `lowDiskFloorBytes = lowDiskAbsoluteFloorBytes = 20 * 1_073_741_824` (20 GiB), independent of total disk capacity; reads continue; ENOSPC starts `enospcCooldownSeconds = 600` | `SSDPrefixCachePolicy.swift` |
 | Payload/staging cap | `defaultMaxStageBytes = 1024 * 1_048_576`; `defaultMaxStageMillis = 1000` at `conservativeStageBytesPerSecond = 1_500_000_000` | `SSDPrefixCachePolicy.swift` |
 | Attention donation floor | `prefixTokens > adoptionBoundTokens + minEffectiveTokens`, whole blocks only; `defaultMinEffectiveTokens = 1024`, raised to 1_536 for `.frozenFullReplay` with bound ≥ 25_600 | `SSDPrefixCache.swift` (`donate`), `PrefixCachePolicy.swift` |
 | Write-behind queue | `writeQueueMaxJobs = 2`, `writeQueueMaxBytes = 512 * 1_048_576`, `writeQueueSlackBytes = 256 * 1_048_576`; overflow drops the donation | `SSDPrefixCachePolicy.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` |
 | Staging RAM | Reserved per staged entry in `GlobalKVCacheBudget`; the engine keeps its full slot grant | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
+
+The production factories attach one persistent, root-wide rolling-day accounting
+domain through `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBudget.swift`.
+Its 25 hourly buckets retain each charge for at least 24 hours, with up to one
+extra hour of conservatism at bucket boundaries. Cache reconstruction and process
+restart do not replenish this budget. Charges
+precede writes and are not refunded on failure or eviction. Attention blocks,
+window sidecars and complete checkpoints charge their complete serialized DBK3
+size, not just plaintext. Exhaustion reports `write_rate_limited`; existing cache
+reads remain available. Corrupt or inaccessible accounting fails closed rather
+than restoring a full allowance. The ledger records only time buckets and byte
+counts, never cache keys, tokens or model identifiers.
+
+This bounds application cache-file writes, not total physical SSD wear: filesystem
+metadata, the small accounting ledger, swap and device write amplification are
+outside that byte count. Existing writes from before the ledger was installed
+cannot be reconstructed from the surviving cache files because eviction deletes
+history. The first installation starts a new accounting window.
 
 ## Per-family reuse capability
 

@@ -145,7 +145,7 @@ final class SSDWriteBehind: @unchecked Sendable {
                 job.onOutcome(.cacheClosed)
                 return
             }
-            self.consume(job)
+            await self.consume(job)
         }
     }
 
@@ -209,7 +209,7 @@ final class SSDWriteBehind: @unchecked Sendable {
 
     // MARK: - Consumer (serial)
 
-    private func consume(_ job: SSDDonationJob) {
+    private func consume(_ job: SSDDonationJob) async {
         queuedBytesLock.withLock {
             queuedJobs -= 1
             queuedBytes -= job.totalBytes
@@ -271,19 +271,34 @@ final class SSDWriteBehind: @unchecked Sendable {
 
         for block in job.blocks {
             defer { onBlockSettled(block.tag16) }
-            guard rateLimiter.tryConsume(bytes: block.plaintextBytes) else {
-                rateLimited = true
-                stats.add(donationsDropped: 1, writeRateLimited: 1)
-                continue
-            }
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: block.tag16Hex)
             guard SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root) else {
+                stats.add(donationsDropped: 1)
+                continue
+            }
+            let access = SSDCheckpointFileCoordinator.shared.makeAccess(to: url)
+            do {
+                try await access.acquire()
+            } catch {
+                stats.add(donationsDropped: 1)
+                continue
+            }
+            // Scope is this iteration, not the entire donation. Release before
+            // the function's deferred TTL/whole-root/budget maintenance runs.
+            defer { access.release() }
+            guard !Task.isCancelled, !queuedBytesLock.withLock({ closed }) else {
                 stats.add(donationsDropped: 1)
                 continue
             }
             let fileBytes: Int
             let sidecar = block.metadata.windowKind == nil ? 0 : 1
             do {
+                let budgetBytes = try SSDBlockStore.serializedByteCount(metadata: block.metadata)
+                guard rateLimiter.tryConsume(bytes: budgetBytes) else {
+                    rateLimited = true
+                    stats.add(donationsDropped: 1, writeRateLimited: 1)
+                    continue
+                }
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
                 } else {

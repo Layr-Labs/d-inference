@@ -9,6 +9,7 @@ protocol QwenStageTransferByteSource {
     func read(_ piece: QwenStageTransferPlan.Piece, file: String, offset: Int) throws -> Payload
     /// A message of the same geometry that carries no artifact bytes. It is
     /// sent only to keep a window whole once the sender has already failed.
+    /// If this throws too, the sender stops at once, mid-window.
     func placeholder(_ piece: QwenStageTransferPlan.Piece) throws -> Payload
 }
 

@@ -107,7 +107,7 @@ struct TinyStageArtifact {
 /// What a state machine asked of its byte source or intake, by piece index.
 final class TransferCallLog {
     var read: [Int] = [], placeholders: [Int] = [], accepted: [Int] = []
-    var digestCollections = 0
+    var digestCollections = 0, discards = 0
 }
 
 /// Reads the artifact's files, with the faults a wrong or failing sender has.
@@ -167,12 +167,19 @@ struct MemoryIntake: QwenStageTransferIntake {
         defer { pending = [] }
         return pending + (reportsUnknownTensor ? [(plan.tensors.count, String(repeating: "0", count: 64))] : [])
     }
+
+    mutating func discard() {
+        log.discards += 1
+        assembled = [:]; pending = []
+    }
 }
 
 /// A rank's uptime clock and the resident control's check, both under test control.
 final class TransferTestClock {
     var now: UInt64
     var cancelled = false
+    /// A cancellation that arrives just as the rank checks this deadline.
+    var cancelledWhenCheckedAgainst: UInt64?
     init(_ now: UInt64) { self.now = now }
 
     func watch(lifetime: UInt64? = nil, startup: UInt64? = nil,
@@ -182,6 +189,7 @@ final class TransferTestClock {
             startupUptimeNanoseconds: startup, progressTimeoutNanoseconds: progressTimeout),
             now: { self.now }, check: { deadline in
                 // The contract of `QwenResidentControl.check(deadline:)`.
+                if let deadline, deadline == self.cancelledWhenCheckedAgainst { self.cancelled = true }
                 guard !self.cancelled, self.now < lifetime, deadline.map({ self.now < $0 }) ?? true else {
                     throw ProbeError("Resident operation cancelled or past its absolute local deadline")
                 }

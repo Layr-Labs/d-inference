@@ -13,6 +13,9 @@ protocol QwenStageTransferIntake {
     /// since the last call, by plan tensor index. `joining` waits for every
     /// tensor that has fully arrived.
     mutating func completedDigests(joining: Bool) throws -> [(tensor: Int, contentSHA256: String)]
+    /// The transfer has failed. Join any hashing still running, which holds
+    /// what it is hashing, and release every piece and tensor. Called once.
+    mutating func discard()
 }
 
 /// The receiving rank's side of a stage transfer, as a state machine with no
@@ -111,7 +114,7 @@ final class QwenStageTransferReceiver<Intake: QwenStageTransferIntake> {
             case .finished, .failing, .failed:
                 throw ProbeError("Stage transfer receiver has no call left to make")
             }
-        } catch { state = .failed; throw error }
+        } catch { fail(); throw error }
     }
 
     func received(control values: [Int32]) throws {
@@ -138,14 +141,14 @@ final class QwenStageTransferReceiver<Intake: QwenStageTransferIntake> {
             default:
                 throw ProbeError("Stage transfer receiver was given a control value it had not asked for")
             }
-        } catch { state = .failed; throw error }
+        } catch { fail(); throw error }
     }
 
     /// The payload of the piece `next()` asked for. After a local failure the
     /// rest of the window is still received, to stay in step, and dropped.
     func received(_ payload: Intake.Payload, for piece: QwenStageTransferPlan.Piece) throws {
         guard case .receiving(let window, let index) = state, piece.index == index else {
-            state = .failed
+            fail()
             throw ProbeError("Stage transfer receiver was given a piece it had not asked for")
         }
         if watch.failure == nil {
@@ -157,7 +160,14 @@ final class QwenStageTransferReceiver<Intake: QwenStageTransferIntake> {
     }
 
     /// The caller's transport failed. Nothing more is sent or accepted.
-    func abandon() { state = .failed }
+    func abandon() { fail() }
+
+    /// Nothing received outlives a failed transfer.
+    private func fail() {
+        if case .failed = state { return }
+        state = .failed
+        intake.discard()
+    }
 
     private static var unexpected: ProbeError {
         ProbeError("Stage transfer control value from the sending rank differs from every value expected here")

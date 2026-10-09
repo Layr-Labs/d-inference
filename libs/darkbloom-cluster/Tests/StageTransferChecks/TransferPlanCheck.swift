@@ -45,9 +45,10 @@ private func checkRowSplit(_ checks: StageTransferChecks) throws {
     try checks.require("tensors that divide evenly split into equal pieces",
         try split(12_288, 2048, limit) == [4096, 4096, 4096] && split(248_320, 128, limit) == Array(repeating: 62_080, count: 4)
         && split(8192, 2048, limit) == [4096, 4096] && split(10, 16, 48) == [3, 3, 2, 2])
-    try checks.refuses("a row larger than a piece", because: "single row exceeds the piece limit") {
-        _ = try split(4, limit + 4, limit)
-    }
+    let unsplittable = "no rows or a row outside the piece limit"
+    try checks.refuses("a row larger than a piece", because: unsplittable) { _ = try split(4, limit + 4, limit) }
+    try checks.refuses("a split of no rows", because: unsplittable) { _ = try split(0, 16, limit) }
+    try checks.refuses("a row of no bytes", because: unsplittable) { _ = try split(4, 0, limit) }
 }
 
 /// Goldens for the registered 9B: tensor and byte counts are the design's
@@ -197,7 +198,7 @@ private func checkPlanRefusals(_ checks: StageTransferChecks) throws {
     try checks.refuses("dimension above the C Int range", because: geometry) {
         try plan([(0, [tensor("a", shape: [Int(Int32.max) + 1], dtype: "float32")])])
     }
-    try checks.refuses("tensor whose row exceeds the piece limit", because: "single row exceeds the piece limit") {
+    try checks.refuses("tensor whose row exceeds the piece limit", because: "no rows or a row outside the piece limit") {
         try plan([(0, [tensor("a", shape: [2, 32])])])
     }
     try checks.refuses("more pieces than the piece limit", because: "exceeds its piece limit") {
@@ -209,7 +210,7 @@ private func checkPlanRefusals(_ checks: StageTransferChecks) throws {
     func limits(_ piece: Int, _ windowBytes: Int, _ windowPieces: Int) throws {
         _ = try QwenStageTransferLimits(pieceByteLimit: piece, windowByteLimit: windowBytes, windowPieceLimit: windowPieces)
     }
-    try limits(16 * 1024 * 1024, 1024 * 1024 * 1024, 1024)
+    try limits(16 * 1024 * 1024, 1024 * 1024 * 1024, 64)
     try limits(1, 1, 1)
     let bounds = "outside its bounds"
     try checks.refuses("piece limit of zero", because: bounds) { try limits(0, 64, 4) }
@@ -219,5 +220,5 @@ private func checkPlanRefusals(_ checks: StageTransferChecks) throws {
     try checks.refuses("window smaller than one piece", because: bounds) { try limits(64, 63, 4) }
     try checks.refuses("window byte limit above its bound", because: bounds) { try limits(64, 1024 * 1024 * 1024 + 1, 4) }
     try checks.refuses("window of no pieces", because: bounds) { try limits(64, 64, 0) }
-    try checks.refuses("window piece limit above its bound", because: bounds) { try limits(64, 64, 1025) }
+    try checks.refuses("window piece limit above its bound", because: bounds) { try limits(64, 64, 65) }
 }

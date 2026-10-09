@@ -5,9 +5,9 @@ struct QwenStageTransferLimits: Encodable, Equatable {
     /// `CollectivePointToPointShape.hardByteLimit`: the most one receive may
     /// allocate before a byte of it is validated. No piece exceeds it.
     static let hardPieceByteLimit = 16 * 1024 * 1024
-    /// Refusal bounds for a window, well above the proposal below.
-    static let hardWindowByteLimit = 1024 * 1024 * 1024
-    static let hardWindowPieceLimit = 1024
+    /// Refusal bounds for a window: the proposed piece count, at the largest piece.
+    static let hardWindowPieceLimit = 64
+    static let hardWindowByteLimit = hardWindowPieceLimit * hardPieceByteLimit
     /// The design's proposal. The two-Mac stream probe settles the final sizes.
     static let proposed = Self(pieceBytes: 8 * 1024 * 1024, windowBytes: 64 * 1024 * 1024, windowPieces: 64)
 
@@ -167,8 +167,8 @@ struct QwenStageTransferPlan: Equatable {
         let largerPieceCount: Int
 
         init(rows: Int, rowBytes: Int, pieceByteLimit: Int) throws {
-            guard rowBytes <= pieceByteLimit else {
-                throw ProbeError("Stage transfer cannot split a tensor whose single row exceeds the piece limit")
+            guard rows > 0, (1...pieceByteLimit).contains(rowBytes) else {
+                throw ProbeError("Stage transfer cannot split a tensor with no rows or a row outside the piece limit")
             }
             pieceCount = (rows - 1) / (pieceByteLimit / rowBytes) + 1
             smallerRows = rows / pieceCount; largerPieceCount = rows % pieceCount

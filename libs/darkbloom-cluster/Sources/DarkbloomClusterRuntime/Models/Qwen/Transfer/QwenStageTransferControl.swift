@@ -71,17 +71,18 @@ struct QwenStageTransferDeadlines {
     /// the rank must still fail by itself, on the path that releases memory,
     /// before either deadline ends it.
     func transferDeadline(start: UInt64, budgetNanoseconds: UInt64) throws -> UInt64 {
-        // A sum past the end of the clock is past every deadline.
-        func later(_ time: UInt64, by duration: UInt64) -> UInt64 {
-            let sum = time.addingReportingOverflow(duration)
-            return sum.overflow ? .max : sum.partialValue
-        }
-        let end = later(start, by: budgetNanoseconds)
-        let cleared = later(later(end, by: progressTimeoutNanoseconds), by: Self.marginNanoseconds)
+        let end = Self.later(start, by: budgetNanoseconds)
+        let cleared = Self.later(Self.later(end, by: progressTimeoutNanoseconds), by: Self.marginNanoseconds)
         guard cleared < lifetimeUptimeNanoseconds, startupUptimeNanoseconds.map({ cleared < $0 }) ?? true else {
             throw ProbeError("Stage transfer cannot finish before this rank's startup and lifetime deadlines")
         }
         return end
+    }
+
+    /// A sum past the end of the clock is past every deadline.
+    static func later(_ time: UInt64, by duration: UInt64) -> UInt64 {
+        let sum = time.addingReportingOverflow(duration)
+        return sum.overflow ? .max : sum.partialValue
     }
 }
 
@@ -89,7 +90,9 @@ struct QwenStageTransferDeadlines {
 /// A failure noticed between calls does not stop the rank mid-window: the peer
 /// is sending or expecting exactly the planned bytes, so the rank finishes the
 /// window and says so at the next boundary. Cancellation and the lifetime
-/// deadline are different: they stop it at once.
+/// deadline are different: they stop it at once. So does a rank still talking
+/// when the margin after its budget has run out, because the deadline rule
+/// reserved no more time than that for carrying an abort to a boundary.
 struct QwenStageTransferWatch {
     let deadlines: QwenStageTransferDeadlines
     /// The rank's uptime clock.
@@ -111,9 +114,16 @@ struct QwenStageTransferWatch {
     }
 
     mutating func beforeCall() throws {
-        try check(nil)
-        guard failure == nil, let transferDeadline else { return }
-        do { try check(transferDeadline) } catch { fail(ProbeError("Stage transfer exceeded its agreed duration")) }
+        guard let transferDeadline else { return try check(nil) }
+        // Stops at once: cancellation, the lifetime deadline, or the end of the margin.
+        let cutoff = QwenStageTransferDeadlines.later(transferDeadline, by: QwenStageTransferDeadlines.marginNanoseconds)
+        try check(cutoff)
+        guard failure == nil else { return }
+        do { try check(transferDeadline) } catch {
+            // The same check throws for a cancellation that has just arrived.
+            try check(cutoff)
+            fail(ProbeError("Stage transfer exceeded its agreed duration"))
+        }
     }
 
     /// Callers record a failure only while there is none: the first one is

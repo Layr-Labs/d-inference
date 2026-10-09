@@ -68,7 +68,8 @@ private func checkCleanTransfer(_ artifact: TinyStageArtifact, _ checks: StageTr
     try checks.require("both ranks finish and the receiver has verified every tensor",
         outcome.sender == nil && outcome.receiver == nil && scenario.isVerified
         && scenario.sender?.isFinished == true && scenario.sender?.servedBytes == 508
-        && scenario.receiver?.receivedBytes == 508 && scenario.link.pieceBytesFromSender == 508)
+        && scenario.receiver?.receivedBytes == 508 && scenario.link.pieceBytesFromSender == 508
+        && scenario.intake.log.discards == 0)
     var fromSender: [LoopbackLink.Message] = [.control(scenario.control(.transferOpen, .sender, 0, 0))]
     var fromReceiver: [LoopbackLink.Message] = [.control(scenario.control(.transferOpen, .receiver, 0, 0))]
     for (index, window) in plan.windows.enumerated() {
@@ -106,7 +107,8 @@ private func checkCleanTransfer(_ artifact: TinyStageArtifact, _ checks: StageTr
     try checks.require("the blocking drivers make the same calls over a transport",
         drivenSender.isFinished && toSender.sent == fromSender && drivenReceiver.isVerified && toReceiver.sent == fromReceiver)
     let cut = ScriptedTransport(incoming: Array(fromSender.prefix(5)), content: content)
-    let stranded = QwenStageTransferReceiver(session: scenario.session, intake: MemoryIntake(plan: plan),
+    let strandedIntake = MemoryIntake(plan: plan)
+    let stranded = QwenStageTransferReceiver(session: scenario.session, intake: strandedIntake,
         watch: scenario.receiverClock.watch())
     try checks.refuses("transport failure in the middle of a window", because: "scripted transport has no such piece") {
         try stranded.run(over: cut)
@@ -117,6 +119,8 @@ private func checkCleanTransfer(_ artifact: TinyStageArtifact, _ checks: StageTr
     try checks.refuses("an unverified receiver gives up nothing it received", because: "has not been verified") {
         _ = try stranded.verifiedIntake()
     }
+    try checks.require("a failed receiver has its intake discard what arrived, once",
+        strandedIntake.log.accepted == [0, 1] && strandedIntake.log.discards == 1)
     // The sender's transport fails where the receipt for window 1 should arrive.
     let silent = ScriptedTransport(incoming: Array(fromReceiver.prefix(2)), content: content)
     let unanswered = QwenStageTransferSender(session: scenario.session, source: scenario.source, watch: scenario.senderClock.watch())
@@ -139,7 +143,7 @@ private func checkWrongBytes(_ artifact: TinyStageArtifact, _ checks: StageTrans
     try checks.require("a flipped bit stops the transfer at that window's boundary",
         !flipped.isVerified && outcome.senderText.contains("receiving rank aborted")
         && flipped.link.fromReceiver.last == .control(flipped.control(.receiverAbort, .receiver, 1, 176))
-        && flipped.link.pieceBytesFromSender == 176)
+        && flipped.link.pieceBytesFromSender == 176 && flipped.intake.log.discards == 1)
 
     // With hashing still running at every boundary, the verdict is what refuses.
     let late = try TransferScenario(artifact)
@@ -151,7 +155,8 @@ private func checkWrongBytes(_ artifact: TinyStageArtifact, _ checks: StageTrans
     try checks.require("a refused stage is told to the sender, which still closes",
         !late.isVerified && outcome.senderText.contains("refused the transferred stage")
         && late.link.fromReceiver.last == .control(late.control(.stageRefused, .receiver, 6, 508))
-        && late.link.fromSender.last == .control(late.control(.senderComplete, .sender, 6, 508)))
+        && late.link.fromSender.last == .control(late.control(.senderComplete, .sender, 6, 508))
+        && late.intake.log.discards == 1)
 
     // Tensors 2 and 3 have one shape and dtype; each is sent the other's bytes.
     let swapped = try TransferScenario(artifact)
@@ -176,7 +181,8 @@ private func checkWrongFraming(_ artifact: TinyStageArtifact, _ checks: StageTra
         if let error = outcome.receiver { throw error }
     }
     try checks.require("a short message leaves both ranks waiting for the progress limit",
-        !short.isVerified && short.link.fromSender[6] == .piece(3) && outcome.senderText.contains("no progress"))
+        !short.isVerified && short.link.fromSender[6] == .piece(3) && outcome.senderText.contains("no progress")
+        && short.intake.log.discards == 1)
 
     let extra = try TransferScenario(artifact)
     extra.link.rewriteFromSender = { $0 == 6 ? $1 + $1 : $1 }
@@ -259,7 +265,8 @@ private func checkAborts(_ artifact: TinyStageArtifact, _ checks: StageTransferC
         !failing.isVerified && failing.sender?.servedBytes == 128 && failing.link.pieceBytesFromSender == 176
         && failing.source.log.read == [0, 1, 2, 3] && failing.source.log.placeholders == [3, 4]
         && failing.link.fromSender.last == .control(failing.control(.senderAbort, .sender, 2, 176))
-        && failing.link.fromReceiver.last == .control(failing.control(.windowReceived, .receiver, 1, 176)))
+        && failing.link.fromReceiver.last == .control(failing.control(.windowReceived, .receiver, 1, 176))
+        && failing.intake.log.discards == 1)
 
     let noticed = try TransferScenario(artifact)
     noticed.source.failingPiece = 3
@@ -398,8 +405,67 @@ private func checkDeadlines(_ artifact: TinyStageArtifact, _ checks: StageTransf
     try checks.refuses("a receiver past its lifetime stops at once", because: "cancelled or past its absolute local deadline") {
         if let error = outcome.receiver { throw error }
     }
-    try checks.require("a receiver past its lifetime sends no abort",
-        expired.link.fromReceiver.count == 2 && outcome.senderText.contains("no progress") && !expired.isVerified)
+    try checks.require("a receiver past its lifetime sends no abort, and keeps nothing it received",
+        expired.link.fromReceiver.count == 2 && outcome.senderText.contains("no progress") && !expired.isVerified
+        && expired.intake.log.discards == 1)
+
+    // The budget's own check is where a cancellation is noticed: it is still a cancellation.
+    let racing = try TransferScenario(artifact)
+    racing.senderClock.cancelledWhenCheckedAgainst = second + racing.session.plan.budgetNanoseconds
+    outcome = racing.run()
+    try checks.refuses("a cancellation noticed by the budget check stops the rank at once",
+                       because: "cancelled or past its absolute local deadline") {
+        if let error = outcome.sender { throw error }
+    }
+    try checks.require("a cancellation is never carried to a boundary as a budget overrun",
+        racing.link.fromSender.count == 1 && !racing.isVerified)
+
+    // Two seconds past its budget a rank has used the margin the deadline rule reserved.
+    let overdue = try TransferScenario(artifact)
+    overdue.intake.deferred = true
+    overdue.link.beforeStep = { fromSender, _ in
+        if fromSender == 6 { overdue.senderClock.now = second + overdue.session.plan.budgetNanoseconds + 2 * second }
+    }
+    outcome = overdue.run()
+    try checks.refuses("a rank past its budget by the whole margin stops at once",
+                       because: "cancelled or past its absolute local deadline") {
+        if let error = outcome.sender { throw error }
+    }
+    try checks.require("a rank out of margin sends neither placeholders nor an abort",
+        overdue.link.fromSender.last == .piece(2) && overdue.source.log.placeholders.isEmpty && !overdue.isVerified)
+    // A rank that is already carrying an abort to the boundary has no more time than that either.
+    let aborting = try TransferScenario(artifact)
+    aborting.source.failingPiece = 3; aborting.intake.deferred = true
+    aborting.link.beforeStep = { fromSender, _ in
+        if fromSender == 7 { aborting.senderClock.now = second + aborting.session.plan.budgetNanoseconds + 2 * second }
+    }
+    outcome = aborting.run()
+    try checks.refuses("a rank already aborting stops at once when its margin runs out",
+                       because: "cancelled or past its absolute local deadline") {
+        if let error = outcome.sender { throw error }
+    }
+    try checks.require("a rank out of margin does not finish its window or send its abort",
+        aborting.link.fromSender.count == 7 && aborting.link.fromSender.last == .piece(3)
+        && aborting.source.log.placeholders == [3] && !aborting.isVerified)
+    // Before the open exchange there is no budget yet; cancellation still stops the rank.
+    let early = try TransferScenario(artifact)
+    early.senderClock.cancelled = true
+    outcome = early.run()
+    try checks.refuses("a rank cancelled before the open exchange stops before it sends anything",
+                       because: "cancelled or past its absolute local deadline") {
+        if let error = outcome.sender, early.link.fromSender.isEmpty { throw error }
+    }
+    try checks.require("a rank cancelled before the open exchange leaves its peer waiting",
+        outcome.receiverText.contains("no progress") && !early.isVerified)
+    let within = try TransferScenario(artifact)
+    within.intake.deferred = true
+    within.link.beforeStep = { fromSender, _ in
+        if fromSender == 6 { within.senderClock.now = second + within.session.plan.budgetNanoseconds + 2 * second - 1 }
+    }
+    outcome = within.run()
+    try checks.require("inside the margin a rank past its budget still aborts at the boundary",
+        outcome.senderText.contains("exceeded its agreed duration")
+        && within.link.fromSender.last == .control(within.control(.senderAbort, .sender, 2, 176)))
 }
 
 private func checkIntakeAndMisuse(_ artifact: TinyStageArtifact, _ checks: StageTransferChecks) throws {

@@ -79,14 +79,21 @@ func (r *Registry) providerRewardSnapshotLocked(p *Provider, now time.Time) Prov
 		hardwareModel = p.appAttestAuthorization.MachineModel
 		memoryGB = p.appAttestAuthorization.MemoryGB
 	}
-	warm := r.warmServingModelLocked(p)
+	// Base rewards pay for capacity the public fleet can use. A cluster member
+	// offers none by itself, and a pair that serves only its owner offers none
+	// either, exactly as a private-only machine does not.
+	publicCapacity := p.executionRolePermitsLocked(false)
+	warm := ""
+	if publicCapacity {
+		warm = r.warmServingModelLocked(p)
+	}
 	return ProviderSnapshot{
 		ID:                  p.ID,
 		AccountID:           p.AccountID,
 		MachineID:           machineID,
 		AppAttestAuthorized: appAttestAuthorized,
 		AppAttestOSVersion:  osVersion,
-		ServingAuthorized:   !p.PrivateOnly && (appAttestAuthorized || r.providerLegacyServingAuthorizedLocked(p, now)),
+		ServingAuthorized:   publicCapacity && !p.PrivateOnly && (appAttestAuthorized || r.providerLegacyServingAuthorizedLocked(p, now)),
 		ProviderKey:         p.PublicKey,
 		SerialNumber:        serial,
 		HardwareModel:       hardwareModel,
@@ -166,7 +173,7 @@ func (r *Registry) PublicProviderModels() map[string]PublicProviderModelSnapshot
 		start := len(buf)
 		current := ""
 		for _, model := range p.Models {
-			if !r.providerModelAllowedByCatalogLocked(p, model) {
+			if !r.providerModelAllowedByCatalogLocked(p, model) || !r.listedForModelLocked(p, model.ID, false) {
 				continue
 			}
 			buf = append(buf, model.ID)

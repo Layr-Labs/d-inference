@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -20,8 +21,11 @@ type NativePairConnection struct {
 	provider                          *Provider
 	nonce                             string
 	inboundSequence, outboundSequence uint64
-	closed                            bool
-	session                           *NativePairSession
+	// admitted is set by Admit once the member's acknowledgement is queued.
+	// Until then no selection, reservation or frame can use the connection.
+	admitted bool
+	closed   bool
+	session  *NativePairSession
 }
 type NativePairSession struct {
 	coordinator           *NativePairCoordinator
@@ -33,7 +37,9 @@ type NativePairSession struct {
 	hellos                [2][]byte
 	confirmations         [2]bool
 	committed             bool
+	declined              bool // a member answered the prepare with a signed cancel before commit
 	stopped               bool
+	stoppedAt             time.Time // when admission closed; zero while running
 	writersEnded          bool
 	cancellationPublished bool // both terminal enqueue/close attempts completed
 	writersStopped        chan struct{}

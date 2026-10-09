@@ -66,7 +66,8 @@ func (r *Registry) ReserveVerifiedPair(members [2]*Provider, request VerifiedPai
 	r.verifiedPairs.generation++
 	m.Generation = r.verifiedPairs.generation
 	m.TranscriptSHA256 = verifiedPairTranscript(m)
-	s := &verifiedPairState{membership: m, providers: members, phase: VerifiedPairPending, done: make(chan struct{})}
+	s := &verifiedPairState{membership: m, providers: members, phase: VerifiedPairPending, done: make(chan struct{}),
+		account: verifiedPairAccountLocked(members)}
 	for rank, p := range members {
 		s.untrust[rank] = p.untrustEpoch.Load()
 		r.verifiedPairs.connections[p] = s
@@ -141,6 +142,24 @@ func (r *Registry) CommitVerifiedPairOwners(h *VerifiedPairHandle) (VerifiedPair
 	return s.membership, nil
 }
 
+// MarkVerifiedPairKeysRelayed records that the relay accepted both members'
+// key confirmations for delivery to the peer: the earliest a request may be
+// reserved on the pair. It does not claim the members derived a key; the
+// leader's own loaded slot is the readiness signal.
+func (r *Registry) MarkVerifiedPairKeysRelayed(h *VerifiedPairHandle) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, err := r.verifiedPairHandleLocked(h)
+	if err != nil {
+		return err
+	}
+	if s.phase != VerifiedPairActive {
+		return ErrVerifiedPairPhase
+	}
+	s.keysRelayed = true
+	return nil
+}
+
 // ValidateVerifiedPair rechecks CURRENT gates/identity before each new native
 // request/key use. It does not refresh the original preparation or lifetime
 // deadline. Callers must also listen to Done; no authorization API can promise
@@ -182,8 +201,13 @@ func (r *Registry) validateVerifiedPairLocked(s *verifiedPairState, now time.Tim
 			return ErrVerifiedPairStale
 		}
 		if (requireEmpty || s.phase == VerifiedPairActive) && !r.verifiedPairIdleLocked(p, true) {
-			r.endVerifiedPairLocked(s)
-			return ErrVerifiedPairBusy
+			// Commit requires both members empty. Afterwards the leader may
+			// hold the pair's own work, and nothing else, once requests are
+			// routed to pairs; the follower stays empty.
+			if requireEmpty || !r.pairLeaderHoldsOnlyPairWorkLocked(p, s) {
+				r.endVerifiedPairLocked(s)
+				return ErrVerifiedPairBusy
+			}
 		}
 	}
 	return nil

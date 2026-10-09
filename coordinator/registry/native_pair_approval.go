@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math"
 	"sort"
 	"time"
+	"unicode/utf8"
 )
 
 var ErrNativePairApproval = errors.New("native pair runtime is not explicitly approved")
@@ -56,8 +58,18 @@ func NewNativeRuntimeCatalog(policies []NativeRuntimeApproval) (*NativeRuntimeCa
 	}
 	return c, nil
 }
+
+// canonicalNativeRuntimeApproval encodes the policy bytes both members compare
+// and hash. The provider derives the same bytes from its saved copy of the
+// entry (ClusterPairApproval.canonicalPolicy) and reads them back with a strict
+// reader (NativePairMemberPolicy), so this refuses everything either refuses:
+// text that is not valid UTF-8, chip names outside printable ASCII (where byte
+// order and the provider's string order and equality could disagree), and an
+// expiry that is not a positive count of nanoseconds since 1970 in an int64.
 func canonicalNativeRuntimeApproval(p NativeRuntimeApproval) ([]byte, error) {
-	if len(p.ID) == 0 || len(p.ID) > 128 || len(p.Model) == 0 || len(p.Model) > 512 || p.Generation == 0 || p.NotAfter.IsZero() || p.NotAfter.UnixNano() <= 0 || len(p.AllowedChips) == 0 || len(p.AllowedChips) > 16 || !sort.StringsAreSorted(p.AllowedChips) {
+	expiry, representable := approvalExpiryNanoseconds(p.NotAfter)
+	if len(p.ID) == 0 || len(p.ID) > 128 || len(p.Model) == 0 || len(p.Model) > 512 || !utf8.ValidString(p.ID) || !utf8.ValidString(p.Model) ||
+		p.Generation == 0 || !representable || len(p.AllowedChips) == 0 || len(p.AllowedChips) > 16 || !sort.StringsAreSorted(p.AllowedChips) {
 		return nil, ErrNativePairApproval
 	}
 	if (p.Schedule != 1 && p.Schedule != 2) || p.MaximumPlaintext == 0 || p.MaximumPlaintext > 16*1024*1024 || p.MaximumTransportFrame < p.MaximumPlaintext+40 || p.MaximumTransportFrame > 16*1024*1024+40 || p.MaximumRecords == 0 || p.MaximumRecords > 1048576 || p.MaximumCumulativePlaintext == 0 || p.MaximumCumulativePlaintext > 4*1024*1024*1024 {
@@ -79,13 +91,33 @@ func canonicalNativeRuntimeApproval(p NativeRuntimeApproval) ([]byte, error) {
 	b = binary.BigEndian.AppendUint32(b, p.MaximumPlaintext)
 	b = binary.BigEndian.AppendUint64(b, p.MaximumRecords)
 	b = binary.BigEndian.AppendUint64(b, p.MaximumCumulativePlaintext)
-	b = binary.BigEndian.AppendUint64(b, uint64(p.NotAfter.UnixNano()))
+	b = binary.BigEndian.AppendUint64(b, expiry)
 	b = binary.BigEndian.AppendUint32(b, uint32(len(p.AllowedChips)))
 	for i, chip := range p.AllowedChips {
-		if len(chip) == 0 || len(chip) > 128 || (i > 0 && p.AllowedChips[i-1] == chip) {
+		if len(chip) == 0 || len(chip) > 128 || !printableASCII(chip) || (i > 0 && p.AllowedChips[i-1] == chip) {
 			return nil, ErrNativePairApproval
 		}
 		add(chip)
 	}
 	return b, nil
+}
+
+// approvalExpiryNanoseconds is an expiry as the nanoseconds since 1970 the
+// canonical policy carries. ok is false at or before the first second of 1970
+// and beyond what an int64 of nanoseconds holds.
+func approvalExpiryNanoseconds(t time.Time) (nanoseconds uint64, ok bool) {
+	seconds, fraction := t.Unix(), int64(t.Nanosecond())
+	if seconds <= 0 || seconds > (math.MaxInt64-fraction)/int64(time.Second) {
+		return 0, false
+	}
+	return uint64(seconds)*uint64(time.Second) + uint64(fraction), true
+}
+
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }

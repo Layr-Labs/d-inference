@@ -63,6 +63,11 @@ func (c *NativePairCoordinator) handleLocked(n *NativePairConnection, m *protoco
 		if !bytes.Equal(payload, []byte("DBNC\x01")) {
 			return ErrNativePairControl
 		}
+		// A signed cancel before any owner was authorized is the member
+		// declining the preparation, not a failure of the session.
+		if !s.committed && !s.stopped {
+			s.declined = true
+		}
 		return nil
 	}
 	if m.Type == protocol.TypeNativePairOwnerReleased {
@@ -96,6 +101,7 @@ func (c *NativePairCoordinator) handleLocked(n *NativePairConnection, m *protoco
 				return e
 			}
 			s.committed = true // No owner-start frame exists before the actual Commit.
+			c.formationCommittedLocked(s)
 			for r := range s.starts {
 				b, _ := s.starts[r].Canonical()
 				if e = c.enqueueLocked(s, r, protocol.TypeNativePairOwnerStart, b); e != nil {
@@ -137,6 +143,11 @@ func (c *NativePairCoordinator) handleLocked(n *NativePairConnection, m *protoco
 		s.confirmations[rank] = true
 		if e := c.enqueueLocked(s, 1-rank, protocol.TypeNativePairPeerConfirmation, payload); e != nil {
 			return e
+		}
+		if s.confirmations[0] && s.confirmations[1] {
+			if e := c.registry.MarkVerifiedPairKeysRelayed(s.handle); e != nil {
+				return e
+			}
 		}
 	default:
 		return ErrNativePairControl

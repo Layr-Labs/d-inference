@@ -461,6 +461,10 @@ func (s *Owner) providerReadLoop(ctx context.Context, conn *websocket.Conn, prov
 				_ = conn.Close(websocket.StatusTryAgainLater, "member acknowledgement unavailable")
 				return
 			}
+			// Only now may the pair selector see this connection: the provider
+			// drops a connection that is sent a native-pair frame before its
+			// acknowledgement, and both travel the same ordered control lane.
+			s.nativePairs.Admit(nativeConnection)
 
 		case protocol.TypeNativePairPrepared, protocol.TypeNativePairHello, protocol.TypeNativePairConfirmation, protocol.TypeNativePairOwnerReleased, protocol.TypeNativePairCancel:
 			if s.nativePairs == nil || nativeConnection == nil || s.nativePairs.Handle(nativeConnection, msg.Payload.(*protocol.NativePairMessage)) != nil {

@@ -73,7 +73,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		for _, m := range p.Models {
 			// Count only provider-model pairs that satisfy the live catalog and
 			// connection-scoped capability requirements.
-			if !r.providerModelAllowedByCatalogLocked(p, m) {
+			if !r.providerModelAllowedByCatalogLocked(p, m) || !r.listedForModelLocked(p, m.ID, false) {
 				continue
 			}
 			a, ok := agg[m.ID]
@@ -155,7 +155,8 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 		attestResult := p.AttestationResult
 		models := make([]protocol.ModelInfo, 0, len(p.Models))
 		for _, model := range p.Models {
-			if r.modelServableForOwnerLocked(p, model) {
+			// The owner's pair is listed once, through its leader.
+			if r.modelServableForOwnerLocked(p, model) && r.listedForModelLocked(p, model.ID, true) {
 				models = append(models, model)
 			}
 		}
@@ -235,7 +236,7 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
 		}
-		serves := cc != "" && r.providerServesCatalogModelLocked(p, modelID)
+		serves := cc != "" && r.providerServesCatalogModelLocked(p, modelID) && r.listedForModelLocked(p, modelID, false)
 		p.mu.Unlock()
 		if !serves {
 			continue
@@ -275,7 +276,7 @@ func (r *Registry) ModelProviderSnapshot() map[string]int64 {
 		}
 		seen := make(map[string]struct{}, len(p.Models))
 		for _, model := range p.Models {
-			if model.ID == "" || !r.providerModelAllowedByCatalogLocked(p, model) {
+			if model.ID == "" || !r.providerModelAllowedByCatalogLocked(p, model) || !r.listedForModelLocked(p, model.ID, false) {
 				continue
 			}
 			if _, duplicate := seen[model.ID]; duplicate {

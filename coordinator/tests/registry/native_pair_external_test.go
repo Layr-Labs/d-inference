@@ -308,6 +308,19 @@ func newNativePairFixture(t *testing.T, r *production.Registry) *nativePairWireF
 	return f
 }
 
+// attachAdmitted attaches a member over explicit test TLS state and admits it
+// at once, as the provider read loop does after queuing the acknowledgement.
+// It is not a claim that a helper's cleartext socket is a TLS deployment.
+func attachAdmitted(t *testing.T, c *production.NativePairCoordinator, p *production.Provider, nonce string) *production.NativePairConnection {
+	t.Helper()
+	n, err := c.Attach(p, nonce, production.NativePairDirectTLS(&tls.ConnectionState{HandshakeComplete: true}))
+	if err != nil {
+		t.Fatalf("attach %s: %v", p.ID, err)
+	}
+	c.Admit(n)
+	return n
+}
+
 func newNativePairWireFixture(t *testing.T) *nativePairWireFixture {
 	t.Helper()
 	r := pairEnvironment(t)
@@ -319,11 +332,7 @@ func newNativePairWireFixture(t *testing.T) *nativePairWireFixture {
 		f.p[rank] = pairMember(t, r, server, ids[rank], f.serials[rank], f.nonces[rank])
 		// Explicit test TLS state; this is not a claim that the helper's
 		// cleartext socket is a TLS deployment.
-		n, err := f.c.Attach(f.p[rank], f.nonces[rank], production.NativePairDirectTLS(&tls.ConnectionState{HandshakeComplete: true}))
-		if err != nil {
-			t.Fatalf("attach rank%d: %v", rank, err)
-		}
-		f.n[rank] = n
+		f.n[rank] = attachAdmitted(t, f.c, f.p[rank], f.nonces[rank])
 		f.frames[rank] = make(chan protocol.NativePairMessage, 32)
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)

@@ -277,9 +277,12 @@ func TestClusterPairEndsWhenAMemberIsLostAndFormsAgainWhenItReturns(t *testing.T
 	third, thirdProvider := d.member(t, "account-one", "studio-pair", "serial-follower", 1)
 	d.makeEligible(t, third, thirdProvider)
 	leader.Heartbeat(t, d.ctx)
-	d.waitForPair(t, "studio-pair", "held by the ended pair", func(v registry.NativePairView) bool {
-		return v.State == registry.NativePairStateWaiting && v.Waiting == registry.NativePairWaitingHeld
+	held := d.waitForPair(t, "studio-pair", "re-forming once the ended pair's hold is released", func(v registry.NativePairView) bool {
+		return v.State == registry.NativePairStateReforming && v.Waiting == registry.NativePairWaitingHeld
 	})
+	if held.ReformExpectedAt.IsZero() || held.ServingReady {
+		t.Fatalf("re-forming cluster is misreported: %+v", held)
+	}
 	requireNoNativePairFrame(t, third, "a device still held by a committed pair was offered again")
 }
 

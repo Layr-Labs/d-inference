@@ -56,7 +56,10 @@ type Registry struct {
 	mu              sync.RWMutex
 	providers       map[string]*Provider
 	// Opt-in pair membership and exclusive physical-device holds; guarded by mu.
-	verifiedPairs           verifiedPairRegistry
+	verifiedPairs verifiedPairRegistry
+	// pairRouting is the operator's opt-in for routing a request to a pair
+	// (pair_routing.go). Off, no member connection is ever a routing candidate.
+	pairRouting             atomic.Bool
 	providerDirectory       *ProviderDirectory
 	heartbeatNow            func() time.Time
 	connectionOriginFactory func(string, time.Time) *connectiontime.Origin

@@ -16,6 +16,14 @@ const (
 	nativePairFormationInterval   = time.Second
 	nativePairFormationRetryFloor = 2 * time.Second
 	nativePairFormationRetryLimit = time.Minute
+	// A member that declines a preparation answered deliberately: its build
+	// cannot serve a committed start yet, and asking again soon changes
+	// nothing. Each offer also costs the member one of the 1,024 session
+	// epochs its control remembers per process, so repeated declines are
+	// spaced far wider than failures: at this ceiling a member process is
+	// offered about four pairs an hour, and its memory lasts over ten days.
+	nativePairDeclineRetryFloor = 30 * time.Second
+	nativePairDeclineRetryLimit = 15 * time.Minute
 )
 
 // A cluster is identified by what both members registered, scoped to the
@@ -30,9 +38,14 @@ type nativePairFormation struct {
 	session   *NativePairSession // the session this selector last formed, until it stops
 	approval  string
 	model     string
-	failures  int       // consecutive sessions that stopped before owners were committed
-	notBefore time.Time // earliest next attempt after such a failure
+	failures  int               // consecutive sessions that stopped before owners were committed, undeclined
+	declines  int               // consecutive preparations a member declined
+	notBefore time.Time         // earliest next attempt after a failure or a decline
+	backoff   NativePairWaiting // which of the two notBefore waits for
 	waiting   NativePairWaiting
+	// reformingSince is when the last committed session stopped; zero when the
+	// cluster's last session never committed or a new one has been formed.
+	reformingSince time.Time
 }
 
 // NativePairWaiting says why a cluster has no session right now.
@@ -45,6 +58,10 @@ const (
 	NativePairWaitingHeld       NativePairWaiting = "device_held"   // a previous pair still holds a device
 	NativePairWaitingIneligible NativePairWaiting = "not_eligible"  // a member fails the pair identity, trust or idleness gates
 	NativePairWaitingRetry      NativePairWaiting = "retry_backoff" // the last attempt stopped before commit
+	// NativePairWaitingDeclined: a member answered the last preparation with a
+	// signed cancel. Both members are present and answering; the cluster is
+	// offered again after a long delay.
+	NativePairWaitingDeclined NativePairWaiting = "member_declined"
 )
 
 type nativePairFormationCandidate struct {
@@ -132,11 +149,17 @@ func (c *NativePairCoordinator) formationCandidates(now time.Time) []nativePairF
 	}
 	for key, formation := range c.formations {
 		if formation.session != nil && formation.session.stopped {
-			if formation.session.committed {
-				formation.failures = 0
-			} else {
+			switch {
+			case formation.session.committed:
+				formation.reformingSince = formation.session.stoppedAt
+			case formation.session.declined:
+				formation.declines++
+				formation.backoff = NativePairWaitingDeclined
+				formation.notBefore = now.Add(nativePairBackoff(formation.declines, nativePairDeclineRetryFloor, nativePairDeclineRetryLimit))
+			default:
 				formation.failures++
-				formation.notBefore = now.Add(nativePairFormationBackoff(formation.failures))
+				formation.backoff = NativePairWaitingRetry
+				formation.notBefore = now.Add(nativePairBackoff(formation.failures, nativePairFormationRetryFloor, nativePairFormationRetryLimit))
 			}
 			formation.session = nil
 		}
@@ -162,7 +185,7 @@ func (c *NativePairCoordinator) formationCandidates(now time.Time) []nativePairF
 			// releases both devices.
 			formation.waiting = NativePairWaitingHeld
 		case now.Before(formation.notBefore):
-			formation.waiting = NativePairWaitingRetry
+			formation.waiting = formation.backoff
 		default:
 			candidates = append(candidates, *candidate)
 		}
@@ -170,12 +193,24 @@ func (c *NativePairCoordinator) formationCandidates(now time.Time) []nativePairF
 	return candidates
 }
 
-func nativePairFormationBackoff(failures int) time.Duration {
-	delay := nativePairFormationRetryFloor
-	for i := 1; i < failures && delay < nativePairFormationRetryLimit; i++ {
+// formationCommittedLocked clears a cluster's record of declined and failed
+// preparations once a session of it commits. The caller holds mu.
+func (c *NativePairCoordinator) formationCommittedLocked(s *NativePairSession) {
+	for _, formation := range c.formations {
+		if formation.session == s {
+			formation.failures, formation.declines, formation.notBefore = 0, 0, time.Time{}
+		}
+	}
+}
+
+// nativePairBackoff doubles floor once per consecutive occurrence after the
+// first, up to limit.
+func nativePairBackoff(occurrences int, floor, limit time.Duration) time.Duration {
+	delay := floor
+	for i := 1; i < occurrences && delay < limit; i++ {
 		delay *= 2
 	}
-	return min(delay, nativePairFormationRetryLimit)
+	return min(delay, limit)
 }
 
 func (c *NativePairCoordinator) formPair(candidate nativePairFormationCandidate, now time.Time) {
@@ -231,7 +266,7 @@ func (c *NativePairCoordinator) recordFormation(key nativePairFormationKey, sess
 	}
 	formation.approval, formation.model, formation.waiting = approval, model, waiting
 	if session != nil {
-		formation.session = session
+		formation.session, formation.reformingSince = session, time.Time{}
 	}
 }
 

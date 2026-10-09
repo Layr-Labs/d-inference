@@ -15,6 +15,23 @@ func (p *Provider) executionRolePermitsLocked(pairEligibility bool) bool {
 	}
 }
 
+// ExecutionRole is the role this connection registered in. Immutable.
+func (p *Provider) ExecutionRole() protocol.ExecutionRole {
+	if p == nil {
+		return ""
+	}
+	return p.executionRole
+}
+
+// ClusterMembership is the cluster this member connection registered, if it
+// registered one. Immutable; the returned value is a copy.
+func (p *Provider) ClusterMembership() (protocol.ClusterMembership, bool) {
+	if p == nil || p.clusterMembership == nil {
+		return protocol.ClusterMembership{}, false
+	}
+	return *p.clusterMembership, true
+}
+
 // ClusterMemberAcceptance is the acknowledgement owed to a connection this
 // registry holds in the control-only member role: its own registered nonce and
 // connection ID, never a value a later frame supplies. ok is false for solo.

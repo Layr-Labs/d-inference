@@ -12,18 +12,32 @@ import (
 const VerifiedPairSuite = "aes256gcm-hkdf-sha256-v1"
 
 const (
-	verifiedPairPreparationLimit = 30 * time.Second
+	// verifiedPairMemberPreparationLimit is the longest preparation window a
+	// member accepts. It measures the window as PrepareBefore minus its own
+	// wall clock when the prepare frame arrives, and drops the connection when
+	// that exceeds this limit (NativePairMemberSession). It is the provider's
+	// constant, mirrored here; the two must change together.
+	verifiedPairMemberPreparationLimit = 30 * time.Second
+	// verifiedPairPreparationLimit is the window the coordinator grants. It is
+	// five seconds short of the member's limit, so a member whose clock trails
+	// the coordinator's by up to five seconds plus the frame's transit time
+	// still measures a window it accepts.
+	verifiedPairPreparationLimit = 25 * time.Second
 	verifiedPairLifetimeLimit    = 300 * time.Second
 	verifiedPairHeartbeatLimit   = 30 * time.Second
 	verifiedPairMaximumHeld      = 1024
 	// verifiedPairOwnerRetirementLimit bounds how long an owner started under a
-	// reservation can outlive its ExpiresAt. The provider anchors the fixed
-	// lifetime to its own clock when the prepare frame arrives and refuses a
-	// frame that leaves it more than verifiedPairPreparationLimit to prepare;
-	// a pair commits only before PrepareBefore, so an owner's lifetime deadline
-	// trails ExpiresAt by less than that limit. Native cleanup then has three
-	// seconds (NativePairMemberSession.cleanupDeadline); the rest is slack.
-	verifiedPairOwnerRetirementLimit = verifiedPairPreparationLimit + 10*time.Second
+	// reservation can outlive its ExpiresAt. The member anchors the fixed
+	// lifetime to its own clock when the prepare frame arrives, so its deadline
+	// trails ExpiresAt by however far its clock is behind. A member accepts the
+	// frame only if it measures at most verifiedPairMemberPreparationLimit to
+	// prepare, which allows a clock behind by the granted window's shortfall
+	// plus the transit time, and a pair commits only before PrepareBefore, so
+	// the transit time is under the granted window. The two add up to less
+	// than the member's limit whatever window is granted. Native cleanup then
+	// has three seconds (NativePairMemberSession.cleanupDeadline); the rest is
+	// slack.
+	verifiedPairOwnerRetirementLimit = verifiedPairMemberPreparationLimit + 10*time.Second
 )
 
 var (
@@ -113,10 +127,16 @@ type verifiedPairState struct {
 	released   [2]bool
 	// departed marks a member whose original connection left the registry
 	// after commit: its owner-release receipt can never arrive.
-	departed   [2]bool
-	done       chan struct{}
-	doneClosed bool
-	timer      *time.Timer
+	departed [2]bool
+	// account is the one account both members belonged to when the pair was
+	// reserved, or empty when they did not share one. Immutable.
+	account string
+	// keysRelayed is set once the relay accepted both members' key
+	// confirmations for delivery: the earliest a leader can be serving.
+	keysRelayed bool
+	done        chan struct{}
+	doneClosed  bool
+	timer       *time.Timer
 }
 
 // All indexes and state fields except the immutable Done channel are protected

@@ -37,16 +37,27 @@ type formationFixture struct {
 	stop     context.CancelFunc
 	next     int
 	ids      []string
+	// register adjusts every member registration before it is sent.
+	register func(*protocol.RegisterMessage)
+	// holdAdmission leaves the next attached member unadmitted, as it is
+	// between attachment and its queued acknowledgement.
+	holdAdmission bool
 	// current guards the members the freshness loop keeps current; a rank is
 	// nil there while a test wants its evidence to stay as it left it.
 	currentMu sync.Mutex
 	current   [2]*production.Provider
 }
 
-func newFormationFixture(t *testing.T) *formationFixture {
+// newFormationFixture builds the fixture; configure may add registry
+// dependencies a test wants to observe.
+func newFormationFixture(t *testing.T, configure ...func(*production.Dependencies)) *formationFixture {
 	t.Helper()
 	writers := &memberFrameWriters{frames: make(map[string]chan protocol.NativePairMessage)}
-	r := pairEnvironmentWith(t, production.Dependencies{Connections: writers})
+	dependencies := production.Dependencies{Connections: writers}
+	for _, adjust := range configure {
+		adjust(&dependencies)
+	}
+	r := pairEnvironmentWith(t, dependencies)
 	document := clustermember.CatalogDocument(t, clustermember.Approval(formationApproval, nativePairFixtureModel, "fixture-chip"))
 	catalog, err := production.ParseNativeRuntimeCatalog(document)
 	if err != nil {
@@ -101,6 +112,9 @@ func (f *formationFixture) attach(t *testing.T, rank int, adjust func(*protocol.
 	f.nonces[rank], f.sent[rank] = nonce, 0
 	f.p[rank] = pairMemberWith(t, f.r, nil, id, f.serials[rank], nonce, func(msg *protocol.RegisterMessage) {
 		msg.ClusterMembership = membership
+		if f.register != nil {
+			f.register(msg)
+		}
 	})
 	f.p[rank].Mu().Lock()
 	f.p[rank].AccountID = f.accounts[rank]
@@ -112,6 +126,9 @@ func (f *formationFixture) attach(t *testing.T, rank int, adjust func(*protocol.
 	f.n[rank], f.frames[rank] = n, f.writers.of(id)
 	f.ids = append(f.ids, id)
 	f.keepCurrent(rank, f.p[rank])
+	if !f.holdAdmission {
+		f.c.Admit(n)
+	}
 }
 
 // keepCurrent selects which connection the freshness loop renews for rank.
@@ -292,11 +309,7 @@ func TestPairSelectorNeverGuessesMembership(t *testing.T) {
 			f.p[1].Mu().Lock()
 			f.p[1].AccountID = formationAccount
 			f.p[1].Mu().Unlock()
-			n, err := f.c.Attach(f.p[1], nonce, production.NativePairDirectTLS(&tls.ConnectionState{HandshakeComplete: true}))
-			if err != nil {
-				t.Fatal(err)
-			}
-			f.n[1], f.frames[1] = n, f.writers.of("plain-member")
+			f.n[1], f.frames[1] = attachAdmitted(t, f.c, f.p[1], nonce), f.writers.of("plain-member")
 			f.ids = append(f.ids, "plain-member")
 			f.keepCurrent(1, f.p[1])
 		},
@@ -345,8 +358,15 @@ func TestPairSelectorReformsAfterTheFixedLifetime(t *testing.T) {
 		for rank := range f.n {
 			f.read(t, rank, protocol.TypeNativePairCancel)
 		}
-		if v := f.view(t); v.State != production.NativePairStateWaiting || v.Waiting != production.NativePairWaitingHeld {
-			t.Fatalf("expired pair is not reported as holding its devices pending cleanup: %+v", v)
+		// The site can show the rotation: the cluster is re-forming, it waits
+		// for the devices' release, and that is expected within the members'
+		// cleanup allowance of the stop.
+		v := f.view(t)
+		if v.State != production.NativePairStateReforming || v.Waiting != production.NativePairWaitingHeld || v.ServingReady {
+			t.Fatalf("expired pair is not reported as re-forming on its devices' release: %+v", v)
+		}
+		if expected := v.ReformExpectedAt.Sub(expires); expected < 0 || expected > 10*time.Second {
+			t.Fatalf("re-form is expected %s after expiry, want within the cleanup allowance", expected)
 		}
 		for rank := range f.n {
 			if err := f.c.Handle(f.n[rank], f.sign(t, rank, protocol.TypeNativePairOwnerReleased, releaseReceipt(starts[rank]))); err != nil {
@@ -388,7 +408,7 @@ func TestPairSelectorReformsAfterALostMemberOnlyOnceTheHoldIsReleased(t *testing
 		// The follower's machine reconnects at once.
 		f.attach(t, 1, nil)
 		f.quiet(t, time.Until(expires.Add(ownerMayStillRun)), "a device whose departed owner may still be running")
-		if v := f.view(t); v.Waiting != production.NativePairWaitingHeld {
+		if v := f.view(t); v.State != production.NativePairStateReforming || v.Waiting != production.NativePairWaitingHeld {
 			t.Fatalf("held device is not reported: %+v", v)
 		}
 
@@ -416,7 +436,7 @@ func TestPairSelectorBacksOffAfterRefusedPreparations(t *testing.T) {
 			if attempt == 3 {
 				break
 			}
-			// Neither member answers: the 30 s preparation window lapses.
+			// Neither member answers: the 25 s preparation window lapses.
 			for rank := range f.n {
 				select {
 				case m := <-f.frames[rank]:
@@ -430,13 +450,38 @@ func TestPairSelectorBacksOffAfterRefusedPreparations(t *testing.T) {
 		}
 		for attempt := 1; attempt < len(offered); attempt++ {
 			gap := offered[attempt] - offered[attempt-1]
-			retry := time.Duration(1<<attempt) * time.Second // 2 s, 4 s, 8 s after the 30 s window
-			if gap < 30*time.Second+retry || gap > 30*time.Second+retry+2*time.Second {
-				t.Fatalf("attempt %d followed the previous one after %s, want about %s", attempt+1, gap, 30*time.Second+retry)
+			retry := time.Duration(1<<attempt) * time.Second // 2 s, 4 s, 8 s after the 25 s window
+			if gap < preparationWindow+retry || gap > preparationWindow+retry+2*time.Second {
+				t.Fatalf("attempt %d followed the previous one after %s, want about %s", attempt+1, gap, preparationWindow+retry)
 			}
 		}
 		if v := f.view(t); v.Failures != 3 {
 			t.Fatalf("refused preparations are not counted: %+v", v)
 		}
+	})
+}
+
+// A member connection is attached before its acknowledgement is queued and
+// admitted only after. The provider drops a connection that is sent a
+// native-pair frame before that acknowledgement, so until admission the
+// selector must not see the connection at all, however eligible it is.
+func TestPairSelectorIgnoresAConnectionUntilItIsAdmitted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFormationFixture(t)
+		defer f.close()
+		f.attach(t, 0, nil)
+		f.holdAdmission = true
+		f.attach(t, 1, nil)
+		f.quiet(t, time.Minute, "a member whose acknowledgement is not queued yet")
+		if v := f.view(t); v.State != production.NativePairStateWaiting || v.Waiting != production.NativePairWaitingPeer || v.Members[1].Attached {
+			t.Fatalf("an unadmitted member is visible to the selector: %+v", v)
+		}
+		if _, err := f.c.Reserve(f.n, formationApproval, time.Minute); err == nil {
+			t.Fatal("an unadmitted connection was reserved")
+		}
+
+		// Admission is the selector's wake-up: no further event is needed.
+		f.c.Admit(f.n[1])
+		f.readPrepares(t)
 	})
 }

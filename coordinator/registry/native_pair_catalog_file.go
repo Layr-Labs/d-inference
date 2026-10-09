@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
+	"slices"
 	"time"
 )
 
@@ -15,9 +17,16 @@ const NativeRuntimeCatalogSchema = "darkbloom_cluster_pair_catalog_v1"
 const nativeRuntimeCatalogFileLimit = 1 << 20
 
 type nativeRuntimeCatalogFile struct {
-	Schema    string                      `json:"schema"`
-	Approvals []nativeRuntimeApprovalFile `json:"approvals"`
+	Schema    string            `json:"schema"`
+	Approvals []json.RawMessage `json:"approvals"`
 }
+
+// approvalInstantSyntax is the only form of not_after both sides read the same
+// way: an RFC 3339 instant with upper-case T, an optional fraction of one to
+// nine digits, and a zone of Z or a signed HH:MM offset. Go's own RFC 3339
+// parser is laxer (a comma, more digits, a one-digit hour) and the provider
+// refuses those forms outright.
+var approvalInstantSyntax = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$`)
 
 // Every field is required. The canonical policy bytes a member compares are
 // built from these values, so nothing here has a default.
@@ -59,6 +68,9 @@ func ParseNativeRuntimeCatalog(data []byte) (*NativeRuntimeCatalog, error) {
 	if _, err := decoder.Token(); err != io.EOF {
 		return nil, fmt.Errorf("%w: trailing data after the catalog document", ErrNativePairApproval)
 	}
+	if err := exactFieldNames(data, "schema", "approvals"); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNativePairApproval, err)
+	}
 	if file.Schema != NativeRuntimeCatalogSchema {
 		return nil, fmt.Errorf("%w: schema must be %q", ErrNativePairApproval, NativeRuntimeCatalogSchema)
 	}
@@ -66,8 +78,18 @@ func ParseNativeRuntimeCatalog(data []byte) (*NativeRuntimeCatalog, error) {
 		return nil, fmt.Errorf("%w: catalog approves nothing", ErrNativePairApproval)
 	}
 	approvals := make([]NativeRuntimeApproval, 0, len(file.Approvals))
-	for index, entry := range file.Approvals {
-		approval, err := entry.approval()
+	for index, raw := range file.Approvals {
+		var entry nativeRuntimeApprovalFile
+		entryDecoder := json.NewDecoder(bytes.NewReader(raw))
+		entryDecoder.DisallowUnknownFields()
+		err := entryDecoder.Decode(&entry)
+		if err == nil {
+			err = exactFieldNames(raw, nativeRuntimeApprovalFields...)
+		}
+		var approval NativeRuntimeApproval
+		if err == nil {
+			approval, err = entry.approval()
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: approval %d (%q): %v", ErrNativePairApproval, index, entry.ID, err)
 		}
@@ -87,9 +109,9 @@ func (f nativeRuntimeApprovalFile) approval() (NativeRuntimeApproval, error) {
 		MaximumRecords: f.MaximumRecords, MaximumCumulativePlaintext: f.MaximumCumulativePlaintext,
 		AllowedChips: append([]string(nil), f.AllowedChips...),
 	}
-	notAfter, err := time.Parse(time.RFC3339, f.NotAfter)
-	if err != nil {
-		return NativeRuntimeApproval{}, fmt.Errorf("not_after must be RFC 3339")
+	notAfter, ok := parseApprovalInstant(f.NotAfter)
+	if !ok {
+		return NativeRuntimeApproval{}, fmt.Errorf("not_after must be an RFC 3339 instant: YYYY-MM-DDTHH:MM:SS, an optional fraction of 1-9 digits, then Z or ±HH:MM")
 	}
 	approval.NotAfter = notAfter
 	digests := []struct {
@@ -114,6 +136,50 @@ func (f nativeRuntimeApprovalFile) approval() (NativeRuntimeApproval, error) {
 		copy(digest.into[:], decoded)
 	}
 	return approval, nil
+}
+
+var nativeRuntimeApprovalFields = []string{"id", "model", "generation", "plan_sha256", "artifact_sha256",
+	"native_runtime_sha256", "metallib_sha256", "resource_library_sha256", "capability_sha256",
+	"resource_policy_sha256", "profile_sha256", "schedule", "maximum_transport_frame", "maximum_plaintext",
+	"maximum_records", "maximum_cumulative_plaintext", "allowed_chips", "not_after"}
+
+// exactFieldNames refuses a JSON object with a member name that is not one of
+// allowed, spelled exactly, or that appears twice. Go's decoder matches names
+// without regard to case and keeps the last of a repeated name; the provider's
+// reader of the same entry does neither.
+func exactFieldNames(object []byte, allowed ...string) error {
+	decoder := json.NewDecoder(bytes.NewReader(object))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return fmt.Errorf("a JSON object is required")
+	}
+	seen := make(map[string]bool, len(allowed))
+	for decoder.More() {
+		token, err := decoder.Token()
+		name, isName := token.(string)
+		if err != nil || !isName || !slices.Contains(allowed, name) || seen[name] {
+			return fmt.Errorf("field %q is misspelled, unknown or repeated", name)
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseApprovalInstant reads not_after in the one form both sides accept.
+func parseApprovalInstant(text string) (time.Time, bool) {
+	if !approvalInstantSyntax.MatchString(text) {
+		return time.Time{}, false
+	}
+	if zone := text[len(text)-6:]; zone[0] == '+' || zone[0] == '-' {
+		if zone[1:3] > "23" || zone[4:6] > "59" {
+			return time.Time{}, false
+		}
+	}
+	instant, err := time.Parse(time.RFC3339Nano, text)
+	return instant, err == nil
 }
 
 // PolicySHA256 returns the lowercase hex commitment of an approval's canonical

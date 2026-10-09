@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
 func (c *NativePairCoordinator) messageLocked(s *NativePairSession, rank int, kind string, payload []byte) ([]byte, error) {
@@ -99,7 +100,13 @@ func (c *NativePairCoordinator) Cancel(s *NativePairSession) {
 	}
 	c.mu.Lock()
 	frames, publish := c.beginCancellationLocked(s)
+	// A leader whose own connection is going away has its requests failed by
+	// its disconnect, with the cause that says how the socket ended.
+	leaderAttached := publish && c.validConnectionLocked(s.connections[0])
 	c.mu.Unlock()
+	if leaderAttached {
+		saferun.Go(c.registry.logger, "registry.pairRequestFlush", func() { c.registry.failPairRequests(s.handle.state) })
+	}
 	if publish {
 		c.publishCancellation(s, frames)
 	}
@@ -112,7 +119,7 @@ func (c *NativePairCoordinator) beginCancellationLocked(s *NativePairSession) ([
 	if s.coordinator != c || c.sessions[s.membership.Epoch] != s || s.stopped {
 		return [2][]byte{}, false
 	}
-	s.stopped = true
+	s.stopped, s.stoppedAt = true, time.Now()
 	_ = c.registry.CancelVerifiedPair(s.handle)
 	var frames [2][]byte
 	for rank := range frames {

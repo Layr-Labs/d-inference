@@ -9,7 +9,6 @@ package registry_test
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -56,11 +55,7 @@ func attachPairMember(t *testing.T, f *nativePairWireFixture, writers *memberFra
 	t.Helper()
 	f.nonces[rank], f.sent[rank] = nonce, 0
 	f.p[rank] = pairMember(t, f.r, nil, id, f.serials[rank], nonce)
-	n, err := f.c.Attach(f.p[rank], nonce, production.NativePairDirectTLS(&tls.ConnectionState{HandshakeComplete: true}))
-	if err != nil {
-		t.Fatalf("attach rank%d: %v", rank, err)
-	}
-	f.n[rank], f.frames[rank] = n, writers.of(id)
+	f.n[rank], f.frames[rank] = attachAdmitted(t, f.c, f.p[rank], nonce), writers.of(id)
 }
 
 func TestNativePairRelayReusesSurvivingMemberAfterAbandonedQuarantine(t *testing.T) {

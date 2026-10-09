@@ -16,9 +16,20 @@ const (
 	// no owner may start yet.
 	NativePairStatePreparing NativePairState = "preparing"
 	// NativePairStateActive: owners were authorized to start. This is not
-	// serving readiness: key establishment and model load follow.
+	// serving readiness: key establishment and model load follow, and
+	// NativePairView.ServingReady reports when they are done.
 	NativePairStateActive NativePairState = "active"
+	// NativePairStateReforming: the cluster's last session was committed and
+	// has ended, by its fixed lifetime or otherwise, and the coordinator forms
+	// the next one as soon as both devices are released. Waiting says what it
+	// still waits for.
+	NativePairStateReforming NativePairState = "reforming"
 )
+
+// nativePairExpectedCleanup is how long a healthy member takes to clean up
+// after its session is cancelled and to report it: the provider's own cleanup
+// deadline is three seconds. It only feeds the ReformExpectedAt estimate.
+const nativePairExpectedCleanup = 5 * time.Second
 
 // NativePairMemberView is one rank of a registered cluster. Attached is false
 // when no connection currently claims that rank.
@@ -41,14 +52,28 @@ type NativePairView struct {
 	State        NativePairState
 	Waiting      NativePairWaiting
 	Members      [2]NativePairMemberView // rank order: leader, follower
+	// ServingReady is true while a request from the pair's account would be
+	// handed to the leader now: the session is active, both key confirmations
+	// were relayed, the leader reports the model loaded and is not draining,
+	// and requests are routed to pairs at all. Concurrency and the lifetime a
+	// particular request needs are decided per request.
+	ServingReady bool
 	// Epoch, PrepareBefore and ExpiresAt describe the current session; zero
 	// while waiting.
 	Epoch         string
 	PrepareBefore time.Time
 	ExpiresAt     time.Time
-	// Failures counts consecutive sessions that stopped before commit; RetryAt
-	// is when the next attempt is allowed.
+	// ReformExpectedAt is set while reforming: the coordinator's estimate of
+	// when both members will have reported cleanup, at which point it starts
+	// the next session. It is an estimate, and serving resumes only after that
+	// session's preparation, key exchange and model load.
+	ReformExpectedAt time.Time
+	// Failures counts consecutive sessions that stopped before commit without
+	// a member declining; Declines counts consecutive preparations a member
+	// declined with a signed cancel. RetryAt is when the next attempt is
+	// allowed after either.
 	Failures int
+	Declines int
 	RetryAt  time.Time
 }
 
@@ -94,26 +119,35 @@ func (c *NativePairCoordinator) Pairs() []NativePairView {
 	for key, formation := range c.formations {
 		v := view(key)
 		v.ApprovalID, v.Model, v.Waiting = formation.approval, formation.model, formation.waiting
-		v.Failures, v.RetryAt = formation.failures, formation.notBefore
-		session := formation.session
-		if session == nil {
-			continue
-		}
-		if session.stopped {
-			// Admission is closed. Until the registry releases both devices the
-			// cluster is waiting on that hold, exactly as the selector will
-			// report it on its next pass.
-			if !c.sessionReleasedLocked(session) {
-				v.Waiting = NativePairWaitingHeld
+		v.Failures, v.Declines, v.RetryAt = formation.failures, formation.declines, formation.notBefore
+		session, reformingSince := formation.session, formation.reformingSince
+		if session != nil && !session.stopped {
+			v.Waiting = NativePairWaitingNone
+			v.Epoch = hex.EncodeToString(session.membership.Epoch[:])
+			v.PrepareBefore, v.ExpiresAt = session.membership.PrepareBefore, session.membership.ExpiresAt
+			v.State = NativePairStatePreparing
+			if session.committed {
+				v.State = NativePairStateActive
+				v.ServingReady = c.registry.verifiedPairServingReady(session.handle)
 			}
 			continue
 		}
-		v.Waiting = NativePairWaitingNone
-		v.Epoch = hex.EncodeToString(session.membership.Epoch[:])
-		v.PrepareBefore, v.ExpiresAt = session.membership.PrepareBefore, session.membership.ExpiresAt
-		v.State = NativePairStatePreparing
-		if session.committed {
-			v.State = NativePairStateActive
+		if session != nil {
+			// Admission is closed and the selector has not settled the session
+			// yet. Until the registry releases both devices the cluster waits
+			// on that hold, exactly as the selector reports it on its next pass.
+			if !c.sessionReleasedLocked(session) {
+				v.Waiting = NativePairWaitingHeld
+			}
+			reformingSince = time.Time{}
+			if session.committed {
+				reformingSince = session.stoppedAt
+			}
+		}
+		// A committed session ended and nothing but the devices' release, or
+		// the selector's next pass, stands between the cluster and its next one.
+		if !reformingSince.IsZero() && (v.Waiting == NativePairWaitingHeld || v.Waiting == NativePairWaitingNone) {
+			v.State, v.ReformExpectedAt = NativePairStateReforming, reformingSince.Add(nativePairExpectedCleanup)
 		}
 	}
 	out := make([]NativePairView, 0, len(views))

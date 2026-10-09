@@ -94,12 +94,18 @@ func (r *Registry) ForEachProviderVerification(fn func(*Provider, Verification, 
 			defer p.mu.Unlock()
 			models := PublicProviderModelSnapshot{Models: []string{}}
 			for _, model := range p.Models {
-				if r.providerModelAllowedByCatalogLocked(p, model) {
+				if r.providerModelAllowedByCatalogLocked(p, model) && r.listedForModelLocked(p, model.ID, false) {
 					models.Models = append(models.Models, model.ID)
 					if model.ID == p.CurrentModel {
 						models.CurrentModel = model.ID
 					}
 				}
+			}
+			// This walk feeds the public roster and public attestation. A
+			// cluster member with no publicly listed model is not part of
+			// either, exactly as a private-only machine is not.
+			if len(models.Models) == 0 && !p.executionRolePermitsLocked(false) {
+				return
 			}
 			fn(p, r.providerVerificationLocked(p, time.Now()), models)
 		}()

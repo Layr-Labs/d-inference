@@ -33,6 +33,9 @@ func (t NativePairTransport) protected() bool {
 }
 
 // This is protocol attachment only, never native/runtime approval by itself.
+// The connection it returns cannot be selected yet: the provider requires its
+// cluster_member_accepted acknowledgement before any native-pair frame, so the
+// caller queues that acknowledgement and then calls Admit.
 func (c *NativePairCoordinator) Attach(p *Provider, nonce string, transport NativePairTransport) (*NativePairConnection, error) {
 	if c == nil || p == nil || !transport.protected() {
 		return nil, ErrNativePairControl
@@ -56,8 +59,24 @@ func (c *NativePairCoordinator) Attach(p *Provider, nonce string, transport Nati
 	}
 	n := &NativePairConnection{coordinator: c, provider: p, nonce: nonce}
 	c.connections[p] = n
-	c.wakeFormation()
 	return n, nil
+}
+
+// Admit makes an attached connection available to the pair selector and the
+// explicit selection hook. The provider read loop calls it after the member's
+// acknowledgement is queued on the connection's control lane, which every
+// native-pair frame also uses, so no such frame can reach the member first.
+func (c *NativePairCoordinator) Admit(n *NativePairConnection) {
+	if c == nil || n == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n.coordinator != c || n.closed || c.connections[n.provider] != n {
+		return
+	}
+	n.admitted = true
+	c.wakeFormation()
 }
 func (c *NativePairCoordinator) Detach(n *NativePairConnection) {
 	if c == nil || n == nil {
@@ -77,7 +96,7 @@ func (c *NativePairCoordinator) Detach(n *NativePairConnection) {
 	}
 }
 func (c *NativePairCoordinator) validConnectionLocked(n *NativePairConnection) bool {
-	return n != nil && n.coordinator == c && !n.closed && c.connections[n.provider] == n
+	return n != nil && n.coordinator == c && n.admitted && !n.closed && c.connections[n.provider] == n
 }
 
 // The coordinator's selector passes exact current Provider objects; no provider

@@ -33,6 +33,13 @@ final class TokenBox: @unchecked Sendable {
     var lastTokenMilliseconds:Int { lock.withLock { Self.milliseconds(tokens.last?.1 ?? .zero) } }
     var finishMilliseconds:Int { lock.withLock { Self.milliseconds(finish ?? .zero) } }
 }
+final class NoticeBox: @unchecked Sendable {
+    struct Entry { let value:DistributedInstalledStopNotice; let at:ContinuousClock.Instant; let running:[Int] }
+    private let lock=NSLock(); private var values:[Entry]=[]
+    func add(_ value:DistributedInstalledStopNotice,running:[Int]){ lock.withLock { values.append(.init(value:value,at:.now,running:running)) } }
+    var count:Int { lock.withLock { values.count } }
+    var first:Entry? { lock.withLock { values.first } }
+}
 final class EndpointBox: @unchecked Sendable {
     let lock=NSLock(); var values:[ClusterRemoteWorkerEndpoint]=[]
     func add(_ value:ClusterRemoteWorkerEndpoint){ lock.withLock { values.append(value) } }
@@ -68,7 +75,8 @@ final class EndpointBox: @unchecked Sendable {
         try await failedStart(fixture,prepared)
         try await missingRelease(fixture,prepared)
         try await expired(fixture)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, withheld pair serving, bounded IO and 7 lifecycle scenarios passed; no native model, SSH or network")
+        try await stopNotice(fixture,prepared)
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -440,6 +448,35 @@ final class EndpointBox: @unchecked Sendable {
         try require(result == .quarantined || result == .released,"expired session kept accepting")
         try require(box.snapshot.allSatisfy(\.nativeCleanupObserved),"expired fixture child lacked actual terminal proof")
         try require(!s.canRotate || box.snapshot.allSatisfy{$0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)},"expiry substituted for owner release")
+    }
+    /// A session that stops without being asked says so at once, while a rank
+    /// that has to end itself is still running; a requested stop says nothing.
+    static func stopNotice(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
+        let notices=NoticeBox()
+        let(quiet,_)=try session(f,p);quiet.installStopNoticeHandler{notices.add($0,running:[])};try await quiet.start()
+        let lease=try request(quiet,1);try lease.start{_ in true};await lease.waitUntilRetired();lease.releaseResources()
+        try require(await quiet.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) == .released,"requested drain did not release")
+        try await Task.sleep(for:.milliseconds(100))
+        try require(notices.count==0,"a requested stop was announced as an unrequested one")
+        // Rank 0 never commits a token, does not answer cancel and needs 1.5 s
+        // to end after its stream closes: a rank inside a collective whose peer went away.
+        let(s,box)=try session(f,p,behavior:"workers:stall,normal")
+        s.installStopNoticeHandler{notices.add($0,running:box.snapshot.filter{!$0.nativeCleanupObserved}.map(\.rank))}
+        try await s.start()
+        let stalled=try request(s,2);try stalled.start{_ in true}
+        try await Task.sleep(for:.milliseconds(100))
+        let began=ContinuousClock.now
+        stalled.cancel()
+        while notices.count==0 && began.duration(to:.now) < .seconds(3) {try await Task.sleep(for:.milliseconds(10))}
+        guard let notice=notices.first else {throw CheckFailure(message:"no stop notice for a session that stopped unasked")}
+        try require(began.duration(to:notice.at) < .seconds(1),"the stop notice came late: \(began.duration(to:notice.at))")
+        try require(notice.running.contains(0),"the stop notice came only after the surviving rank had ended: \(notice.running)")
+        try require(notice.value.longestWaitNanoseconds==75_000_000_000 && notice.value.progressLimitMilliseconds==60_000,"the notice's wait is not the progress limit plus the stop margin")
+        try require(notice.value.message.contains("75 s") && notice.value.message.contains("60 s progress limit"),"the notice does not state the wait")
+        await stalled.waitUntilRetired();stalled.releaseResources()
+        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+8_000_000_000)
+        try require((result == .released || result == .quarantined) && s.readiness()==nil && box.snapshot.allSatisfy(\.nativeCleanupObserved),"the unasked stop did not end both ranks: \(result)")
+        try require(notices.count==1,"the stop was announced more than once")
     }
     static func missingRelease(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         for behavior in ["drop-release","nonzero-owner"] {

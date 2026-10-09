@@ -43,6 +43,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/PartialAdmissionTests.swift" -o "$task_build/partial-check"
 "$task_build/partial-check" "$task_build/fake-worker"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/CleanStopTests.swift" -o "$task_build/clean-stop-check"
+"$task_build/clean-stop-check" "$task_build/fake-worker"
 
 task_repo="$(cd "$task_root/../.." && pwd)"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
@@ -66,6 +71,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/ProviderDeadlinePipeCheck.swift" -o "$task_build/deadline-check"
 "$task_build/deadline-check" "$task_build/fake-worker"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lMLXLMCommon -lProviderPipeContract -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/ProviderCleanStopPipeCheck.swift" -o "$task_build/clean-stop-pipe-check"
+"$task_build/clean-stop-pipe-check" "$task_build/fake-worker"
 
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \

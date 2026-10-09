@@ -258,7 +258,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             let wasPrepared = phase == .prepared
             // Serving ended without a request to end it: say so now, before
             // the wait for the workers, which can be the whole progress limit.
-            if abnormal, phase == .ready || phase == .draining {
+            // A drain was asked for; its own workers' exit reaches here as an
+            // invalidation and is not announced.
+            if abnormal, phase == .ready {
                 if let stopNoticeHandler { notice = stopNoticeHandler } else { stopNoticePending = true }
             }
             if abnormal { draining = false }

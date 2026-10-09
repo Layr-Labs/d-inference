@@ -117,6 +117,40 @@ struct DistributedCBv2DeadlineTests {
         }
     }
 
+    /// Under phase split the pair selects the first token and only then hands
+    /// the request state to rank 1; later tokens reach the owner in relayed
+    /// batches. The first-token budget ends with the first token: a pause as
+    /// long as the hand-off's own agreed limit, and sixteen tokens arriving at
+    /// once, are charged to the generation deadline alone.
+    @Test func handOffPauseAndRelayBatchesAfterTheFirstTokenAreNotFirstTokenTime() async throws {
+        let owner = DistributedTestOwner()
+        let clock = DistributedTestClock()
+        let engine = try distributedTestEngine(owner, clock: clock.clock)
+        let result = try await engine.submit(
+            distributedTestRequest(maxTokens: 40),
+            firstTokenDeadline: distributedTestDeadline(clock.now.advanced(by: .seconds(3))))
+        guard case .admitted(let stream, _, _, let retirement) = result else {
+            Issue.record("expected admission"); return
+        }
+        clock.advance(.seconds(2))
+        #expect(owner.last.send(.token(4))) // selected by the pair, inside its budget
+        clock.advance(.seconds(20)) // the hand-off's agreed limit, far past the first-token deadline
+        for _ in 0..<16 { #expect(owner.last.send(.token(5))) } // one relay batch, all at once
+        clock.advance(.milliseconds(600)) // rank 1 decodes the next batch
+        for _ in 0..<16 { #expect(owner.last.send(.token(4))) }
+        #expect(owner.last.cancelCount == 0)
+        #expect(engine.capacity().activeRequests == 1)
+        for index in 0..<7 { #expect(owner.last.send(.token(5)) == (index < 6)) } // the fortieth token is the limit
+        owner.last.send(.finished(.length))
+        owner.last.acknowledge()
+        await retirement.wait()
+        let terminal = distributedTerminal(await distributedCollect(stream))
+        #expect(terminal?.0 == .length)
+        #expect(terminal?.1.completionTokens == 40)
+        #expect(owner.last.cancelCount == 0)
+        await engine.shutdown()
+    }
+
     @Test func ordinarySubmissionAlsoHasAnAbsoluteDeadline() async throws {
         let owner = DistributedTestOwner()
         let clock = DistributedTestClock()

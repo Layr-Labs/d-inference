@@ -38,7 +38,8 @@ public struct SoloConfiguration: Sendable {
         func require(_ condition: Bool, _ message: String) throws {
             guard condition else { throw QualificationError("Solo configuration: " + message) }
         }
-        try require(QualificationRequest.supportedCuts.contains(stageCut), "stage cut must be 4, 8, 12 or 16")
+        try require(request.supportedCuts.contains(stageCut), "stage cut must be one of the request model's cuts: "
+            + request.supportedCuts.map(String.init).joined(separator: ", "))
         try require(PairConfiguration.isPath(modelDirectory), "model directory must be a plain absolute path")
         try require(PairConfiguration.isPath(servicePath), "service must be a plain absolute path")
         try require((1...PairConfiguration.maximumRepetitions).contains(repetitions), "repetitions must be 1...8")

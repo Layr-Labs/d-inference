@@ -34,7 +34,7 @@ import Foundation
               [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N] [--rank1-delay-seconds N]
               [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
-          darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut 4|8|12|16 --report NEW-REPORT.json
+          darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --service /ABS/darkbloom-cluster-reference --model-dir /ABS/MODEL
               [--remote-ssh DESTINATION [--ssh-option Key=Value]...] [--role LABEL] [--repetitions 1...8]
               [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N]

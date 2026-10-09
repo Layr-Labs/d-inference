@@ -17,7 +17,7 @@ name: Release Provider Bundle (Swift)
 # Tag convention:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
 # Dev releases use workflow_dispatch so the requested version can remain
-# byte-identical to the checked-in provider and coordinator source constants.
+# byte-identical to the checked-in ProviderCore.version.
 #
 # Repo secrets use DEV_/PROD_ prefixes so both environments can remain at
 # repo level. The release job still binds the resolved GitHub environment so

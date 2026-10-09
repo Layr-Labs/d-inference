@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -12,19 +12,19 @@ gate, and the code map — is in
 [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
 and is not restated here.
 
-Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
+Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/app-attest-rollout.md).
 
-A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
+A signed version must be [qualified by the coordinator](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
 
 Account erasure also clears delayed account-specific proof writes and frozen
-legacy-MDM membership; [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys)
+legacy-MDM membership; [shared-device cleanup](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/account-erasure.md#shared-machines-and-shared-keys)
 retains another live account's device evidence. Unshared APNs tokens and pending
 challenges are removed from the coordinator's runtime cache too; stale replies
-cannot restore them ([identity cleanup](../architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
+cannot restore them ([identity cleanup](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/security/identity-binding.md#account-erasure-and-apns-runtime-state)).
 
 Autopilot earnings-floor qualification is a separate historical check: a new
 authorization does not qualify a declaration received before that grant. See
-the [reward policy](../reference/pricing-model.md#autopilot-rewards).
+the [reward policy](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/pricing-model.md#autopilot-rewards).
 
 ## Read current verification in the dashboard
 
@@ -39,8 +39,8 @@ provider advertising an App Attest protocol other than version 3 displays
 The footer counts the union once and reports both method counts and overlap.
 Offline machine records stay in the owned-machine denominator but not current
 authorization. Public proof views omit raw certificates, receipt blobs and
-credential identifiers. See [consumer verification](../consumer/verification.md)
-and the [wire contract](../reference/api-contracts.md#verification-presentation-contract).
+credential identifiers. See [consumer verification](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/verification.md)
+and the [wire contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#verification-presentation-contract).
 
 
 ## App Attest without Darkbloom MDM
@@ -50,7 +50,7 @@ A failed initial enrollment can leave an Apple key unusable even when its identi
 After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's current receipt, build and security checks.
 
 
-If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then every ten minutes while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Persistent generic errors can still require a signed provider update and diagnosis from the bounded native Apple error code; `darkbloom status` or `darkbloom doctor` reports current authorization. The [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then every ten minutes while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Persistent generic errors can still require a signed provider update and diagnosis from the bounded native Apple error code; `darkbloom status` or `darkbloom doctor` reports current authorization. The [recovery policy](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
 
 When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
 
@@ -100,7 +100,7 @@ freezing. Soft-deleted accounts and provider records cannot qualify for that
 initial snapshot; see the [cohort qualification rules](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort). A restart, a new account, a new device or a new
 account association does not reopen eligibility. Reenrollment requires the
 existing key under its frozen account and the [authenticated signed enrollment
-request](../reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve your
+request](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md#legacy-mdm-enrollment-proof). Preserve your
 key and account; a replacement identity must use qualified App Attest, with no
 unsupported-OS fallback. Lost or hashless historical evidence may conservatively
 omit a device; a previous local profile alone does not establish eligibility.
@@ -121,7 +121,7 @@ retains MDM evidence. The OS claim must be bound to that same authorization;
 missing, malformed or older versions do not qualify. Existing economics guards
 still apply.
 Inference/work earnings are unchanged, with no retroactive clawback of rewards.
-See [billing](../consumer/billing.md) for the reward policy.
+See [billing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/billing.md) for the reward policy.
 
 Upgrading macOS does not uninstall MDM. After upgrading to macOS 27
 and updating the provider, restart it and check `darkbloom status`; remove only
@@ -266,7 +266,7 @@ checks above, and (with `--support`) the coordinator URL and MDM state
 Anyone can read your public verdict — `trust_level`, `mdm_verified`,
 `mda_verified` and the verified posture fields, never your serial, UDID, APNs
 token or `code_attested` — from `GET /v1/providers/attestation`; the fields are
-explained in [`../consumer/verification.md#public-attestation-endpoint`](../consumer/verification.md#public-attestation-endpoint).
+explained in [../consumer/verification.md#public-attestation-endpoint](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/verification.md#public-attestation-endpoint).
 
 What `hardware` does not prove: it says nothing about *which* binary holds your
 key (that is `code_attested`) or *which* Apple device (that is `mda_verified`;
@@ -318,7 +318,7 @@ also carries closed, device-wide `devicecheckd` pattern matches, not provider-sp
 - [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) — the MDM profile, operator flow, and webhook.
 - [`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md) — how the SE key, `K`, the APNs token, and your account are bound.
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — the three NaCl Box hops and the privacy statement.
-- [`../consumer/verification.md`](../consumer/verification.md) — how consumers read your verdict.
+- [../consumer/verification.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/consumer/verification.md) — how consumers read your verdict.
 - [`troubleshooting.md`](./troubleshooting.md) — doctor checks and symptom → fix rows.
 - [`../design/apns-code-attestation.md`](../design/apns-code-attestation.md) — design record for code identity.
 

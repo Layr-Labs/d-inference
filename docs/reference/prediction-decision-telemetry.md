@@ -1,36 +1,15 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-09
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
 refused request would have completed on time.
 
-## Coordinator fields
-
-`coordinator/api/inference/profiler_prediction.go` (`recordPredictivePolicy`) records
-request policy. `coordinator/registry/attempt_profile_prediction.go` keeps
-observations under the attempt lock; `coordinator/internal/observation/profile/profiler_record.go`
-(`buildProfileRecord`) persists them with existing request and attempt IDs.
-
-| Field in `request_profiles` | Meaning |
-|---|---|
-| `admission_mode` | `hard` or `soft`, from the actual `ttftHardReject` switch. Empty means unknown historical/unobserved state. This is unrelated to the shadow-prediction mode. |
-| `predictive_bypass` | `none`, `self_route`, `prefer_owner`, or `media`. Records the applicable request exception even if the switch is soft; precedence is self-route, prefer-owner, media. Empty means unknown. |
-| `reservation_ttft_ceiling_ms` | `PendingRequest.MaxTTFTMs` when direct reservation returns or a queue assignment succeeds. Queue rejection exits leave it unobserved. Zero means the predictive ceiling is disabled; NULL means unobserved. It is not a new remaining-time calculation. |
-| `dispatch_budget_ms` | Exact positive budget encoded when the writer constructs this attempt's envelope. NULL when no positive budget was encoded, including expiry before construction. A constructed envelope does not prove a successful socket write or provider receipt; use existing write/acceptance stamps. |
-| Existing `predicted_ttft_ms`, `raw_ttft_ms`, `snapshot_age_ms` | Selected coordinator prediction and source-state age; no formulas or calibration are changed by recording the new fields. |
-
-`coordinator/internal/inference/providerwire/provider_wire.go` (`providerInferenceFrameBuilder`) captures
-the attempt pointer before enqueue and records the envelope budget after
-serialization. Retries, backups and queue dispatch retain their own attempt
-identity. First-write-wins observations and detached snapshots prevent late
-writer activity from mutating an already-built row.
-
 ## Provider fields
 
 `profile.deadline_decision` is an optional schema-1 object carried on existing
-terminal messages. Sources: `coordinator/protocol/profile_deadline.go`
+terminal messages. Sources: [coordinator/protocol/profile_deadline.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/profile_deadline.go)
 (`DeadlineDecision`) and
 `provider-swift/Sources/ProviderCore/Protocol/DeadlineDecisionProfile.swift`.
 
@@ -67,7 +46,7 @@ absolute deadline is still enforced; this is not an unbounded request timeout.
 that a refused request could have completed, nor identify the ultimate cause
 of an inconsistent scheduler state. The SDK creates these values in
 `firstTokenWorkProjection` and the engine's duration/capacity conversion; Swift and Go share the
-[closed vocabulary fixture](../../coordinator/tests/protocol/testdata/deadline_unbounded_reasons.json).
+[deadline_unbounded_reasons.json](../../provider-swift/Tests/ProviderCoreTests/Fixtures/Protocol/deadline_unbounded_reasons.json).
 
 | Cause | Guard that failed |
 |---|---|
@@ -133,8 +112,8 @@ count of proven false rejections. Missing historical reasons remain
 - Older providers omit the object or its new cause field. Older coordinators
   ignore the optional `unbounded_reason` field; schema remains 1. Unknown enums fold to `other`; numeric fields are
   bounded and free-form provider text is not persisted. The full profile cap
-  remains 4,096 bytes. Sources: `coordinator/internal/observation/profile/profiler_provider_deadline.go`
-  (`StoreDeadlineDecision`) and `coordinator/protocol/profile.go`.
+  remains 4,096 bytes. Sources: [coordinator/internal/observation/profile/profiler_provider_deadline.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/observation/profile/profiler_provider_deadline.go)
+  (`StoreDeadlineDecision`) and [coordinator/protocol/profile.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/profile.go).
 - Existing profiler enablement, retention, sampling, asynchronous persistence
   and loss limits remain in effect. Refusals/retries are retained by existing
   rules when profiling is enabled; this is not an unsampled traffic ledger.
@@ -143,7 +122,7 @@ count of proven false rejections. Missing historical reasons remain
 
 ## Storage and rollout
 
-`coordinator/store/postgres/` adds three columns idempotently. Historical
+[coordinator/store/postgres/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/postgres) adds three columns idempotently. Historical
 budgets/ceilings stay NULL and historical bypass stays empty. Provider fields
 use existing `provider_profile` JSONB after the allowlist validation; no new
 telemetry service or table is introduced.
@@ -151,8 +130,8 @@ telemetry service or table is introduced.
 Deploying coordinator support first makes later provider observations readable.
 Both components must carry the change for paired evidence. A rollback leaves
 columns present and optional fields unknown; it does not reconstruct history.
-The manually applied `coordinator/store/postgres/migrations/request_waterfall.sql`
+The manually applied [coordinator/store/postgres/migrations/request_waterfall.sql](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/postgres/migrations/request_waterfall.sql)
 appends the three new outputs, preserving previous view-column positions. It
 is not executed at coordinator startup.
 
-For existing pipeline behavior see [system profiler](../architecture/system-profiler.md).
+For existing pipeline behavior see [system profiler](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/system-profiler.md).

@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-09
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -27,7 +27,7 @@ lives inside this one hardened process. The authoritative provider version is
 | Product | Kind | Role |
 |---|---|---|
 | `darkbloom` | executable | CLI: `start`, `status`, `doctor`, `logs`, `benchmark`, `models`, `fan`, `watchdog`; long-running serve modes host an `NSApplication(.accessory)` run loop for APNs pushes (`provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift`) |
-| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
+| `darkbloom-enclave` | executable | Secure Enclave helper used by [coordinator/api/install.sh](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/install.sh) before the daemon runs: `attest`, `sign`, `info` (`provider-swift/Sources/darkbloom-enclave-cli/`) |
 | `darkbloom-fan-helper` | executable | Opt-in root LaunchDaemon for fan control; never installed by default (`provider-swift/Sources/DarkbloomFanHelper/`) |
 | `ProviderCore` | library | Everything below; shared by the CLI and helpers |
 | `ProviderCoreFoundation` | library | Pure-Foundation pieces also linked by publish tooling: `WeightHasher`, `PromptContractIdentity`, `TemplateRenderCheck`, `ModelScanner`, `Manifest` (`provider-swift/Sources/ProviderCoreFoundation/`) |
@@ -78,7 +78,7 @@ flowchart LR
   `provider-swift/Sources/DarkbloomFanHelper/FanXPCService.swift`).
 - **promptsidecar** is a coordinator-side process; the provider computes the
   same contract identity locally and never talks to it
-  ([`../prompt-contract-sidecar.md`](../prompt-contract-sidecar.md)).
+  ([../prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md)).
 
 ## Invariants
 
@@ -124,5 +124,5 @@ flowchart LR
 - [`mlx-swift.md`](mlx-swift.md) — the three pinned submodules and the metallib
 - [`../inference.md`](../inference.md), [`../prefix-cache.md`](../prefix-cache.md), [`../hardware-support.md`](../hardware-support.md)
 - [`../security/encryption.md`](../security/encryption.md), [`../../provider/attestation.md`](../../provider/attestation.md)
-- [`coordinator.md`](coordinator.md) — the other side of the WebSocket
+- [coordinator.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/components/coordinator.md) — the other side of the WebSocket
 - [`../../provider/cli-reference.md`](../../provider/cli-reference.md), [`../../provider/fan-control.md`](../../provider/fan-control.md)

@@ -12,7 +12,6 @@ from .tracked import file_hash, git, inventory
 
 
 CACHE_VERSION = "v1"
-RUST_VERSION = "1.88.0"
 RECIPE_PATHS = (
     ".github/actions/provider-release-build/action.yml",
     "scripts/provider-release-cache.py",
@@ -22,13 +21,14 @@ RECIPE_PATHS = (
     "scripts/run-provider-tests.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/verify-prompt-parity.sh",
+    "scripts/verify-nemotron-prompt-parity.sh",
+    "scripts/prepare-prompt-fixtures.py",
     "scripts/fetch-metallib.sh",
 )
 # Only build inputs, never arbitrary environment variables or credentials.
 BUILD_ENV = (
     "MACOSX_DEPLOYMENT_TARGET", "MLX_METALLIB_DEPLOYMENT_TARGET",
-    "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "RUSTFLAGS",
-    "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET", "CC", "CXX",
+    "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CC", "CXX",
 )
 
 
@@ -111,23 +111,12 @@ def toolchain_metadata(lane: str) -> dict:
         },
         "build_env": {name: os.environ.get(name, "") for name in BUILD_ENV},
     }
-    if lane == "qualification":
-        rust_sysroot = Path(command("rustc", f"+{RUST_VERSION}", "--print", "sysroot"))
-        result["rust"] = {
-            "version": command("rustc", f"+{RUST_VERSION}", "--version", "--verbose"),
-            "cargo_version": command("cargo", f"+{RUST_VERSION}", "--version"),
-            "compiler": external_file(rust_sysroot / "bin/rustc"),
-            "cargo": external_file(rust_sysroot / "bin/cargo"),
-        }
     return result
 
 
 def dependency_file(path: str) -> bool:
     name = PurePosixPath(path).name
-    return name in {"Package.swift", "Package.resolved", "Cargo.toml", "Cargo.lock",
-                    "rust-toolchain", "rust-toolchain.toml", ".gitmodules"} or (
-        ".cargo" in PurePosixPath(path).parts and name in {"config", "config.toml"}
-    )
+    return name in {"Package.swift", "Package.resolved", ".gitmodules"}
 
 
 def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
@@ -158,11 +147,8 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
     commit = git(root, "rev-parse", "HEAD").decode("ascii").strip()
     # The sole restore prefix retains *all* compatibility boundaries. Only
     # source generation varies, allowing unchanged objects to remain reusable.
-    result = {}
-    for kind in (("swift", "rust") if lane == "qualification" else ("swift",)):
-        prefix = f"provider-{kind}-{CACHE_VERSION}-{lane}-{compatibility_hash}-"
-        result[f"{kind}-prefix"] = prefix
-        result[f"{kind}-key"] = prefix + commit
+    prefix = f"provider-swift-{CACHE_VERSION}-{lane}-{compatibility_hash}-"
+    result = {"swift-prefix": prefix, "swift-key": prefix + commit}
     result.update({
         "toolchain-digest": digest(metadata),
         "dependency-digest": digest(dependencies),
@@ -171,6 +157,4 @@ def keys(root: Path, lane: str, metadata: dict | None = None) -> dict[str, str]:
         "sdk-version": metadata["sdk"]["version"],
         "sdk-build": metadata["sdk"]["build"],
     })
-    if lane == "qualification":
-        result["rust-version"] = metadata["rust"]["version"].splitlines()[0]
     return result

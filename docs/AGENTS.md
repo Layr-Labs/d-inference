@@ -1,11 +1,19 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-09
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
 a bug in the doc. Read this page before editing docs; read
 [`README.md`](README.md) to find a doc.
+
+Local documentation covers provider/native behavior, the landing site and the
+retained console snapshot with its build/test/hosting configuration. New backend,
+console and admin development belongs to the sibling platform. Use
+verified immutable platform links at `48a198c71a2d30feec5597bacf1101120f7f955d`
+for external contracts. Original records absent there remain available in
+d-inference at `4230fa03ddbc84e34e2de150c89431744d6f1c55`; never rewrite their
+body, evidence pins or dates to make the new ownership appear historical.
 
 ## 1. The system in one table
 
@@ -16,7 +24,7 @@ record types that engineering repos need and Diátaxis does not name.
 
 | Directory | Type | Reader's question | Form |
 |---|---|---|---|
-| `consumer/`, `provider/`, `developer/` | how-to (action · application) | "How do I do X?" | Prerequisites → numbered steps → verify → troubleshoot |
+| `provider/`, `developer/` | how-to (action · application) | "How do I do X?" | Prerequisites → numbered steps → verify → troubleshoot |
 | `operations/` | runbook (action · application, prod-touching) | "How do I operate X safely?" | Scope → prerequisites → steps → verification → rollback |
 | `reference/` | reference (cognition · application) | "What exactly is X?" | Tables and schemas; one lede sentence per section; every row cites code |
 | `architecture/` | explanation (cognition · acquisition) | "How and why does X work?" | Context → mechanism → invariants → failure modes → code map |
@@ -32,8 +40,8 @@ Apply the compass at the sentence level too: a how-to that starts explaining
 The audience directories hold how-tos first, but a reference or explanation
 page that only that audience reads lives beside them rather than in
 `reference/` or `architecture/`: `provider/cli-reference.md`,
-`provider/hardware-requirements.md` and `consumer/models.md` are reference
-pages; `consumer/privacy-expectations.md` is an explanation. Such a page names
+`provider/hardware-requirements.md` are reference
+pages. Such a page names
 its type in the lede and follows the skeleton of that type (§3), not the how-to
 skeleton.
 
@@ -104,8 +112,9 @@ sentence lede (principle 3). Then, by type:
 
 ## 4. Citing code
 
-- Cite `path/to/file.ext` plus the symbol: `coordinator/registry/scheduler.go`
-  (`selectCandidate`). Both are grep-able and the path is verified by
+- Cite a provider/native path plus the symbol, such as
+  `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` (`NodeKeyPair`).
+  Both are grep-able and the path is verified by
   `docs-check`.
 - **No line numbers** outside `reports/` and `releases/`. Lines rot within
   days; symbols survive refactors and are searchable.
@@ -165,23 +174,23 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 
 | Code change | Doc(s) that must move in the same PR |
 |---|---|
-| HTTP route, header, status code, JSON shape (`coordinator/api/`) | `reference/api-contracts.md`; the relevant `consumer/` how-to |
-| WebSocket message or field (`coordinator/protocol/messages.go` ↔ `provider-swift/Sources/ProviderCore/Protocol/`) | `reference/protocol-messages.md` |
-| Telemetry wire type (Go / Swift / TS mirrors) or emitter field | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
-| Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
+| WebSocket message, provider JSON or public protocol fixture | `reference/protocol-messages.md`; coordinate the external platform mirror |
+| Provider telemetry wire type or field | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
+| Retained console source, routes or packaging | `architecture/components/console-ui.md`; configuration and build/test guides where applicable; new development remains platform-owned |
+| Shared console-test protocol JSON fixtures | `developer/test.md`, `reference/protocol-messages.md`; check both console and provider resource readers |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
-| Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |
-| Cache-routing evidence, generation fences, restoration or persistence | `architecture/cache-aware-routing.md`; retain the routing, protocol and ownership rows for those surfaces too |
-| Experimental model Autopilot policy, rollout or enrollment (`coordinator/registry/autopilot*`, `coordinator/api/autopilot*`, provider runtime/CLI `Autopilot/`) | `architecture/model-autopilot.md`, `operations/model-autopilot.md`; apply the configuration, CLI, protocol and API rows for those surfaces too |
-| Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
-| Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
-| Store schema / migration | `architecture/schema-lifecycle.md` (versions, kinds, locks); `architecture/storage.md` (tables); `operations/schema-migration.md` if the change affects the production procedure or rollback rules |
-| A read or write of a soft-delete table (`users`, `api_keys`, `providers`, `provider_tokens`) | `reference/soft-delete.md` |
-| sqlc config, query file or generated type (`coordinator/store/postgres/sqlc.yaml`, `coordinator/store/postgres/queries/`) | `reference/sqlc-type-mapping.md` for a new type or override; `developer/sqlc.md` for a workflow or convention change |
-| Coordinator package ownership, application assembly, or backend boundaries | `developer/navigation.md`, `architecture/components/coordinator.md`; retain the relevant API, configuration, storage, and telemetry rows for behavioral surfaces |
-| Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
+| Native inference, memory, admission or resource lifetime | `architecture/inference.md`, `architecture/hardware-support.md`; external capacity compatibility review |
+| Cache evidence, generation fences, restoration or persistence | `architecture/prefix-cache.md`, `reference/ssd-kv-cache.md`; retain protocol/privacy mappings |
+| Experimental provider Autopilot consent or control | `architecture/model-autopilot.md`; apply CLI, configuration and protocol mappings too |
+| Trust, attestation, enrollment or encryption | `architecture/security/*.md`, `provider/attestation.md`, `threat-model.yaml` |
+| Cache directory, volume or daily write limits | `provider/cache-storage.md`, `architecture/security/encryption.md`; retain cache and CLI mappings |
+| Model manifest, discovery, publication or revision API | `reference/model-registry-format.md`, `architecture/model-registry.md`, relevant model publication runbook |
+| Repository ownership/removal boundary | `developer/navigation.md`; keep external compatibility obligations explicit |
+| Provider version, signing, installation or publication | `operations/provider-release.md`; `CHANGELOG.md` for visible changes |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
-| New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
+| Public golden vectors / private qualification boundary | `developer/test.md`; never claim vectors alone execute private implementations |
+| New model family or engine capability | `architecture/inference.md`, `provider/hardware-requirements.md` |
+| Landing routes, configuration or hosting instructions | landing README and relevant build/test guidance |
 | Anything user-visible | `CHANGELOG.md` |
 
 CI encodes the high-confidence part of this matrix in
@@ -190,14 +199,11 @@ against each pull-request diff before the ordinary documentation lint. Keep the
 matrix and machine-readable rules aligned when adding a documentation-sensitive
 surface.
 
-Coordinator source-to-doc mappings apply to the production-consumed components
-under `coordinator/internal/` as well as their API/service adapters. A component
-move must preserve the original behavior-specific mapping; ownership documentation
-does not substitute for API, protocol, configuration, telemetry, trust or billing
-documentation. Go tests are isolated under `coordinator/tests/`; moving test
-files or shared fixtures also requires checking selectors, source-relative fixture
-consumers and the build/test guides. Keep local migration handoff checklists out
-of the published documentation; they are not architectural completion evidence.
+Retired backend mappings are owned by the platform, not exemptions for retained
+provider code. Component moves must preserve behavior-specific mappings;
+ownership documentation does not substitute for protocol, privacy or capacity
+documentation. Moving public fixtures requires checking every reader and the
+build/test guides. Keep internal handoff checklists out of published docs.
 
 ## 8. Adding, moving, retiring pages
 
@@ -209,6 +215,12 @@ of the published documentation; they are not architectural completion evidence.
   inbound links to the new home. Frozen records (`reports/`, `releases/`,
   `design/` with a final status) are the only pages that outlive the code they
   describe.
+- Frozen records linking to a retired documentation page must be retired with
+  their transitive inbound record dependency closure, rather than rewriting
+  bodies or pretending a missing Markdown target is a historical source file.
+  Editable indexes link to exact originals. Keep native evidence and its raw
+  artifacts unless the retired closure was their only owner; never infer a
+  replacement measurement from a repository move.
 - Plans that ship become explanation: fold the as-built facts into
   `architecture/`, set the design doc's status to `Implemented` (or
   `Superseded by`), and stop editing it.

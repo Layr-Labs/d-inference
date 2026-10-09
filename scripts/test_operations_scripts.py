@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -52,64 +51,6 @@ print("{}")
         self.assertEqual(result.returncode, 0, result.stderr)
         call = self.calls()[-1]
         self.assertEqual(json.loads(call[call.index("-d") + 1]), {"version": version, "platform": platform})
-
-    def test_fleet_continues_after_failure_but_returns_failure(self):
-        fleet = self.root / "update-fleet.sh"
-        shutil.copy2(ROOT / "deploy/provider-fleet/update-fleet.sh", fleet)
-        (self.root / "dev-inventory.txt").write_text("first\nsecond\nthird\n")
-        self.stub("ssh", '''import json,os,sys
-with open(os.environ["OPERATIONS_TEST_LOG"], "a") as log:
-    log.write(json.dumps(sys.argv[1]) + "\\n")
-sys.exit(1 if sys.argv[1] == "second" else 0)
-''')
-        result = subprocess.run(["bash", str(fleet), "dev"], env=self.env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(self.calls(), ["first", "second", "third"])
-        self.assertIn("1 failed host", result.stderr)
-        result = subprocess.run(["bash", str(fleet), "prod"], env=self.env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 2)
-        self.assertEqual(self.calls(), ["first", "second", "third"])
-
-    def test_fleet_propagates_remote_download_and_installer_failures(self):
-        fleet = self.root / "update-fleet.sh"
-        shutil.copy2(ROOT / "deploy/provider-fleet/update-fleet.sh", fleet)
-        (self.root / "dev-inventory.txt").write_text("fixture-host\n")
-        self.stub("ssh", '''import subprocess,sys
-# Run only the supplied shell command locally against our curl stub.
-sys.exit(subprocess.run(["/bin/sh", "-c", sys.argv[2]]).returncode)
-''')
-        for curl_source in ("import sys; sys.exit(22)", "print('exit 7')", "print('exit 0')"):
-            with self.subTest(curl_source=curl_source):
-                self.stub("curl", curl_source)
-                result = subprocess.run(["bash", str(fleet), "dev"], env=self.env,
-                                        capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0 if "exit 0" in curl_source else 1)
-
-    def test_smoke_uses_a_fresh_owned_response_file_and_removes_it(self):
-        self.stub("curl", '''import json,os,sys
-from pathlib import Path
-args = sys.argv[1:]
-if "-o" in args:
-    path = args[args.index("-o") + 1]
-    Path(path).write_text("fixture response")
-    with open(os.environ["OPERATIONS_TEST_LOG"], "a") as log:
-        log.write(json.dumps(path) + "\\n")
-    print("500", end="")
-elif args[-1].endswith("/v1/stats"):
-    print('{"providers_online": 1}')
-elif args[-1].endswith("/v1/models/catalog"):
-    print('{"models": [1]}')
-elif args[-1].endswith("/install.sh"):
-    print("https://api.dev.darkbloom.xyz")
-''')
-        for _ in range(2):
-            result = subprocess.run(["bash", str(ROOT / "scripts/smoke-dev.sh")],
-                                    env={**self.env, "API_KEY": "fixture-only"}, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("fixture response", result.stdout)
-        paths = self.calls()
-        self.assertEqual(len(set(paths)), 2)
-        self.assertTrue(all(not Path(path).exists() for path in paths))
 
 
 if __name__ == "__main__":

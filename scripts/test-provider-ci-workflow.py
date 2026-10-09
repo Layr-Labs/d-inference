@@ -277,6 +277,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         test_step = next(step for step in steps if run_command(step) == PROVIDER_TEST_COMMAND)
         self.assertEqual(field(test_step, "id"), "provider-unit-tests")
         self.assertEqual(field(test_step, "timeout-minutes"), "20")
+
         self.assertEqual(field(test_step, "working-directory"), "provider-swift")
         self.assertEqual(field(test_step, "if"), PROVIDER_MIMO_READY)
         self.assertEqual(field(test_step, "MIMO_V26_PROVIDER_LIFETIME_METADATA_TESTS", indent=10), "'1'")
@@ -285,6 +286,18 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(installer, "timeout-minutes"), "2")
         self.assertNotIn("rustup", self.jobs["test-provider"])
         self.assertNotIn("actions/setup-go@", self.jobs["test-provider"])
+
+    def test_atomic_installer_checks_use_only_the_canonical_public_script(self):
+        script = (ROOT / "scripts/test-install-atomic.sh").read_text()
+        self.assertIn('INSTALLER="$REPO_ROOT/scripts/install.sh"', script)
+        self.assertNotIn("coordinator/api/install.sh", script)
+        self.assertNotIn("sync-install-embed.sh", script)
+        for safeguard in ("assert_no_clt_tools", "assert_no_privileged_install",
+                          "assert_fan_variants_rejected", "assert_flat_only_rejected",
+                          "assert_pre_paged_rejected", "run_install_without_hashes",
+                          'run_install "$DIVERGED"', 'run_install "$TAMPERED"',
+                          "DARKBLOOM_TEST_SMOKE_NO_ATTEST=1"):
+            self.assertIn(safeguard, script)
 
     def test_provider_watchdog_diagnostics_survive_test_failure_not_cancellation(self):
         steps = step_blocks(self.jobs["test-provider"])
@@ -448,12 +461,10 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(commands[PROVIDER_TEST_COMMAND], 1)
         self.assertEqual(commands["./scripts/verify-prompt-parity.sh"], 1)
 
-    def test_parity_retains_pinned_go_and_original_script(self):
+    def test_parity_retains_public_swift_golden_vector_scripts(self):
         steps = step_blocks(self.jobs["test-provider-parity"])
         go = [step for step in steps if "actions/setup-go@" in step]
-        self.assertEqual(len(go), 1)
-        self.assertIn("actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34", go[0])
-        self.assertEqual(field(go[0], "go-version-file", indent=10), "go.mod")
+        self.assertEqual(go, [])
         runs = [step for step in steps if field(step, "run")]
         self.assertEqual([run_command(step) for step in runs],
                          [MIMO_PREPARE, "./scripts/verify-prompt-parity.sh",
@@ -509,17 +520,12 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertEqual(field(gate, "MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS", indent=10), "'1'")
         self.assertNotIn("continue-on-error:", gate)
 
-    def test_rust_cache_is_saved_only_after_successful_parity(self):
+    def test_parity_has_no_backend_caches_or_credentials(self):
         steps = step_blocks(self.jobs["test-provider-parity"])
-        parity = next(step for step in steps if run_command(step) == "./scripts/verify-prompt-parity.sh")
         saves = [step for step in steps if "actions/cache/save@" in step]
-        self.assertEqual(len(saves), 1)
-        self.assertEqual(field(parity, "id"), "prompt-parity")
-        self.assertGreater(steps.index(saves[0]), steps.index(parity))
-        self.assertEqual(field(saves[0], "if"), "${{ !cancelled() && steps.prompt-parity.outcome == 'success' && steps.provider-ci-build.outputs.rust-cache-hit != 'true' }}")
-        self.assertIn("key: ${{ steps.provider-ci-build.outputs.rust-key }}", saves[0])
-        for path in ("~/.cargo/registry", "~/.cargo/git/db", "coordinator/promptsidecar/target"):
-            self.assertIn(path, saves[0])
+        self.assertEqual(saves, [])
+        for forbidden in ("coordinator/", "cargo ", "rust-key", "secrets.", "darkbloom-platform"):
+            self.assertNotIn(forbidden, self.jobs["test-provider-parity"])
 
     def test_push_only_release_build_no_longer_warms_sdk_debug_tests(self):
         job = self.jobs["cache-swift"]
@@ -532,6 +538,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertIn("actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57", job)
 
     def test_offline_workflow_test_runs_in_release_integrity(self):
+        self.assertIn("python3 provider-swift/Tests/test_protocol_fixture_resources.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-ci-cache.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-provider-ci-workflow.py", self.jobs["release-integrity"])
         self.assertIn("python3 scripts/test-native-gpu-ci.py", self.jobs["release-integrity"])
@@ -561,7 +568,7 @@ class ProviderCIWorkflowTests(unittest.TestCase):
             self.assertNotIn("--skip", step)
             self.assertNotIn("cache-hit", step)
 
-    def test_composite_cache_keys_and_rust_work_stay_in_their_lanes(self):
+    def test_composite_cache_keys_retain_swift_and_metal_without_backend_work(self):
         action = ACTION.read_text()
         steps = step_blocks(action, indent=4)
         by_id = {field(step, "id", indent=6): step for step in steps if field(step, "id", indent=6)}
@@ -573,11 +580,9 @@ class ProviderCIWorkflowTests(unittest.TestCase):
         self.assertNotIn("restore-keys:", metal_cache)
         rust_steps = [step for step in steps if "install-release-rust.sh" in step
                       or "cargo +1.88.0 clean" in step or field(step, "id", indent=6) == "rust-cache"]
-        self.assertEqual(len(rust_steps), 3)
-        for step in rust_steps:
-            self.assertEqual(field(step, "if", indent=6), "inputs.lane == 'parity'")
-        self.assertIn("rust-key:", action)
-        self.assertIn("rust-cache-hit:", action)
+        self.assertEqual(rust_steps, [])
+        self.assertNotIn("rust-key:", action)
+        self.assertNotIn("rust-cache-hit:", action)
         self.assertEqual(sum("actions/cache/save@" in step for step in steps), 2)
 
 

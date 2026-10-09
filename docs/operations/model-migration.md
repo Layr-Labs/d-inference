@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-09
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -11,7 +11,7 @@ routing prefers the desired build while still accepting the previous one.
 Rollback is the same write pointed the other way.
 
 **Run the entire flow on the dev coordinator first** (`https://api.dev.darkbloom.xyz`,
-[dev-environment.md](dev-environment.md)) with one or two throwaway providers.
+[dev-environment.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md)) with one or two throwaway providers.
 Production alias writes are production mutations and need explicit human
 approval for the specific operation.
 
@@ -25,7 +25,7 @@ approval for the specific operation.
 Not for: registering a brand-new model (that is just steps 1–2 plus
 `promote`), or changing prices/status of an existing build
 (`POST /v1/admin/models/<id>/status`, `…/promote`, `…/runtime-parameters` in
-`coordinator/api/catalog/`, `HandleAdminModelRegistryAction`).
+[coordinator/api/catalog/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog), `HandleAdminModelRegistryAction`).
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   `Authorization: Bearer`). The same key authorizes `/v1/admin/models/register`,
   `/v1/admin/models/aliases`, and the per-model actions.
 - **Providers that understand `desired_models`.** `FanOutDesiredModels` in
-  `coordinator/api/catalog/model_alias_handlers.go` only pushes to providers passing
+  [coordinator/api/catalog/model_alias_handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/model_alias_handlers.go) only pushes to providers passing
   `ProviderSupportsDesiredModels(backend)`, i.e. the Swift backend. Every Swift
   build above the routing floor understands the message.
 - **Coordinator with the retired-resident-build challenge alibi.** After a
@@ -43,14 +43,14 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   as `active_model_hash` at the next challenge; the coordinator accepts any
   catalog-validated hash from `model_hashes` (regression test
   `TestChallengeRetiredResidentBuildHashDoesNotUntrust`,
-   `coordinator/tests/api/provider/contracts/model_hash_race_test.go`). Do **not** deprecate the old
+   [coordinator/tests/api/provider/contracts/model_hash_race_test.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/tests/api/provider/contracts/model_hash_race_test.go)). Do **not** deprecate the old
   registry record while any provider may still hold it resident (see "Retire").
 - **Canary the new build on one production-version provider** via its raw build
   id before flipping: prefetch, hash-verify, GPU-load, and serve chat, tool
   calls, and vision if applicable. Disk verification proves bytes, not
   loadability; the hard-swap advertises the build **before** its first load, so
   an unloadable build turns the fleet into 500s until you revert (the
-  `load-failure cool-down started` path in `coordinator/api/provider/` lets
+  `load-failure cool-down started` path in [coordinator/api/provider/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider) lets
   alias resolution fall back to `previous_build`, but treat it as a backstop).
 - **For a takeover migration, pre-position the rollback build first** (step 6).
 - R2 access for publishing: `R2_ACCOUNT_ID`, `GCP_PROJECT`, and the Secret
@@ -68,7 +68,7 @@ the alias; the provider (`ProviderLoop+Prefetch.swift`) downloads and
 hash-verifies the desired build with no GPU load, then sends an authoritative
 `models_update` advertising the new build and dropping the old one; the
 coordinator logs `provider now advertises build (models_update)` and
-`models_update hard-swap: dropping retired build` (`coordinator/registry/provider_models.go`).
+`models_update hard-swap: dropping retired build` ([coordinator/registry/provider_models.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/provider_models.go)).
 `Registry.ResolveModel` maps the alias to the desired build, falls back to
 `previous_build` until the desired one is routable, and otherwise queues
 against the desired build — capacity never black-holes. There are no weights,
@@ -164,10 +164,10 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
 ```
 
 `GET /v1/models` now lists `gemma-4-26b` and hides raw builds (pass
-`?include_builds=1` to see them, `coordinator/api/catalog/models_endpoints.go`).
+`?include_builds=1` to see them, [coordinator/api/catalog/models_endpoints.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/models_endpoints.go)).
 Requests that still send the raw id keep working.
 
-`aliasUpsertRequest` fields (`coordinator/api/catalog/model_alias_handlers.go`;
+`aliasUpsertRequest` fields ([coordinator/api/catalog/model_alias_handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/catalog/model_alias_handlers.go);
 unknown fields rejected): `alias_id` (letters, digits, `.`, `_`, `-`; ≤128),
 `display_name`, `desired_build` (required, must be a registered build ≠
 `alias_id`), `previous_build`, `active` (default `true`), `takeover`.
@@ -216,7 +216,7 @@ lines to watch: `provider now advertises build (models_update)`,
 started`, and the deroute signature `provider active model hash matches no
 advertised model` (should not be sustained). Prefetch progress is **provider-
 side** only: the coordinator ignores `prefetch_model_status` frames
-(`coordinator/api/provider/`, `TypePrefetchModelStatus`); look at the
+([coordinator/api/provider/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/provider), `TypePrefetchModelStatus`); look at the
 provider's log for `Scheduling desired-build prefetch retry`.
 
 Failed downloads retry with bounded backoff — `desiredPrefetchRetryDelays` in
@@ -316,5 +316,5 @@ with it, `previous_build` must equal `alias_id`):
 
 - [`../reference/model-registry-format.md`](../reference/model-registry-format.md) — manifest, registration, alias, and R2 layout reference.
 - [`../architecture/model-registry.md`](../architecture/model-registry.md) — how the registry, catalog, and provider download fit together.
-- [dev-environment.md](dev-environment.md) — where to rehearse.
-- [release-policy-rollout.md](release-policy-rollout.md) — the other routing gate that can deroute providers during a rollout.
+- [dev-environment.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md) — where to rehearse.
+- [release-policy-rollout.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md) — the other routing gate that can deroute providers during a rollout.

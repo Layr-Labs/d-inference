@@ -1,6 +1,6 @@
 # Configure threat-model review and merge clearance
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-09
 
 The reviewer gives PR authors early Sonnet feedback, escalates selected changes to
 Opus and Sol 6.1, and saves completed findings before continuing. Public comments
@@ -8,7 +8,7 @@ show coverage, cost, reuse and failures. The default remains advisory. Optional
 conditional clearance allows a completed scan without medium/high findings from
 a verified active Layr-Labs organization member, or an independent formal manual
 override, to satisfy the security workflow requirement.
-See [Bedrock and merge-policy rollout](../operations/threat-review-rollout.md).
+See [Bedrock and merge-policy rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/threat-review-rollout.md).
 Paid scanning is disabled when `THREAT_REVIEW_ENABLED` is not `true`.
 
 ## Prerequisites

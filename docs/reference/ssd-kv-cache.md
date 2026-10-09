@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -214,7 +214,7 @@ The allowance still permits an ephemeral fallback, so the benchmark session's
 store. `CacheSnapshot.keyMode` reports the observed key mode. No key bytes are
 written into the test root (`EngineV2Factory+BenchmarkSession.swift`,
 `SSDCacheKeyMaterial.swift`). Restart requires a new OS process; see
-[benchmark validation](../developer/test.md#resident-prefix-benchmark-validation).
+[benchmark validation](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#resident-prefix-benchmark-validation).
 
 The standalone benchmark can instead select an isolated persistent hierarchy with
 paired `--persistent-test-namespace UUID` and `--persistent-test-access-group GROUP`
@@ -230,7 +230,7 @@ Namespaced key failure cannot fall back to an ephemeral key. Omitting the namesp
 preserves the existing production selection and fallback behavior. Reports record
 namespace, selectors, isolated root and observed key mode without key bytes. This
 seam applies only to the standalone benchmark: the full provider loop still has a
-separate default attestation path. The [namespace validation report](../reports/2026-09-06-persistent-ssd-test-namespace.md)
+separate default attestation path. The [namespace validation report](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-06-persistent-ssd-test-namespace.md)
 records source/fixture coverage; actual signed persistent restart remains unproved.
 
 ## Size and eviction rules
@@ -299,7 +299,7 @@ identity binds separate key/value widths and the actual active assistant codec
 threads native IO/work ownership through capture, import and publication;
 returned host IO is not proof of native retirement. Full selected-artifact
 reuse, encrypted restart, paging composition and media-prefix qualification
-remain open; see the [MiMo qualification scope](../../libs/mlx-swift-lm/docs/mimo-v26/qualification.md).
+remain open; see the [MiMo qualification scope](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/qualification.md).
 
 SSD activation and backend selection have separate exact-model defaults; see
 the [backend and cache cohorts](../architecture/prefix-cache.md#kv-layouts).
@@ -341,7 +341,7 @@ capability or checkpoint-identity gates.
 
 Closed enums in `provider-swift/Sources/ProviderCore/Protocol/Messages.swift`;
 the coordinator's consumption is in
-[`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md).
+[../architecture/cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md).
 
 | Enum | Values |
 |---|---|
@@ -372,7 +372,7 @@ observations remain available through these surfaces.
 |---|---|---|
 | `darkbloom logs` | `prefix cache stats (engine=v2, tier=ssd, model=…)` line every `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` with cache kind, index/disk/staging counts and cumulative writes/drops; complete stores add I/O totals | `provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift` (`startSSDPrefixCacheStatsLogger`) |
 | Typed heartbeat | Optional `slots[].prefix_cache` observation with advancing age; cumulative units, freshness and bounded metrics are in [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheTelemetry.swift` (`SSDPrefixCacheTelemetryBox`) |
-| Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), `coordinator/api/inference/exact_cache_status.go` (`HandleExactCacheStatus`) |
+| Heartbeat → coordinator `GET /v1/cache/status` | `prefix_cache_statuses` per loaded model (`state`, `reason`, `backend`, `replay_strategy`) and aggregated donation outcomes | `Messages.swift` (`prefixCacheStatuses`), [coordinator/api/inference/exact_cache_status.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/inference/exact_cache_status.go) (`HandleExactCacheStatus`) |
 | `darkbloom benchmark --parity` | Loads the model on both KV backends and reports the prefix-reuse probe as PASS/FAIL/UNAVAILABLE | `provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift` |
 
 ## Related
@@ -380,7 +380,7 @@ observations remain available through these surfaces.
 - [`../provider/cache-storage.md`](../provider/cache-storage.md) — set daily writes and select a disk
 
 - [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) — layouts, reuse plan, construction gate
-- [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — coordinator side
+- [../architecture/cache-aware-routing.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/cache-aware-routing.md) — coordinator side
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — key hierarchy
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/ssd-kv-cache-v1-design.md`](../design/ssd-kv-cache-v1-design.md) — superseded design records
 - Tests: `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`

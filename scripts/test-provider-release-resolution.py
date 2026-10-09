@@ -18,7 +18,6 @@ class ReleaseResolutionTests(unittest.TestCase):
             shutil.copy2(Path(__file__).parent / name, self.root / "scripts" / name)
         for name, content in (
             ("provider-swift/Sources/ProviderCore/ProviderCore.swift", 'public static let version = "0.9.0"'),
-            ("coordinator/api/server.go", 'var LatestProviderVersion = "0.9.0"'),
         ):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,11 +75,26 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(values, {})
         self.assertFalse((self.root / "unexpected-command").exists())
 
-    def test_validation_requires_matching_provider_and_coordinator_versions(self):
-        (self.root / "coordinator/api/server.go").write_text('var LatestProviderVersion = "0.9.1"\n')
-        result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(values, {})
+    def test_missing_malformed_or_ambiguous_provider_version_fails_before_outputs(self):
+        source = self.root / "provider-swift/Sources/ProviderCore/ProviderCore.swift"
+        for content in (None, "", 'public static let version = "invalid"',
+                        'public static let version = "0.9.0"\npublic static let version = "0.9.0"'):
+            with self.subTest(content=content):
+                if content is None:
+                    source.unlink()
+                else:
+                    source.write_text(content)
+                result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(values, {})
+
+    def test_binary_version_must_match_provider_source(self):
+        for reported, accepted in (("darkbloom 0.9.0", True), ("0.9.0", True),
+                                   ("darkbloom 0.9.1", False), ("garbage", False)):
+            with self.subTest(reported=reported):
+                result = subprocess.run(["bash", "scripts/check-release-version.sh", "v0.9.0", reported],
+                                        cwd=self.root, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
 
 if __name__ == "__main__":

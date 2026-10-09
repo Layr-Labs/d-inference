@@ -35,7 +35,7 @@ def status_body(repository, head, base, diff_base, snapshot, evidence, history=N
         body = body.rsplit(old, 1)[0] + (
             "Merge clearance requires complete coverage with no medium/high findings, or an independent "
             "manual security override. Review-control changes always require human approval. "
-            f"[Override instructions](https://github.com/{repository}/blob/master/docs/operations/threat-review-rollout.md).")
+            f"[Override instructions](https://github.com/{repository}/blob/master/docs/developer/threat-model-review.md).")
     body += (f"\n\nCoverage: {snapshot.get('covered_units', 0)}/{snapshot.get('total_units', 0)} source units; "
              f"cross-file integration {'complete' if snapshot.get('integration_completed') else 'pending'}. "
              f"{snapshot.get('depth_batches_pending', 0)} selected depth batch(es) pending. "

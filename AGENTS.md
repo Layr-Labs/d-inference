@@ -1,477 +1,162 @@
-# Darkbloom - Decentralized Private Inference
+# Darkbloom Provider And Native Runtime
 
-Darkbloom is a decentralized private inference network for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing, auth, billing, attestation, and capacity management, and providers run local inference workloads on macOS hardware using MLX-Swift. Request bodies are encrypted hop by hop (NaCl Box on each leg): the coordinator decrypts inside its confidential-VM memory for routing and billing, does not log or retain prompt content, and re-seals each request to the provider's attested key; the provider is the plaintext endpoint. Exact model: `docs/architecture/security/encryption.md`. Docs map: `docs/README.md`; docs rules: `docs/AGENTS.md`.
+This repository owns the Swift provider, device-local APIs, MLX/native runtime
+integration, public fixtures, provider release tooling and the landing site.
+The existing `console-ui/` source snapshot, build/test tooling and hosting
+configuration are retained; new console development belongs to the platform.
+Start with `docs/README.md`; documentation rules are in `docs/AGENTS.md`.
 
-## Repository Ownership And Workspace
+## Workspace And Ownership
 
-**All centralized coordinator/backend code belongs in
-[`Layr-Labs/darkbloom-platform`](https://github.com/Layr-Labs/darkbloom-platform),
-not this repository.** This includes APIs, authentication, billing, routing,
-storage and migrations, trust/attestation services, telemetry, the prompt
-sidecar, platform deployment code, and the admin and consumer console apps.
-
-**Do not implement, commit, push, or upload centralized coordinator/backend code to
-`Layr-Labs/d-inference`, even while its old platform directories remain.**
-The consumer console is being imported into darkbloom-platform. Retained
-platform copies here are temporary, not a second development home. This policy
-does not authorize deleting retained source, changing hosting, or deploying
-services.
-
-This repository owns provider software, the provider app, native inference,
-MLX dependencies, and provider-side integrations. The provider app's on-device
-Swift backend and local APIs remain provider software; they are not the
-centralized platform backend.
-
-Create a parent `Darkbloom/` workspace with both repositories as sibling clones:
+Use sibling checkouts under one workspace:
 
 ```text
-Darkbloom/
-  d-inference/          # Provider software and provider app
-  darkbloom-platform/   # Coordinator, backend, admin and consumer console
+Darkbloom/d-inference
+Darkbloom/darkbloom-platform
 ```
 
-```bash
-mkdir -p Darkbloom
-git clone --recurse-submodules git@github.com:Layr-Labs/d-inference.git Darkbloom/d-inference
-git clone git@github.com:Layr-Labs/darkbloom-platform.git Darkbloom/darkbloom-platform
-```
+Never nest the repositories or relocate an existing checkout incidentally.
+Centralized coordinator/backend, Rust prompt sidecar, consumer-console and
+admin development belongs exclusively in `darkbloom-platform`. Never implement,
+commit, push or upload new centralized/backend/console code to `d-inference`.
+The retained console snapshot is not authorization to develop it here.
+Provider-local Swift services,
+HTTP APIs and native execution remain here. Verify `git remote -v`, branch,
+status and the full intended diff before publishing anything.
 
-Before editing or pushing, enter the correct clone and check `git remote -v`
-and `git diff --stat`. For backend work, use `Darkbloom/darkbloom-platform` and
-follow that repository's `AGENTS.md`; commit and open PRs there. Do not
-copy backend patches into the provider clone to satisfy an old workflow. Split
-cross-repository changes by ownership while preserving their shared contracts.
+Source ownership does not grant deployment authority. Retained release/model
+publication scripts call external APIs; they do not authorize building, testing
+or deploying the backend here. Infrastructure and hosting changes require
+specific human approval.
 
-## Project Structure
+## Layout And Validation
 
-This inventory includes transitional platform copies. Use the ownership rules
-above, not the presence of a directory below, to choose where new work belongs.
+| Path | Responsibility |
+|---|---|
+| `provider-swift/` | Provider CLI, security, local services, inference and tests |
+| `libs/` | MLX, MLX-Swift and MLX-Swift-LM gitlinks |
+| `landing/` | Independent Next.js marketing app, including its API routes |
+| `console-ui/` | Retained consumer/provider console snapshot and existing build/test/hosting configuration; development owner is the platform |
+| `coordinator/tests/protocol/testdata/` | Two retained JSON fixtures read by console tests, not a coordinator implementation |
+| `fixtures/` | Public fixed-input contracts, not backend implementations |
+| `scripts/` | Native qualification, provider builds/install/publication and repository checks |
+| `docs/` | Provider/native docs and immutable historical evidence |
 
-```text
-coordinator/          Go control plane with domain-owned packages
-├── cmd/coordinator/  command entrypoint, logging and config validation
-├── app/              service assembly, backend selection, startup and shutdown
-├── api/              HTTP + WebSocket composition
-│   ├── server.go          constructs and connects domain owners
-│   ├── routes.go          route bindings; server_handler.go binds internal/api/middleware
-│   ├── access/            authentication, principal context, limits; keys/ and device/ handlers
-│   ├── accounts/          account/provider projections, invites and admin users
-│   ├── billing/           billing HTTP; payouts/ owns provider payout workflows
-│   ├── catalog/           model catalog, aliases, publication and capacity endpoints
-│   ├── inference/         shared admission, dispatch, cancellation and settlement lifecycle
-│   │   ├── request/       request normalization and validation
-│   │   └── response/      response metadata, encoding and SSE normalization
-│   ├── provider/          registration, heartbeat and typed inference-event handoff
-│   │   └── trust/         attestation, enrollment, MDM scheduling and trust reuse
-│   ├── releases/          release registration and runtime-policy publication
-│   ├── reporting/         public network stats and read projections
-│   ├── observation/       operational metrics, profiles, route records and outcomes
-│   ├── operations/        health, readiness, drain, state export and log reports
-│   ├── httpx/, readcache/, geo/, modelprice/  shared HTTP, cache, geo and pricing helpers
-│   └── types/             canonical JSON shapes for consumer-facing endpoints
-├── apns/             APNs-push code-identity attestation
-├── attestation/      Secure Enclave + MDA verification
-├── auth/             Privy JWT integration
-├── billing/          Stripe (deposits + Connect payouts), referrals
-├── config/           AppConfig aggregation of per-package configs
-├── env/              shared env-var helpers/constants
-├── mdm/              MicroMDM client + webhook handling
-├── payments/         ledger + pricing (+ baserewards/)
-├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
-├── protocol/         WebSocket message types; internal/wire owns single-parse frame decode
-├── ratelimit/        rate limiting
-├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
-│                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
-│                     admission/ and selection/ (pure detached policy),
-│                     routingsim/ (trace-driven routing simulation harness)
-├── saferun/          panic-safe goroutine runners
-├── stateexport/      consistent encrypted archive of MicroMDM and other /data state (migration)
-├── store/            persistence contracts, records, cache decorator and capability unwrapping
-│   ├── memory/       in-memory backend
-│   └── postgres/     PostgreSQL backend and migrations
-├── tests/            all coordinator Go tests, mirrored by production owner
-│   ├── api/          domain tests; <domain>/contracts/ exercises the composed HTTP/WS router
-│   ├── store/        memory/, postgres/, and cross-backend contracts/
-│   └── internal/     shared testkit and isolated PostgreSQL fixtures
-├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
-├── datadog/          Datadog APM / DogStatsD / Logs API client
-├── deploy/           container entrypoint (start.sh)
-└── internal/         focused production-consumed components, never test infrastructure
-    ├── api/          middleware, projection, catalog and reporting components
-    ├── inference/    media, provider body, relay, cancellation, promotions/reservations, settlement/outcomes
-    ├── provider/     session, challenge, identity, MDM, trust authority/reuse/journal
-    ├── observation/  independent route, profile and compact-outcome pipelines
-    ├── registry/     writer lanes/watchdog, queue-drain coalescing, demand, residency/capacity and cache
-    ├── store/        cache generations, memory history, shared records and SQL helpers
-    ├── promptcontract/, mediafetch/  sidecar components and hardened fetch policy/budgets
-    ├── wire/         provider frame scanning and decoding
-    └── e2e/          X25519 request-encryption helpers; tamper tests live in tests/internal/e2e/
+Use `mise.toml` and `Makefile`: `make provider-build`, `make provider-test`,
+`make landing`, `make ui-install ui-lint ui-test ui-build`, `make docs-check`,
+and `make docs-impact-check BASE=<target>`.
+Follow `docs/developer/build.md` and `docs/developer/test.md` for focused native
+checks. Do not run tests against production, real accounts or real credentials.
+Keep test daemon state, recovery records and cache files isolated from live
+providers. Public golden-vector checks prove agreement with fixed expected
+outputs, not live cross-implementation parity. Private platform qualification,
+real Apple attestation and full-model GPU evidence remain distinct gates.
 
-e2e/                  System-level E2E testing framework
-├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
-├── profile_test.go      latency profiling tests
-├── benchmark_test.go    load benchmarks (posts markdown to PR comments)
-└── testbed/             shared test harness
-    ├── coordinator.go       Coordinator lifecycle (start/stop, Postgres helpers)
-    ├── provider.go          Provider lifecycle (binary discovery, start/stop)
-    ├── config.go            Test configuration (model, provider, request settings)
-    ├── suite.go             Suite orchestration (multi-provider, user pools)
-    ├── events.go            Event system (segments, buffers, fan-out)
-    ├── instrument.go        Request-level instrumentation
-    ├── load.go              Load generator (concurrency, streaming, metrics)
-    ├── assert/              Latency threshold + accounting integrity assertions
-    ├── deps/                External dependency lifecycle (ephemeral Postgres)
-    └── profile/             Segment stats aggregation, diffing, JSON export
+## Cross-Repository Contracts
 
-provider-swift/       Swift provider CLI for Apple Silicon Macs
-├── Sources/ProviderCore/             coordinator client, protocol, hardware, security, inference, server, telemetry, model downloads
-├── Sources/ProviderCoreFoundation/   model manifests, scanner, weight hashing, template render check, publish-safe foundation code
-├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor`, `login`, `local`, etc.)
-├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
-├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
-├── Sources/ProviderBenchmark/        benchmark harness library behind `darkbloom benchmark`
-└── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, and publish tests
+- Protocol, telemetry, model manifests, capacity quotations and release identity
+  changes require coordinated review with the platform owner. Keep enum casing,
+  optional-field omission, units and lifecycle semantics aligned. Do not copy
+  backend code here or fetch a moving private branch in ordinary provider CI.
+  The retained TypeScript mirror is `console-ui/src/lib/telemetry-types.ts`;
+  keep it aligned with Swift and the external Go contract. Console fixture
+  tests still read the two JSON files under `coordinator/tests/protocol/testdata/`.
+- `ProviderCore.version` is the local release authority. Coordinate the platform
+  version snapshot/fallback separately; no local backend source constant is
+  required. Keep tags, built binary versions and signed artifact identity aligned.
+- Preserve the installer and platform-served snapshot contract through explicit
+  reviewed updates. Never silently overwrite the platform's copy.
+- API registration is not deployment. Missing latest-release rows can make
+  installation/update fail even when a version constant is correct. Preserve
+  post-signing hashes, exact artifact qualification and registration checks.
+- Published catalog manifests determine model bytes. Do not introduce a
+  hardcoded provider model catalog or treat successful upload as model quality.
 
-console-ui/           Next.js 16 / React 19 frontend
-├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn
-├── src/app/api/      chat, auth/keys, keys, payments/*, invite, models, health, pricing, stats,
-│                     telemetry, attestation, device, encryption-key, leaderboard, me, network, admin
-├── src/components/   chat UI, sidebar, top bar, trust badge, verification panel, invite banner
-├── src/components/app-providers/
-│   ├── PrivyClientProvider.tsx
-│   └── ThemeProvider.tsx
-├── src/lib/          API client (src/lib/api/) + Zustand store (store.ts)
-├── src/hooks/        auth (useAuth.ts), toast (useToast.ts), chat streaming (useChatStream.ts)
-└── src/proxy.ts      Next.js 16 proxy (replaces middleware.ts)
+## Native Safety Invariants
 
-admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only queries against the
-                      prod read replica; Basic Auth via src/proxy.ts; has vitest tests, not in CI)
+- Build `mlx.metallib` from the MLX source nested in `libs/mlx-swift/Source/Cmlx/mlx`,
+  which is what Cmlx compiles. Bumping top-level `libs/mlx` alone changes no provider bytes.
+- Keep fast startup discovery separate from on-demand weight hashing. Preserve
+  template render checks and explicit failure reporting; never auto-repair templates.
+- Drive the Qwen vision tower one image at a time. Its unfused attention can
+  allocate quadratic score tensors. Keep the prefill under `MLX.withError` and
+  check every `eval` using `throwIfMLXFaulted`; the handler records and returns.
+- Preserve unified-memory OS/activation/KV safeguards and full LOAD quotations,
+  including validated Qwen4/MiMo transient supplements. Measured residency is
+  not a substitute load allowance. Activation floors are measured constants,
+  not shape formulas; unmeasured/vision members retain the conservative floor.
+  Coordinate floor and capacity semantics with platform admission.
+- Preserve cache encryption, owner-only paths, volume identity, missing-disk
+  refusal, daily write accounting and bounded retirement. Read the current
+  `docs/provider/cache-storage.md` and `docs/architecture/security/encryption.md`.
+- Never include prompt/completion content, token IDs or media in telemetry or
+  heartbeats. Do not claim sender sealing hides plaintext from the coordinator
+  or the provider process.
 
-landing/              Next.js marketing site imported from eigen-homepages; standalone npm app
-                      (make landing: install, lint, build, route tests; dev/start port 3008)
+## Code Structure And Quality
 
-scripts/              build, signing, install, and deploy helpers
-├── install.sh        end-user installer served from coordinator (hash + codesign verification)
-├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
-├── publish-model.sh  model registry publish workflow
-├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
-├── smoke-dev.sh      dev-coordinator smoke test
-├── benchmarks/       attention, radix and cache benchmark harnesses
-└── entitlements.plist hardened runtime entitlements (network, keychain)
+Keep modules domain-owned, cohesive and explicit. Separate transport, policy,
+persistence and presentation where they have distinct responsibilities; keep
+entry points thin. Prefer small single-responsibility files, but do not scatter
+one operation across tiny helpers merely to reduce line counts. Extract helpers
+for meaningful operations or real reuse, not speculative frameworks.
 
-deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),
-                      datadog/ (dashboard JSON), provider-fleet/ (fleet update helper)
+Choose the smallest correct change. Use precise names, explicit dependencies
+and readable guard clauses. Preserve public contracts, failure cleanup,
+concurrency schedules, ownership, cancellation and resource lifetimes. Remove
+dead code and duplication introduced by the change. Comments explain non-obvious
+invariants rather than restating mechanics. Never weaken safeguards or tests
+to make a cleanup pass. Every nontrivial feature or bug fix needs meaningful
+coverage; prefer real isolated components over mocking the thing under test.
 
-docs/                 how-tos, runbooks, reference, architecture, design records, dated reports
-                      (map: docs/README.md · rules + freshness stamps: docs/AGENTS.md · lint: make docs-check)
-.github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
-                      model registration (register-model.yml)
-```
+Keep model/engine/protocol version identifiers, but avoid ticket/wave names in
+files. Never commit binaries, credentials, `.external/` checkouts or local
+runtime state. Preserve other contributors' changes in a dirty worktree.
 
-## Current Surface Area
+## Releases And Production
 
-- Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/completions`, `POST /v1/messages`, `GET /v1/models`, `GET /v1/models/capacity`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
-- Coordinator auth is split between Privy JWTs, API keys, and device-code login (RFC 8628) for provider machines.
-- Routing uses token-budget admission with engine-reported capacity, speculative TTFT dispatch, EWMA TPS tracking, and early 429 with Retry-After for OpenRouter compatibility.
-- Billing HTTP lives in `coordinator/api/billing` and its `payouts` child; `coordinator/payments` owns ledger/pricing and `coordinator/billing` owns Stripe/referral services. Inference reservations and settlement share the lifecycle in `coordinator/api/inference`.
-- Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
-- Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
-- Streaming hot path: provider frames are decoded in a single parse (`coordinator/internal/wire/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/internal/inference/chunkkeys/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
-- Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
+Never release without an explicit request. Follow `docs/operations/provider-release.md`:
+sign and notarize the canonical app, compute final hashes after signing, retain
+regular-file verification artifacts and register the exact qualified release.
+Do not bump a release version for an ordinary cleanup. Add user-visible changes
+to a small topic-specific `Unreleased` changelog section without rewriting history.
 
-## Building And Testing
-
-Toolchain versions (Go, Node, Swift, Python, plus `jq`/`gh`/`awscli`/`gcloud`)
-are pinned in [`mise.toml`](mise.toml). Build/test commands are wrapped in the
-root [`Makefile`](Makefile) — run `make` with no args to list all targets.
-
-### One-time setup
-```bash
-mise install            # installs every tool pinned in mise.toml
-make ui-install         # console-ui npm deps
-```
-
-### Coordinator (Go)
-```bash
-make coordinator-test         # runner guards + complete Go suite with isolated API shards
-make coordinator-build        # cd coordinator && go build ./cmd/coordinator
-make coordinator-build-linux  # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 build (GCP prod container)
-make coordinator              # test + build
-```
-
-### Provider (Swift)
-```bash
-make provider-build           # cd provider-swift && swift build
-make provider-test            # cd provider-swift && swift test
-make provider                 # build + test
-```
-
-The Swift package depends on the `libs/mlx-swift` and `libs/mlx-swift-lm`
-submodules. `scripts/fetch-metallib.sh` (and the release workflow) build
-`mlx.metallib` from the MLX source nested inside mlx-swift
-(`libs/mlx-swift/Source/Cmlx/mlx`, the tree the Cmlx target compiles against),
-not from the top-level `libs/mlx` submodule; bumping `libs/mlx` alone changes no
-provider bytes.
-
-### Console UI (Next.js 16)
-```bash
-make ui-install               # npm install
-make ui-build                 # npm run build
-make ui-lint                  # npx eslint src/
-make ui-test                  # vitest (npm test)
-make ui                       # install + lint + test + build
-```
-
-### E2E Integration Tests
-```bash
-# Requires Postgres + Swift provider binary + MLX model downloaded.
-make e2e-integration          # go test ./e2e/... -run TestIntegration -v
-make e2e-benchmark            # go test ./e2e/... -run TestBenchmark -v
-```
-
-### Aggregates
-```bash
-make test                     # all unit tests (coordinator + provider + ui)
-make build                    # build all components
-make all                      # test + build everything
-make clean                    # remove built artifacts
-```
-
-### Testing rules
-
-Every new feature or non-trivial change ships with tests, and every bug fix
-ships with a regression test that fails without the fix.
-
-- Prefer live-isolated tests over mocks: a real in-process HTTP server
-  (`httptest.NewServer(srv.Handler())`), a real in-memory store, or a throwaway
-  Postgres database. Do not mock the thing under test; mocked tests have passed
-  while the real migration failed.
-- Never point tests at production (no live coordinator, prod DB, real Privy
-  tenants or real credentials).
-- When a `store.Store` method has memory and Postgres implementations, cover
-  both.
-- Keep every coordinator `_test.go` under the mirrored `coordinator/tests/`
-  tree. Production must not import `testing` or coordinator test infrastructure.
-  Use real injected dependencies or cohesive production-consumed components in
-  `coordinator/internal/`; never expose arbitrary state or add test-only facades,
-  copied implementations, overlays, reflection or `go:linkname` to move tests.
-  `go test ./coordinator/...` discovers all suites; focused API tests use
-  `./coordinator/tests/api/...`. The isolation guard lives in `tests/layout_test.go`.
-- Frontend pages and forms get at least a vitest for validation and state.
-
-## Releases
-
-Never create a release unless explicitly asked. A release bumps
-`ProviderCore.version` (`provider-swift/Sources/ProviderCore/ProviderCore.swift`)
-and `LatestProviderVersion` (`coordinator/api/server.go`) together
-(`scripts/check-release-version.sh` enforces this), then tags the merged master
-commit with an annotated `vX.Y.Z` tag. `.github/workflows/release-swift.yml`
-runs on `vX.Y.Z` tags; dev publication uses
-`workflow_dispatch`, and every requested version must equal the checked-in
-constants.
-
-For ordinary PRs, follow the
-[changelog contribution guidance](CONTRIBUTING.md#changelog-entries-with-less-merge-contention):
-keep user-visible changes in a small topic-specific `Unreleased` section,
-update it in place, and preserve other PRs' entries when resolving conflicts.
-Do not assign a release version, rewrite unrelated sections or claim shipment
-without an explicitly requested release operation. Topic-local edits reduce
-contention but cannot prevent same-location insertion conflicts.
-
-## Deploying
-
-Canonical runbook: `docs/operations/coordinator-deploy.md`
-
-Production GCP deploys, VM/container/service/config/secret mutations, and traffic
-changes require explicit human approval for the specific operation. A human
-operator or human-approved agent may execute them. Without that approval, agents
-may only prepare and push reviewed code and perform read-only health inspection.
-
-Current release-sensitive pieces:
-
-- Prod coordinator runs on the GCE VM `darkbloom-coordinator` in the
-  `darkbloom-mainnet` project at `api.darkbloom.dev`. Build target:
-  `coordinator/Dockerfile`. Dev runs in the separate `darkbloom-dev` project.
-- Provider bundle creation (staging, .app wrapping, signing, notarization) lives inline in `.github/workflows/release-swift.yml` (bundle steps ~341-617); there is no standalone bundling script.
-- Installer flow lives in `scripts/install.sh`.
-- Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in `coordinator/api/server.go` is only the no-release-row fallback for the version *display* path and must stay in sync with `ProviderCore.version`.
-- CI release workflow (`release-swift.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing, embeds provisioning profile in .app bundle.
-
-Production coordinator build and human-approved deploy:
-
-```bash
-# The repository trigger builds/pushes the exact master commit. Direct local
-# gcloud builds submit is rejected by the production config.
-git push origin master
-gcloud builds list --project=darkbloom-mainnet --limit=5
-# The human-approved container-swap procedure is in the runbook.
-curl https://api.darkbloom.dev/health
-```
-
-Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
-
-## Important Sync Points
-
-- Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go`.
-- Telemetry wire types live in three places and MUST stay aligned:
-  - `coordinator/protocol/telemetry.go` (canonical),
-  - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
-  - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
-  The Go and Swift symmetry tests pin enum casing and optional-field omission;
-  the TypeScript mirror has no test of its own, so keep it aligned by hand.
-  There is no server-side field allowlist: the coordinator ingests no client
-  telemetry, and the privacy backstop is that no ingestion route exists plus
-  the fixed operational keys each coordinator emitter call site passes. Never
-  add prompt or completion fields to an emitter call or a heartbeat.
-- If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
-- If you change install paths or process invocation, update both the CLI and install flow.
-- Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
-- Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI. Do not add hardcoded provider `MODEL_CATALOG` lists.
-
-## Common Pitfalls
-
-- `.external/` is reserved for local external checkouts and must never be committed.
-- Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error`, so the last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
-- `coordinator/coordinator` may exist locally as a build artifact (it is gitignored, not tracked). Do not model changes from it, and never commit binaries or other built artifacts.
-- CI release workflow must compute binary SHA-256 hashes AFTER code signing, not before. Providers verify hashes of the signed binary.
-- Model scan uses fast discovery (no hashing) at startup (`ModelScanner`). Weight hashing is on-demand via `WeightHasher.computeHash(for:)` only for models that need attestation/verification. Don't add hashing back to the scan path.
-- Models with broken chat templates are not auto-repaired. The provider runs a scan-time chat-template render self-check (`TemplateRenderCheck`) and reports `template_render_ok=false`; the coordinator then fences **all** requests (plain text, tools, multimodal alike) away from that (provider, model) pair — a crashing template breaks every request shape (`providerEligibleForTraitsLocked`, `registry/request_traits.go`). The tool-scoped gates key on advertised capabilities (the tool-constraint protocol for inference-enforced `tool_choice`, `providerSupportsToolConstraintLocked`), never on provider version.
-- The vision tower is driven **one image at a time** (`EngineV2VisionTowerRun.qwenPerImageVisionFeatures`). Qwen3-VL's tower attends over whatever it is handed as one sequence with an N×N intermediate, so batching a request's images made peak device memory quadratic in the image count and asked Metal for buffers many times `MTLDevice.maxBufferLength`. Do not "optimize" the loop back into a single call. `VisionTowerBudget` predicts that peak from the processor's grids and the model's own vision config — the N² multiple is 1 when MLX can fuse the head dim (64/80/128, `sdpa_full_supported_head_dim`) and `numHeads` when it falls back and materializes `[1, H, N, N]` scores — and the whole prefill runs under `MLX.withError` because MLX's default handler is `fatalError`. That handler **records and returns**, so every `eval` site must check the box (`throwIfMLXFaulted`); checking only on block exit lets the code run on after a refused allocation and lets a later Swift throw hide the cause.
-- Store selection (`coordinator/app/store.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
-- Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
-- Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
-- `HandleChunk` never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
-
-### Coordinator State Model — Multiple Overlapping Views
-
-Provider state lives in several fields that are read by different code paths with different precedence rules. When mutating any of these, trace every reader:
-
-- `BackendCapacity.Slots` is **authoritative** for the scheduler when present (Swift providers). The scheduler derives `slotState`, `modelLoaded`, token budgets, and observed TPS from it. `WarmModels` is only a fallback for legacy providers without `BackendCapacity`.
-- `WarmModels` is updated by heartbeats. It is NOT consulted by `snapshotProviderIntoLockedEx` or `buildCandidateWithReason` when `BackendCapacity` is non-nil. `TriggerModelSwaps` / `hasWarmProviderLocked` checks it as a fallback, and `/v1/me/providers` copies it into API responses.
-- `CurrentModel` is set from heartbeat `active_model`. A nil/omitted `active_model` means no model is loaded. Stale `CurrentModel` can cause attestation hash mismatches.
-- `pendingLoads` (`pendingload.Ledger`, `coordinator/internal/registry/pendingload/ledger.go`) is checked by `TriggerModelSwaps` planning, cold-spill eligibility (`registry/cold_dispatch.go`), and the warm-pool controller's target math. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `memorypolicy.Admits` (`coordinator/internal/registry/memorypolicy/admission.go`) — do not assume pending-load state affects routing admission.
-- Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
-- Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
-- The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. Every admit-time consumer (load gate, pending-load reservation, startup preload, doctor and coordinator) must use the scanner's complete LOAD estimate, not bare steady residency. Ordinary/unknown layouts retain disk × 1.2; eligible native Qwen4 SSD-offload layouts use `Qwen4ExpLoadFootprint`'s validated header-derived copy allowance, mirrored by `native_load_transient_bytes` in Swift/Go and revalidated before allocation. All compute, MTP and vision payloads remain counted. Never reduce OS/activation/KV safeguards to make a test pass. A recent owned Qwen4 retirement permits only a bounded real-headroom recheck, not speculative reclaim credit. Measured post-load residency lives separately in `servabilityMeasuredResidentGiB` and informs post-load token budgets; it is not a substitute load allowance. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
-- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/internal/registry/memorypolicy/structural.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per model by `ActivationFloor`: the model's measured floor, else 5.5 GiB; `servabilityMeasuredResidentGiB` likewise supplies measured weights, else the padded catalog figure — no provider-version regimes, because routed providers are past the routing floor). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
-
-### Native MiMo load quotations
-
-Exact `mimo_v2` with a validated closed payload inventory uses
-`MiMoV26DiscoveryLoadFootprint` to quote the existing strict main and ordinary
-sidecar **full LOAD** requests. Discovery reads headers/stat metadata only, not
-weight payload hashes or native arrays. The positive `native_load_transient_bytes`
-supplement does not mean SSD offload: MiMo keeps `ssd_offloaded_weight_bytes` zero.
-Swift discovery/preload/readiness and Go normal/swap/warm/cold routing must agree.
-Go preserves the raw catalog/source-size floor, adds the supplement once, and
-retains conservative legacy pricing for malformed or unsupported declarations.
-Do not replace these bounds with steady residency, change reserve floors, or
-skip the actual load claims and post-load serviceability gates.
-
-### Coordinator Mutation Checklist
-
-When adding code that mutates provider state or sends commands (`load_model`, etc.):
-
-1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `pendingLoads`).
-2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
-3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModelsWithReason`.
-4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
-5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the `UnifiedMemoryCap` load gate on the provider side.
-6. **Store read-through cache** (`store/cached.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).
-
-## Code Structure & Modularity
-
-Keep the codebase modular, never monolithic.
-
-- Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
-- Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
-- One file/component should own one cohesive responsibility. If a file mixes several concerns or grows past a few hundred lines, inspect its boundaries; split by responsibility, not an arbitrary line limit. Do not scatter a cohesive operation across tiny files merely to reduce file size.
-- Organize by domain first, then by responsibility within that domain. Keep implementation details private to their owner; move code into shared modules only when real callers need it. Avoid catch-all `utils`, `helpers`, or `common` modules and unrelated functions collected in a single file.
-- Keep entry points thin: parse inputs, invoke the domain operation, and translate its result. Separate transport, business policy, persistence, and presentation where they have distinct responsibilities. Dependencies must flow through explicit contracts; do not create import cycles or duplicate ownership of mutable state.
-- Name files for their responsibility or the behavior they verify. Avoid work-wave, ticket, priority, and follow-up labels such as `w5fix2` or `p1`; keep meaningful model, engine, and protocol version identifiers. Name shared test helpers for their domain. Keep coordinator Go tests under the mirrored `coordinator/tests/` tree; group Swift and UI files by subsystem without changing their target or imports unnecessarily. See [the repository navigation guide](docs/developer/navigation.md).
-
-## Clean Code
-
-- Prefer the smallest correct change. Follow existing domain conventions; do not introduce speculative abstractions, generic frameworks, configuration switches, or compatibility layers without a concrete requirement.
-- Use precise domain names for variables, functions, types, and errors. Make ownership, units, optionality, and lifecycle states explicit rather than relying on comments or boolean flags whose meaning changes by caller.
-- Keep functions focused and control flow readable. Prefer guard clauses over deeply nested branches. Extract a function when it names a meaningful operation, isolates a distinct responsibility, or serves real reuse; keep straightforward one-off logic together.
-- Keep business policy independent of incidental IO where practical. Pass dependencies explicitly; avoid hidden global state, duplicated sources of truth, and test-only accessors or alternate implementations.
-- Handle errors at the boundary that can act on them. Preserve useful context, never silently swallow failures, and make cancellation, resource cleanup, locking, and terminal-state ownership clear on success and failure paths.
-- Remove dead code, obsolete comments, unused dependencies, and duplication introduced by the change. Comments explain non-obvious intent or invariants, not the mechanics already visible in the code.
-- Preserve behavior and safeguards during refactoring. Keep meaningful regression assertions, boundary cases, and deterministic concurrency schedules; do not weaken tests, admission checks, or security controls to make a cleanup pass.
+Production mutations require specific human approval, including release/model
+publication, credentials, infrastructure, hosting and traffic. No approval is
+implied by a source change or successful test. Backend deployment belongs in
+the sibling platform repository, not this checkout.
 
 ## Required Refactor Pass
 
-**After the first working version is implemented and its applicable focused validation passes (tests for code changes; documentation/config checks for docs/config-only changes), the agent MUST spin up a dedicated refactor subagent before opening the PR. A self-review alone does not satisfy this requirement.**
+After the first working version and focused validation, a dedicated refactor
+subagent must review behavior-preserving cleanup before a PR is opened. Give it
+the scope, diff, instructions, explicit file ownership, invariants and validation
+commands. Do not edit its files concurrently. It must preserve tests and public
+contracts, improve boundaries/names/control flow when warranted, and avoid
+unrelated rewrites. A justified no-change assessment is valid.
 
-1. Give the subagent the task scope, changed files/diff, applicable `AGENTS.md` instructions, behavioral invariants, and validation commands. Assign explicit file ownership so parent and subagent do not edit the same files concurrently.
-2. Ask the subagent to perform a behavior-preserving cleanup of the first version: improve domain/file boundaries, naming, control flow, and dependency clarity; remove dead code and unnecessary abstractions. It must stay within the task scope, preserve tests and public contracts, and avoid unrelated rewrites. For docs/config-only work, it checks organization, clarity, duplication, and consistency instead of inventing code changes.
-3. Wait for the subagent to finish. Inspect its diff and findings, integrate justified changes, and resolve any regressions. If no changes are warranted, retain its explicit no-change assessment rather than forcing a cosmetic refactor.
-4. Rerun the affected tests, build/lint checks, and required documentation checks on the final combined version. Report any unavailable validation honestly; do not claim the PR is ready while a required gate remains unresolved.
-5. Only then open the PR when PR creation is authorized. Include a brief refactor-pass outcome and concrete validation evidence in the description alongside the required before-and-after diagrams. If subagents are unavailable, report the blocker rather than silently skipping this gate.
+Wait, inspect its changes, resolve regressions, and rerun affected checks plus
+documentation validation. Report unavailable validation honestly. If subagents
+are unavailable or delegation is prohibited, report the unresolved gate; a
+self-review does not silently replace it. The coordinating parent owns this
+gate when a narrowly scoped worker has been instructed not to delegate.
 
-## Pull Requests
+## Contributions And Pull Requests
 
-The canonical agent workflow for repository contributions is
-`.agents/skills/darkbloom-contributor/SKILL.md`. Before finalizing any PR,
-evaluate documentation impact using `docs/AGENTS.md` section 7 and run
-`make docs-impact-check BASE=<target-branch>` plus `make docs-check`. CI applies
-the same source-to-doc mapping; a non-applicable mapping requires the
-maintainer-applied `docs-not-needed` label.
+Follow `.agents/skills/darkbloom-contributor/SKILL.md` and `CONTRIBUTING.md`.
+Run docs-impact and docs lint before finalizing. A genuinely inapplicable mapping
+requires the maintainer-applied `docs-not-needed` label, not a weakened checker.
 
-Every PR commit must be signed and display as Verified on GitHub. The protected
-branch's signed-commit rule does not validate commits hosted on a contributor
-fork, so the `Commit Signatures` contribution-policy check enforces this before
-merge.
+Every PR commit must be signed and display Verified on GitHub, including fork
+commits. Never commit, push, release or open a PR without authorization. Every
+PR needs clearly labeled Before/After Mermaid diagrams covering observable
+behavior and code flow; docs-only changes diagram navigation/ownership.
+Include actual validation evidence, limitations and the refactor-pass outcome.
 
-**Stacked PRs**
-
-Use linear PR bases: the first targets `master`, each child targets its immediate
-parent. Before approval, merge each refreshed parent into its child with a signed
-commit and a non-force push, working from the bottom of the stack upward.
-`master` is squash-only: a squash loses the original commit ancestry, so a
-pre-merge parent update never guarantees conflict-free merges after the squash.
-After each actual squash, run
-`python3 scripts/restack-after-squash.py PARENT CHILD [DESCENDANTS...] --check`,
-then `--push` (optionally `--retarget`), following
-[the stacking guide](docs/developer/pull-requests.md). The script only adds
-signed same-tree ancestry bridges; content differences require manual
-reconciliation. Never force-push or change merge policy to repair a stack.
-Use `--skip-hook` only with explicit human approval. Keep affected branches
-unchanged during the operation; non-force pushes are not compare-and-swap
-protection against branch deletion or rewind. Updates can dismiss approvals;
-recheck CI, Verified signatures, bases and mergeability before requesting approval
-again. This procedure does not authorize merging PRs.
-
-**Every PR MUST include a before-and-after diagram (Mermaid) in its description** that details what changed — covering BOTH:
-
-- **Behavior**: the request/response flow, states, and outcomes a user or caller observes (e.g. dispatch → retry → 429/503/200).
-- **Code**: which functions/components changed and how control flows through them.
-
-Use two clearly labeled diagrams — a **Before** and an **After** — (or one side-by-side comparison) so a reviewer sees the delta at a glance. Scope it to what the PR changes; it is not a full-system map. A PR without a before/after diagram is not ready for review.
-
-````markdown
-```mermaid
-flowchart LR
-  subgraph Before
-    A1[request] --> B1[old behavior / code path]
-  end
-  subgraph After
-    A2[request] --> B2[new behavior / code path]
-  end
-```
-````
-
-## Formatting
-
-A pre-commit hook in `.githooks/pre-commit` checks staged files only. It is enabled via:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-| Component | Check | Manual fix |
-|-----------|-------|------------|
-| Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
-| Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
-| TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |
+Stacks are linear: first PR targets `master`, each child its immediate parent.
+Refresh parent-to-child with signed non-force merges. After each actual squash,
+use `scripts/restack-after-squash.py ... --check`, then an authorized `--push`
+according to `docs/developer/pull-requests.md`. Do not force-push, rewrite public
+history, change merge policy or skip hooks without explicit approval. Recheck
+signatures, CI, bases, approvals and mergeability after updates. None of this
+authorizes merging a PR.

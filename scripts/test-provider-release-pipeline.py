@@ -89,7 +89,7 @@ class ReleasePipelineTests(unittest.TestCase):
                         signing.index('Stage and sign bundle'))
 
     def test_checks_run_even_on_exact_cache_hits(self):
-        for name in ['Verify production prompt parity', 'Test provider with release SDK',
+        for name in ['Verify public prompt golden vectors', 'Test provider with release SDK',
                      'Build optimized provider products', 'Build or validate source-matched metallib']:
             step = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
             self.assertNotIn('cache-hit', step)
@@ -99,13 +99,14 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('steps.keys.outputs.swift-prefix', ACTION)
         self.assertNotIn('spm-v3-', ACTION)
 
-    def test_independent_cache_generations_cannot_reuse_stale_rust_outputs(self):
-        step = ACTION.split('- name: Invalidate workspace Rust outputs\n', 1)[1].split('\n    - name:', 1)[0]
+    def test_qualification_keeps_public_prompt_vectors_without_backend_execution(self):
+        step = ACTION.split('- name: Verify public prompt golden vectors\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn("if: inputs.lane == 'qualification'", step)
+        self.assertIn('./scripts/verify-prompt-parity.sh', step)
         self.assertNotIn('cache-hit', step)
-        self.assertIn('cargo +1.88.0 clean --manifest-path coordinator/promptsidecar/Cargo.toml -p promptsidecar', step)
-        self.assertLess(ACTION.index('- name: Invalidate workspace Rust outputs'),
-                        ACTION.index('- name: Verify production prompt parity'))
+        for forbidden in ('coordinator/', 'go.mod', 'actions/setup-go@', 'cargo ', 'rust-key', 'install-release-rust.sh'):
+            self.assertNotIn(forbidden, ACTION)
+            self.assertNotIn(forbidden, WARM)
 
     def test_warming_cannot_publish_or_seed_default_branch_from_pr(self):
         self.assertIn('branches: [master]', WARM)

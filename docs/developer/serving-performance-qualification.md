@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-09
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -16,7 +16,7 @@ is separate work required to introduce a measured prediction-error envelope.
 ## Verify local evidence
 
 Normal CI checks the committed prompt-count coefficients, runtime guards,
-synthetic qualification regressions, and Go/Swift deadline catalog agreement.
+synthetic qualification regressions, and the provider deadline catalog.
 It does not replay the separately archived 9,000-body prompt-count corpus or
 the withdrawn historical hardware cohort. To run those additional checks,
 point the test-only environment variable at the archive directory containing
@@ -24,7 +24,6 @@ the original receipt, projection and review files:
 
 ```bash
 export DARKBLOOM_QUALIFICATION_EVIDENCE_ROOT=/absolute/path/to/evidence
-go test ./coordinator/tests/api/promptwork -run TestReviewedPromptCatalog -count=1
 python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
 ```
 
@@ -343,7 +342,7 @@ and cannot change concurrency, mixed-prefill policy, activation reserve or
 configured context. Out-of-cell work retains the existing conservative path.
 Universal serving-profile gates above remain mandatory for actual policy
 promotion. Review and add passing deadline-only entries to the corresponding
-Swift/Go deadline catalogs together using
+provider deadline catalog using
 `python3 -m serving_performance.catalog_codegen` from `scripts/`. Add the
 archived assembled receipt, prerequisite files and intact training/validation
 run paths to `scripts/serving_performance/catalog/deadline_evidence.json`.
@@ -356,14 +355,7 @@ Generate independent synthetic text/tool/history bodies with
 `scripts/generate-prompt-count-corpus.py`. The JSON input carries temporary
 base64 bodies; do not commit those inputs. Its `--body-output` file contains
 JSONL corpus entries retaining each original ID and base64 request together.
-Project that file through the coordinator's real estimator and shape extractor:
-
-```bash
-cd coordinator
-DARKBLOOM_PROMPT_COUNT_CORPUS=/tmp/corpus-bodies.jsonl \
-  DARKBLOOM_PROMPT_COUNT_OUTPUT=/tmp/corpus-shapes.jsonl \
-  go test ./tests/api/... -run '^TestPromptWorkQualificationCorpus$' -count=1
-```
+The private platform qualification owner projects that exact file through its real estimator and shape extractor at an explicitly reviewed revision. Retain the returned numeric receipt and original corpus digest; do not substitute a public golden-vector pass for that independent execution.
 
 Run `ServingPromptCountQualificationTests.collectTemplateCounts` with
 `DARKBLOOM_PROMPT_COUNT_QUALIFICATION=1` and the explicit
@@ -432,5 +424,5 @@ automatic runtime promotion.
 ## Related
 
 - [Provider inference](../architecture/inference.md)
-- [Scheduling and warm pools](../architecture/scheduling.md)
-- [First-content design](../design/first-content-performance.md)
+- [Scheduling and warm pools](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/scheduling.md)
+- [First-content design](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/first-content-performance.md)

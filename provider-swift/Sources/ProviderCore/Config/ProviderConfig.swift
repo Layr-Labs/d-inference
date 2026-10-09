@@ -471,7 +471,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     /// public fleet. Set `private_only = true` under `[coordinator]` in config.
     public var privateOnly: Bool
 
-    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
+    public init(url: String = BuildEnvironment.current.coordinatorWebSocketURL, heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
         self.url = url
         self.heartbeatIntervalSecs = heartbeatIntervalSecs
         self.privateOnly = privateOnly
@@ -485,7 +485,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "wss://api.darkbloom.dev/ws/provider"
+        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? BuildEnvironment.current.coordinatorWebSocketURL
         self.heartbeatIntervalSecs = try container.decodeIfPresent(UInt64.self, forKey: .heartbeatIntervalSecs) ?? 5
         self.privateOnly = try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
     }
@@ -560,7 +560,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
-                url: "wss://api.darkbloom.dev/ws/provider",
+                url: BuildEnvironment.current.coordinatorWebSocketURL,
                 heartbeatIntervalSecs: 5
             ),
             schedule: nil

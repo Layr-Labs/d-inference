@@ -1581,6 +1581,119 @@
       },
       "scope": "Loose developer-built qualification executable; not a signed or notarized release app.",
       "source_file_digest": "3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa"
+    },
+    "C9": {
+      "artifacts": {
+        "darkbloom": "faa8845e7b398fb0d8ae6a1572456893c56f7bba4bf42859607425b711fc76b2",
+        "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+      },
+      "build_log_sha256": "5a5e96924873c7331247a21bfe2d351c9114964184b184b59c0646be7d58e4f9",
+      "compiledSourceFileCount": 1317,
+      "core_head": "cb77239be31b1df7f5db895226af55c39fc4f093",
+      "mlx_swift_head": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+      "native_head": "b02522c8569304754811d01a88b2fd086b338f2a",
+      "parent_head": "40bd7473ef4a06d8a813ed0bb76af213cbbf2e25",
+      "rawSourceReceiptSHA256": "a9ecf8e040aaa9a2db4eccc5998c20a529ca35829fd6547a9f121ea38c950ff9",
+      "reconstructSourceFrom": "C8",
+      "resources": {
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/Info.plist": "1fc6323cb234cfa872a9b2a1954db0a80d743b5180d08586c61f617b7414b9b3",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/Resources/Fixtures/nemotron-openrouter-boston-reference.json": "01d57485bb9e348ebe31b0a0652fb5729c094781c03dc150f688bf52610da96c",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/Resources/Fixtures/nemotron-prompt-edge-corpus.json": "748f7586ee0667cc71874105a1f7f3cbe3cda1be908bae4872939b12421f0cb8",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/Resources/Fixtures/nemotron-reference-corpus.json": "ac2be189b152d4273982d5dbf9dacbfd585de0743b0da233dfac21c4d0fa317b",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/_CodeSignature/CodeDirectory": "a1d5c907a7b3041f6563e5c8dc8f69220635f744d0cb234c6c27a4c72c56749b",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/_CodeSignature/CodeResources": "8b2083c9110dabbcb98fec51e6c67f996929b8c6396d70dcd67690a6e4f73796",
+        "DarkbloomProvider_ProviderCoreTests.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/Info.plist": "6ecaab4a274340ba5d87e4a60c8d84aa7df461af848e246a3c7e3f4bdebc919a",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/Qwen4Metal/LICENSE": "ccfab7ccb2ea306f71531c8ca77bb55507606cd90768b1e32b8b52ab5b48cf01",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/Qwen4Metal/gemm.metal": "cc2597fad25939505da77537ff15e78eba2fccbdf14a0e636fb2d2ac0bb4bb6c",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/Qwen4Metal/quantized.metal": "d39dae2a27d0352facbe0e07c97af1ba0782a923698ce3931a92417d9e527162",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/Qwen4Metal/quantized_utils.metal": "36893d020956fec4b63f37855035dfebc317bd06a966de14c6372c9a2971ef28",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/pagedattention.metal": "d99096e5c6fc2b0bb0be802a34986d90ff1287416cd57a360d0980ac2ce95a65",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/_CodeSignature/CodeDirectory": "7c593a07e09c7bcbfb501f9b8c8f8252e49c5c0a42219f35b69dc801b2a827ba",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/_CodeSignature/CodeResources": "e1270d9086a77875525d2e61874284fced1dfdd3139eeaa83aa80c8c693dedcf",
+        "mlx-swift-lm_MLXLMCommon.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mlx-swift_Cmlx.bundle/Contents/Info.plist": "f350270dc2dd823663f566f429d8f3bbee12d1bde797915b6fd44d374e66b3bb",
+        "mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib": "528148a079883f86f6ddcda66a547202fc0b47947241c6cfdcff53cedc1184b9",
+        "mlx-swift_Cmlx.bundle/Contents/_CodeSignature/CodeDirectory": "35e12f5f8e1909fadda5ef4e814d7c8a30d7a57049b87dcf614318445a8623e1",
+        "mlx-swift_Cmlx.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "mlx-swift_Cmlx.bundle/Contents/_CodeSignature/CodeResources": "a8cd90952620fa5de404f41c9f22f915700b2a80d3055d929328796986f27f5d",
+        "mlx-swift_Cmlx.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "swift-crypto_Crypto.bundle/Contents/Info.plist": "204c658fcf1bb91cb59ff416ea6f7956d05271dc4bbdc3ba6b329413c1324c50",
+        "swift-crypto_Crypto.bundle/Contents/Resources/PrivacyInfo.xcprivacy": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0",
+        "swift-crypto_Crypto.bundle/Contents/_CodeSignature/CodeDirectory": "74a785653b862863b0039a2838ed0aa7f86ed7799e10e0d07ee00ef93f7ea649",
+        "swift-crypto_Crypto.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "swift-crypto_Crypto.bundle/Contents/_CodeSignature/CodeResources": "ef18096dbff5ed48c3659bec9bdd13f4cbb99b9a32bbef344b28350174a90610",
+        "swift-crypto_Crypto.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "swift-nio-ssl_NIOSSL.bundle/Contents/Info.plist": "43e9741f39e5aedccaf3f5eca4d687a521ca9e6f4c7dcba0ca95ed3d46a7cfd0",
+        "swift-nio-ssl_NIOSSL.bundle/Contents/Resources/PrivacyInfo.xcprivacy": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0",
+        "swift-nio-ssl_NIOSSL.bundle/Contents/_CodeSignature/CodeDirectory": "d31b60a2f350f8e7b0b3a71c073e168e755437ac30a1f810d44eb69856ab6ec0",
+        "swift-nio-ssl_NIOSSL.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "swift-nio-ssl_NIOSSL.bundle/Contents/_CodeSignature/CodeResources": "ef18096dbff5ed48c3659bec9bdd13f4cbb99b9a32bbef344b28350174a90610",
+        "swift-nio-ssl_NIOSSL.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "swift-nio_NIOPosix.bundle/Contents/Info.plist": "7201e54106c2f992344fdb08ca4003c1c51c9aa7d1d2a944c02eaf448a43d696",
+        "swift-nio_NIOPosix.bundle/Contents/Resources/PrivacyInfo.xcprivacy": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909",
+        "swift-nio_NIOPosix.bundle/Contents/_CodeSignature/CodeDirectory": "9bf03608739e59cc3227cf530f9b88e0e0efb9b31ff7ffbec4f89dd6481ec1c9",
+        "swift-nio_NIOPosix.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "swift-nio_NIOPosix.bundle/Contents/_CodeSignature/CodeResources": "67ba4e51c5c6ab53b6d4b05fb6ecd54f032f365a31a915150b4564e31a072a6f",
+        "swift-nio_NIOPosix.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "swift-transformers_Hub.bundle/Contents/Info.plist": "5eb5101874edc706fd895dac5872da62ab3a9016c67621fff2b0dc03ba6b57ff",
+        "swift-transformers_Hub.bundle/Contents/Resources/gpt2_tokenizer_config.json": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7",
+        "swift-transformers_Hub.bundle/Contents/Resources/t5_tokenizer_config.json": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f",
+        "swift-transformers_Hub.bundle/Contents/_CodeSignature/CodeDirectory": "c09e06d58998d264f76fb83415bda98409f926a842c308bd67b0ece278250be3",
+        "swift-transformers_Hub.bundle/Contents/_CodeSignature/CodeRequirements": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986",
+        "swift-transformers_Hub.bundle/Contents/_CodeSignature/CodeResources": "ae3880b32a4b58e4636e028cf141099134804da084866b30e86115f17fe99df7",
+        "swift-transformers_Hub.bundle/Contents/_CodeSignature/CodeSignature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "scope": "Merged master cea374e88 into the provider branch. Only build environment/coordinator/CDN/CLI source changes; all SDK libraries and inference/quantization source are unchanged from C8. C9 local production-environment build.",
+      "sourceChanges": {
+        "provider-swift/Package.swift": {
+          "after": "6f588217915e972ecd489079deea094d1c03f30ed918218a48a699ed77cec851",
+          "before": "43bfce300e13a9346304fe3d2bede44e0328803a7903a7a639ccf22c2836da68"
+        },
+        "provider-swift/Sources/ProviderCore/Config/BuildEnvironment.swift": {
+          "after": "8929b824cba85d38eb818e27f64acdc1e6156eedc147302832aecd0f07f069db",
+          "before": null
+        },
+        "provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift": {
+          "after": "0d3c54578ff2dc95ac01f9603b640ba9534ebb04b7b82e15e54b80608d1d2506",
+          "before": "925940631313dc78ba43b026ca04d08bcc35a7623c2700b5ec185d3a4e57743c"
+        },
+        "provider-swift/Sources/ProviderCore/Diagnostics/AppAttestDeepDiagnosis.swift": {
+          "after": "3f7ba952b9124b94b566377fab62ab86e88d0d69378b0046374ae0b297500608",
+          "before": "047d8147ebdc50d7086e8a3ac8570b234e84df5ac5b11649b76b4652a13fbd31"
+        },
+        "provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift": {
+          "after": "82b378b5361b4c5ea8e5b507d87a1441047dd2f9bc8b80abc62a02a9f18d9c3c",
+          "before": "46ec9b5516c4e959624f526c2eeece47b4731a030cb8c4a92c8798f9200f327c"
+        },
+        "provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift": {
+          "after": "8799be946ec8d2120db3896352be42b4966498e2b5c911574e36258aa3f22913",
+          "before": "284cfbf46b920dcfb969c58e4ba6f7e3747c0484251d21392751b56d512413d9"
+        },
+        "provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift": {
+          "after": "0a419d51f4b4ed58b80d1ece4f81db21d76e015f47af094a1d5ff3ecb0269d27",
+          "before": "e25b157536e3bee993f7b85299f9168ac702c0cdec6ca26e602e0eeaa7cab7bb"
+        },
+        "provider-swift/Sources/darkbloom/Darkbloom.swift": {
+          "after": "2a4cb32d8d16b1232ddd4975207af5c479349b753103db8a066ae6ca308bc1c3",
+          "before": "30c5ad01e1238715d6e4eea29a8b01fbb0f0daebe7e8c736618758f44d130054"
+        },
+        "provider-swift/Sources/darkbloom/DoctorCommand.swift": {
+          "after": "535b0f29b26331ecb11a3db3268f2d96e3a7eb1c6aaa1d260ada9de7fbd37e06",
+          "before": "439f73027db1d52942825ee5e332eb5afa18d90fd477ae651af8a8d64bc47d71"
+        },
+        "provider-swift/Sources/darkbloom/RuntimeSmokeCommand.swift": {
+          "after": "3e472c2c60e7305784a95b4410349f4565a7506cf984d4b19ddf1d5f8941c7c2",
+          "before": "7dfd8becf988b28994b36b4eff6d7941d9042ee69e37c270a0514620255ca1dc"
+        },
+        "provider-swift/Sources/darkbloom/ServiceDrain.swift": {
+          "after": "949f2ab0dc663108d36d98c16031db975b5cbd4b7db36aa04f2a63a825951d08",
+          "before": "5cbb61cfcba0cea53376898935265b84b739ade6c531c16c64b7971ca8a8a3c9"
+        }
+      },
+      "source_file_digest": "1336e9576a8144b3ef7701769135cbb14a5bb87275dd131939ecb3106bf20024"
     }
   },
   "schema": 1,

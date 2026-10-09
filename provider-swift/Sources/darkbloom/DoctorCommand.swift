@@ -33,6 +33,7 @@ struct Doctor: AsyncParsableCommand {
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let bootSecurity = BootSecuritySnapshot.live()
+        let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
         var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
         checks.append(contentsOf: await buildCoordinatorDoctorChecks(
             snapshot: snapshot,
@@ -43,11 +44,14 @@ struct Doctor: AsyncParsableCommand {
         // billing, version — the "why am I / aren't I earning?" answers.
         let diagnosis = await DoctorRunner.buildOperatorDiagnosis(
             snapshot: snapshot,
-            coordinatorURL: coordinator ?? snapshot.config.coordinator.url
+            coordinatorURL: coordinatorURL
         )
 
         print("darkbloom doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
+        print("Build: \(BuildEnvironment.current.rawValue)")
+        print("Coordinator: \(coordinatorURL)")
+        print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
@@ -97,9 +101,9 @@ struct Doctor: AsyncParsableCommand {
         if support {
             print("")
             print("Support")
-            print("  coordinator: \(coordinatorHTTPBase(coordinator ?? snapshot.config.coordinator.url))")
+            print("  coordinator: \(coordinatorHTTPBase(coordinatorURL))")
             print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
-            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinator ?? snapshot.config.coordinator.url)))")
+            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinatorURL)))")
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 

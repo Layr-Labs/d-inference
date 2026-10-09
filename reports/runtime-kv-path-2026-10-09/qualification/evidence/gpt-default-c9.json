@@ -1,0 +1,28 @@
+{
+  "answer": {
+    "early": "cedar-0837",
+    "late": "hazel-2651",
+    "middle": "juniper-1942"
+  },
+  "c3BalancedReportSHA256": "0095e9b64d31c6d42e95123e4adb0f0f6f595c8394f3dbab5b7f3a4137e4d302",
+  "candidateArtifacts": {
+    "darkbloom": "faa8845e7b398fb0d8ae6a1572456893c56f7bba4bf42859607425b711fc76b2",
+    "mlx.metallib": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c"
+  },
+  "candidateSourceDigest": "1336e9576a8144b3ef7701769135cbb14a5bb87275dd131939ecb3106bf20024",
+  "commandOmitsPrecision": true,
+  "completionTokenCount": 117,
+  "exitCode": 0,
+  "expectedAnswer": {
+    "early": "cedar-0837",
+    "late": "hazel-2651",
+    "middle": "juniper-1942"
+  },
+  "finishReason": "stop",
+  "kvQuantization": "balanced",
+  "modelAggregateSHA256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "passed": true,
+  "reportSHA256": "4c1d58e8aeee5a5f1f62a1c0b1a2a2deaf5d1b9b390996a6d316732d4c9ebdc5",
+  "resolvedBackend": "paged",
+  "sameGeneratedTokensAsC3BalancedRetrieval": true
+}

@@ -1,7 +1,6 @@
 # Runtime KV quantization qualification
 
 > Last updated: 2026-10-09
-> Current implementation evidence. The strict C8 GPT cache retest is still outstanding.
 
 The candidate selects balanced K4/V4 attention KV by default for supported
 models except MiMo. Real artifact probes measure smaller paged history and
@@ -61,7 +60,7 @@ synthetic input is not a representative corpus or a general perplexity score.
 
 The updated curated v8 ledger retains 148 cells in 10 stages, including superseded and
 failed stages. C8 controls below are additional evidence, not silently relabeled
-C3 measurements. The per-file receipts contain 1,316 compiled-source entries.
+C3 measurements. C3–C8 per-file receipts contain 1,316 compiled-source entries; C9 adds the upstream build-environment file.
 
 Fresh curation requires both executable and metallib SHA-256 values from each
 report's mode-specific identity envelope. An independent raw-report audit
@@ -76,7 +75,8 @@ mismatched artifact identities are refused.
 | C3 | `ac22bd62afbd7e9992f7ea556d0cebe457eb081d` | `49f91100994ffe51ee0e9a928a871fdb544382801d3707aeebeff90661e460b7` | `12f14a45e1c80e3a6ce47db836779fe896f1b59dee4a2804653a195825f69cc7` | M4/M5 task baseline; Qwen/Bonsai scores and MTP; Nemotron score supplement |
 | C5 | `a571e4318ecfe359406b4a8da7af2d3dbb23a3c7` | `eafe9365859a44c2c7f8e7e13ae1caebff463b07b60873e61ec7e058c136b53b` | `f1c3c25239a78bdcaccc57d16bb3065f5d5a21e8b1d9b7de08c539292233adca` | Corrected Gemma QAT task baseline |
 | C7 | `ad0e330dc7b5026d655b7bd52417bf7669596f2c` | `b290e9349127d7206af16e7801ceee3348876b0356a1bea965bd01c80a0cfa10` | `849bdce033cd00d80eb64257ec0f04116700108e6fcfe90d58d44e62d9c293fb` | M5 identical-score controls; real Gemma MTP; encrypted cache cells |
-| C8 | `b02522c8569304754811d01a88b2fd086b338f2a` | `3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa` | `b7c00f1dbfcba088be3c009b85f28a9a6875757561da8a6e70526c40394ee42b` | Final source; actual B4; Gemma 8-bit pair and default alias; GPT cache replay pending |
+| C8 | `b02522c8569304754811d01a88b2fd086b338f2a` | `3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa` | `b7c00f1dbfcba088be3c009b85f28a9a6875757561da8a6e70526c40394ee42b` | KV implementation; actual B4; Gemma 8-bit pair/default alias; strict GPT cache replay |
+| C9 | `b02522c8569304754811d01a88b2fd086b338f2a` | `1336e9576a8144b3ef7701769135cbb14a5bb87275dd131939ecb3106bf20024` | `faa8845e7b398fb0d8ae6a1572456893c56f7bba4bf42859607425b711fc76b2` | Merged master build/environment checks; real GPT default/auto retrieval |
 
 C3→C5 changes six compiled-source files: packed attention/workspace/Metal,
 the bounded smoke driver, and two generation-benchmark/CLI files. The independent
@@ -105,6 +105,16 @@ this catalog cohort, and its provider already refused packed legacy prefix
 codecs. The current-frontier guard affects checkpoint publication, not the
 cache-disabled generation/scoring controls. No attention shader, packed
 transfer or model implementation changed in this C7→C8 source map.
+
+C8→C9 merges master `cea374e88` and changes eleven compiled-source files:
+the package's release-environment setting, coordinator/CDN defaults and their
+CLI, download, MDM and LaunchAgent consumers. All SDK libraries and provider
+inference/quantization files are byte-identical to C8. The local C9 build
+explicitly selects the normal production build environment. Its real GPT-OSS
+CLI run uses auto with no precision argument, resolves paged/balanced, verifies
+the exact artifact, stops normally with the correct retrieval answer and
+produces the same 117 generated tokens as C3's balanced retrieval. This binds
+the merged provider configuration without relabeling the larger C3/C8 matrices.
 
 These scoped facts justify retaining named cohorts. They do not promote the
 failed C7 GPT cache replay into a C8 pass or claim unchanged results for all
@@ -253,8 +263,40 @@ GPT balanced records 224,567,738 written bytes but **fails** strict cancellation
 recovery: recovered tokens differ from the completed donor. Its nominal 73.70%
 write and 77.10% read reductions are **unqualified**, even though both arms
 write eight files, stage M=3,072 and finish with zero KV/process-owner ledgers.
-The C8 native/balanced GPT retake remains PENDING; a local attempt was refused
-by the unchanged system-load gate, and no model result was substituted.
+The fresh C8 M5 native/balanced GPT retake passes the unchanged strict checks.
+Before inference, all ten files of public revision
+`773a7da77e569019bb0fd17a554b263738d669a3` were checked against the manifest:
+12,104,215,835 bytes, with exact per-file hashes and aggregate
+`61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512`.
+The probe uses the same C8 SDK source, executable
+`aebf7d99e8f95e1cee6b1a63e0d60f3450dfa40afa441088b94f524a243ced76`
+and source-matched metallib as the actual B4 probe. M4 entry refusals remain
+recorded; the completed pair ran on M5 with valid entry GPU temperatures
+23.675°C native and 27.374°C balanced.
+
+| Fresh C8 GPT profile | Files | Encrypted write bytes | Authenticated stage-read bytes | Matched / saved tokens per restore | Strict outcome |
+|---|---:|---:|---:|---:|---|
+| Native | 8 | 853,723,034 | 471,240,170 | 3,072 / 3,072 | PASS |
+| Balanced | 4 | 112,283,777 | 84,274,628 | 2,048 / 2,048 | PASS |
+
+There are three authenticated restores per arm: warm tenant, cancellation and
+recovery, each reading two files. Native saves 9,216 tokens in total; balanced
+saves 6,144. The 86.85% write and 82.12% read reductions combine compression
+with coarser packed capture boundaries and fewer files. They are not a
+same-position payload ratio. Public DBK3 headers do not disclose exact
+per-file checkpoint positions; the table uses observed restored endpoints.
+
+The replay probe selects one public retrieval row and deliberately limits
+generation to 64 tokens. Its completed donors/restores finish at `length`,
+while cancellation stops after three tokens. It tests exact same-precision
+replay and isolation, not semantic task accuracy. The root independently
+checks all 21 exact-or-cancelled-prefix array comparisons in each arm, 92
+retained file hashes, runtime/input/model identities and all 21 exposed
+retirement ledgers. Pending retirement is empty. The harness does not expose
+a native-generation count; its nonzero process generation field is an epoch
+identifier, not an owner count. The separate 1,024-token model matrix and
+normal-stop B4 responses provide semantic evidence.
+
 
 Warmth here is within process with the owned ephemeral cache key. Persistent
 key restart warmth, broad fleet demand gating and production write-limit
@@ -265,7 +307,7 @@ relief are not measured.
 
 The C8 M5 Max Qwen3.6 probe verifies exact aggregate
 `d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed`
-and final source digest `3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa`.
+and C8 source digest `3f986fcf1ea104783213a927113fbd4de394c36bbefa56e391cae2a14e3f65aa`.
 Its separate `radix-engine` probe SHA-256 is
 `aebf7d99e8f95e1cee6b1a63e0d60f3450dfa40afa441088b94f524a243ced76`,
 with the same source-matched metallib. Cache and MTP are off.
@@ -301,6 +343,7 @@ claim. Post-run artifact hashes match; no owned remote process remains.
 - Final C8 provider `swift build --build-tests` completes in 78.98s. Affected
   focused checks pass 12 core functions plus two CLI functions; this does not
   relabel the earlier C3 full component run as a fresh C8 full run.
+- Merged C9 provider build completes in 107.01s. Affected environment/configuration, native/packed policy, MDM, coordinator, LaunchAgent and CLI checks pass 142 functions in 15 suites plus ten functions in three CLI suites. The real default/auto GPT control also passes.
 - Final SDK affected gate passes 112 functions/177 parameterized cases with
   zero skips. A removed-guard negative control fails 14 cases, and the exact
   restored source passes again. It includes all
@@ -375,11 +418,13 @@ The curation SHA-256 is
 all eight exact M5 score-arm comparisons, all 16 B4 expected-answer checks,
 the C8 Gemma 8-bit score pair and the actual base-alias default CLI proof.
 
-The strict C8 GPT encrypted native/balanced retest is outstanding. The local
-entry attempts were refused by the unchanged load/thermal predicates; an
-exact public artifact is being downloaded and verified in a new owned M5
-directory. The prior failed result is unqualified. A final evidence update
-is required before this contribution is ready for review.
+The fresh C8 M5 encrypted-cache pair, raw commands, input, headers and
+retained ciphertext inventory are bound by the final summary and independent
+audit below. Ciphertexts and model weights stay in their owned remote roots;
+the bounded local archive contains 93 evidence files, including a 92-file
+content-hash inventory. C7's failed packed replay remains unqualified. C9's
+source delta reconstructs the merged provider source from the full C8 map.
+
 
 
 Portable report evidence is collected under
@@ -390,3 +435,6 @@ Portable report evidence is collected under
 - [C7 encrypted cache](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/encrypted-cache-c7.json) and [C8 encrypted cache](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/encrypted-cache-c8.json).
 - [Gemma MTP](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gemma-mtp-comparison.json), [actual B4](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/width-four-c8.json) and [default Gemma alias](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gemma-base-default-c8.json).
 - [Independent artifact identity audit](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/artifact-identity-audit.json).
+
+- [C8 independent raw-token/hash audit](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/encrypted-cache-c8-audit.json), [reported retirement ledgers](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/encrypted-cache-c8-retirement.json) and [ten-file M5 artifact verification](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gpt-artifact-m5-verification.json).
+- [Merged C9 default/auto GPT control](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gpt-default-c9.json).

@@ -79,3 +79,31 @@ Mac B rows). Level: model, single host. No collective is created.
 | The host gate refuses a Mac with swap in use | B | Before `960b855f5`: refused, "swapped selected-stage resource observation" (about 3 GB swapped, 64 GiB free, pressure normal) | — |
 | With swap admitted at normal pressure, Mac B loads and releases | B | Cut 4, ranks 1 and 0: 2.7 s and 2.2 s; released; no process left; system wired memory 5.33 → 5.60 GiB across both runs | Other cuts not run on B |
 | The two Macs agree on the stage commitment | A and B | Cut 4: `e2e41be21c40…` on both | This is the value the ranks compare before serving; the comparison over the link has not run |
+
+## Link readiness probe (`darkbloom cluster link`, `761f14d64`)
+
+| Claim | Machine | Level | Result |
+|---|---|---|---|
+| A cabled, configured Mac reports ready | A | physical (local state only) | `ready`: one active device, own IPv4 address, IPv4-mapped GID published; five other ports reported down; exit 0 |
+| A port inside the Thunderbolt Bridge is named as the fault | B | physical (local state only) | `portBridgedWithoutAddress` for the active port: member of the bridge, no IPv4 address of its own, no IPv4-mapped GID; exit 1 with the guidance sentence. This is the condition JACCL refused |
+| Parsers, verdicts, bounded child runner | A | unit | 273 expectations in 15 groups; no address, MAC or GID in any report |
+
+## Coordinator fixes
+
+| Claim | Test | Commit | Result |
+|---|---|---|---|
+| An accepted member is acknowledged exactly once, after every refusal point | real in-process provider session, exact wire bytes | `651b08e93` | Fails before ("socket ended before cluster_member_accepted"), passes after; solo and refused registrations receive none |
+| A quarantined pair is released once nothing can still run under it | registry tests on a fake clock | `b048897ca` | Five cases fail before (machine stays `pair_reserved`), pass after |
+| A member's pair grant ends when the member loses trust | ported research test, eight revocation paths | `4b48612ef` | Eight cases fail before, pass after; a passing periodic challenge keeps the grant |
+| Model work is not sent to a member or a held device | ported research tests | `45d21f76d` | Load, prefetch and desired-models crossings fail before, pass after; a member receives an empty desired list |
+| The branch merges with current master | trial merge in a scratch worktree, `go test ./coordinator/...` | merge `c7ddceb51` (not on the branch yet) | Conflicts only in three document date stamps; 103 packages ok; the same two toolchain-related packages fail |
+
+## JACCL fork branch (`darkbloom/jaccl-send-frame-progress-guard`, local only)
+
+Level: unit, simulated verbs (ASan, UBSan, TSan). Nothing here has run on RDMA hardware.
+
+| Claim | Commit | Result |
+|---|---|---|
+| Stale bytes follow a partial payload on the pin, and the fix clears them | `97fbd680` | On the pin 4 of 5 groups fail with a non-zero stale tail; all pass with the fix |
+| A silent peer, a lost completion and a failed completion end in an error, with resources released and the group closed | `aec94c2b` | On the previous commit 34 of 38 cases fail (a silent peer is ended only by the harness watchdog; a failed completion is accepted as data); 38 of 38 pass |
+| The source GID index follows the advertised GID | `83291eb6` | Compiles; no test. On Mac A the IPv4-mapped GID is at index 2, not 1 |

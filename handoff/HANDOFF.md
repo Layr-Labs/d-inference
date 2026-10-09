@@ -16,7 +16,7 @@ one Thunderbolt cable; the link reports 80 Gb/s and RDMA is enabled on both.
 | G0 Review, reproduction, repair | **Passed, with open findings** | Starting revision verified; 13 checks, package tests and coordinator suite reproduced; two coordinator failures shown to be toolchain-related; three independent reviews done; backend plan proven by a real-JACCL build | Work through [DESIGN-gap-map.md](DESIGN-gap-map.md) |
 | G1 Two-Mac qualification | **Passed** | Real collectives over RDMA between the two Macs: 5.36 GiB exact, IP counters at 0.0003% of payload, about 8.7 GiB/s peak; dead-peer behaviour characterized with and without the progress guard; nothing left behind | Keep the guarded JACCL as a requirement for any run with a model loaded |
 | G2 One real model on both ranks | **Passed at the runtime level; product path fixed, not yet run end to end** | Qwen3.5 9B generates across both Macs over RDMA through the pair driver: nine requests up to 8,192 prompt tokens, tokens equal or differing only at near-ties (the two chips alone differ the same way), pair exact run to run, prefill 3,069 tok/s with lookahead against 971 and 2,788 for each Mac alone, decode 60–63 against 60–65 and 77–81; a rank killed mid-decode leaves no process and no memory behind. The installed path (`darkbloom start --local --distributed`) now selects the direct bootstrap the worker accepts, requires the guarded JACCL, lets a fenced worker end itself and clears its own journal; unit and script checks pass | Run one HTTP completion through `darkbloom start --local --distributed` on the two Macs, then the lifecycle faults. Blocked on the Mac B port address (below) |
-| G3 Terminal UI | **Link onboarding built; the rest not started** | `darkbloom cluster` (guided setup: detects the cable and RDMA, plans a port address, applies it under one macOS approval), `cluster link` (`--fix`, `--remove`, `--watch`), `cluster doctor`, `cluster recover`. The address it applies was lost on Mac B after about two hours with no restart or replug, so a one-time alias is not durable on a bridged port | Durable address (A7); then status, start, stop and model verbs wired to the real owner (C13) |
+| G3 Terminal UI | **Link onboarding built with a durable address; the screen is in progress** | `darkbloom cluster` (guided setup: detects the cable and RDMA, plans a port address, applies and keeps it under one macOS approval), `cluster link` (`--fix`, `--remove`, `--watch`, `--dry-run`, `--temporary`), `cluster doctor`, `cluster recover`. An interactive screen wired to these operations is being built on `work/cluster-tui` with a table that says, per element, which real operation backs it | Run the durable address behind a real approval (A7); finish and review the screen; start, stop, join, leave and drain verbs and a follower status surface (C13) |
 | G4 Model matrix | **In progress** | Catalog inventory of the eleven served entries (ten artifacts) with identities; single-Mac validation through the served path is running model by model (night run folder `night-20261009T045500Z`). Distributed: the runtime admits two registered models, Qwen3.5 9B (ran on the pair) and Qwen3.8 27B (verified on each Mac alone, pair run blocked on the link; [QWEN27B-PAIR.md](QWEN27B-PAIR.md)) | Publish the matrix with passed / failed / blocked / untested / unsupported per model and per mode; run the 27B pair when the link is back; decision D4 |
 | G5 Larger models | **Not attempted** | — | After G2 |
 
@@ -46,11 +46,18 @@ Pushed: branch `feat/cluster-two-mac-foundation` on `Layr-Labs/d-inference`, dra
 
 ## What only the owner can unblock
 
-Mac B's port has no address again. It got one through `darkbloom cluster`
-(approved by the owner in the macOS prompt) on 2026-10-08 at about 19:55 PDT
-and had lost it by about 22:20 PDT, with no restart, replug or system sleep
-seen. Every two-Mac run is blocked until the owner runs `darkbloom cluster` on
-Mac B again and approves. The cause and a durable address are open work (A7).
+Mac B's port has no address. Run `darkbloom cluster` on Mac B and approve the
+macOS prompt: the build installed there on 2026-10-09 gives the port its
+address and installs the job that keeps it there (gap A7). Every two-Mac run
+is blocked until then. `darkbloom cluster --dry-run` prints the fourteen
+commands the approval would run and changes nothing; `darkbloom cluster
+--temporary` adds the address only. The durable path has never run behind a
+real approval, so the first thing to do afterwards is `darkbloom cluster link`
+on both Macs, and again a few hours later.
+
+Decisions waiting for the owner: D4 (the 27B on mixed chips), the memory gate
+change in B13, and the defaults taken for B11 (section 10 of
+[DESIGN-stage-transfer.md](DESIGN-stage-transfer.md)).
 
 ## Resuming
 

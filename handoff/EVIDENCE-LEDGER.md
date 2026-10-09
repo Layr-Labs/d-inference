@@ -165,3 +165,18 @@ physical. Run folder `g2-pair-20261009T032724Z`. The provider's own
 | A dead rank with the model loaded does not strand memory | Rank 1 ended with SIGTERM mid-decode at 8,192 tokens: rank 0 reported the JACCL error at its 60 s limit and exited 1 by itself, never signalled; no process on either Mac; wired memory A 12.69 → 12.26 GiB and B 5.66 → 6.14 GiB a few minutes later (B's baseline wandered 5.4–6.1 all session); the next run was exact against the run before the fault | A fault in rank 0, or during prefill, not tried. The survivor waits the whole limit because no cancel is sent (gap B1) |
 | Single-Mac reference is deterministic and releases | Repeat runs exact; 5.04 GB active loaded; 4 KB active and 0 cached after release | — |
 | Checks on the merged branch | `QualificationChecks` 33 tests; library 22 tests in 5 suites; worker tests pass | — |
+
+## Merged branch after the 27B and the durable link (2026-10-09)
+
+Mac A, compile under the build lane and tests under the GPU lane. Level: unit
+and check runners; no model, no pair. Logs: `merged/after-27b-20261009T082846Z`
+and `merged/after-link-durable-20261009T084434Z` in the task's evidence folder.
+
+| Claim | Head | Result | Remaining uncertainty |
+|---|---|---|---|
+| The cluster library builds and its tests pass | `965ed6c73` | 29 tests in 6 suites, including the 27B admission suite | — |
+| The worker package builds for macOS 26.2 and its tests pass | `965ed6c73` | 48 XCTest cases (14 worker, 34 qualification), 0 failures | — |
+| Every check runner passes | `98be2d03a`, then `85af189f8` | 17 runners: 11 library, 2 worker package, 4 provider (link: 2,072 expectations in 32 groups). `PrefillScheduleChecks` failed to compile at `98be2d03a` because the worker configuration now needs the model catalog; fixed in the runner by `85af189f8` and passing | The runner's stand-in runtime now carries the catalog's real pure sources |
+| The provider builds | `98be2d03a` | `swift build` rc 0 | Provider unit tests were not rerun here; CI runs them |
+| The new `darkbloom` behaves on both Macs without privileges | `85af189f8` build | Mac A: link ready, `cluster --dry-run` opens no prompt. Mac B: link reports the recorded address missing and names the command; `cluster --dry-run` prints fourteen commands and changes nothing | Nothing behind the approval has run |
+

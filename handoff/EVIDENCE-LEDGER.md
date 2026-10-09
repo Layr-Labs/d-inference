@@ -98,7 +98,14 @@ Mac B rows). Level: model, single host. No collective is created.
 | Model work is not sent to a member or a held device | ported research tests | `45d21f76d` | Load, prefetch and desired-models crossings fail before, pass after; a member receives an empty desired list |
 | The branch merges with current master | trial merge in a scratch worktree, `go test ./coordinator/...` | merge `c7ddceb51` (not on the branch yet) | Conflicts only in three document date stamps; 103 packages ok; the same two toolchain-related packages fail |
 
-## JACCL fork branch (`darkbloom/jaccl-send-frame-progress-guard`, local only)
+## JACCL fork branch (`darkbloom/jaccl-send-frame-progress-guard`, draft Layr-Labs/mlx#33)
+
+The rows below name the commits that were run. On 2026-10-08 the branch was
+moved onto four upstream backports and pushed; the same three changes are
+`95e89385` (send frame), `cbe63d14` (guard) and `8785a85e` (GID) there, with
+identical source for the mesh path. At the pushed head the simulated-verbs
+tests pass 8 of 8 under ASan and UBSan (rerun locally 2026-10-08 23:10 PDT).
+The two-Mac runs were not repeated on the pushed head.
 
 Level: unit, simulated verbs (ASan, UBSan, TSan). Nothing here has run on RDMA hardware.
 

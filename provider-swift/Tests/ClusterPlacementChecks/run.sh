@@ -13,9 +13,11 @@ task_flags=(-swift-version 6 -warnings-as-errors)
 task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
 xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterProtocol \
   -emit-module-path "$task_build/DarkbloomClusterProtocol.swiftmodule" \
+  -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterProtocol.dylib \
   "$task_repo"/libs/darkbloom-cluster/Sources/DarkbloomClusterProtocol/*.swift -o "$task_build/libDarkbloomClusterProtocol.dylib"
 xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterPlacement \
   -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
+  -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterPlacement.dylib \
   "$task_repo"/libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
 xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
@@ -26,4 +28,18 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift" \
   "$task_provider/Tests/ClusterPlacementChecks/PlacementSetupCheck.swift" -o "$task_build/setup-check"
+# PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
+# there, for `setup-check flow ...` (see PlacementSetupCheck.swift); run it
+# with DYLD_LIBRARY_PATH set to that directory.
+if [[ -n "${PLACEMENT_CHECK_KEEP:-}" ]]; then
+  mkdir -p "$PLACEMENT_CHECK_KEEP"
+  cp "$task_build/setup-check" "$task_build"/libDarkbloomCluster*.dylib "$PLACEMENT_CHECK_KEEP/"
+fi
 "$task_build/setup-check"
+# PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
+# there, for `setup-check flow ...` (see PlacementSetupCheck.swift); run it
+# with DYLD_LIBRARY_PATH set to that directory.
+if [[ -n "${PLACEMENT_CHECK_KEEP:-}" ]]; then
+  mkdir -p "$PLACEMENT_CHECK_KEEP"
+  cp "$task_build/setup-check" "$task_build"/libDarkbloomCluster*.dylib "$PLACEMENT_CHECK_KEEP/"
+fi

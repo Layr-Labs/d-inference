@@ -76,9 +76,11 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public let ranks: [ClusterPlacementRank]
     public let sustained: ClusterPlacementPrediction
     public let rested: ClusterPlacementPrediction
-    /// Worst device answer: 0 fits now, 1 after file cache is released,
-    /// 2 after other programs release memory.
+    /// Worst device answer: 0 fits now, 1 the kernel would give the memory
+    /// but the gate counts less, 2 applications must release memory, 3 only
+    /// a restart would do, 4 never.
     public let tier: Int
+    public var possible: Bool { tier < 4 }
     public let withinGPUWorkingSet: Bool
     /// Smallest share of admissible memory left over on any rank; negative
     /// when a rank does not fit now.
@@ -107,7 +109,7 @@ public struct ClusterPlacementRefusal: Codable, Equatable, Sendable {
         public let device: String
         public let physicalMemoryBytes: Int
         public let admissibleNowBytes: Int
-        public let afterFileCacheReleaseBytes: Int
+        public let withApplicationsClosedBytes: Int
         /// The most it could hold from the start of the model, whatever is
         /// freed on it: a layer count (0 when not even one) and those bytes.
         public let mostLayersAsFirst: Int
@@ -146,7 +148,8 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     public let outputTokens: Int
     public let regime: ClusterPlacementPolicy.Regime
     public let basis: ClusterPlacementBasis
-    /// The chosen placement, or nil when the model is refused.
+    /// The chosen division between devices; nil when none is possible. The
+    /// model is then either held by one Mac alone (`alone`) or refused.
     public let chosen: ClusterPlacementCandidate?
     public let alternatives: [ClusterPlacementCandidate]
     /// The chosen placement had the other regime been optimised.
@@ -193,14 +196,17 @@ public enum ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let admitted = try context.candidates(.admitted)
-        let ranked = context.ordered(admitted.filter { $0.tier < 3 }, regime: policy.regime)
+        let ranked = context.ordered(admitted.filter(\.possible), regime: policy.regime)
         let other: ClusterPlacementPolicy.Regime = policy.regime == .sustained ? .rested : .sustained
-        let structural = context.ordered(try context.candidates(.structural).filter { $0.tier < 3 }, regime: policy.regime).first
-        let anyBoundary = context.ordered(try context.candidates(.anyBoundary).filter { $0.tier < 3 }, regime: policy.regime).first
+        let structural = context.ordered(try context.candidates(.structural).filter(\.possible), regime: policy.regime).first
+        let anyBoundary = context.ordered(try context.candidates(.anyBoundary).filter(\.possible), regime: policy.regime).first
         let basis = ClusterPlacementBasis(source: devices.map(\.speed.source).max() ?? .assumedEqual,
             absolute: devices.allSatisfy(\.speed.absolute), linkCostsMeasured: link.measured)
+        let alone = devices.map(context.alone)
+        // A Mac that holds the whole model is a placement too: the model is
+        // refused only when no division and no single Mac can hold it.
         var refusal: ClusterPlacementRefusal?
-        if ranked.isEmpty {
+        if ranked.isEmpty, !alone.contains(where: \.fit.possible) {
             let extents = devices.map { (first: context.extent($0, first: true), last: context.extent($0, first: false)) }
             var uncovered: (layers: Int, bytes: Int)?
             if devices.count == 2 {
@@ -214,7 +220,7 @@ public enum ClusterPlacementPlanner {
             refusal = .init(devices: zip(devices, extents).map { device, extent in
                 ClusterPlacementRefusal.Device(device: device.label, physicalMemoryBytes: device.profile.physicalMemoryBytes,
                     admissibleNowBytes: device.profile.memory.admissibleNowBytes,
-                    afterFileCacheReleaseBytes: device.profile.memory.afterFileCacheReleaseBytes,
+                    withApplicationsClosedBytes: device.profile.memory.withApplicationsClosedBytes,
                     mostLayersAsFirst: extent.first,
                     mostBytesAsFirst: extent.first > 0 ? layout.range(0..<extent.first).loadedBytes : 0,
                     mostLayersAsLast: extent.last,
@@ -223,7 +229,6 @@ public enum ClusterPlacementPlanner {
                 modelLoadedBytes: layout.wholeModelLoadedBytes, uncoveredLayers: uncovered?.layers, uncoveredBytes: uncovered?.bytes,
                 fitsAtAStructuralCut: structural != nil, fitsAtSomeLayerBoundary: anyBoundary != nil)
         }
-        let alone = devices.map(context.alone)
         var aloneAsFast: [String] = []
         if let chosen = ranked.first {
             let limit = chosen.prediction(policy.regime).requestSeconds * (1 + policy.tieTolerance)
@@ -232,7 +237,7 @@ public enum ClusterPlacementPlanner {
         return .init(runtimeModelID: layout.runtimeModelID, promptTokens: prompt, outputTokens: outputs,
             regime: policy.regime, basis: basis, chosen: ranked.first,
             alternatives: Array(ranked.dropFirst().prefix(policy.alternatives)),
-            chosenForOtherRegime: context.ordered(admitted.filter { $0.tier < 3 }, regime: other).first,
+            chosenForOtherRegime: context.ordered(admitted.filter(\.possible), regime: other).first,
             bestStructural: structural, bestAnyBoundary: anyBoundary,
             alone: alone, aloneAsFast: aloneAsFast, refusal: refusal, candidatesConsidered: admitted.count)
     }
@@ -410,7 +415,7 @@ public enum ClusterPlacementPlanner {
             return .init(cuts: cuts, mode: mode, prefillSchedule: schedule, ranks: ranks,
                 sustained: prediction(.sustained, order: chosen, ranges: ranges, mode: mode, schedule: schedule),
                 rested: prediction(.rested, order: chosen, ranges: ranges, mode: mode, schedule: schedule),
-                tier: ranks.map(\.fit.tier).max() ?? 3, withinGPUWorkingSet: ranks.allSatisfy(\.withinGPUWorkingSet),
+                tier: ranks.map(\.fit.tier).max() ?? 4, withinGPUWorkingSet: ranks.allSatisfy(\.withinGPUWorkingSet),
                 smallestHeadroomShare: headroom)
         }
 
@@ -438,8 +443,9 @@ public enum ClusterPlacementPlanner {
         }
 
         /// Best first: tier; then inside the GPU working set; then, among
-        /// placements that fit now, those with comfortable headroom; then
-        /// predicted request time. Equal times are broken by the larger
+        /// placements that fit now, those with comfortable headroom; among
+        /// placements that do not, the fewest Macs asked for memory and the
+        /// least asked; then predicted request time. Equal times are broken by the larger
         /// smallest headroom, the lower cut, the devices' labels in rank order
         /// and the mode's place in the layout. Nothing depends on the order
         /// the devices were given in, so the result is the same whichever
@@ -450,8 +456,17 @@ public enum ClusterPlacementPlanner {
                 return c.tier * 4 + (c.withinGPUWorkingSet ? 0 : 2) + (tight ? 1 : 0)
             }
             func time(_ c: ClusterPlacementCandidate) -> Double { c.prediction(regime).requestSeconds }
+            // Among placements that do not pass the gate now, the one that asks
+            // the fewest Macs for memory comes first, then the one that asks
+            // for the least, in whole GiB so that rounding does not decide.
+            func waiting(_ c: ClusterPlacementCandidate) -> Int { c.ranks.filter { $0.fit != .now }.count }
+            func short(_ c: ClusterPlacementCandidate) -> Int {
+                c.ranks.reduce(0) { $0 + max(0, $1.needBytes - $1.admissibleNowBytes) } / 1_073_741_824
+            }
             return candidates.sorted { a, b in
                 if group(a) != group(b) { return group(a) < group(b) }
+                if waiting(a) != waiting(b) { return waiting(a) < waiting(b) }
+                if short(a) != short(b) { return short(a) < short(b) }
                 if time(a) != time(b) { return time(a) < time(b) }
                 if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
                 if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }

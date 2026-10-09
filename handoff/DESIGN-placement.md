@@ -92,23 +92,32 @@ for a change to the 32 GiB cache cap), the profile changes with it and the
 planner follows without an edit; the check fails if the reduction above stops
 being exact.
 
-Three more numbers say what would change a refusal:
+A Mac's memory is three parts with three different remedies, and the profile
+keeps them apart; the output never adds them up:
 
-| Number | Meaning |
-|---|---|
-| `admissibleNowBytes` | Free plus the file cache the gate counts, now |
-| `afterFileCacheReleaseBytes` | Pageable minus anonymous: what the gate would compare with if every cached file were dropped. No program has to close |
-| `physicalMemoryBytes` | Nothing beyond this is possible on this Mac |
+| Part | In the record | Remedy |
+|---|---|---|
+| Free pages | `actualFreeBytes` | None needed |
+| File cache above the kernel's minimum | `fileCacheAboveReserveBytes` | None needed: the kernel gives it up without touching an application. The gate counts part of it (`countedFileCacheBytes`) |
+| File cache the kernel keeps as its minimum | `fileCacheReserveBytes` (the 10/27 term, as the gate computed it) | None short of a restart. Measured on this pair: the kernel gave cache up freely down to this figure and then compressed applications within a second. It is never promised |
+| Applications | `anonymousBytes` | Closing them turns their memory into free pages |
+| Wired and compressed | `wiredBytes`, `compressorBytes` | None in a session |
 
-They give every requirement on every device one of four answers: **fits
-now**; **fits once file cache is released** (by how much more must be
-admissible); **fits only if other programs release memory** (by how much);
-**cannot fit on this Mac** (by how much). The second answer is the state the
-gate's cap on counted cache produces for a large stage right after a
-download. The planner reports it as it is. It does not manipulate memory and
-does not suggest doing so. A stage larger than the allocator's limit or a
-tensor larger than the GPU's buffer limit is the fourth answer whatever is
-free, because freeing memory moves neither.
+From these, every requirement on every device gets one of five answers:
+
+| Answer | Condition | What the output says |
+|---|---|---|
+| **fits now** | the gate's own comparison admits it | |
+| **the gate counts less** | not admitted, but within free pages plus cache above the kernel's minimum | The gate's rule refuses, not the Mac's memory; nothing has to close. This is the state the gate's cap produces for a large stage after a download, and it is a finding about the gate |
+| **applications must release** | within everything pageable except the kernel's cache minimum | How much applications must release; the kernel's minimum is named as not reclaimable |
+| **only a restart** | within everything that is not wired | Even with every application closed it is short, by how much |
+| **never** | beyond that, beyond the allocator's limit, or a tensor beyond the GPU's buffer limit | Short by how much |
+
+The memory block is an observation of one moment. It is taken when a session
+is planned and says when (`sampledUTC`, printed with the profile); it is not
+cached with a speed measurement, whose key has no memory in it. On this pair
+the admissible figure of one Mac moved between 27 and 44 GiB within twenty
+minutes, and the 173 GB model's cut moved with it.
 
 ### How a profile travels
 
@@ -318,14 +327,14 @@ zero and the output says the decode figure is an upper bound.
 1. Enumerate every candidate over the admitted cuts (two devices: both
    orders, every cut, every allowed mode; a few hundred evaluations).
 2. Give each device in each candidate its answer from section 1. A candidate's
-   tier is its worst device's answer. A candidate with a device that cannot
-   fit is dropped.
-3. Rank by, in order: tier (fits now, fits after cache is released, fits
-   after other programs release memory); every range inside its device's GPU
-   working set; among those that fit now, comfortable before tight (the
-   tightest rank keeps at least a tenth of its need in reserve, so memory that
-   moves a little between planning and loading does not refuse it); predicted
-   time for the reference request.
+   tier is its worst device's answer. A candidate with a device whose answer
+   is "never" is dropped.
+3. Rank by, in order: tier; every range inside its device's GPU working set;
+   among those that fit now, comfortable before tight (the tightest rank
+   keeps at least a tenth of its need in reserve, so memory that moves a
+   little between planning and loading does not refuse it); among those that
+   do not fit now, the fewest Macs asked for memory, then the least asked, in
+   whole GiB; predicted time for the reference request.
 4. Equal times are broken by the larger smallest reserve, the lower cut, the
    members' labels in rank order and the mode's place in the layout. Nothing
    depends on the order the devices were given in, so the answer is the same
@@ -346,9 +355,11 @@ another.
 
 ### Refusal rule
 
-The planner refuses only when no candidate survives step 2: for every order,
-cut and mode, some device cannot hold its range even with everything else on
-it closed. The refusal states, per device, what it has and the most it could
+The planner refuses only when no candidate survives step 2 and no Mac holds
+the model alone: for every order, cut and mode, some device cannot hold its
+range whatever is freed. A Mac that holds the whole model is a placement too;
+when no division is possible and one Mac can hold it, the result says that
+and names the ordinary single-Mac path, and is not a refusal. The refusal states, per device, what it has and the most it could
 hold from the start of the model and from its end, whatever is freed; for a
 pair, the layers that are left with no Mac able to hold them in the better
 order; the admitted placement that comes closest, with each rank's shortfall;
@@ -363,8 +374,8 @@ load gate on each Mac decides when it loads, on what that Mac has then, and
 because the plan and the gate use one rule a rank that fits in the plan is
 refused at load only if its memory has changed.
 
-This is the owner's rule made checkable: *refused ⇔ no placement is
-possible*. A check enumerates every order, cut and mode by plain loops,
+This is the owner's rule made checkable: *a division is chosen ⇔ one is
+possible, and the model is refused ⇔ none is and no Mac holds it alone*. A check enumerates every order, cut and mode by plain loops,
 evaluates each alone, and requires exactly that, for every constructed device
 mix.
 
@@ -390,6 +401,45 @@ a pin move of `mlx-swift-lm`, then one line in the plan, and the existing
 receipts as the oracle since every cut that exists today keeps its bytes. It
 is not done here. What it would buy on this pair is in the validation: 2 to
 3 % of the first-token time for the 27B.
+
+### Refinement from the running pair (planned, not built)
+
+The first choice comes from each Mac's figures alone, and a Mac's settled
+rate is not a property of the Mac alone. On this pair Mac B settles at about
+545 tok/s when it serves the 27B by itself (fifteen seconds of prefill per
+request) and at about 640 to 675 inside the pair (nine to ten seconds), so a
+plan made from the solo sustained figure under-predicts every cut Mac B
+limits by 15 to 22 % and picks cut 24 where cut 20 is measured best. The
+cuts Mac A limits are predicted within 3 %. No constant is adjusted to hide
+this; it is the design's next piece.
+
+- **What is already timed.** Each rank times its own stage per frame: the
+  staged reference reports per-frame stage 0, residual copy and stage 1
+  times, the worker's qualification record carries the same per rank, and
+  the provider's `DistributedRequestObservation` logs first-token time and
+  rates per request (logged only; nothing reads it back). The quantity the
+  planner needs is each rank's prefill seconds per token in the placement
+  that is running: `t_r` measured instead of predicted.
+- **The rule.** After a window of requests, compare the ranks' measured
+  `t_r`. If the bottleneck is not the rank the plan predicted, or the two
+  differ by more than one cut position is worth, move the cut one admitted
+  position toward the measured bottleneck (it takes fewer layers) and
+  re-plan with the measured rates in place of the solo ones. One position at
+  a time, and never to a cut whose memory answer is worse.
+- **What a cut change costs.** A cut is fixed for a session: both ranks bind
+  the Plan into their load agreement and load their stage against it, so a
+  new cut is a new session: both stages reloaded (7 to 14 s per rank for the
+  27B, hash included; under a phase split the last rank loads everything)
+  and no request in flight. It therefore happens only between requests, at a
+  session rotation the envelope already forces (16 requests or 300 s), and
+  only when the predicted gain outweighs one reload. Layers moving between
+  ranks without a reload would need the stage-transfer work and a second
+  agreement; that is not proposed.
+- **What it needs.** The per-rank stage time reported in the worker's
+  request-finished event (today only in qualification evidence), the
+  provider reading its own observations back, and the measured rates stored
+  as a `ClusterSpeedMeasurement` whose probe shape names the placement, so
+  the estimator can prefer it to a solo figure for that placement.
 
 ### Beyond two Macs
 
@@ -535,20 +585,51 @@ bytes are conserved across ingress, layers, egress and the excluded set.
 A family's speed probe reports a `ClusterSpeedMeasurement`. Nothing else in
 the speed path knows the family.
 
+## What each Mac holds, in one line
+
+`ClusterPlacementExplanation.holdings` says which layers and how many GiB
+each Mac holds while a session of a placement is up, beside the Mac's own
+size ("mac-b holds layers 0 to 39: 8.65 GiB of weights of its 128.00 GiB;
+mac-a holds layers 40 to 63 and, to decode alone, every earlier layer too:
+14.12 GiB of weights of its 256.00 GiB"), so a small share on a large Mac is
+not read as nothing running. The guided step prints it with the plan.
+
+For the live status view (`darkbloom cluster status`, the console's
+`model.ranks` row) the line has two possible sources. The layers are already
+there, from the saved setup's Plan. The bytes can come from the layout (one
+run of the plan tool's `layout` for the installed model, milliseconds), which
+is what the plan said; or from each rank's load receipt, which is what was
+loaded. The worker's `ready` event carries request capacity and not loaded
+bytes today, so the receipt-backed line needs one field added there. Neither
+is wired into the status view yet.
+
 ## Status
 
-Built and checked without hardware (`libs/darkbloom-cluster/Tests/PlacementChecks`,
-`provider-swift/Tests/ClusterPlacementChecks`):
+Built and checked without hardware (`libs/darkbloom-cluster/Tests/PlacementChecks`, 190 checks;
+`provider-swift/Tests/ClusterPlacementChecks`, 19; `libs/darkbloom-cluster-worker/Tests/QualificationChecks`, 42 tests):
 
 - The placement target: profile, layout and builder, estimator, planner,
-  explanation.
+  budgets, explanation.
 - The gate bridge and the check that the profile's reduction of the gate is
   exact.
 - The dense Qwen conformance, with layouts that reproduce recorded stage
   sizes and the load gate's recorded asks.
 - The plan tool's logic, and the provider's step that turns a placement into
-  both members' setups (wiring (a), the decision; see below for what has and
-  has not been compiled into a product).
+  both members' setups.
+- The pair driver's `--local-rank`, so a placement whose first range belongs
+  on the second Mac can be run from the Mac that can reach the other.
 
-See the task's evidence folder `placement-20261009` for what was run on the
-two Macs, and the handoff's final report for what is not done.
+Built as a product and run on both Macs: `darkbloom-cluster-plan` (`device`
+on each Mac; `layout` and `plan` on real artifacts with both Macs' detected
+profiles).
+
+Written and not compiled: `ClusterPlacementFlow.run` and the
+`darkbloom cluster plan` command (they need the provider build).
+
+Not built: the speed probe for the dense Qwen models (recorded solo runs
+stand in as measurements); the model-free device index has code and has not
+been run; wiring (b) and (c) beyond the pure budget derivation; the
+refinement above; the status line in the status view.
+
+What was run on the two Macs is in the task's evidence folder
+`placement-20261009`.

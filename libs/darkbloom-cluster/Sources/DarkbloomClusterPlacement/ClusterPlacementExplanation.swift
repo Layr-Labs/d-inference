@@ -23,10 +23,16 @@ public enum ClusterPlacementExplanation {
         switch fit {
         case .now:
             return "fits now"
-        case .afterFileCacheRelease(let bytes):
-            return "does not fit now: \(gibText(bytes, roundUp: true)) more must be admissible, and this Mac holds that in cached files, so nothing has to close"
-        case .afterProgramsRelease(let bytes):
-            return "does not fit now: other programs would have to release \(gibText(bytes, roundUp: true)) first"
+        case .gateCountsLess(let bytes):
+            return "does not pass the load gate now, by \(gibText(bytes, roundUp: true)). This Mac's free pages and the file cache above the kernel's "
+                + "own minimum would cover it without an application losing memory; the gate counts less of that cache than there is, "
+                + "so its rule refuses here, not the Mac's memory. Nothing has to close"
+        case .afterApplicationsRelease(let bytes):
+            return "does not fit now: applications would have to release \(gibText(bytes, roundUp: true)) first. "
+                + "The file cache the kernel keeps as its minimum does not count; it is not memory that closing or waiting frees"
+        case .afterRestart(let bytes):
+            return "does not fit as this Mac is: with every application closed it would still be \(gibText(bytes, roundUp: true)) short, "
+                + "because the kernel keeps its minimum of file cache. Only a restart empties that"
         case .never(let bytes):
             return "cannot fit on this Mac whatever is freed: short by \(gibText(bytes, roundUp: true))"
         }
@@ -37,14 +43,17 @@ public enum ClusterPlacementExplanation {
         var lines = ["\(label): \(profile.chip), \(profile.performanceCores) performance and \(profile.efficiencyCores) efficiency cores"
             + (profile.gpuCores.map { ", \($0) GPU cores" } ?? "") + ", macOS \(profile.osVersion) (\(profile.osBuild)), "
             + "\(gibText(profile.physicalMemoryBytes)) of memory."]
+        // Three parts with three remedies, so they are never added up.
+        lines.append("  Memory as sampled at \(m.sampledUTC): \(gibText(m.actualFreeBytes)) free; \(gibText(m.anonymousBytes)) held by applications "
+            + "(closing them frees it); \(gibText(m.fileBackedBytes)) of file cache, of which the kernel keeps \(gibText(min(m.fileBackedBytes, m.fileCacheReserveBytes))) "
+            + "as its minimum (not reclaimable short of a restart) and would give up \(gibText(m.fileCacheAboveReserveBytes)); "
+            + "\(gibText(m.wiredBytes + m.compressorBytes)) wired or compressed.")
         if m.judged {
-            lines.append("  The load gate would admit \(gibText(m.admissibleNowBytes)) now: \(gibText(m.actualFreeBytes)) free plus "
-                + "\(gibText(m.countedFileCacheBytes)) of the \(gibText(m.fileBackedBytes)) in cached files (rule \(m.gatePolicy)).")
+            lines.append("  The load gate would admit \(gibText(m.admissibleNowBytes)) now: the free pages plus \(gibText(m.countedFileCacheBytes)) "
+                + "of that cache (rule \(m.gatePolicy)). With every application closed: \(gibText(m.withApplicationsClosedBytes)).")
         } else {
             lines.append("  The load gate would not judge this Mac's memory now: \(m.unjudgedReason ?? "no reason given").")
         }
-        lines.append("  If every cached file were released it could admit \(gibText(m.afterFileCacheReleaseBytes)); "
-            + "\(gibText(m.anonymousBytes)) is other programs' memory, \(gibText(m.wiredBytes)) wired.")
         lines.append("  Its GPU says an application may keep \(gibText(profile.gpuRecommendedWorkingSetBytes)) resident.")
         if !profile.power.admitsExecution {
             lines.append("  A request would be refused here now: external power \(profile.power.onExternalPower ? "yes" : "no"), "
@@ -109,6 +118,18 @@ public enum ClusterPlacementExplanation {
         return lines
     }
 
+    /// One line saying what each Mac holds while a session of this placement
+    /// is up: which layers and how much, beside the Mac's own size, so that a
+    /// small share on a large Mac is not read as nothing running there.
+    public static func holdings(_ c: ClusterPlacementCandidate, devices: [ClusterPlacementDevice]) -> String {
+        "While the session is up: " + c.ranks.map { r in
+            let size = devices.first { $0.label == r.device }.map { " of its \(gibText($0.profile.physicalMemoryBytes))" } ?? ""
+            let every = c.mode == .phaseSplit && r.rank == c.ranks.count - 1 && r.rank > 0
+            return "\(r.device) holds layers \(r.firstLayer) to \(r.endLayer - 1)"
+                + (every ? " and, to decode alone, every earlier layer too" : "") + ": \(gibText(r.weightsBytes)) of weights\(size)"
+        }.joined(separator: "; ") + "."
+    }
+
     public static func describe(_ result: ClusterPlacementResult, devices: [ClusterPlacementDevice],
                                 layout: ClusterModelLayout, link: ClusterLinkCosts = .unmeasured) -> [String] {
         var lines = ["What each Mac detected"]
@@ -121,6 +142,7 @@ public enum ClusterPlacementExplanation {
         if let chosen = result.chosen {
             lines.append(chosen.tier == 0 ? "Chosen placement" : "Chosen placement (it does not fit now; see each rank)")
             lines += candidate(chosen, basis: result.basis, prompt: result.promptTokens, outputs: result.outputTokens).map { "  " + $0 }
+            lines.append("  " + holdings(chosen, devices: devices))
             lines.append("  Predicted for \(request):")
             lines.append("    " + prediction(chosen.prediction(result.regime), result.basis, prompt: result.promptTokens, outputs: result.outputTokens))
             let other: ClusterPlacementPolicy.Regime = result.regime == .sustained ? .rested : .sustained
@@ -137,12 +159,12 @@ public enum ClusterPlacementExplanation {
             lines.append("  This is a plan, not an admission. The load gate on each Mac decides when it loads, on what that Mac has then; "
                 + "the plan and the gate use one rule, so a rank that fits here is refused there only if its memory has changed.")
         } else if let refusal = result.refusal {
-            lines.append("Refused: no placement of this model on these Macs fits, whatever is freed")
+            lines.append("Refused: no division of this model between these Macs is possible, and no Mac holds it alone")
             lines.append("  The model holds \(gibText(refusal.modelLoadedBytes)) when loaded, and each rank needs its load and request headroom on top of its share.")
             for d in refusal.devices {
-                lines.append("  \(d.device): \(gibText(d.physicalMemoryBytes)) of memory, \(gibText(d.admissibleNowBytes)) admissible now. "
-                    + "Whatever is freed on it, it could hold at most the first \(d.mostLayersAsFirst) layers (\(gibText(d.mostBytesAsFirst))) "
-                    + "or the last \(d.mostLayersAsLast) (\(gibText(d.mostBytesAsLast))).")
+                lines.append("  \(d.device): \(gibText(d.physicalMemoryBytes)) of memory, \(gibText(d.admissibleNowBytes)) admissible now, "
+                    + "\(gibText(d.withApplicationsClosedBytes)) with every application closed. Whatever is freed on it, it could hold at most the first "
+                    + "\(d.mostLayersAsFirst) layers (\(gibText(d.mostBytesAsFirst))) or the last \(d.mostLayersAsLast) (\(gibText(d.mostBytesAsLast))).")
             }
             if let layers = refusal.uncoveredLayers, let bytes = refusal.uncoveredBytes, layers > 0 {
                 lines.append("  In the better order that leaves \(layers) layers (\(gibText(bytes, roundUp: true))) that neither Mac could hold.")
@@ -157,6 +179,12 @@ public enum ClusterPlacementExplanation {
                 lines.append("  A layer boundary the model's stage plan cannot cut at would fit. The plan's cut rule refuses this model, not the Macs' memory.")
             } else {
                 lines.append("  Freeing memory on these Macs cannot change this: at every layer boundary and in every order, some share is more than its Mac can ever admit.")
+            }
+        } else {
+            // No division is possible, and a Mac holds the model alone.
+            lines.append("No division between these Macs is possible; one Mac holds the model alone")
+            for a in result.alone where a.fit.possible {
+                lines.append("  \(a.device) alone needs \(gibText(a.needBytes, roundUp: true)): \(describe(a.fit)). That is the ordinary single-Mac path, not a cluster session.")
             }
         }
         if !result.alternatives.isEmpty {
@@ -226,7 +254,7 @@ public enum ClusterPlacementExplanation {
                 + "is predicted that much faster and is not a position the plan can cut at.")
         }
         if chosen.tier > 0 {
-            lines.append("No admitted placement fits now; this is the best of those that fit once memory is freed.")
+            lines.append("No admitted placement passes the load gate now; this is the best of those that could, with what each rank says is in the way.")
         }
         return lines
     }

@@ -111,6 +111,13 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
     /// Free plus counted: what a decision taken now is compared with.
     public let admissibleNowBytes: Int
     public let fileBackedBytes: Int
+    /// The kernel's own file-cache minimum on this sample. It gives cache up
+    /// freely down to this and then turns to compressing applications, so
+    /// cache below it is not memory a model can be given.
+    public let fileCacheReserveBytes: Int
+    /// File cache above that minimum: what the kernel would give up before
+    /// it touches an application. The gate counts part of it.
+    public let fileCacheAboveReserveBytes: Int
     public let anonymousBytes: Int
     public let wiredBytes: Int
     public let compressorBytes: Int
@@ -129,7 +136,8 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
 
     public init(gatePolicy: String, sampledUTC: String, judged: Bool, unjudgedReason: String?,
                 physicalMemoryBytes: Int, actualFreeBytes: Int, countedFileCacheBytes: Int,
-                admissibleNowBytes: Int, fileBackedBytes: Int, anonymousBytes: Int, wiredBytes: Int,
+                admissibleNowBytes: Int, fileBackedBytes: Int, fileCacheReserveBytes: Int,
+                fileCacheAboveReserveBytes: Int, anonymousBytes: Int, wiredBytes: Int,
                 compressorBytes: Int, pageableBytes: Int, pressureLevel: Int, swapUsedBytes: Int,
                 minimumAdmissibleBytes: Int, minimumTrulyFreeBytes: Int, loadingHeadroomBytes: Int,
                 allocatorHeadroomBytes: Int, loadScratchBytes: Int, pageSizeBytes: Int) {
@@ -137,6 +145,7 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
         self.unjudgedReason = unjudgedReason; self.physicalMemoryBytes = physicalMemoryBytes
         self.actualFreeBytes = actualFreeBytes; self.countedFileCacheBytes = countedFileCacheBytes
         self.admissibleNowBytes = admissibleNowBytes; self.fileBackedBytes = fileBackedBytes
+        self.fileCacheReserveBytes = fileCacheReserveBytes; self.fileCacheAboveReserveBytes = fileCacheAboveReserveBytes
         self.anonymousBytes = anonymousBytes; self.wiredBytes = wiredBytes
         self.compressorBytes = compressorBytes; self.pageableBytes = pageableBytes
         self.pressureLevel = pressureLevel; self.swapUsedBytes = swapUsedBytes
@@ -147,7 +156,8 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
 
     func validate() throws {
         let counters = [physicalMemoryBytes, actualFreeBytes, countedFileCacheBytes, admissibleNowBytes,
-            fileBackedBytes, anonymousBytes, wiredBytes, compressorBytes, pageableBytes, swapUsedBytes,
+            fileBackedBytes, fileCacheReserveBytes, fileCacheAboveReserveBytes, anonymousBytes, wiredBytes,
+            compressorBytes, pageableBytes, swapUsedBytes,
             minimumAdmissibleBytes, minimumTrulyFreeBytes, loadingHeadroomBytes, allocatorHeadroomBytes,
             loadScratchBytes, pressureLevel]
         guard (1...1_048_576).contains(pageSizeBytes), !gatePolicy.isEmpty, gatePolicy.utf8.count <= 96, sampledUTC.utf8.count <= 64,
@@ -157,7 +167,8 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
               anonymousBytes <= physicalMemoryBytes, wiredBytes <= physicalMemoryBytes,
               compressorBytes <= physicalMemoryBytes,
               admissibleNowBytes == actualFreeBytes + countedFileCacheBytes,
-              countedFileCacheBytes <= fileBackedBytes, judged == (unjudgedReason == nil) else {
+              fileCacheAboveReserveBytes <= fileBackedBytes, countedFileCacheBytes <= fileCacheAboveReserveBytes,
+              judged == (unjudgedReason == nil) else {
             throw ClusterPlacementError("Device memory record contradicts itself")
         }
     }
@@ -172,22 +183,32 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
             && admissibleNowBytes >= required
     }
 
-    /// What the gate would compare with if every cached file were dropped:
-    /// free pages equal to everything pageable that is not anonymous. No
-    /// program has to close for this Mac to reach it.
-    public var afterFileCacheReleaseBytes: Int { max(0, pageableBytes - anonymousBytes) }
+    /// Free pages plus the file cache above the kernel's minimum: what this
+    /// Mac can give a model without an application losing memory. The gate
+    /// admits on part of it; the rest is the gate's margin, not memory in use.
+    public var kernelWouldGiveBytes: Int { actualFreeBytes + fileCacheAboveReserveBytes }
 
-    /// Which of the four answers a requirement gets on this Mac.
+    /// What this Mac could give with every application closed: everything
+    /// pageable except the file cache the kernel keeps for itself. Closing an
+    /// application turns its memory into free pages; it does not shrink the
+    /// kernel's cache minimum.
+    public var withApplicationsClosedBytes: Int { max(0, pageableBytes - min(fileBackedBytes, fileCacheReserveBytes)) }
+
+    /// What a restart could give: everything that is not wired. Nothing the
+    /// owner can do in a session reaches this.
+    public var afterRestartBytes: Int { min(physicalMemoryBytes, pageableBytes + compressorBytes) }
+
+    /// Which answer a requirement gets on this Mac.
     public func fit(_ requiredBytes: Int) -> ClusterPlacementFit {
         if admits(requiredBytes) { return .now }
         let required = max(minimumAdmissibleBytes, requiredBytes)
         if required > physicalMemoryBytes { return .never(shortBytes: required - physicalMemoryBytes) }
         // A sample the gate would not judge says nothing about what is free.
-        guard judged else { return .afterProgramsRelease(bytes: required) }
-        if required <= afterFileCacheReleaseBytes {
-            return .afterFileCacheRelease(bytes: max(0, required - admissibleNowBytes))
-        }
-        return .afterProgramsRelease(bytes: required - afterFileCacheReleaseBytes)
+        guard judged else { return .afterApplicationsRelease(bytes: required) }
+        if required <= kernelWouldGiveBytes { return .gateCountsLess(bytes: max(0, required - admissibleNowBytes)) }
+        if required <= withApplicationsClosedBytes { return .afterApplicationsRelease(bytes: required - kernelWouldGiveBytes) }
+        if required <= afterRestartBytes { return .afterRestart(bytes: required - withApplicationsClosedBytes) }
+        return .never(shortBytes: required - afterRestartBytes)
     }
 }
 
@@ -215,28 +236,39 @@ public struct ClusterDevicePower: Codable, Equatable, Sendable {
     }
 }
 
-/// One device's answer to one requirement, best first.
+/// One device's answer to one requirement, best first. The remedies differ,
+/// so the answers are kept apart: free pages and countable cache are there
+/// now; cache above the kernel's minimum is there but only partly counted by
+/// the gate; applications can be closed; the kernel's own cache minimum goes
+/// only with a restart.
 public enum ClusterPlacementFit: Codable, Equatable, Sendable {
     /// The gate would admit it on the sample in the profile.
     case now
-    /// It would be admitted once this many more bytes were admissible, and the
-    /// Mac holds at least that much in cached files. No program has to close.
-    case afterFileCacheRelease(bytes: Int)
-    /// Other programs would have to release this much memory first.
-    case afterProgramsRelease(bytes: Int)
-    /// Not on this Mac, whatever is freed: short by this much.
+    /// The kernel would give this Mac's file cache above its minimum to the
+    /// load without touching an application, and that would be enough; the
+    /// gate counts less of that cache than there is, so it refuses, by this
+    /// many bytes. The gate's rule refuses here, not the Mac's memory.
+    case gateCountsLess(bytes: Int)
+    /// Applications would have to release this much first.
+    case afterApplicationsRelease(bytes: Int)
+    /// Even with every application closed it is this much short, because the
+    /// kernel keeps its minimum of file cache. Only a restart empties that.
+    case afterRestart(bytes: Int)
+    /// Not on this Mac: short by this much of what is not wired, or beyond
+    /// the allocator's or the GPU's own limit.
     case never(shortBytes: Int)
 
     /// 0 best. A candidate's tier is its worst device's.
     public var tier: Int {
         switch self {
         case .now: return 0
-        case .afterFileCacheRelease: return 1
-        case .afterProgramsRelease: return 2
-        case .never: return 3
+        case .gateCountsLess: return 1
+        case .afterApplicationsRelease: return 2
+        case .afterRestart: return 3
+        case .never: return 4
         }
     }
-    public var possible: Bool { tier < 3 }
+    public var possible: Bool { tier < 4 }
 }
 
 public struct ClusterPlacementError: Error, CustomStringConvertible, Equatable, Sendable {

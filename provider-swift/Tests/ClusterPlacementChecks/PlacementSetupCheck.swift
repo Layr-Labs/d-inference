@@ -23,7 +23,7 @@ import Foundation
         let physical = physicalGiB * gib, free = freeGiB * gib
         let memory = ClusterDeviceMemory(gatePolicy: "check", sampledUTC: "2026-10-09T00:00:00Z", judged: true, unjudgedReason: nil,
             physicalMemoryBytes: physical, actualFreeBytes: free, countedFileCacheBytes: 0, admissibleNowBytes: free,
-            fileBackedBytes: 0, anonymousBytes: physical - free - 4 * gib, wiredBytes: 4 * gib, compressorBytes: 0,
+            fileBackedBytes: 0, fileCacheReserveBytes: 0, fileCacheAboveReserveBytes: 0, anonymousBytes: physical - free - 4 * gib, wiredBytes: 4 * gib, compressorBytes: 0,
             pageableBytes: physical - 4 * gib, pressureLevel: 1, swapUsedBytes: 0, minimumAdmissibleBytes: 6 * gib,
             minimumTrulyFreeBytes: 16 * 1_048_576, loadingHeadroomBytes: 4 * gib, allocatorHeadroomBytes: 2 * gib,
             loadScratchBytes: 8 * 1_048_576, pageSizeBytes: 16_384)
@@ -35,7 +35,38 @@ import Foundation
             rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: decode), sustained: nil, explanation: "check"))
     }
 
+    /// `setup-check flow PAIR CAPABILITY MEMBER LOCAL_PROFILE PEER_PROFILE LAYOUT OUT [SPEED...]`
+    /// runs the guided step's own decision on files, for looking at what it
+    /// prints for a real pair without the provider build. The profiles and
+    /// the layout are the ones `darkbloom-cluster-plan` printed; nothing is
+    /// detected here. It writes the two setups into OUT, a new directory.
+    static func flow(_ arguments: [String]) throws {
+        guard arguments.count >= 7 else { throw ClusterConfigurationError.invalid("flow needs PAIR CAPABILITY MEMBER LOCAL_PROFILE PEER_PROFILE LAYOUT OUT [SPEED...]") }
+        func read(_ path: String) throws -> Data { try Data(contentsOf: URL(fileURLWithPath: path)) }
+        let description = try ClusterPairDescription.decode(read(arguments[0]))
+        let capabilityData = try read(arguments[1])
+        guard ClusterConfigurationCodec.sha256(capabilityData) == description.capabilitySHA256 else {
+            throw ClusterConfigurationError.invalid("the pair description pins another capability record")
+        }
+        let decided = try ClusterPlacementFlow.decide(description: description,
+            capability: try ClusterRuntimeCapabilityCodec.decode(capabilityData), localMemberID: arguments[2],
+            localProfile: try ClusterDeviceProfile.decode(read(arguments[3])), peerProfile: try ClusterDeviceProfile.decode(read(arguments[4])),
+            layout: try ClusterModelLayout.decode(read(arguments[5])),
+            measurements: try arguments.dropFirst(7).map { try JSONDecoder().decode(ClusterSpeedMeasurement.self, from: read($0)) })
+        for line in decided.lines { print(line) }
+        guard let setup = decided.setup else { return }
+        let output = URL(fileURLWithPath: arguments[6], isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        for (member, data) in setup.configurations { try data.write(to: output.appendingPathComponent(member + ".setup.json")) }
+    }
+
     static func main() throws {
+        if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "flow" {
+            do { try flow(Array(CommandLine.arguments.dropFirst(2))) } catch {
+                FileHandle.standardError.write(Data("\(error)\n".utf8)); exit(1)
+            }
+            return
+        }
         // A 32-layer model of 5 GiB with the 9B's four admitted cuts.
         var part = ClusterModelLayout.Part(storedBytes: gib / 8, loadedBytes: gib / 8, largestTensorBytes: gib / 16, tensorCount: 30)
         part.requestWorkBytes = 0

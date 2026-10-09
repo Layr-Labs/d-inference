@@ -130,7 +130,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	for _, action := range actions {
 		if p, ok := r.providers[action.ProviderID]; ok {
 			p.mu.Lock()
-			eligible := p.executionRolePermitsLocked(false) && !r.providerPairHeldLocked(p, now, nil) && !providerLegacyModelChangesBlockedLocked(p) && p.warmLifecycleLocked().CanLoad(now) && r.providerCanAcquireCatalogModelLocked(p, action.ModelID)
+			eligible := !providerLegacyModelChangesBlockedLocked(p) && p.warmLifecycleLocked().CanLoad(now) && r.providerCanAcquireCatalogModelLocked(p, action.ModelID)
 			p.mu.Unlock()
 			if !eligible {
 				continue

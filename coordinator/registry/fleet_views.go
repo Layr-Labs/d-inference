@@ -36,7 +36,7 @@ func (r *Registry) ApplicationEvidenceModelCoverage() map[string]ModelEvidenceCo
 		holds := baseline && (r.providerHasAppAttestAuthorizationLocked(p, now) || r.providerHoldsCurrentApplicationEvidenceLocked(p))
 		if baseline {
 			for _, model := range p.Models {
-				if !r.providerModelAllowedByCatalogLocked(p, model) || !r.listedForModelLocked(p, model.ID, false) {
+				if !r.providerModelAllowedByCatalogLocked(p, model) {
 					continue
 				}
 				coverage := out[model.ID]

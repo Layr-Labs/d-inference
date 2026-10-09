@@ -129,7 +129,7 @@ func unhex(_ string: String) -> Data {
     // MARK: - Group 1: codec vectors mirror the Go/Swift/Python public bytes
 
     static func codecVectors() throws {
-        // Values mirror coordinator/tests/protocol/testdata/native_pair_public_vector.json
+        // Values mirror darkbloom-platform coordinator/tests/protocol/testdata/native_pair_public_vector.json
         // fields common/starts (same closed canonical encoding).
         func digest32(_ i: Int) -> Data { Data(SHA256.hash(data: Data("fixture-native-field-\(i)".utf8))) }
         var epochBytes = Data((1...16).map { UInt8($0) })

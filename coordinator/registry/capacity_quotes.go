@@ -73,9 +73,7 @@ func (p *Provider) capacityQuoteReady() bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// A cluster member is never probed: its control-only role answers no
-	// solo work, and a pair's leader is selected on its heartbeat alone.
-	return p.capacityQuoteCapable && p.executionRolePermitsLocked(false)
+	return p.capacityQuoteCapable
 }
 
 // bucketPromptTokens rounds a prompt-token estimate UP to the probe bucket
@@ -357,8 +355,7 @@ func (r *Registry) HedgeGovernorSnapshot(model string, pr *PendingRequest, exclu
 		if p.Status != StatusUntrusted && p.Status != StatusOffline {
 			if p.BackendCapacity != nil && !p.PrivateOnly {
 				for _, slot := range p.BackendCapacity.Slots {
-					if slotStateModelLoaded(slot.State) && slot.NumRunning == 0 && slot.NumWaiting == 0 &&
-						r.listedForModelLocked(p, slot.Model, false) {
+					if slotStateModelLoaded(slot.State) && slot.NumRunning == 0 && slot.NumWaiting == 0 {
 						fleetIdleSlots++
 					}
 				}
@@ -369,8 +366,7 @@ func (r *Registry) HedgeGovernorSnapshot(model string, pr *PendingRequest, exclu
 			// primary reporting capacity already proves this is a reporting
 			// fleet for the model (dual path is capability-based, not
 			// request-sampled).
-			if !capacitySignalsAvailable && (p.BackendCapacity != nil || p.capacityQuoteCapable) &&
-				r.listedForModelLocked(p, model, false) {
+			if !capacitySignalsAvailable && (p.BackendCapacity != nil || p.capacityQuoteCapable) {
 				for _, m := range p.Models {
 					if m.ID == model {
 						capacitySignalsAvailable = true

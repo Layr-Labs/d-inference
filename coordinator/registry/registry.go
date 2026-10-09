@@ -52,14 +52,9 @@ import (
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
-	autopilotEvents *autopilotledger.Events
-	mu              sync.RWMutex
-	providers       map[string]*Provider
-	// Opt-in pair membership and exclusive physical-device holds; guarded by mu.
-	verifiedPairs verifiedPairRegistry
-	// pairRouting is the operator's opt-in for routing a request to a pair
-	// (pair_routing.go). Off, no member connection is ever a routing candidate.
-	pairRouting             atomic.Bool
+	autopilotEvents         *autopilotledger.Events
+	mu                      sync.RWMutex
+	providers               map[string]*Provider
 	providerDirectory       *ProviderDirectory
 	heartbeatNow            func() time.Time
 	connectionOriginFactory func(string, time.Time) *connectiontime.Origin

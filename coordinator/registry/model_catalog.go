@@ -229,7 +229,7 @@ func (r *Registry) HasVisionProviderForModel(model string, allowedSerials ...str
 		// whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesVisionModelLocked(p, model, false) && r.listedForModelLocked(p, model, false)
+			r.providerServesVisionModelLocked(p, model, false)
 		p.mu.Unlock()
 		if eligible {
 			return true

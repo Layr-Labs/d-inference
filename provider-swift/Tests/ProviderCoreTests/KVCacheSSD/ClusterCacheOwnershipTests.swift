@@ -3,7 +3,7 @@ import Testing
 @testable import ProviderCore
 
 // Mirrored cluster cache ownership tests (Go side:
-// coordinator/tests/protocol/cluster_cache_ownership_test.go). The canonical
+// darkbloom-platform coordinator/tests/protocol/cluster_cache_ownership_test.go). The canonical
 // encoding and namespace digest MUST stay byte-identical across languages.
 
 @Suite("Cluster cache ownership (mirrored contract)")
@@ -23,7 +23,7 @@ struct ClusterCacheOwnershipTests {
         let canonical = identity.canonicalBytes
         #expect(canonical.starts(with: Data("darkbloom/cluster-cache-identity/v1\0".utf8)))
         #expect(canonical.count == 36 + 4 * 64 + 4 + 18 + 4 + 8 + 4 + 7)
-        // Pinned with coordinator/tests/protocol/cluster_cache_ownership_test.go;
+        // Pinned with darkbloom-platform coordinator/tests/protocol/cluster_cache_ownership_test.go;
         // update both sides together.
         #expect(identity.namespaceSHA256 == "d9a9f866e1ab9efb081317777815a95401fe310b1f9e87730d86133f0655a569")
     }

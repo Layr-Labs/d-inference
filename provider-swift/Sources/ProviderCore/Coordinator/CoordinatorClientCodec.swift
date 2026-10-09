@@ -62,7 +62,7 @@ public enum CoordinatorClientCodec {
         // A control-only cluster member publishes an EMPTY ordinary inventory
         // (old coordinators cannot cold-route it) and carries its cluster
         // inventory separately; the coordinator closes the connection on any
-        // role-field mismatch (coordinator/protocol/execution_role.go).
+        // role-field mismatch (darkbloom-platform coordinator/protocol/execution_role.go).
         let memberMode = config.executionRole == .clusterMember
         return .register(ProviderMessage.Register(
             hardware: config.hardware,

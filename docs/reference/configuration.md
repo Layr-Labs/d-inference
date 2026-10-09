@@ -141,18 +141,14 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 
 ### Experimental cluster pairs
 
-Off unless `EIGENINFERENCE_CLUSTER_PAIR_CATALOG` is set. With it unset no
-approval catalog exists, the pair selector is not started, member connections
-are never attached to pair control and a member registration is only
-acknowledged. Both values are validated before startup
-(`coordinator/api/cluster_pair_config.go`, `ClusterPairConfig.Check`, reported
-as `cluster_pairs`), so a mistyped file or address stops the coordinator
-instead of disabling or widening the feature.
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_CLUSTER_PAIR_CATALOG` | absolute path to a JSON approval file | unset (off) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/native_pair.go` (`clusterPairCatalog`); `coordinator/registry/native_pair_catalog_file.go` (`ParseNativeRuntimeCatalog`) | The operator's reviewed native-runtime approvals. Enables member attachment and native-pair control, starts the pair selector (`StartClusterPairFormation`), and lets a serving pair take its owner's own requests (`Registry.EnableClusterPairRouting`; see [serving a pair](cluster-control-protocol.md#serving-a-pair)). Only this file can approve a runtime; no provider message can add or change an entry. |
-| `EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES` | comma-separated IP addresses or CIDR prefixes | unset (trust none) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/provider/member_transport.go` (`ParseTrustedTLSProxies`, `memberTransport`) | Addresses of the operator's TLS-terminating reverse proxy. Requires the catalog. A prefix that would trust every peer (`/0`) and a hostname are refused. See the trade-off below. |
+The coordinator side of two-Mac cluster pairs, including the settings that
+turn it on (`EIGENINFERENCE_CLUSTER_PAIR_CATALOG` and
+`EIGENINFERENCE_CLUSTER_PAIR_TRUSTED_TLS_PROXIES`), is implemented and
+documented in `Layr-Labs/darkbloom-platform`. With the catalog unset
+there, no pair is ever formed and a member registration is only acknowledged.
+What this repository shares with it is the approval entry below: a provider's
+saved cluster setup carries the same entry, field for field (see
+[coordinator-paired member](#coordinator-paired-member)).
 
 The approval file has schema `darkbloom_cluster_pair_catalog_v1` and an
 `approvals` list of at most 64 entries. Every field is required; unknown
@@ -175,34 +171,17 @@ setup, so an entry one side accepts is never refused, or read differently, by
 the other: field names must be spelled exactly and appear once (Go's usual
 case-insensitive matching is not applied), and the `not_after` and
 `allowed_chips` rules above are the provider's
-(`coordinator/registry/native_pair_catalog_file.go`,
-`ParseNativeRuntimeCatalog`; `provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift`).
+(`ParseNativeRuntimeCatalog` in the coordinator;
+`provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift` here).
 Three entries with fixed digests are pinned in both test suites
-(`coordinator/tests/registry/native_pair_catalog_golden_test.go` and the
-provider's `ClusterPairApprovalTests`), so neither encoder can change alone.
+(the coordinator's catalog golden test and the provider's
+`ClusterPairApprovalTests`), so neither encoder can change alone.
 
 Each entry's canonical bytes are what a member compares with its installed
 policy, and their SHA-256 is the `policy_sha256` it registers
 (`NativeRuntimeCatalog.PolicySHA256`). Changing any field therefore produces a
 different policy: members that installed the old one are no longer offered a
 pair.
-
-**Trusted TLS proxy trade-off.** By default a member connection attaches to
-pair control only when the accepted request itself completed a TLS handshake.
-The production coordinator listens on plain HTTP behind Caddy
-(`coordinator/Caddyfile`), so it never sees one. With the setting, a request
-is also accepted when its immediate peer address is in the list and it carries
-exactly one `X-Forwarded-Proto: https` header. The coordinator then no longer
-observes the handshake; it relies on the deployment for three things: only the
-proxy can reach the coordinator's port from a listed address, the proxy
-forwards only TLS traffic to it, and the proxy replaces any client-supplied
-`X-Forwarded-Proto` (Caddy's default for untrusted clients). Anything else able
-to connect from a listed address, including any local process when loopback is
-listed, can claim TLS. Member control frames remain individually signed by the
-member's attested key and carry only public values, so what the setting gives
-up is the coordinator's own assurance that the client hop was encrypted, not
-frame authenticity. With the setting unset the forwarded header is ignored
-whatever its source.
 
 ### Database, store and persistent disk
 
@@ -1142,7 +1121,7 @@ must equal the saved setup's own model, selected Plan, capability pins and
 prefill schedule (`1` serial, `2` one-chunk lookahead). The member derives the
 canonical policy bytes from the entry exactly as the coordinator does
 (`provider-swift/Sources/ProviderCore/Config/ClusterPairApproval.swift`,
-`canonicalPolicy`, mirroring `coordinator/registry/native_pair_approval.go`,
+`canonicalPolicy`, mirroring `darkbloom-platform:coordinator/registry/native_pair_approval.go`,
 `canonicalNativeRuntimeApproval`) and registers their SHA-256 as
 `cluster_membership.policy_sha256`. `not_after` must be a strict RFC 3339
 instant (`YYYY-MM-DDTHH:MM:SS`, an optional fraction of one to nine digits,

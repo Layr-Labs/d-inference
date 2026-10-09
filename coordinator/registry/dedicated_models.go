@@ -127,7 +127,7 @@ func (r *Registry) HasProviderForModel(model string, allowedSerials ...string) b
 		}
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesCatalogModelLocked(p, model) && r.listedForModelLocked(p, model, false)
+			r.providerServesCatalogModelLocked(p, model)
 		p.mu.Unlock()
 		if eligible {
 			return true
@@ -160,7 +160,7 @@ func (r *Registry) HasProviderAdvertisingToolConstraint(model string, allowedSer
 		}
 		p.mu.Lock()
 		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesCatalogModelLocked(p, model) && r.listedForModelLocked(p, model, false) &&
+			r.providerServesCatalogModelLocked(p, model) &&
 			providerSupportsToolConstraintLocked(p, model)
 		p.mu.Unlock()
 		if eligible {

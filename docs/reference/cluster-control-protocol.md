@@ -3,8 +3,12 @@
 > Last updated: 2026-10-09
 
 Exact member-role and native-pair public-control shapes on the provider
-WebSocket, as staged on the private `kimi/cluster-foundation-20261007`
-branch. Member registration and negotiation are implemented end to end
+WebSocket, as staged in draft pull requests: the provider side in this
+repository, the coordinator side in `Layr-Labs/darkbloom-platform`.
+Since the repositories split, coordinator code is no longer developed here:
+a path under `coordinator/` on this page that is not in this repository's
+retained copy names a file in that repository, and its own copy of this page
+is the reference for coordinator behaviour. Member registration and negotiation are implemented end to end
 (provider client and coordinator); native-pair authorization is implemented
 on the coordinator and mirrored by the Swift codec; a provider whose saved
 setup carries a pair approval registers its cluster membership and installs
@@ -32,19 +36,19 @@ inventory, a separate cluster inventory and a fresh connection nonce.
 
 | `cluster_member_accepted` field | Type | Rule | Source |
 |---|---|---|---|
-| `type` | String | Exactly `cluster_member_accepted` | `coordinator/protocol/execution_role.go`, `ClusterMemberAcceptedMessage` |
+| `type` | String | Exactly `cluster_member_accepted` | `darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMemberAcceptedMessage` |
 | `execution_role` | String | Exactly `cluster_member` | `provider-swift/Sources/ProviderCore/Protocol/ProviderExecutionRole.swift`, `ClusterMemberNegotiation.accept` |
 | `member_registration_nonce` | String | Exact nonce from this connection's registration | `ClusterMemberNegotiation.accept` |
 | `provider_id` | String | Nonempty, at most 128 UTF-8 bytes | `ClusterMemberNegotiation.accept` |
 
 The coordinator queues the acknowledgment as the last step of handling
-`register` (`coordinator/api/provider/cluster_member.go`,
+`register` (`darkbloom-platform:coordinator/api/provider/cluster_member.go`,
 `acknowledgeClusterMember`, called from `providerReadLoop` in
 `coordinator/api/provider/session.go`): after every step that can refuse the
 connection, including native-pair attachment when a runtime catalog is
 configured, so a refused member never observes an acceptance. The frame carries
 the registry's own record of the connection
-(`coordinator/registry/execution_role.go`, `ClusterMemberAcceptance`): the nonce
+(`darkbloom-platform:coordinator/registry/execution_role.go`, `ClusterMemberAcceptance`): the nonce
 it registered with and the coordinator-assigned connection ID. A solo
 registration is sent nothing. If the acknowledgment cannot be queued the
 coordinator closes the socket with status 1013 so the provider negotiates again
@@ -55,7 +59,7 @@ ends the connection if one arrives first. The coordinator therefore attaches a
 member to pair control in two steps: `Attach` records the connection without
 making it selectable, the acknowledgment is queued, and only then does `Admit`
 let the pair selector and the selection hook see it
-(`coordinator/registry/native_pair_connection.go`, `Attach` / `Admit`). The
+(`darkbloom-platform:coordinator/registry/native_pair_connection.go`, `Attach` / `Admit`). The
 acknowledgment and every native-pair frame travel the connection's one ordered
 control lane, so no prepare can overtake it.
 
@@ -71,7 +75,7 @@ native-owner authorization or serving readiness
 
 Pair formation is off unless the operator sets
 [`EIGENINFERENCE_CLUSTER_PAIR_CATALOG`](configuration.md#experimental-cluster-pairs).
-The selector (`coordinator/registry/native_pair_formation.go`, `RunFormation`)
+The selector (`darkbloom-platform:coordinator/registry/native_pair_formation.go`, `RunFormation`)
 then examines attached member connections once a second, and at once when a
 member attaches or a held pair is released. It offers two connections to the
 reservation below when all of the following hold. It adds no authority: the
@@ -82,13 +86,13 @@ reservation repeats every identity, trust, release and idleness check itself.
 | Registered membership | Both members registered a `cluster_membership` with the same `cluster_id` and `policy_sha256` and the two distinct ranks. Rank 0 is the leader. A rank claimed by two connections is never resolved by guessing | `formationCandidates` |
 | Account | Both connections are linked to the same nonempty account. A member cannot name a peer or another account | `formationCandidates` |
 | Approval | Exactly the registered policy: an unrevoked catalog entry whose canonical bytes hash to `policy_sha256`, whose model is in both members' cluster inventories and before whose expiry a full 300-second session fits | `formationApproval` |
-| Eligibility | Neither device is held by an earlier pair, and both members pass the pair identity, trust, release-evidence and idleness gates. A member's `draining` heartbeat status is not a disqualifier: a control-only member reports it on every heartbeat, because it refuses solo work for as long as it runs | `coordinator/registry/native_pair_formation.go`, `verifiedPairAdmission`; `coordinator/registry/verified_pair_membership.go`, `verifiedPairMemberLocked` |
+| Eligibility | Neither device is held by an earlier pair, and both members pass the pair identity, trust, release-evidence and idleness gates. A member's `draining` heartbeat status is not a disqualifier: a control-only member reports it on every heartbeat, because it refuses solo work for as long as it runs | `darkbloom-platform:coordinator/registry/native_pair_formation.go`, `verifiedPairAdmission`; `darkbloom-platform:coordinator/registry/verified_pair_membership.go`, `verifiedPairMemberLocked` |
 
 The reservation gives the members 25 seconds to prepare. A member measures
 that window against its own wall clock and drops the connection when it
 exceeds 30 seconds, so the five seconds of difference is what a member's clock
 may trail the coordinator's by, on top of the frame's transit time
-(`coordinator/registry/verified_pair_types.go`,
+(`darkbloom-platform:coordinator/registry/verified_pair_types.go`,
 `verifiedPairPreparationLimit` / `verifiedPairMemberPreparationLimit`).
 
 A session that stops before owners are committed is retried later, and how
@@ -106,7 +110,7 @@ per process, and every offer uses one. At the declined ceiling that is about
 four an hour, so a member process that only ever declines is offered pairs for
 over ten days before it must be restarted; the counts are forgotten when both
 members of a cluster have disconnected
-(`coordinator/registry/native_pair_formation.go`, `nativePairDeclineRetryLimit`).
+(`darkbloom-platform:coordinator/registry/native_pair_formation.go`, `nativePairDeclineRetryLimit`).
 
 When a session ends at
 its fixed lifetime and both owners report cleanup, or when an abandoned
@@ -138,14 +142,14 @@ candidate.
 
 | Condition | Rule | Source |
 |---|---|---|
-| Whose requests | Only a request authenticated as the account that owns both members and scoped to that account's own machines: `X-Darkbloom-Route: self` or `prefer`, or a self-route-only key. For every other request the pair is neither a candidate nor capacity; the request is answered exactly as if the pair did not exist. The handoff authorization repeats the check | `coordinator/registry/pair_routing.go`, `clusterPairServesOwnerAccountOnly` / `requestPairLocked`; `coordinator/registry/inference_authorization.go`, `Authorize` |
-| Serving | The exact pair is active, both key confirmations were relayed, and the leader's own heartbeat is not `draining` and reports one slot for the pair model in state `idle` or `running`. Until then, and whatever else the slot reports, the pair is a capacity wait (`pair_not_ready`), never a cold-load target | `pair_routing.go`, `pairCandidateGate`; `coordinator/registry/verified_pair_reservation.go`, `MarkVerifiedPairKeysRelayed` |
+| Whose requests | Only a request authenticated as the account that owns both members and scoped to that account's own machines: `X-Darkbloom-Route: self` or `prefer`, or a self-route-only key. For every other request the pair is neither a candidate nor capacity; the request is answered exactly as if the pair did not exist. The handoff authorization repeats the check | `darkbloom-platform:coordinator/registry/pair_routing.go`, `clusterPairServesOwnerAccountOnly` / `requestPairLocked`; `coordinator/registry/inference_authorization.go`, `Authorize` |
+| Serving | The exact pair is active, both key confirmations were relayed, and the leader's own heartbeat is not `draining` and reports one slot for the pair model in state `idle` or `running`. Until then, and whatever else the slot reports, the pair is a capacity wait (`pair_not_ready`), never a cold-load target | `pair_routing.go`, `pairCandidateGate`; `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `MarkVerifiedPairKeysRelayed` |
 | Trust | The leader passes the public routing gates with no owner relaxation: the trust floor, private-only admission and the catalog apply to a pair exactly as to the public fleet | `coordinator/registry/scheduler.go`, `routingLocked` |
-| Request faults | The leader's cooldowns, breaker and ejection keep a request from being routed to it while they last. They do not end the pair and do not keep two members from pairing: membership is an identity and trust decision, as is the member's `draining` status | `pair_routing.go`, `pairMemberLiveLocked`; `coordinator/registry/verified_pair_membership.go`, `verifiedPairMemberLocked` |
+| Request faults | The leader's cooldowns, breaker and ejection keep a request from being routed to it while they last. They do not end the pair and do not keep two members from pairing: membership is an identity and trust decision, as is the member's `draining` status | `pair_routing.go`, `pairMemberLiveLocked`; `darkbloom-platform:coordinator/registry/verified_pair_membership.go`, `verifiedPairMemberLocked` |
 | Remaining lifetime | A request is admitted only while the pair's remaining fixed lifetime covers the coordinator's estimate of it: prompt tokens at the leader's prefill rate plus the token allowance at its decode rate, capped at half the 300-second lifetime. Otherwise it is a capacity wait for the next pair (`pair_lifetime`) | `pair_routing.go`, `pairRequestBudget` / `pairRequestLifetimeCap` |
 | Binding | The attempt records the exact pair it was reserved on with its pending debit. It is handed over only while that same pair is still serving; a later pair on the same connection is a different reservation | `scheduler.go`, `commit`; `inference_authorization.go`, `Authorize` |
-| Pair's own work | The leader of an active pair may hold requests reserved on that pair and at most one slot, for the pair model, in state `idle` or `running`. Anything else on the leader, including that slot in any other state, and anything at all on the follower, ends the pair as before | `coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked`; `pair_routing.go`, `pairLeaderHoldsOnlyPairWorkLocked` |
-| Pair end | When the relay cancels a session whose leader is still attached (fixed lifetime, a cancel, a lost follower, lost trust), every request still reserved on the pair is removed from the leader at once and given the coordinator's `provider disconnected` terminal with the health-neutral restart cause, and the leader is then sent a `cancel` for each. Only the request's error channel is used, because the leader's read loop may still be delivering a chunk for it. The request fails over as it does when a provider restarts gracefully: to another eligible provider if there is one, otherwise as HTTP 502. The leader's health trackers are not struck. When the leader's own connection is what ended, its disconnect fails its requests instead, with the cause that says how the socket ended. A request that arrives while the cluster is re-forming waits in the queue for the next pair | `coordinator/registry/native_pair_relay.go`, `Cancel`; `pair_routing.go`, `failPairRequests` |
+| Pair's own work | The leader of an active pair may hold requests reserved on that pair and at most one slot, for the pair model, in state `idle` or `running`. Anything else on the leader, including that slot in any other state, and anything at all on the follower, ends the pair as before | `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked`; `pair_routing.go`, `pairLeaderHoldsOnlyPairWorkLocked` |
+| Pair end | When the relay cancels a session whose leader is still attached (fixed lifetime, a cancel, a lost follower, lost trust), every request still reserved on the pair is removed from the leader at once and given the coordinator's `provider disconnected` terminal with the health-neutral restart cause, and the leader is then sent a `cancel` for each. Only the request's error channel is used, because the leader's read loop may still be delivering a chunk for it. The request fails over as it does when a provider restarts gracefully: to another eligible provider if there is one, otherwise as HTTP 502. The leader's health trackers are not struck. When the leader's own connection is what ended, its disconnect fails its requests instead, with the cause that says how the socket ended. A request that arrives while the cluster is re-forming waits in the queue for the next pair | `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `Cancel`; `pair_routing.go`, `failPairRequests` |
 | Owner preflights | The owner's self-route preflight, alias resolution and forced-`tool_choice` check ask the pair through its leader on the same terms. A quarantined pair whose owners must have retired, and which a connected member has still not released, is no longer reported as serving | `scheduler.go`, `OwnedProviderSummary`; `coordinator/registry/model_aliases.go`, `structuralBuildLocked`; `pair_routing.go`, `ledPairLocked` |
 
 A member connection is not a provider of the public fleet. Neither connection
@@ -217,7 +221,7 @@ accepts no coordinator inference request in any state: it answers 503
 
 ## Native pair messages
 
-All rows use Go `NativePairMessage` in `coordinator/protocol/native_pair.go`
+All rows use Go `NativePairMessage` in `darkbloom-platform:coordinator/protocol/native_pair.go`
 and Swift `NativePairMessage` in
 `provider-swift/Sources/ProviderCore/Protocol/NativePairMessages.swift`.
 `IsNativePairInbound` / `IsNativePairOutbound` define the closed directions;
@@ -229,15 +233,15 @@ other connection refuses them with a policy violation.
 
 | Direction | `type` | Public payload | Enforcement |
 |---|---|---|---|
-| Coordinator → member | `native_pair_prepare` | `DBNPR` version 1, length-prefixed canonical coordinator policy, then canonical native start proposal | `coordinator/registry/native_pair_reservation.go`, `Reserve` |
-| Member → coordinator | `native_pair_prepared` | Exact same canonical start | `coordinator/registry/native_pair_handlers.go`, `handleLocked` |
+| Coordinator → member | `native_pair_prepare` | `DBNPR` version 1, length-prefixed canonical coordinator policy, then canonical native start proposal | `darkbloom-platform:coordinator/registry/native_pair_reservation.go`, `Reserve` |
+| Member → coordinator | `native_pair_prepared` | Exact same canonical start | `darkbloom-platform:coordinator/registry/native_pair_handlers.go`, `handleLocked` |
 | Coordinator → member | `native_pair_owner_start` | Committed canonical start | `handleLocked`; emitted only after `CommitVerifiedPairOwners` |
-| Member → coordinator | `native_pair_hello` | Exact start plus native ephemeral X25519 public key | `coordinator/protocol/native_authorization.go`, `ValidateNativeAuthorizationHello` |
+| Member → coordinator | `native_pair_hello` | Exact start plus native ephemeral X25519 public key | `darkbloom-platform:coordinator/protocol/native_authorization.go`, `ValidateNativeAuthorizationHello` |
 | Coordinator → member | `native_pair_binding` | Ordered pair of validated public hellos | `NativeAuthorizationBinding` |
 | Member → coordinator | `native_pair_confirmation` | 32-byte native confirmation MAC | `handleLocked` |
 | Coordinator → member | `native_pair_peer_confirmation` | Peer confirmation MAC, relayed unchanged. An honest coordinator never holds the key it is computed with; see [trust in the coordinator](#trust-in-the-coordinator) | `handleLocked` |
 | Member → coordinator | `native_pair_owner_released` | `DBNR` version 1, SHA-256 of start, three complete-cleanup flags | `nativePairReleaseReceipt` |
-| Both directions | `native_pair_cancel` | `DBNC` version 1 | `handleLocked`; `coordinator/registry/native_pair_relay.go`, `beginCancellationLocked` |
+| Both directions | `native_pair_cancel` | `DBNC` version 1 | `handleLocked`; `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `beginCancellationLocked` |
 
 ## Shared frame fields
 
@@ -248,12 +252,12 @@ public-control operation.
 
 | Field | Type | Required | Rule | Source |
 |---|---|---|---|---|
-| `type` | String | Yes | One of the direction-appropriate types above | `coordinator/protocol/native_pair.go`, `Validate` |
+| `type` | String | Yes | One of the direction-appropriate types above | `darkbloom-platform:coordinator/protocol/native_pair.go`, `Validate` |
 | `version` | UInt8 | Yes | `1` | `Validate` |
-| `member_nonce` | String | Yes | Nonzero 32-byte lowercase hex; exact current attachment nonce | `Validate`; `coordinator/registry/native_pair_handlers.go`, `handleLocked` |
+| `member_nonce` | String | Yes | Nonzero 32-byte lowercase hex; exact current attachment nonce | `Validate`; `darkbloom-platform:coordinator/registry/native_pair_handlers.go`, `handleLocked` |
 | `epoch` | String | Yes | Nonzero 16-byte lowercase hex; exact session epoch | `Validate`; `handleLocked` |
 | `generation` | UInt64 | Yes | Positive; exact membership generation | `Validate`; `handleLocked` |
-| `sequence` | UInt64 | Yes | Positive, exactly next for the original member connection; exhaustion refuses further use | `handleLocked`; `coordinator/registry/native_pair_relay.go`, `messageLocked` |
+| `sequence` | UInt64 | Yes | Positive, exactly next for the original member connection; exhaustion refuses further use | `handleLocked`; `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `messageLocked` |
 | `payload` | String | Yes | Canonical padded base64; decoded size at most 32,768 bytes; type-specific bytes above | `Validate`; `handleLocked` |
 | `signature` | String | Member → coordinator | Canonical base64 DER P-256 signature, 8–72 bytes; verified against the member's attested SE key | `Validate`; `nativePairSignatureValid` |
 | `prepare_before_unix_nano` | Int64 | Coordinator → member | Fixed membership preparation deadline; member input must omit or equal zero | `messageLocked`; `handleLocked` |
@@ -263,23 +267,23 @@ public-control operation.
 `darkbloom/coordinator-native-pair/member-message/v1` domain. The SE signs their
 SHA-256 digest. The signature field itself is excluded. Traffic secrets,
 prompts, activations, diagnostic tails and arbitrary worker JSON are outside
-this protocol (`coordinator/protocol/native_pair.go`, `SigningBytes`).
+this protocol (`darkbloom-platform:coordinator/protocol/native_pair.go`, `SigningBytes`).
 
 ## Authorization and lifecycle limits
 
 | Boundary | Exact rule | Source |
 |---|---|---|
-| Attachment | Actual accepted request has completed TLS, or it arrived from an operator-listed TLS-terminating proxy that marked it HTTPS (off by default); exact current `cluster_member` connection and nonce | `coordinator/registry/native_pair_connection.go`, `Attach` / `NativePairTransport`; `coordinator/api/provider/member_transport.go`, `memberTransport` |
-| Selection | The pair selector, or the explicit in-process hook, chooses two current connections and an approved runtime ID; no public HTTP/provider selection route | `coordinator/registry/native_pair_formation.go`, `RunFormation`; `coordinator/api/native_pair.go`, `BeginNativePair` |
-| Default | Nil/empty native runtime catalog disables handlers | `coordinator/registry/native_pair_types.go`, `NewNativePairCoordinator` |
-| Catalog | At most 64 immutable entries; each binds runtime, model, resources, profile, plan, chips, schedule, limits and expiry | `coordinator/registry/native_pair_approval.go`, `NewNativeRuntimeCatalog` |
-| Relay | At most 64 sessions, 16 queued/in-flight frames and 1,048,576 bytes per rank; one control write capped at five seconds and the unchanged membership expiry | `coordinator/registry/native_pair_types.go`; `coordinator/registry/native_pair_relay.go`, `enqueueLocked` / `writeLoop` |
-| Revocation or failure | Closes admission and publishes cancellation; active device holds are released by both original owner-cleanup observations | `coordinator/registry/native_pair_relay.go`, `Cancel`; `coordinator/registry/verified_pair_lifecycle.go`, `ObserveVerifiedPairOwnerReleased` |
-| Trust loss | A hard or transient untrust, a failed challenge or challenge timeouts at the deroute limit, an attestation or trust-level downgrade, lost SIP verification, a revoked runtime or code proof, and a release-policy generation change each close the grant at once instead of at the next revalidation; a later recovery never revives it. A periodic challenge that verifies does not: the verifier's clear-and-regrant of release evidence leaves the grant open, and validation refuses it while the evidence is absent | `coordinator/registry/attestation_policy.go`, `markUntrusted` / `SetTrustLevel` / `RecordChallengeFailure` / `SetReleasePolicyGeneration`; `coordinator/registry/provider_evidence.go`, `SetAttested` / `SetChallengeVerifiedSIP`; `coordinator/registry/provider_capabilities.go`, `ReconcileAttestedRuntimeCapabilities`; `coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked` |
-| Abandoned quarantine | A member whose original connection left the registry can never deliver its observation. Once every member has either delivered it or departed, the hold is released 40 seconds after the fixed membership expiry: the member's own 30-second preparation limit bounds how far an owner's lifetime deadline can trail the expiry, whatever shorter window the coordinator grants, and the rest covers native cleanup. A member that is still connected and owes its observation is never released by time alone. The relay drops its record of a released session at the next selection | `coordinator/registry/verified_pair_lifecycle.go`, `releaseAbandonedQuarantineLocked`; `coordinator/registry/verified_pair_types.go`, `verifiedPairOwnerRetirementLimit`; `coordinator/registry/native_pair_relay.go`, `removeReleasedSessionsLocked` |
-| Relay completion | `WaitControlStopped` joins public-relay workers only; it is not proof of native or lease cleanup | `coordinator/registry/native_pair_types.go`, `WaitControlStopped` |
+| Attachment | Actual accepted request has completed TLS, or it arrived from an operator-listed TLS-terminating proxy that marked it HTTPS (off by default); exact current `cluster_member` connection and nonce | `darkbloom-platform:coordinator/registry/native_pair_connection.go`, `Attach` / `NativePairTransport`; `darkbloom-platform:coordinator/api/provider/member_transport.go`, `memberTransport` |
+| Selection | The pair selector, or the explicit in-process hook, chooses two current connections and an approved runtime ID; no public HTTP/provider selection route | `darkbloom-platform:coordinator/registry/native_pair_formation.go`, `RunFormation`; `darkbloom-platform:coordinator/api/native_pair.go`, `BeginNativePair` |
+| Default | Nil/empty native runtime catalog disables handlers | `darkbloom-platform:coordinator/registry/native_pair_types.go`, `NewNativePairCoordinator` |
+| Catalog | At most 64 immutable entries; each binds runtime, model, resources, profile, plan, chips, schedule, limits and expiry | `darkbloom-platform:coordinator/registry/native_pair_approval.go`, `NewNativeRuntimeCatalog` |
+| Relay | At most 64 sessions, 16 queued/in-flight frames and 1,048,576 bytes per rank; one control write capped at five seconds and the unchanged membership expiry | `darkbloom-platform:coordinator/registry/native_pair_types.go`; `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `enqueueLocked` / `writeLoop` |
+| Revocation or failure | Closes admission and publishes cancellation; active device holds are released by both original owner-cleanup observations | `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `Cancel`; `darkbloom-platform:coordinator/registry/verified_pair_lifecycle.go`, `ObserveVerifiedPairOwnerReleased` |
+| Trust loss | A hard or transient untrust, a failed challenge or challenge timeouts at the deroute limit, an attestation or trust-level downgrade, lost SIP verification, a revoked runtime or code proof, and a release-policy generation change each close the grant at once instead of at the next revalidation; a later recovery never revives it. A periodic challenge that verifies does not: the verifier's clear-and-regrant of release evidence leaves the grant open, and validation refuses it while the evidence is absent | `coordinator/registry/attestation_policy.go`, `markUntrusted` / `SetTrustLevel` / `RecordChallengeFailure` / `SetReleasePolicyGeneration`; `coordinator/registry/provider_evidence.go`, `SetAttested` / `SetChallengeVerifiedSIP`; `coordinator/registry/provider_capabilities.go`, `ReconcileAttestedRuntimeCapabilities`; `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked` |
+| Abandoned quarantine | A member whose original connection left the registry can never deliver its observation. Once every member has either delivered it or departed, the hold is released 40 seconds after the fixed membership expiry: the member's own 30-second preparation limit bounds how far an owner's lifetime deadline can trail the expiry, whatever shorter window the coordinator grants, and the rest covers native cleanup. A member that is still connected and owes its observation is never released by time alone. The relay drops its record of a released session at the next selection | `darkbloom-platform:coordinator/registry/verified_pair_lifecycle.go`, `releaseAbandonedQuarantineLocked`; `darkbloom-platform:coordinator/registry/verified_pair_types.go`, `verifiedPairOwnerRetirementLimit`; `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `removeReleasedSessionsLocked` |
+| Relay completion | `WaitControlStopped` joins public-relay workers only; it is not proof of native or lease cleanup | `darkbloom-platform:coordinator/registry/native_pair_types.go`, `WaitControlStopped` |
 | Member eligibility | Cluster members and pair-held devices are excluded from ordinary routing, warming and load planning. The one exception is the leader of a pair its owner's request may use; see [serving a pair](#serving-a-pair) | `coordinator/registry/gate_reason.go`, `GateMemberOnly`/`GatePairReserved`/`GatePairNotReady`/`GatePairLifetime`; `model_load_warm.go`, `warmplan` reasons |
-| Model commands | `load_model`, `prefetch_model` and a nonempty `desired_models` are refused for a cluster member or a pair-held device, and a pair is not reserved while one is being written; the empty `desired_models` revoke still passes. A member is offered no desired models, so it only ever receives that empty set | `coordinator/registry/verified_pair_commands.go`, `beginVerifiedPairAwareModelCommand`; `coordinator/registry/model_commands.go`, `SendLoadModel` / `SendPrefetchModel` / `sendDesiredModels` / `DesiredModelsForProvider` |
+| Model commands | `load_model`, `prefetch_model` and a nonempty `desired_models` are refused for a cluster member or a pair-held device, and a pair is not reserved while one is being written; the empty `desired_models` revoke still passes. A member is offered no desired models, so it only ever receives that empty set | `darkbloom-platform:coordinator/registry/verified_pair_commands.go`, `beginVerifiedPairAwareModelCommand`; `coordinator/registry/model_commands.go`, `SendLoadModel` / `SendPrefetchModel` / `sendDesiredModels` / `DesiredModelsForProvider` |
 
 The [security explanation](../architecture/security/encryption.md) owns the
 trust and encryption boundary. The [routing explanation](../architecture/routing.md)

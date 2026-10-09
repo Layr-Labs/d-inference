@@ -54,9 +54,7 @@ func startBackgroundLoops(ctx context.Context, srv *api.Server, reg *registry.Re
 	srv.StartAccountErasureLoop(ctx)
 	// Deliver the erasure outbox: Stripe deletions and the erasure_log record.
 	srv.StartErasureOutboxLoop(ctx)
-	// Experimental two-Mac pairs: a no-op unless the operator configured a
-	// cluster pair catalog.
-	srv.StartClusterPairFormation(ctx)
+
 }
 
 func drainAndStop(srv *api.Server, reg *registry.Registry, httpServer *http.Server, promptSidecar *promptcontract.Supervisor, cancel, persistCancel context.CancelFunc, logger *slog.Logger) {

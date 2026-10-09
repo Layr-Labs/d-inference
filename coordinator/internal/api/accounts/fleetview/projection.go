@@ -97,11 +97,6 @@ func Build(rec *store.ProviderRecord, live *registry.Provider) Provider {
 		}
 		mp.Backend = live.Backend
 		mp.Version = live.Version
-		mp.ExecutionRole = ExecutionRoleName(live.ExecutionRole())
-		if membership, registered := live.ClusterMembership(); registered {
-			mp.Cluster = &ProviderCluster{ClusterID: membership.ClusterID, Rank: membership.Rank,
-				Role: ClusterRole(membership.Rank), PolicySHA256: membership.PolicySHA256}
-		}
 		mp.OSVersion = "" // A live connection must not inherit a previous OS report.
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested

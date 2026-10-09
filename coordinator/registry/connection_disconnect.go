@@ -35,7 +35,6 @@ func (l *ConnectionLifecycle) Disconnect(id string, expected *Provider, timeout 
 		// Losing the session cannot prove delivery, final residency or rollback.
 		// Queue only; the controller persists outside registry/provider locks.
 		p.autopilotState.Disconnect(p.ID, time.Now, r.queueAutopilotEvent)
-		r.disconnectVerifiedPairLocked(p)
 		r.providerDirectory.deleteLocked(id)
 		p.transport.Reset()
 		p.warmWork.Reset()

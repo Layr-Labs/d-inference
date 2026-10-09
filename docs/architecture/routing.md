@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-08
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -1190,64 +1190,6 @@ must not run in parallel with other scheduler tests in the same process.
 | Queue-before-shed and cold dispatch flags | `coordinator/api/inference/cold_dispatch.go` |
 | Flag wiring at startup | `coordinator/app/routing.go` |
 | Simulation harness | `coordinator/registry/routingsim/` — `runner.go`, `fleet.go`, `fleet_ndjson.go`, `trace.go`, `report.go` |
-
-## Verified cluster-pair reservations (experimental, staging)
-
-Two gate reasons are reserved for the experimental cluster membership
-lifecycle and take precedence at the top of the liveness chain:
-`member_only` (`GateMemberOnly`) excludes control-only cluster-member
-connections from ordinary dispatch, warming and load planning (only the pair
-selector's eligibility path may admit them), and `pair_reserved`
-(`GatePairReserved`) excludes a provider whose physical device is held by an
-active verified pair so ordinary work never double-books it. Both are
-appended to the persisted `GateReason` enum in
-`coordinator/registry/gate_reason.go` (order preserved) with matching
-`warmplan` cold reasons. A verified pair is a bilateral, time-boxed hold:
-preparation and commit require both members' current identity, attestation
-and release evidence; disconnect, trust loss, release-policy generation
-changes or capability loss quarantine the hold. Both original owners' cleanup
-observations release it; once every member has delivered its observation or
-its original connection is gone, the hold is released 40 seconds after the
-fixed membership expiry. A member that is still connected and owes its
-observation is never released by time alone
-(`releaseAbandonedQuarantineLocked`,
-`coordinator/registry/verified_pair_lifecycle.go`). Member connections and
-pair-held devices are also never told to start model work: `load_model`,
-`prefetch_model` and a nonempty `desired_models` are refused for them, a
-pair is not reserved while such a command is being written
-(`beginVerifiedPairAwareModelCommand`,
-`coordinator/registry/verified_pair_commands.go`), and a member is offered
-no desired models in the first place, so catalog publication stays
-deliverable to it (`DesiredModelsForProvider`,
-`coordinator/registry/model_commands.go`). The empty `desired_models`
-revoke still passes. The public control shapes live in
-[cluster-control-protocol.md](../reference/cluster-control-protocol.md).
-The catalog is empty by default, so the lifecycle is inert. When the operator
-configures one, the pair selector
-(`coordinator/registry/native_pair_formation.go`, `RunFormation`) forms a pair
-from two attached members of one account that registered the same cluster,
-the same approved policy and the two ranks, and forms the next session when
-one ends.
-
-The same configuration makes a pair a routing candidate, for one audience
-only. A request that is authenticated as the account owning both members and
-scoped to that account's own machines (self-route or prefer-owner) reaches the
-pair through its leader's connection; `routingLocked` then evaluates the
-leader on the pair's own hold, with none of the owner relaxations. For every
-other request both members stay `member_only`, so the pair is neither a
-candidate nor a capacity rejection. Two more gate reasons, both counted as
-transient capacity, cover a pair the request may use but cannot use yet:
-`pair_not_ready` (`GatePairNotReady`: preparing, exchanging keys, loading or
-rotating) and `pair_lifetime` (`GatePairLifetime`: less of the pair's fixed
-300-second lifetime remains than the request is estimated to need). The
-reservation commit binds the attempt to the exact pair, the handoff
-authorization re-checks it, and when the pair ends its reserved requests get
-the health-neutral `provider_restart` terminal
-(`coordinator/registry/pair_routing.go`). The follower is never a candidate.
-Neither member is counted in public model availability, provider counts,
-fleet capacity signals, base rewards or the warm pool, and neither is sent a
-capacity probe; the conditions are tabulated in
-[serving a pair](../reference/cluster-control-protocol.md#serving-a-pair).
 
 ## Related
 

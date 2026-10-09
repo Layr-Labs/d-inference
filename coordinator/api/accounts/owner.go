@@ -45,9 +45,6 @@ type Dependencies struct {
 	MinProviderVersion         string
 	SelfRouteModelEntries      func(string, bool) []types.ModelEntry
 	SoftDeleteMutationsEnabled bool
-	// ClusterPairs lists the coordinator's clusters and reports whether
-	// cluster pairs are configured at all. Nil means not configured.
-	ClusterPairs func() ([]registry.NativePairView, bool)
 }
 
 type Owner struct {
@@ -61,14 +58,13 @@ type Owner struct {
 	minProviderVersion         string
 	selfRouteModelEntries      func(string, bool) []types.ModelEntry
 	softDeleteMutationsEnabled bool
-	clusterPairs               func() ([]registry.NativePairView, bool)
 }
 
 func New(d Dependencies) *Owner {
 	return &Owner{store: d.Store, registry: d.Registry, access: d.Access, logger: d.Logger,
 		readCache: d.ReadCache, latestReleasedVersion: d.LatestReleasedVersion,
 		minProviderVersion: d.MinProviderVersion, selfRouteModelEntries: d.SelfRouteModelEntries,
-		softDeleteMutationsEnabled: d.SoftDeleteMutationsEnabled, clusterPairs: d.ClusterPairs}
+		softDeleteMutationsEnabled: d.SoftDeleteMutationsEnabled}
 }
 
 func (s *Owner) SetMinProviderVersion(version string) { s.minProviderVersion = version }

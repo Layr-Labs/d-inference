@@ -112,15 +112,7 @@ func (h InferenceHandoff) Authorize() error {
 	if selfRouteOwner {
 		minimum = TrustNone
 	}
-	if pair := pending.pair; pair != nil {
-		// An attempt reserved on a pair is handed to that pair's leader only
-		// while the same pair is still serving and this request may still use
-		// it. A later pair on the same connection is a different reservation.
-		if r.requestPairLocked(p, pending.Model, selfRouteOwner, now) != pair || !pairAdmittingLocked(pair, now) ||
-			!r.pairMemberLiveLocked(p, pair, pending.Model, pending.Traits, now) {
-			return ErrProviderServingUnauthorized
-		}
-	} else if !r.providerLivenessGateLocked(p, minimum, selfRouteOwner, now) ||
+	if !r.providerLivenessGateLocked(p, minimum, selfRouteOwner, now) ||
 		!r.providerServesRoutableModelLocked(p, pending.Model, selfRouteOwner) ||
 		!r.providerEligibleForTraitsLocked(p, pending.Model, pending.Traits) {
 		return ErrProviderServingUnauthorized

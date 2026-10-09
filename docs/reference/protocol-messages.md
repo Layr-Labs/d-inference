@@ -183,7 +183,7 @@ connection, first.
 | `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | omitted/`""` keeps ordinary solo; `"cluster_member"` is the control-only member role (empty ordinary `models`, separate `cluster_models`, fresh `member_registration_nonce`) — grants no trust or model capability |
 | `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
 | `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
-| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`) |
+| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`) |
 
 An attested registration is encoded by the raw-attestation encoder, not the
 Codable one. Both write the three member fields, and only for the member role
@@ -988,13 +988,17 @@ drift correction for the coordinator's ledger, not reservations.
 
 ## Coordinator → provider
 
+The Go side of the member fields above and of `cluster_member_accepted` is in
+`Layr-Labs/darkbloom-platform`; a `coordinator/` path named for them on this
+page is a file in that repository.
+
 ### `cluster_member_accepted`
 
-Go `ClusterMemberAcceptedMessage` (`coordinator/protocol/execution_role.go`) ·
+Go `ClusterMemberAcceptedMessage` (`darkbloom-platform:coordinator/protocol/execution_role.go`) ·
 Swift `CoordinatorMessage.clusterMemberAccepted` (`ClusterMemberAccepted`).
 Sent once per member-role connection as the last step of handling
 [`register`](#register) (`acknowledgeClusterMember`,
-`coordinator/api/provider/cluster_member.go`): after every check that can
+`darkbloom-platform:coordinator/api/provider/cluster_member.go`): after every check that can
 refuse the connection, and whether or not a native runtime catalog is
 configured. A refused or solo registration is sent none. One acceptance per
 negotiation, before a ten-second deadline; the negotiation is discarded on
@@ -1141,7 +1145,7 @@ Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
 `model_autopilot` commands instead. Never sent to a `cluster_member` connection
 or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
-`coordinator/registry/verified_pair_commands.go`).
+`darkbloom-platform:coordinator/registry/verified_pair_commands.go`).
 
 ### `prefetch_model`
 

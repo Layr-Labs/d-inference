@@ -4,7 +4,7 @@ import Foundation
 /// (`darkbloom_cluster_pair_catalog_v1`), saved field for field so the member
 /// derives the same canonical policy bytes the coordinator does. Mirrors
 /// `nativeRuntimeApprovalFile` and `canonicalNativeRuntimeApproval`
-/// (coordinator/registry/native_pair_catalog_file.go, native_pair_approval.go).
+/// (darkbloom-platform coordinator/registry/native_pair_catalog_file.go, native_pair_approval.go).
 /// Saving an entry approves nothing: only the coordinator's own file can.
 public struct ClusterPairApproval: Codable, Sendable, Equatable {
     public let id: String

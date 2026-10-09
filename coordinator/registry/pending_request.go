@@ -50,10 +50,6 @@ type PendingRequest struct {
 	// Captured atomically with this provider's pending debit. A later lease
 	// cannot transfer already-queued work onto a changed endpoint or identity.
 	providerAuthorizationBinding providerRequestAuthorizationBinding
-	// pair is the exact verified pair this attempt was reserved on, set with
-	// the pending debit and nil for a solo provider. The attempt is authorized
-	// and served only while that same pair is active (pair_routing.go).
-	pair *verifiedPairState
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string

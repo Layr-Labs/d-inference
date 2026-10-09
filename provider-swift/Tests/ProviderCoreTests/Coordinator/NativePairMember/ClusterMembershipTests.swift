@@ -4,7 +4,7 @@ import Testing
 
 /// The `cluster_membership` claim in the member `register` frame, checked on
 /// the bytes the provider emits against what the coordinator accepts
-/// (coordinator/protocol/execution_role.go, `ClusterMembership.Validate`).
+/// (darkbloom-platform coordinator/protocol/execution_role.go, `ClusterMembership.Validate`).
 @Suite("Cluster membership registration")
 struct ClusterMembershipTests {
     private static let policy = String(repeating: "ab", count: 32)

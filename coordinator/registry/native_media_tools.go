@@ -31,7 +31,7 @@ func (r *Registry) HasProviderAdvertisingNativeMediaTools(model string, serials 
 			continue
 		}
 		p.mu.Lock()
-		ok := p.Status != StatusOffline && p.Status != StatusUntrusted && r.providerServesCatalogModelLocked(p, model) && r.listedForModelLocked(p, model, false) && providerSupportsNativeMediaToolsLocked(p, model)
+		ok := p.Status != StatusOffline && p.Status != StatusUntrusted && r.providerServesCatalogModelLocked(p, model) && providerSupportsNativeMediaToolsLocked(p, model)
 		p.mu.Unlock()
 		if ok {
 			return true

@@ -51,8 +51,7 @@ func (c *modelAutopilotController) refreshControlLeases(now time.Time) {
 	}
 	for _, p := range r.providers {
 		p.mu.Lock()
-		// A cluster member holds no solo inventory to manage: no control lease.
-		if providerAutopilotConsentedLocked(p) && p.writer != nil && p.executionRolePermitsLocked(false) {
+		if providerAutopilotConsentedLocked(p) && p.writer != nil {
 			enabled := c.config.Enabled && !c.paused.Load() &&
 				!p.ModelAutopilot.Paused && !p.PrivateOnly
 			expiry := now.Add(3*c.config.Interval + 10*time.Second)

@@ -236,10 +236,6 @@ type PrefixCacheDonationOutcomeCount struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	ExecutionRole               ExecutionRole                      `json:"execution_role,omitempty"`
-	MemberRegistrationNonce     string                             `json:"member_registration_nonce,omitempty"`
-	ClusterModels               []ModelInfo                        `json:"cluster_models,omitempty"`
-	ClusterMembership           *ClusterMembership                 `json:"cluster_membership,omitempty"`
 	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
 	ModelAutopilot              *ModelAutopilotState               `json:"model_autopilot,omitempty"`
 	Type                        string                             `json:"type"`
@@ -1089,19 +1085,10 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	pm.Type = msgType
 
 	switch msgType {
-	case TypeNativePairPrepared, TypeNativePairHello, TypeNativePairConfirmation, TypeNativePairOwnerReleased, TypeNativePairCancel:
-		msg, err := DecodeNativePairMessage(data)
-		if err != nil {
-			return err
-		}
-		pm.Payload = msg
 	case TypeRegister:
 		var msg RegisterMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal register: %w", err)
-		}
-		if err := msg.ValidateExecutionRole(); err != nil {
-			return err
 		}
 		pm.Payload = &msg
 

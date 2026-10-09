@@ -268,13 +268,7 @@ func (e *ProviderEligibility) structuralBuildLocked(p *Provider, buildID string,
 	// Liveness/trust/privacy core. allowPrivate marks the owner self-route
 	// context (relax private-only admission); the trust-floor relaxation is
 	// folded into the minTrust the caller passes (TrustNone for owner routes).
-	if pair := r.requestPairLocked(p, buildID, allowPrivate, now); pair != nil {
-		// The owner's pair is asked through its leader, on the pair's own
-		// hold and with none of the owner relaxations.
-		if ok, _ := e.livenessAllowPairLocked(p, r.MinTrustLevel, false, now, pair, true); !ok {
-			return false
-		}
-	} else if ok, _ := e.livenessLocked(p, minTrust, allowPrivate, now); !ok {
+	if ok, _ := e.livenessLocked(p, minTrust, allowPrivate, now); !ok {
 		return false
 	}
 	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.

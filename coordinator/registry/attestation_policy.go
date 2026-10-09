@@ -105,11 +105,6 @@ func (r *Registry) SetReleasePolicyGeneration(
 	stillApproved func(ApplicationEvidence) bool,
 ) (needChallenge []string) {
 	r.mu.Lock()
-	if generation != r.releasePolicyGeneration {
-		for state := range r.verifiedPairs.states {
-			r.endVerifiedPairLocked(state)
-		}
-	}
 	// The same release snapshot generation binds both authorization paths.
 	// App Attest is re-evaluated by the API under the refreshed qualification
 	// and revocation policy; carrying a stale verdict forward is not safe.
@@ -287,7 +282,7 @@ func (r *Registry) notifyRuntimeCapabilitiesPromoted(providerID string) {
 // non-recoverable: the provider stays untrusted until it reconnects and
 // re-registers. This is the default for every direct deroute call site.
 func (r *Registry) MarkUntrusted(providerID string) {
-	r.markUntrusted(providerID, false)
+	r.connectionLifecycle.MarkUntrusted(providerID, false)
 }
 
 // MarkUntrustedTransient sets a provider's status to untrusted for a *transient*
@@ -301,15 +296,7 @@ func (r *Registry) MarkUntrusted(providerID string) {
 // model hash and runtime before RecordChallengeSuccess is reached, so using it
 // as the recovery trigger is safe.
 func (r *Registry) MarkUntrustedTransient(providerID string) {
-	r.markUntrusted(providerID, true)
-}
-
-// markUntrusted deroutes the provider, then revokes any verified pair grant on
-// that connection. Even a transient untrust that later recovers must not
-// resurrect the grant; its device hold is quarantined, never freed.
-func (r *Registry) markUntrusted(providerID string, recoverable bool) {
-	r.connectionLifecycle.MarkUntrusted(providerID, recoverable)
-	r.invalidateVerifiedPairForProvider(r.GetProvider(providerID))
+	r.connectionLifecycle.MarkUntrusted(providerID, true)
 }
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
@@ -329,10 +316,6 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 		p.RuntimeCapabilities = nil
 	}
 	p.mu.Unlock()
-
-	if level != TrustHardware {
-		r.invalidateVerifiedPairForProvider(p)
-	}
 
 	// Persist trust state.
 	r.persistProviderNow(p)
@@ -430,10 +413,6 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 		p.ChallengeVerifiedSIP = false
 	}
 	p.mu.Unlock()
-
-	if !transientOnly || count >= MaxFailedChallenges {
-		r.invalidateVerifiedPairForProvider(p)
-	}
 
 	// Persist challenge state and reputation.
 	r.persistProviderNow(p)

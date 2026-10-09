@@ -2,7 +2,7 @@ import Foundation
 
 /// A member's saved cluster claim as it registers it: which cluster it belongs
 /// to, its fixed rank there, and the coordinator runtime policy it installed.
-/// Mirrors `protocol.ClusterMembership` (coordinator/protocol/execution_role.go).
+/// Mirrors `protocol.ClusterMembership` (darkbloom-platform coordinator/protocol/execution_role.go).
 /// The coordinator matches it against a second member and its own approval
 /// catalog; the claim grants nothing by itself. The coordinator closes the
 /// socket on a malformed value, so this type cannot hold one.

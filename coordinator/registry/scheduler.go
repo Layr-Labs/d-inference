@@ -182,13 +182,6 @@ type routingSnapshot struct {
 	explorationDecodeTPS  float64
 	explorationPrefillTPS float64
 
-	// pair is set only for the leader of a verified pair this request may be
-	// routed to (pair_routing.go); nil for every solo provider. pairAdmitting
-	// and pairExpiresAt are that pair's admission state at snapshot time.
-	pair          *verifiedPairState
-	pairAdmitting bool
-	pairExpiresAt time.Time
-
 	// Engine-health (first-token wedge) signals, decoded from the slot's
 	// BackendSlotCapacity (see docs/reports/2026-06-22-cancel-root-cause-and-fix.md
 	// §C). MEASUREMENT ONLY: surfaced here so routing/observability code can read
@@ -845,9 +838,6 @@ func (s ReservationSelection) commit(
 	pr.RefreshFirstContentBudget(now)
 	pr.SetFirstContentExplored(firstContentEvidenceExplorable(candidate) || candidate.snapshot.explorationUsesMedian())
 	recordReservedPrefill(pr, candidate)
-	// Bind the attempt to the exact pair this section just validated, under
-	// the same lock as its pending debit; nil for a solo provider.
-	pr.pair = snapshot.pair
 	p.addPendingLocked(pr)
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
@@ -1336,18 +1326,10 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 		// messaging matches what routing would actually admit: an owned box
 		// advertising a stale-hash catalog build reports "model not loaded"
 		// instead of proceeding into a dispatch that can only be rejected.
-		var serves bool
-		if pair := r.requestPairLocked(p, model, true, now); pair != nil {
-			// The owner's pair counts once, through its leader, while it is
-			// formed or rotating; a request then waits for it to serve.
-			serves = r.pairMemberLiveLocked(p, pair, model, traits, now) &&
-				(!requiresVision || r.providerServesVisionModelLocked(p, model, false))
-		} else {
-			serves = r.providerServesOwnedRoutableModelLocked(p, model) &&
-				r.providerEligibleForTraitsLocked(p, model, traits) &&
-				(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
-				r.providerLivenessGateLocked(p, TrustNone, true, now)
-		}
+		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
+			r.providerEligibleForTraitsLocked(p, model, traits) &&
+			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
+			r.providerLivenessGateLocked(p, TrustNone, true, now)
 		p.mu.Unlock()
 		if serves {
 			servesModel++
@@ -1429,17 +1411,6 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 }
 
 func (e *ProviderEligibility) routingLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
-	// A request scoped to its owner's machines may reach that owner's pair
-	// through the pair's leader. The pair is admitted on its own hold and with
-	// none of the owner relaxations: trust floor, private-only admission and
-	// the catalog apply to a pair exactly as to the public fleet.
-	if pair := e.registry.requestPairLocked(p, model, selfRouteOwner, now); pair != nil {
-		return e.routingAllowPairLocked(p, model, traits, false, now, ignoreProviderBreaker, ignoreCapacityCooldown, pair, true)
-	}
-	return e.routingAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil, false)
-}
-
-func (e *ProviderEligibility) routingAllowPairLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
 	// Catalog membership + dedicated-box isolation: a request for a dedicated
 	// model family (e.g. Gemma 4) may ONLY route to a provider whose ENTIRE
 	// advertised catalog is that family. This single gate is shared by the
@@ -1450,17 +1421,13 @@ func (e *ProviderEligibility) routingAllowPairLocked(p *Provider, model string, 
 	if ok, reason := e.catalogReasonLocked(p, model, selfRouteOwner); !ok {
 		return false, reason
 	}
-	return e.postCatalogAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, pair, pairEligibility)
+	return e.postCatalogLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown)
 }
 
 // Shared trust, liveness and request-shape checks. Autopilot planning supplies
 // its separate inventory permission before entering here; it never changes a
 // provider's ordinary routing permission to ask a hypothetical question.
 func (e *ProviderEligibility) postCatalogLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool) (bool, GateReason) {
-	return e.postCatalogAllowPairLocked(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, ignoreCapacityCooldown, nil, false)
-}
-
-func (e *ProviderEligibility) postCatalogAllowPairLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, now time.Time, ignoreProviderBreaker, ignoreCapacityCooldown bool, pair *verifiedPairState, pairEligibility bool) (bool, GateReason) {
 	r := e.registry
 	// The identity's fault-tracker gates (gate_state.go): cached on the
 	// connected provider, so the five reads are atomic loads for a provider
@@ -1481,7 +1448,7 @@ func (e *ProviderEligibility) postCatalogAllowPairLocked(p *Provider, model stri
 	if selfRouteOwner {
 		minTrust = TrustNone
 	}
-	if ok, reason := e.livenessAllowPairLocked(p, minTrust, selfRouteOwner, now, pair, pairEligibility); !ok {
+	if ok, reason := e.livenessLocked(p, minTrust, selfRouteOwner, now); !ok {
 		return false, reason
 	}
 	// Trait eligibility: a render-broken build is fenced for EVERY request shape
@@ -1549,9 +1516,6 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	// rate for TTFT/cost estimation, and NOT the observed-under-load value.
 	// No-op (legacy flat cap) when the cap is disabled.
 	dst.hasHeadroom = r.hasConcurrencyHeadroomWithReportLocked(p, model, serviceReport)
-	if pair := r.requestPairLocked(p, model, selfRouteOwner, now); pair != nil {
-		dst.pair, dst.pairAdmitting, dst.pairExpiresAt = pair, pairAdmittingLocked(pair, now), pair.membership.ExpiresAt
-	}
 	return true, GateReasonCount
 }
 
@@ -1613,14 +1577,6 @@ func (r *Registry) buildCandidateWithReason(snap *routingSnapshot, pr *PendingRe
 // written and must be discarded by the caller (the arena releases the slot).
 // The counter semantics of candidateRejection are unchanged. Caller holds r.mu.
 func (r *Registry) buildCandidateInto(c *routingCandidate, snap *routingSnapshot, pr *PendingRequest, now time.Time) (candidateRejection, GateReason, bool) {
-	if snap.pair != nil {
-		// A pair that is forming, rotating, not holding its model loaded or
-		// too close to its fixed lifetime for this request is capacity the
-		// request waits for, whatever its leader's slot reports.
-		if reason, ok := pairCandidateGate(snap, pr, now); !ok {
-			return rejectCapacity, reason, false
-		}
-	}
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
 		if snap.slotState == "crashed" {

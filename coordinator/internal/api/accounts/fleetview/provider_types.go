@@ -43,16 +43,8 @@ type Provider struct {
 	CapacityModelIDs *[]string `json:"capacity_model_ids,omitempty"`
 	Backend          string    `json:"backend,omitempty"`
 	Version          string    `json:"version,omitempty"`
-	// ExecutionRole is the role of the machine's current connection: "solo" for
-	// an ordinary provider, "cluster_member" for a control-only member of a
-	// two-Mac cluster. Omitted while the machine is not connected.
-	ExecutionRole string `json:"execution_role,omitempty"`
-	// Cluster is present for a connected cluster member that registered a
-	// cluster: what it registered, and where the coordinator's pair for that
-	// cluster stands. The full pair is at GET /v1/me/cluster-pairs.
-	Cluster      *ProviderCluster `json:"cluster,omitempty"`
-	OSVersion    string           `json:"os_version,omitempty"` // Current or last app-reported macOS version.
-	serialNumber string
+	OSVersion        string    `json:"os_version,omitempty"` // Current or last app-reported macOS version.
+	serialNumber     string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
@@ -117,21 +109,6 @@ type Provider struct {
 	// Timestamps
 	RegisteredAt *time.Time `json:"registered_at,omitempty"`
 	LastSeen     *time.Time `json:"last_seen,omitempty"`
-}
-
-// ProviderCluster is one machine's side of a two-Mac cluster.
-type ProviderCluster struct {
-	ClusterID    string `json:"cluster_id"`
-	Rank         int    `json:"rank"`
-	Role         string `json:"role"` // "leader" (rank 0) or "follower" (rank 1)
-	PolicySHA256 string `json:"policy_sha256"`
-	// PairState, Waiting, ServingReady and PeerProviderID come from the
-	// coordinator's pair for this cluster and are omitted when it lists none,
-	// which is always the case while cluster pairs are not configured.
-	PairState      string `json:"pair_state,omitempty"`
-	Waiting        string `json:"waiting,omitempty"`
-	ServingReady   bool   `json:"serving_ready"`
-	PeerProviderID string `json:"peer_provider_id,omitempty"`
 }
 
 type ProvidersResponse struct {

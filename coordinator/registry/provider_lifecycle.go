@@ -58,22 +58,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	autopilotState := r.newAutopilotState(id)
-	// Direct in-process callers also fail closed on malformed roles. The API
-	// rejects these before Register; an unknown role is never normalized to solo.
-	var models []protocol.ModelInfo
-	var clusterMembership *protocol.ClusterMembership
-	switch {
-	case msg.ValidateExecutionRole() != nil:
-		models = nil
-	case msg.ExecutionRole == protocol.ExecutionRoleClusterMember:
-		models = msg.ClusterModels
-		if msg.ClusterMembership != nil {
-			membership := *msg.ClusterMembership
-			clusterMembership = &membership
-		}
-	default:
-		models = autopilotState.RegisterInventory(msg.Models, msg.AutopilotInventory, msg.ModelAutopilot)
-	}
+	models := autopilotState.RegisterInventory(msg.Models, msg.AutopilotInventory, msg.ModelAutopilot)
 	modelInventory, _ := uniqueProviderModels(models)
 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
 		msg.PrefixCacheStatuses, modelInventory)
@@ -113,9 +98,6 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		kvBackends:                  r.newKVBackendHistory(id),
 		ModelAutopilot:              autopilot.CloneState(msg.ModelAutopilot),
 		ID:                          id,
-		executionRole:               msg.ExecutionRole,
-		memberNonce:                 msg.MemberRegistrationNonce,
-		clusterMembership:           clusterMembership,
 		persistence:                 ProviderPersistence{pending: r.store != nil},
 		Hardware:                    msg.Hardware,
 		Models:                      models,

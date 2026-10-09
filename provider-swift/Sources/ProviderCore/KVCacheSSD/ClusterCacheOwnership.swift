@@ -10,7 +10,7 @@ import Foundation
 /// this contract; when any compatibility field is absent or fuzzy the correct
 /// behavior is a safe miss — these types simply cannot be constructed.
 ///
-/// Go mirror: coordinator/protocol/cluster_cache_ownership.go. The canonical
+/// Go mirror: darkbloom-platform coordinator/protocol/cluster_cache_ownership.go. The canonical
 /// encodings and the namespace digest MUST stay byte-identical on both sides
 /// (shared vector in coordinator/tests/protocol and ProviderCoreTests).
 

@@ -102,10 +102,6 @@ type Server struct {
 	inference   *infer.Owner
 	providers   *providerapi.Owner
 	trust       *trustapi.Owner
-	nativePairs *registry.NativePairCoordinator // nil unless startup supplies an explicit native approval catalog
-	// clusterPairFormation is true only for the operator opt-in; a catalog
-	// handed in directly enables control without starting the selector.
-	clusterPairFormation bool
 
 	operations.Drain
 	operations *operations.Handler
@@ -214,15 +210,8 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		},
 		ResolveBaseURL: s.resolveBaseURL,
 	}}, trustapi.Config{AppAttest: cfg.AppAttestShadow, MDMScheduler: cfg.MDMScheduler, MinProviderVersion: cfg.MinProviderVersion, DurableTrustReuse: cfg.DurableTrustReuse, TrustReuseJournalPath: cfg.TrustReuseJournalPath})
-	s.nativePairs = registry.NewNativePairCoordinator(reg, clusterPairCatalog(cfg, logger))
-	s.clusterPairFormation = cfg.ClusterPairs.Enabled()
-	if s.nativePairs != nil && s.clusterPairFormation {
-		// The same operator opt-in that forms pairs lets a request reach one.
-		reg.EnableClusterPairRouting()
-	}
 	s.providers = providerapi.New(providerapi.Dependencies{Registry: reg, Store: st, Trust: s.trust, Releases: s.releases, Catalog: s.catalog, Geo: s.geoResolver, Observation: s.observation, Logger: logger,
-		Inference:   providerapi.InferenceEvents{Chunk: s.inference.HandleChunk, Accepted: s.inference.HandleInferenceAccepted, CompleteAt: s.inference.HandleCompleteAt, Error: s.inference.HandleInferenceError},
-		NativePairs: s.nativePairs, TrustedTLSProxies: clusterPairTrustedTLSProxies(cfg, logger)})
+		Inference: providerapi.InferenceEvents{Chunk: s.inference.HandleChunk, Accepted: s.inference.HandleInferenceAccepted, CompleteAt: s.inference.HandleCompleteAt, Error: s.inference.HandleInferenceError}})
 
 	s.accounts = accounts.New(accounts.Dependencies{
 		Store: st, Registry: reg, Access: s.access, Logger: logger, ReadCache: s.readCache,
@@ -230,7 +219,6 @@ func NewRuntime(d RuntimeDependencies, cfg ServerConfig) *Runtime {
 		MinProviderVersion:         strings.TrimSpace(cfg.MinProviderVersion),
 		SelfRouteModelEntries:      s.catalog.SelfRouteModelEntries,
 		SoftDeleteMutationsEnabled: cfg.SoftDeleteMutationsEnabled,
-		ClusterPairs:               s.ownerClusterPairs,
 	})
 	s.erasure = erasureapi.New(erasureapi.Dependencies{
 		Store: st, Access: s.access, Logger: logger, MaxBodyBytes: maxControlPlaneBodyBytes,
@@ -294,9 +282,6 @@ func (s *Server) Close() {
 	s.observation.FlushRoutes()
 	s.trust.CloseAuthority()
 	s.observation.CloseProfilesAndOutcomes()
-	if s.nativePairs != nil {
-		s.nativePairs.Close()
-	}
 }
 
 // 64 MiB

@@ -48,19 +48,6 @@ const (
 	GateAllowlist
 	GateNotServingModel
 	GateStateRestoring
-	// GateMemberOnly: a cluster-member connection is excluded from ordinary
-	// routing; only the pair selector's eligibility path may admit it.
-	GateMemberOnly
-	// GatePairReserved: the provider's physical device is held by an active
-	// verified pair; ordinary dispatch must not double-book it.
-	GatePairReserved
-	// GatePairNotReady: the request may use this pair, but the pair is not
-	// serving yet: it is preparing, exchanging keys, loading its model or
-	// rotating. A capacity wait.
-	GatePairNotReady
-	// GatePairLifetime: the pair is serving, but less of its fixed lifetime
-	// remains than this request needs. A capacity wait for the next pair.
-	GatePairLifetime
 	// GateReasonCount is the number of reasons; it sizes the tally arrays and
 	// is not itself a reason.
 	GateReasonCount
@@ -95,10 +82,6 @@ var gateReasonNames = [GateReasonCount]string{
 	GateAllowlist:            "allowlist",
 	GateNotServingModel:      "not_serving_model",
 	GateStateRestoring:       "state_restoring",
-	GateMemberOnly:           "member_only",
-	GatePairReserved:         "pair_reserved",
-	GatePairNotReady:         "pair_not_ready",
-	GatePairLifetime:         "pair_lifetime",
 }
 
 // String returns the snake_case name of the reason ("unknown" for an

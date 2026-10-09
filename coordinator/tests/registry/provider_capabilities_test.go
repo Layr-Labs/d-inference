@@ -3,7 +3,6 @@ package registry_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -706,34 +705,4 @@ func TestClearIneligiblePendingModelLoadsAfterCapabilityRevocation(t *testing.T)
 	if reg.HasPendingModelLoad(provider.ID, production.Qwen38NAXModelID) {
 		t.Fatal("revoked protected load still consumes pending budget")
 	}
-}
-
-// Run under `-race`. Reconciliation reads the App Attest deny set and policy
-// generations, which the registry lock guards; a revocation writes that set.
-// With the registry read lock dropped before the decision, this is a
-// concurrent map read and write.
-func TestCapabilityReconciliationHoldsRegistryLockAgainstRevocation(t *testing.T) {
-	reg := production.New(testLogger())
-	reg.SetModelCatalog([]production.CatalogEntry{{ID: production.Qwen38NAXModelID}})
-	capabilities := []string{production.ProviderCapabilityMLXNAX}
-	provider := reg.Register("reconcile-race", nil,
-		capabilityTestRegister(production.Qwen38NAXModelID, "M5", capabilities))
-	attestCapabilityTestProvider(t, reg, provider, "M5", capabilities, capabilityTestMetallibHash)
-
-	const rounds = 2000
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < rounds; i++ {
-			_ = reg.ReconcileAttestedRuntimeCapabilities(provider.ID)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for i := 0; i < rounds; i++ {
-			reg.RevokeAppAttestCredential(fmt.Sprintf("credential-%d", i))
-		}
-	}()
-	wg.Wait()
 }

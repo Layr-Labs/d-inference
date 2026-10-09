@@ -4,7 +4,7 @@ import Foundation
 // Focused CPU mirror check for the provider-swift native-pair public control
 // codec and the cluster-member registration negotiation. No MLX, no network,
 // no coordinator. Vectors pin the exact Go/Swift/Python public-byte contract
-// (coordinator/tests/protocol/native_pair_test.go,
+// (darkbloom-platform coordinator/tests/protocol/native_pair_test.go,
 //  ProviderCoreTests/Protocol/NativePairMessageTests.swift).
 
 var failures = 0

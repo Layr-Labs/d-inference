@@ -389,7 +389,7 @@ observations remain available through these surfaces.
 
 `ClusterCacheIdentity` and `ClusterCacheWriterLease`
 (`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterCacheOwnership.swift`,
-mirrored by `coordinator/protocol/cluster_cache_ownership.go`) are the
+mirrored on the coordinator side in `Layr-Labs/darkbloom-platform`) are the
 ownership contracts clustering adds on top of the epoch seam, without
 changing it: a cluster cache namespace is scoped to the authorization
 boundary plus the exact model aggregate, prompt contract, build,

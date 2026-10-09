@@ -2059,6 +2059,26 @@ verdict. Its CPU checks run with
 Real generation, tool/retrieval quality, memory peaks and latency are separate
 gates before enabling serving.
 
+#### Instruction-prefix candidate
+
+Preserve the [frozen original campaign](../reports/2026-10-09-selective-kv-working-set.md).
+The separate [preregistered candidate](../reports/2026-10-09-instruction-prefix-retention.md)
+fixes protection at 128 before GPU results. Build and stage ordinary test
+products, then run the provider `InstructionPrefixAuditTests`,
+`KVInstructionPrefixIntegrationTests` and selective invariants under one native
+fixture lease. The nested `CBv2InstructionPrefixRetentionTests` check repeated
+compaction, rejection, chronological positions and unchanged reservation.
+
+Before model evaluation, run `radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON
+AUDIT_JSON cache-off mtp-off contiguous ssd ephemeral-key --prompt-audit-only`.
+It uses the native tokenizer and normalization, records actual prompt IDs and
+the verified header boundary, and performs no model load or MLX evaluation.
+The `instruction-half` generation arm refuses missing header evidence or a
+header beyond 128. Compare one frozen binary's dense and candidate arms on the
+six recovery observations and the twelve new cases. A first-main index-47 logit
+diagnostic is separate from its five uninstrumented recovery replays; its timing
+is excluded from performance claims. Do not retune the cohort after results.
+
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)

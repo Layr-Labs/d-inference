@@ -1,0 +1,142 @@
+[
+  {
+    "kind": "recovery",
+    "mode": "0",
+    "command": [
+      "/Users/gaj/.codex/worktrees/kv-instruction-retention/d-inference/scripts/benchmarks/radix-engine/.build/out/Products/Debug/radix-engine",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+      "/tmp/kv-instruction-evidence/recovery-http.json",
+      "/tmp/kv-instruction-evidence/recovery-0.json",
+      "cache-off",
+      "mtp-off",
+      "contiguous",
+      "ssd",
+      "ephemeral-key",
+      "--production-kv-grant",
+      "--expected-model-sha256",
+      "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+      "--logit-diagnostic-position",
+      "47",
+      "--logit-diagnostic-candidates",
+      "7890,6960"
+    ],
+    "environment": {
+      "DARKBLOOM_PREFIX_CACHE": "0",
+      "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
+      "DARKBLOOM_CBV2_MTP": "0",
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
+      "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+      "DARKBLOOM_CBV2_SELECTIVE_KV": "0"
+    },
+    "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+    "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "input_sha256": "62730533d05da402a647474eefb2d6b2b3f7ba4f291e3b9b4fed15e9554a87ec",
+    "pid": 68230,
+    "exit_code": 0,
+    "seconds": 74.46823108301032
+  },
+  {
+    "kind": "recovery",
+    "mode": "instruction-half",
+    "command": [
+      "/Users/gaj/.codex/worktrees/kv-instruction-retention/d-inference/scripts/benchmarks/radix-engine/.build/out/Products/Debug/radix-engine",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+      "/tmp/kv-instruction-evidence/recovery-http.json",
+      "/tmp/kv-instruction-evidence/recovery-instruction-half.json",
+      "cache-off",
+      "mtp-off",
+      "contiguous",
+      "ssd",
+      "ephemeral-key",
+      "--production-kv-grant",
+      "--expected-model-sha256",
+      "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+      "--logit-diagnostic-position",
+      "47",
+      "--logit-diagnostic-candidates",
+      "7890,6960"
+    ],
+    "environment": {
+      "DARKBLOOM_PREFIX_CACHE": "0",
+      "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
+      "DARKBLOOM_CBV2_MTP": "0",
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
+      "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+      "DARKBLOOM_CBV2_SELECTIVE_KV": "instruction-half"
+    },
+    "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+    "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "input_sha256": "62730533d05da402a647474eefb2d6b2b3f7ba4f291e3b9b4fed15e9554a87ec",
+    "pid": 73981,
+    "exit_code": 0,
+    "seconds": 81.69304270899738
+  },
+  {
+    "kind": "new-holdout",
+    "mode": "0",
+    "command": [
+      "/Users/gaj/.codex/worktrees/kv-instruction-retention/d-inference/scripts/benchmarks/radix-engine/.build/out/Products/Debug/radix-engine",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+      "/tmp/kv-instruction-evidence/new-holdout-http.json",
+      "/tmp/kv-instruction-evidence/new-holdout-0.json",
+      "cache-off",
+      "mtp-off",
+      "contiguous",
+      "ssd",
+      "ephemeral-key",
+      "--production-kv-grant",
+      "--expected-model-sha256",
+      "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512"
+    ],
+    "environment": {
+      "DARKBLOOM_PREFIX_CACHE": "0",
+      "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
+      "DARKBLOOM_CBV2_MTP": "0",
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
+      "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+      "DARKBLOOM_CBV2_SELECTIVE_KV": "0"
+    },
+    "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+    "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "input_sha256": "3d749cd8108d4acc76af8ba2db21b23b4b3bb68c663aca0be520706e3d9207ef",
+    "pid": 78148,
+    "exit_code": 0,
+    "seconds": 204.6174034999858
+  },
+  {
+    "kind": "new-holdout",
+    "mode": "instruction-half",
+    "command": [
+      "/Users/gaj/.codex/worktrees/kv-instruction-retention/d-inference/scripts/benchmarks/radix-engine/.build/out/Products/Debug/radix-engine",
+      "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+      "/tmp/kv-instruction-evidence/new-holdout-http.json",
+      "/tmp/kv-instruction-evidence/new-holdout-instruction-half.json",
+      "cache-off",
+      "mtp-off",
+      "contiguous",
+      "ssd",
+      "ephemeral-key",
+      "--production-kv-grant",
+      "--expected-model-sha256",
+      "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512"
+    ],
+    "environment": {
+      "DARKBLOOM_PREFIX_CACHE": "0",
+      "DARKBLOOM_PREFIX_CACHE_MEMORY": "0",
+      "DARKBLOOM_CBV2_MTP": "0",
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
+      "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+      "DARKBLOOM_CBV2_SELECTIVE_KV": "instruction-half"
+    },
+    "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+    "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "input_sha256": "3d749cd8108d4acc76af8ba2db21b23b4b3bb68c663aca0be520706e3d9207ef",
+    "pid": 83240,
+    "exit_code": 0,
+    "seconds": 206.73630583300837
+  }
+]

@@ -17,7 +17,8 @@ enum BenchmarkLoader {
         options: BenchmarkOptions, report: HTTPReport, modelID: String,
         environment: [String: String]? = nil
     ) async throws -> Loaded {
-        try options.persistentTestKeys?.validate(environment: environment ?? ProcessInfo.processInfo.environment)
+        let requestedEnvironment = environment ?? ProcessInfo.processInfo.environment
+        try options.persistentTestKeys?.validate(environment: requestedEnvironment)
         #if !RADIX_CANDIDATE
         guard !options.productionKVGrant else {
             throw RadixBenchmark.Failure.message("production grant requires the candidate artifact")
@@ -55,12 +56,14 @@ enum BenchmarkLoader {
             if let expected = options.expectedModelSHA256, hashBefore != expected {
                 throw RadixBenchmark.Failure.message("loaded artifact hash does not match the pinned model")
             }
-            let input = try await container.perform { context in
-                try inputs(report, context: context, modelType: modelType, options: options)
-            }
-            var effectiveEnvironment = environment ?? ProcessInfo.processInfo.environment
-            effectiveEnvironment["DARKBLOOM_PREFIX_CACHE"] = options.cacheEnabled ? "1" : "0"
+            var sessionEnvironment = requestedEnvironment
+            sessionEnvironment["DARKBLOOM_PREFIX_CACHE"] = options.cacheEnabled ? "1" : "0"
+            let effectiveEnvironment = sessionEnvironment
             try options.persistentTestKeys?.validate(environment: effectiveEnvironment)
+            let input = try await container.perform { context in
+                try inputs(report, context: context, modelType: modelType, options: options,
+                           environment: effectiveEnvironment)
+            }
             let session = try await EngineV2Factory.makeBenchmarkSession(
                 modelId: modelID, modelDirectory: directory, isVLM: isVLM,
                 container: container, tokenizer: TokenizerHandle(input.tokenizer),
@@ -110,7 +113,8 @@ enum BenchmarkLoader {
             #if RADIX_CANDIDATE
             mtpConfig.acceptance = MTPAcceptancePolicy.parse(options.mtpAcceptance)!
             #endif
-            let input = try inputs(report, context: context, modelType: modelType, options: options)
+            let input = try inputs(report, context: context, modelType: modelType, options: options,
+                                   environment: requestedEnvironment)
             #if RADIX_CANDIDATE
             let hybrid = cacheEnabled ? CBv2HybridPrefixCacheConfig(
                 maximumBytes: 1_073_741_824, maximumEntries: 32, maximumCheckpointsPerRequest: 2,
@@ -122,7 +126,8 @@ enum BenchmarkLoader {
                 model: model, modelID: modelID, tokenizer: context.tokenizer,
                 kvBytesCapacity: options.kvBudgetBytes, maxConcurrentRequests: options.concurrency,
                 residentPrefixCache: resident, hybridPrefixCache: hybrid,
-                mtpDrafter: assistant, mtpConfig: mtpConfig, kvBackend: options.backend)
+                mtpDrafter: assistant, mtpConfig: mtpConfig, kvBackend: options.backend,
+                environment: requestedEnvironment)
             #else
             let build = try EngineV2Factory.makeProductionBuild(
                 model: model, tokenizer: context.tokenizer,
@@ -144,14 +149,18 @@ enum BenchmarkLoader {
         let eos: Set<Int>
     }
 
-    private static func inputs(_ report: HTTPReport, context: ModelContext, modelType: String?, options: BenchmarkOptions) throws -> PreparedInput {
+    private static func inputs(
+        _ report: HTTPReport, context: ModelContext, modelType: String?,
+        options: BenchmarkOptions, environment: [String: String]
+    ) throws -> PreparedInput {
         let rendering = templateContext()
         func prepare(name: String, kind: String, body: Data, maxTokens: Int) throws -> Input {
             #if RADIX_CANDIDATE
             let prompt = try EngineV2Factory.benchmarkPrompt(body: body, tokenizer: context.tokenizer,
                 modelType: modelType, defaultDate: PromptRenderDate(rendering.date!)!)
             return Input(name: name, kind: kind, tokens: prompt.tokens, maxTokens: maxTokens,
-                         promptRenderDate: prompt.renderDate, sampling: prompt.sampling)
+                         promptRenderDate: prompt.renderDate, sampling: prompt.sampling,
+                         instructionPrefixTokens: prompt.instructionPrefixTokens)
             #else
             guard let raw = try JSONSerialization.jsonObject(with: body) as? [String: Any],
                   let messages = raw["messages"] as? [[String: String]] else {
@@ -168,6 +177,8 @@ enum BenchmarkLoader {
                 body: JSONEncoder().encode(row.request.body), maxTokens: row.request.max_tokens)
         }
         #if RADIX_CANDIDATE
+        try BenchmarkPromptAudit.requireInstructionPrefixCoverage(
+            inputs, modelType: modelType, environment: environment)
         let diagnostics = options.gemmaMTPVerification != nil || options.logitDiagnostic != nil
             || options.attentionMetadata != nil || options.attentionPacket != nil
         try BenchmarkSampling.requireGreedyDiagnostics(inputs, enabled: diagnostics)

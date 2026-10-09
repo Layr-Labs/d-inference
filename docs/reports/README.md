@@ -12,6 +12,7 @@ File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
 - [Selective full-attention KV experiments](2026-10-09-selective-kv-working-set.md) - paired native-model pilots and independent backing-allocation evidence, with peak-memory and serving limits.
+- [Instruction-prefix KV candidate](2026-10-09-instruction-prefix-retention.md) - separate fixed policy, native CPU header audit and preregistered recovery/new-case qualification.
 - [Autopilot shadow evidence and calibration](2026-10-07-autopilot-shadow-evidence.md) - read-only week/day demand, output-limit calibration, retained controller decisions and synthetic placement valuation, with replay and causal limits.
 - [Typical MTP acceptance benchmarks](2026-10-07-typical-mtp-acceptance-benchmarks.md) - controlled three-model M5 Max before/exact/typical decode measurements, weighted acceptance and paired spread, with quality and default-change limits.
 - [Registry scan optimization](2026-10-04-registry-scan-optimization.md) — combined reservation storage, compact evidence and pending-work measurements on an isolated Mac mini, with correctness and production-latency limits.

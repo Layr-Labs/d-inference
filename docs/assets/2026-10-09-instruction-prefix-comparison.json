@@ -1,0 +1,1231 @@
+{
+  "scope": "One fixed preregistered candidate. Handcrafted holdout is not broad statistical qualification.",
+  "artifact": {
+    "frozen_utc": "2026-10-09T12:18:58.454765+00:00",
+    "parent_revision": "f2fb32afae48f4a7fbce4779002103d6de50d005",
+    "sdk_revision": "f328058257f23b22607e73bbe5325c2e597c130d",
+    "mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+    "mlx_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+    "parent_worktree_status": "",
+    "sdk_worktree_status": "",
+    "binary_path": "/Users/gaj/.codex/worktrees/kv-instruction-retention/d-inference/scripts/benchmarks/radix-engine/.build/out/Products/Debug/radix-engine",
+    "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+    "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+    "model_expected_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+    "system": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "memory_bytes": 137438953472,
+    "preregistration_sha256": "acc230fe950920653fc6e6e28470eeb34742aed1731b46128d628afe6333e589",
+    "input_sha256": {
+      "recovery": "62730533d05da402a647474eefb2d6b2b3f7ba4f291e3b9b4fed15e9554a87ec",
+      "new-holdout": "3d749cd8108d4acc76af8ba2db21b23b4b3bb68c663aca0be520706e3d9207ef"
+    },
+    "final_cpu_audits": {
+      "recovery": {
+        "sha256": "33fa7b798f669fa221920216dad4716acf1bea69103b15ff57ba4687bc23435f",
+        "runtime_identity": {
+          "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+          "normalization": "darkbloom-request-normalization-v8",
+          "renderer": "swift-jinja-request-date-compatible-v4",
+          "tokenizer": "huggingface-tokenizer-json-v1"
+        },
+        "rows": 1,
+        "all_prompt_ids_and_boundaries_match_preregistered": true
+      },
+      "new-holdout": {
+        "sha256": "cc1c1935f2108d07697753ac01a29f6ad8d692197ff8c3217a931d761a87a877",
+        "runtime_identity": {
+          "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+          "normalization": "darkbloom-request-normalization-v8",
+          "renderer": "swift-jinja-request-date-compatible-v4",
+          "tokenizer": "huggingface-tokenizer-json-v1"
+        },
+        "rows": 12,
+        "all_prompt_ids_and_boundaries_match_preregistered": true
+      }
+    }
+  },
+  "recovery": {
+    "rows": [
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 47,
+        "native": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "expected": "272",
+          "completion_tokens": 164
+        },
+        "candidate": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory levels at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "expected": "272",
+          "completion_tokens": 256
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 238780416,
+          "retained": 141262848,
+          "ratio": 0.5916014820913956,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501120845,
+            "candidate_active_bytes": 12485201861,
+            "candidate_minus_native_bytes": -15918984
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12500741933,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97135396
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501120845,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97514308
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501120841,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97514304
+          }
+        ],
+        "observation": "main_diagnostic"
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 47,
+        "native": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "expected": "272",
+          "completion_tokens": 164,
+          "ttft_s": 3.644937708,
+          "decode_tps": 17.576541276253455
+        },
+        "candidate": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory levels at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "expected": "272",
+          "completion_tokens": 256,
+          "ttft_s": 3.1540795,
+          "decode_tps": 34.93636344412769
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 477560832,
+          "retained": 282525696,
+          "ratio": 0.5916014820913956,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12499922713,
+            "candidate_active_bytes": 12403606541,
+            "candidate_minus_native_bytes": -96316172
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12499922649,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -96316112
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12499922645,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -96316108
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501120905,
+            "candidate_active_bytes": 12405803793,
+            "candidate_minus_native_bytes": -95317112
+          }
+        ],
+        "observation": "fresh_scope_1"
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 47,
+        "native": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "expected": "272",
+          "completion_tokens": 164,
+          "ttft_s": 3.605811583,
+          "decode_tps": 33.49268643271118
+        },
+        "candidate": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory levels at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "expected": "272",
+          "completion_tokens": 256,
+          "ttft_s": 4.727538625,
+          "decode_tps": 33.67823218396988
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 716341248,
+          "retained": 423788544,
+          "ratio": 0.5916014820913956,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501120973,
+            "candidate_active_bytes": 12403606605,
+            "candidate_minus_native_bytes": -97514368
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606605,
+            "candidate_minus_native_bytes": -97514364
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501155533,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -97548932
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -97514368
+          }
+        ],
+        "observation": "fresh_scope_2"
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 47,
+        "native": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "expected": "272",
+          "completion_tokens": 164,
+          "ttft_s": 3.551034292,
+          "decode_tps": 30.693635199272542
+        },
+        "candidate": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory levels at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "expected": "272",
+          "completion_tokens": 256,
+          "ttft_s": 4.430871625,
+          "decode_tps": 33.731020223092294
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 955121664,
+          "retained": 565051392,
+          "ratio": 0.5916014820913956,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501120973,
+            "candidate_active_bytes": 12403606669,
+            "candidate_minus_native_bytes": -97514304
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606669,
+            "candidate_minus_native_bytes": -97514300
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12406220005,
+            "candidate_minus_native_bytes": -94900964
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97514304
+          }
+        ],
+        "observation": "fresh_scope_3"
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 47,
+        "native": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "expected": "272",
+          "completion_tokens": 164,
+          "ttft_s": 3.462091291,
+          "decode_tps": 33.866584283298536
+        },
+        "candidate": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory levels at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "expected": "272",
+          "completion_tokens": 256,
+          "ttft_s": 3.806714541,
+          "decode_tps": 33.77436677617861
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 1193902080,
+          "retained": 706314240,
+          "ratio": 0.5916014820913956,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501120973,
+            "candidate_active_bytes": 12403606669,
+            "candidate_minus_native_bytes": -97514304
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97514304
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97514304
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97514304
+          }
+        ],
+        "observation": "donor"
+      },
+      {
+        "id": "4k-reasoning-50",
+        "prompt_tokens": 4602,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 47,
+        "native": {
+          "final_text": "272",
+          "oracle_pass": true,
+          "expected": "272",
+          "completion_tokens": 164,
+          "ttft_s": 3.628648959,
+          "decode_tps": 33.149338688193176
+        },
+        "candidate": {
+          "final_text": "We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That likely applies at some point. Also there are many archive records with categories and checkpoint values. But those likely represent inventory checkpoints? The question: \"How many Iris units remain?\" We need to consider all inventory changes. The archive records likely represent inventory levels at checkpoints? But they are not necessarily inventory changes. They might be just logs of inventory levels at checkpoints. But the question likely expects to compute final inventory after applying the rules. The archive records might be irrelevant? But maybe they indicate inventory at each checkpoint, but we need to find the last checkpoint for Iris? But Iris is a package, not a category. The archive records have categories 0-22. Iris is a package, not a category. So the archive records likely not relevant to Iris. The only inventory rules are the two. So start 137, then gains 219, then ships 84. So final = 137 + 219 - 84 = 272. Let's compute: 137+219=356, minus 84 = 272. So answer",
+          "oracle_pass": false,
+          "expected": "272",
+          "completion_tokens": 256,
+          "ttft_s": 4.730066833,
+          "decode_tps": 34.121025379893474
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 1671462912,
+          "retained": 988839936,
+          "ratio": 0.5916014820913956,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606669,
+            "candidate_minus_native_bytes": -97514300
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97514304
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501120969,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97514304
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501155533,
+            "candidate_active_bytes": 12403606665,
+            "candidate_minus_native_bytes": -97548868
+          }
+        ],
+        "observation": "recovery"
+      }
+    ],
+    "diagnostic": {
+      "native": {
+        "record": {
+          "acceptedDrafts": 0,
+          "argMaxID": 7890,
+          "backend": "CBv2ContiguousKVBackend",
+          "batchIndex": 0,
+          "batchSize": 1,
+          "cacheOffset": 4648,
+          "candidateIDs": [
+            7890,
+            6960
+          ],
+          "column": 0,
+          "confirmedWidth": 1,
+          "draftDepth": 0,
+          "draftPrefix": [],
+          "infiniteCount": 0,
+          "logitDType": "float32",
+          "nanCount": 0,
+          "outcome": "confirmed",
+          "outputBase": 47,
+          "outputIndex": 47,
+          "phase": "chained_decode",
+          "requestID": 2,
+          "seedToken": 4569,
+          "targetToken": 7890,
+          "topTwoIDs": [
+            7890,
+            6960
+          ],
+          "valueBits": [
+            1100491963,
+            1100491963,
+            1100459708,
+            1100491963,
+            1100459708
+          ],
+          "verificationWidth": 1,
+          "vocabularySize": 201088
+        },
+        "values_float32": [
+          19.021841049194336,
+          19.021841049194336,
+          18.96031951904297,
+          19.021841049194336,
+          18.96031951904297
+        ],
+        "requested_logit_margin_7890_minus_6960": 0.06152153015136719
+      },
+      "candidate": {
+        "record": {
+          "acceptedDrafts": 0,
+          "argMaxID": 6960,
+          "backend": "CBv2ContiguousKVBackend",
+          "batchIndex": 0,
+          "batchSize": 1,
+          "cacheOffset": 4648,
+          "candidateIDs": [
+            7890,
+            6960
+          ],
+          "column": 0,
+          "confirmedWidth": 1,
+          "draftDepth": 0,
+          "draftPrefix": [],
+          "infiniteCount": 0,
+          "logitDType": "float32",
+          "nanCount": 0,
+          "outcome": "confirmed",
+          "outputBase": 47,
+          "outputIndex": 47,
+          "phase": "chained_decode",
+          "requestID": 2,
+          "seedToken": 4569,
+          "targetToken": 6960,
+          "topTwoIDs": [
+            6960,
+            7890
+          ],
+          "valueBits": [
+            1100419589,
+            1100419589,
+            1100411026,
+            1100411026,
+            1100419589
+          ],
+          "verificationWidth": 1,
+          "vocabularySize": 201088
+        },
+        "values_float32": [
+          18.883798599243164,
+          18.883798599243164,
+          18.86746597290039,
+          18.86746597290039,
+          18.883798599243164
+        ],
+        "requested_logit_margin_7890_minus_6960": -0.016332626342773438
+      },
+      "control_fields_equal": true,
+      "same_generated_prefix_before_index_47": true,
+      "scope": "One actual position; raw logits, no full-vocabulary probabilities. No diagnostic timing claim."
+    },
+    "within_native_all_six_equal": true,
+    "within_candidate_all_six_equal": true
+  },
+  "new_holdout": {
+    "rows": [
+      {
+        "id": "4k-arithmetic-a",
+        "prompt_tokens": 4604,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 10,
+        "native": {
+          "final_text": "280",
+          "oracle_pass": true,
+          "expected": "280",
+          "completion_tokens": 77,
+          "ttft_s": 4.639747208,
+          "decode_tps": 35.68418695779994
+        },
+        "candidate": {
+          "final_text": "280",
+          "oracle_pass": true,
+          "expected": "280",
+          "completion_tokens": 189,
+          "ttft_s": 3.134868625,
+          "decode_tps": 35.14991501293691
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 238878720,
+          "retained": 141361152,
+          "ratio": 0.5917695473251029,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501124109,
+            "candidate_active_bytes": 12403606541,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501124105,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501124105,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97517568
+          }
+        ],
+        "kind": "arithmetic"
+      },
+      {
+        "id": "4k-arithmetic-b",
+        "prompt_tokens": 4590,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 7,
+        "native": {
+          "final_text": "We need to compute inventory of Hazel. We have initial package Hazel starts with 302 units. Then there are shipments and receipts. We need to track all transactions that affect inventory. The journal entries mostly say \"this line records no transaction.\" But some entries mention \"Package Hazel ships 77 units.\" etc. Also \"Package Hazel receives 146 units.\" Also \"Package Hazel ships 38 units.\" Also \"Package Hazel ships 77 units.\" Wait earlier we had \"Package Hazel ships 77 units.\" after entry 00082. Then later \"Package Hazel receives 146 units.\" after entry 00123. Then \"Package Hazel ships 38 units.\" after entry 00164. Also earlier \"Package Hazel ships 77 units.\" after entry 00082. Also earlier \"Package Hazel starts with 302 units.\" So we need to sum: start 302. Then shipments: 77 units shipped. Then receives: 146 units received. Then ships: 38 units shipped. Also earlier there might be other shipments? Let's scan: After entry 00082, we saw \"Package Hazel ships 77 units.\" Then after entry 00123, \"Package Hazel receives 146 units.\" Then after entry 00164, \"Package Hazel ships",
+          "oracle_pass": false,
+          "expected": "333",
+          "completion_tokens": 256,
+          "ttft_s": 3.984870458,
+          "decode_tps": 34.7666138765766
+        },
+        "candidate": {
+          "final_text": "We need to compute remaining units of Hazel after all transactions. We have initial package Hazel starts with 302 units. Then there are shipments and receipts. We need to parse all entries that mention \"Package Hazel ships\" or \"Package Hazel receives\" or \"Package Hazel starts\". Also \"Package Hazel ships 77 units.\" etc. Also \"Package Hazel receives 146 units.\" etc. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier. Also \"Package Hazel ships 38 units.\" etc. Also \"Package Hazel ships 77 units.\" earlier.",
+          "oracle_pass": false,
+          "expected": "333",
+          "completion_tokens": 256,
+          "ttft_s": 3.287296291,
+          "decode_tps": 33.50786018823366
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 477069312,
+          "retained": 282820608,
+          "ratio": 0.5928291778281476,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12500337677,
+            "candidate_active_bytes": 12403606605,
+            "candidate_minus_native_bytes": -96731072
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12500337673,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -96731072
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12500349197,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -96742596
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12500337673,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -96731072
+          },
+          {
+            "completion_tokens": 256,
+            "native_active_bytes": 12500337673,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -96731072
+          }
+        ],
+        "kind": "arithmetic"
+      },
+      {
+        "id": "4k-code-a",
+        "prompt_tokens": 4604,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": true,
+        "first_token_difference": null,
+        "native": {
+          "final_text": "90",
+          "oracle_pass": true,
+          "expected": "90",
+          "completion_tokens": 171,
+          "ttft_s": 3.2198845,
+          "decode_tps": 34.77261297989013
+        },
+        "candidate": {
+          "final_text": "90",
+          "oracle_pass": true,
+          "expected": "90",
+          "completion_tokens": 171,
+          "ttft_s": 3.170296458,
+          "decode_tps": 32.94102483336239
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 715948032,
+          "retained": 424181760,
+          "ratio": 0.5924756281752025,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501124109,
+            "candidate_active_bytes": 12403606541,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501124105,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501124105,
+            "candidate_active_bytes": 12406219877,
+            "candidate_minus_native_bytes": -94904228
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501158673,
+            "candidate_active_bytes": 12403606537,
+            "candidate_minus_native_bytes": -97552136
+          }
+        ],
+        "kind": "code"
+      },
+      {
+        "id": "4k-code-b",
+        "prompt_tokens": 4601,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 71,
+        "native": {
+          "final_text": "30",
+          "oracle_pass": true,
+          "expected": "30",
+          "completion_tokens": 185,
+          "ttft_s": 3.345503292,
+          "decode_tps": 34.164813027348316
+        },
+        "candidate": {
+          "final_text": "30",
+          "oracle_pass": true,
+          "expected": "30",
+          "completion_tokens": 187,
+          "ttft_s": 3.311758959,
+          "decode_tps": 33.52899071915608
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 954679296,
+          "retained": 565395456,
+          "ratio": 0.5922360088554807,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501124173,
+            "candidate_active_bytes": 12403606605,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501124169,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501124169,
+            "candidate_active_bytes": 12403606601,
+            "candidate_minus_native_bytes": -97517568
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501124169,
+            "candidate_active_bytes": 12406219941,
+            "candidate_minus_native_bytes": -94904228
+          }
+        ],
+        "kind": "code"
+      },
+      {
+        "id": "4k-tool-a",
+        "prompt_tokens": 4599,
+        "instruction_prefix_tokens": 124,
+        "tokens_equal": true,
+        "first_token_difference": null,
+        "native": {
+          "final_text": "{\"name\":\"book_shipment\",\"arguments\":{\"city\":\"Tallinn\",\"speed\":\"express\"}}",
+          "oracle_pass": true,
+          "native_call_name": null,
+          "expected": {
+            "name": "book_shipment",
+            "arguments": {
+              "city": "Tallinn",
+              "speed": "express"
+            }
+          },
+          "completion_tokens": 192,
+          "ttft_s": 3.366142709,
+          "decode_tps": 33.0847492739641
+        },
+        "candidate": {
+          "final_text": "{\"name\":\"book_shipment\",\"arguments\":{\"city\":\"Tallinn\",\"speed\":\"express\"}}",
+          "oracle_pass": true,
+          "native_call_name": null,
+          "expected": {
+            "name": "book_shipment",
+            "arguments": {
+              "city": "Tallinn",
+              "speed": "express"
+            }
+          },
+          "completion_tokens": 192,
+          "ttft_s": 3.247735417,
+          "decode_tps": 32.45886571644045
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 1193312256,
+          "retained": 706510848,
+          "ratio": 0.5920586539253645,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501124173,
+            "candidate_active_bytes": 12403573837,
+            "candidate_minus_native_bytes": -97550336
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501124169,
+            "candidate_active_bytes": 12403573833,
+            "candidate_minus_native_bytes": -97550336
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501124105,
+            "candidate_active_bytes": 12403573833,
+            "candidate_minus_native_bytes": -97550272
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12501124105,
+            "candidate_active_bytes": 12403541065,
+            "candidate_minus_native_bytes": -97583040
+          }
+        ],
+        "kind": "tool_json"
+      },
+      {
+        "id": "4k-tool-b",
+        "prompt_tokens": 4593,
+        "instruction_prefix_tokens": 118,
+        "tokens_equal": true,
+        "first_token_difference": null,
+        "native": {
+          "final_text": "{\"name\":\"convert_length\",\"arguments\":{\"unit\":\"cm\",\"value\":37}}",
+          "oracle_pass": true,
+          "native_call_name": null,
+          "expected": {
+            "name": "convert_length",
+            "arguments": {
+              "value": 37,
+              "unit": "cm"
+            }
+          },
+          "completion_tokens": 119,
+          "ttft_s": 3.209642417,
+          "decode_tps": 32.41858325227829
+        },
+        "candidate": {
+          "final_text": "{\"name\":\"convert_length\",\"arguments\":{\"unit\":\"cm\",\"value\":37}}",
+          "oracle_pass": true,
+          "native_call_name": null,
+          "expected": {
+            "name": "convert_length",
+            "arguments": {
+              "value": 37,
+              "unit": "cm"
+            }
+          },
+          "completion_tokens": 119,
+          "ttft_s": 3.186501542,
+          "decode_tps": 32.09964091538107
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 1431650304,
+          "retained": 847331328,
+          "ratio": 0.5918563532117966,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12501124173,
+            "candidate_active_bytes": 12403541069,
+            "candidate_minus_native_bytes": -97583104
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12501124169,
+            "candidate_active_bytes": 12403541065,
+            "candidate_minus_native_bytes": -97583104
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12501124169,
+            "candidate_active_bytes": 12403508297,
+            "candidate_minus_native_bytes": -97615872
+          }
+        ],
+        "kind": "tool_json"
+      },
+      {
+        "id": "8k-arithmetic-c",
+        "prompt_tokens": 8694,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 72,
+        "native": {
+          "final_text": "394",
+          "oracle_pass": true,
+          "expected": "394",
+          "completion_tokens": 147,
+          "ttft_s": 7.079059,
+          "decode_tps": 32.67893150746957
+        },
+        "candidate": {
+          "final_text": "394",
+          "oracle_pass": true,
+          "expected": "394",
+          "completion_tokens": 157,
+          "ttft_s": 7.102577208,
+          "decode_tps": 31.780504008284286
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 1871560704,
+          "retained": 1089060864,
+          "ratio": 0.5818998345457888,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12702057613,
+            "candidate_active_bytes": 12503876685,
+            "candidate_minus_native_bytes": -198180928
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12702057609,
+            "candidate_active_bytes": 12503876681,
+            "candidate_minus_native_bytes": -198180928
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12702057609,
+            "candidate_active_bytes": 12503876681,
+            "candidate_minus_native_bytes": -198180928
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12702057609,
+            "candidate_active_bytes": 12503876681,
+            "candidate_minus_native_bytes": -198180928
+          }
+        ],
+        "kind": "arithmetic"
+      },
+      {
+        "id": "8k-arithmetic-d",
+        "prompt_tokens": 8698,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 6,
+        "native": {
+          "final_text": "We need to compute remaining Aspen units after all transactions. We have initial package Aspen starts with 415 units. Then there are shipments and receipts. We need to track all transactions that affect Aspen units. The journal entries mostly say \"this line records no transaction.\" So only lines that mention \"Package Aspen ships\" or \"Package Aspen receives\" affect inventory. Also \"Package Aspen ships 126 units.\" \"Package Aspen ships 59 units.\" \"Package Aspen receives 208 units.\" Also earlier \"Package Aspen starts with 415 units.\" So we need to sum shipments and receipts.\n\nLet's list:\n\n- Start: 415 units.\n\n- \"Package Aspen ships 126 units.\" => subtract 126.\n\n- \"Package Aspen ships 59 units.\" => subtract 59.\n\n- \"Package Aspen receives 208 units.\" => add 208.\n\nAny other shipments/receives? Search: earlier \"Package Aspen ships 126 units.\" yes. \"Package Aspen ships 59 units.\" yes. \"Package Aspen receives 208 units.\" yes. Also earlier \"Package Aspen ships 126 units.\" appears once. Also earlier \"Package Aspen ships 59 units.\" appears once. Also earlier \"Package Aspen receives 208 units.\" appears once. Also earlier \"Package Aspen ships",
+          "oracle_pass": false,
+          "expected": "438",
+          "completion_tokens": 256,
+          "ttft_s": 7.227592625,
+          "decode_tps": 31.392692482908984
+        },
+        "candidate": {
+          "final_text": "We need to parse the journal entries. They are all \"no transaction\" except some lines that mention \"Package Aspen starts with 415 units.\" then later \"Package Aspen ships 126 units.\" then \"Package Aspen receives 208 units.\" then \"Package Aspen ships 59 units.\" then \"Package Aspen ships 59 units.\" Wait there are multiple shipping events. Let's list all events that affect inventory:\n\n- Start: 415 units.\n- Then \"Package Aspen ships 126 units.\" => subtract 126.\n- Then \"Package Aspen receives 208 units.\" => add 208.\n- Then \"Package Aspen ships 59 units.\" => subtract 59.\n- Then \"Package Aspen ships 59 units.\" Wait I saw earlier \"Package Aspen ships 59 units.\" after entry 00315? Let's check: after entry 00315? Actually after entry 00315? Let's scan: After entry 00315? The text: \"Package Aspen ships 59 units.\" appears after entry 00315? Let's locate: In the long list, after entry 00315? Wait earlier we had \"Package Aspen ships 59 units.\" after entry 00315? Let's search: I see \"Package Aspen ships 59 units.\" after entry 003",
+          "oracle_pass": false,
+          "expected": "438",
+          "completion_tokens": 256,
+          "ttft_s": 7.528167458,
+          "decode_tps": 30.518142100546516
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 2311667712,
+          "retained": 1330987008,
+          "ratio": 0.5757691735238459,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12702450829,
+            "candidate_active_bytes": 12504269901,
+            "candidate_minus_native_bytes": -198180928
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269901,
+            "candidate_minus_native_bytes": -198180924
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12707226853,
+            "candidate_active_bytes": 12504269897,
+            "candidate_minus_native_bytes": -202956956
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269897,
+            "candidate_minus_native_bytes": -198180928
+          },
+          {
+            "completion_tokens": 256,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269897,
+            "candidate_minus_native_bytes": -198180928
+          }
+        ],
+        "kind": "arithmetic"
+      },
+      {
+        "id": "8k-code-c",
+        "prompt_tokens": 8695,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": true,
+        "first_token_difference": null,
+        "native": {
+          "final_text": "3",
+          "oracle_pass": true,
+          "expected": "3",
+          "completion_tokens": 191,
+          "ttft_s": 7.577034083,
+          "decode_tps": 30.717209039197982
+        },
+        "candidate": {
+          "final_text": "3",
+          "oracle_pass": true,
+          "expected": "3",
+          "completion_tokens": 191,
+          "ttft_s": 7.749405083,
+          "decode_tps": 29.989905039663206
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 2751627264,
+          "retained": 1572765696,
+          "ratio": 0.5715765781858454,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12702057549,
+            "candidate_active_bytes": 12503876749,
+            "candidate_minus_native_bytes": -198180800
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12702057545,
+            "candidate_active_bytes": 12503876745,
+            "candidate_minus_native_bytes": -198180800
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12706450517,
+            "candidate_active_bytes": 12503876745,
+            "candidate_minus_native_bytes": -202573772
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12702057545,
+            "candidate_active_bytes": 12503876749,
+            "candidate_minus_native_bytes": -198180796
+          }
+        ],
+        "kind": "code"
+      },
+      {
+        "id": "8k-code-d",
+        "prompt_tokens": 8690,
+        "instruction_prefix_tokens": 64,
+        "tokens_equal": false,
+        "first_token_difference": 8,
+        "native": {
+          "final_text": "D-H",
+          "oracle_pass": true,
+          "expected": "D-H",
+          "completion_tokens": 226,
+          "ttft_s": 7.617008375,
+          "decode_tps": 32.05015150729815
+        },
+        "candidate": {
+          "final_text": "D-H",
+          "oracle_pass": true,
+          "expected": "D-H",
+          "completion_tokens": 190,
+          "ttft_s": 8.118684291,
+          "decode_tps": 29.4296874954819
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 3191341056,
+          "retained": 1814298624,
+          "ratio": 0.5685066535239034,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12702057613,
+            "candidate_active_bytes": 12503876749,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12702057609,
+            "candidate_active_bytes": 12503876745,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12702057609,
+            "candidate_active_bytes": 12503876745,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 128,
+            "native_active_bytes": 12702057613,
+            "candidate_active_bytes": 12503876749,
+            "candidate_minus_native_bytes": -198180864
+          }
+        ],
+        "kind": "code"
+      },
+      {
+        "id": "8k-tool-c",
+        "prompt_tokens": 8701,
+        "instruction_prefix_tokens": 118,
+        "tokens_equal": false,
+        "first_token_difference": 77,
+        "native": {
+          "final_text": "{\"hour\":17,\"zone\":\"UTC\"}",
+          "oracle_pass": true,
+          "native_call_name": "set_alarm",
+          "expected": {
+            "name": "set_alarm",
+            "arguments": {
+              "hour": 17,
+              "zone": "UTC"
+            }
+          },
+          "completion_tokens": 108,
+          "ttft_s": 6.762085666,
+          "decode_tps": 31.535121615417548
+        },
+        "candidate": {
+          "final_text": "{\"name\":\"set_alarm\",\"arguments\":{\"hour\":17,\"zone\":\"UTC\"}}",
+          "oracle_pass": true,
+          "native_call_name": null,
+          "expected": {
+            "name": "set_alarm",
+            "arguments": {
+              "hour": 17,
+              "zone": "UTC"
+            }
+          },
+          "completion_tokens": 107,
+          "ttft_s": 7.889965541,
+          "decode_tps": 29.61856319887761
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 3631595520,
+          "retained": 2056372224,
+          "ratio": 0.5662448399539826,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12702450829,
+            "candidate_active_bytes": 12504269965,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269961,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269961,
+            "candidate_minus_native_bytes": -198180864
+          }
+        ],
+        "kind": "tool_json"
+      },
+      {
+        "id": "8k-tool-d",
+        "prompt_tokens": 8700,
+        "instruction_prefix_tokens": 118,
+        "tokens_equal": false,
+        "first_token_difference": 89,
+        "native": {
+          "final_text": "{\"account\":\"Birch\",\"currency\":\"EUR\"}",
+          "oracle_pass": true,
+          "native_call_name": "send_invoice",
+          "expected": {
+            "name": "send_invoice",
+            "arguments": {
+              "account": "Birch",
+              "currency": "EUR"
+            }
+          },
+          "completion_tokens": 111,
+          "ttft_s": 7.434174209,
+          "decode_tps": 30.52319426301269
+        },
+        "candidate": {
+          "final_text": "{\"name\":\"send_invoice\",\"arguments\":{\"account\":\"Birch\",\"currency\":\"EUR\"}}",
+          "oracle_pass": true,
+          "native_call_name": null,
+          "expected": {
+            "name": "send_invoice",
+            "arguments": {
+              "account": "Birch",
+              "currency": "EUR"
+            }
+          },
+          "completion_tokens": 109,
+          "ttft_s": 8.131996416,
+          "decode_tps": 29.454470808883386
+        },
+        "pruning_events": 12,
+        "last_prune_storage_bytes": {
+          "source": 4071800832,
+          "retained": 2298396672,
+          "ratio": 0.5644668702695526,
+          "scope": "Native KV backing counters at last prune; excludes scorer and overlap scratch."
+        },
+        "matched_decode_allocator_samples": [
+          {
+            "completion_tokens": 1,
+            "native_active_bytes": 12702450829,
+            "candidate_active_bytes": 12504269965,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 8,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269961,
+            "candidate_minus_native_bytes": -198180864
+          },
+          {
+            "completion_tokens": 32,
+            "native_active_bytes": 12702450825,
+            "candidate_active_bytes": 12504269961,
+            "candidate_minus_native_bytes": -198180864
+          }
+        ],
+        "kind": "tool_json"
+      }
+    ],
+    "native_pass": 10,
+    "candidate_pass": 10,
+    "native_pass_candidate_fail": [],
+    "native_fail_candidate_pass": []
+  }
+}

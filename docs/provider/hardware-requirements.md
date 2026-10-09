@@ -268,6 +268,9 @@ does not qualify a smaller RAM tier or a larger context window. Dense prefill
 and conservative admission still apply, and gather compaction has a transient
 source-plus-destination peak. Its logical storage counters require separate
 physical-memory and model-quality measurements before any serving change.
+The separate fixed instruction-prefix candidate retains more protected tokens
+under the same native reservation. Its 128-token prefix is not a RAM-tier,
+context-limit or activation-reserve reduction.
 
 ## Storage
 

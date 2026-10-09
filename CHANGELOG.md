@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — instruction-prefix KV benchmark candidate
+
+- Add a separate GPT-OSS benchmark candidate that protects a fixed 128-token instruction prefix before selecting older KV chunks. Bound the typed protection budget, audit native system/tool headers on CPU, preserve the original half-retention experiment, and keep serving disabled pending separate qualification.
+
 ## Unreleased — selective KV benchmark working sets
 
 - Add an opt-in Gemma 4 and GPT-OSS benchmark experiment that preserves dense prefill, configured sliding windows, original RoPE positions and speculative rollback while retaining half of older full-attention history by attention mass and coverage. Keep serving disabled, exact prefix reuse fenced, and admission conservative pending model-quality and physical-memory qualification.

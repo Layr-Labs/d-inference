@@ -1,0 +1,110 @@
+[
+  {
+    "id": "4k-arithmetic-a",
+    "kind": "arithmetic",
+    "expected": "280",
+    "max_tokens": 256,
+    "target_tokens": 4608
+  },
+  {
+    "id": "4k-arithmetic-b",
+    "kind": "arithmetic",
+    "expected": "333",
+    "max_tokens": 256,
+    "target_tokens": 4608
+  },
+  {
+    "id": "4k-code-a",
+    "kind": "code",
+    "expected": "90",
+    "max_tokens": 256,
+    "target_tokens": 4608
+  },
+  {
+    "id": "4k-code-b",
+    "kind": "code",
+    "expected": "30",
+    "max_tokens": 256,
+    "target_tokens": 4608
+  },
+  {
+    "id": "4k-tool-a",
+    "kind": "tool_json",
+    "expected": {
+      "name": "book_shipment",
+      "arguments": {
+        "city": "Tallinn",
+        "speed": "express"
+      }
+    },
+    "max_tokens": 256,
+    "target_tokens": 4608
+  },
+  {
+    "id": "4k-tool-b",
+    "kind": "tool_json",
+    "expected": {
+      "name": "convert_length",
+      "arguments": {
+        "value": 37,
+        "unit": "cm"
+      }
+    },
+    "max_tokens": 256,
+    "target_tokens": 4608
+  },
+  {
+    "id": "8k-arithmetic-c",
+    "kind": "arithmetic",
+    "expected": "394",
+    "max_tokens": 256,
+    "target_tokens": 8704
+  },
+  {
+    "id": "8k-arithmetic-d",
+    "kind": "arithmetic",
+    "expected": "438",
+    "max_tokens": 256,
+    "target_tokens": 8704
+  },
+  {
+    "id": "8k-code-c",
+    "kind": "code",
+    "expected": "3",
+    "max_tokens": 256,
+    "target_tokens": 8704
+  },
+  {
+    "id": "8k-code-d",
+    "kind": "code",
+    "expected": "D-H",
+    "max_tokens": 256,
+    "target_tokens": 8704
+  },
+  {
+    "id": "8k-tool-c",
+    "kind": "tool_json",
+    "expected": {
+      "name": "set_alarm",
+      "arguments": {
+        "hour": 17,
+        "zone": "UTC"
+      }
+    },
+    "max_tokens": 256,
+    "target_tokens": 8704
+  },
+  {
+    "id": "8k-tool-d",
+    "kind": "tool_json",
+    "expected": {
+      "name": "send_invoice",
+      "arguments": {
+        "account": "Birch",
+        "currency": "EUR"
+      }
+    },
+    "max_tokens": 256,
+    "target_tokens": 8704
+  }
+]

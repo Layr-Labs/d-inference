@@ -701,6 +701,22 @@ retrieval, tools, coding and long generation, plus allocator peak, time to first
 token and decode throughput. A local attention-mass estimate is not a bound on
 future questions or end-to-end model quality.
 
+### Protected instruction-prefix candidate
+
+`DARKBLOOM_CBV2_SELECTIVE_KV=instruction-half` is a separate GPT-OSS singleton
+benchmark candidate. Its fixed 128-token protected prefix includes the four
+original sink anchors; the native recent band stays protected before older
+chunk selection. The SDK's typed prefix field is bounded to 256 tokens; the
+benchmark candidate stays at 128. The original `half` policy defaults that field
+to zero and stays unchanged.
+The generation harness audits the normalized system/developer/tool header
+through the first user-content boundary and refuses unverified or longer
+headers. CPU prompt auditing loads no model weights and evaluates no MLX arrays.
+Scoring, conservative admission, prefix fencing and MTP restrictions stay the
+same. Full FP32 key-history casts and gather overlap remain unqualified for
+serving. The [fixed cohort and qualification record](../reports/2026-10-09-instruction-prefix-retention.md)
+preserve the original failed campaign and distinguish diagnosis from cause.
+
 ### Supported `model_type`s and quantization
 
 | `model_type` | Family | Notes |

@@ -1,0 +1,148 @@
+{
+  "status": "preregistered_before_candidate_gpu_evaluation",
+  "registered_utc": "2026-10-09T11:48:52.263746+00:00",
+  "base_parent_revision": "d1f71c63a3138dc318be62d4860a0bc185bb9a7b",
+  "base_sdk_revision": "46477f018f204f4f689b4e4348ea637096194256",
+  "model": "gpt-oss-20b",
+  "model_aggregate_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "policy": {
+    "mode": "instruction-half",
+    "protected_prefix_tokens": 128,
+    "maximum_supported_protected_prefix_tokens": 256,
+    "anchor_tokens": 4,
+    "recent_tokens": 512,
+    "older_history_fraction": 0.5,
+    "chunk_tokens": 16,
+    "minimum_tokens": 4096,
+    "prune_interval": 256
+  },
+  "controls": {
+    "backend": "contiguous",
+    "concurrency": 1,
+    "prefix_reuse": false,
+    "mtp": false,
+    "temperature": 0,
+    "max_tokens": 256,
+    "reasoning_effort": "medium",
+    "prompt_date": "2026-10-09"
+  },
+  "recovery": {
+    "complete_observations_per_arm": 6,
+    "first_main_diagnostic": {
+      "output_index": 47,
+      "candidate_token_ids": [
+        7890,
+        6960
+      ]
+    },
+    "remaining_five_observations": "uninstrumented; compare token IDs to first main",
+    "prompt_tokens": 4602,
+    "matches_frozen_original_prompt": true
+  },
+  "new_holdout": {
+    "cases": 12,
+    "arithmetic": 4,
+    "code": 4,
+    "tool_json": 4,
+    "target_contexts": [
+      4608,
+      8704
+    ],
+    "case_metadata": [
+      {
+        "id": "4k-arithmetic-a",
+        "prompt_tokens": 4604,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "4k-arithmetic-b",
+        "prompt_tokens": 4590,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "4k-code-a",
+        "prompt_tokens": 4604,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "4k-code-b",
+        "prompt_tokens": 4601,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "4k-tool-a",
+        "prompt_tokens": 4599,
+        "instruction_prefix_tokens": 124
+      },
+      {
+        "id": "4k-tool-b",
+        "prompt_tokens": 4593,
+        "instruction_prefix_tokens": 118
+      },
+      {
+        "id": "8k-arithmetic-c",
+        "prompt_tokens": 8694,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "8k-arithmetic-d",
+        "prompt_tokens": 8698,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "8k-code-c",
+        "prompt_tokens": 8695,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "8k-code-d",
+        "prompt_tokens": 8690,
+        "instruction_prefix_tokens": 64
+      },
+      {
+        "id": "8k-tool-c",
+        "prompt_tokens": 8701,
+        "instruction_prefix_tokens": 118
+      },
+      {
+        "id": "8k-tool-d",
+        "prompt_tokens": 8700,
+        "instruction_prefix_tokens": 118
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "kind": "new-input",
+      "file": "2026-10-09-instruction-prefix-new-input.json.gz",
+      "raw_sha256": "3d749cd8108d4acc76af8ba2db21b23b4b3bb68c663aca0be520706e3d9207ef",
+      "gzip_sha256": "4af30220686d84604b25b9c2b71c15a1ce89dccbb68ea486534e9e898f12b071"
+    },
+    {
+      "kind": "new-audit",
+      "file": "2026-10-09-instruction-prefix-new-audit.json.gz",
+      "raw_sha256": "8d31e0b23419da4506de5fd6c55a98959e83ed53fc34673d13a2343178c6cc75",
+      "gzip_sha256": "9417cccae0f46f2da20ec61b68900ccf774a21d10ad5ec0ba9c662a6e7ace186"
+    },
+    {
+      "kind": "recovery-input",
+      "file": "2026-10-09-instruction-prefix-recovery-input.json.gz",
+      "raw_sha256": "62730533d05da402a647474eefb2d6b2b3f7ba4f291e3b9b4fed15e9554a87ec",
+      "gzip_sha256": "0174aef7093535e8e359a179de6257c89513223985db0b8ca0c0ebf2d98c8ed3"
+    },
+    {
+      "kind": "recovery-audit",
+      "file": "2026-10-09-instruction-prefix-recovery-audit.json.gz",
+      "raw_sha256": "0621138ca30bee51ecbf31401d4f5bb8e659adbc84f14240cb76d796bdacb547",
+      "gzip_sha256": "707f0a6f19d67961d4eadead339bda2b1289e11e7d895310f0027464e6979361"
+    }
+  ],
+  "oracles_file": "2026-10-09-instruction-prefix-oracles.json",
+  "oracles_sha256": "66726777698d2c61a49e8cd83058398f0a89309a198b991e1d824cbc1cabe1fc",
+  "decision_rule": "Preserve the frozen original campaign. Run one fixed128 candidate; do not retune on recovery or new holdout outcomes. Report native baseline failures separately and do not claim broad statistical quality.",
+  "limitations": [
+    "The fixed candidate is GPT-only and benchmark-only; headers beyond128 are refused by the generation harness.",
+    "Changing prefix size also changes the older chunk partition and budget; behavior change does not prove semantic instruction loss was the unique cause.",
+    "The full FP32 key-history cast and source/destination overlap remain unqualified for serving. No admission credit or memory safeguard is reduced."
+  ]
+}

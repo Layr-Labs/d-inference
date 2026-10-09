@@ -7,6 +7,9 @@ Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `Mode
 The provider's [selective KV working-set experiment](../architecture/inference.md#selective-full-attention-working-set-experiment)
 is restricted to offline benchmark construction for Gemma 4 and GPT-OSS. It
 changes no public model capability, context limit or serving default.
+Its separate [instruction-prefix candidate](../reports/2026-10-09-instruction-prefix-retention.md)
+is restricted further to GPT-OSS benchmarks; it likewise changes no advertised
+capability or serving default.
 
 ## `GET /v1/models`
 

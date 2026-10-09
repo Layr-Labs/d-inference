@@ -1,0 +1,47 @@
+{
+  "scope": "Fixed preregistered GPT-OSS instruction-prefix candidate; no policy changes after outcomes.",
+  "artifacts": [
+    {
+      "file": "2026-10-09-instruction-prefix-recovery-0.json.gz",
+      "raw_sha256": "ca150967242be7d53d1dac2bd867f7fa2726e5b1e5fdef8b43b4df0ca35e55d2",
+      "gzip_sha256": "ec7e257d96be21c21b191ea9be9b3bef922c6b4bcd21753285c7ee45fad79b27"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-recovery-instruction-half.json.gz",
+      "raw_sha256": "906c658d3bb664f682204dca37fe3864926916d999293db8246a0d234576b395",
+      "gzip_sha256": "8e83f0e4db6f53eaeedaac5699f4e499820e27c400cd4d357be8e71b3c30fa58"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-new-holdout-0.json.gz",
+      "raw_sha256": "b6f855ced598754a22a2efeacbaa3b8171262db0ea20c965a2e31cd5b266fe92",
+      "gzip_sha256": "57dfa8c008c68a73039b20cfa653a493ba7d288722e4c54ca7689a3ccae2bb43"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-new-holdout-instruction-half.json.gz",
+      "raw_sha256": "d4f4e9550a266823cf1393e5eee131e881233671b3cdc3a61b201d9e8336463b",
+      "gzip_sha256": "3c470aee1d2f69c09e56386858e35ad09da496b99ebed59f47619791df0b976f"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-recovery-final-prompt-audit.json.gz",
+      "raw_sha256": "33fa7b798f669fa221920216dad4716acf1bea69103b15ff57ba4687bc23435f",
+      "gzip_sha256": "6532427953a8a801d7e6d649114c4404c057f1157a222e6781b99640be4ee117"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-new-holdout-final-prompt-audit.json.gz",
+      "raw_sha256": "cc1c1935f2108d07697753ac01a29f6ad8d692197ff8c3217a931d761a87a877",
+      "gzip_sha256": "b7814ee6b11d42fa7eb50468d87db6d45cb29f82196050e26598e9ca52ffedad"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-artifact.json",
+      "sha256": "7141da2267e522d285e4240aaefd6944193326fc09eaaa3a530306e784a2c9c4"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-comparison.json",
+      "sha256": "b5e07dc6808ce9b368786fc40df02802cd5793c3c66be037e56f9c74e6567bf1"
+    },
+    {
+      "file": "2026-10-09-instruction-prefix-commands.json",
+      "sha256": "07d6f8dffffb2836a7fcdec934c470aaec204a95b5327f7002a4842d1019193f"
+    }
+  ]
+}

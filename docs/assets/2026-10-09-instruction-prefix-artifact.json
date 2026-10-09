@@ -1,0 +1,45 @@
+{
+  "frozen_utc": "2026-10-09T12:18:58.454765+00:00",
+  "parent_revision": "f2fb32afae48f4a7fbce4779002103d6de50d005",
+  "sdk_revision": "f328058257f23b22607e73bbe5325c2e597c130d",
+  "mlx_swift_revision": "6923a80f624f5c91fbf456efe4e00e9698a72961",
+  "mlx_revision": "cb77239be31b1df7f5db895226af55c39fc4f093",
+  "parent_worktree_status": "",
+  "sdk_worktree_status": "",
+  "binary_path": "/Users/gaj/.codex/worktrees/kv-instruction-retention/d-inference/scripts/benchmarks/radix-engine/.build/out/Products/Debug/radix-engine",
+  "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+  "metallib_sha256": "fb1ba8f90b9f1cc346246b7240c3986771464bd977c67f0ef03186811f16c85c",
+  "model_directory": "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+  "model_expected_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+  "system": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "memory_bytes": 137438953472,
+  "preregistration_sha256": "acc230fe950920653fc6e6e28470eeb34742aed1731b46128d628afe6333e589",
+  "input_sha256": {
+    "recovery": "62730533d05da402a647474eefb2d6b2b3f7ba4f291e3b9b4fed15e9554a87ec",
+    "new-holdout": "3d749cd8108d4acc76af8ba2db21b23b4b3bb68c663aca0be520706e3d9207ef"
+  },
+  "final_cpu_audits": {
+    "recovery": {
+      "sha256": "33fa7b798f669fa221920216dad4716acf1bea69103b15ff57ba4687bc23435f",
+      "runtime_identity": {
+        "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+        "normalization": "darkbloom-request-normalization-v8",
+        "renderer": "swift-jinja-request-date-compatible-v4",
+        "tokenizer": "huggingface-tokenizer-json-v1"
+      },
+      "rows": 1,
+      "all_prompt_ids_and_boundaries_match_preregistered": true
+    },
+    "new-holdout": {
+      "sha256": "cc1c1935f2108d07697753ac01a29f6ad8d692197ff8c3217a931d761a87a877",
+      "runtime_identity": {
+        "binary_sha256": "d054816fd0b5c842d1d4fe5a6af9e8477f60305a3af6a0f0ad93cdcee248245a",
+        "normalization": "darkbloom-request-normalization-v8",
+        "renderer": "swift-jinja-request-date-compatible-v4",
+        "tokenizer": "huggingface-tokenizer-json-v1"
+      },
+      "rows": 12,
+      "all_prompt_ids_and_boundaries_match_preregistered": true
+    }
+  }
+}

@@ -867,12 +867,15 @@ uploads, catalog changes, signing or production promotion.
 
 | Variable | Default | Accepted value and scope | Consumer |
 |---|---|---|---|
-| `DARKBLOOM_CBV2_SELECTIVE_KV` | Unset (dense) | `half`: loaded Gemma 4 or GPT-OSS, singleton benchmark construction, MTP off, explicit `--kv-backend contiguous` only. Empty or `0` also disables it. Other values or serving use are rejected. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SelectiveKV.swift`, `selectiveKVPolicy` |
+| `DARKBLOOM_CBV2_SELECTIVE_KV` | Unset (dense) | `half`: loaded Gemma 4 or GPT-OSS. `instruction-half`: GPT-OSS only, fixed 128-token protected prefix. Both require singleton benchmark construction, MTP off and explicit `--kv-backend contiguous`. Empty or `0` disables it. Other values or serving use are rejected. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SelectiveKV.swift`, `selectiveKVPolicy` |
 
 The [selective working-set experiment](../architecture/inference.md#selective-full-attention-working-set-experiment)
 retains the native dtype and full configured sliding windows. It does not change
 memory caps, activation reserves, catalog context limits or request admission.
 All prefix-reuse paths are disabled for this lossy experiment.
+The [instruction-prefix candidate](../reports/2026-10-09-instruction-prefix-retention.md)
+uses a separately preregistered cohort. Its typed API prefix bound is 256;
+the fixed benchmark remains at 128 and rejects unverified/longer native headers.
 
 ## Model verification I/O
 

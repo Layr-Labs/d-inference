@@ -1,0 +1,11 @@
+{
+  "generated_token_index": 47,
+  "absolute_position": 4649,
+  "native_token_id": 7890,
+  "half_token_id": 6960,
+  "native_piece": " seems",
+  "half_piece": " likely",
+  "shared_generated_prefix": "<|channel|>analysis<|message|>We need to compute inventory of package Iris. We have initial inventory rule: \"package Iris starts with 137 units.\" Then later \"Inventory rule: package Iris gains 219 units, then ships 84 units.\" That",
+  "native_continuation": " seems to be a rule that applies at some point. We need to consider",
+  "half_continuation": " likely applies at some point. Also there are many archive records with categories and"
+}

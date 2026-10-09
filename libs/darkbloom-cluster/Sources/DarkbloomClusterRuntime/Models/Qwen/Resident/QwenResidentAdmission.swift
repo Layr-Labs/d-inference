@@ -64,7 +64,7 @@ struct QwenResidentAdmission {
             throw ProbeError("Resident load requires a registered model's closed identity, one of its cuts and a bounded local lifetime")
         }
         // Before any model construction or native environment cache is used.
-        arithmetic = try QwenLongPrefillArithmeticEnvironment.admit(environment)
+        arithmetic = try definition.arithmetic.admit(environment)
         arithmeticSHA256 = sha256(try canonicalJSONData(arithmetic))
         jaccl = try QwenResidentJACCLConfiguration.admit(environment: environment, read: read)
         guard jaccl.rank == configuration.rank else { throw ProbeError("Resident local rank differs from JACCL") }

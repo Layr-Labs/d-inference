@@ -20,10 +20,12 @@ rollout. Ordinary base rewards remain independent.
 - Explicit human approval for each production mutation: coordinator deployment,
   payment-flag change/restart, exact cap change and each historical baseline
   import. This runbook grants none of those approvals.
-- A durable PostgreSQL coordinator and verified migration 31, using the
+- A durable PostgreSQL coordinator and verified migrations 31 and 32, using the
   [schema migration procedure](schema-migration.md). Preserve all four new
   [financial tables](../architecture/storage.md#autopilot-reward-persistence) in
   database backups; existing accounting archive coverage cannot restore them.
+  Migration 32 preserves frozen baselines and receipts; older declarations
+  remain unqualified rather than gaining invented historical eligibility.
 - The approved `COORDINATOR_URL` and an admin bearer credential in `ADMIN_TOKEN`;
   never place credentials or evidence in public logs, PRs or tickets.
 - Separately released compatible providers reporting saved `consent_enabled`.
@@ -50,6 +52,13 @@ This list includes eligible durable offline enrollments; it is not the connected
 inventory report. Listing may materialize a previously journaled declaration
 once its session has a verified machine binding, but moves no money.
 
+For `baseline_source="cohort"`, verify the cohort key, peer count, fingerprint,
+anchor window and statistic in `baseline_evidence` under the
+[cohort contract](../reference/api-contracts.md#autopilot-reward-administration).
+It is the frozen fallback for a machine with shorter personal history, not a
+baseline to replace once that machine matures. An empty comparable cohort keeps
+the baseline unknown.
+
 An absent row can mean no supported positive declaration or unresolved identity.
 Do not use the current live `enabled`/`active` flags as historical consent proof.
 The new pool starts at zero and the payment flag defaults off, as defined in
@@ -63,6 +72,13 @@ preceding window in the [policy](../reference/pricing-model.md#autopilot-rewards
 Include sponsored/promotional inference payouts; exclude base rewards and other
 reward/referral income. Verify canonical machine and account ownership, original
 time, interval boundaries and completeness of the earnings source.
+
+First distinguish missing opt-in history from missing comparable earnings
+evidence. A machine with a proven first-ever opt-in but shorter personal history
+can receive an automatic cohort baseline under the
+[cohort policy](../reference/pricing-model.md#autopilot-rewards). Unknown hardware
+or no comparable mature peers does not authorize a zero baseline. Preserve the
+original anchor while investigating; do not toggle consent to create a new one.
 
 Old software never recorded the opt-in date. Deployment, reconnect, first-seen
 time, current consent or an earnings export alone cannot prove it. An unbound old
@@ -148,6 +164,10 @@ The worker catches up on startup and follows the bounded
 [UTC schedule](../reference/pricing-model.md#autopilot-rewards). No manual
 settlement endpoint is provided. Consent tracking continues while payments are
 disabled, so enabling can process previously closed tracked days.
+The [shared final eligible day](../reference/pricing-model.md#autopilot-rewards)
+does not move with enrollment or a restart. Keep the worker and any approved
+funding available to settle earlier pending days afterward; the cutoff already
+prevents new accrual and does not disable Autopilot or ordinary base rewards.
 
 ## Verification
 
@@ -163,7 +183,7 @@ disabled, so enabling can process previously closed tracked days.
   same amount raised wallet, withdrawable balance and pool spending atomically.
   Earnings summaries count it once with no inference count/tokens.
 - Distinguish `pool_exhausted` and `history_required` pending states from final
-  `paid`, `zero` and `opted_out` results. Pending days keep `next_day`; a funded
+  `paid`, `zero`, `opted_out` and `ineligible` results. Pending days keep `next_day`; a funded
   retry recalculates actuals. Finalized receipts are not reopened for later
   backdated earnings. For unknown or conflicted baselines, inspect enrollment and
   `history_pending` even if no receipt exists: the worker can defer that machine
@@ -174,6 +194,12 @@ disabled, so enabling can process previously closed tracked days.
 - Verify first-partial-day and day-end consent against the exact
   [policy](../reference/pricing-model.md#autopilot-rewards), not live availability
   at payout time. A later strong day must not erase an earlier weak day's top-up.
+- For `ineligible`, inspect the day-close captured qualification and union of
+  canonical-machine session uptime for that UTC day. A current OS upgrade,
+  inventory refresh, reconnect or lease granted after the recorded receive time
+  does not manufacture earlier qualification.
+  Duplicate sessions cannot multiply uptime, and short first enrollment days
+  still use the full-day denominator. Confirm no wallet credit or pool spending.
 
 For 400/404/409/429/503 handling, use the
 [HTTP contract](../reference/api-contracts.md#autopilot-reward-administration).
@@ -194,7 +220,7 @@ fresh enrollment. A store failure is not proof that an earlier write rolled back
    Re-enabling resumes from durable days; it does not create a new baseline.
 4. Before rolling back coordinator code, confirm it preserves this tracker and
    all existing financial/erasure compatibility. An older writer that cannot
-   capture saved-consent history creates a gap; do not later claim uninterrupted
+   capture saved-consent and qualification history creates a gap; do not later claim uninterrupted
    history or substitute reconnect time. Preserve database backups containing
    all new tables, not just the [partial archive evidence](../architecture/storage.md#retention-and-archive-boundary).
 

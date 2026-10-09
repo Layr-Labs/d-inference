@@ -219,7 +219,7 @@ func applyFirstContentQuote(c *routingCandidate, snapshot *routingSnapshot, pr *
 	c.firstContent = forecast.ApplyQuote(forecast.Result{Estimate: c.firstContent, Calibrated: snapshot.calibratedForecastQualified},
 		&evidence,
 		forecast.Request{PromptTokens: c.firstContent.PromptTokens, FreshAfter: pr.RequireFreshFeasibleAfter,
-			Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision}, Deadline: pr.FirstContentDeadline,
+			Incoming: performance.IncomingWork{RequiresVision: pr.RequiresVision}, Deadline: candidateFirstContentDeadline(c, pr),
 			Hedge: pr.Hedge, RequireFreshFeasible: pr.RequireFreshFeasible, PlanningHorizon: pr.FirstContentPlanningHorizon},
 		forecastQuote(quote), forecast.QuoteContext{CapacitySeq: snapshot.capacitySeq, NewestReservationAt: snapshot.newestReservationAt}, now)
 }

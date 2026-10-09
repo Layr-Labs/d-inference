@@ -689,15 +689,29 @@ accepts older responses containing the extra field.
 
 Inference planning may obtain exact input work from the verified model/template
 tokenizer before dispatch. The internal numeric provenance is not a client
-request field. Planning, retries and provider reconciliation spend the same
-original first-content clock; neither corrected counts nor a calibrated margin
-extend it. Unsupported shapes keep conservative fallback, and billing continues
-to settle actual provider usage (`planPromptRoute`, `coordinator/api/inference/prompt_work.go`).
+request field. Before preflight and dispatch, a verified exact count matching
+the candidate provider's advertised artifact and renderer may correct the SLA's
+input-token term upward or downward, measured from the original request
+arrival and bounded by any earlier caller deadline. Calibrated uncertainty and
+provider recount do not extend that duration. Planning, retries and hedges keep
+the original arrival time and never start a fresh clock. Each provider's
+feasibility and dispatched budget use its own qualified or fallback cutoff;
+another provider's matching renderer cannot supply that qualification. An
+unsent exact-bound attempt is rejected if its renderer changes before handoff.
+When every otherwise-fitting provider's own cutoff has expired, admission returns
+`429` with `Retry-After`, retains the `deadline_unreachable` rejection reason and
+does not spill to a cold provider. A physically fitting expired peer prevents a
+too-small peer from turning that request into a permanent model-size refusal.
+An eligible previous-build alias can still serve within its own cutoff.
+Unsupported shapes keep
+conservative fallback, and billing continues to settle actual provider usage
+(`planPromptRoute`, `coordinator/api/inference/prompt_work.go`; `Owner.PromptWorkDeadline`,
+`coordinator/api/inference/first_content_prompt_deadline.go`).
 
 Public inference uses [first-content routing](../architecture/first-content-routing.md)
 by default across chat completions, Responses, completions and Anthropic messages.
 Internal retries, cache planning, quotes, queue waits and hedges consume the same
-original request deadline. Predictive provider refusals do not count as node
+ingress-anchored budget. Predictive provider refusals do not count as node
 health failures; after two, another attempt needs fresh feasible evidence.
 A request can launch at most one speculative backup. Current error JSON and
 `Retry-After` contracts remain; unavailable deadline-bound capacity can produce
@@ -1544,6 +1558,11 @@ See [persistence](../architecture/storage.md#autopilot-machine-settings) and
 
 ### Autopilot reward administration
 
+Provider WebSocket capture records consent without calculating a baseline.
+This admin listing may materialize a previously journaled enrollment using its
+original opt-in timestamp; the [billing mechanism](../architecture/billing.md#autopilot-rewards)
+describes that separation.
+
 `coordinator/api/autopilot/rewards.go` (`RewardsHandler`) owns the payloads;
 `rewards_decode.go` in that directory rejects ambiguous JSON. The adapter
 `coordinator/api/autopilot_handlers.go` (`handleAdminAutopilotRewards`) requires
@@ -1572,7 +1591,8 @@ Response records are defined in `coordinator/store/earningsfloor/types.go`:
 | `enrollments[].machine_id`, `account_id` | Current canonical machine UUID and authenticated payout account; financial records may retain an original pre-merge ID |
 | `first_opt_in_at`, `first_observed_at` | Frozen first-ever anchor (null while unknown), and the first positive used to initialize enrollment respectively. Both remain unchanged when later evidence sets `history_conflict`; backfill does not move accrual to an older date |
 | `seven_day_earnings_micro_usd`, `daily_floor_micro_usd`, `baseline_known`, `baseline_evidence` | Frozen baseline values and evidence. Zero values with `baseline_known=false` are unknown, not a measured zero floor |
-| `baseline_source` | Closed enum: `""` while unknown, `"tracked"` for an automatically frozen baseline, `"verified_history"` for an evidenced admin import. Assigned by the store, not a baseline-request field; independent of the free-form evidence string |
+| `baseline_source` | Closed enum: `""` while unknown, `"tracked"` for an automatically frozen personal-history baseline, `"cohort"` for an automatically frozen comparable-machine baseline, `"verified_history"` for an evidenced admin import. Assigned by the store, not a baseline-request field; independent of the evidence string. All known sources stay frozen through off/on |
+| Cohort `baseline_evidence` | JSON string containing `chip_class`, `memory_gb`, `peer_count`, `peer_fingerprint_sha256`, `window_start`, `window_end` and `statistic="mean_seven_day_micro_usd_floor"`. The fingerprint hashes sorted canonical peer IDs; it does not expose the peer IDs. `coordinator/internal/payments/floorpolicy/cohort.go` (`CohortBaselineValue`) |
 | `history_conflict` | Linked history contradicts the frozen anchor or invalidates an automatic baseline's creation-history proof; [history rules](pricing-model.md#autopilot-rewards). May be true with `baseline_known=true`; frozen fields stay unchanged, but unfinalized days are held without payment or cursor advance. Ordinary baseline import still returns 409 for the frozen value |
 | `opted_in`, `observed_at` | Whether the latest durable declaration qualifies as saved opt-in, and that declaration's observation watermark; not a connection/readiness indicator or the consent snapshot for every prior day |
 | `next_day` | Next chronological UTC settlement day; pending funding/history does not advance it |
@@ -1586,6 +1606,10 @@ enrollment reads are separate snapshots, not an atomic financial export.
 There is no receipt-list or manual settlement endpoint here. Use the
 [operator runbook](../operations/autopilot-rewards.md) for restricted financial
 verification and backfill evidence requirements.
+Daily receipts distinguish final unpaid `ineligible` days from pending history
+or funding under the [status reference](pricing-model.md#autopilot-rewards).
+The enrollment's current `opted_in` field alone does not prove a day's OS/model
+qualification or uptime.
 
 ### Autopilot inventory report
 

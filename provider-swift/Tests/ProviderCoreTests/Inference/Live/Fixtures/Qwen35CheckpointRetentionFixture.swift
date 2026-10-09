@@ -90,11 +90,11 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
 
     /// A shorter donor built from the same records: its deepest chunk end is
     /// one chunk above the 4,096 fork target.
-    func shortDonor(deepest: Int) throws -> [Int] {
+    func shortDonor(deepest: Int, stripeTokens: Int = Qwen35CheckpointRetentionFixture.stripeTokens) throws -> [Int] {
         for count in stride(from: prompts.records.count, to: 0, by: -1) {
             let tokens = try tokenize([["role": "user", "content":
                 prompts.records.prefix(count).joined(separator: "\n") + "\n" + Self.releaseQuestion + Self.instruction]])
-            if tokens.count >= deepest + 64, tokens.count < deepest + Self.stripeTokens {
+            if tokens.count >= deepest + 64, tokens.count < deepest + stripeTokens {
                 return tokens
             }
         }
@@ -229,8 +229,9 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
         return store
     }
 
-    func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1) throws -> EngineV2Bridge {
-        var environment = ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(Self.stripeTokens)]
+    func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1,
+                    stripeTokens: Int = Qwen35CheckpointRetentionFixture.stripeTokens) throws -> EngineV2Bridge {
+        var environment = ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": String(stripeTokens)]
         if store == nil { environment["DARKBLOOM_PREFIX_CACHE"] = "0" }
         // `.auto` maps catalog IDs to paged; this dev artifact is not listed,
         // so select the native paged backend production uses for the family.
@@ -247,7 +248,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
             let engine = try #require(build.engine as? EngineV2)
             try #require(engine.completeCheckpointCodec?.backendLayout == CBv2CompleteCheckpointManifest.pagedLayout,
                          "the store layout must be the codec's")
-            try #require(engine.loopForTesting.scheduler.config.soloPrefillStripeTokens == Self.stripeTokens)
+            try #require(engine.loopForTesting.scheduler.config.soloPrefillStripeTokens == stripeTokens)
         }
         let bridge = EngineV2Bridge(engine: build.engine, modelId: modelID,
             tokenizer: tokenizer, eosTokenIds: eos, extraEOSTokens: extraEOSTokens,
@@ -325,6 +326,24 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
                     "recurrent boundaries sit on the block-hash stride; chunkSize is the chunk that ended there")
             return manifest
         }
+    }
+
+    /// Locate a fully authenticated fixture-owned file for the before/after
+    /// comparison. Moving it aside reproduces the old publication set while
+    /// using the same engine, weights, prompt and encrypted remaining files.
+    func checkpointFile(position: Int, scope: String) throws -> URL {
+        let enumerator = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
+        for case let file as URL in enumerator where file.pathExtension == "dbk3" {
+            var bytes: Data?
+            try SSDBlockStore.readStreaming(from: file, kekKey: key,
+                maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
+                maximumPlaintextBytes: SSDPrefixCachePolicy.maxStageBytes(environment: [:]),
+                requireEOF: true, validateMetadata: { _ in },
+                consumeChunk: { index, data in if index == 0 { bytes = data } })
+            let manifest = try SSDHybridCheckpointEnvelope.decodeManifest(try #require(bytes))
+            if manifest.position == position && manifest.cacheSalt == scope { return file }
+        }
+        throw FixtureFailure.promptTooShort
     }
 
     /// Retained boundaries of one scope that prefix `tokens`, ascending, with

@@ -65,7 +65,7 @@ func TestAutopilotRewardsVerifiedSourceOverridesKnownGapsNotPositiveContradictio
 	if _, err := f.ObserveMachine(ctx, store.MachineObservation{SessionID: "a", AccountID: "owner", SEKey: "a", At: f.firstSeen.Add(-48 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	unknown, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "a", AccountID: "owner", Supported: true, OptedIn: true, At: first})
+	unknown, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "a", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first})
 	if err != nil || unknown.BaselineKnown || unknown.BaselineSource != "" {
 		t.Fatalf("pretracking machine did not require verified history: %+v %v", unknown, err)
 	}
@@ -89,6 +89,15 @@ func TestAutopilotRewardsVerifiedSourceOverridesKnownGapsNotPositiveContradictio
 	if _, err := f.SetAutopilotRewardPoolCap(ctx, 100); err != nil {
 		t.Fatal(err)
 	}
+	clockBefore := f.now
+	f.now = verified.NextDay
+	if err := f.OpenProviderSession(ctx, "a", "", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	f.now = clockBefore
+	if err := f.TouchProviderSession(ctx, "a", "", "owner", "a-key", verified.NextDay.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	paid, err := f.SettleAutopilotRewardDay(ctx, verified.MachineID, verified.NextDay)
 	if err != nil || paid.AmountMicroUSD != 11 {
 		t.Fatalf("verified historical baseline withheld: %+v %v", paid, err)
@@ -96,7 +105,7 @@ func TestAutopilotRewardsVerifiedSourceOverridesKnownGapsNotPositiveContradictio
 	if _, err := f.ObserveMachine(ctx, store.MachineObservation{SessionID: "earlier-positive", AccountID: "owner", SEKey: "a", At: first.Add(2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	contradicted, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "earlier-positive", AccountID: "owner", Supported: true, OptedIn: true, At: first.Add(-2 * time.Hour)})
+	contradicted, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "earlier-positive", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first.Add(-2 * time.Hour)})
 	if err != nil || !contradicted.HistoryConflict || contradicted.BaselineSource != earningsfloor.VerifiedBaseline || !contradicted.FirstOptInAt.Equal(first) {
 		t.Fatalf("verified source overrode contradictory positive evidence: %+v %v", contradicted, err)
 	}

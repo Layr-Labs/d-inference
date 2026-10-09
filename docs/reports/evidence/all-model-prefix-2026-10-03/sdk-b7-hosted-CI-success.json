@@ -1,0 +1,71 @@
+{
+  "scope": "Actual exact-head hostedSDKchecks; separate fromlocaltest/documentationqualification andlaterupstreammain discovery",
+  "status": "all_six_hosted_checks_success",
+  "observedUTC": "2026-10-04T03:30:51.341817+00:00",
+  "repository": "Layr-Labs/mlx-swift-lm",
+  "PR": 289,
+  "head": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+  "observedPRBase": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+  "run": {
+    "conclusion": "success",
+    "created_at": "2026-10-04T02:37:10Z",
+    "head_sha": "a2c400f3ff8155826849053b5a28e54b709e9ed0",
+    "html_url": "https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/37171612517",
+    "id": 37171612517,
+    "status": "completed",
+    "updated_at": "2026-10-04T03:26:42Z"
+  },
+  "buildAndTestJob": {
+    "completed_at": "2026-10-04T03:26:41Z",
+    "conclusion": "success",
+    "html_url": "https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/37171612517/job/111345511444",
+    "id": 111345511444,
+    "name": "Build and test",
+    "started_at": "2026-10-04T02:37:17Z",
+    "status": "completed"
+  },
+  "fullSuiteStep": {
+    "completed_at": "2026-10-04T03:26:31Z",
+    "conclusion": "success",
+    "name": "Run all test suites once",
+    "number": 40,
+    "started_at": "2026-10-04T03:00:10Z",
+    "status": "completed"
+  },
+  "checks": [
+    {
+      "conclusion": "SUCCESS",
+      "name": "Analyze (actions)",
+      "status": "COMPLETED"
+    },
+    {
+      "conclusion": "SUCCESS",
+      "name": "fork.yaml describes the fork",
+      "status": "COMPLETED"
+    },
+    {
+      "conclusion": "SUCCESS",
+      "name": "Build and test",
+      "status": "COMPLETED"
+    },
+    {
+      "conclusion": "SUCCESS",
+      "name": "lint",
+      "status": "COMPLETED"
+    },
+    {
+      "conclusion": "SUCCESS",
+      "name": "Analyze (python)",
+      "status": "COMPLETED"
+    },
+    {
+      "conclusion": "SUCCESS",
+      "name": "CodeQL",
+      "status": "COMPLETED"
+    }
+  ],
+  "sourceSnapshotSHA256": "6875d70247e62268a245717740a96ab402f78fd476e4eff56f4bf05d601827ca",
+  "laterUpstreamMainIsSeparate": "821100075f1d471b0b31b7b5c48d32ff290677ac",
+  "actualB7TestedMainAncestor": "99b41b855d90f92516a329bd62e2800cec64fbc5",
+  "laterMainRuntimeQualificationTransferred": false
+}

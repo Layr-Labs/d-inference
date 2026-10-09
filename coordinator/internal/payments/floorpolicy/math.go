@@ -9,6 +9,12 @@ import (
 
 const BaselineDuration = 7 * 24 * time.Hour
 
+// EndsAt is shared by every enrollee: November 7 is the final eligible UTC day.
+// Earlier earned days may still be settled after this exclusive accrual cutoff.
+func EndsAt() time.Time {
+	return time.Date(2026, time.November, 8, 0, 0, 0, 0, time.UTC)
+}
+
 // DailyFloor rounds only once, after multiplying the exact seven-day daily
 // average by 110%. Splitting the quotient avoids an overflowing intermediate.
 func DailyFloor(sevenDayMicroUSD int64) (int64, error) {
@@ -26,6 +32,9 @@ func Day(at time.Time) time.Time {
 func ValidateDay(day, now time.Time) error {
 	if day.IsZero() || !day.Equal(Day(day)) || !day.Before(Day(now)) {
 		return errors.New("a closed UTC day is required")
+	}
+	if !day.Before(EndsAt()) {
+		return errors.New("Autopilot rewards end after November 7, 2026 UTC")
 	}
 	return nil
 }

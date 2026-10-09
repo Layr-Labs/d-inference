@@ -123,6 +123,9 @@ func (planner *ReservationPlanner) scanCandidatesLockedStorage(storage *reservat
 			scan.BestTTFTMs = bestTTFT
 		}
 		if !firstContentCandidateAllowed(c, pr) {
+			if deadline := candidateFirstContentDeadline(c, pr); !deadline.IsZero() && !deadline.After(now) {
+				scan.DeadlineRejections++
+			}
 			arena.Release(c)
 			scan.TTFTRejections++
 			scan.tallyGate(GateTTFTCeiling)

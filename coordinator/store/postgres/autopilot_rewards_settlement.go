@@ -45,9 +45,15 @@ func (s *PostgresStore) SettleAutopilotRewardDay(ctx context.Context, machineID 
 		return earningsfloor.Settlement{}, earningsfloor.ErrDayOrder
 	}
 	end := day.Add(24 * time.Hour)
-	optedIn, _, err := autopilotConsentAt(ctx, tx, machine.ancestors, &end)
+	optedIn, qualified, _, err := autopilotConsentAt(ctx, tx, machine.ancestors, &end)
 	if err != nil {
 		return earningsfloor.Settlement{}, err
+	}
+	if optedIn && qualified {
+		qualified, err = autopilotRewardUptime(ctx, tx, machine, day)
+		if err != nil {
+			return earningsfloor.Settlement{}, err
+		}
 	}
 	receipt := earningsfloor.Settlement{
 		MachineID: enrollment.MachineID, AccountID: machine.account, Day: day,
@@ -58,6 +64,8 @@ func (s *PostgresStore) SettleAutopilotRewardDay(ctx context.Context, machineID 
 		receipt.Status = earningsfloor.HistoryRequired
 	case !optedIn:
 		receipt.Status = earningsfloor.OptedOut
+	case !qualified:
+		receipt.Status = earningsfloor.Ineligible
 	case !enrollment.BaselineKnown:
 		receipt.Status = earningsfloor.HistoryRequired
 	default:
@@ -112,7 +120,7 @@ func (s *PostgresStore) SettleAutopilotRewardDay(ctx context.Context, machineID 
 func finalizedAutopilotRewardDay(ctx context.Context, tx pgx.Tx, machine autopilotRewardMachine, day time.Time) (*earningsfloor.Settlement, error) {
 	rows, err := tx.Query(ctx, `SELECT machine_id,account_id,day,floor_micro_usd,inference_micro_usd,due_micro_usd,amount_micro_usd,status,created_at
 	 FROM autopilot_reward_settlements WHERE machine_id=ANY($1::text[]) AND day=$2
-	 AND status IN ('paid','zero','opted_out') LIMIT 2`, machine.ancestors, day)
+	 AND status IN ('paid','zero','opted_out','ineligible') LIMIT 2`, machine.ancestors, day)
 	if err != nil {
 		return nil, err
 	}

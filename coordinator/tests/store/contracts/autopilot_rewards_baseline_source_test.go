@@ -47,7 +47,7 @@ func TestAutopilotRewardsTrackedBaselineRechecksLinkedHistory(t *testing.T) {
 					primary.VerifiedSerial, primary.At = "ancestor-serial", f.optIn.Add(time.Hour)
 					canonical = f.observe(t, primary).ID
 				case "unbound_positive", "conflicting_session_owner":
-					if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "delayed", AccountID: "owner", Supported: true, OptedIn: true, At: f.optIn.Add(-time.Hour)}); !errors.Is(err, earningsfloor.ErrIdentity) {
+					if _, err := f.rewards.ObserveAutopilotConsent(t.Context(), earningsfloor.Consent{SessionID: "delayed", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: f.optIn.Add(-time.Hour)}); !errors.Is(err, earningsfloor.ErrIdentity) {
 						t.Fatalf("unbound prior positive = %v", err)
 					}
 					if scenario == "conflicting_session_owner" {

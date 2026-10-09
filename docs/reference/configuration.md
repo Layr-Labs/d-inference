@@ -493,7 +493,10 @@ Prices, the platform fee and the fixed consumer referral reward live in [`../arc
 Autopilot's independent pool cap is durable state, not an environment-derived
 percentage or monthly base-reward budget. Set it through the
 [reward admin API](api-contracts.md#autopilot-reward-administration); enabling the
-worker alone cannot fund payments. Follow [reward operations](../operations/autopilot-rewards.md)
+worker alone cannot fund payments or waive the fixed
+[daily OS/model and uptime gates](pricing-model.md#autopilot-rewards).
+`EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` applies to ordinary base rewards only;
+it does not retune Autopilot daily eligibility. Follow [reward operations](../operations/autopilot-rewards.md)
 for separately approved deployment, funding and historical baseline repair.
 
 ### Model registry, releases and R2/CDN

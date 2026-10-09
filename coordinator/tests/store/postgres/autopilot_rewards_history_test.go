@@ -31,7 +31,7 @@ func TestAutopilotRewardsEarlierIndependentSessionDeclarationIsNeverLost(t *test
 	if empty, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "b", AccountID: "owner", Supported: true, At: newerFalse}); err != nil || empty.MachineID != "" {
 		t.Fatalf("newer false created enrollment: %+v %v", empty, err)
 	}
-	enrollment, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "a", AccountID: "owner", Supported: true, OptedIn: true, At: first})
+	enrollment, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "a", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: first})
 	if err != nil || enrollment.MachineID != machineID || !enrollment.BaselineKnown || enrollment.HistoryConflict || enrollment.FirstOptInAt == nil || !enrollment.FirstOptInAt.Equal(first) || enrollment.DailyFloorMicroUSD != 11 {
 		t.Fatalf("earlier independent positive was dropped or re-anchored: %+v %v", enrollment, err)
 	}
@@ -63,7 +63,7 @@ func TestAutopilotRewardsLateEarlierPositiveFencesFrozenBaseline(t *testing.T) {
 	const enrollmentRows = `SELECT row_to_json(e)::text FROM autopilot_reward_enrollments e ORDER BY machine_id`
 	frozen := queryLines(t, f.pool, enrollmentRows)
 	earlier := frozenFirst.Add(-48 * time.Hour)
-	conflict, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "a", AccountID: "owner", Supported: true, OptedIn: true, At: earlier})
+	conflict, err := f.ObserveAutopilotConsent(ctx, earningsfloor.Consent{SessionID: "a", AccountID: "owner", Supported: true, Qualified: true, OptedIn: true, At: earlier})
 	if err != nil || !conflict.HistoryConflict || !conflict.BaselineKnown || !conflict.FirstOptInAt.Equal(frozenFirst) || conflict.DailyFloorMicroUSD != 11 {
 		t.Fatalf("late evidence silently kept a payable wrong anchor: %+v %v", conflict, err)
 	}

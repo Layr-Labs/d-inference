@@ -18,8 +18,8 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 | A3 | Nothing in Darkbloom tells the operator about A2 before launch | `cluster doctor` inspects saved metadata only | **in progress**: read-only `cluster link` probe |
 | A7 | Link setup is manual. Requirement set 2026-10-08: plug in the cable, Darkbloom detects the RDMA link, configures what the link needs and starts onboarding; approving a macOS prompt is the only acceptable manual step | Owner requirement; A2 is the concrete case | **open**. Order: (1) the read-only probe names the exact problem (A3); (2) `cluster link` gains an approval-gated fix that applies the one address change through the system authorization prompt and re-probes; (3) detection on plug-in (link and port state changes) feeds the onboarding screen; (4) a one-time-approved helper so later plug-ins need no prompt. The address is not persistent, so the fix must reapply after reboot or replug |
 | A8 | The resident load refused any Mac with swap in use, and a 250 ms gate re-checked it during a request. Mac B has about 3 GB swapped; most Macs in daily use do | Real stage load refused on Mac B | **fixed** `960b855f5`: refused only under warning pressure; free-page requirements unchanged. Wants a second opinion |
-| A4 | The pinned JACCL sends stale bytes after a partial payload (fixed-size frames). The research fix (`stage_send_frame`, mlx `4e89c2e3`) is not in Darkbloom's mlx pin | Research commit; `NativeSendChecks` needs `send_frame.h`, absent at the pin | **in progress**: mlx fork branch |
-| A5 | The pinned JACCL has no progress bound: polling loops spin forever on a lost completion or dead peer, completion status is not checked, the completion queue has no headroom | Source read; ThunderMLX incident (GPU-wired memory orphaned after a rank blocked in `recv` was killed) | **in progress**: mlx fork branch |
+| A4 | The pinned JACCL sends stale bytes after a partial payload (fixed-size frames) | Simulated-verbs harness: 4 of 5 groups fail on the pin with a non-zero stale tail | **fixed in the mlx fork branch** `97fbd680` (the research commit carried onto the current pin, author kept). Needs the mlx-swift repin (D2) |
+| A5 | The pinned JACCL has no progress bound: polling loops spin forever on a lost completion or dead peer, and completion status is never read | Harness: a silent peer is only ended by the harness watchdog; a failed completion is accepted as data | **fixed in the mlx fork branch** `aec94c2b`: all ten polling loops bounded (`JACCL_PROGRESS_TIMEOUT_MS`, default 120 s), completion status checked, queue pair, completion queue and registrations released, an error thrown to the caller, group closed for good. 38 simulated-verbs cases under ASan, UBSan and TSan. **Not yet run on the real link**: whether the Thunderbolt driver sets a success status on good completions is the first thing to check |
 | A6 | Owner-authenticated JACCL bootstrap is unstaged. JACCL opens its own unauthenticated TCP coordinator socket on the link | `Collective.swift` staging note; mlx-c `489e965` (+192 lines on the staged pin) carries the bridge | **open**: needs the mlx-c pin decision; worker refuses the flags until then |
 
 ## B. One request across two ranks
@@ -42,8 +42,8 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 
 | # | Gap | Evidence | Status |
 |---|---|---|---|
-| C1 | The coordinator never sends `cluster_member_accepted`; the provider's negotiation timer then tears the leader down about 10 s after connecting | Integration review, verified by reading | **in progress**: coordinator worktree |
-| C2 | `DistributedHTTPResponse.recordTerminal` has no caller, so every streamed completion aborts without a finish frame, usage or `[DONE]` | Integration review, verified by reading | **open** |
+| C1 | The coordinator never sent `cluster_member_accepted`; the provider's negotiation timer then tore the leader down about 10 s after connecting | Real in-process provider session, exact wire bytes | **fixed** `651b08e93`: sent as the last step of registration, only for an accepted member |
+| C2 | `DistributedHTTPResponse.recordTerminal` has no caller, so every streamed completion aborts without a finish frame, usage or `[DONE]` | The caller exists in the research tree (`EngineV2Bridge+Events.swift`) and was dropped in extraction | **in progress** (see F1) |
 | C3 | Capability reconciliation dropped the registry lock before reading registry-guarded state: a data race on the ordinary single-host path | Reproduced with the race detector | **fixed** `17da399ad` |
 | C4 | A dead follower is waited on forever: remote cleanup completes only on the owner's terminal frame, and reserve and teardown await it unbounded | Integration review, verified by reading | **open** |
 | C5 | The device lease journal is sticky and has no recovery tool: a failed launch, a 500 ms stall at hello, or a lost release handshake blocks every later start until the file is edited by hand | Integration and security reviews, verified by reading | **open**: journal immediately before launch, plus an explicit `cluster recover` |
@@ -52,7 +52,7 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 | C8 | The controller SIGTERMs a local owner on any reader error, orphaning its worker (no handler, no process group) | Security review, verified by reading | **open** |
 | C9 | `provider.toml` mode trap: cluster readers require 0600, the ordinary config save rewrites 0644 | Integration review, verified by reading | **in progress** |
 | C10 | Coordinator-originated inference never reaches the distributed engine: member mode answers 503, the pair catalog is nil outside tests, `BeginNativePair` has no production caller | Integration review, verified by reading | **open**: local serving first; coordinator traffic is a later gate |
-| C11 | Quarantined pairs are never released; the machine identity stays gated until the coordinator restarts | Integration review, verified by reading (latent) | **in progress** |
+| C11 | Quarantined pairs were never released; the machine identity stayed gated until the coordinator restarted | Registry tests on a fake clock | **fixed** `b048897ca`: released once every member has delivered its receipt or left, 40 s after the fixed expiry; a connected member that owes its receipt is never released by time alone |
 | C12 | `Attach` requires TLS on the connection although Caddy terminates it; the load-command guard has no caller; no clock-skew allowance on the 30 s prepare check; `projectFirstToken` returns unbounded | Integration review (latent) | **open** |
 | C13 | No start, stop, join, leave, drain or recover verb; the follower has no live status surface; a quarantined leader is unobservable over HTTP | Integration review | **open**: terminal UI gate |
 
@@ -63,6 +63,43 @@ Status: **fixed** (commit), **in progress**, **open**, **blocked** (on what).
 | D1 | Trust model for the pair | The peer is key-agreed, not authenticated: the native accepts whatever peer key arrives in the coordinator-relayed binding. Either the member verifies the peer hello's attested signature before sending the binding, or the coordinator is documented as trusted and the doc line "the coordinator does not possess its key" is corrected |
 | D2 | Dependency pins for A4, A5, A6 | Three small fork changes (mlx send-frame clearing, mlx progress guard, mlx-c bootstrap bridge) and the mlx-swift pin that selects them. Each changes provider bytes |
 | D3 | Session envelope | 16 requests and 300 seconds per session suit a qualification run, not hosting. Rotation exists for quota exhaustion; lifetime expiry stops the server |
+
+## F. How the branch came to be incomplete
+
+| # | Finding | Evidence | Status |
+|---|---|---|---|
+| F1 | The extraction from the research runtime (PR 1226) carried the new files but skipped edits to 14 existing files, and most of the provider tests (27 cluster test files there, 7 here). C2, the unguarded model commands and several member-mode leaks follow from this | `git diff --name-status` of the research PR against its base, compared with this branch against its base | **in progress**: two workers restoring the Go and Swift hunks with the research tests |
+| F2 | The three research archives (PRs 1227, 1228, 1229; 671 drafts) hold tested or physically exercised drafts for several open items | Read-only survey of each archive | See "Available to lift" below |
+
+### Available to lift from the research archives
+
+| For | Draft (under `experiments/cluster/research-archive/…/sources/`) | State there |
+|---|---|---|
+| A2, A7 | `control-delivery/…/rdma_alias_smoke_20260915.py`; `gemma-decode/…/decode-faster-than-solo-20260920/harness-cpu/alias.py` | The same alias fix, with its verification (IPv4-mapped GID present, port active, bridge members and routes unchanged) and removal. Used on real hardware, driven by sudo with a stored password, which is what A7 replaces |
+| B2 | `gemma-decode/…/gemma4-decode-optimization-20260920/control-frame-draft` | One zero-padded 16 KiB control frame instead of length-then-body; physical |
+| B3 | `control-delivery/…/cluster-worker-partial-admission-overlay-20260915` | Per-rank admission state, cancel only admitted ranks; CPU-validated |
+| B1 | `control-delivery/…/owner-cancellation-recovery-draft-20260915` | Owner-level cancel and fence, then a fresh epoch returns the expected tokens; physical |
+| C5 | `control-delivery/…/cluster-owner-release-eof-drain-correction-20260917`, `…/cluster-owner-retirement-shutdown-draft-20260915` | Two causes of a sticky journal; one reproduced on CPU from a physical failure. No recovery tool exists anywhere |
+| C6 | `control-delivery/…/shared-device-exclusion-draft` | The ordinary provider takes the owners' gate; CPU-validated |
+| A6 | `control-delivery/…/jaccl-owner-bootstrap-draft`, `…/jaccl-owner-channel-draft`, `…/cluster-owner-bootstrap-relay-overlay-20260915` | CPU-validated, never run over RDMA; does not remove the GID requirement |
+| B6 | `control-delivery/…/collective-protected-scopes-draft-20260915`, `…/cluster-lab-encrypted-rdma-20260920` | Wiring is source only; cost measured on the real link without a model (5 MiB record: 4.50 ms encrypted, 2.02 ms raw) |
+| B11 | `gemma-decode/…/gemma4-artifact-transfer-rsync-options-ready-20260917` | rsync over SSH with hash, identity and exclusive-rename promotion. Nothing in any archive sends weights over the link |
+| More models | `gemma-decode/…/gemma4-native-layer-stage-draft-20260915` | Gemma 4 26B as a layer pipeline, exact against one Mac; a benchmark executable, needs an SDK change |
+
+### What the research measured (two M4 Pro Macs, 24 GB and 48 GB, plaintext RDMA)
+
+Expectation-setting only; none of it was run here.
+
+| Model and shape | Pair | One Mac |
+|---|---|---|
+| Qwen3.5 9B, 8,192-token prompt, cut 16: prefill | 814 tok/s | 440 tok/s |
+| same: decode | 24.7 tok/s | 37.7 tok/s |
+| Gemma 4 26B, 4,096-token prompt, cut 7: prefill | 455 tok/s | 371 tok/s |
+| same: decode | 32.0 tok/s | 47.1 tok/s |
+
+A layer pipeline across two Macs prefills faster and decodes slower than one
+Mac that can hold the model. Its value is models that do not fit on one Mac,
+and long prompts.
 
 ## E. Documents that are out of date
 

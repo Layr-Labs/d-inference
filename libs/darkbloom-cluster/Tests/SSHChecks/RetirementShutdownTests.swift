@@ -71,8 +71,12 @@ import DarkbloomClusterProtocol
         do { while true { _ = try peer.receive() } } catch { }
         try peer.awaitOwnerExit()
         results.append(["case": kind + "_shutdown_refused", "observed": peer.summary])
-        try retirementRequire(!peer.released && peer.journalBytes > 0 && peer.process.terminationStatus != 0,
-            "Invalid shutdown obtained a release or cleared journal")
+        // The refusal is the missing release acknowledgement and the nonzero
+        // owner exit. The journal is a separate fact: the owner observed its
+        // own child's exit, so it leaves none behind.
+        try retirementRequire(!peer.released && peer.process.terminationStatus != 0,
+            "Invalid shutdown obtained a release acknowledgement or a clean owner exit")
+        try retirementRequire(peer.journalBytes == 0, "Owner left a journal after observing its own child's exit")
     }
 
     static func missingRelease(_ owner: URL, _ worker: String, _ root: URL,
@@ -84,7 +88,10 @@ import DarkbloomClusterProtocol
         try peer.command(.shutdown, requestID: nil)
         peer.close() // EOF is not the explicit release handshake.
         try peer.awaitOwnerExit()
-        results.append(["case": "missing_release_retains_journal", "observed": peer.summary])
-        try retirementRequire(!peer.released && peer.journalBytes > 0, "Shutdown/EOF fabricated device release")
+        results.append(["case": "missing_release_owner_clears_own_journal", "observed": peer.summary])
+        // No acknowledgement reaches the leader and the owner does not report a
+        // clean release, but a lost handshake no longer strands the journal.
+        try retirementRequire(!peer.released && peer.process.terminationStatus != 0, "Shutdown/EOF fabricated a release acknowledgement")
+        try retirementRequire(peer.journalBytes == 0, "Lost release handshake left a journal after the child's observed exit")
     }
 }

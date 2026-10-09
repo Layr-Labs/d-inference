@@ -56,6 +56,12 @@ final class ClusterOwnerPipe: @unchecked Sendable {
             }
         }
     }
+    /// Drops unread input without decoding it. Used only after this side has
+    /// stopped trusting the stream and merely waits for the peer process to end.
+    func discardAvailable() {
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while Darwin.read(input, &buffer, buffer.count) > 0 {}
+    }
     func closeOutput() { writing.withLock { if !outputClosed { outputClosed = true; Darwin.close(output) } } }
     deinit { Darwin.close(input); if !outputClosed { Darwin.close(output) } }
 }

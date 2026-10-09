@@ -5,7 +5,19 @@ import DarkbloomClusterProcess
 
 /// One authenticated SSH owner connection. The SSH process is only transport;
 /// nativeCleanupObserved requires that owner's current-incarnation terminal.
+///
+/// The transport process is control only: `ssh`, or the local owner that
+/// supervises the native child. It never holds the model. Ending a local owner
+/// early would end the supervision that waits for the child and clears the
+/// device journal, so without a release acknowledgement this endpoint closes its
+/// command stream (the owner's order to fence) and lets the owner run to its own
+/// retirement ceiling before signalling it.
 public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
+    /// Past the session lifetime: the child's retirement allowance, the owner's
+    /// release handshake, and slack for the connection.
+    public static let standardOwnerRetirementAllowanceNanoseconds: UInt64 =
+        ClusterWorkerSignalPolicy.standard.allowanceNanoseconds + ClusterWorkerOwnerService.handshakeAllowanceNanoseconds + 5_000_000_000
+    private let ownerRetirementDeadline: UInt64
     public let expectedIdentity: ClusterWorkerIdentity
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
@@ -75,7 +87,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            bootstrapRelay: ClusterOwnerBootstrapRelay) throws {
+                            bootstrapRelay: ClusterOwnerBootstrapRelay?) throws {
         try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
@@ -105,7 +117,11 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     init(transport: ClusterWorkerLaunch, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
          lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
-         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil) throws {
+         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil,
+         ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws {
+        let ceiling = lifetimeDeadlineUptimeNanoseconds.addingReportingOverflow(ownerRetirementAllowanceNanoseconds)
+        guard !ceiling.overflow, ownerRetirementAllowanceNanoseconds <= 300_000_000_000 else { throw OwnerWire.invalid("Invalid owner retirement allowance") }
+        ownerRetirementDeadline = ceiling.partialValue
         self.nativeKeyRelay = nativeKeyRelay
         self.leaseID = nativeKeyRelay?.start.leaseID ?? UUID()
         guard bootstrapRelay == nil || nativeKeyRelay == nil else { throw OwnerWire.invalid("Ambiguous bootstrap relay") }
@@ -196,7 +212,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                 }
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
-                    var writeDeadline = min(localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000, now + 500_000_000)
+                    var writeDeadline = min(ownerRetirementDeadline, now + 500_000_000)
                     if work.2 && !sentRelease {
                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
                     } else if work.1 && !sentFence {
@@ -229,17 +245,31 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     private func readLoop(_ pipe: ClusterOwnerPipe) {
         defer {
             // Reaping ssh owns transport only; this never leaves nativeEnded.
-            // A valid release ACK precedes normal owner return. Give that
-            // return the same bounded exit grace; do not race it with SIGTERM.
-            if process.isRunning && !lock.withLock({ ownerReleased }) { process.terminate() }
-            let limit = min(localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000,
-                DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
-            while process.isRunning && DispatchTime.now().uptimeNanoseconds < limit {
+            // A valid release ACK precedes normal owner return: the owner's
+            // child is gone and its journal clear, so two seconds of exit grace
+            // are enough. Without that ACK the owner may still be waiting for
+            // its child; it keeps its whole retirement ceiling and is not
+            // signalled before it. The closed command stream is its fence order.
+            let released = lock.withLock { ownerReleased }
+            if !released { pipe.closeOutput(); try? input.fileHandleForWriting.close() }
+            let entered = DispatchTime.now().uptimeNanoseconds
+            let patience = released ? entered + 2_000_000_000 : max(entered, ownerRetirementDeadline)
+            while process.isRunning && DispatchTime.now().uptimeNanoseconds < patience {
                 // The owner may emit its final diagnostic after the released
-                // ACK. Keep reading during the existing bounded exit grace.
+                // ACK. Keep reading during the bounded exit grace. Unread owner
+                // output is discarded so a waiting owner is never blocked on it.
                 do { try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor) } catch { fail() }
+                if !released { pipe.discardAvailable() }
                 Thread.sleep(forTimeInterval: 0.01)
             }
+            if process.isRunning && !released {
+                // Past its ceiling the owner is a control process with nothing
+                // left to supervise in contract. SIGTERM first, then SIGKILL.
+                process.terminate()
+                let grace = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+                while process.isRunning && DispatchTime.now().uptimeNanoseconds < grace { Thread.sleep(forTimeInterval: 0.01) }
+            }
+            let limit = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
             if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
             process.waitUntilExit()
             lock.withLock { ownerTerminationValue = process.terminationReason == .exit
@@ -252,7 +282,10 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             while true {
                 let now = DispatchTime.now().uptimeNanoseconds
                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
-                if now >= localLifetimeDeadlineUptimeNanoseconds + 2_000_000_000 { throw ClusterWorkerOwnerError.deadline }
+                // Keep listening for the terminal and the release ACK until the
+                // owner's retirement ceiling: a child that ends itself at the
+                // lifetime is reported after it, not before.
+                if now >= ownerRetirementDeadline { throw ClusterWorkerOwnerError.deadline }
                 try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
                 if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
                 if lock.withLock({ ownerReleased }) { return }

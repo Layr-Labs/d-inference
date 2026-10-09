@@ -9,7 +9,10 @@ import DarkbloomClusterProcess
         guard CommandLine.arguments.count == 5, let rank = Int(CommandLine.arguments[3]) else { exit(64) }
         let executable = URL(fileURLWithPath: CommandLine.arguments[1])
         let directory = URL(fileURLWithPath: CommandLine.arguments[2])
-        let behavior = CommandLine.arguments[4]
+        // "option+option+workerBehavior": options select this stand-in owner's
+        // own behaviour; the last element is passed to the stand-in worker.
+        let parts = CommandLine.arguments[4].split(separator: "+").map(String.init)
+        let options = Set(parts.dropLast()), behavior = parts.last ?? ""
         if behavior == "transport-exit" { return }
         if behavior == "inflight-round" {
             let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: STDOUT_FILENO, readingCommands: true)
@@ -34,9 +37,10 @@ import DarkbloomClusterProcess
             try pipe.write(OwnerWire(kind: "bootstrapRound", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 1,
                 bootstrapSequence: 0, bootstrapBytes: Data([2, 0, 0, 0])).encoded(commandStream: false), until: deadline)
             child.requestNativeCleanup(); child.waitForNativeCleanup()
-            guard case .signalled(let signal) = child.termination else { throw ClusterOwnerStateError.invalid("Expected actual native signal exit") }
+            // The fence closes the stand-in's command stream and it ends itself.
+            guard case .exited(let status) = child.termination, child.sentSignals.isEmpty else { throw ClusterOwnerStateError.invalid("Expected the native child's own exit") }
             try pipe.write(OwnerWire(kind: "terminal", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 2,
-                launchID: launch, termination: .signalled(signal: signal)).encoded(commandStream: false), until: deadline)
+                launchID: launch, termination: .exited(status: status)).encoded(commandStream: false), until: deadline)
             guard let release = try pipe.read(until: deadline), try OwnerWire.decode(release, commandStream: true).kind == "release" else { return }
             try lease.resolve()
             try pipe.write(OwnerWire(kind: "released", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 3)
@@ -54,7 +58,34 @@ import DarkbloomClusterProcess
                 sequence: 1, launchID: launch, termination: .exited(status: 0)).encoded(commandStream: false), until: end)
             return
         }
-        try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
+        // "garbage": one undecodable line follows the first relayed event, as a
+        // faulty owner connection would deliver it. Everything else passes.
+        let filter = Pipe(), filtered = DispatchGroup()
+        if options.contains("garbage") {
+            filtered.enter()
+            DispatchQueue.global().async {
+                defer { filtered.leave() }
+                var buffered = Data(), injected = false
+                while true {
+                    let bytes = filter.fileHandleForReading.availableData
+                    if bytes.isEmpty { break }; buffered.append(bytes)
+                    while let index = buffered.firstIndex(of: 10) {
+                        let line = Data(buffered.prefix(through: index)); buffered.removeSubrange(...index)
+                        try? FileHandle.standardOutput.write(contentsOf: line)
+                        if !injected, let frame = try? OwnerWire.decode(line, commandStream: false), frame.kind == "event" {
+                            injected = true; try? FileHandle.standardOutput.write(contentsOf: Data("{\"garbage\":true}\n".utf8))
+                        }
+                    }
+                }
+            }
+        }
+        defer { try? filter.fileHandleForWriting.close(); if options.contains("garbage") { filtered.wait() } }
+        // "quick": short signal margins so a child that ignores everything is
+        // retired within a test's patience. The order of the stages is unchanged.
+        let policy: ClusterWorkerSignalPolicy = options.contains("quick")
+            ? .init(terminateMarginNanoseconds: 300_000_000, killMarginNanoseconds: 500_000_000, reapMarginNanoseconds: 1_000_000_000) : .standard
+        try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
+            output: options.contains("garbage") ? filter.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
             clusterID: "cpu-test", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
             bootstrapProfile: behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
             binding: { epoch, lease, incarnation in
@@ -62,10 +93,14 @@ import DarkbloomClusterProcess
                 return try .init(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: lease,
                     identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
             }, native: { binding, deadline, attachment in
-                try .init(launch: .init(executable: executable, arguments: [String(rank), behavior] + (attachment?.workerArguments ?? []), environment: [:]),
+                if options.contains("factory-throws") { throw ClusterOwnerStateError.invalid("Fabricated native factory refusal") }
+                // "launch-fails": a child that can be constructed but not run.
+                let program = options.contains("launch-fails") ? URL(fileURLWithPath: "/nonexistent/darkbloom-cluster-worker") : executable
+                return try .init(launch: .init(executable: program, arguments: [String(rank), behavior] + (attachment?.workerArguments ?? []), environment: [:]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
-                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), lifetimeDeadline: deadline)
+                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), lifetimeDeadline: deadline,
+                    retirement: policy)
             })
     }
 }

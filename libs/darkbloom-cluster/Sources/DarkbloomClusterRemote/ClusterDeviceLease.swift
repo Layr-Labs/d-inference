@@ -18,7 +18,7 @@ final class ClusterDeviceLease {
         try gate.recordNativeOwnership(data)
     }
 
-    /// Called only after existing service checks prove actual native cleanup and
-    /// receipt of the current connection's release acknowledgement.
+    /// Called only after this owner itself observed the exit of the child the
+    /// journal names, or established that no child was launched.
     func resolve() throws { try gate.resolveNativeOwnership() }
 }

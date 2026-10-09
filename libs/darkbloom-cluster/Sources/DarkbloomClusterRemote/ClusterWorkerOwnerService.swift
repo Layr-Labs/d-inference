@@ -6,10 +6,20 @@ import DarkbloomClusterSecurity
 /// Installed darkbloom's configured worker-owner entry calls this service. No
 /// executable, model path, environment or bootstrap address is accepted on wire.
 public enum ClusterWorkerOwnerService {
-    /// This factory must return an UNLAUNCHED direct child. For physical JACCL it
-    /// must require the authenticated bootstrap attachment; plaintext fallback is
-    /// not an implementation of that configuration. The child's native hard
-    /// alarm must also cover owner death; this supervisor cannot run after death.
+    /// This factory must return an UNLAUNCHED direct child. With a bootstrap
+    /// profile it must require that profile's attachment. Without one the child
+    /// uses its native bootstrap and the caller must say so wherever it reports
+    /// the session; the two are never substituted for each other. The child's
+    /// own hard deadline must also cover owner death; this supervisor cannot
+    /// run after death.
+    ///
+    /// Journal rule: the device journal is written immediately before the child
+    /// is launched and cleared by this owner once it has itself observed that
+    /// child's exit (or that no child was created). A release acknowledgement
+    /// from the leader is still exchanged when the connection is alive, but its
+    /// loss does not leave a journal behind. The journal outlives this process
+    /// only when the child may still be running: this owner died first, or the
+    /// child outlived its own deadline and every signal.
     public typealias NativeFactory = @Sendable (ClusterOwnerBinding, UInt64) throws -> ClusterWorkerProcess
     public typealias BindingFactory = @Sendable (UUID, UUID, UUID) throws -> ClusterOwnerBinding
 
@@ -65,7 +75,6 @@ public enum ClusterWorkerOwnerService {
             remainingLifetimeNanoseconds: remaining)
         let launchID = nativeStart?.launchID ?? UUID()
         try state.beginNativeLaunch(launchID, now: DispatchTime.now().uptimeNanoseconds)
-        try lease.record(binding: ownerBinding, launchID: launchID)
         let attachment = try bootstrapProfile.map { try ClusterOwnerBootstrapAttachment(profile: $0,
             deadline: min(state.lifetimeDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds + 30_000_000_000), nativeStart: nativeStart) }
         let context = ServiceContext(pipe: pipe, state: state, launchID: launchID, attachment: attachment)
@@ -80,18 +89,39 @@ public enum ClusterWorkerOwnerService {
                   child.localLifetimeDeadlineUptimeNanoseconds <= state.lifetimeDeadlineUptimeNanoseconds else {
                 throw OwnerWire.invalid("Native factory binding differs")
             }
+        } catch {
+            // Nothing was launched and nothing was recorded: no journal exists.
+            try? context.recordTerminal(.launchFailed)
+            try? context.publishTerminal()
+            throw error
+        }
+        context.supervisionDeadline = Self.supervisionDeadline(child)
+        // The journal names this launch immediately before it can exist.
+        do { try lease.record(binding: ownerBinding, launchID: launchID) }
+        catch {
+            // A failed journal write is never retried and no child is launched.
+            try? context.recordTerminal(.launchFailed)
+            try? context.publishTerminal()
+            throw error
+        }
+        do {
             try child.launch()
             try context.lock.withLock { try context.state.observeNativeStarted(launchID) }
         } catch {
-            // Factory contract permits only construction before launch; run failure
-            // is independently exposed by Process. No PID-absence inference.
-            if let child = context.child, child.launchedProcessIdentifier != nil {
-                try context.lock.withLock { if !context.state.childStarted { try context.state.observeNativeStarted(launchID) } }
-                child.requestNativeCleanup(); child.waitForNativeCleanup()
-                if let terminal = child.termination { try context.recordTerminal(terminal) }
-            } else { try context.recordTerminal(.launchFailed) }
+            // Run failure is independently exposed by Process. No PID-absence inference.
+            if child.launchedProcessIdentifier != nil {
+                try? context.lock.withLock { if !context.state.childStarted { try context.state.observeNativeStarted(launchID) } }
+                child.requestNativeCleanup()
+                if child.waitForExit(until: child.retirementDeadlineUptimeNanoseconds), let terminal = child.termination {
+                    try context.recordTerminal(terminal)
+                    try lease.resolve() // This owner observed the exit of the only child it launched.
+                }
+            } else {
+                try context.recordTerminal(.launchFailed)
+                try lease.resolve() // No child was launched.
+            }
             try? context.publishTerminal()
-            throw error // Sticky journal: no remote release acknowledgement.
+            throw error
         }
         if let attachment {
             context.attachmentTasks.enter()
@@ -111,9 +141,12 @@ public enum ClusterWorkerOwnerService {
         do {
             while !released {
                 let now = DispatchTime.now().uptimeNanoseconds
+                // At the lifetime the state requests a fence; the child ends
+                // itself there. This loop keeps serving the terminal and the
+                // release handshake until the child's retirement ceiling.
                 try context.observeTime()
-                if now >= context.deadline { throw ClusterWorkerOwnerErrorProxy.deadline }
-                guard let line = try pipe.read(until: min(context.deadline, now + 100_000_000)) else { continue }
+                if now >= context.supervisionDeadline { throw ClusterWorkerOwnerErrorProxy.deadline }
+                guard let line = try pipe.read(until: min(context.supervisionDeadline, now + 100_000_000)) else { continue }
                 let frame = try OwnerWire.decode(line, commandStream: true)
                 try context.accept(frame)
                 if frame.kind == "release" {
@@ -130,11 +163,28 @@ public enum ClusterWorkerOwnerService {
         } catch {
             context.lock.withLock { context.state.disconnect() }
             attachment?.cancel()
-            child.requestNativeCleanup(); child.waitForNativeCleanup(); relay.wait()
-            // Even if actual cleanup succeeded, loss of the release handshake
-            // leaves the durable journal unresolved and prevents another load.
+            // The leader is gone or wrong. The child still ends itself, and its
+            // exit, which this owner observes directly, is what frees the device.
+            child.requestNativeCleanup()
+            guard child.waitForExit(until: child.retirementDeadlineUptimeNanoseconds) else {
+                throw OwnerWire.invalid("Native child \(child.launchedProcessIdentifier.map(String.init) ?? "unknown") outlived its own deadline and every signal; its device journal is retained (\(error))")
+            }
+            relay.wait()
+            let resolvable = context.lock.withLock { context.state.canReleaseDeviceLease }
+            if resolvable {
+                try lease.resolve()
+                try context.lock.withLock { try context.state.observeDeviceLeaseReleased() }
+            }
             throw error
         }
+    }
+
+    /// Latest moment this owner still reads and writes its connection: the
+    /// child's retirement ceiling plus time for the release handshake.
+    static let handshakeAllowanceNanoseconds: UInt64 = 5_000_000_000
+    static func supervisionDeadline(_ child: ClusterWorkerProcess) -> UInt64 {
+        let value = child.retirementDeadlineUptimeNanoseconds.addingReportingOverflow(handshakeAllowanceNanoseconds)
+        return value.overflow ? UInt64.max : value.partialValue
     }
 }
 
@@ -154,11 +204,14 @@ private final class ServiceContext: @unchecked Sendable {
     var admissionDeadline: UInt64?
     var session: ClusterWorkerSession
     let deadline: UInt64
+    /// Set once the child exists; until then the owner's own lifetime bounds IO.
+    var supervisionDeadline: UInt64
     let binding: ClusterOwnerBinding
     let attachment: ClusterOwnerBootstrapAttachment?
     init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID, attachment: ClusterOwnerBootstrapAttachment?) {
         self.pipe = pipe; self.state = state; self.launchID = launchID
-        deadline = state.lifetimeDeadlineUptimeNanoseconds; binding = state.binding; self.attachment = attachment
+        deadline = state.lifetimeDeadlineUptimeNanoseconds; supervisionDeadline = deadline
+        binding = state.binding; self.attachment = attachment
         // Binding was validated by its initializer.
         session = try! ClusterWorkerSession(identity: state.binding.identity, rank: state.binding.rank,
             profile: state.binding.profile, executionPlanSHA256: state.binding.executionPlanSHA256)
@@ -170,7 +223,7 @@ private final class ServiceContext: @unchecked Sendable {
                 incarnation: route.ownerIncarnation, sequence: nextOutgoing, launchID: launchID,
                 payload: payload, termination: termination, bootstrapProfile: kind == "hello" ? attachment?.profile : nil,
                 bootstrapSequence: bootstrapSequence, bootstrapBytes: bootstrapBytes)
-            try pipe.write(frame.encoded(commandStream: false), until: min(deadline + 2_000_000_000, DispatchTime.now().uptimeNanoseconds + 500_000_000))
+            try pipe.write(frame.encoded(commandStream: false), until: min(supervisionDeadline, DispatchTime.now().uptimeNanoseconds + 500_000_000))
             nextOutgoing += 1
         }
     }
@@ -281,7 +334,11 @@ private final class ServiceContext: @unchecked Sendable {
                 if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup() }
             }
         } catch { lock.withLock { state.disconnect() }; child.requestNativeCleanup() }
-        child.waitForNativeCleanup()
+        // Bounded by the child's retirement ceiling. Without an observed exit
+        // no terminal is recorded and the journal stays.
+        guard child.waitForExit(until: child.retirementDeadlineUptimeNanoseconds) else {
+            attachment?.cancel(); lock.withLock { state.disconnect() }; return
+        }
         attachment?.cancel()
         do {
             guard let termination = child.termination else { throw OwnerWire.invalid("Missing actual native terminal") }

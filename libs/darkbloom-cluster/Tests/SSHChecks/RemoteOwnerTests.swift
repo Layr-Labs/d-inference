@@ -1,11 +1,11 @@
 import Foundation
 import Darwin
 import DarkbloomClusterProtocol
-import DarkbloomClusterProcess
+@_spi(OwnerService) import DarkbloomClusterProcess
 @testable import DarkbloomClusterRemote
 
-func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-    if !condition() { throw ClusterOwnerStateError.invalid(message) }
+func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+    if try !condition() { throw ClusterOwnerStateError.invalid(message) }
 }
 func rejects(_ body: () throws -> Void) throws {
     do { try body() } catch { return }; throw ClusterOwnerStateError.invalid("Expected rejection")
@@ -30,7 +30,11 @@ func directory() throws -> URL {
         try invalidBootstrap(owner, worker)
         try bootstrapContracts()
         try cancelledInflightRound(owner, worker)
-        print("remote-owner: 13 CPU groups passed")
+        try journalFollowsTheLaunch(owner, worker)
+        try ownerKeepsItsCeilingAfterAReaderError(owner, worker)
+        try lifetimeExpiryStillReleases(owner, worker)
+        try recovery(worker)
+        print("remote-owner: 17 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
@@ -82,10 +86,144 @@ func directory() throws -> URL {
         try rejects { _ = try ClusterSSHConfiguration(host: "peer;touch-bad", user: "gaj", port: 22,
             knownHostsFile: known, identityFile: key, installedDarkbloom: "/bin/sh -c") }
     }
-    static func endpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String, rank: Int = 0, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws -> ClusterRemoteWorkerEndpoint {
+    static func endpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String, rank: Int = 0, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
+                         lifetimeNanoseconds: UInt64 = 15_000_000_000,
+                         ownerAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws -> ClusterRemoteWorkerEndpoint {
         try .init(transport: .init(executable: owner, arguments: [worker, dir.path, String(rank), behavior], environment: [:]),
             clusterID: "cpu-test", expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: rank,
-            executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 15_000_000_000, bootstrapRelay: bootstrapRelay)
+            executionPlanSHA256: fixturePlan, lifetimeDeadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + lifetimeNanoseconds,
+            bootstrapRelay: bootstrapRelay, ownerRetirementAllowanceNanoseconds: ownerAllowanceNanoseconds)
+    }
+    static func journalBytes(_ dir: URL) -> UInt64 {
+        ((try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent("native-device.lease").path)[.size]) as? NSNumber)?.uint64Value ?? 0
+    }
+    static func awaitOwnerExit(_ e: ClusterRemoteWorkerEndpoint, seconds: UInt64) -> ClusterWorkerProcessTermination? {
+        let end = DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000
+        while e.ownerTermination == nil && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
+        return e.ownerTermination
+    }
+
+    /// The journal names a launch immediately before that launch can exist and
+    /// is cleared when no child was created. Previously it was written before
+    /// the hello and the factory, and each of these three left it behind.
+    static func journalFollowsTheLaunch(_ owner: URL, _ worker: String) throws {
+        for behavior in ["factory-throws+normal", "launch-fails+normal"] {
+            let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+            let e = try endpoint(owner, worker, dir, behavior: behavior)
+            try rejects { _ = try e.receiveWorkerEvent(until: DispatchTime.now().uptimeNanoseconds + 3_000_000_000) }
+            try require(awaitOwnerExit(e, seconds: 5) != nil, "Owner did not end after a failed launch (\(behavior))")
+            try require(e.readiness == nil, "Failed launch became ready")
+            try require(journalBytes(dir) == 0, "A launch that created no child left a journal (\(behavior))")
+            _ = try ClusterDeviceLease(directoryURL: dir)
+        }
+        // The leader stops listening before the hello can be delivered.
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = owner; process.arguments = [worker, dir.path, "0", "normal"]; process.environment = [:]
+        process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        try process.run()
+        try input.fileHandleForReading.close(); try output.fileHandleForWriting.close(); try output.fileHandleForReading.close()
+        let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
+        let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        try pipe.write(OwnerWire(kind: "open", epoch: fixtureIdentity.membershipEpoch, lease: UUID(), incarnation: nil,
+            sequence: 0, clusterID: "cpu-test", remaining: 6_000_000_000).encoded(commandStream: true), until: deadline)
+        while process.isRunning && DispatchTime.now().uptimeNanoseconds < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        if process.isRunning { process.terminate(); throw OwnerWire.invalid("Owner stalled at a hello nobody reads") }
+        process.waitUntilExit(); pipe.closeOutput(); try? input.fileHandleForWriting.close()
+        try require(journalBytes(dir) == 0, "A hello that was never delivered left a journal")
+        _ = try ClusterDeviceLease(directoryURL: dir)
+    }
+
+    /// A reader error must not end a local owner that is still waiting for its
+    /// child. The endpoint closes its command stream; the owner fences the
+    /// child, waits out the three seconds the stand-in needs, clears its own
+    /// journal and exits by itself. Previously the endpoint sent SIGTERM to the
+    /// owner at once, orphaning the child and stranding the journal.
+    static func ownerKeepsItsCeilingAfterAReaderError(_ owner: URL, _ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let begin = DispatchTime.now().uptimeNanoseconds
+        let e = try endpoint(owner, worker, dir, behavior: "garbage+slow-exit")
+        _ = try event(e)
+        try rejects { _ = try e.receiveWorkerEvent(until: DispatchTime.now().uptimeNanoseconds + 2_000_000_000) }
+        let ended = awaitOwnerExit(e, seconds: 10)
+        try require(ended != nil, "Owner did not end by itself after its connection failed")
+        try require(ended != .signalled(SIGTERM) && ended != .signalled(SIGKILL), "The endpoint signalled an owner that still supervised a child: \(String(describing: ended))")
+        try require(DispatchTime.now().uptimeNanoseconds - begin >= 2_500_000_000, "Owner ended before its child's own three seconds")
+        try require(!e.nativeCleanupObserved && !e.ownerDeviceLeaseReleasedObserved, "A failed connection fabricated cleanup proof")
+        try require(journalBytes(dir) == 0, "Owner that observed its child's exit left a journal")
+        _ = try ClusterDeviceLease(directoryURL: dir)
+    }
+
+    /// A child that ignores its stream lives to its lifetime and is ended after
+    /// it. The owner keeps reading and writing past the lifetime, so the
+    /// terminal, the release and the cleared journal all still arrive.
+    /// Previously the owner stopped at its deadline and stranded the journal.
+    static func lifetimeExpiryStillReleases(_ owner: URL, _ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let begin = DispatchTime.now().uptimeNanoseconds
+        let e = try endpoint(owner, worker, dir, behavior: "quick+deaf-term", lifetimeNanoseconds: 1_500_000_000, ownerAllowanceNanoseconds: 8_000_000_000)
+        _ = try event(e)
+        try require(e.waitForNativeCleanup(until: begin + 8_000_000_000), "Native terminal after the lifetime was not received")
+        try require(DispatchTime.now().uptimeNanoseconds - begin >= 1_700_000_000, "Child was ended before its lifetime plus margin")
+        try require(e.waitForOwnerReleased(deadline: begin + 10_000_000_000), "Release handshake after the lifetime was lost")
+        try require(e.ownerTermination == .exited(0) && journalBytes(dir) == 0, "Lifetime expiry left an owner error or a journal")
+    }
+
+    /// Explicit recovery of a journal whose owner is gone.
+    static func recovery(_ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        try require(try ClusterDeviceLeaseRecovery.recover(directoryURL: dir.appendingPathComponent("absent")) == .nothingToRecover, "Absent directory needs no recovery")
+        let binding = try ClusterOwnerBinding(clusterID: "cpu-test", ownerIncarnation: UUID(), leaseID: UUID(),
+            identity: fixtureIdentity, profile: fixtureProfile, rank: 1, executionPlanSHA256: fixturePlan)
+        let epoch = fixtureIdentity.membershipEpoch.uuidString.lowercased()
+        func strand() throws { let lease = try ClusterDeviceLease(directoryURL: dir); try lease.record(binding: binding, launchID: UUID()) }
+        do { _ = try ClusterDeviceLease(directoryURL: dir) }
+        try require(try ClusterDeviceLeaseRecovery.recover(directoryURL: dir) == .nothingToRecover, "Empty journal needs no recovery")
+
+        // A live owner holds the device scope: recovery leaves its journal alone.
+        do {
+            let lease = try ClusterDeviceLease(directoryURL: dir); try lease.record(binding: binding, launchID: UUID())
+            try require(try ClusterDeviceLeaseRecovery.recover(directoryURL: dir) == .refusedLiveOwner, "Recovery ignored a live owner")
+            try require(journalBytes(dir) > 0, "Recovery cleared a live owner's journal")
+            try lease.resolve()
+        }
+
+        // A stranded journal whose worker still runs, by its recorded epoch.
+        try strand()
+        try rejects { _ = try ClusterDeviceLease(directoryURL: dir) }
+        let pretend = try ClusterDeviceLeaseRecovery.recover(directoryURL: dir, runningProcesses: {
+            [.init(processIdentifier: 4242, arguments: ["/opt/other", "--membership-epoch", UUID().uuidString.lowercased()]),
+             .init(processIdentifier: 4243, arguments: ["/opt/worker", "--membership-epoch", epoch])]
+        })
+        guard case .refusedLiveWorker(let found, let named) = pretend, found == 4243, named.membershipEpoch == epoch,
+              named.rank == 1, named.clusterID == "cpu-test" else { throw OwnerWire.invalid("Recovery missed a process carrying the recorded epoch") }
+        try require(journalBytes(dir) > 0, "Refused recovery changed the journal")
+        // The same refusal against the real process table: an actual child whose
+        // command line carries the epoch, as a native worker's does.
+        let alive = Process()
+        alive.executableURL = URL(fileURLWithPath: worker)
+        alive.arguments = ["0", "never-ready", "--membership-epoch", epoch, "a", "b", "c", "d"]
+        alive.standardInput = FileHandle.nullDevice; alive.standardOutput = FileHandle.nullDevice; alive.standardError = FileHandle.nullDevice
+        try alive.run()
+        defer { if alive.isRunning { alive.terminate(); alive.waitUntilExit() } }
+        Thread.sleep(forTimeInterval: 0.2)
+        guard case .refusedLiveWorker(let actual, _) = try ClusterDeviceLeaseRecovery.recover(directoryURL: dir),
+              actual == alive.processIdentifier else { throw OwnerWire.invalid("Recovery did not find the running process that carries the epoch") }
+        try require(journalBytes(dir) > 0, "Refused recovery changed the journal")
+        alive.terminate(); alive.waitUntilExit()
+
+        // Nothing the journal names is running: it is cleared and the device is usable.
+        guard case .cleared(let record) = try ClusterDeviceLeaseRecovery.recover(directoryURL: dir), record.membershipEpoch == epoch else {
+            throw OwnerWire.invalid("Recovery refused a journal that names nothing running")
+        }
+        try require(journalBytes(dir) == 0, "Recovery reported a clear it did not perform")
+        _ = try ClusterDeviceLease(directoryURL: dir)
+        try require(try ClusterDeviceLeaseRecovery.recover(directoryURL: dir) == .nothingToRecover, "Recovery is not idempotent")
+
+        // Bytes this build did not write prove nothing and are left alone.
+        do { let gate = try ClusterDeviceExclusion(directoryURL: dir); try gate.recordNativeOwnership(Data("not a lease record\n".utf8)) }
+        try require(try ClusterDeviceLeaseRecovery.recover(directoryURL: dir, runningProcesses: { [] }) == .refusedUnreadable, "Recovery cleared an unreadable journal")
+        try require(journalBytes(dir) > 0, "Refused recovery changed the journal")
     }
     static func event(_ endpoint: ClusterRemoteWorkerEndpoint) throws -> ClusterWorkerEventFrame {
         try endpoint.receiveWorkerEvent(until: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
@@ -142,7 +280,8 @@ func directory() throws -> URL {
     static func ownerEOF(_ owner: URL, _ worker: String) throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let process = Process(), input = Pipe(), output = Pipe(), err = Pipe()
-        process.executableURL = owner; process.arguments = [worker, dir.path, "0", "hang"]; process.environment = [:]
+        // The stand-in needs three seconds to end itself once its stream closes.
+        process.executableURL = owner; process.arguments = [worker, dir.path, "0", "slow-exit"]; process.environment = [:]
         process.standardInput = input; process.standardOutput = output; process.standardError = err
         let pipe = try ClusterOwnerPipe(input: output.fileHandleForReading.fileDescriptor,
             output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
@@ -160,11 +299,17 @@ func directory() throws -> URL {
         pipe.closeOutput(); try input.fileHandleForWriting.close()
         guard let terminal = try pipe.read(until: deadline) else { throw OwnerWire.invalid("EOF cleanup terminal missing") }
         let result = try OwnerWire.decode(terminal, commandStream: false)
-        try require(result.kind == "terminal" && result.termination == .signalled(signal: SIGKILL), "EOF did not observe actual fenced native child")
+        // Losing the leader fences the child by closing its command stream. The
+        // child is left to end by its own path: no SIGTERM (which this stand-in
+        // would report as status 99) and no SIGKILL two seconds later.
+        try require(result.kind == "terminal" && result.termination == .exited(status: 3), "EOF did not leave the native child to end itself: \(String(describing: result.termination))")
         while process.isRunning && DispatchTime.now().uptimeNanoseconds < deadline { Thread.sleep(forTimeInterval: 0.01) }
         if process.isRunning { process.terminate(); throw OwnerWire.invalid("Owner failed to stop after EOF") }
         process.waitUntilExit()
-        try rejects { _ = try ClusterDeviceLease(directoryURL: dir) }
+        try require(process.terminationStatus != 0, "An owner that lost its leader reported a clean release")
+        // The owner observed its own child's exit, so no journal is left behind
+        // even though the release handshake never happened.
+        _ = try ClusterDeviceLease(directoryURL: dir)
         try output.fileHandleForReading.close(); try err.fileHandleForReading.close()
     }
 

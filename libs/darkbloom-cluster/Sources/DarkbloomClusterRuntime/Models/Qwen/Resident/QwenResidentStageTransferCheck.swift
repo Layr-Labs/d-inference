@@ -100,7 +100,7 @@ public enum QwenResidentStageTransferCheck {
         public let cacheBytesAfterRelease: Int
         public let modelsReleased: Bool
         /// What the host memory gate decided in this process, over both loads.
-        public let resourceAdmission: QwenDenseStageLoadAdmissionSummary
+        public let resourceAdmission: QwenResidentResourceAdmissionReport
         public let passed: Bool
         public let collectiveCreated = false
     }
@@ -139,7 +139,7 @@ public enum QwenResidentStageTransferCheck {
                 GPU.resetPeakMemory()
                 let before = Memory.snapshot().activeMemory, footprintBefore = qwenProcessFootprintBytes()
                 sampledNative = 0; sampledFootprint = 0
-                let started = uptime(), asked = QwenDenseStageLoadAdmissionSummary.current.decisions
+                let started = uptime(), asked = gateDecisions()
                 var stage: QwenResidentLoadedStage?
                 weak var retired: Module?
                 do {
@@ -159,7 +159,7 @@ public enum QwenResidentStageTransferCheck {
                         peakBytes: memory.peakMemory - before, loadedBytes: memory.activeMemory - before,
                         sampledActiveAndCachePeakBytes: max(0, sampledNative - before),
                         footprintBeforeBytes: footprintBefore, sampledFootprintPeakBytes: sampledFootprint,
-                        resourceDecisions: QwenDenseStageLoadAdmissionSummary.current.decisions - asked)
+                        resourceDecisions: gateDecisions() - asked)
                     stage = nil
                     try settle(); Memory.clearCache(); try settle()
                     released = released && retired == nil
@@ -249,6 +249,13 @@ public enum QwenResidentStageTransferCheck {
 
     /// Where in this transfer the fault lands: a piece near the middle, or two
     /// one-piece tensors of one shape and dtype whose pinned contents differ.
+    /// Gate passes this process has made so far, over its entry checks and
+    /// every load; the difference across one load is that load's count.
+    private static func gateDecisions() -> Int {
+        let report = QwenResidentResourceAdmissionReport.current
+        return report.entryChecks.decisions + report.scopes.reduce(0) { $0 + $1.decisions }
+    }
+
     private static func injected(_ fault: Fault, _ session: QwenStageTransferSession) throws -> QwenStageFaultyByteSource.Fault {
         let plan = session.plan, middle = plan.pieces.count / 2
         switch fault {

@@ -364,12 +364,21 @@ final class QwenLayerStageGenerationTransport {
         try operation { try sendAck(.handoffAccepted, header.fingerprint, check: check) }
     }
 
-    /// Rank 1: one batch of tokens it selected alone, and rank 0's answer.
-    func exchangeRelay(_ packet: QwenPhaseSplitRelayPacket,
-                       check: () throws -> Void) throws -> QwenPhaseSplitRelayDecisionPacket {
+    /// Rank 1: one batch of tokens it selected alone. It does not wait for
+    /// the answer here: rank 0 publishes the batch while rank 1 decodes the
+    /// next one, and the answer is read at the next batch boundary.
+    func sendRelay(_ packet: QwenPhaseSplitRelayPacket, check: () throws -> Void) throws {
         try operation {
             guard rank == 1 else { throw ProbeError("Only phase-split rank1 relays tokens") }
             try sendFrame(try packet.encoded(), frameBytes: QwenPhaseSplitRelayPacket.frameBytes, check: check)
+        }
+    }
+
+    /// Rank 1: rank 0's answer to a batch already sent.
+    func receiveRelayDecision(relay packet: QwenPhaseSplitRelayPacket,
+                              check: () throws -> Void) throws -> QwenPhaseSplitRelayDecisionPacket {
+        try operation {
+            guard rank == 1 else { throw ProbeError("Only phase-split rank1 receives relay decisions") }
             return try .decode(receiveFrame(frameBytes: QwenPhaseSplitRelayDecisionPacket.frameBytes, check: check),
                 agreement: agreement, relay: packet)
         }

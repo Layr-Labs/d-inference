@@ -84,9 +84,10 @@ enum QwenPhaseSplitSlab {
 }
 
 /// Rank 1's side: the header is checked against the local expectation, then
-/// every component's bytes against the header's digest. A digest that differs
-/// is recorded and the remaining segments are still accepted, so the sender is
-/// never left blocked in a transfer; `finish` then refuses the hand-off.
+/// every component's bytes against the header's digest. The digests are
+/// computed together once every agreed segment has arrived, so a component
+/// that differs never leaves the sender blocked in the middle of its
+/// transfers; `finish` then refuses the hand-off and names the component.
 final class QwenPhaseSplitHandoffReceiver {
     let agreement: QwenLayerStageGenerationAgreement
     let split: QwenPhaseSplitPlan
@@ -95,7 +96,8 @@ final class QwenPhaseSplitHandoffReceiver {
     private(set) var refusal: String?
     private var nextSegment = 0
     private var partial: Data?
-    private var verified: [Int: Data] = [:]
+    private var arrived: [(entryIndex: Int, bytes: Data)] = []
+    private var verified: [Int: Data]?
     var segments: [QwenPhaseSplitSegment] { split.segments }
     var complete: Bool { header != nil && nextSegment == split.segments.count }
 
@@ -120,7 +122,8 @@ final class QwenPhaseSplitHandoffReceiver {
 
     /// Segments arrive in the agreed order with the agreed sizes.
     func acceptSegment(_ index: Int, bytes: Data) throws {
-        guard let header, index == nextSegment, split.segments.indices.contains(index) else {
+        guard header != nil, verified == nil, refusal == nil, index == nextSegment,
+              split.segments.indices.contains(index) else {
             throw ProbeError("Hand-off segment is out of order or precedes its header")
         }
         let segment = split.segments[index], shape = split.shapes[segment.entryIndex]
@@ -133,23 +136,28 @@ final class QwenPhaseSplitHandoffReceiver {
             guard tokens.upperBound == shape.shape[2] else { partial = assembling; return }
             partial = nil; entry = assembling
         } else { entry = bytes }
-        guard sha256(entry) == header.content.entries[segment.entryIndex].sha256 else {
-            if refusal == nil {
-                refusal = "global layer \(shape.globalLayerIndex) \(shape.component): received bytes differ from the sender's digest"
-            }
-            return
-        }
-        verified[segment.entryIndex] = entry
+        arrived.append((segment.entryIndex, entry))
     }
 
-    /// The verified logical bytes of every transferred component, by entry index.
+    /// Checks every arrived component against the sender's digest and returns
+    /// the verified logical bytes by entry index. Nothing is usable before it.
     func finish() throws -> [Int: Data] {
-        guard let refusal else {
-            guard complete, partial == nil, verified.count == Set(split.segments.map(\.entryIndex)).count else {
-                throw ProbeError("Hand-off ended before every agreed segment arrived")
-            }
-            return verified
+        if let refusal { throw ProbeError("Hand-off refused: \(refusal)") }
+        if let verified { return verified }
+        guard let header, complete, partial == nil,
+              arrived.count == Set(split.segments.map(\.entryIndex)).count else {
+            throw ProbeError("Hand-off ended before every agreed segment arrived")
         }
-        throw ProbeError("Hand-off refused: \(refusal)")
+        let digests = CBv2OwnedStateSnapshot.digests(arrived.map(\.bytes))
+        for (component, digest) in zip(arrived, digests)
+        where digest != header.content.entries[component.entryIndex].sha256 {
+            let shape = split.shapes[component.entryIndex]
+            let reason = "global layer \(shape.globalLayerIndex) \(shape.component): received bytes differ from the sender's digest"
+            refusal = reason; arrived.removeAll()
+            throw ProbeError("Hand-off refused: \(reason)")
+        }
+        let result = Dictionary(uniqueKeysWithValues: arrived.map { ($0.entryIndex, $0.bytes) })
+        verified = result; arrived.removeAll()
+        return result
     }
 }

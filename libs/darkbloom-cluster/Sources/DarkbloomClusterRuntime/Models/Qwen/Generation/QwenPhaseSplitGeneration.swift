@@ -207,10 +207,41 @@ enum QwenPhaseSplitGeneration {
             var finalLogits: QwenRecordedLogits?
             var batches = 0, forwards = 0, batchLimit = 1
             guard var lastToken = control.lastTokenID else { throw ProbeError("Solo decode lacks the agreed first token") }
+            // The next ordinal this rank will select. It runs ahead of the
+            // control state, which only advances when rank 0 has answered.
+            var nextOrdinal = control.selectedTokenCount
+            struct Batch { let tokenIDs: [Int]; let payloads: [String] }
+            var unanswered: (relay: QwenPhaseSplitRelayPacket, batch: Batch)?
+
+            /// Reads rank 0's answer to the batch in flight and takes exactly the
+            /// tokens it published through the control state machine.
+            func settle() throws {
+                guard let sent = unanswered else { return }
+                unanswered = nil
+                let verdict = try transport.receiveRelayDecision(relay: sent.relay, check: check).content
+                var last: QwenLayerStageGenerationDecisionPacket?
+                for index in 0..<verdict.acceptedCount {
+                    let proceed = index + 1 < verdict.acceptedCount || verdict.decision == .proceed
+                    last = try replay(tokenID: sent.batch.tokenIDs[index], payloadSHA256: sent.batch.payloads[index],
+                                      control: control) { _ in proceed }
+                    selectedTokens.append(sent.batch.tokenIDs[index])
+                }
+                // The owner's count, history and decision must be exactly what
+                // this rank derives from the same tokens.
+                guard let last, last.content.decision == verdict.decision,
+                      control.selectedTokenCount == verdict.selectedTokenCount,
+                      control.tokenChainSHA256 == verdict.tokenChainSHA256,
+                      verdict.acceptedCount == sent.batch.tokenIDs.count || control.phase == .retiring else {
+                    throw ProbeError("Relay decision differs from the locally selected history")
+                }
+                if control.phase == .retiring { finalDecision = last }
+            }
+
             while control.phase == .frame {
+                // Decode the next batch while rank 0 publishes the previous one.
                 var tokenIDs: [Int] = [], payloads: [String] = []
                 var terminal = false
-                let firstOrdinal = control.selectedTokenCount
+                let firstOrdinal = nextOrdinal
                 while tokenIDs.count < batchLimit, !terminal {
                     try autoreleasepool {
                         try check()
@@ -240,27 +271,23 @@ enum QwenPhaseSplitGeneration {
                         }
                     }
                 }
+                nextOrdinal += tokenIDs.count
+                // The previous batch's answer fixes the history this one extends.
+                // If it was a stop, this batch was decoded for nothing and is dropped.
+                try settle()
+                guard control.phase == .frame else { break }
+                guard control.selectedTokenCount == firstOrdinal else {
+                    throw ProbeError("Relayed history differs from the tokens this rank selected")
+                }
                 let relay = try QwenPhaseSplitRelayPacket(agreement: agreement, handoffFingerprint: handoffFingerprint,
                     firstOrdinal: firstOrdinal, previousTokenChainSHA256: control.tokenChainSHA256,
                     tokenIDs: tokenIDs, payloadSHA256: payloads)
-                let verdict = try transport.exchangeRelay(relay, check: check).content
+                try transport.sendRelay(relay, check: check)
+                unanswered = (relay, Batch(tokenIDs: tokenIDs, payloads: payloads))
                 batches += 1
-                var last: QwenLayerStageGenerationDecisionPacket?
-                for index in 0..<verdict.acceptedCount {
-                    let proceed = index + 1 < verdict.acceptedCount || verdict.decision == .proceed
-                    last = try replay(tokenID: tokenIDs[index], payloadSHA256: payloads[index], control: control) { _ in proceed }
-                    selectedTokens.append(tokenIDs[index])
-                }
-                // The owner's count, history and decision must be exactly what
-                // this rank derives from the same tokens.
-                guard let last, last.content.decision == verdict.decision,
-                      control.selectedTokenCount == verdict.selectedTokenCount,
-                      control.tokenChainSHA256 == verdict.tokenChainSHA256,
-                      verdict.acceptedCount == tokenIDs.count || control.phase == .retiring else {
-                    throw ProbeError("Relay decision differs from the locally selected history")
-                }
-                if control.phase == .retiring { finalDecision = last }
                 batchLimit = min(split.terms.relayBatchTokens, batchLimit * 2)
+                // Nothing can follow a stop token or the output limit: wait for the answer.
+                if terminal { try settle() }
             }
             guard control.phase == .retiring, !control.isFailed, let finalDecision,
                   let reason = control.finishReason, let lastTokenID = control.lastTokenID else {

@@ -81,7 +81,11 @@ struct StatusCommandRunTests {
         #expect(trusted.contains("\nNot loaded (loads on request): acme/Alpha-4bit\n"))
         #expect(trusted.contains("\nRequests served: 12  |  tokens: 3400\n"))
         #expect(trusted.contains("\nLast model-load error: acme/Alpha-4bit: weights unreadable\n"))
-        #expect(trusted.contains("\nKV-backend guard: ACTIVE — `.auto` serves contiguous on this box "))
+        #expect(trusted.contains("\nKV-backend guard: ACTIVE — packed autoregressive `.auto` (`balanced`/`k8v4`/`k8v8`) "))
+        #expect(trusted.contains("requires paged and is refused while guarded"))
+        #expect(trusted.contains("--clear-backend-guard` to permit a paged retry"))
+        #expect(trusted.contains("explicit legacy `native` recovery permits contiguous `.auto`"))
+        #expect(!trusted.contains("serves contiguous on this box"))
 
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))
         #expect(authorized.contains("\nAuthorization: App Attest authorizes this connection. "))

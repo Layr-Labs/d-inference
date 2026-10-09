@@ -900,15 +900,29 @@ Two of the detailed checks cover the KV-backend rollout:
 | `daemon state freshness` | The daemon is running but has not rewritten its state file for eight write periods — it is wedged, and every live value below it is a guess. The bar is derived from `heartbeat_interval_secs` (the daemon writes every half-heartbeat) with a 90 s floor, so raising the heartbeat does not make a healthy daemon look wedged. |
 | `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
 
-`auto` never fails this check — it promises nothing, so whichever backend it
-lands on is honoured by definition. Candidate `auto` can report paged for the
-[exact qualified-artifact cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
-after fallback; non-cohort `auto` remains contiguous. None is a posture fault
-or validation of the candidate rollout. Explicit `paged` construction failures
-refuse the load; a policy veto that serves contiguous instead still fails the
-explicit-request posture check. When
-the state file is past the wedge bar the backend verdict is WITHHELD rather
-than asserted from a snapshot that may predate a reload.
+The posture check compares explicit storage requests; an `auto` slot does not
+fail this check. The default `balanced` serving path requires paged storage.
+Non-MiMo `balanced`, `k8v4` and `k8v8` `auto` require paged even outside the
+[exact qualified-artifact cohort](../architecture/prefix-cache.md#kv-layouts),
+and refuse construction if a veto or failure resolves contiguous. Only the
+explicitly selected legacy `native` `auto` recovery/diagnostic path retains the
+model-specific allowlist and observable contiguous fallback. Native precision
+controls can still use explicit `paged`, as the paired cache measurements do.
+MiMo resolves to `native` before precision overrides and keeps its
+native backend path (`EngineV2KVQuantizationPolicy.resolve`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`).
+For a guarded automatic AR paged retry, use
+`darkbloom doctor --clear-backend-guard` before retrying construction; direct
+Diffusion assembly does not consult this crash-loop guard. For explicit legacy contiguous recovery, resolve
+`native` precision before selecting `contiguous` or disabling paged storage
+with `DARKBLOOM_CBV2_PAGED_KV=0`; see the
+[precision settings](#providertoml-keys-read-by-the-cli). A posture pass alone
+does not qualify precision or the runtime. Explicit `paged` construction
+failures refuse the load; a native policy veto that serves contiguous still
+fails the explicit-request check (`KVBackendPosture.backendCheck`,
+`provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`). When the
+state file is past the wedge bar the backend verdict is WITHHELD rather than
+asserted from a snapshot that may predate a reload.
 
 An explicit `engine_v2_kv_backend` with no slot behind it — startup preload
 off, or every slot idle-unloaded — WARNs rather than passes: nothing on the

@@ -6,8 +6,9 @@ import Testing
 
 /// The crash-loop KV-backend guard's operator-facing surface: what `status`
 /// prints, what `doctor` warns on, and how a degrade reason renders in the
-/// per-slot posture line. The wording is the operator's ONLY explanation for
-/// a box that quietly went contiguous, so it is pinned, not eyeballed.
+/// per-slot posture line. The record has no model-precision observation, so
+/// the wording must explain both precision-dependent outcomes without claiming
+/// that a guarded slot is serving.
 @Suite("kv backend crash-loop guard (status + doctor rendering)")
 struct KVBackendGuardDiagnosticsTests {
 
@@ -29,7 +30,12 @@ struct KVBackendGuardDiagnosticsTests {
         #expect(lines.count == 1)
         let line = lines[0]
         #expect(line.contains("ACTIVE"))
-        #expect(line.contains("`.auto` serves contiguous"))
+        #expect(line.hasPrefix("KV-backend guard: ACTIVE — packed autoregressive `.auto`"))
+        #expect(line.contains("`balanced`/`k8v4`/`k8v8`"))
+        #expect(line.contains("requires paged and is refused while guarded"))
+        #expect(line.contains("--clear-backend-guard` to permit a paged retry"))
+        #expect(line.contains("explicit legacy `native` recovery permits contiguous `.auto`"))
+        #expect(!line.contains("serves contiguous on this box"))
         #expect(line.contains("2h ago"))
         #expect(line.contains("v0.8.0"))
         #expect(line.contains("3 crash-loop restarts"))
@@ -52,13 +58,22 @@ struct KVBackendGuardDiagnosticsTests {
 
     // MARK: - doctor check
 
-    @Test("doctor reports an active guard as WARN — the box is serving, degraded")
+    @Test("doctor warns on an active guard and explains both precision outcomes")
     func doctorWarnsOnActiveGuard() {
         let check = KVBackendGuardDiagnostics.doctorCheck(
             record: active, now: 2_000, runningVersion: "0.8.0")
         #expect(check.name == "kv backend crash-loop guard")
         #expect(check.status == .warn)
         #expect(check.detail.contains("ACTIVE"))
+        #expect(check.detail.hasPrefix("ACTIVE — packed autoregressive `.auto`"))
+        #expect(check.detail.contains("`balanced`/`k8v4`/`k8v8`"))
+        #expect(check.detail.contains("requires paged and is refused while guarded"))
+        #expect(check.detail.contains("--clear-backend-guard` to permit a paged retry"))
+        #expect(check.detail.contains("explicit legacy `native` recovery permits contiguous `.auto`"))
+        #expect(!check.detail.contains("serves contiguous on this box"))
+        #expect(check.detail.contains("16m ago on v0.8.0"))
+        #expect(check.detail.contains("3 crash-loop restarts"))
+        #expect(check.detail.contains("next release"))
         #expect(check.detail.contains("--clear-backend-guard"))
     }
 

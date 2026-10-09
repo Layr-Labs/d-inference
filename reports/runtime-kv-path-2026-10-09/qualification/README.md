@@ -23,11 +23,25 @@ directory. Its receipt binds compiled-source files, source revisions, the build
 log, executable, metallib and every resource file. These loose artifacts are
 qualification builds; they are not published signed/notarized app bundles.
 
-`run_suite.py` verifies that receipt, runs each model/profile sequentially and
-preserves raw JSON, stderr, complete commands and hashes. It checks exact model
-aggregate identity, the actual paged backend and the resolved precision.
+`run_suite.py` verifies that receipt and every selected prepared task/score
+file against `suite.json` before executing either profile. It makes private
+copies of the validated suite inputs inside the output directory and checks
+them before each arm. A schema2 run binds the suite, each selected input, the
+runner sources and a retained configuration snapshot. The command executes
+the original configuration URL to preserve relative model-cache paths; its
+bytes must match the snapshot before and after each arm.
+
+Children receive only an explicit system/locale environment allowlist. The
+recorded values and digest exclude ambient inference, MLX, Metal, loader and
+Hugging Face overrides and credentials. Requested precision and backend remain
+explicit CLI arguments: both native and packed arms use paged attention.
+The runner preserves raw JSON, stderr, complete commands and hashes. It checks
+exact model/executable/metallib identity, the actual paged backend, the resolved
+precision and raw prompt/date or score-input identity against the selected
+prepared input.
 Failed or unparsed results remain in the manifest; existing evidence is never
-overwritten. Periods in model IDs remain part of distinct task/profile filenames.
+overwritten; the output directory must be empty for a new run. Periods in model
+IDs remain part of distinct task/profile filenames.
 The script supports the system Python 3.9 on the remote M5 host.
 
 Example:
@@ -65,6 +79,19 @@ unlisted or unparsed files do not contribute. It produces a compact summary
 with answers, measurements and finite/repeat/top1 score observations. Failed and superseded stages remain
 separate; the dated report names the usable cohorts. CPU regressions exercise
 the actual CLI with changed execution identities and unchanged raw-hash validity.
+For schema2, curation also checks the retained prepared files, per-entry input
+binding, configuration checks and the declared environment allowlist. Unknown
+run schemas refuse curation. Historical schema1 runs retain their original
+limitations: their runner inherited ambient settings and did not enforce these
+new pre-execution checks. They are not relabeled as scrubbed. Optional explicit
+`--inputs /owned/inputs /owned/inputs-1024` checks retained historical raw prompt
+hashes/dates or score hashes/documents against those prepared suites without
+claiming historical environment isolation. The dated report retains a separate
+audit of historical inputs and identifies the evidence boundary.
+
+`test_run_suite.py` runs the actual runner/curator with a harmless CPU executable
+to check child environment isolation, changed prepared bytes, raw input identity,
+configuration URL semantics, mid-arm drift and failure/no-overwrite behavior.
 
 ```sh
 python3 curate_runs.py --root /owned/qualification \

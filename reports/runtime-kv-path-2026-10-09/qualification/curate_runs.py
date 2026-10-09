@@ -6,6 +6,9 @@ import json
 import math
 from pathlib import Path
 
+from qualification_environment import validate_environment
+from suite_inputs import PreparedSuite, validate_report_input
+
 
 def sha(path):
     digest = hashlib.sha256()
@@ -56,17 +59,58 @@ def evidence_label(entry):
     return label + ("-mtp" if "--runtime-mtp" in entry["command"] else "")
 
 
+def bound_suite(directory, manifest):
+    schema = manifest.get("schema", 1)
+    if type(schema) is not int or schema not in (1, 2):
+        raise RuntimeError("Unsupported qualification run schema")
+    if schema == 1:
+        if "qualification" in manifest:
+            raise RuntimeError("Legacy run cannot claim a scrubbed qualification environment")
+        return None
+    binding = manifest["qualification"]
+    validate_environment(binding["environment"])
+    if sha(directory / "provider-config.toml") != binding["configSHA256"]:
+        raise RuntimeError("Retained qualification config changed")
+    prepared = PreparedSuite(directory / "inputs")
+    if prepared.digest != binding["suiteSHA256"]:
+        raise RuntimeError("Retained qualification suite changed")
+    return prepared
+
+
+def validate_bound_input(report, entry, prepared, manifest, legacy_suites):
+    if prepared is not None:
+        identity, _, score_document = prepared.select(entry["modelID"], entry["mode"])
+        if entry.get("inputIdentity") != identity:
+            raise RuntimeError("Run input identity differs from retained prepared suite")
+        digest = manifest["qualification"]["configSHA256"]
+        if entry.get("configBeforeSHA256") != digest or entry.get("configAfterSHA256") != digest:
+            raise RuntimeError("Run config validation differs from retained snapshot")
+        validate_report_input(report, entry["mode"], identity, score_document, entry["requestedPrecision"])
+    elif legacy_suites:
+        for suite in legacy_suites:
+            try:
+                identity, _, score_document = suite.select(entry["modelID"], entry["mode"])
+                validate_report_input(report, entry["mode"], identity, score_document, entry["requestedPrecision"])
+                return
+            except (RuntimeError, KeyError, OSError):
+                continue
+        raise RuntimeError("Legacy report input does not match an explicit prepared suite")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--stages", nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--inputs", type=Path, nargs="+", help="Validate legacy schema1 inputs without claiming a scrubbed environment")
     args = parser.parse_args()
     stages = []
+    legacy_suites = [PreparedSuite(path) for path in (args.inputs or [])]
     for name in args.stages:
         directory = args.root / name
         manifest_path = directory / "run.json"
         manifest = json.loads(manifest_path.read_text())
+        prepared = bound_suite(directory, manifest)
         results = []
         for original in manifest["results"]:
             entry = {key: value for key, value in original.items()
@@ -87,6 +131,7 @@ def main():
                         entry[field] = report[field]
                 entry.update(execution_artifacts(
                     report, entry["mode"], manifest["candidateArtifacts"], raw))
+                validate_bound_input(report, entry, prepared, manifest, legacy_suites)
                 if entry["mode"] == "scores":
                     diagnostic = report["diagnostic"]
                     repeated = report["repeatedDiagnostic"]
@@ -113,6 +158,7 @@ def main():
                             raise RuntimeError("Retained native peer evidence changed: " + str(other))
                         native = json.loads(other.read_text())
                         execution_artifacts(native, "scores", manifest["candidateArtifacts"], other)
+                        validate_bound_input(native, peer, prepared, manifest, legacy_suites)
                         if native["input"] != report["input"]:
                             raise RuntimeError("Teacher contexts differ: " + str(raw))
                         expected_top1 = native["diagnostic"]["top1"]
@@ -127,6 +173,8 @@ def main():
             "artifacts": manifest["candidateArtifacts"],
             "runManifestSHA256": sha(manifest_path), "results": results,
         }
+        if prepared is not None:
+            stage["qualification"] = manifest["qualification"]
         control = directory / "control.json"
         if control.exists():
             stage["control"] = json.loads(control.read_text())

@@ -63,6 +63,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
           python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
 
   docs:
     name: Docs Lint

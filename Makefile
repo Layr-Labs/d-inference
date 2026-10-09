@@ -82,6 +82,7 @@ benchmark-wrapper-test: ## Unit-test benchmark wrappers (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s serving_performance -t . -p 'test_*.py'
 	python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
 	python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+	python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)

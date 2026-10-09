@@ -70,6 +70,16 @@ its frozen cohort artifacts; the actual alias report matches C8 too. Ten
 unparsed failed cells remain failures. Missing, malformed, conflicting or
 mismatched artifact identities are refused.
 
+A separate [prepared-input audit](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/input-identity-audit.json)
+checks the selected input for all 148 retained cells against the original
+suite manifests. All 138 parsed reports match the declared prompt hash and
+render date or teacher-forced input hash. The ten unparsed cells remain
+failures. Historical schema 1 manifests did not retain the child environment;
+this audit cannot establish that ambient inference overrides were absent.
+The repaired runner scrubs inherited inference settings and binds verified
+inputs before each launch. Its stronger provenance applies to new runs and
+does not retroactively qualify the historical environment.
+
 | Cohort | SDK head | Compiled source digest | Developer executable SHA-256 | Used evidence |
 |---|---|---|---|---|
 | C3 | `ac22bd62afbd7e9992f7ea556d0cebe457eb081d` | `49f91100994ffe51ee0e9a928a871fdb544382801d3707aeebeff90661e460b7` | `12f14a45e1c80e3a6ce47db836779fe896f1b59dee4a2804653a195825f69cc7` | M4/M5 task baseline; Qwen/Bonsai scores and MTP; Nemotron score supplement |
@@ -431,6 +441,47 @@ The Go old blanket-paged expectation and dropped owned-host precision controls
 also fail meaningful assertions, with exact source restoration. Final local
 and remote validation is tracked in the PR; no unavailable criterion or earlier
 failure is silently counted as a pass.
+
+### Paged qualification harness and operator guidance
+
+C12 repairs the runner's provenance separately from the historical model
+tables. Schema 2 copies verified selected inputs into an owned snapshot,
+checks each arm's suite/prompt/score identity, preserves the original config
+URL with before/after hashes, and passes a recorded system-only environment
+to the child. The curator rechecks those bindings, the actual paged backend
+and precision, and executable/metallib identities. Unknown schemas refuse;
+historical schema 1 remains readable with its explicit environment limit.
+
+The [fresh GPT pair](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/gpt-paged-harness-c12.json)
+runs through that repaired harness with synthetic ambient query-block and
+native-precision overrides. Neither override reaches the child. Both native
+and balanced resolve paged, stop normally and return the expected retrieval
+answer. Their 95 and 117 generated tokens respectively match their same-profile
+C3 token arrays exactly. This is two fresh provenance controls, with no new
+cross-profile equality, broad accuracy or controlled timing claim.
+
+C12 compiled-source digest is
+`374e3ca41cc9beb377344783c357a7c65c46d3971861ea5f34dd5489940b70c9`;
+its developer executable is
+`f90f942ba3618b2fb0d82fa45958608e2c73d3f13dfe282bafeb7af6b4a4cb39`.
+The source map differs from C11 only in the CLI crash-guard renderer. Packed
+autoregressive guard guidance now explains paged refusal and retry without
+claiming a slot is serving; legacy native recovery is explicitly secondary.
+Telemetry documents name the resolved precision field and its producer-only,
+operation-specific presence. SDK, production attention math, storage policy
+and memory safeguards are unchanged. Fifty CLI functions in seven suites pass;
+restoring the old renderer produces seventeen assertion failures, and the
+byte-exact corrected source passes again. The dedicated combined refactor
+review found no further changes warranted.
+
+Eight runner and eight curator CPU regressions pass, and the full wrapper
+gate runs 213 tests with one pre-existing historical-archive skip and no
+failures. [Exact earlier-script counterexamples](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/runner-negative-c12.json)
+show inherited overrides and changed prompt/score contexts were previously
+accepted with valid-looking identity flags. The repaired runner scrubs the
+override and refuses changed inputs before either child. The
+[validation receipt](../../reports/runtime-kv-path-2026-10-09/qualification/evidence/review-repairs-c12.json)
+binds the build, positive/negative CLI, wrapper, workflow and fresh-model logs.
 
 ## Retained failed stages and limits
 

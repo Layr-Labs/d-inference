@@ -27,6 +27,15 @@ enum QwenLongPrefillArithmeticEnvironment {
     }
 
     static func admit(_ environment: [String: String]) throws -> Receipt {
+        try admit(environment, contract: contract, additionalValues: [:], additionalAbsentNames: [], additionalBindings: [:])
+    }
+
+    /// The same contract extended by another adapter's own names. With no
+    /// additions the receipt is the one above, byte for byte.
+    static func admit(_ environment: [String: String], contract: String, additionalValues: [String: String],
+                      additionalAbsentNames: [String], additionalBindings: [String: String]) throws -> Receipt {
+        let requiredValues = Self.requiredValues.merging(additionalValues) { current, _ in current }
+        let requiredAbsentNames = Self.requiredAbsentNames + additionalAbsentNames
         for name in requiredValues.keys.sorted() {
             guard environment[name] == requiredValues[name] else {
                 throw QwenLongPrefillBudgetError.invalid("Long-prefill arithmetic requires exact " + name + "=" + requiredValues[name]!)
@@ -46,6 +55,6 @@ enum QwenLongPrefillArithmeticEnvironment {
                 "MLX_ENABLE_TF32": "explicit 1 matches pinned source default; permits eligible NAX paths",
                 "DARKBLOOM_BF16_WEIGHTS": "explicit 1 converts stored Float16 tensors to BFloat16 before subsequent arithmetic",
                 "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "explicit 128 matches pinned source default; chunk512 uses four query blocks",
-            ])
+            ].merging(additionalBindings) { current, _ in current })
     }
 }

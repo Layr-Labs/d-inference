@@ -32,6 +32,11 @@ public enum MiMoResidentStageLoadCheck {
         /// stage loaded (and probed), and after release. Other processes move
         /// it too; a stage held by a standing residency is tens of gigabytes.
         public let systemWiredBytesBefore: Int, systemWiredBytesLoaded: Int, systemWiredBytesAfterRelease: Int
+        /// The kernel gives wired pages back a moment after the buffers are
+        /// freed, and its statistics lag. The figure after release is read once
+        /// it is within 512 MiB of the figure before, or after five seconds:
+        /// this is how long that took, in this process, before it exited.
+        public let systemWiredSettleSeconds: Double
         /// MLX's wired limit for this process before the load and after release.
         public let wiredLimitBytesBefore: Int, wiredLimitBytesAfterRelease: Int
         /// Hashing every manifest file and admitting the metadata.
@@ -240,6 +245,13 @@ public enum MiMoResidentStageLoadCheck {
                 Memory.clearCache()
                 try settle()
                 let after = Memory.snapshot()
+                let settleStarted = DispatchTime.now().uptimeNanoseconds
+                var wiredAfter = try systemWired(), wiredSettle = 0.0
+                while wiredAfter > wiredBefore + (512 << 20), wiredSettle < 5 {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    wiredAfter = try systemWired()
+                    wiredSettle = Double(DispatchTime.now().uptimeNanoseconds - settleStarted) / 1e9
+                }
                 return Receipt(runtimeModelID: specification.model.rawValue, rank: rank, stageCut: stageCut,
                     layerCount: layers, sourceLayerStart: range.lowerBound, sourceLayerEnd: range.upperBound,
                     verifiedAggregateSHA256: receipt.verifiedAggregateSHA256, planSHA256: receipt.planSHA256,
@@ -252,7 +264,7 @@ public enum MiMoResidentStageLoadCheck {
                     activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
                     modelReleased: retired == nil,
                     systemWiredBytesBefore: wiredBefore, systemWiredBytesLoaded: wiredLoaded,
-                    systemWiredBytesAfterRelease: try systemWired(),
+                    systemWiredBytesAfterRelease: wiredAfter, systemWiredSettleSeconds: wiredSettle,
                     wiredLimitBytesBefore: limitBefore, wiredLimitBytesAfterRelease: MiMoStageResidency.current,
                     verifySeconds: Double(verified - started) / 1e9, loadSeconds: Double(finished - verified) / 1e9,
                     heldSeconds: holdSeconds == 0 ? 0 : held, arithmeticContract: arithmetic.contract,

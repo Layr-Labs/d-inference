@@ -17,6 +17,12 @@ task_sources=(
   Support/CanonicalJSON
   Support/ClusterMetadataHashing
   Models/Qwen/Metadata/QwenLayerStageMetadata
+  Models/Qwen/Metadata/QwenRoutedExpertStageMetadata
+  Models/Qwen/Prism/QwenPrismStageConfiguration
+  Models/Qwen/Prism/QwenRegisteredPack
+  Models/Qwen/Metadata/QwenDenseProfileTypes
+  Models/Nemotron/NemotronStageMetadata
+  Models/Nemotron/NemotronLayerStagePlan
   Models/Qwen/Metadata/QwenLayerStagePlan
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
   Models/Qwen/Generation/QwenLayerStageGenerationRequest

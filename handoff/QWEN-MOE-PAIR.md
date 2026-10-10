@@ -169,9 +169,10 @@ reference chose token 9117 and the pair 17415, and in the reference those two
 have the same logit (28.875, margin 0.0). Final-row logits differ by at most
 0.5. The pair's stage 1 runs on the other chip, and the 27B programme accepts
 exactly this verdict across chips, but "tokens equal the oracle" was the bar
-here and it was not met. Mac B's own reference of this request has not been
-run; it is the next step and tells whether Mac B alone breaks the tie the
-same way.
+here and it was not met. Mac B's own reference of this request (2026-10-09 23:26Z) settles it: Mac B alone also
+chooses 17415 at index 10 (Mac A against Mac B: `divergedAtNearTie`, 0.0 ulp), and the
+pair then equals Mac B alone up to index 36, where a 1-ulp near tie splits them. The tie
+is broken by the chip, not by the pair. Under the owner's rule this is a pass.
 
 | Mode | First token | Prefill | Decode |
 |---|---:|---:|---:|
@@ -194,6 +195,25 @@ no worker process was left on either Mac.
 **Qwen3.6 35B A3B** (same build, cut 12, 2026-10-09 23:10Z to 23:16Z, the first run of this model across the cable). Stage loads on Mac A: 5.557 GiB in 15.8 s and 12.612 GiB in 21.1 s. Mac A's reference twice: `exact` (18.17 GiB, peak 19.28 GiB). Local test socket, pipeline: `exact`. On the pair all three modes completed, ranks agree, the modes agree `exact`, and against Mac A's reference the verdict is `tokensEqualLogitsDiffer` (all 64 tokens equal; final-row difference at most 1.5, mean 0.135; reference margin 3.625). Indicative figures, compile lanes not held, mean of the last three of four requests: pipeline 0.905 s first token, 4,524 tok/s prefill, 69.7 tok/s decode; compact 0.905 s, 4,524, 71.3; phase split 0.930 s, 4,405, 85.8. Fault with the 8,192-token request: rank 1 on Mac B ended with SIGTERM 0.3 s after the first token (27 tokens committed); rank 0 exited by itself with status 1, nothing was left on either Mac, wired memory unchanged within 26 MB on both.
 
 The owner's rule for mixed-chip numerics (2026-10-09): a run passes when its tokens equal the reference (`exact` or `tokensEqualLogitsDiffer`) or first differ at a near tie (`divergedAtNearTie`, 4-ulp rule); `diverged` and `incomparable` fail. By that rule both models pass D at cut 12.
+
+For the Qwen3.6 model Mac B's own reference differs from Mac A's at a 1-ulp near tie at index 39 (`divergedAtNearTie`); the pair equals Mac A's reference for all 64 tokens. With 5,120 prompt tokens the pair against Mac A's reference is `divergedAtNearTie` at index 27 (1.0 ulp), a pass under the owner's rule.
+
+**Pair against each Mac alone, Qwen3.6 35B A3B** (one hold, 2026-10-10 00:19Z to 00:25Z; `lane.sh` and `lane-b.sh`, compile lanes not held; 64 outputs, mean of requests 2 to 4 of four, driver clock; single Mac = `pair-check solo`, serial schedule; pair = lookahead):
+
+| Prompt | Run | First token | Prefill | Decode |
+|---|---|---:|---:|---:|
+| 4,096 | Mac A alone (M3 Ultra) | 2.217 s | 1,847 tok/s | 56.6 tok/s |
+| 4,096 | Mac B alone (M5 Max) | 1.213 s | 3,377 tok/s | 85.8 tok/s |
+| 4,096 | Pair, pipeline | 0.909 s | 4,507 tok/s | 63.6 tok/s |
+| 4,096 | Pair, compact pipeline | 0.910 s | 4,505 tok/s | 65.8 tok/s |
+| 4,096 | Pair, phase split | 0.927 s | 4,420 tok/s | 82.8 tok/s |
+| 5,120 | Mac A alone | 2.810 s | 1,822 tok/s | 57.2 tok/s |
+| 5,120 | Mac B alone | 1.537 s | 3,332 tok/s | 87.9 tok/s |
+| 5,120 | Pair, pipeline | 1.127 s | 4,544 tok/s | 65.7 tok/s |
+| 5,120 | Pair, compact pipeline | 1.134 s | 4,514 tok/s | 69.1 tok/s |
+| 5,120 | Pair, phase split | 1.165 s | 4,395 tok/s | 77.6 tok/s |
+
+The adapter profile caps prompts at 8,192 tokens; 10k, 20k and 30k wait for the coordinator to raise it (not changed here).
 
 **Refusals and failures.** The first real load (an earlier build, cut 20,
 Mac B) was refused before any tensor was read, by the count comparison fixed

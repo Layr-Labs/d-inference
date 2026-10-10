@@ -14,6 +14,18 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         [(runtimeModelID, profileID),
          ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1")]
     }
+    /// The longest session lifetime a capability of this adapter may declare:
+    /// load plus every request. An implementation ceiling, not a promise; an
+    /// owner asks for a lifetime sized to its own requests. The dense models
+    /// take prompts up to the protocol's context, and the largest request on
+    /// the slower Mac (the 27B: about 32,000 prompt tokens and 4,096 outputs)
+    /// runs for minutes, so the dense adapter's ceiling is the protocol's own
+    /// deadline bound rather than the earlier 300 seconds. Any other adapter
+    /// keeps 300 seconds until it says otherwise (written without a switch so
+    /// an adapter a family adds compiles unchanged).
+    public var maximumLifetimeSeconds: Int {
+        self == .qwen35Dense ? Int(ClusterWorkerLimits.deadlineNanoseconds / 1_000_000_000) : 300
+    }
 }
 
 public struct ClusterRuntimeStage: Equatable, Sendable {

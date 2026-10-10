@@ -25,12 +25,16 @@ enum ClusterRuntimeCapabilityValidation {
             && (1...ClusterWorkerLimits.outputTokens).contains(p.maximumOutputTokens)
             && (1...p.maximumPromptTokens).contains(p.maximumChunkTokens)
             && (1...ClusterWorkerLimits.contextTokens).contains(p.maximumContextTokens)
-            && p.maximumPromptTokens <= p.maximumContextTokens - p.maximumOutputTokens
+            // Each maximum leaves room for at least one token of the other; a
+            // request's own prompt plus output is held to the context by the
+            // reservation checks, so a long prompt and a long output need not
+            // both fit at once.
+            && p.maximumPromptTokens < p.maximumContextTokens && p.maximumOutputTokens < p.maximumContextTokens
             ,
             "Runtime profile exceeds protocol geometry")
         // These are implementation ceilings, not runtime admission or a hardware
         // promise. The producer obtains its exact values from the shared adapter.
-        try workerRequire((1...300).contains(value.maxLifetimeSeconds) && (1...16).contains(value.maxRequests),
+        try workerRequire((1...adapter.maximumLifetimeSeconds).contains(value.maxLifetimeSeconds) && (1...16).contains(value.maxRequests),
                           "Unsupported resident lifetime or request count")
         try workerRequire(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
                           "Unknown runtime arithmetic policy")

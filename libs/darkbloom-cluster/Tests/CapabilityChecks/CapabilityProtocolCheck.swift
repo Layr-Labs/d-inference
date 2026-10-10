@@ -121,7 +121,7 @@ struct CheckFailure: Error { let message: String }
         for (key, replacement): (String, Any) in [
             ("adapterID", "unknown"), ("adapterVersion", 2), ("runtimeModelID", "registered_qwen38_27b"),
             ("workerProtocolVersion", 2), ("ownerProtocolVersion", 2), ("bootstrapABIVersion", 2),
-            ("rankCount", 3), ("batchSize", 2), ("maxActiveRequests", 2), ("maxLifetimeSeconds", 301),
+            ("rankCount", 3), ("batchSize", 2), ("maxActiveRequests", 2), ("maxLifetimeSeconds", 3601),
             ("maxRequests", 17), ("schedulingPolicy", "oneChunkLookahead"), ("selectionPolicy", "sampling"),
             ("speculation", "mtp"), ("prefixReuse", true), ("prefixReuse", 0), ("modality", "image"),
             ("stopPolicy", "string"), ("arithmeticPolicyID", "unknown"), ("stateSemantics", "sharedCache"),

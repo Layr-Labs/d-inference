@@ -38,6 +38,11 @@ public struct ClusterPlacementPolicy: Sendable {
     public var maximumRanges = 2
     public var maximumCandidates = 200_000
     public var alternatives = 5
+    /// When set, only placements whose first range (rank 0, the leader) is
+    /// this device are considered: the installed path starts a session from
+    /// rank 0's Mac, so a Mac that cannot reach the other one cannot lead.
+    /// Each Mac alone is still evaluated, and nothing else changes.
+    public var leader: String?
     public init() {}
 }
 
@@ -280,13 +285,14 @@ public enum ClusterPlacementPlanner {
             }
         }
 
-        /// Every ordered choice of `count` devices.
+        /// Every ordered choice of `count` devices, led by the policy's leader when it names one.
         func orders(_ count: Int) -> [[Int]] {
             func extend(_ prefix: [Int]) -> [[Int]] {
                 if prefix.count == count { return [prefix] }
                 return devices.indices.filter { !prefix.contains($0) }.flatMap { extend(prefix + [$0]) }
             }
-            return extend([])
+            guard let leader = policy.leader else { return extend([]) }
+            return extend([]).filter { devices[$0[0]].label == leader }
         }
 
         /// Every ascending choice of `count` cuts.

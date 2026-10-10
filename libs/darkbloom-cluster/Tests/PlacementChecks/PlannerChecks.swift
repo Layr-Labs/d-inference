@@ -363,6 +363,20 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     checks.require("a Mac three times as fast at prefill takes three quarters of the layers", result.chosen?.cut == 16 && result.chosen?.ranks.first?.device == "slow")
     let swapped = try ClusterPlacementPlanner.plan(devices: devices.reversed(), layout: big, policy: policy)
     checks.require("the result does not depend on which Mac was named first", swapped.chosen == result.chosen)
+    // A leader restriction: only placements whose first range is the named Mac, the rest as before.
+    var led = policy; led.leader = "fast"
+    let restricted = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: led)
+    checks.require("a leader restriction gives rank 0 to that Mac", restricted.chosen?.ranks.first?.device == "fast")
+    checks.require("every alternative under a leader restriction is led by that Mac",
+        restricted.alternatives.allSatisfy { $0.ranks.first?.device == "fast" } && !restricted.alternatives.isEmpty)
+    checks.require("each Mac alone is still evaluated under a leader restriction", restricted.alone.map(\.device).sorted() == ["fast", "slow"])
+    checks.require("a leader restriction never makes the request faster than the free choice",
+        (restricted.chosen?.prediction(.rested).requestSeconds ?? 0) >= (result.chosen?.prediction(.rested).requestSeconds ?? .infinity) - 1e-9)
+    checks.require("a leader restriction is the same whichever Mac was named first",
+        try ClusterPlacementPlanner.plan(devices: devices.reversed(), layout: big, policy: led).chosen == restricted.chosen)
+    var stranger = policy; stranger.leader = "neither"
+    checks.require("a leader the pair does not have leaves no division, and each Mac alone is still offered",
+        try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: stranger).chosen == nil)
     // Headroom is a floor, not a goal: a tight placement is passed over for a
     // comfortable one, and among comfortable ones the faster wins.
     do {

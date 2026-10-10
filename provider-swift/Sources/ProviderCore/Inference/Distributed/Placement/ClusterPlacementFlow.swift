@@ -50,7 +50,7 @@ public enum ClusterPlacementFlow {
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
-                              regime: ClusterPlacementPolicy.Regime = .rested) throws
+                              regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {
@@ -68,6 +68,7 @@ public enum ClusterPlacementFlow {
         }
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = promptTokens; policy.outputTokens = outputTokens; policy.regime = regime
+        policy.leader = leader
         policy.modes = capability.supportedGenerationModes
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]

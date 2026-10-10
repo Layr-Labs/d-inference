@@ -28,7 +28,7 @@ import DarkbloomClusterProtocol
             profile: profile, profileFingerprint: hash("e"), partitions: [ClusterRuntimePartition(planSHA256: hash("f"), stages: [
                 ClusterRuntimeStage(rank: 0, sourceLayerStart: 0, sourceLayerEnd: 4, stagePlanSHA256: hash("1"), constructionConfigurationSHA256: hash("2")),
                 ClusterRuntimeStage(rank: 1, sourceLayerStart: 4, sourceLayerEnd: 32, stagePlanSHA256: hash("3"), constructionConfigurationSHA256: hash("4"))])],
-            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"), maxLifetimeSeconds: 300, maxRequests: 16)
+            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"))
         let capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
         let capabilityHash = ClusterConfigurationCodec.sha256(capabilityData)
         let key = root.appendingPathComponent("key"), hosts = root.appendingPathComponent("known_hosts")
@@ -131,7 +131,7 @@ import DarkbloomClusterProtocol
         let changes: [(String, Any)] = [("schema", "other"), ("enabled", true), ("capacity", 100), ("environment", ["KEY": "VALUE"]),
             ("deviceLeaseDirectory", "/tmp/other"), ("role", "both"), ("memberID", "peer-1"), ("clusterID", "-option"),
             ("publicModelID", "bad\nmodel"), ("capabilitySHA256", hash("0")), ("selectedPlanSHA256", hash("0")),
-            ("chunkTokens", 0), ("chunkTokens", 513), ("chunkTokens", true), ("requestTimeoutSeconds", 301), ("requestTimeoutSeconds", 0)]
+            ("chunkTokens", 0), ("chunkTokens", 513), ("chunkTokens", true), ("requestTimeoutSeconds", 3601), ("requestTimeoutSeconds", 0)]
         for (field, value) in changes { var bad = object; bad[field] = value; try rejected { _ = try decode(bad) } }
         for field in object.keys { var bad = object; bad.removeValue(forKey: field); try rejected { _ = try decode(bad) } }
         let text = String(decoding: canonical, as: UTF8.self)

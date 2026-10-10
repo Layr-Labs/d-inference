@@ -46,7 +46,7 @@ public enum DistributedInstalledOwner {
         try features.requireProgressGuard()
         try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
-            maximumLifetimeNanoseconds: plan.maximumLifetimeNanoseconds, bootstrapProfile: plan.bootstrap.ownerProfile,
+            bootstrapProfile: plan.bootstrap.ownerProfile,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
             }, native: { binding, deadline, attachment in
@@ -61,7 +61,11 @@ public enum DistributedInstalledOwner {
                 try prepared.requireUnchanged()
                 try DistributedInstalledFiles.check(deadline)
                 try beforeNativeLaunch()
-                let startup = min(deadline, DispatchTime.now().uptimeNanoseconds + plan.budgets.startupAllowanceNanoseconds)
+                // The worker has no fixed lifetime: `deadline` is its first
+                // rank-lease grant, which its supervisor renews while this
+                // owner holds the leader's lease. Loading is bounded by the
+                // startup allowance, which may outlast the first grant.
+                let startup = DispatchTime.now().uptimeNanoseconds + plan.budgets.startupAllowanceNanoseconds
                 return try ClusterWorkerProcess(launch: .init(
                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                     arguments: plan.nativeArguments(binding: binding, deadline: deadline,
@@ -69,7 +73,7 @@ public enum DistributedInstalledOwner {
                     environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
-                    startupDeadline: startup, lifetimeDeadline: deadline,
+                    startupDeadline: startup, initialLeaseDeadline: deadline,
                     // A worker that was told its startup deadline ends itself
                     // there; only then may this owner treat it as final. Its
                     // SIGTERM-to-SIGKILL margin is sized to the artifact's

@@ -58,7 +58,7 @@ private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool, ho
         print("Epoch: \(live.session.observedMembershipEpoch ?? "not observed") · MTP off: \(live.session.mtpOffReason)")
         print("Running generation mode: \(live.session.observedGenerationMode?.rawValue ?? "not observed")")
         if let state = live.session.admission {
-            print("Lifetime remaining: \(state.remainingLifetimeNanoseconds / 1_000_000) ms · admissions: \(state.remainingRequests) · active: \(state.activeRequest)")
+            print("Requests served: \(state.requestsServed) · keep-warm exchanges: \(state.keepWarmExchanges) · active: \(state.activeRequest)")
         }
         for peer in live.session.members {
             print("  \(peer.peerID) rank \(peer.rank): \(peer.transport.rawValue), ready \(peer.nativeReady), native cleanup \(peer.nativeCleanupObserved), release ACK \(peer.ownerReleaseAcknowledged)")

@@ -108,15 +108,21 @@ mimo mimo-step-evidence-switch-refused-without-the-flag 1 "$steps is a qualifica
 mimo mimo-step-evidence-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$steps=on" -- --qualification-switches yes
 mimo mimo-step-evidence-takes-only-on 1 "$steps takes only the value on" "" "$steps=yes" -- --qualification-switches yes
 mimo mimo-memory-gate-switch-refused-without-the-flag 1 "$gate is a qualification switch" "" "$gate=measure" --
-# Its own session bound: longer than the dense rows' 300 s, and not unbounded.
-MIMO_LIFETIME=1800 mimo mimo-lifetime-of-its-row-is-accepted 1 "" "local lifetime" --
-MIMO_LIFETIME=1801 mimo mimo-lifetime-beyond-its-row-is-refused 1 "<=1800-second local lifetime" "" --
+# No session lifetime for any model: the launch deadline is the rank lease's
+# first grant, at most one grant (120 s) away, which the owner then renews.
+MIMO_LIFETIME=120 mimo mimo-first-lease-grant-is-accepted 1 "" "first lease deadline" --
+MIMO_LIFETIME=121 mimo mimo-beyond-one-lease-grant-is-refused 1 "first lease deadline at most 120 seconds away" "" --
+MIMO_LIFETIME=1800 mimo mimo-old-row-lifetime-is-refused 1 "first lease deadline at most 120 seconds away" "" --
+check keep-warm-takes-on-or-off 1 "--keep-warm takes on or off" "" -- --keep-warm maybe
+check keep-warm-off-reaches-the-model 1 "" "--keep-warm" -- --keep-warm off
 check residency-switch-refused-without-the-flag 1 "$residency is a qualification switch" "" "$residency=stage_wired_residency_v1" --
 check residency-switch-takes-only-its-policy 1 "$residency takes only stage_wired_residency_v1" "" "$residency=on" -- --qualification-switches yes
 check residency-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$residency=stage_wired_residency_v1" -- --qualification-switches yes
 # S00: before the model is opened the orphan-wired guard has decided, and a
 # worker that fails leaves through the one forced exit, release first.
 check orphan-guard-decides-before-the-model 1 "darkbloom-orphan-wired-v1 role=worker-rank-0 decision=" "" --
-check a-failed-worker-takes-the-forced-exit 1 "darkbloom-forced-exit-v1 status=1 reason=worker-error phase=claimed" "" --
+# The control reader runs from launch (it reads rank-lease renewals during the
+# load), so with no usable input it may claim the exit before the load fails.
+check a-failed-worker-takes-the-forced-exit 1 "darkbloom-forced-exit-v1 status=1 reason=" "" --
 check the-forced-exit-resets-the-wired-limit 1 "phase=released wired_limit_before=0 wired_limit=0" "" --
 printf '{"passed":true,"cases":%d,"modelOrGPUExecution":false}\n' "$passed"

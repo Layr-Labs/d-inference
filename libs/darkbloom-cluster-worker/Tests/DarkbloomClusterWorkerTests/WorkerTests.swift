@@ -43,6 +43,9 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     }
     func cancel(_ id: UUID) { lock.lock(); cancelled = true; lock.unlock() }
     func shutdown() throws { lock.lock(); shutdowns += 1; closed = true; lock.unlock() }
+    func keepWarmPulse() throws -> UInt64 { lock.lock(); pulses += 1; lock.unlock(); return 1 }
+    func dataPlanePing() throws -> UInt64 { lock.lock(); pings += 1; lock.unlock(); return 1 }
+    var pulses = 0, pings = 0
 }
 
 private final class ResultBox: @unchecked Sendable {
@@ -75,7 +78,8 @@ private final class Harness {
     private(set) var input: Int32
     private(set) var output: Int32
     private var sequence: UInt64 = 0
-    init(rank: Int = 0) throws {
+    private var renewals: UInt64 = 0
+    init(rank: Int = 0, leaseNanoseconds: UInt64 = 5_000_000_000) throws {
         runtime = FakeRuntime(rank: rank)
         exits.runtime = runtime
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
@@ -86,11 +90,19 @@ private final class Harness {
         Thread.detachNewThread {
             do {
                 let io = try WorkerPipes(input: childInput, output: childOutput,
-                    deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+                    deadline: DispatchTime.now().uptimeNanoseconds + leaseNanoseconds)
                 try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks).run()
             } catch { result.save(error) }
             close(childInput); close(childOutput); done.leave()
         }
+    }
+    /// One rank-lease renewal line, outside the request sequence.
+    func renew(ttl: UInt64) throws {
+        renewals += 1
+        let data = try ClusterWorkerCodec.encode(ClusterWorkerLeaseRenewal(membershipEpoch: runtime.ready.identity.membershipEpoch,
+            renewal: renewals, ttlNanoseconds: ttl))
+        let count = data.withUnsafeBytes { Darwin.write(input, $0.baseAddress, $0.count) }
+        guard count == data.count else { throw WorkerFailure.invalid("Test renewal short write") }
     }
     func send(_ command: ClusterWorkerCommand, id: UUID? = nil) throws {
         let data = try ClusterWorkerCodec.encode(.init(membershipEpoch: runtime.ready.identity.membershipEpoch,
@@ -148,7 +160,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         for cut in [4, 8, 12, 16] { for rank in [0, 1] {
             var selected = args; selected[3] = String(rank); selected[5] = String(cut)
             let value = try WorkerConfiguration(arguments: selected, now: 100)
@@ -159,7 +171,8 @@ final class WorkerTests: XCTestCase {
             var selected = args; selected[5] = cut
             XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100))
         }
-        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "300000000101")] {
+        // The launch deadline is the rank lease's first grant: at most 120 s.
+        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "120000000101"), (23, "300000000100")] {
             var changed = args; changed[index] = value
             XCTAssertThrowsError(try WorkerConfiguration(arguments: changed, now: 100))
         }
@@ -174,7 +187,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         for cut in stride(from: 4, through: 60, by: 4) { for rank in [0, 1] {
             var selected = args; selected[3] = String(rank); selected[5] = String(cut)
             let value = try WorkerConfiguration(arguments: selected, now: 100)
@@ -210,7 +223,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         for cut in stride(from: 4, through: 60, by: 4) { for rank in [0, 1] {
             var selected = args; selected[3] = String(rank); selected[5] = String(cut)
             let value = try WorkerConfiguration(arguments: selected, now: 100)
@@ -237,7 +250,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         // A serving launch names no evidence directory and gets none.
         XCTAssertNil(try WorkerConfiguration(arguments: args, now: 100).evidenceDirectory)
         let recording = try WorkerConfiguration(arguments: args + ["--evidence-directory", "/private/run/evidence"], now: 100)
@@ -261,7 +274,7 @@ final class WorkerTests: XCTestCase {
              "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
              "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
              "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-             "--deadline-uptime-nanoseconds", "300000000100"]
+             "--deadline-uptime-nanoseconds", "120000000100"]
         }
         for (model, cut) in [("registered_qwen35_9b", "8"), ("registered_qwen38_27b", "16"),
                              ("registered_ternary_bonsai_2_27b", "24")] {
@@ -307,7 +320,7 @@ final class WorkerTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         let installed = try WorkerConfiguration(arguments: args, now: 100)
         let qualification = try WorkerConfiguration(arguments: args + ["--qualification-switches", "yes"], now: 100)
         XCTAssertFalse(installed.qualificationSwitchesPermitted); XCTAssertTrue(qualification.qualificationSwitchesPermitted)
@@ -353,20 +366,22 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(QwenResidentQualificationSwitches.permittingArgument, "--qualification-switches")
     }
 
-    func testStartupDeadlineIsOptionalCanonicalAndWithinTheLifetime() throws {
+    func testStartupDeadlineIsOptionalCanonicalAndWithinTheHour() throws {
         let args = ["--model-dir", "/invented/model", "--rank", "0", "--stage-cut", "4",
             "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", "registered_qwen35_9b",
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         XCTAssertNil(try WorkerConfiguration(arguments: args, now: 100).startupDeadlineUptimeNanoseconds)
         let named = try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", "90000000100"], now: 100)
         XCTAssertEqual(named.startupDeadlineUptimeNanoseconds, 90_000_000_100)
+        // A startup may outlast the first lease grant (the lease is renewed
+        // while the model loads), up to the protocol's hour.
         XCTAssertEqual(try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", "300000000100"], now: 100)
             .startupDeadlineUptimeNanoseconds, 300_000_000_100)
-        // In the past, beyond the lifetime, or not canonical.
-        for value in ["100", "99", "300000000101", "090000000100", "+90000000100", "9e10", ""] {
+        // In the past, beyond the hour, or not canonical.
+        for value in ["100", "99", "3600000000101", "090000000100", "+90000000100", "9e10", ""] {
             XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--startup-deadline-uptime-nanoseconds", value], now: 100), value)
         }
         // It composes with the other optional arguments.
@@ -374,6 +389,34 @@ final class WorkerTests: XCTestCase {
             "--startup-deadline-uptime-nanoseconds", "90000000100", "--evidence-directory", "/private/run/evidence"], now: 100)
         XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
         XCTAssertEqual(all.load.prefillSchedule, .oneChunkLookahead)
+    }
+
+    /// The rank lease (S03): renewals are read outside the request sequence
+    /// and keep the worker past its first grant; the keep-warm command (S27
+    /// tier 2) runs the data-plane exchange on the executor and is answered.
+    func testLeaseRenewalsKeepTheWorkerAndKeepWarmIsAnswered() throws {
+        let h = try Harness(leaseNanoseconds: 1_000_000_000)
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        // Four renewals over 2.4 s, each good for one second: well past the first grant.
+        for _ in 0..<4 { try h.renew(ttl: 1_000_000_000); Thread.sleep(forTimeInterval: 0.6) }
+        try h.send(.keepWarm(ordinal: 1))
+        guard case .keptWarm(1, _) = try h.event().event else { return XCTFail("Keep-warm was not answered") }
+        // The renewals took no command sequence number: keep-warm was command 0.
+        XCTAssertEqual(h.runtime.pings, 1)
+        try h.renew(ttl: 1_000_000_000)
+        try h.send(.shutdown)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(h.exits.reasons.isEmpty, "\(h.exits.reasons)")
+    }
+
+    /// Without renewals the lease lapses: the reader ends the worker through
+    /// the forced exit's hook, as an owner that died would leave it.
+    func testUnrenewedLeaseEndsTheWorker() throws {
+        let h = try Harness(leaseNanoseconds: 1_000_000_000)
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        XCTAssertEqual(h.done.wait(timeout: .now() + 5), .success)
+        XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
+        XCTAssertEqual(h.exits.reasons.first, "lease-expired")
     }
 
     func testStartupDeadlineFiresOnlyWhileArmed() throws {

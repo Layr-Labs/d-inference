@@ -189,8 +189,7 @@ import Foundation
                 adapterVersion: 1, runtimeModelID: capability.runtimeModelID, artifactSHA256: capability.artifactSHA256,
                 configurationSHA256: capability.configurationSHA256, manifestSHA256: capability.manifestSHA256,
                 profile: capability.profile, profileFingerprint: capability.profileFingerprint, partitions: capability.partitions,
-                arithmeticPolicyID: capability.arithmeticPolicyID, arithmeticPolicySHA256: capability.arithmeticPolicySHA256,
-                maxLifetimeSeconds: 300, maxRequests: 16)
+                arithmeticPolicyID: capability.arithmeticPolicyID, arithmeticPolicySHA256: capability.arithmeticPolicySHA256)
         }
         refuses("this adapter under the dense arithmetic policy") {
             _ = try ClusterRuntimeCapability(runtimeBinarySHA256: binary, adapterID: capability.adapterID,
@@ -198,7 +197,7 @@ import Foundation
                 configurationSHA256: capability.configurationSHA256, manifestSHA256: capability.manifestSHA256,
                 profile: capability.profile, profileFingerprint: capability.profileFingerprint, partitions: capability.partitions,
                 arithmeticPolicyID: ClusterRuntimeAdapter.qwen35Dense.arithmeticPolicyID,
-                arithmeticPolicySHA256: capability.arithmeticPolicySHA256, maxLifetimeSeconds: 300, maxRequests: 16)
+                arithmeticPolicySHA256: capability.arithmeticPolicySHA256)
         }
         refuses("a capability for another manifest") {
             var edited = manifest; edited[10] ^= 1

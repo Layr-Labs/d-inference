@@ -9,9 +9,9 @@ import MLXLMCommon
 
 struct CheckFailure: Error { let message:String }
 func require(_ value:Bool,_ message:String) throws { if !value { throw CheckFailure(message:message) } }
-func rejected(_ body:() throws->Void) throws {
-    do { try body() } catch is CheckFailure { throw CheckFailure(message:"assertion inside refusal") } catch { return }
-    throw CheckFailure(message:"expected refusal")
+func rejected(line:Int = #line,_ body:() throws->Void) throws {
+    do { try body() } catch is CheckFailure { throw CheckFailure(message:"assertion inside refusal at line \(line)") } catch { return }
+    throw CheckFailure(message:"expected refusal at line \(line)")
 }
 final class TokenBox: @unchecked Sendable {
     private let lock=NSLock()
@@ -71,10 +71,10 @@ final class EndpointBox: @unchecked Sendable {
         try await phaseSplitSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
         try await normalAndDrain(fixture,prepared)
-        try await exhausted(fixture,prepared)
+        try await noRequestLimit(fixture,prepared)
         try await failedStart(fixture,prepared)
         try await missingRelease(fixture,prepared)
-        try await expired(fixture)
+        try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
         print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
     }
@@ -137,7 +137,12 @@ final class EndpointBox: @unchecked Sendable {
         try require(Array(direct.suffix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)],"startup deadline was not passed to the worker")
         let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
         try require(legacy==Array(direct.dropLast(2)) && legacy.count==24,"a worker without the startup argument must be started without it")
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:nil)}
+        // A startup may outlast the first lease grant (the lease is renewed
+        // during the load), but not the protocol's hour; a first grant is at
+        // most one lease grant away.
+        _ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:nil)
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:DispatchTime.now().uptimeNanoseconds+3_601_000_000_000,attachment:nil)}
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:DispatchTime.now().uptimeNanoseconds+121_000_000_000,startupDeadline:nil,attachment:nil)}
         let attachment=try ClusterOwnerBootstrapAttachment(profile:.mesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000)
         defer{attachment.cancel()}
         try require(attachment.workerArguments.count==6 && attachment.workerArguments[0]=="--bootstrap-socket-path","authenticated argument contract changed")
@@ -320,7 +325,7 @@ final class EndpointBox: @unchecked Sendable {
         try bytes.write(to:described)
         try require(try refusal{_ = try mixed.prepare()}.contains("not built from the same tree"),"an unknown field was not explained")
         // A readable record that differs is a changed worker, a different sentence.
-        record.removeValue(forKey:"aFieldFromANewerWorker");record["maxRequests"]=15
+        record.removeValue(forKey:"aFieldFromANewerWorker");record["arithmeticPolicySHA256"]=String(repeating:"e",count:64)
         bytes=try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys,.withoutEscapingSlashes]);bytes.append(10)
         try bytes.write(to:described)
         let changed=try refusal{_ = try mixed.prepare()}
@@ -357,7 +362,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(s.readiness() != nil && s.status == .ready && box.snapshot.allSatisfy{!$0.nativeCleanupObserved},"a clean phase-split stop cost the session")
         // The stand-in for rank 1 always reports a client stop, so the second request stops too.
         let again=try request(s,2);try again.start{_ in false};await again.waitUntilRetired();again.releaseResources()
-        try require(s.readiness() != nil && s.admissionState?.admissionsRemaining==14,"the session was not reusable after a batched request")
+        try require(s.readiness() != nil && s.admissionState?.requestsServed==2,"the session was not reusable after a batched request")
         try require(await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) == .released,"phase-split session did not release")
     }
     static func fileAndProbeChecks(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
@@ -402,8 +407,9 @@ final class EndpointBox: @unchecked Sendable {
     }
     static func normalAndDrain(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         let(s,box)=try session(f,p);try require(s.status == .prepared && s.readiness()==nil && !s.canRotate,"preparation fabricated readiness")
-        try await s.start();try require(s.readiness() != nil && s.admissionState?.admissionsRemaining==16,"actual ready missing: status=\(s.status), state=\(String(describing:s.admissionState)), endpoints=\(box.snapshot.map { String(describing:$0.ownerTermination) + ":" + String(decoding:$0.diagnosticTail,as:UTF8.self) })")
-        try require(s.admissionState!.remainingLifetimeNanoseconds < 10_000_000_000,"minimum endpoint lifetime lost")
+        try await s.start();try require(s.readiness() != nil && s.admissionState?.requestsServed==0,"actual ready missing: status=\(s.status), state=\(String(describing:s.admissionState)), endpoints=\(box.snapshot.map { String(describing:$0.ownerTermination) + ":" + String(decoding:$0.diagnosticTail,as:UTF8.self) })")
+        // No fixed lifetime: the endpoints' leases are renewed while the session runs.
+        try require(s.admissionState!.isValid,"a fresh session was not valid")
         let lease=try request(s,1);try require(s.readiness() != nil,"post-reserve readiness falsely lost")
         try lease.start{_ in true};await lease.waitUntilRetired()
         let drain=Task { await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) }
@@ -414,15 +420,16 @@ final class EndpointBox: @unchecked Sendable {
         try require(s.canRotate && box.snapshot.allSatisfy{$0.nativeCleanupObserved && $0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)},"rotation preceded cleanup ACK and exit")
         do {try await s.start();throw CheckFailure(message:"session restarted")} catch DistributedEngineError.unavailable {}
     }
-    static func exhausted(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
+    /// No request count: a session serves more requests than the old cap of
+    /// sixteen and stays ready, then drains and releases cleanly.
+    static func noRequestLimit(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         let(s,_)=try session(f,p);try await s.start()
-        for id in 1...16 {
-            let lease=try request(s,UInt64(id));try require(s.readiness() != nil,"last active reservation lost readiness")
+        for id in 1...20 {
+            let lease=try request(s,UInt64(id));try require(s.readiness() != nil,"an active reservation lost readiness")
             try lease.start{_ in true};await lease.waitUntilRetired();lease.releaseResources()
         }
-        try require(s.admissionState?.admissionsRemaining==0 && s.readiness()==nil,"exhausted session advertised ready")
-        try rejected{_ = try request(s,17)}
-        try require(await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) == .released,"exhausted drain failed")
+        try require(s.admissionState?.requestsServed==20 && s.readiness() != nil,"a session stopped being ready after many requests")
+        try require(await s.drain(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000) == .released,"drain after many requests failed")
     }
     static func failedStart(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         let(s,box)=try session(f,p,failSecond:true)
@@ -435,22 +442,19 @@ final class EndpointBox: @unchecked Sendable {
         try require(result == .released || result == .quarantined,"partial startup returned live readiness")
         try require(!s.canRotate || box.snapshot[0].ownerDeviceLeaseReleasedObserved,"partial rotate missing release")
     }
-    static func expired(_ f:InstalledFixture) async throws {
-        let short=try InstalledFixture.make(root:f.root.appendingPathComponent("short-life"),probe:f.probe,owner:f.owner,worker:f.worker,lifetimeSeconds:1)
-        let prepared=try short.prepare(),(s,box)=try session(short,prepared)
+    /// No fixed lifetime: a session whose owners' leases are renewed outlives
+    /// the first lease grant, here a session that serves on past the first
+    /// renewal interval, then stops cleanly when asked.
+    static func outlivesFirstGrant(_ f:InstalledFixture) async throws {
+        let prepared=try f.prepare(),(s,box)=try session(f,prepared)
         try await s.start()
-        guard let deadline=s.lifetimeDeadlineUptimeNanoseconds else {throw CheckFailure(message:"missing fixed lifetime")}
-        let now=DispatchTime.now().uptimeNanoseconds
-        if deadline>now {try await Task.sleep(nanoseconds:deadline-now+50_000_000)}
-        try require(s.admissionState?.remainingLifetimeNanoseconds==0 && s.readiness()==nil,"expired lifetime advertised ready")
-        try rejected{_ = try request(s,77)}
-        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+5_000_000_000)
-        try require(result == .quarantined || result == .released,"expired session kept accepting")
-        try require(box.snapshot.allSatisfy(\.nativeCleanupObserved),"expired fixture child lacked actual terminal proof")
-        try require(!s.canRotate || box.snapshot.allSatisfy{$0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)},"expiry substituted for owner release")
+        try await Task.sleep(nanoseconds:ClusterWorkerLease.renewNanoseconds+1_500_000_000)
+        try require(s.readiness() != nil && s.admissionState?.isValid==true,"a renewed session stopped being ready")
+        let lease=try request(s,77);try lease.start{_ in true};await lease.waitUntilRetired();lease.releaseResources()
+        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+8_000_000_000)
+        try require(result == .released,"a renewed session did not release on stop: \(result)")
+        try require(box.snapshot.allSatisfy{$0.nativeCleanupObserved && $0.ownerDeviceLeaseReleasedObserved && $0.ownerTermination == .exited(0)},"stop lacked owner release")
     }
-    /// A session that stops without being asked says so at once, while a rank
-    /// that has to end itself is still running; a requested stop says nothing.
     static func stopNotice(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         let notices=NoticeBox()
         let(quiet,_)=try session(f,p);quiet.installStopNoticeHandler{notices.add($0,running:[])};try await quiet.start()

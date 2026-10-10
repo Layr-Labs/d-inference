@@ -121,13 +121,16 @@ struct CheckFailure: Error { let message: String }
         for (key, replacement): (String, Any) in [
             ("adapterID", "unknown"), ("adapterVersion", 2), ("runtimeModelID", "registered_qwen38_27b"),
             ("workerProtocolVersion", 2), ("ownerProtocolVersion", 2), ("bootstrapABIVersion", 2),
-            ("rankCount", 3), ("batchSize", 2), ("maxActiveRequests", 2), ("maxLifetimeSeconds", 301),
-            ("maxRequests", 17), ("schedulingPolicy", "oneChunkLookahead"), ("selectionPolicy", "sampling"),
+            ("rankCount", 3), ("batchSize", 2), ("maxActiveRequests", 2),
+            ("schedulingPolicy", "oneChunkLookahead"), ("selectionPolicy", "sampling"),
             ("speculation", "mtp"), ("prefixReuse", true), ("prefixReuse", 0), ("modality", "image"),
             ("stopPolicy", "string"), ("arithmeticPolicyID", "unknown"), ("stateSemantics", "sharedCache"),
             ("runtimeBinarySHA256", String(repeating: "A", count: 64)), ("adapterVersion", true), ("schema", NSNull()),
         ] { try refuse("closed-field-" + key + "-" + String(describing: replacement)) { $0[key] = replacement } }
         try refuse("unknown-top-key") { $0["ready"] = true }
+        // A session has no lifetime or request count: the retired fields are unknown keys now.
+        try refuse("retired-lifetime-field") { $0["maxLifetimeSeconds"] = 300 }
+        try refuse("retired-request-count-field") { $0["maxRequests"] = 16 }
         try refuse("missing-key") { $0.removeValue(forKey: "manifestSHA256") }
         try profileEdit("id", "unknown"); try profileEdit("extra", 1); try profileEdit("maximumContextTokens", Int.min)
         try profileEdit("maximumContextTokens", Int.max); try profileEdit("maximumContextTokens", 8192)

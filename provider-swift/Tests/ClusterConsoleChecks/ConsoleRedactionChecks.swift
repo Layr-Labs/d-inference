@@ -137,7 +137,7 @@ extension ClusterConsoleCheck {
             "std::string and Foo::bar and ratio 3:2 and step 2: wait",
             "/usr/bin/ibv_devinfo and /opt/darkbloom/bin/darkbloom-cluster-worker",
             "Local leader: host serving, session ready, ready, admission available, port 8000, bearer authentication.",
-            "Lifetime remaining 281 s; admissions remaining 15; maximumPromptTokens 8192; tokenizer.json verified.",
+            "Requests served 1; keep-warm exchanges 12; maximumPromptTokens 8192; tokenizer.json verified.",
             "Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleLiveOperations.swift",
             "The peer is peer-1 (rank 1); this Mac is peer-0 (leader, rank 0) on rdma_en7.",
             "Wrote darkbloom-cluster-diagnostics-20261009T093307Z.json in the directory this command was run in.",

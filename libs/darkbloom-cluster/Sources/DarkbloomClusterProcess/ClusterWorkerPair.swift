@@ -95,9 +95,12 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         }
     }
 
+    /// `keepWarm` is explicit at every serving call site: the installed
+    /// session and the pair driver pass `.standard` (keep-warm is on by
+    /// default in the product); a caller that names nothing gets none.
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
                 timing: ClusterWorkerPairTiming = .standard,
-                keepWarm: ClusterWorkerKeepWarmPolicy = .standard) throws {
+                keepWarm: ClusterWorkerKeepWarmPolicy = .off) throws {
         guard timing.isWithinLimits else {
             throw ClusterWorkerOwnerError.invalid("Pair waits must be between one nanosecond and one minute")
         }

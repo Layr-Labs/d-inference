@@ -210,6 +210,9 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         try lock.withLock {
             guard !launched else { throw ClusterWorkerOwnerError.invalid("Worker launched twice") }
             launched = true
+            // The launch deadline is the first grant; the first renewal falls
+            // due one interval later.
+            nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
             do { try childExit.run(process); launchedPID = process.processIdentifier } catch { fault = .closed; terminalValue = .launchFailed; exited.complete(); wakeup.closeAfterPolling(); throw error }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()

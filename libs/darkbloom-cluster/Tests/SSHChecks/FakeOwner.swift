@@ -25,7 +25,7 @@ import DarkbloomClusterProcess
             try lease.record(binding: binding, launchID: launch)
             let child = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "hang"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: deadline, lifetimeDeadline: deadline)
+                startupDeadline: deadline, initialLeaseDeadline: deadline)
             try child.launch()
             _ = try child.receiveWorkerEvent(until: deadline)
             try pipe.write(OwnerWire(kind: "hello", epoch: open.epoch, lease: open.lease, incarnation: incarnation, sequence: 0,
@@ -91,7 +91,7 @@ import DarkbloomClusterProcess
             ? .init(terminateMarginNanoseconds: 300_000_000, killMarginNanoseconds: 500_000_000, reapMarginNanoseconds: 1_000_000_000) : .standard
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
             output: options.contains("garbage") ? filter.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
-            clusterID: "cpu-test", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
+            clusterID: "cpu-test", leaseDirectory: directory,
             bootstrapProfile: behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
             binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fake epoch differs") }
@@ -104,7 +104,7 @@ import DarkbloomClusterProcess
                 return try .init(launch: .init(executable: program, arguments: [String(rank), behavior] + (attachment?.workerArguments ?? []), environment: [:]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
-                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), lifetimeDeadline: deadline,
+                    startupDeadline: min(deadline, DispatchTime.now().uptimeNanoseconds + 3_000_000_000), initialLeaseDeadline: deadline,
                     retirement: policy)
             })
     }

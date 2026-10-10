@@ -48,7 +48,7 @@ struct InstalledFixture: Sendable {
             profile:profile,profileFingerprint:pin("e"),partitions:[.init(planSHA256:pin("f"),stages:[
                 .init(rank:0,sourceLayerStart:0,sourceLayerEnd:4,stagePlanSHA256:pin("1"),constructionConfigurationSHA256:pin("2")),
                 .init(rank:1,sourceLayerStart:4,sourceLayerEnd:32,stagePlanSHA256:pin("3"),constructionConfigurationSHA256:pin("4"))])],
-            arithmeticPolicyID:"qwen_cbv2_query128_bf16_tf32_default_v1",arithmeticPolicySHA256:pin("5"),maxLifetimeSeconds:lifetimeSeconds,maxRequests:16,
+            arithmeticPolicyID:"qwen_cbv2_query128_bf16_tf32_default_v1",arithmeticPolicySHA256:pin("5"),
             supportedGenerationModes:advertisedModes)
         let capBytes = try ClusterRuntimeCapabilityCodec.encode(cap), capHash = hash(capBytes)
         try capBytes.write(to: model.appendingPathComponent("fixture-capability.json"))

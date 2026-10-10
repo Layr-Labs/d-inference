@@ -2,14 +2,12 @@ import Foundation
 import Hummingbird
 import MLXLMCommon
 
-/// One listener and retained generation ownership. A replacement factory enables
-/// quota rotation only; fixed-lifetime expiry still stops this first increment.
+/// One listener and retained generation ownership. The session has no fixed
+/// lifetime and no request count, so there is no rotation: the loaded model
+/// stays resident and serving until the server is stopped or the session fails.
 public actor DistributedLocalServer {
-    typealias ReplacementFactory = @Sendable () async throws -> any DistributedLocalServerSession
     var generation: DistributedLocalServerGeneration
-    var seenMembershipEpochs: Set<UUID>
     let binding: DistributedLocalSessionBinding
-    let replacementSessionFactory: ReplacementFactory?
     let config: LocalInferenceHTTPConfig
     let defaultMaxTokens: Int
     let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
@@ -21,9 +19,8 @@ public actor DistributedLocalServer {
     var ownDiscovery: LocalEndpoint.Info?
     var failed = false
     var startupTask: Task<Void, Error>?
-    var rotationTask: Task<Void, Never>?
     var serviceTask: Task<Void, Never>?
-    var lifetimeTask: Task<Void, Never>?
+    var monitorTask: Task<Void, Never>?
     var teardownTask: Task<Void, Never>?
     var stopWaiters: [CheckedContinuation<DistributedLocalServerStatus, Never>] = []
 
@@ -35,30 +32,22 @@ public actor DistributedLocalServer {
 
     public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-                publishDiscovery: Bool = true,
-                replacementSessionFactory: (@Sendable () async throws -> DistributedInstalledSession)? = nil) {
+                publishDiscovery: Bool = true) {
         generation = .init(session: session); binding = .init(session)
-        seenMembershipEpochs = [session.expectedIdentity.membershipEpoch]
         self.config = config; defaultMaxTokens = session.profile.maxOutputTokens
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
-        if let factory = replacementSessionFactory {
-            self.replacementSessionFactory = { try await factory() }
-        } else { self.replacementSessionFactory = nil }
     }
 
     init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
          firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
-         discovery: DistributedLocalDiscovery? = nil,
-         replacementSessionFactory: ReplacementFactory? = nil) {
+         discovery: DistributedLocalDiscovery? = nil) {
         generation = .init(session: session); binding = .init(session)
-        seenMembershipEpochs = [session.expectedIdentity.membershipEpoch]
         self.config = config; defaultMaxTokens = session.profile.maxOutputTokens
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
-        self.replacementSessionFactory = replacementSessionFactory
     }
 
     public var status: DistributedLocalServerStatus {

@@ -15,20 +15,29 @@ final class NativePairMemberControl: @unchecked Sendable {
         self.installation = installation; self.signer = signer
     }
     var status: String { lock.withLock { session?.status ?? "idle" } }
+    /// A new connection. A session away in its disconnect grace (its
+    /// registration on this connection claimed it with `resume`) moves to it;
+    /// the coordinator then renews its grant here.
     func attach(nonce: String, connection nw: NWConnection) throws -> NativePairMemberConnection {
         try lock.withLock {
-            guard session == nil, connection?.isLive != true else { throw NativePairMemberError.inactive }
+            guard session == nil || session?.resumeClaim != nil, connection?.isLive != true else { throw NativePairMemberError.inactive }
             let next = NativePairMemberConnection(nonce: nonce, connection: nw, signer: signer,
                 onInvalidation: { [weak self] value in self?.detach(value) })
+            try session?.reattach(next)
             connection = next; inboundSequence = 0; return next
         }
     }
+    /// A connection boundary. An established session keeps its owner for the
+    /// disconnect grace, never past its grant; anything else ends now.
     func detach(_ expected: NativePairMemberConnection) {
         let old = lock.withLock { () -> NativePairMemberSession? in
             guard connection === expected else { return nil }; connection = nil; return session
         }
-        expected.invalidate(); old?.cancel(notify: false)
+        expected.invalidate(); _ = old?.detached()
     }
+    /// The `resume` claim to register on the next connection, if a session is
+    /// away in its grace.
+    var resumeClaim: ClusterMembership.Resume? { lock.withLock { session?.resumeClaim } }
     func receive(_ message: NativePairMessage, on expected: NativePairMemberConnection,
                  receivedAt: UInt64, wallUnixNanoseconds: Int64) throws {
         var start: NativePairMemberSession?
@@ -53,11 +62,11 @@ final class NativePairMemberControl: @unchecked Sendable {
                     guard let current = session, message.epoch == current.epoch,
                           message.generation == current.generation,
                           message.prepareBeforeUnixNano == current.prepareUnixNanoseconds,
-                          message.expiresAtUnixNano == current.expiresUnixNanoseconds else { throw NativePairMemberError.binding }
+                          message.type == "native_pair_lease" || message.expiresAtUnixNano == current.expiresUnixNanoseconds else { throw NativePairMemberError.binding }
                     if message.type == "native_pair_cancel" {
                         guard Data(base64Encoded: message.payload) == Data([68, 66, 78, 67, 1]) else { throw NativePairMemberError.binding }
                         cancel = current
-                    } else { try current.accept(message) }
+                    } else { try current.accept(message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds) }
                 }
             }
             cancel?.cancel(notify: false); start?.run()

@@ -31,7 +31,6 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private var pair: ClusterWorkerPair?
     private var owner: DistributedPipeExecutionOwner?
     private var stoppingTask: Task<Void, Never>?
-    private var lifetime: UInt64 = 0
     private var handler: (@Sendable () -> Void)?
     private var notified = false
     private var draining = false
@@ -40,7 +39,6 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
     public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
-    public var lifetimeDeadlineUptimeNanoseconds: UInt64? { lock.withLock { lifetime == 0 ? nil : lifetime } }
     /// A fresh epoch is permitted only after all owned native and owner cleanup
     /// and both release acknowledgements. There is no implicit journal recovery.
     public var canRotate: Bool { status == .released }
@@ -70,14 +68,14 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let state = values.1?.admissionState
         let phase = status
         let ready = values.1?.readiness != nil && members.allSatisfy(\.nativeReady)
-            && state?.isValid == true && (state?.remainingLifetimeNanoseconds ?? 0) > 0
+            && state?.isValid == true
             && (phase == .ready || (phase == .draining && state?.hasActiveRequest == true))
         return .init(binding: diagnosticBinding, phase: phase.rawValue,
             observedMembershipEpoch: values.2?.uuidString.lowercased(),
             observedPrefillSchedule: values.2 == nil ? nil : configuration.selectedPrefillSchedule,
             observedGenerationMode: values.2 == nil ? nil : configuration.selectedGenerationMode,
-            ready: ready, admission: state.map { .init(remainingLifetimeNanoseconds: $0.remainingLifetimeNanoseconds,
-                remainingRequests: $0.admissionsRemaining, activeRequest: $0.hasActiveRequest,
+            ready: ready, admission: state.map { .init(requestsServed: $0.requestsServed,
+                keepWarmExchanges: $0.keepWarmExchanges, activeRequest: $0.hasActiveRequest,
                 draining: $0.isDraining, valid: $0.isValid) }, members: members,
             mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation",
             nativeBootstrap: prepared.plan.bootstrap,
@@ -179,14 +177,16 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private func launch() throws {
         try requireStarting(); try prepared.requireUnchanged()
         let now = DispatchTime.now().uptimeNanoseconds
-        let lifetime = now + prepared.plan.maximumLifetimeNanoseconds
-        let startupDeadline = min(lifetime, now + prepared.plan.budgets.startupAllowanceNanoseconds)
+        // No fixed lifetime: each owner is opened with one rank-lease grant
+        // and its endpoint renews it while this session keeps the pair.
+        let lifetime = now + ClusterWorkerLease.maximumNanoseconds
+        let startupDeadline = now + prepared.plan.budgets.startupAllowanceNanoseconds
         // No relay exists for the direct native bootstrap: the owners carry no
         // bootstrap rounds and the status reports the exchange as unauthenticated.
         let relay = try prepared.plan.bootstrap.ownerAuthenticated ? ClusterOwnerBootstrapRelay(identity: wireIdentity,
             executionPlanSHA256: prepared.plan.partition.planSHA256,
             deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000)) : nil
-        lock.withLock { self.lifetime = lifetime; self.relay = relay }
+        lock.withLock { self.relay = relay }
         for rank in 0..<2 {
             try requireStarting()
             let endpoint = try endpointFactory(prepared.plan, wireIdentity, rank, lifetime, relay)
@@ -194,8 +194,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if stopped { endpoint.requestNativeCleanup(); throw DistributedEngineError.shuttingDown }
         }
         let values = lock.withLock { endpoints }
-        let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline, maximumRequests: capability.maxRequests,
-            timing: prepared.plan.budgets.pairTiming)
+        let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline,
+            timing: prepared.plan.budgets.pairTiming, keepWarm: .standard)
         lock.withLock { self.pair = pair }
         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
@@ -294,8 +294,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         var released = true
         for endpoint in values.1 {
-            // Each owner keeps its own retirement ceiling past its lifetime,
-            // which the endpoint tracks; a release acknowledgement cannot
+            // Each owner keeps its own retirement ceiling past its last lease
+            // grant, which the endpoint tracks; a release acknowledgement cannot
             // arrive later than that.
             let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
             if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) { released = false }
@@ -309,8 +309,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             guard let owner, let pair else { throw DistributedEngineError.unavailable }
             let state = pair.admissionState
             guard phase == .ready || (!forReservation && phase == .draining && state.hasActiveRequest),
-                  state.remainingLifetimeNanoseconds > 0,
-                  state.admissionsRemaining > 0 || (!forReservation && state.hasActiveRequest),
+                  state.isValid || (!forReservation && state.hasActiveRequest),
                   !forReservation || state.canAdmit() else { throw DistributedEngineError.unavailable }
             return owner
         }

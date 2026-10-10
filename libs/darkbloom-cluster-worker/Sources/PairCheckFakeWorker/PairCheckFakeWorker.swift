@@ -179,7 +179,7 @@ import Foundation
                 if count == 0 { break }
                 if count < 0 { if errno == EINTR { continue }; exit(74) }
                 for line in try decoder.append(Data(buffer.prefix(count))) {
-                    let command = try ClusterWorkerCodec.decodeCommand(line)
+                    guard case .command(let command) = try ClusterWorkerCodec.decodeControl(line) else { continue } // a rank-lease renewal
                     try session.accept(command, now: uptime())
                     switch command.command {
                     case .reserve(let value):
@@ -213,6 +213,8 @@ import Foundation
                     case .cancel:
                         // A real worker reports the failure, releases and exits.
                         try emit(.failed(.runtimeError)); exit(1)
+                    case .keepWarm(let ordinal):
+                        try emit(.keptWarm(ordinal: ordinal, microseconds: 1))
                     case .shutdown:
                         try emit(.shutdownComplete); exit(0)
                     }
@@ -242,7 +244,7 @@ import Foundation
                               constructionConfigurationSHA256: hash("fake-construction1-\(cut)")),
                     ])
                 }, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
-                arithmeticPolicySHA256: hash("fake-arithmetic"), maxLifetimeSeconds: 300, maxRequests: 16,
+                arithmeticPolicySHA256: hash("fake-arithmetic"),
                 supportedPrefillSchedules: [.serial, .oneChunkLookahead],
                 supportedGenerationModes: pipelineOnly ? [.pipeline] : ClusterGenerationMode.allCases)
             try FileHandle.standardOutput.write(contentsOf: ClusterRuntimeCapabilityCodec.encode(capability))

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — cluster sessions without a fixed lifetime; rank lease and keep-warm
+
+- A two-Mac cluster session has no fixed lifetime and no request count any more. The 300-second session (1,800 for MiMo), the sixteen-request cap, the installed session's teardown at its deadline, the rotation to a new session after sixteen requests and the member session's 900-second cap are removed; a loaded model stays resident and serving until it is stopped (`darkbloom stop`, an operator unload, an autopilot model switch) or a real failure is detected. The capability record drops `maxLifetimeSeconds` and `maxRequests`.
+- Each worker holds a renewable rank lease instead (S03): armed before its weights load at most one grant away, renewed every 5 s for 30 s by its owner with an `extendDeadline` line on the worker's control pipe, which the worker reads from launch, through the load. An owner that stops renewing (it stopped, died or lost its link) leaves the worker to end by itself within the time to live, through the forced exit that releases MLX's wired memory first. The leader renews each remote owner's lease the same way (`renew` frames), and each owner renews its own worker's.
+- A cluster member honors the coordinator's grant lease (S15): `native_pair_lease` frames move its deadline (a grant may leave at most 120 s plus 5 s of clock allowance); an established session survives a dropped control connection for the 90-second grace, and the member claims it again with `resume` in its registration.
+- Keep-warm, on by default (S27): a GPU pulse on each worker's own executor every half second while idle once the first request has run (back-off for a minute after a slow submission), and a 1x16 data-plane exchange both ranks run about once a second while idle, sequenced by the leader; a failed exchange ends the session cleanly. `darkbloom-cluster-pair-check --keep-warm off` and the worker's `--keep-warm off` turn it off for comparison.
+- `darkbloom-cluster-pair-check` takes any number of repetitions, idle gaps between them (`--idle-seconds`) and a qualification switch that stops renewing both leases (`--stop-renewals-after-seconds`).
+
 ## Unreleased — provider cache storage controls
 
 - Add `darkbloom cache set --daily-write-gb ... --directory ...` and `cache status` for persistent write limits and optional external cache storage. Validate local APFS storage, require encryption for external volumes, pin the volume UUID and refuse unavailable or replaced disks without falling back. Keep encryption keys and the rolling-day write ledger on the Mac; switching disks does not reset usage. Changes apply after restart.

@@ -29,12 +29,7 @@ extension Start {
         let budget = try session.firstTokenBudgetPolicy()
         let server = DistributedLocalServer(
             session: session, config: .init(host: bind, port: port, authToken: token),
-            firstTokenBudgetPolicy: budget,
-            replacementSessionFactory: {
-                let next = try await factory.prepare()
-                next.installStopNoticeHandler(announce)
-                return next
-            })
+            firstTokenBudgetPolicy: budget)
 
         // Keep the existing endpoint/PID and sleep-prevention ownership. The
         // cluster leader never takes the native device gate from its own child.

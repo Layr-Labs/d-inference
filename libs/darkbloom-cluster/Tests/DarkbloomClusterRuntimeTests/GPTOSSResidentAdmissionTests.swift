@@ -98,7 +98,8 @@ struct GPTOSSResidentAdmissionTests {
         refuses("a dense model ID") { try Self.admit(identity: try Self.identity(model: "registered_qwen35_9b")) }
         refuses("another artifact") { try Self.admit(identity: try Self.identity(artifactSHA: String(repeating: "0", count: 64))) }
         refuses("another configuration hash") { try Self.admit(identity: try Self.identity(configSHA: String(repeating: "0", count: 64))) }
-        refuses("a lifetime beyond the bound") { try Self.admit(deadline: Self.now + 300_000_000_001, identity: identity) }
+        // No per-model lifetime: a bounded run's deadline is held to the protocol's hour.
+        refuses("a deadline beyond the hour") { try Self.admit(deadline: Self.now + 3_600_000_000_001, identity: identity) }
         refuses("an expired deadline") { try Self.admit(deadline: Self.now, identity: identity) }
         refuses("changed configuration bytes") { try Self.admit(identity: identity, config: try Self.fixture("configuration") + Data(" ".utf8)) }
         refuses("changed manifest bytes") { try Self.admit(identity: identity, manifest: try Self.fixture("manifest") + Data(" ".utf8)) }
@@ -156,7 +157,6 @@ struct GPTOSSResidentAdmissionTests {
         #expect(capability.runtimeModelID == spec.model.rawValue && capability.profile.id == spec.profileID)
         #expect(capability.partitions.map { $0.stages[0].sourceLayerEnd } == [6, 8, 10, 12])
         #expect(capability.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
-        #expect(capability.maxLifetimeSeconds == 300 && capability.maxRequests == 16)
         // The dense catalog does not know this model, and this adapter does not know a dense one.
         #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: spec.model.rawValue) == nil)
         #expect(GPTOSSResidentCapabilityMetadata.registeredModel(runtimeModelID: "registered_qwen35_9b") == nil)

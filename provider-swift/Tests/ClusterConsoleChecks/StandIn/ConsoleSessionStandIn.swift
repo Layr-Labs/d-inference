@@ -74,7 +74,7 @@ import DarkbloomClusterProcess
                 authenticationConfigured: false, hostPhase: host, session: observation, boundPort: 8000, acquisitions: 0, failed: false,
                 ready: ready,
                 admissionAvailable: ready && admission?.valid == true && admission?.activeRequest == false
-                    && admission?.draining == false && (admission?.remainingRequests ?? 0) > 0,
+                    && admission?.draining == false,
                 quarantined: host == "quarantined" || observation.phase == "quarantined")
             let temporary = statusFile.appendingPathExtension("tmp")
             try ClusterStatusCodec.encode(status).write(to: temporary)

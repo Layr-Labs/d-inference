@@ -61,7 +61,11 @@ enum AdmissionTestFailure: Error { case failed(String) }
         for value in ["0", "1", "-1", "0123", "2147483648"] {
             try refuse(replacing(base + extra, "--bootstrap-owner-pid", value))
         }
-        for value in [String(now), String(lifetime + 1), "0" + String(lifetime), "-1"] {
+        // The bootstrap may outlast the first lease grant (the lease is renewed
+        // while the worker loads and joins its peer), but not the hour.
+        _ = try WorkerConfiguration(arguments: replacing(base + extra, "--bootstrap-deadline-uptime-nanoseconds", String(lifetime + 1)), now: now)
+        accepted += 1
+        for value in [String(now), String(now + 3_600_000_000_001), "0" + String(lifetime), "-1"] {
             try refuse(replacing(base + extra, "--bootstrap-deadline-uptime-nanoseconds", value))
         }
         for value in ["relative", "/" + String(repeating: "a", count: 103), "/bad\0path"] {

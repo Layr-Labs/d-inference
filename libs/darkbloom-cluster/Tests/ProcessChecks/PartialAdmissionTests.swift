@@ -70,7 +70,7 @@ private final class AdmissionCompletion: @unchecked Sendable {
                 let child = try ClusterWorkerProcess(launch: .init(executable: executable,
                     arguments: [String(rank), behaviors[rank]], environment: [:]), expectedIdentity: fixtureIdentity,
                     rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                    startupDeadline: now + 3_000_000_000, lifetimeDeadline: end)
+                    startupDeadline: now + 3_000_000_000, initialLeaseDeadline: end)
                 try child.launch(); return SubmissionEndpoint(child)
             }
             defer { for endpoint in endpoints { endpoint.requestNativeCleanup() } }
@@ -99,7 +99,7 @@ private final class AdmissionCompletion: @unchecked Sendable {
             let child = try ClusterWorkerProcess(launch: .init(executable: executable,
                 arguments: [String(rank), rank == 0 ? "slow-admit" : "normal"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: now + 3_000_000_000, lifetimeDeadline: end)
+                startupDeadline: now + 3_000_000_000, initialLeaseDeadline: end)
             try child.launch(); return SubmissionEndpoint(child, holdProof: rank == 1)
         }
         defer { for endpoint in endpoints { endpoint.allowCleanupProof(); endpoint.requestNativeCleanup() } }

@@ -49,7 +49,6 @@ final class RegisteredModelListsTests: XCTestCase {
             let request = try XCTUnwrap(QualificationRequest.registeredModel(name), "\(name) has no qualification request row")
             XCTAssertEqual(request.profileID, entry.profileID, name)
             XCTAssertEqual(request.supportedCuts, entry.supportedCuts, name)
-            XCTAssertEqual(request.maximumLifetimeSeconds, entry.maximumLifetimeSeconds, name)
             XCTAssertEqual(PromptTokenizer.registeredManifests.first { $0.modelID == name }?.sha256, entry.manifestSHA256, name)
             XCTAssertTrue(usage.split(separator: "\n").contains(Substring(
                 "\(name): " + entry.supportedCuts.map(String.init).joined(separator: "|"))), "\(name) is missing from the usage text")

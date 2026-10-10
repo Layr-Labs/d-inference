@@ -355,6 +355,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     guard inc == nativeKeyRelay.start.ownerIncarnation, launch == nativeKeyRelay.start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
                 }
                 incarnation = inc; launchID = launch
+                // The open was the first grant; renewals follow one interval on.
+                nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
                 // See ownerRetirementDeadlineUptimeNanoseconds: the owner's own
                 // lifetime, and so its ceiling, ends no later than this.
                 let latest = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(offeredLifetime)

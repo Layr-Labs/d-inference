@@ -53,7 +53,7 @@ private final class Sides {
         return url
     }
 
-    func configuration(outputCount: Int = 5, recording: Bool = true, lifetime: Int = 30, startup: Int = 10,
+    func configuration(outputCount: Int = 5, recording: Bool = true, startup: Int = 10,
                        schedule: String = "serial_v1", progress: Int? = 60_000,
                        keepRunFiles: Bool = true, localRank: Int = 0) throws -> PairConfiguration {
         let request = try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...40), chunkSize: 16,
@@ -61,7 +61,7 @@ private final class Sides {
         // Each of the two directories belongs to a rank; the local side is the one of the local rank.
         return try PairConfiguration(request: request, stageCut: 8, local: sides[localRank], remote: sides[1 - localRank],
             remoteTransport: ["/bin/sh", "-c"], coordinator: Self.coordinator, prefillSchedule: schedule,
-            recording: recording, lifetimeSeconds: lifetime, startupSeconds: startup, requestSeconds: 10,
+            recording: recording, startupSeconds: startup, requestSeconds: 10,
             rankOneDelaySeconds: 0, progressTimeoutMilliseconds: progress, keepRunFiles: keepRunFiles,
             sensitive: ["operator@peer-mac.example"], localRank: localRank)
     }
@@ -306,9 +306,10 @@ final class PairDriverTests: XCTestCase {
     }
 
     func testRefusesWhileAWorkerFromThisPathIsStillRunningAndCountsIt() throws {
-        // A first run whose rank 1 stays alive until its 10-second lifetime ends.
+        // A first run whose rank 1 ignores its input, and so its lease
+        // renewals, and stays alive until its first lease grant ends.
         let sides = try Sides(modes: ["ok", "never-ready"])
-        let first = try sides.configuration(lifetime: 10, startup: 3)
+        let first = try sides.configuration(startup: 3)
         let ended = expectation(description: "first run ended")
         let firstReport = ReportBox()
         DispatchQueue.global().async { firstReport.set(PairDriver(configuration: first).run()); ended.fulfill() }
@@ -346,14 +347,15 @@ final class PairDriverTests: XCTestCase {
         assertEndedByItself(report, sides, configuration)
     }
 
-    func testWorkerThatNeverBecomesReadyIsLeftToItsOwnLifetime() throws {
+    func testWorkerThatNeverBecomesReadyIsLeftToItsOwnLease() throws {
         let sides = try Sides(modes: ["ok", "never-ready"])
-        let configuration = try sides.configuration(lifetime: 10, startup: 3)
+        let configuration = try sides.configuration(startup: 3)
         let started = Date()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "failed")
         XCTAssertTrue(report.failure?.contains("not ready within 3 s: rank 1 remote") == true, report.failure ?? "")
-        // It ignored its input and ended at the lifetime it was launched with.
+        // It ignored its input, renewals included, and ended at the first
+        // lease grant it was launched with: no lifetime, only the lease.
         XCTAssertEqual(report.ranks[1].exitStatus, 124)
         XCTAssertGreaterThan(Date().timeIntervalSince(started), 8)
         XCTAssertEqual(report.ranks[0].exitStatus, 1)
@@ -432,8 +434,8 @@ final class PairDriverTests: XCTestCase {
             ("coordinator without port", changed { $0.coordinator = "10.0.0.1" }),
             ("multicast coordinator", changed { $0.coordinator = "224.0.0.1:47000" }),
             ("padded port", changed { $0.coordinator = "10.0.0.1:047000" }),
-            ("lifetime", changed { $0.lifetimeSeconds = 301 }),
-            ("startup beyond lifetime", changed { $0.startupSeconds = 31 }),
+            ("no repetitions", changed { $0.repetitions = 0 }),
+            ("startup beyond an hour", changed { $0.startupSeconds = 3601 }),
             ("schedule", changed { $0.prefillSchedule = "eager" }),
             ("progress timeout", changed { $0.progressTimeoutMilliseconds = 10 }),
             ("guard required without a timeout", changed { $0.progressTimeoutMilliseconds = nil }),
@@ -643,7 +645,10 @@ final class PairDriverTests: XCTestCase {
         var recording = try sides.configuration()
         recording.repetitions = 2
         XCTAssertThrowsError(try recording.validate())
-        recording.repetitions = 9; recording.recording = false
+        // A serving run has no session limit: hundreds of requests are one run.
+        recording.repetitions = 300; recording.recording = false
+        XCTAssertNoThrow(try recording.validate())
+        recording.repetitions = PairConfiguration.maximumRepetitions + 1
         XCTAssertThrowsError(try recording.validate())
     }
 

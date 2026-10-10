@@ -56,9 +56,11 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             throw DistributedEngineError.unsupportedRequest("worker supports only greedy text; stop strings stay in the provider")
         }
         let uptime = DispatchTime.now().uptimeNanoseconds
+        // The workers have no lifetime: their rank leases are renewed while
+        // the request runs, so only the request's own budget bounds it.
         let deadlines = try deadlineContext.localDeadlines(at: ContinuousClock.now,
             uptimeBeforeNow: uptime, maximumRemaining: profile.requestTimeout,
-            lifetimeDeadline: pair.localLifetimeDeadlineUptimeNanoseconds)
+            lifetimeDeadline: .max)
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit)

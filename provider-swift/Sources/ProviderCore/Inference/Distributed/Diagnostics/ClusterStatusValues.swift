@@ -17,8 +17,6 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
     /// The saved setup's selected generation mode; the pipeline when it names none.
     public let generationMode: ClusterGenerationMode
     public let peers: [Peer]
-    public let maximumLifetimeSeconds: Int
-    public let maximumRequests: Int
 
     public struct Peer: Codable, Sendable, Equatable {
         public let id: String
@@ -38,7 +36,6 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
         artifactSHA256 = capability.artifactSHA256; configurationModelSHA256 = capability.configurationSHA256
         planSHA256 = configuration.selectedPlanSHA256; prefillSchedule = configuration.selectedPrefillSchedule
         generationMode = configuration.selectedGenerationMode
-        maximumLifetimeSeconds = capability.maxLifetimeSeconds; maximumRequests = capability.maxRequests
         peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256,
             supportedGenerationModes: ClusterGenerationSelection.supportedModes(for: $0, capability: capability)) }
     }
@@ -99,10 +96,12 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
         self.collectiveProgressLimitMilliseconds = collectiveProgressLimitMilliseconds
     }
 
+    /// A session has no lifetime and no request count; these are counters.
     public struct Admission: Codable, Sendable, Equatable {
-        /// The leader's already-clamped local lifetime, sampled locally.
-        public let remainingLifetimeNanoseconds: UInt64
-        public let remainingRequests: Int
+        /// Requests admitted since the pair became ready.
+        public let requestsServed: Int
+        /// Keep-warm data-plane exchanges completed while idle.
+        public let keepWarmExchanges: Int
         public let activeRequest: Bool
         public let draining: Bool
         public let valid: Bool

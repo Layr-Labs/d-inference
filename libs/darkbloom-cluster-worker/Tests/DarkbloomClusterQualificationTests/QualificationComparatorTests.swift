@@ -292,8 +292,7 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(mimo.profileID, "registered_mimo_v26_flash_mopd_greedy_generation_v1")
         XCTAssertEqual(mimo.supportedCuts, [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44])
         let mimoRow = try XCTUnwrap(QualificationRequest.registeredModel(mimo.modelID))
-        XCTAssertEqual(mimoRow.maximumLifetimeSeconds, 1800); XCTAssertFalse(mimoRow.hasRecordingRuntime)
-        XCTAssertEqual(QualificationRequest.registeredModel(small.modelID)?.maximumLifetimeSeconds, 300)
+        XCTAssertFalse(mimoRow.hasRecordingRuntime)
         XCTAssertEqual(QualificationRequest.registeredModel(large.modelID)?.hasRecordingRuntime, true)
         // A Gemma request carries its own vocabulary and its two serving values; a Qwen request keeps the Qwen bound.
         let source = QualificationPromptSource(kind: "tokenIDs", description: "test")

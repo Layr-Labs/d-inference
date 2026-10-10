@@ -161,6 +161,8 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     /// behind any command already written, until the input closes, the worker
     /// exits or the qualification fault says to stop.
     private func renewLease() {
+        // The launch deadline is the first grant; renewals follow one interval on.
+        Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
             let state = lock.withLock { () -> (stop: Bool, renewal: UInt64, started: UInt64) in

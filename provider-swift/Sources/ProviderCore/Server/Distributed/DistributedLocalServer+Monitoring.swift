@@ -1,32 +1,25 @@
 import Foundation
 
 extension DistributedLocalServer {
-    func startLifetimeMonitor(_ target: DistributedLocalServerGeneration, deadline: UInt64) {
+    /// Watches the serving generation. A session has no fixed lifetime and no
+    /// request count: it serves until it is stopped or it fails. The monitor
+    /// ends serving only when the session itself is no longer valid (a rank
+    /// was lost, its rank lease lapsed, or it was quarantined or released).
+    func startSessionMonitor(_ target: DistributedLocalServerGeneration) {
         guard generation === target else { return }
-        lifetimeTask?.cancel()
-        lifetimeTask = Task {
+        monitorTask?.cancel()
+        monitorTask = Task {
             while !Task.isCancelled {
-                // The old timer cannot stop a replacement generation.
                 guard generation === target else { return }
-                let now = DispatchTime.now().uptimeNanoseconds
-                if now >= deadline { beginTeardown(drainUntil: nil); return }
                 if [.starting, .serving].contains(phase),
                    target.session.status != .ready || target.session.httpSessionInvalid {
                     failed = true; beginTeardown(drainUntil: nil); return
                 }
-                if phase == .serving, target.session.httpSessionExhausted {
-                    if replacementSessionFactory != nil {
-                        beginQuotaRotation(target)
-                    } else if target.pin == nil {
-                        // Preserve the existing one-session default behavior.
-                        beginTeardown(drainUntil: nil); return
-                    }
-                }
-                if ![.starting, .serving, .rotating].contains(phase),
+                if ![.starting, .serving].contains(phase),
                    [.quarantined, .released].contains(target.session.status) {
                     beginTeardown(drainUntil: nil); return
                 }
-                do { try await Task.sleep(nanoseconds: min(deadline - now, 100_000_000)) }
+                do { try await Task.sleep(nanoseconds: 100_000_000) }
                 catch { return }
             }
         }

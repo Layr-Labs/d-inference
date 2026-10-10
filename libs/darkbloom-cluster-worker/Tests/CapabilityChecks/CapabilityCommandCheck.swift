@@ -109,7 +109,7 @@ import Foundation
                                                                     runtimeBinarySHA256: binary)
                 try capabilityCheck(mimo.adapterID == "mimo-v26-layer-stage" && mimo.runtimeModelID == "registered_mimo_v26_flash_mopd"
                     && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode]
-                    && mimo.supportedPrefillSchedules == [.serial] && mimo.maxLifetimeSeconds == 1800
+                    && mimo.supportedPrefillSchedules == [.serial]
                     && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44]
                     && mimo.partitions.allSatisfy { $0.stages.count == 2 && $0.stages[1].sourceLayerEnd == 48 },
                     "The MiMo capability differs from its resident row")

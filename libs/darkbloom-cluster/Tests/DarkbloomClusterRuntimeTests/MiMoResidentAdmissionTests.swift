@@ -88,8 +88,6 @@ struct MiMoResidentAdmissionTests {
         // No phase split: the rank that decodes alone would hold the whole model.
         #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
         #expect(spec.maximumManifestPayloadBytes == 172_863_462_401 && spec.maximumStageTensorBytes == 167_264_120_704)
-        #expect(MiMoRegisteredSpecification.maximumLifetimeNanoseconds == 1_800_000_000_000)
-        #expect(MiMoRegisteredSpecification.maximumRequests == 16)
         #expect(try MiMoRegisteredSpecification.specification(runtimeModelID: "registered_mimo_v26_flash_mopd").model == .v26FlashMOPD)
         #expect(try MiMoRegisteredSpecification.specification(configuration: Self.fixture("configuration")).model == .v26FlashMOPD)
         for unknown in ["", "registered_mimo_v26_flash_mopd ", "mimo-v2.6-flash-mopd", "registered_qwen35_9b"] {
@@ -267,8 +265,8 @@ struct MiMoResidentAdmissionTests {
         refused("an unlisted cut") { try Self.admit(Self.configuration(cut: 31, identity: Self.identity())) }
         refused("a cut outside the model") { try Self.admit(Self.configuration(cut: 48, identity: Self.identity())) }
         refused("lookahead") { try Self.admit(Self.configuration(schedule: .oneChunkLookahead, identity: Self.identity())) }
-        refused("a lifetime over the row's") {
-            try Self.admit(Self.configuration(deadline: Self.now + 1_800_000_000_001, identity: Self.identity()))
+        refused("a deadline beyond the hour") {
+            try Self.admit(Self.configuration(deadline: Self.now + 3_600_000_000_001, identity: Self.identity()))
         }
         refused("a past deadline") { try Self.admit(Self.configuration(deadline: Self.now, identity: Self.identity())) }
         refused("another configuration hash") {
@@ -300,8 +298,8 @@ struct MiMoResidentAdmissionTests {
         }
         // The dense rows' own arithmetic names are not MiMo switches and do not matter here.
         _ = try Self.admit(Self.configuration(identity: Self.identity()))
-        // The last second of the row's lifetime is admitted.
-        _ = try Self.admit(Self.configuration(deadline: Self.now + 1_800_000_000_000, identity: Self.identity()))
+        // The last second of the hour is admitted; the row has no lifetime of its own.
+        _ = try Self.admit(Self.configuration(deadline: Self.now + 3_600_000_000_000, identity: Self.identity()))
     }
 
     @Test func aRequestIsHeldToTheRowsProfile() throws {
@@ -330,7 +328,6 @@ struct MiMoResidentAdmissionTests {
         #expect(value.artifactSHA256 == spec.artifactSHA256 && value.manifestSHA256 == spec.manifestSHA256)
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == spec.supportedCuts)
         #expect(value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 48 })
-        #expect(value.maxLifetimeSeconds == 1800 && value.maxRequests == 16)
         #expect(value.supportedPrefillSchedules == [.serial])
         #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
         #expect(value.arithmeticPolicyID == "mimo_v26_text_ordinary_cache_bf16_defaults_v1")
@@ -345,17 +342,16 @@ struct MiMoResidentAdmissionTests {
         }
     }
 
-    @Test func theProtocolKeepsEachAdaptersOwnPolicyAndLifetime() throws {
+    @Test func theProtocolKeepsEachAdaptersOwnPolicyAndNoLifetime() throws {
         let dense = ClusterRuntimeAdapter.qwen35Dense, mimo = ClusterRuntimeAdapter.mimoV26LayerStage
         #expect(ClusterRuntimeAdapter.registering(runtimeModelID: "registered_mimo_v26_flash_mopd") == mimo)
-        // Every adapter but MiMo keeps the 300 seconds that used to be one literal.
-        #expect(ClusterRuntimeAdapter.allCases.filter { $0 != mimo }.allSatisfy { $0.maximumLifetimeSeconds == 300 })
-        // The dense adapter's values are the ones it always had.
-        #expect(dense.maximumLifetimeSeconds == 300 && dense.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1")
+        // The dense adapter's values are the ones it always had. No adapter has
+        // a session lifetime or a request count any more (removed 2026-10-10).
+        #expect(dense.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1")
         #expect(dense.registeredProfiles.map(\.runtimeModelID) == ["registered_qwen35_9b", "registered_qwen38_27b"])
-        #expect(mimo.maximumLifetimeSeconds == 1800 && mimo.registeredProfiles.count == 1)
+        #expect(mimo.registeredProfiles.count == 1)
         func capability(adapter: ClusterRuntimeAdapter, model: String? = nil, profile: String? = nil,
-                        policy: String? = nil, lifetime: Int) throws -> ClusterRuntimeCapability {
+                        policy: String? = nil) throws -> ClusterRuntimeCapability {
             let hash = String(repeating: "d", count: 64), other = String(repeating: "e", count: 64)
             return try ClusterRuntimeCapability(runtimeBinarySHA256: hash, adapterID: adapter.rawValue,
                 adapterVersion: 1, runtimeModelID: model ?? adapter.runtimeModelID, artifactSHA256: hash,
@@ -368,18 +364,15 @@ struct MiMoResidentAdmissionTests {
                           constructionConfigurationSHA256: hash),
                     .init(rank: 1, sourceLayerStart: 4, sourceLayerEnd: 8, stagePlanSHA256: other,
                           constructionConfigurationSHA256: hash)])],
-                arithmeticPolicyID: policy ?? adapter.arithmeticPolicyID, arithmeticPolicySHA256: hash,
-                maxLifetimeSeconds: lifetime, maxRequests: 16)
+                arithmeticPolicyID: policy ?? adapter.arithmeticPolicyID, arithmeticPolicySHA256: hash)
         }
-        _ = try capability(adapter: dense, lifetime: 300)
-        _ = try capability(adapter: mimo, lifetime: 1800)
-        #expect(throws: (any Error).self) { _ = try capability(adapter: dense, lifetime: 301) }
-        #expect(throws: (any Error).self) { _ = try capability(adapter: mimo, lifetime: 1801) }
+        _ = try capability(adapter: dense)
+        _ = try capability(adapter: mimo)
         // Neither adapter may borrow the other's policy, model or profile.
-        #expect(throws: (any Error).self) { _ = try capability(adapter: dense, policy: mimo.arithmeticPolicyID, lifetime: 300) }
-        #expect(throws: (any Error).self) { _ = try capability(adapter: mimo, policy: dense.arithmeticPolicyID, lifetime: 300) }
-        #expect(throws: (any Error).self) { _ = try capability(adapter: dense, model: mimo.runtimeModelID, lifetime: 300) }
-        #expect(throws: (any Error).self) { _ = try capability(adapter: mimo, profile: dense.profileID, lifetime: 300) }
+        #expect(throws: (any Error).self) { _ = try capability(adapter: dense, policy: mimo.arithmeticPolicyID) }
+        #expect(throws: (any Error).self) { _ = try capability(adapter: mimo, policy: dense.arithmeticPolicyID) }
+        #expect(throws: (any Error).self) { _ = try capability(adapter: dense, model: mimo.runtimeModelID) }
+        #expect(throws: (any Error).self) { _ = try capability(adapter: mimo, profile: dense.profileID) }
     }
 
     @Test func theCatalogListsEveryAdaptersModelsFromTheirOwnRows() throws {
@@ -394,15 +387,14 @@ struct MiMoResidentAdmissionTests {
         for entry in all {
             let adapter = try #require(ClusterRuntimeAdapter(rawValue: entry.adapterID))
             #expect(adapter.registeredProfiles.contains { $0.runtimeModelID == entry.runtimeModelID && $0.profileID == entry.profileID })
-            #expect(entry.maximumLifetimeSeconds == adapter.maximumLifetimeSeconds)
             #expect(ClusterResidentModelCatalog.entry(runtimeModelID: entry.runtimeModelID) == entry)
         }
         let nine = try #require(ClusterResidentModelCatalog.entry(runtimeModelID: "registered_qwen35_9b"))
-        #expect(nine.supportedCuts == [4, 8, 12, 16] && nine.layerCount == 32 && nine.maximumLifetimeSeconds == 300)
+        #expect(nine.supportedCuts == [4, 8, 12, 16] && nine.layerCount == 32)
         #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
         let mimo = try ClusterResidentModelCatalog.entry(configuration: Self.fixture("configuration"))
         #expect(mimo.family == .mimoV26 && mimo.layerCount == 48 && mimo.supportedCuts == [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44])
-        #expect(mimo.maximumLifetimeSeconds == 1800 && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
+        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
         #expect(ClusterResidentModelCatalog.entry(runtimeModelID: "mimo-v2.6-flash-mopd") == nil)
         #expect(throws: (any Error).self) { _ = try ClusterResidentModelCatalog.entry(configuration: Data("{}".utf8)) }
         let described = try ClusterResidentModelCatalog.describe(configuration: Self.fixture("configuration"),

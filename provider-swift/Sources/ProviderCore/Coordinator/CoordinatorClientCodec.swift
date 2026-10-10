@@ -19,7 +19,8 @@ public enum CoordinatorClientCodec {
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
-        memberRegistrationNonce: String? = nil
+        memberRegistrationNonce: String? = nil,
+        clusterResume: ClusterMembership.Resume? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -92,7 +93,8 @@ public enum CoordinatorClientCodec {
             executionRole: config.executionRole,
             memberRegistrationNonce: memberMode ? memberRegistrationNonce : nil,
             clusterModels: memberMode ? servingModels : nil,
-            clusterMembership: memberMode ? config.clusterMembership : nil
+            // A member away in its session's disconnect grace claims it here.
+            clusterMembership: memberMode ? config.clusterMembership?.resuming(clusterResume) : nil
         ))
     }
 
@@ -111,7 +113,8 @@ public enum CoordinatorClientCodec {
         modelAutopilot: ModelAutopilotSnapshot? = nil,
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
-        memberRegistrationNonce: String? = nil
+        memberRegistrationNonce: String? = nil,
+        clusterResume: ClusterMembership.Resume? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -129,7 +132,8 @@ public enum CoordinatorClientCodec {
                 modelAutopilot: modelAutopilot,
                 ordinaryServingModelIDs: ordinaryServingModelIDs,
                 autopilotInventory: autopilotInventory,
-                memberRegistrationNonce: memberRegistrationNonce
+                memberRegistrationNonce: memberRegistrationNonce,
+                clusterResume: clusterResume
             )
         )
     }

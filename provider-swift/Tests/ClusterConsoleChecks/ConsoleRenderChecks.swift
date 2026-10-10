@@ -276,7 +276,7 @@ extension ClusterConsoleCheck {
         let serving = screen(state(ConsoleFixtures.snapshot(saved: ConsoleFixtures.savedSetup(),
             live: try live(host: "serving", phase: "ready", ready: true, capacity: [4096, 8192]))))
         for sentence in ["host serving, session ready, ready, admission available", "Epoch 11111111-2222-3333-4444-555555555555",
-                         "Lifetime remaining 281 s; admissions remaining 15; no active request.", "Rank 1, peer-1: authenticatedSSH; native ready;"] {
+                         "Requests served 1; keep-warm exchanges 12; no active request.", "Rank 1, peer-1: authenticatedSSH; native ready;"] {
             expect(serving.contains(sentence), "the serving session lacks: \(sentence)")
         }
         // A newer observation replaces the session lines, and only those.

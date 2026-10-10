@@ -49,7 +49,9 @@ func directory() throws -> URL {
         let decoded = try OwnerWire.decode(data, commandStream: true)
         try require(decoded.deliveryRemaining == 200, "Admission duration lost")
         let local = try decoded.localCommand(now: 300, lifetimeDeadline: 1_100)
-        if case .reserve(let r) = local.command { try require(r.deadlineUptimeNanoseconds == 1_100, "Remote translation failed") }
+        // The leader's remaining duration is translated, not capped by the
+        // owner's lease, which the leader renews while the request runs.
+        if case .reserve(let r) = local.command { try require(r.deadlineUptimeNanoseconds == 1_300, "Remote translation failed") }
         else { throw OwnerWire.invalid("Expected reserve") }
         try rejects { _ = try OwnerWire.decode(Data("{\"version\":1,\"version\":1}\n".utf8), commandStream: true) }
         try rejects { _ = try OwnerWire.decode(data.dropLast(), commandStream: true) }

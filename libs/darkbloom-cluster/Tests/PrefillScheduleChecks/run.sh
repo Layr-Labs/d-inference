@@ -75,7 +75,7 @@ task_catalog_paths=()
 for task_source in "${task_catalog[@]}"; do task_catalog_paths+=("$task_runtime/$task_source.swift"); done
 xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterRuntime \
   -emit-module-path "$task_build/DarkbloomClusterRuntime.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
-  "$task_bootstrap_tests/LoadConfiguration.swift" "${task_catalog_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
+  "$task_bootstrap_tests/LoadConfiguration.swift" "$task_runtime/Support/ClusterLeaseDeadline.swift" "${task_catalog_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" \
   -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap \
   "$task_worker/Startup/WorkerConfiguration.swift" "$task_worker/Startup/WorkerBootstrapConfiguration.swift" \

@@ -4,10 +4,11 @@
 //
 // Re-homed from the retired `BatchScheduler+Telemetry` implementation's
 // `measuredLiveKVHeadroomBytes` / `hasServeableKVHeadroom`: pure
-// `UnifiedMemoryCap` math over the live MLX + OS memory counters, used by
-// the post-load guard in `ensureModelLoaded` (a model that loads with no
-// serveable KV headroom is unloaded + 503'd instead of advertising a slot
-// whose every request the KV gate would reject).
+// `UnifiedMemoryCap` math over the MLX + OS memory counters, used by the
+// post-load guards (a model that loads with no serveable KV headroom is
+// unloaded + 503'd instead of advertising a slot whose every request the KV
+// gate would reject). `ensureModelLoaded` reads the counters through the
+// owner's `GlobalKVCacheBudget`; the other forms read them live.
 
 import Foundation
 import MLX
@@ -31,6 +32,22 @@ public enum KVHeadroomProbe {
         return UnifiedMemoryCap.liveKVHeadroomBytes(
             mlxUsedBytes: mlxUsed,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            activationReserveBytes: activationReserveBytes)
+    }
+
+    /// The same measurement over one sample from `budget`'s memory reader.
+    /// A load owner's post-load guards use this, so they read memory from the
+    /// source its load admission reads. The production budget samples the
+    /// live MLX and OS counters that the parameterless form reads.
+    static func measuredLiveKVHeadroomBytes(
+        budget: GlobalKVCacheBudget, activationReserveBytes: UInt64
+    ) -> UInt64 {
+        let sample = budget.memoryHeadroomSnapshot()
+        let (mlxUsed, overflow) = sample.activeBytes.addingReportingOverflow(sample.cacheBytes)
+        return UnifiedMemoryCap.liveKVHeadroomBytes(
+            physicalBytes: sample.totalBytes,
+            mlxUsedBytes: overflow ? .max : mlxUsed,
+            systemAvailableBytes: sample.systemAvailableBytes,
             activationReserveBytes: activationReserveBytes)
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterPlacement
 import Darwin
 import DarkbloomClusterProtocol
 @testable import InstalledContract
@@ -81,8 +82,16 @@ enum ConsoleFixtures {
             maximumLifetimeSeconds: 300, maximumRequests: 16, maximumPromptTokens: 8192, maximumOutputTokens: 128)
     }
 
+    /// What the plan tool beside the worker would report for the fixture model: rank 0 its four layers, rank 1 the rest.
+    static let holdings = ClusterInstalledHoldings.Observation(holdings: .init(ranks: [
+        .init(rank: 0, label: "peer-0", firstLayer: 0, endLayer: 4, holdsEveryEarlierLayer: false, weightsBytes: 1_610_612_736,
+              physicalMemoryBytes: 274_877_906_944, local: true),
+        .init(rank: 1, label: "peer-1", firstLayer: 4, endLayer: 32, holdsEveryEarlierLayer: false, weightsBytes: 4_503_339_494,
+              physicalMemoryBytes: nil, local: false)]), detail: nil)
+
     static let installed = ClusterConsoleInstalled(workerBinary: .verified, hasProgressGuard: true, acceptsStartupDeadline: true,
-        manifest: .verified, artifactFiles: .init(expected: 12, present: 12, expectedBytes: 6_113_952_230, missingOrDifferent: []))
+        manifest: .verified, artifactFiles: .init(expected: 12, present: 12, expectedBytes: 6_113_952_230, missingOrDifferent: []),
+        holdings: holdings)
 
     static func savedSetup(role: ClusterConfiguration.Role = .leader) -> ClusterConsoleSavedSetup {
         .init(state: .loaded, error: nil, configurationSHA256: String(repeating: "d", count: 64),

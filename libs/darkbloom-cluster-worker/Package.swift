@@ -14,6 +14,7 @@ let package = Package(
         .executable(name: "darkbloom-cluster-stage-check", targets: ["StageLoadCheck"]),
         .executable(name: "darkbloom-cluster-reference", targets: ["ReferenceCheck"]),
         .executable(name: "darkbloom-cluster-pair-check", targets: ["PairCheck"]),
+        .executable(name: "darkbloom-cluster-plan", targets: ["PlacementPlan"]),
     ],
     dependencies: [
         .package(path: "../darkbloom-cluster"),
@@ -35,6 +36,11 @@ let package = Package(
         ]),
         // One Mac, one rank, real artifact: verified stage load and release.
         .executableTarget(name: "StageLoadCheck", dependencies: [
+            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+        ]),
+        // One Mac, no model: this Mac's device profile, an artifact's layout
+        // and the placement of a model on two or more devices.
+        .executableTarget(name: "PlacementPlan", dependencies: [
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),
         // Qualification: requests, reports, the comparator and the pair driver.

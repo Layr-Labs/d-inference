@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "DarkbloomClusterProcess", targets: ["DarkbloomClusterProcess"]),
         .library(name: "DarkbloomClusterRemote", targets: ["DarkbloomClusterRemote"]),
         .library(name: "DarkbloomClusterRuntime", targets: ["DarkbloomClusterRuntime"]),
+        .library(name: "DarkbloomClusterPlacement", targets: ["DarkbloomClusterPlacement"]),
     ],
     dependencies: [
         // Pinned Darkbloom MLX build (same submodule the provider compiles);
@@ -26,6 +27,10 @@ let package = Package(
         .target(name: "DarkbloomClusterSecurity", dependencies: ["DarkbloomClusterBootstrap"]),
         .target(name: "DarkbloomClusterProtocol"),
         .target(name: "DarkbloomClusterBootstrap"),
+        // Placement from detected hardware: device profile, model layout, speed
+        // estimate and the planner. Foundation only, so the provider can plan
+        // without linking the MLX runtime.
+        .target(name: "DarkbloomClusterPlacement", dependencies: ["DarkbloomClusterProtocol"]),
         .target(name: "DarkbloomClusterProcess", dependencies: ["DarkbloomClusterProtocol"]),
         .target(name: "DarkbloomClusterRemote", dependencies: ["DarkbloomClusterProtocol", "DarkbloomClusterProcess", "DarkbloomClusterBootstrap", "DarkbloomClusterSecurity"]),
         // Staged subset: the model-free closure plus tensor-level
@@ -36,6 +41,7 @@ let package = Package(
         .target(name: "DarkbloomClusterRuntime", dependencies: [
             "DarkbloomClusterProtocol",
             "DarkbloomClusterSecurity",
+            "DarkbloomClusterPlacement",
             .product(name: "MLX", package: "mlx-swift"),
             .product(name: "MLXNN", package: "mlx-swift"),
             .product(name: "MLXLLM", package: "mlx-swift-lm"),

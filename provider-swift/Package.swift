@@ -137,6 +137,7 @@ let package = Package(
                 .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
                 .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
                 .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterPlacement", package: "darkbloom-cluster"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),

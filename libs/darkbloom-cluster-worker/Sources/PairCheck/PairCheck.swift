@@ -26,6 +26,8 @@ import Foundation
               --local-worker /ABS/WORKER --remote-worker /ABS/WORKER
               --local-model-dir /ABS/MODEL --remote-model-dir /ABS/MODEL
               --local-rdma-device NAME --remote-rdma-device NAME --coordinator RANK0_LINK_IPV4:PORT
+              [--local-rank 0|1 (default 0; 1 runs rank 0 on the second Mac and rank 1 here, and the
+               coordinator address is then the second Mac's own link address)]
               [--evidence final-row|none] [--prefill-schedule serial_v1|one_chunk_lookahead_v1]
               [--mode pipeline|pipeline-compact|phase-split] [--repetitions 1...8 (with --evidence none)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
@@ -157,7 +159,7 @@ import Foundation
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
-            "--memory-gate", "--stage-residency", "--mimo-step-evidence"]
+            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -208,7 +210,8 @@ import Foundation
             keepRunFiles: fields["--keep-run-files"]?.first == "yes",
             preflightOnly: fields["--preflight-only"]?.first == "yes", generationMode: mode,
             repetitions: try integer(fields, "--repetitions") ?? 1,
-            workerTransport: fields["--transport"]?.first ?? PairConfiguration.jacclTransport, sensitive: sensitive)
+            workerTransport: fields["--transport"]?.first ?? PairConfiguration.jacclTransport, sensitive: sensitive,
+            localRank: try integer(fields, "--local-rank") ?? 0)
         if let fault = fields["--fault"]?.first {
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }

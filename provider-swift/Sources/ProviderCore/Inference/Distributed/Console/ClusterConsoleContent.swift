@@ -275,6 +275,11 @@ enum ClusterConsoleContent {
             let count = stage.sourceLayerEnd - stage.sourceLayerStart
             lines.append(.init("Rank \(stage.rank), \(stage.peerID)\(stage.local ? " (this Mac)" : ""): layers \(stage.sourceLayerStart) to \(stage.sourceLayerEnd - 1) (\(count)).", indent: 4, from: .wired("model.ranks")))
         }
+        // The plan's figure from the model's own files, beside this Mac's size:
+        // a small share on a large Mac is the plan and not a sign of nothing running.
+        if let holdings = snapshot.saved.installed?.holdings {
+            lines.append(.init(holdings.line, holdings.holdings == nil ? .dim : .normal, indent: 4, from: .wired("model.holdings")))
+        }
         for member in members {
             if member.nativeReady {
                 let capacity = member.requestCapacityBytes.map { "request capacity \(bytes(Int64($0)))" } ?? "no request capacity reported"

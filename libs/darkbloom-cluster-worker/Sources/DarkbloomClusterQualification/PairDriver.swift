@@ -71,10 +71,11 @@ public struct PairDriver: Sendable {
     public func run() -> PairReport {
         let c = configuration
         let redact = PairRedactor(sensitive: c.sensitive + [c.coordinator])
-        var ranks = (0...1).map { PairRankReport(role: PairConfiguration.roles[$0], rank: $0) }
+        var ranks = (0...1).map { PairRankReport(role: c.roles[$0], rank: $0) }
         var timing = PairTiming(note: "Driver clock, from the start command to rank 0's committed-token events; "
             + "includes control and transport. A recording worker also captures the final row and state digests, "
             + "so these are not serving timings."
+            + (c.localRank == 0 ? "" : " Rank 0 ran on the second Mac, so every event timed here crossed the remote transport first.")
             + (c.workerTransport == PairConfiguration.jacclTransport ? ""
                 : " Both ranks ran on one Mac over a loopback socket: not RDMA and not a pair timing."))
         var identity: QualificationIdentity?
@@ -169,7 +170,7 @@ public struct PairDriver: Sendable {
         hashesEqual = inspections[0].worker == inspections[1].worker
         metallibEqual = inspections[0].metallib == inspections[1].metallib
         guard hashesEqual == true else {
-            return finish("refused", "the worker binaries differ: \(inspections[0].worker) on rank 0 local, \(inspections[1].worker) on rank 1 remote")
+            return finish("refused", "the worker binaries differ: \(inspections[0].worker) on \(c.roles[0]), \(inspections[1].worker) on \(c.roles[1])")
         }
         guard metallibEqual == true else {
             return finish("refused", "the mlx.metallib files beside the workers differ")
@@ -219,7 +220,7 @@ public struct PairDriver: Sendable {
         // 3. Launch rank 0 first: it listens on the coordinator address.
         let workerIdentity = ClusterWorkerIdentity(membershipEpoch: c.membershipEpoch, modelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
-            peers: PairConfiguration.peerIDs.map { .init(id: $0, buildSHA256: workerSHA256) })
+            peers: c.peerIDs.map { .init(id: $0, buildSHA256: workerSHA256) })
         do {
             endpoints = try (0...1).map { rank in
                 try PairWorkerEndpoint(command: c.command(rank, script: c.launchScript(rank,

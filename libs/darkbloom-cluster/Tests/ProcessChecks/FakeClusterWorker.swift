@@ -9,6 +9,7 @@ import DarkbloomClusterBootstrap
         guard [3, 9].contains(CommandLine.arguments.count), let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
         let behavior = CommandLine.arguments[2]
         // A stand-in's own hard deadline: no check, passing or failing, leaves one behind.
+        // Like a real worker's lease, each renewal from its owner pushes it out again.
         alarm(60)
         if behavior.hasPrefix("bootstrap") {
             guard CommandLine.arguments.count == 9, CommandLine.arguments[3] == "--bootstrap-socket-path",
@@ -54,7 +55,7 @@ import DarkbloomClusterBootstrap
             if count < 0 { if errno == EINTR { continue }; exit(74) }
             let bytes = Data(buffer.prefix(count))
             for line in try decoder.append(bytes) {
-                guard case .command(let command) = try ClusterWorkerCodec.decodeControl(line) else { continue } // a rank-lease renewal
+                guard case .command(let command) = try ClusterWorkerCodec.decodeControl(line) else { alarm(60); continue } // a rank-lease renewal
                 try session.accept(command, now: DispatchTime.now().uptimeNanoseconds)
                 switch command.command {
                 case .reserve(let value):

@@ -446,6 +446,9 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertThrowsError(try h.event())
+        // The reader saw the deadline: the forced exit begins there, before release.
+        XCTAssertEqual(h.exits.reasons.first, "request-deadline")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
     }
 
     func testOutputFailurePreventsNativeStart() throws {
@@ -476,7 +479,7 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.runtime.startCount, 0)
         // Lost input begins the forced exit from the reader, before the
         // executor releases the model; the executor's own failure path joins it.
-        XCTAssertEqual(h.exits.reasons.first, "worker-input")
+        XCTAssertEqual(h.exits.reasons.first, "lost-input")
         XCTAssertTrue(h.exits.beganBeforeRelease)
     }
 

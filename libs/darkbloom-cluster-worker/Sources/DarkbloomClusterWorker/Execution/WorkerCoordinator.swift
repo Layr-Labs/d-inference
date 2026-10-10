@@ -53,10 +53,11 @@ final class WorkerCoordinator: @unchecked Sendable {
             Thread.detachNewThread { [self] in
                 defer { readerDone.leave() }
                 do { try readControl() } catch {
-                    // Lost or failed input: an executor blocked in a collective
-                    // would not see it until its guard; release now, bound the
-                    // unwind, then wake it.
-                    exitHooks.begin("worker-input")
+                    // Lost or failed input, or a deadline seen while awaiting
+                    // control: an executor blocked in a collective would not
+                    // see it until its guard; release now, bound the unwind,
+                    // then wake it.
+                    exitHooks.begin(Self.exitReason(error))
                     fail(error)
                 }
             }
@@ -112,6 +113,15 @@ final class WorkerCoordinator: @unchecked Sendable {
             }
             throw primary
         }
+    }
+
+    /// The reason a reader failure gives the forced exit, for the log.
+    static func exitReason(_ error: Error) -> String {
+        guard case WorkerFailure.invalid(let message) = error else { return "worker-input" }
+        if message.hasPrefix("EOF preceded") { return "lost-input" }
+        if message.hasPrefix("Worker request deadline") { return "request-deadline" }
+        if message.hasPrefix("Worker absolute lifetime") { return "lifetime-deadline" }
+        return "worker-input"
     }
 
     private func publish(_ event: ClusterWorkerEvent, requestID: UUID?) throws {

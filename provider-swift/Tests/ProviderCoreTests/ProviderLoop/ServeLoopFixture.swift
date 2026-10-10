@@ -41,10 +41,13 @@ struct ServeLoopFixture: Sendable {
 
     static func make(
         heartbeatIntervalSecs: UInt64 = 60,
-        privateOnly: Bool = false
+        privateOnly: Bool = false,
+        coordinatorURL overrideURL: String? = nil,
+        memoryGB: UInt64 = 64
     ) async throws -> ServeLoopFixture {
         let mock = MockCoordinator()
-        let coordinatorURL = try await mock.start().mockProviderWebSocketURL()
+        let localURL = try await mock.start().mockProviderWebSocketURL()
+        let coordinatorURL = overrideURL ?? localURL
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("serve-loop-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -54,7 +57,7 @@ struct ServeLoopFixture: Sendable {
         }
         let hardware = HardwareInfo(
             machineModel: "Mac16,5", chipName: "Apple M4 Max",
-            chipFamily: .m4, chipTier: .max, memoryGb: 64, memoryAvailableGb: 64,
+            chipFamily: .m4, chipTier: .max, memoryGb: memoryGB, memoryAvailableGb: memoryGB,
             cpuCores: .init(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546)
         let signer = ServeLoopTestSigner()

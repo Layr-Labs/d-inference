@@ -360,6 +360,14 @@ public final class MockCoordinator: @unchecked Sendable {
 
     // MARK: Push helpers
 
+    public func pushAppAttestShadow(_ payload: AppAttestShadowPayload) async throws {
+        try await sendCoordinatorMessage(.appAttestShadow(payload))
+    }
+
+    public func pushTrustStatus(_ status: CoordinatorMessage.TrustStatus) async throws {
+        try await sendCoordinatorMessage(.trustStatus(status))
+    }
+
     public func pushAttestationChallenge(
         nonce: String,
         timestamp: String

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -13,6 +13,11 @@ gate, and the code map — is in
 and is not restated here.
 
 Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
+
+App Attest replies and received grant updates can progress while model loading
+is suspended. A local Apple success still does not establish coordinator
+acceptance; use the current coordinator verdict when diagnosing expiry. See
+[provider connection control](../architecture/security/attestation.md#provider-connection-control).
 
 A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
 

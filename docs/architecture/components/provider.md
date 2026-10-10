@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-10
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -64,6 +64,14 @@ flowchart LR
 ```
 
 ### Process boundaries
+
+`ProviderLoop+Serve.swift` reads App Attest messages, authorization status and
+connection invalidation before forwarding slower events to its ordered work
+consumer. An inference handler awaiting a model load therefore cannot hold a
+renewal reply or a received grant update. Both consumers belong to the same
+serve invocation; shutdown finishes the work stream and waits for its consumer.
+The [attestation lifecycle](../security/attestation.md#provider-connection-control)
+owns the connection and trust guarantees.
 
 - **In-process inference.** The MLX stack is linked into the `darkbloom`
   binary; there is no Python interpreter and no inference subprocess. Runtime verification can launch a child for paged-kernel preflight

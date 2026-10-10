@@ -620,12 +620,26 @@ public struct WatchdogRecoveryService: Sendable {
             var state = try session.readState()
             let before = state
             // The previous watchdog may have exited after kickstart but
-            // before persisting its launch receipt. Keep the intent when
-            // the snapshot is unavailable so a later tick can recover it.
-            if state.candidate?.launchIntent != nil,
-               let snapshot = deps.launchSnapshot()
+            // before persisting its launch receipt. Require comparable
+            // evidence of a new launch; a health tick can precede kickstart.
+            // Keep unproven intent available for a later observation.
+            if let baseline = state.candidate?.launchIntent?.baseline,
+               let snapshot = deps.launchSnapshot(),
+               snapshot.label == baseline.label
             {
-                _ = state.reconcileLaunchIntent(snapshot: snapshot, now: now)
+                let runsAdvanced = if let previous = baseline.runs, let current = snapshot.runs {
+                    current > previous
+                } else {
+                    false
+                }
+                let processChanged = if let previous = baseline.process, let current = snapshot.process {
+                    current != previous
+                } else {
+                    false
+                }
+                if runsAdvanced || processChanged {
+                    _ = state.reconcileLaunchIntent(snapshot: snapshot, now: now)
+                }
             }
             guard let candidate = state.candidate else { return .noCandidate }
             let freshMatchingHeartbeat: Bool

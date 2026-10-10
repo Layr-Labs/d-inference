@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-10
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -213,10 +213,14 @@ that exact version is blocked; a newer release installs normally.
 
 If the watchdog exits after starting a candidate but before recording the
 launch receipt, its next health observations reconcile the saved intent with
-launchd's run count or process identity. A proven launch receives the existing
-startup timeout from reconciliation; repeated observations do not extend it.
-An unavailable launch snapshot preserves the intent for a later observation,
-and an unchanged snapshot does not arm a failed-start timeout. This also covers
+launchd's run count or process identity for the same job. For each comparison,
+both saved and current values must be known; either a higher run count or a
+changed process identity proves a launch. A proven launch receives the existing
+startup timeout from reconciliation;
+repeated observations do not extend it. Missing or unchanged evidence preserves
+the intent for a later observation without arming a failed-start timeout. This
+includes a health observation before restart and a previously unreadable process
+identity becoming available without other evidence of a launch. This also covers
 a candidate that remains running without a heartbeat
 (`provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
 `observeHealthyProvider`).

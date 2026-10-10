@@ -13,26 +13,35 @@ public struct ClusterWorkerPairReadiness: Sendable {
     public let requestCapacityBytes: Int
 }
 
-/// How long a pair's owner waits for a rank to answer. Neither wait ends in a
-/// signal: when one passes, the rank's command stream is closed and the rank
-/// ends itself. The caller chooses the values for the model its ranks hold.
+/// How long a pair's owner waits for a rank to answer. None of these waits
+/// ends in a signal: when one passes, the rank's command stream is closed and
+/// the rank ends itself. The caller chooses the values for the model its ranks hold.
 public struct ClusterWorkerPairTiming: Sendable, Equatable {
     /// Longest a rank may take to answer a reservation.
     public let admissionWaitNanoseconds: UInt64
     /// Longest a rank may take to answer `shutdown`.
     public let shutdownAcknowledgementNanoseconds: UInt64
+    /// Longest `shutdown` waits for a request that is still running to stop at
+    /// its next committed token before it cancels the request. A request that
+    /// stops this way leaves both ranks able to answer `shutdown`; a cancelled
+    /// one ends them, and a rank still inside a collective then needs its
+    /// progress limit. Zero cancels at once.
+    public let cleanStopWaitNanoseconds: UInt64
 
-    public init(admissionWaitNanoseconds: UInt64, shutdownAcknowledgementNanoseconds: UInt64) {
+    public init(admissionWaitNanoseconds: UInt64, shutdownAcknowledgementNanoseconds: UInt64,
+                cleanStopWaitNanoseconds: UInt64 = 0) {
         self.admissionWaitNanoseconds = admissionWaitNanoseconds
         self.shutdownAcknowledgementNanoseconds = shutdownAcknowledgementNanoseconds
+        self.cleanStopWaitNanoseconds = cleanStopWaitNanoseconds
     }
 
     public static let standard = ClusterWorkerPairTiming(admissionWaitNanoseconds: 5_000_000_000,
                                                          shutdownAcknowledgementNanoseconds: 2_000_000_000)
-    /// No wait is absent and none outlasts a minute.
+    /// No answer wait is absent and no wait outlasts a minute.
     static let longestWaitNanoseconds: UInt64 = 60_000_000_000
     var isWithinLimits: Bool {
         [admissionWaitNanoseconds, shutdownAcknowledgementNanoseconds].allSatisfy { (1...Self.longestWaitNanoseconds).contains($0) }
+            && cleanStopWaitNanoseconds <= Self.longestWaitNanoseconds
     }
 }
 
@@ -215,8 +224,16 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             if stopping { return (false, nil) }; stopping = true; return (true, active)
         }
         guard first.0 else { await shutdownFinished.value(); return }
-        let lease = first.1
-        if let lease { lease.cancel(reason: .callerCancelled); await lease.waitUntilRetired(); lease.releaseResources() }
+        if let lease = first.1 {
+            // A request that is still running is first asked to stop at its
+            // next committed token, which leaves both ranks retired and able
+            // to answer the shutdown below. Cancelling ends the ranks instead,
+            // and is what remains for a request that does not get there in time.
+            if timing.cleanStopWaitNanoseconds > 0, lease.isRunning, lease.requestCleanStop() {
+                _ = await lease.waitUntilRetired(until: DispatchTime.now().uptimeNanoseconds + timing.cleanStopWaitNanoseconds)
+            }
+            lease.cancel(reason: .callerCancelled); await lease.waitUntilRetired(); lease.releaseResources()
+        }
         let deadline = DispatchTime.now().uptimeNanoseconds + timing.shutdownAcknowledgementNanoseconds
         await withTaskGroup(of: Void.self) { group in
             for worker in workers {

@@ -19,10 +19,17 @@ struct DistributedInstalledTimeBudgets: Sendable, Equatable {
     /// Added to the collective progress limit for a clean stop: a rank releases
     /// its model and its owner exchanges the release.
     let stopMarginNanoseconds: UInt64
+    /// Longest a stop of the session waits for a request that is still running
+    /// to end at its next committed token before the request is cancelled.
+    /// Ending at a token leaves both ranks able to shut down at once;
+    /// cancelling ends them, and one still inside a collective then needs the
+    /// progress limit. Sized to reach the first token of the longest prompt.
+    let cleanStopWaitNanoseconds: UInt64
 
     var pairTiming: ClusterWorkerPairTiming {
         .init(admissionWaitNanoseconds: admissionWaitNanoseconds,
-              shutdownAcknowledgementNanoseconds: shutdownAcknowledgementNanoseconds)
+              shutdownAcknowledgementNanoseconds: shutdownAcknowledgementNanoseconds,
+              cleanStopWaitNanoseconds: cleanStopWaitNanoseconds)
     }
 }
 
@@ -81,11 +88,16 @@ enum DistributedInstalledPairServingTable {
     ///   nothing.
     /// - Shutdown acknowledgement, 2 s, and stop margin, 15 s: releasing
     ///   5 GB of weights and exchanging the release.
+    /// - Clean-stop wait, 10 s. A token follows the last within 25 ms as a
+    ///   pipeline and within a relayed batch of about 0.25 s under phase
+    ///   split; the first token of the longest prompt (8,192 tokens) was
+    ///   measured 4.0 to 4.6 s after the request arrived. 10 s is twice that.
     static let qwen35 = Row(runtimeModelID: "registered_qwen35_9b", pairServing: .open(.init(
         startupAllowanceNanoseconds: 90_000_000_000,
         firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 1,
         admissionWaitNanoseconds: 5_000_000_000,
-        shutdownAcknowledgementNanoseconds: 2_000_000_000, stopMarginNanoseconds: 15_000_000_000)))
+        shutdownAcknowledgementNanoseconds: 2_000_000_000, stopMarginNanoseconds: 15_000_000_000,
+        cleanStopWaitNanoseconds: 10_000_000_000)))
 
     /// Registered Qwen3.8 27B. Derived from single-Mac measurements; no pair
     /// has run this model.
@@ -101,11 +113,14 @@ enum DistributedInstalledPairServingTable {
     /// - Admission, 5 s: the same bookkeeping as for the 9B.
     /// - Shutdown acknowledgement, 6 s, and stop margin, 20 s: three times the
     ///   weights to release (15.1 GB against 5.0 GB).
+    /// - Clean-stop wait, 20 s: the first token of the longest prompt is
+    ///   expected about 15 s after the request arrives, without lookahead.
     static let qwen38 = Row(runtimeModelID: "registered_qwen38_27b", pairServing: .withheld(groundwork: .init(
         startupAllowanceNanoseconds: 120_000_000_000,
         firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 4,
         admissionWaitNanoseconds: 5_000_000_000,
-        shutdownAcknowledgementNanoseconds: 6_000_000_000, stopMarginNanoseconds: 20_000_000_000)))
+        shutdownAcknowledgementNanoseconds: 6_000_000_000, stopMarginNanoseconds: 20_000_000_000,
+        cleanStopWaitNanoseconds: 20_000_000_000)))
 
     static let rows = [qwen35, qwen38]
 

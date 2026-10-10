@@ -46,6 +46,10 @@ import DarkbloomClusterBootstrap
             let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
             // A worker that needs three seconds to end itself after its stream closes.
             if count == 0 && behavior == "slow-exit" { usleep(3_000_000); exit(3) }
+            // "stall": a rank that never commits a token, does not answer
+            // `cancel`, and needs 1.5 s to end itself after its stream closes,
+            // like a rank inside a collective whose peer has gone.
+            if count == 0 && behavior == "stall" { usleep(1_500_000); exit(4) }
             if count == 0 { break }
             if count < 0 { if errno == EINTR { continue }; exit(74) }
             let bytes = Data(buffer.prefix(count))
@@ -63,7 +67,7 @@ import DarkbloomClusterBootstrap
                     if behavior == "refuse" { try emit(.refused(.capacity)) }
                     else { try emit(.admitted(reservedBytes: behavior == "larger" ? 1400 : 800)) }
                 case .start:
-                    if behavior == "hang" { continue }
+                    if behavior == "hang" || behavior == "stall" { continue }
                     if behavior == "exit" { exit(7) }
                     if behavior == "delayed-exit" { usleep(250_000); exit(7) }
                     if behavior == "partial" { try FileHandle.standardOutput.write(contentsOf: Data("{\"kind\":".utf8)); exit(0) }
@@ -98,7 +102,7 @@ import DarkbloomClusterBootstrap
                             committedTokens: reservation!.promptTokenIDs.count + selected)); selected += 1
                     }
                 case .cancel:
-                    if behavior == "hang" { continue }
+                    if behavior == "hang" || behavior == "stall" { continue }
                     try emit(.retired(.cancelled))
                 case .shutdown:
                     // "slow-shutdown": releasing takes half a second. Status 21

@@ -143,9 +143,11 @@ extension EngineV2Bridge {
                 }
                 #endif
                 sawTerminal = true
-                // The distributed engine emits .finished only after its lease
-                // retired. An engine teardown or a cancelled pump never
-                // reaches this line, so neither can fill the HTTP terminal.
+                // The distributed engine emits a clean .finished only after
+                // its lease retired, and a failure as soon as it is known; the
+                // retirement wait below keeps ownership either way. An engine
+                // teardown or a cancelled pump never reaches this line, so
+                // neither can fill the HTTP terminal.
                 httpResponse?.recordTerminal(.init(
                     promptTokens: usage.promptTokens,
                     completionTokens: usage.completionTokens,

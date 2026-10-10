@@ -14,10 +14,15 @@ extension Start {
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
         let member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
+        // A session that stops without being asked says so at once: the wait
+        // for its workers that follows can be the whole progress limit.
+        let announce: @Sendable (DistributedInstalledStopNotice) -> Void = { printError($0.message) }
         let session = try await factory.prepare()
-        // A clean stop sends shutdown and waits for both workers to end
-        // themselves. One that is still inside a collective when its peer went
-        // away needs its progress limit to do so; nothing signals it sooner.
+        session.installStopNoticeHandler(announce)
+        // A stop first lets a running request end at its next token, then
+        // sends shutdown and waits for both workers to end themselves. One that
+        // is still inside a collective when its peer went away needs its
+        // progress limit to do so; nothing signals it sooner.
         let stopAllowance = session.cooperativeStopAllowanceNanoseconds
         let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
         // From the selected registered model's row, like the stop allowance.
@@ -25,7 +30,11 @@ extension Start {
         let server = DistributedLocalServer(
             session: session, config: .init(host: bind, port: port, authToken: token),
             firstTokenBudgetPolicy: budget,
-            replacementSessionFactory: { try await factory.prepare() })
+            replacementSessionFactory: {
+                let next = try await factory.prepare()
+                next.installStopNoticeHandler(announce)
+                return next
+            })
 
         // Keep the existing endpoint/PID and sleep-prevention ownership. The
         // cluster leader never takes the native device gate from its own child.
@@ -58,7 +67,10 @@ extension Start {
             memberTask.cancel()
             Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance) }
         }
-        signals.attach(stop)
+        signals.attach {
+            printError(DistributedInstalledStopNotice.requestedStopMessage(longestWaitNanoseconds: stopAllowance))
+            stop()
+        }
         let status: DistributedLocalServerStatus
         do {
             status = try await withTaskCancellationHandler {

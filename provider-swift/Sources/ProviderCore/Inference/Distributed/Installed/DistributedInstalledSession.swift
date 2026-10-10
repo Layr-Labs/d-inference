@@ -35,6 +35,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private var handler: (@Sendable () -> Void)?
     private var notified = false
     private var draining = false
+    private var stopNoticeHandler: (@Sendable (DistributedInstalledStopNotice) -> Void)?
+    private var stopNoticePending = false
 
     public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
     public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
@@ -82,11 +84,36 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             collectiveProgressLimitMilliseconds: DistributedInstalledPlan.collectiveProgressLimitMilliseconds)
     }
 
-    /// Longest a clean stop can legitimately take: a rank still inside a
-    /// collective when its peer went away ends itself at the progress limit,
-    /// then releases its model within the selected model's stop margin.
+    /// Longest a stop can legitimately take. A request that is still running
+    /// is first given the selected model's clean-stop wait to end at a token.
+    /// If it is cancelled instead, a rank still inside a collective when its
+    /// peer went away ends itself at the progress limit, then releases its
+    /// model within the selected model's stop margin.
     public var cooperativeStopAllowanceNanoseconds: UInt64 {
+        prepared.plan.budgets.cleanStopWaitNanoseconds + unrequestedStopAllowanceNanoseconds
+    }
+
+    /// The same for a stop nobody asked for (a rank was lost, or a request had
+    /// to be cancelled): no clean-stop wait precedes it.
+    var unrequestedStopAllowanceNanoseconds: UInt64 {
         UInt64(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) * 1_000_000 + prepared.plan.budgets.stopMarginNanoseconds
+    }
+
+    /// One call at most, at the moment a session that was serving stops
+    /// without having been asked to. Installing the handler after that moment
+    /// delivers the notice at once.
+    public func installStopNoticeHandler(_ value: @escaping @Sendable (DistributedInstalledStopNotice) -> Void) {
+        let notify = lock.withLock { () -> Bool in
+            stopNoticeHandler = value
+            if stopNoticePending { stopNoticePending = false; return true }
+            return false
+        }
+        if notify { notifications.async { value(self.stopNotice) } }
+    }
+
+    private var stopNotice: DistributedInstalledStopNotice {
+        .init(longestWaitNanoseconds: unrequestedStopAllowanceNanoseconds,
+              progressLimitMilliseconds: DistributedInstalledPlan.collectiveProgressLimitMilliseconds)
     }
 
     /// The selected model's first-token allowance. It does not depend on the
@@ -225,9 +252,17 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     }
 
     func beginStop(abnormal: Bool) {
+        var notice: (@Sendable (DistributedInstalledStopNotice) -> Void)?
         let result = lock.withLock { () -> ([ClusterRemoteWorkerEndpoint], ClusterOwnerBootstrapRelay?, (@Sendable () -> Void)?) in
             if phase == .released { return ([], nil, nil) }
             let wasPrepared = phase == .prepared
+            // Serving ended without a request to end it: say so now, before
+            // the wait for the workers, which can be the whole progress limit.
+            // A drain was asked for; its own workers' exit reaches here as an
+            // invalidation and is not announced.
+            if abnormal, phase == .ready {
+                if let stopNoticeHandler { notice = stopNoticeHandler } else { stopNoticePending = true }
+            }
             if abnormal { draining = false }
             phase = abnormal ? .quarantined : (phase == .quarantined ? .quarantined : (draining ? .draining : .stopping))
             if wasPrepared { startup.complete() }
@@ -236,6 +271,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if !draining, !notified, let handler { notified = true; notify = handler } else { notify = nil }
             return (abnormal || pair == nil ? endpoints : [], relay, notify)
         }
+        if let notice { let value = stopNotice; notifications.async { notice(value) } }
         result.1?.cancel()
         for endpoint in result.0 { endpoint.requestNativeCleanup() }
         // An abnormal stop can interrupt a previously started graceful drain.

@@ -71,24 +71,45 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
 }
 
 private final class DistributedPipeRequestLease: DistributedResidentRequestLease, @unchecked Sendable {
+    /// Whether the consumer ended the request: it declined a token, or it asked
+    /// for the clean stop itself.
+    private final class ConsumerStop: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var requested: Bool { lock.withLock { value } }
+        func record() { lock.withLock { value = true } }
+    }
     let identity: DistributedResidentIdentity
     let requestID: CBv2RequestID
     private let native: ClusterWorkerRequest
+    private let consumerStop = ConsumerStop()
     var reservedBytes: Int { native.reservedBytes }
     var bytesInUse: Int { native.bytesInUse }
     init(identity: DistributedResidentIdentity, requestID: CBv2RequestID, native: ClusterWorkerRequest) {
         self.identity = identity; self.requestID = requestID; self.native = native
     }
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
-        try native.start { event in
+        try native.start { [consumerStop] event in
             switch event {
-            case .token(let token): return emit(.token(token))
-            case .finished(let reason): return emit(.finished(reason == .length ? .length : .stop))
+            case .token(let token):
+                let more = emit(.token(token))
+                if !more { consumerStop.record() }
+                return more
+            case .finished(let reason):
+                // A client stop the consumer did not ask for was requested by
+                // the pair's owner, which is stopping: the output is incomplete
+                // and is not reported as a natural stop.
+                if reason == .clientStop, !consumerStop.requested { return emit(.finished(.cancelled)) }
+                return emit(.finished(reason == .length ? .length : .stop))
             case .failed(let message): return emit(.finished(.error(message)))
             }
         }
     }
     func cancel() { native.cancel() }
+    func requestCleanStop() -> Bool {
+        guard native.requestCleanStop() else { return false }
+        consumerStop.record(); return true
+    }
     func waitUntilRetired() async { await native.waitUntilRetired() }
     func releaseResources() { native.releaseResources() }
 }

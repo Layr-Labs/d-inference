@@ -20,7 +20,11 @@ final class DistributedTestLease: DistributedResidentRequestLease, @unchecked Se
     private var starts = 0
     private var cancels = 0
     private var releases = 0
+    private var cleanStops = 0
     var throwOnStart = false
+    /// A lease with the clean stop of the worker pair's lease; without it
+    /// every caller stop is `cancel()`, as for an owner that has none.
+    var acceptsCleanStop = false
 
     init(identity: DistributedResidentIdentity, requestID: CBv2RequestID, reservedBytes: Int = 64) {
         self.identity = identity
@@ -32,12 +36,19 @@ final class DistributedTestLease: DistributedResidentRequestLease, @unchecked Se
     var startCount: Int { lock.withLock { starts } }
     var cancelCount: Int { lock.withLock { cancels } }
     var releaseCount: Int { lock.withLock { releases } }
+    var cleanStopCount: Int { lock.withLock { cleanStops } }
 
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
         lock.withLock { starts += 1; self.emit = emit }
         if throwOnStart { throw DistributedEngineError.unavailable }
     }
     func cancel() { lock.withLock { cancels += 1 } }
+    func requestCleanStop() -> Bool {
+        lock.withLock {
+            guard acceptsCleanStop, cancels == 0 else { return false }
+            cleanStops += 1; return true
+        }
+    }
     func waitUntilRetired() async { await acknowledgement.wait() }
     func releaseResources() { lock.withLock { releases += 1; emit = nil } }
     func acknowledge() { acknowledgement.complete() }
@@ -65,6 +76,7 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
     var onReserve: (@Sendable () -> Void)?
     var badReservationIdentity = false
     var throwOnStart = false
+    var leasesAcceptCleanStop = false
     private var invalidation: (@Sendable () -> Void)?
     private var leases: [DistributedTestLease] = []
     private var shutdowns = 0
@@ -102,6 +114,7 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
         }
         let lease = DistributedTestLease(identity: returnedIdentity, requestID: request.id)
         lease.throwOnStart = throwOnStart
+        lease.acceptsCleanStop = leasesAcceptCleanStop
         lock.withLock { leases.append(lease) }
         onReserve?()
         return lease

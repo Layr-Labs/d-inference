@@ -100,6 +100,31 @@ import Foundation
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(nemotron)) == nemotron,
                     "The Nemotron capability does not round-trip within the byte bound")
             }
+            // A second adapter, through the one catalog the worker's command asks: MiMo's own
+            // row, its own session bound and no phase split. Described without MLX, like the others.
+            try checks.yes("registered-mimo-is-described-from-its-own-row") {
+                let mimoConfiguration = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.configuration.json"))
+                let mimoManifest = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.manifest.json"))
+                let mimo = try ClusterResidentModelCatalog.describe(configuration: mimoConfiguration, manifest: mimoManifest,
+                                                                    runtimeBinarySHA256: binary)
+                try capabilityCheck(mimo.adapterID == "mimo-v26-layer-stage" && mimo.runtimeModelID == "registered_mimo_v26_flash_mopd"
+                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode]
+                    && mimo.supportedPrefillSchedules == [.serial] && mimo.maxLifetimeSeconds == 1800
+                    && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44]
+                    && mimo.partitions.allSatisfy { $0.stages.count == 2 && $0.stages[1].sourceLayerEnd == 48 },
+                    "The MiMo capability differs from its resident row")
+                try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(mimo)) == mimo,
+                    "The MiMo capability does not round-trip within the byte bound")
+                // The catalog answers for the dense rows exactly as their own producer does.
+                try capabilityCheck(try ClusterResidentModelCatalog.describe(configuration: configuration, manifest: manifest,
+                    runtimeBinarySHA256: binary) == QwenResidentCapabilityMetadata.describe(configuration: configuration,
+                    manifest: manifest, runtimeBinarySHA256: binary), "The catalog changed a dense capability")
+            }
+            try checks.no("mimo-changed-manifest") {
+                _ = try ClusterResidentModelCatalog.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.configuration.json")),
+                    manifest: manifest, runtimeBinarySHA256: binary)
+            }
             try checks.yes("binary-binding-remains-separate-from-model-identities") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
                 try capabilityCheck(value.runtimeBinarySHA256 != golden.runtimeBinarySHA256 && value.partitions == golden.partitions

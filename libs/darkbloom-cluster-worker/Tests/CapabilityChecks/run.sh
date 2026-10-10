@@ -41,6 +41,11 @@ task_sources=(
   Models/GPTOSS/Metadata/GPTOSSStageMetadata
   Models/GPTOSS/Metadata/GPTOSSArithmeticEnvironment
   Models/GPTOSS/Resident/GPTOSSResidentCapabilityMetadata
+  Models/MiMo/Metadata/MiMoRegisteredSpecification
+  Models/MiMo/Metadata/MiMoLayerStagePlan
+  Models/MiMo/Metadata/MiMoArithmeticEnvironment
+  Models/MiMo/Resident/MiMoResidentCapabilityMetadata
+  Models/Metadata/ClusterResidentModelCatalog
 )
 task_paths=()
 for task_source in "${task_sources[@]}"; do task_paths+=("$task_runtime/$task_source.swift"); done

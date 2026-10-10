@@ -273,7 +273,7 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
                        ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
                         "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
-                        "registered_gpt_oss_20b"])
+                        "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd"])
         // A model with routed experts adds its route to the three common variables; the others add nothing.
         XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))
@@ -286,6 +286,14 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(gptoss.profileID, "registered_gpt_oss_20b_greedy_generation_v1")
         XCTAssertEqual(gptoss.supportedCuts, [6, 8, 10, 12])
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try gptoss.encoded()), gptoss)
+        // MiMo's row: its own cuts and session bound, and no recording runtime.
+        let mimo = try make("registered_mimo_v26_flash_mopd")
+        XCTAssertEqual(mimo.profileID, "registered_mimo_v26_flash_mopd_greedy_generation_v1")
+        XCTAssertEqual(mimo.supportedCuts, [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44])
+        let mimoRow = try XCTUnwrap(QualificationRequest.registeredModel(mimo.modelID))
+        XCTAssertEqual(mimoRow.maximumLifetimeSeconds, 1800); XCTAssertFalse(mimoRow.hasRecordingRuntime)
+        XCTAssertEqual(QualificationRequest.registeredModel(small.modelID)?.maximumLifetimeSeconds, 300)
+        XCTAssertEqual(QualificationRequest.registeredModel(large.modelID)?.hasRecordingRuntime, true)
         for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
             XCTAssertThrowsError(try make(unknown), unknown)
         }

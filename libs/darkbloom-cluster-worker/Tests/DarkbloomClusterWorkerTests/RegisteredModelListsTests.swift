@@ -15,18 +15,28 @@ import XCTest
 final class RegisteredModelListsTests: XCTestCase {
     func testEveryRegisteredModelIsInEveryClosedList() throws {
         let runtime = QwenResidentCapabilityMetadata.registeredModels
-        // GPT-OSS has its own closed catalog; the lists hold its rows after the Qwen ones.
-        let gptoss = GPTOSSResidentCapabilityMetadata.registeredModels
-        let identifiers = runtime.map(\.runtimeModelID) + gptoss.map(\.runtimeModelID)
+        // Every family's rows, from the one catalog the worker asks: the Qwen
+        // catalog first, then the families with catalogs of their own.
+        let catalog = ClusterResidentModelCatalog.all
+        let identifiers = catalog.map(\.runtimeModelID)
         XCTAssertGreaterThanOrEqual(runtime.count, 3)
+        XCTAssertEqual(Array(identifiers.prefix(runtime.count)), runtime.map(\.runtimeModelID))
         XCTAssertEqual(Set(identifiers).count, identifiers.count, "a runtime model ID is registered twice")
 
-        // The protocol: every adapter pair is a runtime row and the reverse.
+        // The protocol: every adapter pair is a catalog row and the reverse.
         let admitted = ClusterRuntimeAdapter.admittedModels
         XCTAssertEqual(admitted.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
-                       (runtime.map { "\($0.runtimeModelID) \($0.profileID)" }
-                        + gptoss.map { "\($0.runtimeModelID) \($0.profileID)" }).sorted(),
-                       "ClusterRuntimeAdapter.registeredProfiles and the runtime catalogs differ")
+                       catalog.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
+                       "ClusterRuntimeAdapter.registeredProfiles and the resident catalog differ")
+        // Every family's request row, manifest pin, cuts and session bound are its catalog entry's.
+        for entry in catalog {
+            let name = entry.runtimeModelID
+            let request = try XCTUnwrap(QualificationRequest.registeredModel(name), "\(name) has no qualification request row")
+            XCTAssertEqual(request.profileID, entry.profileID, name)
+            XCTAssertEqual(request.supportedCuts, entry.supportedCuts, name)
+            XCTAssertEqual(request.maximumLifetimeSeconds, entry.maximumLifetimeSeconds, name)
+            XCTAssertEqual(PromptTokenizer.registeredManifests.first { $0.modelID == name }?.sha256, entry.manifestSHA256, name)
+        }
 
         // The qualification request models, in the catalog's order.
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), identifiers,

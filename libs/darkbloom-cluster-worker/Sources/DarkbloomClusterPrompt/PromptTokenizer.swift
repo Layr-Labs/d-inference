@@ -19,6 +19,7 @@ public struct PromptTokenizer: Sendable {
         ("7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a", "registered_nemotron35_lightning"),
         // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
         ("a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996", "registered_gpt_oss_20b"),
+        ("de1bd701115a9ee7e4a99ac85307b31285c63a0b0b1c22ef0c69e9b4ac10f346", "registered_mimo_v26_flash_mopd"),
     ]
     /// Models whose chat format is not the wrapper below. Their prompts are raw
     /// text only, so a request never carries a chat format the model does not have.
@@ -26,13 +27,19 @@ public struct PromptTokenizer: Sendable {
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    /// MiMo's own template closes the turn without a newline and writes an
+    /// empty thinking block. Every other registered model uses the pair above
+    /// unless `chatWrapper` names its own.
+    static let assistantSuffixes = [
+        "registered_mimo_v26_flash_mopd": "<|im_end|><|im_start|>assistant\n<think></think>",
+    ]
     /// What a registered artifact's own template puts around one user turn
     /// with thinking disabled. Nemotron's template always opens with a system
     /// turn, empty when the request has none, and closes thinking at once.
     static func chatWrapper(modelID: String) -> (prefix: String, suffix: String) {
         modelID == "registered_nemotron35_lightning"
             ? ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think></think>")
-            : (userPrefix, assistantSuffix)
+            : (userPrefix, assistantSuffixes[modelID] ?? assistantSuffix)
     }
 
     public let tokenizerSHA256: String

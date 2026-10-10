@@ -47,18 +47,34 @@ struct TensorDescriptor {
 
 /// What a caller of `tensorDescriptors` accepts beyond the dense default. The
 /// default is the original behaviour: the four stored dtypes of a dense
-/// artifact, and any other dtype anywhere in a shard is an error.
+/// artifact, any other dtype anywhere in a shard is an error, and every
+/// `.safetensors` file of the manifest is a weight shard.
 struct TensorDescriptorScope {
     /// Also accept `U8`: the per-group exponent bytes of MXFP4 projections.
     var acceptsUInt8 = false
+    /// Describe only the shards `model.safetensors.index.json` names. A
+    /// manifest may carry another `.safetensors` file that is not part of the
+    /// indexed checkpoint (a sidecar in a subdirectory); it is still hashed
+    /// with the artifact, but it contributes no descriptor. Requires the index.
+    var indexedShardsOnly = false
     static let dense = TensorDescriptorScope()
 }
 
 func tensorDescriptors(checkpoint: VerifiedCheckpoint,
                        scope: TensorDescriptorScope = .dense) throws -> [String: TensorDescriptor] {
     var result: [String: TensorDescriptor] = [:]
+    var indexedShards: Set<String>?
+    if scope.indexedShardsOnly {
+        guard let index = checkpoint.files["model.safetensors.index.json"],
+              let object = try JSONSerialization.jsonObject(with: index.data(offset: 0, count: index.size))
+                as? [String: Any], let mapping = object["weight_map"] as? [String: String], !mapping.isEmpty,
+              mapping.values.allSatisfy({ $0.hasSuffix(".safetensors") && checkpoint.files[$0] != nil }) else {
+            throw ProbeError("An indexed-shards scope requires a safetensors index that names verified shards")
+        }
+        indexedShards = Set(mapping.values)
+    }
     for file in checkpoint.files.values.sorted(by: { $0.path < $1.path })
-    where file.path.hasSuffix(".safetensors") {
+    where file.path.hasSuffix(".safetensors") && (indexedShards?.contains(file.path) ?? true) {
         guard file.size >= 8 else { throw ProbeError("Truncated safetensors file") }
         let prefix = try file.data(offset: 0, count: 8)
         let length64 = prefix.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }

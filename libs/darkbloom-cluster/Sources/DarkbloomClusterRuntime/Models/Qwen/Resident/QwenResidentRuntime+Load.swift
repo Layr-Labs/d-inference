@@ -25,6 +25,10 @@ extension QwenResidentRuntime {
         if qualification.permitted {
             transport = try ClusterTransport.admit(environment: launchEnvironment)
             fault = try QwenPhaseSplitFault.admit(environment: launchEnvironment)
+            // The host memory gate's record or measure mode, the same switch for every adapter.
+            if let gate = try QwenDenseStageLoadMeasurement.requested(environment: launchEnvironment) {
+                try QwenDenseStageLoadMeasurement.shared.enable(gate, permittedBy: qualification)
+            }
         }
         // STAGING DIVERGENCE (recorded in the handoff source ledger, same as
         // Transport/Collective.swift): the research source accepted an optional

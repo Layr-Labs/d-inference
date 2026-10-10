@@ -692,3 +692,71 @@ free, so neither was.
     load that fails part-way (two-line change above, in a file this work did
     not own).
 14. **A request that runs with no free pages** prefills 5–21 % slower.
+
+## Stages of tens of GiB: what the MiMo loads add (2026-10-09)
+
+Added by the MiMo work (`work/mimo`). The rule and its constants are
+unchanged. These are five loads of one rank of MiMo V2.6 Flash on Mac B, a
+128 GiB Mac in ordinary desktop use (23 to 34 GiB of application memory),
+through the stage check with the gate's record kept (`record` and `measure`
+modes, qualification only). Raw records: evidence folder `mimo-20261009`,
+`stage-load/` and `cleanup/`.
+
+| Time | Stage (required) | Free / file-backed at the first load check | Rule | What the kernel did |
+|---|---|---|---|---|
+| 16:35Z | 53.13 GiB (59.15) | 12.93 / 75.27 GiB | refuses: 37.20 admissible (waived, measuring) | compressed from 25.7 GiB loaded with 22 GiB of cache still above the reserve; guard stopped it at 573 MiB |
+| 17:01Z | 53.13 GiB (59.15) | 15.67 / 66.56 GiB | refuses: 33.31 admissible (waived) | gave up 20.99 GiB of cache with 4 MiB compressed, then went from 4 to 1,823 MiB inside a second as file-backed memory reached the kernel's published minimum (47.3 to 45.6 GiB against 45.9); stopped |
+| 17:02Z | 53.13 GiB (59.15) | 38.88 / 45.22 GiB | refuses: 40.76 admissible (waived) | cache already at the minimum: compressed as free pages ran out, at 36.6 GiB loaded; stopped |
+| 17:32Z | 26.87 GiB (32.88) | 24.21 / 69.29 GiB | **admits**: 43.72 admissible | free pages ran out at 23.5 GiB loaded; compressed 690 MiB while giving up 1.96 GiB of cache; stopped, 8.22 GiB short |
+| 17:44Z | 26.87 GiB (32.88) | 54.09 / 39.09 GiB | admits on free pages | loaded in 4.9 s, nothing compressed, released |
+
+Every stopped load released cleanly, swapped nothing out and left pressure
+normal. Together the four cost Mac B's other programs about 5 GiB of
+compressed memory.
+
+What this adds to the sections above:
+
+- **The reserve term is the kernel's behaviour, at 20 GiB scale.** At 17:01Z
+  the rule predicted 33.31 GiB and compression began between 33.5 and 34.5 GiB
+  loaded. A test that decides fit against physical memory minus wired,
+  anonymous and compressor memory would have said 84 GiB; it is wrong.
+- **The counted cache is not dependable after a large write.** 17:01Z and
+  17:32Z had the same amount above the reserve (23.5 and 26 GiB). In the first
+  the cache was an hour-old copy of this artifact and the kernel took 21 GiB
+  of it; in the second about 23 GiB had been written by other copies in the
+  preceding fifteen minutes and the kernel took 2 GiB and compressed. That is
+  risks 6 and 10 above, measured. What the cache consisted of is the open
+  question; the records cannot say which pages were dirty.
+- **The growth guard held in both directions**: against a waived refusal three
+  times and against the rule's own admission once.
+- **A large artifact written through the buffer cache parks itself under the
+  kernel's minimum.** After a 173 GB copy, 75 GiB of file cache; three stopped
+  loads later it sat at the minimum and 36.64 GiB of it was that artifact
+  (`mincore` over read-only maps). Verification and loading read uncached and
+  added none (66.55 GiB before a 12.9 s hash of all 172.9 GB, 66.56 after).
+  Replacing each file by a clone of itself returned 36.40 GiB as free pages,
+  after which the same stage loaded on free pages alone. The same happens
+  after a provider download written through the cache, on any Mac. Product
+  candidates: write large artifacts with caching off; or have the verified
+  loader give up its own artifact's cached ranges.
+
+Still to decide:
+
+1. **The 32 GiB cap.** Never the binding term in these loads (the reserve
+   term was, each time). Nothing here supports raising or lowering it.
+2. **The kernel's own minimum or the formula.** On Mac B within 35 minutes the
+   published minimum (`vm.vm_page_filecache_min`) read 38.0, 45.9, 42.3, 43.1
+   and 36.3 GiB while the rule's ten twenty-sevenths gave 42.7 to 46.5. The
+   17:01Z onset matched the published figure (45.9) more closely than the
+   formula (43.0 at that load's first check). Reading it is one sysctl; what
+   it does on a Mac that does not publish it has to be decided first.
+3. **Reusable pages.** Mac A at 17:43Z: 108 GiB free, 99 GiB of anonymous
+   memory by the kernel's count, of which `vm.page_reusable_count` said 44 GiB
+   and process footprints account for about 40. Reusable pages are freed
+   without compression when the pageout scan reaches them, and the rule
+   counts them as memory in use. Counting them is a candidate, not a
+   proposal. Before it could be trusted: a load on a Mac whose free pages
+   fall short by less than its reusable pages, in `record` mode, must show
+   compression staying near zero while the reusable count falls by what the
+   load took; and the same on a Mac where reusable pages share the inactive
+   queue with idle application memory, which is where it is likely to fail.

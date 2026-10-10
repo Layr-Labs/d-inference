@@ -55,11 +55,15 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     private var refusalValue: String?
 
     public init(command: [String], expectedIdentity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, lifetimeSeconds: Int) throws {
+                executionPlanSHA256: String, lifetimeSeconds: Int,
+                maximumLifetimeSeconds: Int = 300) throws {
         // Validates the identity, rank, profile and plan the way a worker does.
+        // The lifetime bound is the model's own (300 s, or 1,800 s for MiMo), as the
+        // configuration already checked; a fixed 300 here refused every MiMo launch.
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
                                      executionPlanSHA256: executionPlanSHA256)
-        guard let executable = command.first, executable.hasPrefix("/"), (10...300).contains(lifetimeSeconds) else {
+        guard let executable = command.first, executable.hasPrefix("/"),
+              (10...max(10, maximumLifetimeSeconds)).contains(lifetimeSeconds) else {
             throw ClusterWorkerOwnerError.invalid("Invalid pair worker launch")
         }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile

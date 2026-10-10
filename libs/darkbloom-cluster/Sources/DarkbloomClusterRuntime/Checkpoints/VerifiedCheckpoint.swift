@@ -126,9 +126,16 @@ final class VerifiedCheckpoint {
     let verifiedManifestSHA256: String?
     let files: [String: File]
 
+    /// `hashingConcurrency` is how many files are hashed at once. The default
+    /// of one is the original single pass. Each file has its own descriptor and
+    /// buffer, and the digests are compared and combined in path order whatever
+    /// order they finished in, so the result does not depend on the number.
     init(directory: URL, configurationData: Data,
          expectedAggregateSHA256: String? = nil, maximumPayloadBytes: Int? = nil,
-         expectedManifestSHA256: String? = nil) throws {
+         expectedManifestSHA256: String? = nil, hashingConcurrency: Int = 1) throws {
+        guard (1...16).contains(hashingConcurrency) else {
+            throw ProbeError("Checkpoint hashing concurrency must be 1...16")
+        }
         if let expectedAggregateSHA256 {
             guard expectedAggregateSHA256.utf8.count == 64,
                   expectedAggregateSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
@@ -180,7 +187,8 @@ final class VerifiedCheckpoint {
         }
         var verified: [String: File] = [:]
         var aggregateHasher = SHA256()
-        for entry in manifest.files.sorted(by: { $0.path < $1.path }) {
+        let ordered = manifest.files.sorted(by: { $0.path < $1.path })
+        func verifiedFile(_ entry: CheckpointManifest.Entry) throws -> File {
             guard !entry.path.hasPrefix("/"),
                 entry.path.split(separator: "/", omittingEmptySubsequences: false)
                     .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
@@ -190,12 +198,26 @@ final class VerifiedCheckpoint {
                 directory.resolvingSymlinksInPath().path + "/") else {
                 throw ProbeError("Manifest path leaves checkpoint directory")
             }
-            let file = try File(url: url, path: entry.path, expectedSize: entry.size_bytes)
-            let digest = try file.digest()
+            return try File(url: url, path: entry.path, expectedSize: entry.size_bytes)
+        }
+        func accept(_ file: File, _ digest: SHA256.Digest, _ entry: CheckpointManifest.Entry) throws {
             let hex = digest.map { String(format: "%02x", $0) }.joined()
             guard hex == entry.sha256 else { throw ProbeError("Checkpoint SHA256 mismatch: \(entry.path)") }
             digest.withUnsafeBytes { aggregateHasher.update(bufferPointer: $0) }
             verified[entry.path] = file
+        }
+        if hashingConcurrency == 1 {
+            // The original pass: each file is opened, hashed and compared before the next.
+            for entry in ordered {
+                let file = try verifiedFile(entry)
+                try accept(file, try file.digest(), entry)
+            }
+        } else {
+            // Every file is opened first; then that many are hashed at once.
+            let opened = try ordered.map(verifiedFile)
+            for (index, digest) in try Self.digests(of: opened, concurrency: hashingConcurrency).enumerated() {
+                try accept(opened[index], digest, ordered[index])
+            }
         }
         let aggregate = aggregateHasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard aggregate == manifest.aggregate_sha256 else { throw ProbeError("Checkpoint aggregate mismatch") }
@@ -205,6 +227,40 @@ final class VerifiedCheckpoint {
         self.configurationSHA256 = configurationSHA256
         self.aggregate = aggregate; files = verified
         self.verifiedManifestSHA256 = matchedManifest
+    }
+
+    /// Every file's digest, in the order given, with up to `concurrency` files
+    /// hashed at once. The first failure in file order is the one reported, and
+    /// no digest is used if any file failed.
+    private static func digests(of files: [File], concurrency: Int) throws -> [SHA256.Digest] {
+        // Each file is hashed by exactly one worker, through its own
+        // descriptor and buffer; the lock guards only the cursor and the results.
+        final class Work: @unchecked Sendable {
+            let files: [File]
+            let lock = NSLock()
+            var next = 0
+            var values: [Result<SHA256.Digest, Error>?]
+            init(_ files: [File]) { self.files = files; values = Array(repeating: nil, count: files.count) }
+        }
+        let results = Work(files)
+        // Largest first would finish soonest; path order keeps the work predictable and is close enough.
+        DispatchQueue.concurrentPerform(iterations: min(concurrency, files.count)) { _ in
+            while true {
+                results.lock.lock()
+                let index = results.next
+                results.next += 1
+                results.lock.unlock()
+                guard index < results.files.count else { return }
+                let value = Result { try results.files[index].digest() }
+                results.lock.lock()
+                results.values[index] = value
+                results.lock.unlock()
+            }
+        }
+        return try results.values.map { value in
+            guard let value else { throw ProbeError("Checkpoint hashing did not finish") }
+            return try value.get()
+        }
     }
 
     /// Reuse verified descriptors only with the exact configuration already verified.

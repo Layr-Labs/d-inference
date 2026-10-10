@@ -597,6 +597,13 @@ final class PairDriverTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.contains("10.0.0.2") })
     }
 
+    func testMiMoStepLinesAreKeptVerbatim() {
+        let step = "darkbloom-mimo-step-v1 rank=1 i=28 boundary=abababababababab row=cdcdcdcdcdcdcdcd "
+            + "dtype=bfloat16 top=279_41bc0000_264_41bb0000_11_41ba0000_7_41b90000"
+        let lines = PairDriver.runtimeLines(step + "\ndarkbloom-mimo-step-v1 rank=1 i=29 top=1.5\n")
+        XCTAssertEqual(lines, [step])
+    }
+
     /// A shell script stands in for `darkbloom-cluster-reference --serve yes`:
     /// it speaks the same line protocol and records how it was started.
     func testSoloDriverTimesOneMacAloneOnTheDriverClock() throws {

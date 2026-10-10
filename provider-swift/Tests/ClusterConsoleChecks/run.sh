@@ -32,12 +32,16 @@ build_module() {
     -Xlinker -install_name -Xlinker "@rpath/lib$task_name.dylib"
 }
 
-# The live operations file is the one console source that needs the whole
-# provider (the doctor, the provider configuration reader, the local endpoint
-# token); the full Provider suite compiles it. Everything else is built here.
+# The two live operations files (the console's and the setup wizard's) are the
+# console sources that need the whole provider (the doctor, the provider
+# configuration reader and writer, the local endpoint token); the full Provider
+# suite compiles them. Everything else is built here.
 task_console=()
 for task_source in "$task_sources"/Inference/Distributed/Console/*.swift; do
-  [[ "$(basename "$task_source")" == "ClusterConsoleLiveOperations.swift" ]] || task_console+=("$task_source")
+  case "$(basename "$task_source")" in
+    ClusterConsoleLiveOperations.swift|ClusterSetupWizardLiveOperations.swift) ;;
+    *) task_console+=("$task_source") ;;
+  esac
 done
 
 build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
@@ -64,7 +68,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
-  "$task_sources"/Inference/Distributed/Placement/ClusterInstalledHoldings.swift \
+  "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift \

@@ -3,33 +3,54 @@ import ArgumentParser
 import ProviderCore
 
 extension Cluster {
-    /// `darkbloom cluster` with no subcommand: the guided link setup.
+    /// `darkbloom cluster` with no subcommand: the guided setup wizard on a
+    /// terminal, the guided link setup line by line everywhere else.
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "setup",
-            abstract: "Get this Mac's Thunderbolt RDMA link ready; the only thing asked of you is approval in a macOS prompt.",
+            abstract: "Set up a two-Mac cluster step by step: this Mac, the cable, pairing, the model and plan, a check, and serving.",
             discussion: """
-                Checks that RDMA is enabled, waits for a Thunderbolt 5 connection to another Mac, and sets the \
-                connected port up for the cluster alone: out of every bridge, with its own network service, a \
-                fixed address, no router and no DNS, which macOS keeps also after a restart. macOS shows its \
-                own approval prompt for that one change; Darkbloom never uses sudo and never changes Internet \
-                Sharing. When not run in a terminal, or with --json, nothing is waited for or asked: the current \
-                state and the next step are printed instead, unless --yes is given. `darkbloom cluster link \
-                --remove` restores the network settings this changes.
+                On a terminal, bare `darkbloom cluster` opens the setup wizard: six steps, each showing what was \
+                detected, what is wrong in plain words and the one action that fixes it. Nothing is changed, \
+                trusted or started without a key and a confirmation; the link fix shows its exact commands first \
+                and then asks macOS for one approval. Running it again opens at the first unfinished step. The \
+                leader is given its pair once with --pair, --capability, --capability-sha256 and --member; the \
+                other Mac receives its setup from the leader and approves it on its own screen. --dry-run limits \
+                the link fix to its preview. --plain prints the six steps and exits.
+
+                As `darkbloom cluster setup`, with --json, --yes or --temporary, or when not run in a terminal, \
+                it is the guided link setup: it checks that RDMA is enabled, waits for a Thunderbolt 5 connection \
+                to another Mac, and sets the connected port up for the cluster alone (out of every bridge, with \
+                its own network service, a fixed address, no router and no DNS, which macOS keeps also after a \
+                restart), behind macOS's own approval prompt. Darkbloom never uses sudo and never changes \
+                Internet Sharing. When not run in a terminal, or with --json, nothing is waited for or asked \
+                unless --yes is given. `darkbloom cluster link --remove` restores the network settings this changes.
                 """)
+        @OptionGroup var configOptions: ConfigOptions
         @Flag(help: "Print one JSON object at the end instead of a line per step.") var json = false
         @Flag(help: "Allow the wait for a connection and the macOS approval prompt when not run in a terminal or with --json.")
         var yes = false
         @Flag(help: "Add a link-local address alone, without changing the network settings; it lasts until macOS next reconfigures the port.")
         var temporary = false
-        @Flag(name: .customLong("dry-run"), help: "Print the commands an approval would run, and change nothing.")
+        @Flag(name: .customLong("dry-run"), help: "Print the commands a link approval would run, and change no network setting; in the wizard, the link fix only shows its commands.")
         var dryRun = false
+        @Flag(help: "Print the setup wizard's six steps as text and exit.") var plain = false
+        @Option(help: "Absolute path to the pair description: the two Macs and their installations (the leader, once).")
+        var pair: String?
+        @Option(help: "Absolute path to the worker's capability record for the pair description's model.")
+        var capability: String?
+        @Option(name: .customLong("capability-sha256"), help: "Expected SHA-256 of that capability record.")
+        var capabilitySHA256: String?
+        @Option(help: "This Mac's member ID in the pair description.")
+        var member: String?
+
+        func validate() throws { try validateWizardOptions() }
 
         mutating func run() async throws {
-            // Bare `darkbloom cluster` in a terminal opens the console, which continues this flow.
-            if Console.replacesGuidedSetup(arguments: CommandLine.arguments, json: json, yes: yes, temporary: temporary,
-                dryRun: dryRun, inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
+            if plain { return try await printWizardPlain() }
+            if Self.opensWizard(arguments: CommandLine.arguments, json: json, yes: yes, temporary: temporary, plain: plain,
+                inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
                 terminalType: ProcessInfo.processInfo.environment["TERM"]) {
-                return try await Console.runAsGuidedSetup()
+                return try await runWizard()
             }
             Darkbloom.ensureLogging()
             let mode = temporary ? ClusterLinkRepair.Mode.temporary : .durable, dryRun = dryRun

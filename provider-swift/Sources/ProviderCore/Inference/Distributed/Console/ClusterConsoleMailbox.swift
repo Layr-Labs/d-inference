@@ -1,11 +1,15 @@
 import Foundation
 import Darwin
 
-/// How work running elsewhere reaches the run loop's thread: results are
-/// queued here and one byte on a pipe wakes the loop's `poll`.
-final class ClusterConsoleMailbox: @unchecked Sendable {
+/// The console's mailbox.
+typealias ClusterConsoleMailbox = ClusterScreenMailbox<ClusterConsoleEvent>
+
+/// How work running elsewhere reaches a screen's run loop thread: results
+/// are queued here and one byte on a pipe wakes the loop's `poll`. The
+/// console and the setup wizard each post their own events.
+final class ClusterScreenMailbox<Event: Sendable>: @unchecked Sendable {
     enum Mail: Sendable {
-        case event(ClusterConsoleEvent)
+        case event(Event)
         /// SIGWINCH: the loop asks the terminal for its new size.
         case windowChanged
     }
@@ -36,7 +40,7 @@ final class ClusterConsoleMailbox: @unchecked Sendable {
         }
     }
 
-    func post(_ event: ClusterConsoleEvent) { post(.event(event)) }
+    func post(_ event: Event) { post(.event(event)) }
 
     func take() -> [Mail] {
         var buffer = [UInt8](repeating: 0, count: 256)

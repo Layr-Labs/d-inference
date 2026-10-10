@@ -471,7 +471,21 @@ extension ClusterConsoleCheck {
         d.send(.session(.launched(processIdentifier: 4242)))
         expect(d.send(.tick).contains(.pollSession), "a running session is polled")
         expect(!d.send(.tick).contains(.pollSession), "one poll at a time")
+        // While it starts the leader has no status yet: said as loading, not as the reader's error, and
+        // step 6 is not done (seen on the pair 2026-10-10 13:36: "Configuration input does not exist").
+        var starting = F.scriptedLive
+        starting.observed = false; starting.ready = false; starting.detail = "Configuration input does not exist"
+        d.send(.sessionObserved(starting))
+        expect(d.text.contains("both Macs are loading the model") && !d.text.contains("Configuration input"),
+            "a starting session says it is loading: \(d.text)")
+        expectEqual(d.state.status(of: .serve), .todo, "step 6 is not done while the ranks load")
+        d.send(.tick, after: 50_000)
+        d.send(.sessionObserved(starting))
+        expect(d.text.contains("No status from the leader after") && d.text.contains("Configuration input does not exist"),
+            "after the grace the reason shows: \(d.text)")
+        d.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4)))
         d.send(.sessionObserved(F.scriptedLive))
+        expectEqual(d.state.status(of: .serve), .done, "step 6 is done once both ranks are ready")
         let live = ClusterSetupScreen.frame(withSize(d.state, columns: 100, rows: 40)).text
         expect(live.contains("Serving Qwen3.5-9B"), "the live view says it serves: \(live)")
         expect(live.contains("Rank 1") && live.contains("mac-b"), "both ranks show")

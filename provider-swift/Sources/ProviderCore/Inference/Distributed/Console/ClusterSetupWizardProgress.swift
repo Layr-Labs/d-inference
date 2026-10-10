@@ -89,8 +89,8 @@ extension ClusterSetupState {
             if case .failed = check { return .blocked }
             return .todo
         case .serve:
-            // The check's own short session is not serving.
-            if case .running = session, !checkRunning { return .done }
+            // The check's own short session is not serving, and a session is serving once its ranks are ready.
+            if case .running = session, !checkRunning { return live?.ready == true ? .done : .todo }
             return savedSetup == nil ? .waiting : .todo
         }
     }

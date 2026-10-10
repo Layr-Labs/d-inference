@@ -404,6 +404,9 @@ enum ClusterSetupContent {
         return parts.joined(separator: " \u{B7} ")
     }
 
+    /// How long a starting session may go without status before the reason is shown.
+    static let statusGraceNanoseconds: UInt64 = 45_000_000_000
+
     static func seconds(_ now: UInt64, _ since: UInt64) -> String {
         guard now >= since else { return "" }
         return String(format: "%.0f s", Double(now - since) / 1e9)
@@ -737,10 +740,13 @@ enum ClusterSetupContent {
                 b.text("Link \(link == "ready" ? "ready" : "NOT ready (\(link))")\(tb)", link == "ready" ? .normal : .bad, indent: 3, from: .wired("link.port"))
             }
             if live.quarantined { b.verdict(g.blocked, "Quarantined: an owner has not released its device.", .bad, from: .wired("session.status")) }
-        } else if let live = state.live, let detail = live.detail {
-            b.text("\(g.spin(state.now)) Waiting for the leader's status: \(detail)", .dim, indent: 1, from: .wired("session.status"))
+        } else if let live = state.live, let detail = live.detail, let since, state.now >= since + statusGraceNanoseconds {
+            // A leader still without status after the grace: why its status cannot be read.
+            b.text("\(g.spin(state.now)) No status from the leader after \(seconds(state.now, since)): \(detail)", .warning, indent: 1, from: .wired("session.status"))
         } else {
-            b.text("\(g.spin(state.now)) Process \(pid) started; waiting for its status\u{2026}", .dim, indent: 1, from: .wired("session.process"))
+            // While a session starts its status is not there yet; that is not shown as an error.
+            let elapsed = since.map { " \(seconds(state.now, $0))" } ?? ""
+            b.text("\(g.spin(state.now)) Process \(pid) started; both Macs are loading the model\u{2026}\(elapsed)", .accent, indent: 1, from: .wired("session.process"))
         }
         b.blank()
         switch state.prompt {

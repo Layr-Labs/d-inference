@@ -437,7 +437,15 @@ enum ClusterSetupContent {
             // A saved setup is replaced only from a fresh plan, which r makes.
             guard state.mayPlan, case .ready(let options) = state.plans else {
                 if state.status(of: .model) == .done { b.action("enter", saved.isLeader ? "Next: the check" : "Next", from: .frame) }
-                if state.mayPlan, saved.isLeader { b.text("To serve another model, press r: it plans again from both Macs' memory now.", .dim, from: .frame) }
+                guard state.mayPlan, saved.isLeader else { return }
+                if state.replanRequested || state.plans == .planning {
+                    b.text("\(g.spin(state.now)) Planning each model from both Macs' memory now\u{2026}", .accent, from: .wired("model.plan"))
+                } else if case .failed(let reason) = state.plans {
+                    b.verdict(g.blocked, "Planning failed: \(reason)", .bad, from: .wired("model.plan"))
+                    b.action("r", "Plan again", from: .wired("model.plan"))
+                } else {
+                    b.text("To serve another model, press r: it plans again from both Macs' memory now.", .dim, from: .wired("model.plan"))
+                }
                 return
             }
             b.blank()

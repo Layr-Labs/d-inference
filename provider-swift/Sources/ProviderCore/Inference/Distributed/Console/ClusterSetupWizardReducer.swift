@@ -90,6 +90,10 @@ extension ClusterSetupState {
         if followFirstUnfinished() { effects += entered(step) }
         // A plan needs the other Mac's profile: it is made once that arrived.
         if step == .model, plans == .notRun, peerReport != nil, mayPlan, !hasClusterSetup { effects += requestPlans() }
+        if replanRequested {
+            replanRequested = false
+            if step == .model, peerReport != nil, mayPlan { effects += requestPlans() }
+        }
         return effects
     }
 
@@ -187,8 +191,11 @@ extension ClusterSetupState {
             leaving = nil
         case .character("r"), .character("R"):
             var effects = requestRefresh()
+            // On step 4 the plans are made again from both Macs' memory now, also over a saved setup:
+            // the other Mac is read first, and the plans follow its answer.
+            if step == .model, mayPlan, plans != .planning { replanRequested = true }
             if step >= .pair { effects += reachPeer() }
-            if step == .model, mayPlan, plans != .planning, peerReport != nil { effects += requestPlans() }
+            if replanRequested, peerReport != nil { replanRequested = false; effects += requestPlans() }
             return effects
         case .left: return go(to: ClusterSetupStep(rawValue: step.rawValue - 1))
         case .right, .tab: return go(to: ClusterSetupStep(rawValue: step.rawValue + 1))

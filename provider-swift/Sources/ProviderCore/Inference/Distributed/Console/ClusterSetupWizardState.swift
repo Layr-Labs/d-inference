@@ -389,6 +389,8 @@ public struct ClusterSetupState: Sendable {
     public internal(set) var snapshot: ClusterSetupSnapshot?
     public internal(set) var refreshing = false
     var refreshQueued = false
+    /// `r` on step 4 asked for fresh plans: made as soon as the other Mac has answered again.
+    public internal(set) var replanRequested = false
     /// The step on screen.
     public internal(set) var step: ClusterSetupStep = .thisMac
     /// The first snapshot moves the screen to the first unfinished step, once.

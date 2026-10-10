@@ -220,6 +220,28 @@ extension ClusterConsoleCheck {
         expectEqual(unreachable.state.status(of: .pair), .blocked, "the rail marks the step blocked")
         expectEqual(unreachable.key(.character("p")), [.reachPeer], "p tries again")
 
+        // Over a saved setup, step 4 shows it and plans nothing until r; r reads the other Mac again
+        // and plans from its answer (found on the pair 2026-10-10 13:20: r used to re-read only).
+        var replan = WizardDrive()
+        _ = replan.state.begin()
+        replan.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())))
+        replan.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4)))
+        effects = replan.key(.character("4"))
+        expect(!effects.contains(.planModels) && replan.text.contains("Saved setup"), "a saved setup is shown, not planned over: \(effects)")
+        expect(replan.text.contains("press r"), "the step says how to plan again: \(replan.text)")
+        effects = replan.key(.character("r"))
+        expect(effects.contains(.reachPeer) && !effects.contains(.planModels), "r reads the other Mac first: \(effects)")
+        expect(replan.text.contains("Planning each model from both Macs' memory now"), "the step says it is planning: \(replan.text)")
+        effects = replan.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4)))
+        expect(effects.contains(.planModels), "the plans follow the other Mac's answer: \(effects)")
+        replan.send(.plans(.ready(F.options)))
+        expect(replan.text.contains("Saved setup") && replan.text.contains("Qwen3.5-9B") && replan.text.contains("fits now"),
+            "the fresh plans show under the saved setup: \(replan.text)")
+        expect(!replan.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4))).contains(.planModels), "one r plans once")
+        replan.key(.character("r"))
+        replan.send(.peer(.failed("the other Mac did not answer within 30 s")))
+        expect(!replan.state.replanRequested, "a failed answer ends the request; r asks again")
+
         try wizardLinkFix()
         try wizardFollower(savedB: savedB)
         try wizardCheck(savedA: savedA, savedB: savedB)

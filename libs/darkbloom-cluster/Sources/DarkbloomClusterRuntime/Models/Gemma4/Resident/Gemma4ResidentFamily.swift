@@ -25,8 +25,7 @@ extension Gemma4ResidentAdmission: LayerStageResidentAdmission {
     func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
         guard value.profileID == profile.identifier, value.capacityLimitBytes > 0,
               value.stopTokenIDs == Array(Set(value.stopTokenIDs)).sorted(),
-              value.deadlineUptimeNanoseconds > now,
-              value.deadlineUptimeNanoseconds <= configuration.deadlineUptimeNanoseconds else {
+              configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,

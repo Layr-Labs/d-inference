@@ -24,25 +24,29 @@ public enum ClusterWorkerOwnerService {
     public typealias BindingFactory = @Sendable (UUID, UUID, UUID) throws -> ClusterOwnerBinding
 
     public typealias AttachedNativeFactory = @Sendable (ClusterOwnerBinding, UInt64, ClusterOwnerBootstrapAttachment?) throws -> ClusterWorkerProcess
+    /// There is no configured owner lifetime. The leader opens with a first
+    /// rank-lease grant of at most `ClusterWorkerLease.maximumNanoseconds` and
+    /// renews it with `renew` frames while it keeps the session; the native
+    /// child's own lease is renewed by its supervisor until this owner fences
+    /// it. A leader that stops renewing (stopped, died, lost its link) leaves
+    /// this owner to fence the child at the lease's end.
     public static func serve(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
-                             maximumLifetimeNanoseconds: UInt64, binding: BindingFactory, native: NativeFactory) throws {
+                             binding: BindingFactory, native: NativeFactory) throws {
         try serveConfigured(input: input, output: output, clusterID: clusterID, leaseDirectory: leaseDirectory,
-            maximumLifetimeNanoseconds: maximumLifetimeNanoseconds, bootstrapProfile: nil, binding: binding,
+            bootstrapProfile: nil, binding: binding,
             native: { binding, deadline, _ in try native(binding, deadline) })
     }
     public static func serveConfigured(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
-                             maximumLifetimeNanoseconds: UInt64, bootstrapProfile: ClusterOwnerBootstrapProfile?,
+                             bootstrapProfile: ClusterOwnerBootstrapProfile?,
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
                              binding: BindingFactory, native: AttachedNativeFactory) throws {
         let pipe = try ClusterOwnerPipe(input: input, output: output, readingCommands: true)
         let begin = DispatchTime.now().uptimeNanoseconds
-        guard maximumLifetimeNanoseconds > 0, maximumLifetimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds else {
-            throw OwnerWire.invalid("Invalid configured owner lifetime")
-        }
         guard let bytes = try pipe.read(until: begin + 5_000_000_000) else { throw ClusterWorkerOwnerErrorProxy.deadline }
         let open = try OwnerWire.decode(bytes, commandStream: true)
-        guard open.kind == "open", open.sequence == 0, open.clusterID == clusterID, open.bootstrapProfile == bootstrapProfile, let duration = open.remaining else {
-            throw OwnerWire.invalid("Owner open differs from installed configuration")
+        guard open.kind == "open", open.sequence == 0, open.clusterID == clusterID, open.bootstrapProfile == bootstrapProfile, let duration = open.remaining,
+              duration <= ClusterWorkerLease.maximumNanoseconds else {
+            throw OwnerWire.invalid("Owner open differs from installed configuration or exceeds one lease grant")
         }
         // Opt-in is configured locally. Wire start bytes alone never enable it.
         let nativeStart: ClusterNativeAuthorizationStart?
@@ -66,7 +70,7 @@ public enum ClusterWorkerOwnerService {
         }
         let lease = try ClusterDeviceLease(directoryURL: leaseDirectory)
         let localNow = DispatchTime.now().uptimeNanoseconds
-        var remaining = min(duration, maximumLifetimeNanoseconds)
+        var remaining = duration
         if let end = open.nativeLocalDeadline {
             guard end > localNow else { throw OwnerWire.invalid("Native local lifetime expired before lease admission") }
             remaining = min(remaining, end - localNow)
@@ -141,7 +145,10 @@ public enum ClusterWorkerOwnerService {
         do {
             while !released {
                 let now = DispatchTime.now().uptimeNanoseconds
-                // At the lifetime the state requests a fence; the child ends
+                // The child's lease, and so its retirement ceiling, moves with
+                // each renewal its supervisor queues.
+                context.lock.withLock { context.supervisionDeadline = Self.supervisionDeadline(child) }
+                // At the lease's end the state requests a fence; the child ends
                 // itself there. This loop keeps serving the terminal and the
                 // release handshake until the child's retirement ceiling.
                 try context.observeTime()
@@ -203,14 +210,17 @@ private final class ServiceContext: @unchecked Sendable {
     var terminalWriteSucceeded = false
     var admissionDeadline: UInt64?
     var session: ClusterWorkerSession
-    let deadline: UInt64
-    /// Set once the child exists; until then the owner's own lifetime bounds IO.
+    /// The rank lease's current deadline: the leader's renewals move it.
+    private let leaseLock = NSLock()
+    private var leaseDeadline: UInt64
+    var deadline: UInt64 { leaseLock.withLock { leaseDeadline } }
+    /// Set once the child exists; until then the owner's lease bounds IO.
     var supervisionDeadline: UInt64
     let binding: ClusterOwnerBinding
     let attachment: ClusterOwnerBootstrapAttachment?
     init(pipe: ClusterOwnerPipe, state: ClusterOwnerLeaseState, launchID: UUID, attachment: ClusterOwnerBootstrapAttachment?) {
         self.pipe = pipe; self.state = state; self.launchID = launchID
-        deadline = state.lifetimeDeadlineUptimeNanoseconds; supervisionDeadline = deadline
+        leaseDeadline = state.lifetimeDeadlineUptimeNanoseconds; supervisionDeadline = state.lifetimeDeadlineUptimeNanoseconds
         binding = state.binding; self.attachment = attachment
         // Binding was validated by its initializer.
         session = try! ClusterWorkerSession(identity: state.binding.identity, rank: state.binding.rank,
@@ -254,6 +264,10 @@ private final class ServiceContext: @unchecked Sendable {
             let now = DispatchTime.now().uptimeNanoseconds
             switch frame.kind {
             case "fence": state.disconnect(); attachment?.cancel(); child?.requestNativeCleanup()
+            case "renew":
+                guard let ttl = frame.remaining else { throw OwnerWire.invalid("Lease renewal without a duration") }
+                try state.renewLease(now: now, ttl: ttl)
+                leaseLock.withLock { leaseDeadline = state.lifetimeDeadlineUptimeNanoseconds }
             case "bootstrapReply":
                 guard let attachment, let sequence = frame.bootstrapSequence, let bytes = frame.bootstrapBytes else { throw OwnerWire.invalid("Unexpected bootstrap reply") }
                 try attachment.acceptReply(sequence: sequence, bytes: bytes)
@@ -285,7 +299,7 @@ private final class ServiceContext: @unchecked Sendable {
                     } else {
                         try control(.shutdown, now: now)
                     }
-                case .tokenDecision: break
+                case .tokenDecision, .keepWarm: break
                 }
                 guard let delivery = frame.deliveryRemaining else { throw OwnerWire.invalid("Missing delivery duration") }
                 let deliveryEnd = now.addingReportingOverflow(delivery)

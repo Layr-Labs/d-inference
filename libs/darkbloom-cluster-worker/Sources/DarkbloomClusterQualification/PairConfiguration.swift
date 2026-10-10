@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// One Mac's side of a pair run.
@@ -41,7 +42,9 @@ public struct PairConfiguration: Sendable {
     /// The worker argument without which a worker refuses the two
     /// qualification switches below. Passed only when one of them is set.
     public static let qualificationSwitchesArgument = "--qualification-switches"
-    public static let maximumRepetitions = 8
+    /// A bound on one run's size, not on a session: a worker has no request
+    /// count and no lifetime, and an endurance run serves hundreds of requests.
+    public static let maximumRepetitions = 100_000
     /// The name a recording worker reads a qualification fault from.
     public static let faultEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
     public static let jacclTransport = "jaccl"
@@ -72,7 +75,6 @@ public struct PairConfiguration: Sendable {
     public var coordinator: String
     public var prefillSchedule: String
     public var recording: Bool
-    public var lifetimeSeconds: Int
     public var startupSeconds: Int
     public var requestSeconds: Int
     public var rankOneDelaySeconds: Double
@@ -91,6 +93,16 @@ public struct PairConfiguration: Sendable {
     /// Requests run one after another in the same loaded session, each with
     /// its own request ID. The first is the warm-up of a timing run.
     public var repetitions: Int
+    /// Idle gaps before requests 2, 3, ...: the list repeats. Empty: none.
+    /// The session stays loaded and leased throughout; an idle-latency run
+    /// reads each request's first-token time against the gap before it.
+    public var idleSeconds: [Double] = []
+    /// Keep-warm (S27, both tiers): on by default; off for the comparison.
+    public var keepWarm = true
+    /// Qualification only: both endpoints stop renewing their rank leases this
+    /// long after launch, with the inputs still open. The workers must then end
+    /// by themselves within the time to live, through the forced exit.
+    public var stopRenewalsAfterSeconds: Double?
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
     /// RDMA result, and its timings are not pair timings.
@@ -121,7 +133,7 @@ public struct PairConfiguration: Sendable {
 
     public init(request: QualificationRequest, stageCut: Int, local: PairSide, remote: PairSide,
                 remoteTransport: [String], coordinator: String, prefillSchedule: String = "serial_v1",
-                recording: Bool = true, lifetimeSeconds: Int = 240, startupSeconds: Int = 120,
+                recording: Bool = true, startupSeconds: Int = 120,
                 requestSeconds: Int = 100, rankOneDelaySeconds: Double = 2, progressTimeoutMilliseconds: Int? = nil,
                 requireProgressGuard: Bool = true, keepRunFiles: Bool = false, preflightOnly: Bool = false,
                 generationMode: String = PairConfiguration.pipelineMode, repetitions: Int = 1,
@@ -130,7 +142,7 @@ public struct PairConfiguration: Sendable {
         self.request = request; self.stageCut = stageCut; self.local = local; self.remote = remote
         self.remoteTransport = remoteTransport; self.coordinator = coordinator
         self.prefillSchedule = prefillSchedule; self.recording = recording
-        self.lifetimeSeconds = lifetimeSeconds; self.startupSeconds = startupSeconds
+        self.startupSeconds = startupSeconds
         self.requestSeconds = requestSeconds; self.rankOneDelaySeconds = rankOneDelaySeconds
         self.progressTimeoutMilliseconds = progressTimeoutMilliseconds
         self.requireProgressGuard = requireProgressGuard; self.keepRunFiles = keepRunFiles
@@ -214,7 +226,7 @@ public struct PairConfiguration: Sendable {
         try require(["serial_v1", "one_chunk_lookahead_v1"].contains(prefillSchedule), "unknown prefill schedule")
         try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode].contains(generationMode),
             "unknown generation mode")
-        try require((1...Self.maximumRepetitions).contains(repetitions), "repetitions must be 1...8")
+        try require((1...Self.maximumRepetitions).contains(repetitions), "repetitions must be 1...\(Self.maximumRepetitions)")
         try require(repetitions == 1 || !recording, "a recording run takes one request; repeat with --evidence none")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
@@ -228,12 +240,10 @@ public struct PairConfiguration: Sendable {
                 && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
                 "a fault is a recording phase-split run's input: RANK and name=value of lowercase letters, digits, '_', ':'")
         }
-        try require((10...request.maximumLifetimeSeconds).contains(lifetimeSeconds),
-            "lifetime must be 10...\(request.maximumLifetimeSeconds) seconds for this model")
         try require(!recording || QualificationRequest.registeredModel(request.modelID)?.hasRecordingRuntime == true,
             "this model has no recording runtime; run it with --evidence none")
-        try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
-        try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
+        try require((2...3600).contains(startupSeconds), "startup timeout must be 2...3600 seconds")
+        try require((5...3600).contains(requestSeconds), "request timeout must be 5...3600 seconds")
         try require((0...30).contains(rankOneDelaySeconds), "rank 1 delay must be 0...30 seconds")
         try require(progressTimeoutMilliseconds.map { (1000...600_000).contains($0) } ?? true, "progress timeout must be 1000...600000 ms")
         try require(!requireProgressGuard || progressTimeoutMilliseconds != nil, "a guarded run needs a progress timeout")
@@ -329,8 +339,8 @@ public struct PairConfiguration: Sendable {
         "exec /usr/bin/head -c \(PairEvidence.maximumBytes + 1) \(Self.quoted(evidencePath(rank)))"
     }
 
-    /// Writes the device matrix, turns the remaining lifetime into this Mac's
-    /// own uptime deadline and replaces itself with the worker. The first
+    /// Writes the device matrix, turns the first rank-lease grant into this
+    /// Mac's own uptime deadline and replaces itself with the worker. The first
     /// stderr line reports the worker's process ID and that clock. Interrupt
     /// and hangup are ignored from here on, and stay ignored in the worker: an
     /// interrupted driver must not take a loaded worker down with it. The
@@ -366,6 +376,7 @@ public struct PairConfiguration: Sendable {
         // A worker refuses a qualification switch in its environment unless it
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.
+        if !keepWarm { arguments += ["--keep-warm", "off"] }
         if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency
             || mimoStepEvidence || stageResidency {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
@@ -382,7 +393,7 @@ public struct PairConfiguration: Sendable {
         printf '%s\\n' \(Self.quoted(String(deviceMatrix.dropLast()))) > "$RUN/devices.json"
         set +C
         NOW=$("$W" --uptime-nanoseconds)
-        DEADLINE=$((NOW + \(lifetimeSeconds)000000000))
+        DEADLINE=$((NOW + \(ClusterWorkerLease.ttlNanoseconds)))
         trap '' INT HUP
         echo "\(PairLaunchPreamble.marker) pid=$$ uptime=$NOW deadline=$DEADLINE" >&2
         exec /usr/bin/env -i \(fixed) JACCL_IBV_DEVICES="$RUN/devices.json" "$W" \

@@ -66,7 +66,7 @@ struct OwnerWire: Sendable {
         }
         guard try uint("version") == 1 else { throw invalid("Owner version differs") }
         let kind = try string("kind")
-        let allowed = commandStream ? ["open", "command", "fence", "release", "bootstrapReply"] : ["hello", "event", "terminal", "released", "bootstrapRound"]
+        let allowed = commandStream ? ["open", "command", "fence", "release", "bootstrapReply", "renew"] : ["hello", "event", "terminal", "released", "bootstrapRound"]
         guard allowed.contains(kind) else { throw invalid("Wrong owner message direction") }
         var keys: Set<String> = ["version", "kind", "epoch", "lease", "sequence"]
         let inc: UUID?
@@ -104,6 +104,11 @@ struct OwnerWire: Sendable {
                 value.nativeStart = start
             }
         case "hello": keys.insert("launchID"); value.launchID = try uuid("launchID")
+        case "renew":
+            // A rank-lease renewal (S03): the owner's lease moves to this
+            // duration after the frame arrives.
+            keys.insert("remainingNanoseconds"); value.remaining = try uint("remainingNanoseconds")
+            guard value.remaining! <= ClusterWorkerLease.maximumNanoseconds else { throw invalid("Lease renewal exceeds its bound") }
         case "command", "event":
             keys.insert("worker")
             if kind == "command" { keys.insert("deliveryRemainingNanoseconds"); value.deliveryRemaining = try uint("deliveryRemainingNanoseconds") }
@@ -158,6 +163,9 @@ struct OwnerWire: Sendable {
         result.payload = payload; return result
     }
 
+    /// The leader's remaining request duration becomes a local deadline. It is
+    /// not capped by the owner's lease, which the leader renews while the
+    /// request runs; it must only start before the lease has lapsed.
     func localCommand(now: UInt64, lifetimeDeadline: UInt64) throws -> ClusterWorkerCommandFrame {
         guard kind == "command", let payload else { throw Self.invalid("No native command") }
         let frame = try ClusterWorkerCodec.decodeCommand(payload)
@@ -169,7 +177,7 @@ struct OwnerWire: Sendable {
         return .init(membershipEpoch: frame.membershipEpoch, sequence: frame.sequence, requestID: frame.requestID,
             command: .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize,
-                deadlineUptimeNanoseconds: min(end.partialValue, lifetimeDeadline), capacityLimitBytes: r.capacityLimitBytes)))
+                deadlineUptimeNanoseconds: end.partialValue, capacityLimitBytes: r.capacityLimitBytes)))
     }
     static func invalid(_ reason: String) -> ClusterOwnerStateError { .invalid(reason) }
 }

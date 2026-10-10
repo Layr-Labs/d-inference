@@ -47,7 +47,7 @@ extension QwenResidentRuntime {
         guard admission.supportedGenerationModes.contains(mode) else {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.runtimeModelID)")
         }
-        let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
+        let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var stage: (any LayerStageResidentStage)?
         var producerStage: (any LayerStageResidentStage)?
@@ -116,7 +116,8 @@ extension QwenResidentRuntime {
                                 identity: configuration.identity, modelDirectory: configuration.modelDirectory, rank: 0,
                                 stageCut: configuration.stageCut,
                                 deadlineUptimeNanoseconds: configuration.deadlineUptimeNanoseconds,
-                                allocatorPolicy: configuration.allocatorPolicy, prefillSchedule: configuration.prefillSchedule),
+                                allocatorPolicy: configuration.allocatorPolicy, prefillSchedule: configuration.prefillSchedule,
+                                lease: configuration.lease),
                             configBytes: admission.configBytes, manifestBytes: admission.manifestBytes,
                             environment: environment, now: DispatchTime.now().uptimeNanoseconds,
                             read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
@@ -181,7 +182,7 @@ extension QwenResidentRuntime {
                     throw error
                 }
             }
-            let lifecycle = try QwenLayerStageResidentLifecycle(maximumRequests: QwenResidentAdmission.maximumRequests)
+            let lifecycle = QwenLayerStageResidentLifecycle()
             try control.loaded()
             return .init(admission: admission, control: control, collective: collective,
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,

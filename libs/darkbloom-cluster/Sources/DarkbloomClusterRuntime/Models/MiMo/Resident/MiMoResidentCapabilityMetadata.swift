@@ -36,8 +36,6 @@ public enum MiMoResidentCapabilityMetadata {
             profileFingerprint: profile.fingerprint, partitions: partitions,
             arithmeticPolicyID: MiMoArithmeticEnvironment.contract,
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
-            maxLifetimeSeconds: Int(MiMoRegisteredSpecification.maximumLifetimeNanoseconds / 1_000_000_000),
-            maxRequests: MiMoRegisteredSpecification.maximumRequests,
             supportedPrefillSchedules: spec.supportedPrefillSchedules,
             supportedGenerationModes: spec.supportedGenerationModes)
     }

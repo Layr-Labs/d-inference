@@ -29,11 +29,14 @@ import Foundation
               [--local-rank 0|1 (default 0; 1 runs rank 0 on the second Mac and rank 1 here, and the
                coordinator address is then the second Mac's own link address)]
               [--evidence final-row|none] [--prefill-schedule serial_v1|one_chunk_lookahead_v1]
-              [--mode pipeline|pipeline-compact|phase-split] [--repetitions 1...8 (with --evidence none)]
+              [--mode pipeline|pipeline-compact|phase-split] [--repetitions N (with --evidence none; no session limit)]
+              [--idle-seconds S[,S...] (idle gaps before requests 2, 3, ...; the list repeats)]
+              [--keep-warm on|off (S27 keep-warm, both tiers; default on)]
+              [--stop-renewals-after-seconds S (qualification: stop renewing both rank leases; workers must end)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
-              [--lifetime-seconds 10...300 (10...1800 for MiMo)] [--startup-seconds N] [--request-seconds N]
+              [--startup-seconds N] [--request-seconds N]
               [--rank1-delay-seconds N] [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
               [--memory-gate record|measure (qualification: record every host memory gate decision; measure also
                                              leaves a refusal for admissible memory alone unenforced)]
@@ -157,7 +160,8 @@ import Foundation
         let names: Set<String> = ["--request", "--stage-cut", "--report", "--remote-ssh", "--ssh-option",
             "--local-worker", "--remote-worker", "--local-model-dir", "--remote-model-dir",
             "--local-rdma-device", "--remote-rdma-device", "--coordinator", "--evidence", "--prefill-schedule",
-            "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
+            "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
+            "--idle-seconds", "--keep-warm", "--stop-renewals-after-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank"]
@@ -190,7 +194,6 @@ import Foundation
                 return value
             }
         }
-        let lifetime = try integer(fields, "--lifetime-seconds") ?? 240
         let delay = fields["--rank1-delay-seconds"]?.first.flatMap(Double.init) ?? 2
         let modes = ["pipeline": PairConfiguration.pipelineMode, "phase-split": PairConfiguration.phaseSplitMode,
                      "pipeline-compact": PairConfiguration.pipelineCompactDecodeMode]
@@ -204,8 +207,8 @@ import Foundation
                           rdmaDevice: try required("--remote-rdma-device"), scratchDirectory: fields["--remote-scratch-dir"]?.first ?? "/tmp"),
             remoteTransport: transport, coordinator: try required("--coordinator"),
             prefillSchedule: fields["--prefill-schedule"]?.first ?? "serial_v1", recording: evidence == "final-row",
-            lifetimeSeconds: lifetime, startupSeconds: try integer(fields, "--startup-seconds") ?? min(120, lifetime),
-            requestSeconds: try integer(fields, "--request-seconds") ?? min(100, lifetime), rankOneDelaySeconds: delay,
+            startupSeconds: try integer(fields, "--startup-seconds") ?? 120,
+            requestSeconds: try integer(fields, "--request-seconds") ?? 100, rankOneDelaySeconds: delay,
             progressTimeoutMilliseconds: try integer(fields, "--progress-timeout-ms") ?? 60_000,
             requireProgressGuard: fields["--allow-unguarded-jaccl"]?.first != "yes",
             keepRunFiles: fields["--keep-run-files"]?.first == "yes",
@@ -213,6 +216,23 @@ import Foundation
             repetitions: try integer(fields, "--repetitions") ?? 1,
             workerTransport: fields["--transport"]?.first ?? PairConfiguration.jacclTransport, sensitive: sensitive,
             localRank: try integer(fields, "--local-rank") ?? 0)
+        if let idle = fields["--idle-seconds"]?.first {
+            let gaps = idle.split(separator: ",").map { Double($0) }
+            guard !gaps.isEmpty, gaps.allSatisfy({ $0.map { (0...3600).contains($0) } ?? false }) else {
+                throw Failure("--idle-seconds takes comma-separated seconds, each 0...3600")
+            }
+            configuration.idleSeconds = gaps.map { $0! }
+        }
+        if let keepWarm = fields["--keep-warm"]?.first {
+            guard ["on", "off"].contains(keepWarm) else { throw Failure("--keep-warm takes on or off") }
+            configuration.keepWarm = keepWarm == "on"
+        }
+        if let stop = fields["--stop-renewals-after-seconds"]?.first {
+            guard let seconds = Double(stop), (1...3600).contains(seconds) else {
+                throw Failure("--stop-renewals-after-seconds takes 1...3600")
+            }
+            configuration.stopRenewalsAfterSeconds = seconds
+        }
         if let fault = fields["--fault"]?.first {
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }
@@ -244,10 +264,15 @@ import Foundation
         guard configuration.workerTransport == PairConfiguration.jacclTransport || fields["--remote-command-prefix"] != nil else {
             throw Failure("--transport local-socket-test needs --remote-command-prefix (both ranks on this Mac)")
         }
-        // Last resort for the driver itself: inspections, the workers' whole
-        // lifetime, their exit, and collection, with room to spare.
+        // Last resort for the driver itself: inspections, the planned run
+        // (startup, every request at its timeout and every idle gap), the
+        // workers' exit, and collection, with room to spare. The workers have
+        // no lifetime of their own; the driver's run is what is bounded.
+        let longestGap = Int((configuration.idleSeconds.max() ?? 0).rounded(.up))
+        let planned = min(86_400, configuration.startupSeconds
+            + configuration.repetitions * (configuration.requestSeconds + longestGap) + 420)
         try QualificationDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
-            + UInt64(lifetime + 420) * 1_000_000_000, status: 124)
+            + UInt64(planned) * 1_000_000_000, status: 124)
         // The artifact's tokenizer, if this Mac has it, only to print readable output.
         let tokenizer = try? await PromptTokenizer.load(modelDirectory: URL(fileURLWithPath: configuration.local.modelDirectory))
         var driver = PairDriver(configuration: configuration)

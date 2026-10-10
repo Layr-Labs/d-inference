@@ -28,11 +28,6 @@ enum ClusterRuntimeCapabilityValidation {
             && p.maximumPromptTokens <= p.maximumContextTokens - p.maximumOutputTokens
             ,
             "Runtime profile exceeds protocol geometry")
-        // These are implementation ceilings, not runtime admission or a hardware
-        // promise. The producer obtains its exact values from the shared adapter.
-        try workerRequire((1...adapter.maximumLifetimeSeconds).contains(value.maxLifetimeSeconds)
-                          && (1...16).contains(value.maxRequests),
-                          "Unsupported resident lifetime or request count")
         try workerRequire(value.arithmeticPolicyID == adapter.arithmeticPolicyID,
                           "Unknown runtime arithmetic policy")
         try workerRequire((1...16).contains(value.partitions.count)

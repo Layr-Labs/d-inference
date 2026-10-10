@@ -40,20 +40,22 @@ enum ClusterWorkerValidation {
     static func command(_ frame: ClusterWorkerCommandFrame) throws {
         try workerRequire(frame.sequence < UInt64(Int64.max), "Invalid command sequence")
         switch frame.command {
-        case .shutdown: try workerRequire(frame.requestID == nil, "Shutdown has no request ID")
+        case .shutdown, .keepWarm: try workerRequire(frame.requestID == nil, "Shutdown and keep-warm have no request ID")
         default: try workerRequire(frame.requestID != nil, "Command requires request ID")
         }
         switch frame.command {
         case .reserve(let value): try reservation(value)
         case .tokenDecision(let ordinal, _):
             try workerRequire((0..<ClusterWorkerLimits.outputTokens).contains(ordinal), "Invalid token decision ordinal")
+        case .keepWarm(let ordinal):
+            try workerRequire((1..<ClusterWorkerLimits.keepWarmOrdinals).contains(ordinal), "Invalid keep-warm ordinal")
         default: break
         }
     }
     static func event(_ frame: ClusterWorkerEventFrame) throws {
         try workerRequire(frame.sequence < UInt64(Int64.max), "Invalid event sequence")
         switch frame.event {
-        case .ready, .unavailable, .shutdownComplete:
+        case .ready, .unavailable, .shutdownComplete, .keptWarm:
             try workerRequire(frame.requestID == nil, "Worker event has no request ID")
         default: try workerRequire(frame.requestID != nil, "Event requires request ID")
         }
@@ -63,6 +65,9 @@ enum ClusterWorkerValidation {
             try workerRequire(value.identity.membershipEpoch == frame.membershipEpoch, "Ready epoch differs")
         case .admitted(let bytes):
             try workerRequire((1...ClusterWorkerLimits.capacityBytes).contains(bytes), "Invalid reserved bytes")
+        case .keptWarm(let ordinal, let microseconds):
+            try workerRequire((1..<ClusterWorkerLimits.keepWarmOrdinals).contains(ordinal) && microseconds >= 0,
+                "Invalid keep-warm acknowledgment")
         case .committedToken(let ordinal, let token, let committed):
             try workerRequire((0..<ClusterWorkerLimits.outputTokens).contains(ordinal)
                 && (0..<ClusterWorkerLimits.vocabularySize).contains(token)

@@ -55,23 +55,10 @@ struct MiMoRegisteredSpecification {
     // Request scope, the same as the dense rows so results are comparable.
     static let maximumPromptTokens = 8192, maximumChunkTokens = 512
     static let maximumOutputTokens = 128, maximumContextTokens = 8320
-    static let maximumRequests = 16
 
-    /// A session's whole life: both loads and every request.
-    ///
-    /// Each rank hashes the whole 172,863,462,401-byte artifact before it reads
-    /// a tensor. Hashing is one thread of SHA-256 over uncached 4 MiB reads:
-    /// 92 s for this artifact on the M3 Ultra (measured 2026-10-09 by the
-    /// night run's verifier), and the 27B's 16.3 GB load, which is mostly its
-    /// hash, took 6.6 to 7.9 s on the M5 Max, so about 70 to 85 s there. The
-    /// stage read is 110 GB on rank 0 and 57 GB on rank 1 at cut 32, one
-    /// aligned read and one copy per tensor: allow up to 150 s. That is up to
-    /// 250 s before a rank is ready, against the dense rows' 300 s for
-    /// everything. Sixteen requests of at most 8,192 prompt and 128 output
-    /// tokens at a first-proof rate of 100 prompt and 5 output tokens a second
-    /// would be 108 s each, 1,728 s in all; a qualification session runs a few.
-    /// 1,800 s holds the load and about fourteen such requests.
-    static let maximumLifetimeNanoseconds: UInt64 = 1_800_000_000_000
+    // No session lifetime and no request count (removed 2026-10-10): a rank
+    // is kept on its renewable rank lease while its owner wants it resident.
+    // Loading is bounded by the startup deadline below, not by a lifetime.
     /// Files hashed at once when a rank verifies the artifact. One thread took
     /// 62.4 s on the M5 Max for all 172.9 GB (2.8 GB/s, the speed of one core's
     /// SHA-256); six are bounded by the disk instead. The dense rows keep one.

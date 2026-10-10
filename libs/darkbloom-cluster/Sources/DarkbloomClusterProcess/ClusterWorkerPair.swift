@@ -52,8 +52,8 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     public let identity: ClusterWorkerIdentity
     public let profile: ClusterWorkerProfile
     public let executionPlanSHA256: String
-    public let maximumRequests: Int
     public let timing: ClusterWorkerPairTiming
+    public let keepWarm: ClusterWorkerKeepWarmPolicy
     let workers: [any ClusterWorkerEndpoint]
     private let lock = NSLock()
     private var active: ClusterWorkerRequest?
@@ -65,17 +65,29 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     private var handler: (@Sendable () -> Void)?
     private var notificationSent = false
     private let notifications = DispatchQueue(label: "darkbloom.worker-pair.invalidation")
+    /// Requests admitted, for diagnostics. Never a limit: a pair has no
+    /// request count and no lifetime.
     private var admittedCount = 0
+    /// Recent request IDs, to refuse a replay; a window, not a count.
     private var requestIDs = Set<UUID>()
-    /// Same-Mac absolute ceiling only. A remote endpoint must translate a
-    /// remaining duration against its own lifetime, never forward this uptime.
+    private var requestOrder: [UUID] = []
+    /// A keep-warm exchange is outstanding; no request is reserved meanwhile.
+    private var warming = false
+    private var keepWarmOrdinal = 0
+    private var keepWarmExchanges = 0
+    private var lastKeepWarmMicroseconds: Int?
+    private var keepWarmTimer: DispatchSourceTimer?
+    private let keepWarmQueue = DispatchQueue(label: "darkbloom.worker-pair.keep-warm")
+    /// The earliest current rank-lease deadline of the two ranks on THIS Mac's
+    /// clock: each owner renews its rank's lease while it keeps the pair, so
+    /// this moves forward and is never a lifetime.
     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 {
         min(workers[0].localLifetimeDeadlineUptimeNanoseconds, workers[1].localLifetimeDeadlineUptimeNanoseconds)
     }
     public var readiness: ClusterWorkerPairReadiness? {
         lock.withLock {
-            guard !invalid && !stopping && (!draining || active != nil) && (admittedCount < maximumRequests || active != nil)
-                && DispatchTime.now().uptimeNanoseconds < localLifetimeDeadlineUptimeNanoseconds, let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
+            guard !invalid && !stopping && (!draining || active != nil),
+                  let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
             let sum = a.requestCapacityBytes.addingReportingOverflow(b.requestCapacityBytes)
             guard !sum.overflow, sum.partialValue <= ClusterWorkerLimits.capacityBytes else { return nil }
             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
@@ -84,23 +96,78 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     }
 
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
-                maximumRequests: Int = ClusterWorkerLimits.requestsPerEpoch,
-                timing: ClusterWorkerPairTiming = .standard) throws {
+                timing: ClusterWorkerPairTiming = .standard,
+                keepWarm: ClusterWorkerKeepWarmPolicy = .standard) throws {
         guard timing.isWithinLimits else {
             throw ClusterWorkerOwnerError.invalid("Pair waits must be between one nanosecond and one minute")
         }
-        guard (1...ClusterWorkerLimits.requestsPerEpoch).contains(maximumRequests), workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
+        guard workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
               workers[0].expectedIdentity == workers[1].expectedIdentity,
               workers[0].expectedProfile == workers[1].expectedProfile,
               workers[0].executionPlanSHA256 == workers[1].executionPlanSHA256 else {
             throw ClusterWorkerOwnerError.invalid("Expected two ordered workers with one identity/profile/plan")
         }
-        self.maximumRequests = maximumRequests; self.timing = timing
+        self.timing = timing; self.keepWarm = keepWarm
         self.workers = workers; identity = workers[0].expectedIdentity; profile = workers[0].expectedProfile
         executionPlanSHA256 = workers[0].executionPlanSHA256
         do { try Self.awaitReadiness(of: workers, until: startupDeadline) }
         catch { for worker in workers { worker.requestNativeCleanup() }; throw error }
         for worker in workers { worker.setInvalidationHandler { [weak self] in self?.invalidate() } }
+        if keepWarm.enabled { startKeepWarm() }
+    }
+
+    deinit { keepWarmTimer?.cancel() }
+
+    // MARK: Keep-warm tier 2
+
+    private func startKeepWarm() {
+        let timer = DispatchSource.makeTimerSource(queue: keepWarmQueue)
+        timer.schedule(deadline: .now() + .nanoseconds(Int(keepWarm.dataPlaneIntervalNanoseconds)),
+                       repeating: .nanoseconds(Int(keepWarm.dataPlaneIntervalNanoseconds)))
+        timer.setEventHandler { [weak self] in self?.keepWarmTick() }
+        lock.withLock { keepWarmTimer = timer }
+        timer.resume()
+    }
+
+    /// One exchange when the pair is valid and idle. Exclusive with requests:
+    /// `reserve` waits while it is outstanding, and it never starts while a
+    /// request is reserved or running. A failure invalidates the pair.
+    private func keepWarmTick() {
+        let ordinal = lock.withLock { () -> Int? in
+            guard !invalid, !stopping, !draining, active == nil, !warming,
+                  workers[0].readiness != nil, workers[1].readiness != nil,
+                  keepWarmOrdinal + 1 < ClusterWorkerLimits.keepWarmOrdinals else { return nil }
+            warming = true; keepWarmOrdinal += 1; return keepWarmOrdinal
+        }
+        guard let ordinal else { return }
+        let deadline = DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds
+        var longest = 0, failed = false
+        do {
+            for worker in workers { try worker.sendWorkerCommand(.keepWarm(ordinal: ordinal), requestID: nil, deadline: deadline) }
+            for worker in workers {
+                let event = try worker.receiveWorkerEvent(until: deadline)
+                guard event.requestID == nil, case .keptWarm(let answered, let microseconds) = event.event, answered == ordinal else {
+                    throw ClusterWorkerOwnerError.invalid("Keep-warm was answered with another event")
+                }
+                longest = max(longest, microseconds)
+            }
+        } catch { failed = true }
+        lock.withLock {
+            warming = false
+            if !failed { keepWarmExchanges += 1; lastKeepWarmMicroseconds = longest }
+        }
+        if failed {
+            // Any failure of the data plane while idle is a failed pair: its
+            // owner shuts it down cleanly rather than serve on a broken link.
+            invalidate()
+        }
+    }
+
+    /// Waits, bounded, for an outstanding keep-warm exchange to finish.
+    private func awaitKeepWarmIdle(until deadline: UInt64) {
+        while lock.withLock({ warming }) && DispatchTime.now().uptimeNanoseconds < deadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
     }
 
     /// Both ranks are watched at once. A rank that fails or exits while its peer
@@ -161,13 +228,17 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         }
         _ = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: identity.membershipEpoch,
             sequence: 0, requestID: requestID, command: .reserve(reservation)))
+        // A keep-warm exchange takes milliseconds; a request waits it out.
+        awaitKeepWarmIdle(until: min(admissionDeadline ?? UInt64.max,
+            DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds))
         let lease = try lock.withLock { () -> ClusterWorkerRequest in
-            guard !invalid && !stopping && !draining && active == nil, admittedCount < maximumRequests, !requestIDs.contains(requestID),
+            guard !invalid && !stopping && !draining && active == nil, !warming, !requestIDs.contains(requestID),
                   reservation.profileID == profile.id,
                   reservation.promptTokenIDs.count <= profile.maximumPromptTokens,
                   reservation.outputCount <= profile.maximumOutputTokens,
                   reservation.chunkSize <= profile.maximumChunkTokens,
-                  workers.allSatisfy({ reservation.deadlineUptimeNanoseconds <= $0.localLifetimeDeadlineUptimeNanoseconds }),
+                  reservation.deadlineUptimeNanoseconds > DispatchTime.now().uptimeNanoseconds,
+                  reservation.deadlineUptimeNanoseconds - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds,
                   reservation.promptTokenIDs.count <= profile.maximumContextTokens - reservation.outputCount,
                   (reservation.promptTokenIDs + reservation.stopTokenIDs).allSatisfy({ $0 < profile.vocabularySize }),
                   let a = workers[0].readiness, let b = workers[1].readiness,
@@ -176,7 +247,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
                 throw ClusterWorkerOwnerError.unavailable
             }
             let value = ClusterWorkerRequest(owner: self, requestID: requestID, reservation: reservation)
-            active = value; activeReleased = WorkerCompletion(); admittedCount += 1; requestIDs.insert(requestID); return value
+            active = value; activeReleased = WorkerCompletion(); admittedCount += 1
+            requestIDs.insert(requestID); requestOrder.append(requestID)
+            if requestOrder.count > ClusterWorkerLimits.requestReplayWindow { requestIDs.remove(requestOrder.removeFirst()) }
+            return value
         }
         do { try lease.admit(until: admissionDeadline); return lease }
         catch {
@@ -200,12 +274,9 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// long a particular prompt or output will take.
     public var admissionState: ClusterWorkerPairAdmissionState {
         lock.withLock {
-            let now = DispatchTime.now().uptimeNanoseconds
-            let deadline = localLifetimeDeadlineUptimeNanoseconds
-            return .init(remainingLifetimeNanoseconds: deadline > now ? deadline - now : 0,
-                admissionsRemaining: max(0, maximumRequests - admittedCount),
-                hasActiveRequest: active != nil, isDraining: draining || stopping,
-                isValid: !invalid && !stopping && !draining)
+            .init(requestsServed: admittedCount, hasActiveRequest: active != nil, isDraining: draining || stopping,
+                isValid: !invalid && !stopping && !draining, keepWarmExchanges: keepWarmExchanges,
+                lastKeepWarmMicroseconds: lastKeepWarmMicroseconds)
         }
     }
 
@@ -224,6 +295,8 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             if stopping { return (false, nil) }; stopping = true; return (true, active)
         }
         guard first.0 else { await shutdownFinished.value(); return }
+        lock.withLock { keepWarmTimer?.cancel(); keepWarmTimer = nil }
+        awaitKeepWarmIdle(until: DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds)
         if let lease = first.1 {
             // A request that is still running is first asked to stop at its
             // next committed token, which leaves both ranks retired and able

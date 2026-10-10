@@ -20,6 +20,7 @@ public final class QwenResidentRuntime {
     /// Declared at load and bound into the load agreement with the peer.
     public let generationMode: QwenResidentGenerationMode
     private let operation = NSLock()
+    private let keepWarm = ClusterKeepWarm()
     private let lifecycle: QwenLayerStageResidentLifecycle
     private var stage: (any LayerStageResidentStage)?
     private weak var model: Module?
@@ -44,6 +45,27 @@ public final class QwenResidentRuntime {
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity)
+    }
+
+    /// Keep-warm tier 1: one asynchronous pulse on a dedicated stream of this
+    /// executor while idle (`ClusterKeepWarm.pulse`); returns its submission
+    /// time in nanoseconds. Refuses while a native operation or request runs.
+    public func keepWarmPulse() throws -> UInt64 {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard control.available else { throw ProbeError("Keep-warm needs an idle resident owner") }
+        return keepWarm.pulse()
+    }
+
+    /// Keep-warm tier 2: one 1x16 exchange with the peer on the data plane
+    /// while idle (`ClusterKeepWarm.dataPlanePing`); returns its duration in
+    /// nanoseconds. Both ranks must be told by their owner; never during a
+    /// request.
+    public func dataPlanePing() throws -> UInt64 {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard control.available else { throw ProbeError("Keep-warm needs an idle resident owner") }
+        return try ClusterKeepWarm.dataPlanePing(collective: collective, check: { try control.check() })
     }
 
     public var readiness: ClusterWorkerReady? {

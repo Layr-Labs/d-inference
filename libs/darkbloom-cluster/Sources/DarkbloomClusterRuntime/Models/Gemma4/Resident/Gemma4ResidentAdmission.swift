@@ -25,8 +25,7 @@ struct Gemma4ResidentAdmission {
               identity.peers.count == 2, identity.peers[0].id != identity.peers[1].id,
               identity.peers.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 128 &&
                   $0.id.utf8.allSatisfy({ (33...126).contains($0) }) && qwenStageWireIsSHA256($0.buildSHA256) }),
-              configuration.deadlineUptimeNanoseconds > now,
-              configuration.deadlineUptimeNanoseconds - now <= Gemma4ResidentAdapterDefinition.maximumLifetimeNanoseconds,
+              configuration.admitsLoadDeadline(now: now),
               (1...1_048_576).contains(configBytes.count), (1...4_194_304).contains(manifestBytes.count),
               identity.configurationSHA256 == spec.configurationSHA256,
               identity.artifactSHA256 == spec.artifactSHA256,

@@ -67,16 +67,6 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         case .gemma4LayerStage: "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
         }
     }
-    /// The longest session lifetime a capability of this adapter may declare:
-    /// load plus every request. An implementation ceiling per adapter, not a
-    /// promise: 300 seconds unless the adapter's models need more. A rank of
-    /// the MiMo adapter hashes 173 GB and reads up to 142 GB before it is ready.
-    public var maximumLifetimeSeconds: Int {
-        switch self {
-        case .mimoV26LayerStage: 1800
-        default: 300
-        }
-    }
     /// The adapter that registers a runtime model, or nil for an unregistered ID.
     public static func registering(runtimeModelID: String) -> ClusterRuntimeAdapter? {
         allCases.first { $0.registeredProfiles.contains { $0.runtimeModelID == runtimeModelID } }
@@ -131,8 +121,8 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     public let rankCount = 2
     public let batchSize = 1
     public let maxActiveRequests = 1
-    public let maxLifetimeSeconds: Int
-    public let maxRequests: Int
+    // No session lifetime and no request count: a loaded runtime serves until
+    // its owner stops it or its rank lease lapses (ClusterWorkerLease).
     /// Requests remain serialized even when adjacent prefill stages overlap.
     public let schedulingPolicy = "serial"
     public let supportedPrefillSchedules: [ClusterPrefillSchedule]
@@ -149,7 +139,7 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
                 runtimeModelID: String, artifactSHA256: String, configurationSHA256: String,
                 manifestSHA256: String, profile: ClusterWorkerProfile, profileFingerprint: String,
                 partitions: [ClusterRuntimePartition], arithmeticPolicyID: String,
-                arithmeticPolicySHA256: String, maxLifetimeSeconds: Int, maxRequests: Int,
+                arithmeticPolicySHA256: String,
                 supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial],
                 supportedGenerationModes: [ClusterGenerationMode] = [.pipeline]) throws {
         self.runtimeBinarySHA256 = runtimeBinarySHA256; self.adapterID = adapterID; self.adapterVersion = adapterVersion
@@ -157,7 +147,6 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
         self.configurationSHA256 = configurationSHA256; self.manifestSHA256 = manifestSHA256
         self.profile = profile; self.profileFingerprint = profileFingerprint; self.partitions = partitions
         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
-        self.maxLifetimeSeconds = maxLifetimeSeconds; self.maxRequests = maxRequests
         self.supportedPrefillSchedules = supportedPrefillSchedules
         self.supportedGenerationModes = supportedGenerationModes
         try ClusterRuntimeCapabilityValidation.check(self)

@@ -47,8 +47,6 @@ public enum GPTOSSResidentCapabilityMetadata {
             profileFingerprint: profile.fingerprint, partitions: partitions,
             arithmeticPolicyID: GPTOSSArithmeticEnvironment.contract,
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
-            maxLifetimeSeconds: Int(GPTOSSRegisteredSpecification.maximumLifetimeNanoseconds / 1_000_000_000),
-            maxRequests: GPTOSSRegisteredSpecification.maximumRequests,
             supportedPrefillSchedules: spec.supportedPrefillSchedules,
             supportedGenerationModes: spec.supportedGenerationModes)
     }
@@ -62,7 +60,6 @@ public enum GPTOSSResidentCapabilityMetadata {
         public let supportedCuts: [Int]
         public let supportedPrefillSchedules: [ClusterPrefillSchedule]
         public let supportedGenerationModes: [ClusterGenerationMode]
-        public let maximumLifetimeSeconds: Int
         public let configurationSHA256: String
         public let manifestSHA256: String
 
@@ -70,7 +67,6 @@ public enum GPTOSSResidentCapabilityMetadata {
             runtimeModelID = spec.model.rawValue; profileID = spec.profileID; layerCount = spec.layers
             supportedCuts = spec.supportedCuts; supportedPrefillSchedules = spec.supportedPrefillSchedules
             supportedGenerationModes = spec.supportedGenerationModes
-            maximumLifetimeSeconds = Int(GPTOSSRegisteredSpecification.maximumLifetimeNanoseconds / 1_000_000_000)
             configurationSHA256 = spec.configurationSHA256; manifestSHA256 = spec.manifestSHA256
         }
     }

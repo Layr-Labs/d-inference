@@ -1,4 +1,5 @@
 import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
 import Darwin
 import Foundation
@@ -30,7 +31,7 @@ import Foundation
             // thread exists. Every forced end of this process from here on goes
             // through one exit (`ProcessForcedExit`): MLX's wired limit to zero
             // and its cache returned first, behind a 20 s dead-man. SIGTERM and
-            // the lifetime alarm are routed to it; SIGINT and SIGHUP too, unless
+            // the lease alarm are routed to it; SIGINT and SIGHUP too, unless
             // the launcher started this worker with them ignored.
             signal(SIGPIPE, SIG_IGN)
             ProcessNativeMemoryRelease.installForForcedExit()
@@ -38,21 +39,30 @@ import Foundation
             let beforeAlarm = DispatchTime.now().uptimeNanoseconds
             guard deadline > beforeAlarm else { throw WorkerFailure.invalid("Worker startup exhausted its deadline") }
             let remaining = deadline - beforeAlarm
-            guard remaining <= configuration.maximumLifetimeNanoseconds else {
-                throw WorkerFailure.invalid("Worker startup lifetime exceeds its bound")
+            guard remaining <= ClusterWorkerLease.maximumNanoseconds else {
+                throw WorkerFailure.invalid("Worker first lease grant exceeds its bound")
             }
-            alarm(UInt32((remaining + 999_999_999) / 1_000_000_000))
-            // The alarm did not end a rank spinning in the RDMA completion poll
-            // on real hardware; this thread is the last resort that is relied on.
-            try ProcessDeadline.arm(uptimeNanoseconds: deadline, status: 124)
+            alarm(UInt32((remaining + 999_999_999) / 1_000_000_000) + 1)
+            // The rank lease (S03), armed before any weights load: this thread
+            // ends the process at the lease's deadline unless the owner renews
+            // it. The alarm did not end a rank spinning in the RDMA completion
+            // poll on real hardware; this thread is the last resort relied on.
+            try ProcessDeadline.arm(lease: configuration.lease, status: 124)
             // Loading and the native bootstrap cannot be interrupted from
             // inside. An owner that names a startup deadline gets a worker
             // that is gone by then unless it became ready.
             let startup = try configuration.startupDeadlineUptimeNanoseconds.map {
                 try WorkerStartupDeadline.arm(uptimeNanoseconds: $0)
             }
-            let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
+            let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, lease: configuration.lease)
             try pipes.check()
+            // The control reader runs from here, through the load, so the
+            // owner's renewals keep the lease alive while weights load. Each
+            // renewal also moves the alarm, the second of the two last resorts.
+            let coordinator = WorkerCoordinator(pipes: pipes, membershipEpoch: configuration.load.identity.membershipEpoch,
+                keepWarm: configuration.keepWarm, exitHooks: .forcedExit,
+                renewal: { ttl in alarm(UInt32((ttl + 999_999_999) / 1_000_000_000) + 1) })
+            coordinator.startReading()
             // Nothing is loaded over memory a dead process left wired.
             try ClusterOrphanWiredGuard.check(role: "worker-rank-\(configuration.load.rank)")
             // The registered model's own adapter executes it: GPT-OSS has its
@@ -78,7 +88,7 @@ import Foundation
             let residency: ProcessStageResidency? = stageResidency
                 ? try WorkerStageResidency.hold(runtime: runtime, rank: configuration.load.rank) : nil
             startup?.disarm()
-            try WorkerCoordinator(runtime: runtime, pipes: pipes, exitHooks: .forcedExit).run()
+            try coordinator.run(runtime: runtime)
             alarm(0)
             withExtendedLifetime(residency) {}
             ProcessForcedExit.finish(status: 0, reason: "shutdown-complete")

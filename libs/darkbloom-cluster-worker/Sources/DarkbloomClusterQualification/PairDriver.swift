@@ -104,6 +104,8 @@ public struct PairDriver: Sendable {
                 ranks[rank].events = endpoint.events
                 ranks[rank].shutdownCommandSent = endpoint.shutdownCommandSent
                 ranks[rank].shutdownCompleteObserved = endpoint.shutdownCompleteObserved
+                ranks[rank].leaseRenewalsSent = endpoint.renewalsSent
+                ranks[rank].keepWarmExchanges = endpoint.keepWarmAnswered
                 ranks[rank].exitObserved = endpoint.launched && seen && endpoint.termination != nil
                 if let termination = endpoint.termination {
                     if termination.signalled { ranks[rank].exitSignal = termination.status }
@@ -196,9 +198,8 @@ public struct PairDriver: Sendable {
                   capability.profile.id == c.request.profileID,
                   capability.supportedPrefillSchedules.map(\.rawValue).contains(c.prefillSchedule),
                   capability.supportedGenerationModes.map(\.rawValue).contains(c.generationMode),
-                  c.lifetimeSeconds <= capability.maxLifetimeSeconds,
                   let selected = capability.partitions.first(where: { $0.stages.count == 2 && $0.stages[0].sourceLayerEnd == c.stageCut }) else {
-                throw QualificationError("the worker does not offer this model, profile, schedule, generation mode, lifetime or cut")
+                throw QualificationError("the worker does not offer this model, profile, schedule, generation mode or cut")
             }
             partition = selected
         } catch {
@@ -227,8 +228,8 @@ public struct PairDriver: Sendable {
                         artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
                         workerSHA256: workerSHA256)),
                     expectedIdentity: workerIdentity, rank: rank, profile: capability.profile,
-                    executionPlanSHA256: partition.planSHA256, lifetimeSeconds: c.lifetimeSeconds,
-                    maximumLifetimeSeconds: c.request.maximumLifetimeSeconds)
+                    executionPlanSHA256: partition.planSHA256,
+                    stopRenewalsAfterNanoseconds: c.stopRenewalsAfterSeconds.map { UInt64($0 * 1e9) })
             }
         } catch { return finish("refused", "cannot prepare the workers: \(error)") }
         let begun = DispatchTime.now().uptimeNanoseconds
@@ -261,14 +262,14 @@ public struct PairDriver: Sendable {
         let pair: ClusterWorkerPair
         do {
             pair = try ClusterWorkerPair(workers: endpoints,
-                startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, maximumRequests: c.repetitions)
+                startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
+                keepWarm: c.keepWarm ? .standard : .off)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         log("pair-check: both ranks ready after \(String(format: "%.1f", timing.startupSeconds!)) s")
 
         // 5 and 6. Reserve on both ranks, start, and let rank 0's committed
         // tokens continue; once per repetition, in the same loaded session.
-        let lifetimeEnd = pair.localLifetimeDeadlineUptimeNanoseconds
         let announce = self.log
         var lease: ClusterWorkerRequest!
         var result: (tokens: [Int], stamps: [UInt64], finish: String?, failure: String?, concluded: UInt64?) = ([], [], nil, nil, nil)
@@ -276,11 +277,17 @@ public struct PairDriver: Sendable {
         var repetitions: [PairRepetitionTiming] = []
         var firstTokens: [Int] = []
         for repetition in 0..<c.repetitions {
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard lifetimeEnd > now + 8_000_000_000 else {
-                return finish("failed", "the workers' lifetime was used up before request \(repetition + 1) could start")
+            // An idle gap leaves the session loaded and leased, as a server
+            // between requests; the next request's first token shows whether
+            // anything went cold meanwhile.
+            var idleBefore: Double?
+            if repetition > 0, !c.idleSeconds.isEmpty {
+                let gap = c.idleSeconds[(repetition - 1) % c.idleSeconds.count]
+                if gap > 0 { Thread.sleep(forTimeInterval: gap) }
+                idleBefore = gap
             }
-            let requestDeadline = min(now + UInt64(c.requestSeconds) * 1_000_000_000, lifetimeEnd - 3_000_000_000)
+            let now = DispatchTime.now().uptimeNanoseconds
+            let requestDeadline = now + UInt64(c.requestSeconds) * 1_000_000_000
             guard let capacity = pair.readiness?.requestCapacityBytes else {
                 return finish("failed", "the pair stopped being ready before the reservation")
             }
@@ -319,6 +326,7 @@ public struct PairDriver: Sendable {
                     secondTokenGapSeconds: result.stamps.count > 1 ? Double(result.stamps[1] - first) / 1e9 : nil,
                     tokens: result.tokens.count, selectedTokenIDsSHA256: QualificationHash.tokenIDs(result.tokens),
                     finishReason: result.finish ?? "none")
+                measured?.idleBeforeSeconds = idleBefore
                 if repetition == 0 {
                     timing.admissionSeconds = admission
                     timing.firstTokenSeconds = firstToken
@@ -362,7 +370,9 @@ public struct PairDriver: Sendable {
             finalLease.releaseResources()
             await pair.shutdown()
         }
-        let exitLimit = lifetimeEnd + 20_000_000_000
+        // A clean shutdown is acknowledged in seconds; a lease that lapsed
+        // ends a worker within its time to live, plus the forced exit's bound.
+        let exitLimit = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.ttlNanoseconds + 60_000_000_000
         for endpoint in endpoints { _ = endpoint.waitForExit(until: exitLimit) }
         timing.shutdownSeconds = Double(DispatchTime.now().uptimeNanoseconds - shutdownStarted) / 1e9
 

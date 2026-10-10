@@ -355,6 +355,10 @@ public struct PairRankReport: Codable, Equatable, Sendable {
     /// Lines the runtime wrote for its launcher: load, hand-off and release
     /// sizes and durations of this rank. Sizes are MLX's own byte counts.
     public var runtimeLines: [String]?
+    /// Rank-lease renewals the driver wrote to this worker (S03).
+    public var leaseRenewalsSent: UInt64?
+    /// Keep-warm data-plane exchanges this worker answered (S27 tier 2).
+    public var keepWarmExchanges: Int?
 
     public init(role: String, rank: Int) { self.role = role; self.rank = rank }
 }
@@ -375,6 +379,8 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
     public var tokens: Int
     public var selectedTokenIDsSHA256: String
     public var finishReason: String
+    /// The idle gap the session spent loaded before this request (idle-latency runs).
+    public var idleBeforeSeconds: Double?
 
     public init(requestID: String, admissionSeconds: Double, firstTokenSeconds: Double, prefillTokensPerSecond: Double,
                 decodeSeconds: Double, decodeTokensPerSecond: Double?, totalSeconds: Double,

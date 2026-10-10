@@ -56,5 +56,6 @@ struct WorkerObject {
         guard let value = try take(key) as? [Any] else { throw ClusterWorkerProtocolError.invalid("Expected integer array: " + key) }
         return try value.map { item in var r = WorkerObject([key: item]); return try r.int(key) }
     }
+    func peekString(_ key: String) -> String? { values[key] as? String }
     func finish() throws { try workerRequire(values.isEmpty, "Unknown worker record fields") }
 }

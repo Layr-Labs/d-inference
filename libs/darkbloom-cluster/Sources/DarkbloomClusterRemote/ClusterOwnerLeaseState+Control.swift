@@ -14,13 +14,15 @@ extension ClusterOwnerLeaseState {
         case .reserve(let id, let ceiling, let remaining):
             let end = now.addingReportingOverflow(remaining)
             try require(available && request == nil && !seen.contains(id)
-                        && seen.count < ClusterWorkerLimits.requestsPerEpoch
                         && ceiling > 0 && ceiling <= (readyCapacity ?? 0)
                         && remaining > 0 && remaining <= ClusterWorkerLimits.deadlineNanoseconds && !end.overflow,
                         "Reservation is unavailable or outside bounds")
-            let deadline = min(end.partialValue, lifetimeDeadlineUptimeNanoseconds)
+            // The rank lease is renewed for as long as the request runs, so
+            // the request's own deadline stands; there is no lifetime cap.
+            let deadline = end.partialValue
             request = .init(id: id, ceiling: ceiling, deadline: deadline, charged: ceiling)
-            seen.insert(id)
+            seen.insert(id); seenOrder.append(id)
+            if seenOrder.count > ClusterWorkerLimits.requestReplayWindow { seen.remove(seenOrder.removeFirst()) }
             action = .forwardReserve(id, localDeadlineUptimeNanoseconds: deadline)
         case .start(let id):
             try require(available && request?.id == id && request?.phase == .admitted

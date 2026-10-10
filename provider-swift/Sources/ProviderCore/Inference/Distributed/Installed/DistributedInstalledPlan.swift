@@ -37,7 +37,14 @@ struct DistributedInstalledPlan: Sendable {
     static let collectiveProgressLimitMilliseconds = 60_000
 
     var localPeer: ClusterConfiguration.Peer { configuration.peers[configuration.localRank] }
-    var maximumLifetimeNanoseconds: UInt64 { UInt64(capability.maxLifetimeSeconds) * 1_000_000_000 }
+    /// The installed session's lifetime stays what it was (finding 5 of the
+    /// handoff: the product's session lifetime is an open decision). A worker
+    /// may now declare a longer ceiling for long prompts; the product does not
+    /// take it until that decision is made.
+    static let sessionLifetimeCeilingSeconds = 300
+    var maximumLifetimeNanoseconds: UInt64 {
+        UInt64(min(capability.maxLifetimeSeconds, Self.sessionLifetimeCeilingSeconds)) * 1_000_000_000
+    }
     var configurationURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("config.json") }
     var manifestURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("manifest.json") }
 

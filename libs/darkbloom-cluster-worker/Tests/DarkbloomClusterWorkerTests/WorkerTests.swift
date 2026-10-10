@@ -142,10 +142,14 @@ final class WorkerTests: XCTestCase {
             var selected = args; selected[5] = cut
             XCTAssertThrowsError(try WorkerConfiguration(arguments: selected, now: 100))
         }
-        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "300000000101")] {
+        for (index, value) in [(3, "00"), (7, epoch.uppercased()), (9, "other"), (23, "3600000000101")] {
             var changed = args; changed[index] = value
             XCTAssertThrowsError(try WorkerConfiguration(arguments: changed, now: 100))
         }
+        // The dense adapter's ceiling, 3,600 s: a long prompt's run on the
+        // slower Mac outlasts the earlier 300 s, and the worker takes it.
+        var long = args; long[23] = "3600000000100"
+        XCTAssertEqual(try WorkerConfiguration(arguments: long, now: 100).maximumLifetimeNanoseconds, 3_600_000_000_000)
         XCTAssertThrowsError(try WorkerConfiguration(arguments: args + ["--rank", "1"], now: 100))
     }
 

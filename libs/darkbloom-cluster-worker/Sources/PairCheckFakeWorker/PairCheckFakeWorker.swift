@@ -91,7 +91,7 @@ import Foundation
            environment["DARKBLOOM_CLUSTER_TRANSPORT"] != nil || environment["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"] != nil { exit(67) }
         // What a real worker would refuse: its own deadline on its own clock.
         let now = uptime()
-        guard deadline > now, deadline - now <= 300_000_000_000 else { exit(65) }
+        guard deadline > now, deadline - now <= 3_600_000_000_000 else { exit(65) }
         let run = URL(fileURLWithPath: matrixPath).deletingLastPathComponent()
         // Dispositions a launcher sets to "ignore" survive into the worker.
         let ignored = [SIGINT, SIGHUP, SIGTERM].map { number -> Bool in

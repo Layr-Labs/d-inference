@@ -19,6 +19,12 @@ struct WorkerConfiguration {
     /// qualification switch in the environment stops the worker at startup.
     /// An installed owner never passes it.
     let qualificationSwitchesPermitted: Bool
+    /// The longest local lifetime this worker accepts: the ceiling of the
+    /// adapter that registers `--model-id` (`ClusterRuntimeAdapter.maximumLifetimeSeconds`,
+    /// 3,600 s for the dense models, whose long prompts run for minutes on the
+    /// slower Mac), 300 s for a model no adapter registers. The owner still
+    /// asks for a lifetime sized to its requests.
+    let maximumLifetimeNanoseconds: UInt64
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
@@ -58,9 +64,11 @@ struct WorkerConfiguration {
               epoch.uuidString.lowercased() == fields["--membership-epoch"],
               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
               String(deadline) == fields["--deadline-uptime-nanoseconds"],
-              deadline > now, deadline - now <= 300_000_000_000 else {
-            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <=300-second local lifetime")
+              deadline > now, deadline - now <= Self.lifetimeBound(runtimeModelID: fields["--model-id"]!) else {
+            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <="
+                + "\(Self.lifetimeBound(runtimeModelID: fields["--model-id"]!) / 1_000_000_000)-second local lifetime")
         }
+        maximumLifetimeNanoseconds = Self.lifetimeBound(runtimeModelID: fields["--model-id"]!)
         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")
         }
@@ -108,5 +116,14 @@ struct WorkerConfiguration {
             modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
             deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
             prefillSchedule: prefillSchedule)
+    }
+}
+
+extension WorkerConfiguration {
+    /// The lifetime ceiling of the adapter that registers `runtimeModelID`,
+    /// or 300 s for a model no adapter registers.
+    static func lifetimeBound(runtimeModelID: String) -> UInt64 {
+        let adapter = ClusterRuntimeAdapter.allCases.first { $0.registeredProfiles.contains { $0.runtimeModelID == runtimeModelID } }
+        return UInt64(adapter?.maximumLifetimeSeconds ?? 300) * 1_000_000_000
     }
 }

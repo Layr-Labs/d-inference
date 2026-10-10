@@ -41,8 +41,7 @@ masked captures in `evidence/link-v2-20261009/captures`):
   all of it as a root launchd job at load and every 30 minutes. Uninstall
   switches back to Automatic and deletes the location.
 - ThunderMLX (`docs/SETUP.md`): a manual IPv4 per link on a private subnet
-  (`10.0.0.1`/`10.0.0.2`), no router. Mac A still carries this as a service on
-  `en5`.
+  (one address per Mac), no router.
 - oMLX (`omlx/cluster/transport.py`): treats `169.254/16` as unroutable, takes a
   link only when both ends share a subnet over the selected interfaces, and
   proves the route with `route -n get` and a ping in both directions.

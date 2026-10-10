@@ -72,7 +72,10 @@ struct ResidentAdmissionTests {
         #expect(QwenResidentAdapterDefinition.supportedCuts == [4, 8, 12, 16])
         let profile = try QwenResidentAdapterDefinition.profile(specification: try Self.specification())
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumContextTokens == 8320 && profile.maximumOutputTokens == 128)
+        // Derived from the protocol bounds and the declared 262,144-token context.
+        #expect(profile.maximumContextTokens == 32_768 && profile.maximumOutputTokens == 4096)
+        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
+        #expect(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds == 3_600_000_000_000)
         #expect(profile.fingerprint.count == 64)
     }
 
@@ -111,7 +114,7 @@ struct ResidentAdmissionTests {
             try Self.admit(Self.configuration(deadline: Self.now, identity: valid))
         }
         refuses("lifetime beyond the closed bound") {
-            try Self.admit(Self.configuration(deadline: Self.now + 300_000_000_001, identity: valid))
+            try Self.admit(Self.configuration(deadline: Self.now + 3_600_000_000_001, identity: valid))
         }
         refuses("duplicate peer labels") {
             try Self.admit(Self.configuration(identity: try Self.identity(peers: [

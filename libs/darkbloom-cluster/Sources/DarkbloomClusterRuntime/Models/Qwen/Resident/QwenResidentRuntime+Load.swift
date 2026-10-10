@@ -149,9 +149,17 @@ extension QwenResidentRuntime {
                         bound: QwenResidentResourceEnvironment.allocationBound)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
                         profile: loaded.profile, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens)
-                    try maximum.requireLive(
-                        additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
-                        additionalHostBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraHostBytes ?? 0, split?.extraHostBytes ?? 0]))
+                    // The gate at load: the largest context this Mac admits now,
+                    // with the stage resident. Refused only below the smallest
+                    // useful request; each request is gated again when reserved.
+                    let admitted = try QwenResidentRuntime.admittedContext(admission: admission, profile: loaded.profile,
+                        rank: collective.rank, mode: mode)
+                    try admitted.allowance.requireLive(additionalNativeBytes: admitted.extraNativeBytes,
+                        additionalHostBytes: admitted.extraHostBytes)
+                    log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.specification.model.rawValue)"
+                        + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.contextTokens)"
+                        + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
+                        + " transient_at_admitted=\(admitted.allowance.transientBytes)")
                     try checked()
                     if mode == .phaseSplit {
                         // Sizes only, for whoever launched this worker.

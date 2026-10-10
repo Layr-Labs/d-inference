@@ -38,6 +38,7 @@ final class QwenGenerationDiagnosticResources {
             bound: QwenResidentResourceEnvironment.allocationBound)
         guard actual.stateBytes == requestAllowance.stateBytes,
               actual.fusionBytes == requestAllowance.fusionBytes,
+              actual.transientBytes == requestAllowance.transientBytes,
               actual.reservedBytes == requestAllowance.reservedBytes else {
             throw ProbeError("Diagnostic allowance differs from the actual reserved generation geometry")
         }

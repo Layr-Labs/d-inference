@@ -16,7 +16,8 @@ struct QwenResidentContextLimits: Equatable, Encodable {
     /// boundary arrays are priced for one frame of it.
     static let chunkTokens = 512
 
-    let declaredContextTokens: Int
+    /// The model's declared context, or nil for the earlier reservation.
+    let declaredContextTokens: Int?
     /// The longest prompt plus output one request may hold.
     let maximumContextTokens: Int
     /// Each leaves room for at least one token of the other. A request's own
@@ -34,5 +35,20 @@ struct QwenResidentContextLimits: Equatable, Encodable {
         maximumPromptTokens = min(ClusterWorkerLimits.promptTokens, maximumContextTokens - 1)
         maximumOutputTokens = min(ClusterWorkerLimits.outputTokens, maximumContextTokens - 1)
         maximumChunkTokens = min(Self.chunkTokens, maximumPromptTokens)
+    }
+
+    /// The earlier fixed profile every model had (8,192 prompt, 128 output,
+    /// 8,320 context, frames of 512): what a model keeps until the context its
+    /// configuration declares is recorded.
+    static let reservation = QwenResidentContextLimits(prompt: 8192, output: 128, context: 8320, chunk: chunkTokens)
+
+    /// A declared context's limits, or the reservation when none is recorded.
+    static func derived(declaredContextTokens declared: Int?) throws -> QwenResidentContextLimits {
+        try declared.map { try QwenResidentContextLimits(declaredContextTokens: $0) } ?? .reservation
+    }
+
+    private init(prompt: Int, output: Int, context: Int, chunk: Int) {
+        declaredContextTokens = nil; maximumContextTokens = context
+        maximumPromptTokens = prompt; maximumOutputTokens = output; maximumChunkTokens = chunk
     }
 }

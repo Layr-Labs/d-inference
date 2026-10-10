@@ -49,3 +49,18 @@ struct QwenDenseRegisteredSpecification {
             queryHeads: 24, linearValueHeads: 48, namedStateBytes: 1_599_082_560),
     ]
 }
+
+/// The context each registered model declares (`max_position_embeddings` of
+/// its pinned configuration, which `configurationSHA256` fixes), one row per
+/// model. The request limits are derived from it (`QwenResidentContextLimits`).
+///
+/// A model without a row keeps the earlier fixed reservation (8,192 prompt,
+/// 128 output, 8,320 context) until its family records the context its own
+/// configuration declares here; nothing about it changes before that.
+extension QwenDenseRegisteredSpecification {
+    static let declaredContextTokensByModel: [QwenRegisteredDenseModel: Int] = [
+        .qwen35NineB: 262_144,
+        .qwen38TwentySevenB: 262_144,
+    ]
+    var declaredContextTokens: Int? { Self.declaredContextTokensByModel[model] }
+}

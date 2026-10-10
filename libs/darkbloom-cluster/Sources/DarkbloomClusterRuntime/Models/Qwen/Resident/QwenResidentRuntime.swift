@@ -108,6 +108,55 @@ public final class QwenResidentRuntime {
             bound: QwenResidentResourceEnvironment.allocationBound)
     }
 
+    /// The largest context this rank admits now and its charge: state,
+    /// fusion and attention transient (`QwenResidentRequestAllowance`), plus
+    /// the schedule's and the mode's named storage at that context's prompt.
+    /// One sample of the host is judged for every candidate, so the search
+    /// is consistent; the caller then takes one live decision at the result.
+    static func admittedContext(admission: QwenResidentAdmission, profile: QwenRegisteredDenseModelProfile,
+                                rank: Int, mode: QwenResidentGenerationMode) throws -> QwenResidentAdmittedContext {
+        let limits = try QwenResidentContextLimits(specification: admission.specification)
+        let policy = QwenResidentPrefillSelection.policy(admission.configuration.prefillSchedule)
+        let sum = QwenLongPrefillCheckedBytes.sum
+        func charge(_ context: Int) throws -> QwenResidentAdmittedContext {
+            let prompt = min(admission.profile.maximumPromptTokens, context - 1)
+            let chunk = min(admission.profile.maximumChunkTokens, prompt)
+            let allowance = try QwenResidentRequestAllowance.derive(profile: profile, plan: admission.plan, rank: rank,
+                maximumTokens: context, chunkSize: chunk, bound: QwenResidentResourceEnvironment.allocationBound)
+            let prefill = try QwenResidentPrefillSelection.allowance(policy, rank: rank, promptCount: prompt,
+                chunkSize: chunk, hiddenSize: admission.profile.hiddenSize,
+                elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
+                bound: QwenResidentResourceEnvironment.allocationBound)
+            let split = try phaseSplitAllowance(mode, admission: admission, profile: profile, rank: rank, promptCount: prompt)
+            return .init(contextTokens: context, allowance: allowance,
+                extraNativeBytes: try sum([prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
+                extraHostBytes: try sum([prefill?.extraHostBytes ?? 0, split?.extraHostBytes ?? 0]))
+        }
+        let os = try QwenDenseStageLoadResources.observeOS()
+        let native = QwenDenseStageLoadResources.observeNative()
+        let now = DispatchTime.now().uptimeNanoseconds
+        func admits(_ context: Int) throws -> Bool {
+            let value = try charge(context)
+            let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes, try sum([value.allowance.reservedBytes,
+                value.extraNativeBytes, value.extraHostBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+            let allocator = try sum([native.activeBytes, native.cacheBytes, value.allowance.reservedBytes,
+                value.extraNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+            let decision = try QwenDenseStageLoadPolicy.decide(os, requiredBytes: free,
+                purpose: "Resident context of \(context) tokens", now: now)
+            return decision.admitted && native.allocatorLimitBytes >= allocator
+        }
+        let minimum = QwenResidentContextAdmission.minimumContextTokens(limits: limits)
+        guard let largest = try QwenResidentContextAdmission.largest(minimum: minimum,
+                maximum: limits.maximumContextTokens, admits: admits) else {
+            // The live gate's own sentence for the smallest useful request.
+            let smallest = try charge(minimum)
+            try smallest.allowance.requireLive(additionalNativeBytes: smallest.extraNativeBytes,
+                additionalHostBytes: smallest.extraHostBytes)
+            throw ProbeError("Resident load refused: not even a request of \(minimum) context tokens fits on rank \(rank)")
+        }
+        return try charge(largest)
+    }
+
     private func maximumRecordingCharge() throws -> QwenResidentRecordingCharge {
         guard let stage else { throw ProbeError("Resident model already released") }
         let base = try QwenResidentRequestAllowance.derive(profile: stage.profile, plan: admission.plan,
@@ -238,6 +287,9 @@ public final class QwenResidentRuntime {
                 rank: collective.rank, promptCount: reserved.request.promptCount)) else {
                 throw ProbeError("Phase-split allowance changed since reservation")
             }
+            // This request's allocator peak, for whoever launched the worker.
+            let before = Memory.snapshot()
+            Memory.peakMemory = 0   // resets the allocator peak (the value is ignored)
             let value = try QwenResidentRequestPublication.run(control: control, lifecycle: lifecycle,
                 identity: .init(requestID: requestID, epoch: requestID,
                     recordedRequestFingerprint: reserved.request.fingerprint), deadline: reserved.deadline, body: {
@@ -250,6 +302,11 @@ public final class QwenResidentRuntime {
                         onCommittedToken: onCommittedToken)
                 }
             }, prepare: { try prepare($0.0, $0.1) })
+            let after = Memory.snapshot()
+            log("darkbloom-resident-request-v1 rank=\(collective.rank) prompt=\(reserved.request.promptCount)"
+                + " output=\(reserved.request.outputCount) reserved=\(reserved.allowance.reservedBytes)"
+                + " transient=\(reserved.allowance.transientBytes) active_before=\(before.activeMemory)"
+                + " peak=\(after.peakMemory) active_after=\(after.activeMemory) cache_after=\(after.cacheMemory)")
             // Output is fully prepared and control completed before this slot
             // is cleared. A thrown encode keeps the failed owner unavailable.
             reservation = nil; phaseSplitAllowance = nil
@@ -290,4 +347,12 @@ public final class QwenResidentRuntime {
         // admission if a caller dropped an owner without acknowledged cleanup.
         if processLeaseOwned { control.fail() }
     }
+}
+
+/// What `QwenResidentRuntime.admittedContext` found for one rank at load.
+struct QwenResidentAdmittedContext {
+    let contextTokens: Int
+    let allowance: QwenResidentRequestAllowance
+    let extraNativeBytes: Int
+    let extraHostBytes: Int
 }

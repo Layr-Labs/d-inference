@@ -29,7 +29,7 @@ def main(binary, fixtures):
                 assert result.stderr == b""
                 value = json.loads(result.stdout)
                 assert value["runtimeBinarySHA256"] == digest
-                assert value["profile"]["maximumOutputTokens"] == 128
+                assert value["profile"]["maximumOutputTokens"] == 4096 and value["profile"]["maximumPromptTokens"] == 32767
                 assert [p["stages"][0]["sourceLayerEnd"] for p in value["partitions"]] == [4, 8, 12, 16]
                 assert result.stdout == (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
             else:

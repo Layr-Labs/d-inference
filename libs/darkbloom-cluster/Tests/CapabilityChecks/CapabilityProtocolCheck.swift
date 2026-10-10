@@ -104,10 +104,10 @@ struct CheckFailure: Error { let message: String }
             try refuse("generation-modes-" + String(describing: malformed)) { $0["supportedGenerationModes"] = malformed }
         }
         try yes("exact-native-profile-and-arithmetic") {
-            try require(value.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff", "Profile recipe changed")
+            try require(value.profileFingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb", "Profile recipe changed")
             try require(value.arithmeticPolicySHA256 == "0ae9c7c21048fa94fc90353b84cd8578f4adc05b1b22c3d55bd70f01c9c3bc74", "Arithmetic receipt changed")
-            try require(value.profile.maximumPromptTokens == 8192 && value.profile.maximumOutputTokens == 128
-                && value.profile.maximumChunkTokens == 512 && value.profile.maximumContextTokens == 8320, "Native bounds differ")
+            try require(value.profile.maximumPromptTokens == 32_767 && value.profile.maximumOutputTokens == 4096
+                && value.profile.maximumChunkTokens == 512 && value.profile.maximumContextTokens == 32_768, "Native bounds differ")
         }
         try yes("native-cut4-plan-and-complete-partitions") {
             try require(value.partitions[0].planSHA256 == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f", "Known cut4 Plan differs")

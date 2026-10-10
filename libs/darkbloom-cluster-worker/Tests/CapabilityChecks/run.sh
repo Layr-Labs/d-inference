@@ -28,6 +28,8 @@ task_sources=(
   Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment
   Models/Qwen/Loading/QwenLayerStageCandidates
   Models/Qwen/Resident/QwenResidentModelDefinition
+  Models/Qwen/Resources/QwenResidentContextLimits
+  Models/Qwen/Resources/QwenResidentContextLimits+Registered
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
 )

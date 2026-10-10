@@ -6,7 +6,8 @@
 # complete, well-formed command line that names a model directory which does
 # not exist: a refusal must come before anything of the model is opened, and a
 # case that passes the gate must then stop at that missing directory instead.
-# No model, no GPU, no peer, no network; every case ends within a few seconds.
+# No model, no GPU work, no peer, no network (a failed worker's release opens
+# the Metal device to reset MLX's wired limit); every case ends within a few seconds.
 #
 # usage: run.sh /ABS/PATH/darkbloom-cluster-worker
 set -euo pipefail
@@ -43,6 +44,7 @@ check() {
   passed=$((passed + 1)); printf 'ok %-58s %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-150)"
 }
 transport=DARKBLOOM_CLUSTER_TRANSPORT; fault=DARKBLOOM_CLUSTER_QUALIFICATION_FAULT; retired=DARKBLOOM_CLUSTER_GENERATION_MODE
+residency=DARKBLOOM_CLUSTER_STAGE_RESIDENCY
 # With no switch the worker gets as far as the missing model: the baseline every refusal is told apart from.
 check baseline-stops-at-the-missing-model 1 "" "qualification switch" --
 check transport-switch-refused-without-the-flag 1 "$transport is a qualification switch" "" "$transport=local-socket-test" --
@@ -59,4 +61,12 @@ check retired-mode-name-refused-even-with-the-flag 1 "$retired is no longer read
 check unknown-generation-mode-refused 1 "generation mode must be one the registered model lists" "" -- --generation-mode phase-split
 check declared-generation-mode-reaches-the-model 1 "" "generation mode must be" -- --generation-mode phase_split_v1
 check declared-compact-mode-reaches-the-model 1 "" "generation mode must be" -- --generation-mode pipeline_compact_decode_v1
+check residency-switch-refused-without-the-flag 1 "$residency is a qualification switch" "" "$residency=stage_wired_residency_v1" --
+check residency-switch-takes-only-its-policy 1 "$residency takes only stage_wired_residency_v1" "" "$residency=on" -- --qualification-switches yes
+check residency-switch-passes-the-gate-with-the-flag 1 "" "qualification switch" "$residency=stage_wired_residency_v1" -- --qualification-switches yes
+# S00: before the model is opened the orphan-wired guard has decided, and a
+# worker that fails leaves through the one forced exit, release first.
+check orphan-guard-decides-before-the-model 1 "darkbloom-orphan-wired-v1 role=worker-rank-0 decision=" "" --
+check a-failed-worker-takes-the-forced-exit 1 "darkbloom-forced-exit-v1 status=1 reason=worker-error phase=claimed" "" --
+check the-forced-exit-resets-the-wired-limit 1 "phase=released wired_limit_before=0 wired_limit=0" "" --
 printf '{"passed":true,"cases":%d,"modelOrGPUExecution":false}\n' "$passed"

@@ -27,6 +27,8 @@ let package = Package(
             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+            // The orphan-wired guard at worker start (no MLX).
+            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
         ]),
         .testTarget(name: "DarkbloomClusterWorkerTests", dependencies: [
             "DarkbloomClusterWorker",

@@ -1,5 +1,16 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Foundation
+
+/// What the coordinator does the moment it knows the worker will not go on:
+/// the reader saw its input end before shutdown or fail, or the executor
+/// caught a failure. The worker begins its one forced exit there (release
+/// first, dead-man armed), then unwinds; tests record the call instead.
+struct WorkerExitHooks: Sendable {
+    let begin: @Sendable (String) -> Void
+    static let none = WorkerExitHooks(begin: { _ in })
+    static let forcedExit = WorkerExitHooks(begin: { ProcessForcedExit.begin(status: 1, reason: $0) })
+}
 
 /// The main process thread is the dedicated synchronous native executor. The
 /// reader only validates control, queues one next action, and signals cancel.
@@ -8,6 +19,7 @@ import Foundation
 final class WorkerCoordinator: @unchecked Sendable {
     private let runtime: any WorkerRuntime
     private let pipes: WorkerPipes
+    private let exitHooks: WorkerExitHooks
     private let ready: ClusterWorkerReady
     private let condition = NSCondition()
     private let readerDone = DispatchGroup()
@@ -20,9 +32,9 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var shutdownReceived = false
     private var requestDeadline: UInt64?
 
-    init(runtime: any WorkerRuntime, pipes: WorkerPipes) throws {
+    init(runtime: any WorkerRuntime, pipes: WorkerPipes, exitHooks: WorkerExitHooks = .none) throws {
         guard let ready = runtime.readiness else { throw WorkerFailure.invalid("Native owner did not establish bilateral readiness") }
-        self.runtime = runtime; self.pipes = pipes; self.ready = ready
+        self.runtime = runtime; self.pipes = pipes; self.ready = ready; self.exitHooks = exitHooks
         session = try .init(identity: ready.identity, rank: ready.rank, profile: ready.profile,
             executionPlanSHA256: ready.executionPlanSHA256)
     }
@@ -40,7 +52,13 @@ final class WorkerCoordinator: @unchecked Sendable {
             readerDone.enter(); readerStarted = true
             Thread.detachNewThread { [self] in
                 defer { readerDone.leave() }
-                do { try readControl() } catch { fail(error) }
+                do { try readControl() } catch {
+                    // Lost or failed input: an executor blocked in a collective
+                    // would not see it until its guard; release now, bound the
+                    // unwind, then wake it.
+                    exitHooks.begin("worker-input")
+                    fail(error)
+                }
             }
             while true {
                 let command = try nextAction()
@@ -78,6 +96,9 @@ final class WorkerCoordinator: @unchecked Sendable {
             }
         } catch {
             let primary = error
+            // Includes a JACCL guard error: release first, and bound the local
+            // cleanup below by the dead-man.
+            exitHooks.begin("worker-failure")
             let id = activeRequest()
             if let id {
                 runtime.cancel(id)

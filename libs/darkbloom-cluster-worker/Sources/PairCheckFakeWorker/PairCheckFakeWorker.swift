@@ -88,7 +88,8 @@ import Foundation
         if let flag = fields["--qualification-switches"], flag != "yes" { exit(66) }
         if environment["DARKBLOOM_CLUSTER_GENERATION_MODE"] != nil { exit(67) }
         if fields["--qualification-switches"] == nil,
-           environment["DARKBLOOM_CLUSTER_TRANSPORT"] != nil || environment["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"] != nil { exit(67) }
+           environment["DARKBLOOM_CLUSTER_TRANSPORT"] != nil || environment["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"] != nil
+            || environment["DARKBLOOM_CLUSTER_STAGE_RESIDENCY"] != nil { exit(67) }
         // What a real worker would refuse: its own deadline on its own clock.
         let now = uptime()
         guard deadline > now, deadline - now <= 300_000_000_000 else { exit(65) }

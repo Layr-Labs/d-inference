@@ -38,6 +38,10 @@ public struct PairConfiguration: Sendable {
     public static let localSocketTransport = "local-socket-test"
     /// The name the runtime reads a declared qualification transport from.
     public static let workerTransportEnvironment = "DARKBLOOM_CLUSTER_TRANSPORT"
+    /// The name and only value a worker reads a requested standing stage
+    /// residency from (S00's measurement; qualification only).
+    public static let stageResidencyEnvironment = "DARKBLOOM_CLUSTER_STAGE_RESIDENCY"
+    public static let stageResidencyPolicy = "stage_wired_residency_v1"
 
     public var request: QualificationRequest
     public var stageCut: Int
@@ -82,6 +86,9 @@ public struct PairConfiguration: Sendable {
     /// that hangs up would. Serving path only: a recording run compares a
     /// complete history.
     public var stopAfterTokens: Int?
+    /// Both workers hold a standing MLX wired limit for their loaded stage
+    /// (`stage_wired_residency_v1`). Qualification only.
+    public var stageResidency = false
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -310,6 +317,9 @@ public struct PairConfiguration: Sendable {
         if faultRank == rank, let faultValue {
             environment.append((Self.faultEnvironment, faultValue))
         }
+        if stageResidency {
+            environment.append((Self.stageResidencyEnvironment, Self.stageResidencyPolicy))
+        }
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
             "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
@@ -321,7 +331,7 @@ public struct PairConfiguration: Sendable {
         // A worker refuses a qualification switch in its environment unless it
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.
-        if workerTransport != Self.jacclTransport || faultValue != nil {
+        if workerTransport != Self.jacclTransport || faultValue != nil || stageResidency {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")

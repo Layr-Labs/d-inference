@@ -484,6 +484,29 @@ final class PairDriverTests: XCTestCase {
         assertEndedByItself(pipeline, sides, configuration)
     }
 
+    func testStageResidencyReachesBothRanksWithTheExplicitFlag() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.stageResidency = true
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+            XCTAssertEqual(environment["DARKBLOOM_CLUSTER_STAGE_RESIDENCY"], "stage_wired_residency_v1")
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            let index = try XCTUnwrap(arguments.firstIndex(of: "--qualification-switches"))
+            XCTAssertEqual(arguments[index + 1], "yes")
+        }
+        assertEndedByItself(report, sides, configuration)
+        // S00's lines are kept in reports; anything else a worker prints is not.
+        let lines = PairDriver.runtimeLines("darkbloom-forced-exit-v1 status=143 reason=signal-15 phase=claimed dead_man_ms=20000\n"
+            + "darkbloom-orphan-wired-v1 role=worker-rank-0 decision=clear wired=1 baseline=2\n"
+            + "darkbloom-stage-residency-v1 rank=0 policy=stage_wired_residency_v1 applied=3\nsomething else\n")
+        XCTAssertEqual(lines.count, 3)
+    }
+
     func testQualificationSwitchesReachOnlyTheRankTheyAreMeantFor() throws {
         let sides = try Sides(modes: ["ok", "ok"])
         var configuration = try sides.configuration(outputCount: 2)

@@ -22,6 +22,10 @@ public enum DistributedInstalledOwner {
         // does not take the cluster's device scope. Refuse before anything is
         // prepared, and again immediately before the native launch.
         try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile: providerInstanceLock)
+        // Memory a dead rank left wired is not this Mac's to plan with: refuse
+        // before anything is prepared, naming the measured value and the idle
+        // baseline. Skipped while another Darkbloom process runs here.
+        try ClusterOrphanWiredGuard.check(role: "owner")
         let prepared = try DistributedInstalledPreparation.prepare(reference: reference,
             paths: ClusterUserPaths(), deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
         try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO,
@@ -60,8 +64,11 @@ public enum DistributedInstalledOwner {
                     executionPlanSHA256: binding.executionPlanSHA256,
                     startupDeadline: startup, lifetimeDeadline: deadline,
                     // A worker that was told its startup deadline ends itself
-                    // there; only then may this owner treat it as final.
-                    retirement: .init(childEndsItselfAtStartupDeadline: features.acceptsStartupDeadline))
+                    // there; only then may this owner treat it as final. Its
+                    // SIGTERM-to-SIGKILL margin is sized to the artifact's
+                    // bytes, an upper bound for any stage of it.
+                    retirement: .sized(plannedBytes: UInt64(max(0, prepared.manifest.totalSizeBytes)),
+                        childEndsItselfAtStartupDeadline: features.acceptsStartupDeadline))
             })
     }
 }

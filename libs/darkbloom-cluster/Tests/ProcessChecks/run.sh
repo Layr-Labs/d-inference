@@ -48,6 +48,11 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/CleanStopTests.swift" -o "$task_build/clean-stop-check"
 "$task_build/clean-stop-check" "$task_build/fake-worker"
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -Xlinker -rpath -Xlinker "$task_build" \
+  "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/OrphanWiredCheck.swift" -o "$task_build/orphan-wired-check"
+"$task_build/orphan-wired-check"
 
 task_repo="$(cd "$task_root/../.." && pwd)"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \

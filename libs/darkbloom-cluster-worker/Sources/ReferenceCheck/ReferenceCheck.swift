@@ -84,9 +84,11 @@ import Foundation
                 throw Failure("--stage-cut must be one of " + registered.supportedCuts.map(String.init).joined(separator: ", "))
             }
             let started = DispatchTime.now().uptimeNanoseconds
-            // Covers a native call that never returns; nothing is released by it.
-            // The thread is the bound that is relied on: an alarm alone did not
-            // end a process spinning in a native loop on real hardware.
+            // Covers a native call that never returns. The thread is the bound
+            // that is relied on: an alarm alone did not end a process spinning
+            // in a native loop on real hardware. When it fires it takes the one
+            // forced exit, which resets MLX's wired limit and returns its cache.
+            ProcessNativeMemoryRelease.installForForcedExit()
             signal(SIGALRM) { _ in Darwin._exit(124) }
             alarm(UInt32(seconds + 5))
             try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)

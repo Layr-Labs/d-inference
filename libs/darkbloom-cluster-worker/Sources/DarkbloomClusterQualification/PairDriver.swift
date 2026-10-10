@@ -58,7 +58,8 @@ public struct PairDriver: Sendable {
 
     /// Lines the runtime writes for its launcher. They carry a rank, a request
     /// ID, byte counts and durations, and nothing else.
-    static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 "]
+    static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 ",
+        "darkbloom-forced-exit-v1 ", "darkbloom-orphan-wired-v1 ", "darkbloom-stage-residency-v1 "]
     static func runtimeLines(_ diagnostics: String) -> [String] {
         diagnostics.split(separator: "\n").map(String.init).filter { line in
             runtimeLinePrefixes.contains { line.hasPrefix($0) }

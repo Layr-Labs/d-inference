@@ -82,7 +82,7 @@ extension ClusterLinkCheck {
             expect(ClusterLinkServiceName.isSafe(name), "safe name \(name)")
         }
         for name in ["", " leading", "trailing ", "USB 10/100/1000 LAN", "a'b", "a\"b", "a\\b", "$(id)", "a`b`", "a;b", "a|b",
-                     "a\nb", "Jonathan’s", String(repeating: "x", count: 65)] {
+                     "a\nb", "Owner’s Mac", String(repeating: "x", count: 65)] {
             expect(!ClusterLinkServiceName.isSafe(name), "unsafe name \(name.debugDescription)")
         }
         expectEqual(ClusterLinkServiceName.cluster(interface: "en6"), "Darkbloom Cluster Link (en6)", "Darkbloom's service name")

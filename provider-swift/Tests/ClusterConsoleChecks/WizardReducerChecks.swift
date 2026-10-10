@@ -439,18 +439,40 @@ extension ClusterConsoleCheck {
         guard case .failed(.ranks, let died) = dies.state.check else { failures.append("a dead session fails the check: \(dies.state.check)"); return }
         expect(died.contains("memory gate refused"), "the failure carries the session's last output: \(died)")
 
-        // Memory left wired on the other Mac after the stop fails the clean-up stage.
-        var leak = ready()
-        leak.key(.character("c")); leak.yes()
-        leak.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())))
-        leak.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4)))
-        leak.send(.session(.launched(processIdentifier: 9)))
-        leak.send(.sessionObserved(F.scriptedLive))
-        leak.send(.prompt(.finished(.init(completionTokens: 8, firstTokenMilliseconds: 700, tokensPerSecond: 50, finishReason: "length"))))
-        leak.send(.session(.ended(description: "exited with status 0", clean: true)))
-        leak.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())))
-        leak.send(.peer(.reached(F.reportB(saved: savedB, journal: .ownershipUnproven,
-            memoryGuard: .init(decision: .refused, wiredBytes: 90 * F.gib, baselineBytes: 16 * F.gib, detail: "90 GiB wired")), seconds: 0.4)))
+        // After the stop: a check stopped cleanly and read once on both Macs.
+        func stopped() -> WizardDrive {
+            var d = ready()
+            d.key(.character("c")); d.yes()
+            d.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())))
+            d.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4)))
+            d.send(.session(.launched(processIdentifier: 9)))
+            d.send(.sessionObserved(F.scriptedLive))
+            d.send(.prompt(.finished(.init(completionTokens: 8, firstTokenMilliseconds: 700, tokensPerSecond: 50, finishReason: "length"))))
+            d.send(.session(.ended(description: "exited with status 0", clean: true)))
+            d.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())))
+            return d
+        }
+        let leaked = F.reportB(saved: savedB, journal: .ownershipUnproven,
+            memoryGuard: .init(decision: .refused, wiredBytes: 90 * F.gib, baselineBytes: 16 * F.gib, detail: "90 GiB wired"))
+
+        // The other Mac's owner still clearing its journal a moment after the leader's exit: read again,
+        // and the check passes once it is clear (seen on the pair 2026-10-10 13:57: failed on one reading).
+        var settles = stopped()
+        settles.send(.peer(.reached(leaked, seconds: 0.4)))
+        guard case .running(.cleanup, _) = settles.state.check else { failures.append("a journal still clearing is read again, not failed at once: \(settles.state.check)"); return }
+        expect(!settles.send(.tick, after: 500).contains(.reachPeer), "not read again at once")
+        effects = settles.send(.tick, after: 2_000)
+        expect(effects.contains(.refresh) && effects.contains(.reachPeer), "both Macs are read again after a moment: \(effects)")
+        settles.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())))
+        effects = settles.send(.peer(.reached(F.reportB(saved: savedB), seconds: 0.4)))
+        expect(effects.first.map { if case .recordCheck = $0 { return true }; return false } == true, "a journal cleared on the next reading passes: \(effects)")
+
+        // Memory and journal still left after the settle time fail the clean-up stage, naming both.
+        var leak = stopped()
+        leak.send(.peer(.reached(leaked, seconds: 0.4)))
+        leak.send(.tick, after: 2_100)
+        leak.send(.snapshot(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed())), after: 19_000)
+        leak.send(.peer(.reached(leaked, seconds: 0.4)))
         guard case .failed(.cleanup, let left) = leak.state.check else { failures.append("memory left fails clean-up: \(leak.state.check)"); return }
         expect(left.contains("journal") && left.contains("wired"), "both findings are named: \(left)")
     }

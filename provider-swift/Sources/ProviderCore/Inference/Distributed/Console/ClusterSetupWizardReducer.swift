@@ -165,6 +165,11 @@ extension ClusterSetupState {
            now >= peerPollAt + UInt64(options.peerPollSeconds) * 1_000_000_000 {
             effects += reachPeer()
         }
+        if case .running(.cleanup, _) = check, let at = cleanupRereadAt, now >= at, !refreshing {
+            cleanupRereadAt = nil
+            effects += requestRefresh()
+            if pair?.canReachPeer == true { peer = .reaching(since: now); effects.append(.reachPeer) }
+        }
         if case .running(.ranks, let since) = check, now >= since + UInt64(options.readyTimeoutSeconds) * 1_000_000_000 {
             effects += failCheck(.ranks, "Both ranks were not ready \(options.readyTimeoutSeconds) s after the start (\(checkReadyRanks) of 2 ranks ready). The session is being stopped; its last output is under Serve.", at: time)
         }
@@ -587,8 +592,13 @@ extension ClusterSetupState {
 
     private mutating func advanceCheck(to stage: CheckStage) {
         check = .running(stage, since: now)
+        cleanupRereadAt = nil
         if stage == .cleanup { checkSaw = (false, false) }
     }
+
+    /// How long after the stop both Macs may take to clear their journals and memory.
+    static let cleanupSettleNanoseconds: UInt64 = 20_000_000_000
+    static let cleanupRereadNanoseconds: UInt64 = 2_000_000_000
 
     private mutating func checkObserved(snapshotArrived: Bool = false, peerArrived: Bool = false, at time: String) -> [ClusterSetupEffect] {
         guard case .running(let stage, _) = check, stage == .cable || stage == .cleanup else { return [] }
@@ -627,6 +637,13 @@ extension ClusterSetupState {
             problems.append("the other Mac did not answer, so its memory was not read")
         }
         guard problems.isEmpty else {
+            // Each Mac's owner clears its journal and lets go of its memory as its own process ends, which
+            // can be a moment after the leader's exit: both are read again until the settle time is over.
+            if case .running(_, let since) = check, now < since + Self.cleanupSettleNanoseconds {
+                checkSaw = (false, false)
+                cleanupRereadAt = now + Self.cleanupRereadNanoseconds
+                return []
+            }
             return failCheck(.cleanup, "After the stop, " + problems.joined(separator: "; ") + ". `darkbloom cluster recover` clears a stranded journal; memory left wired comes back only with a restart.", at: time)
         }
         let pass = ClusterSetupRecord.CheckPass(configurationSHA256: savedSetup?.configurationSHA256 ?? "", at: time,

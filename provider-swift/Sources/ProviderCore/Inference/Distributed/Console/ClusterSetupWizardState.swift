@@ -417,6 +417,8 @@ public struct ClusterSetupState: Sendable {
     var checkPrompt: ClusterSetupPromptResult?
     /// Which of the two fresh readings the check, or the clean-up after a stop, has seen.
     var checkSaw = (snapshot: false, peer: false)
+    /// After the check's stop, when both Macs are read again while their owners finish letting go.
+    var cleanupRereadAt: UInt64?
     var cleanupSaw = (snapshot: false, peer: false)
     public internal(set) var session: Session = .none
     public internal(set) var live: ClusterSetupLive?

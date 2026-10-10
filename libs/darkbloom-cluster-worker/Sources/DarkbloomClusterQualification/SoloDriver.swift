@@ -43,7 +43,7 @@ public struct SoloConfiguration: Sendable {
         try require(PairConfiguration.isPath(modelDirectory), "model directory must be a plain absolute path")
         try require(PairConfiguration.isPath(servicePath), "service must be a plain absolute path")
         try require((1...PairConfiguration.maximumRepetitions).contains(repetitions), "repetitions must be 1...8")
-        try require((10...300).contains(lifetimeSeconds), "lifetime must be 10...300 seconds")
+        try require((10...PairConfiguration.maximumLifetimeSeconds).contains(lifetimeSeconds), "lifetime must be 10...\(PairConfiguration.maximumLifetimeSeconds) seconds")
         try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
         try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
         try require(!transport.isEmpty && transport[0].hasPrefix("/")

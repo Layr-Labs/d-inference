@@ -58,7 +58,8 @@ public struct PairDriver: Sendable {
 
     /// Lines the runtime writes for its launcher. They carry a rank, a request
     /// ID, byte counts and durations, and nothing else.
-    static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 "]
+    static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 ",
+        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 "]
     static func runtimeLines(_ diagnostics: String) -> [String] {
         diagnostics.split(separator: "\n").map(String.init).filter { line in
             runtimeLinePrefixes.contains { line.hasPrefix($0) }
@@ -196,6 +197,14 @@ public struct PairDriver: Sendable {
                   c.lifetimeSeconds <= capability.maxLifetimeSeconds,
                   let selected = capability.partitions.first(where: { $0.stages.count == 2 && $0.stages[0].sourceLayerEnd == c.stageCut }) else {
                 throw QualificationError("the worker does not offer this model, profile, schedule, generation mode, lifetime or cut")
+            }
+            // The worker's own profile is the authority on how long a request may be.
+            let p = capability.profile, prompt = c.request.promptTokenIDs.count, output = c.request.outputCount
+            guard prompt <= p.maximumPromptTokens, output <= p.maximumOutputTokens, c.request.chunkSize <= p.maximumChunkTokens,
+                  prompt <= p.maximumContextTokens - output else {
+                throw QualificationError("the request (\(prompt) prompt and \(output) output tokens, chunk \(c.request.chunkSize)) exceeds "
+                    + "the worker's profile (prompt \(p.maximumPromptTokens), output \(p.maximumOutputTokens), "
+                    + "chunk \(p.maximumChunkTokens), context \(p.maximumContextTokens))")
             }
             partition = selected
         } catch {

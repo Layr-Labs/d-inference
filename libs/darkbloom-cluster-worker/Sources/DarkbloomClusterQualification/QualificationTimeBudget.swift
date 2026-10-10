@@ -1,0 +1,85 @@
+import DarkbloomClusterProtocol
+import Foundation
+
+/// Time budgets of one request, scaled with its prompt length from the rates
+/// measured on the slower Mac running the model alone. The owner's watchdogs
+/// do the same (ThunderMLX: max(base, tokens / 60 + 120 s)); a fixed budget
+/// sized for 8,192 tokens is far too short for 30,000 on the slower Mac and
+/// far too long for 1,000.
+///
+/// Prefill cost per token grows with the context it attends over. With `r`
+/// the short-context rate and `D` the context at which a token costs twice as
+/// much as at the start, a prompt of `n` tokens takes `n / r * (1 + n / D)`;
+/// the last frame of it, `chunk / r * (1 + 2n / D)`. Budgets add a margin on
+/// top: they bound a run that has gone wrong, they are not a forecast.
+public struct QualificationTimeBudget: Equatable, Sendable {
+    /// Prompt tokens per second, the slower Mac alone, prompts of 1,024 to 8,192.
+    public let slowestPrefillTokensPerSecond: Double
+    /// Output tokens per second, the slower decoding Mac alone.
+    public let slowestDecodeTokensPerSecond: Double
+    /// The context at which a prompt token costs twice what it costs at the start.
+    public let attentionDoublingTokens: Double
+
+    public static let baseSeconds = 10.0
+    public static let margin = 1.5
+    public static let decodeMargin = 2.0
+    public static let requestSlackSeconds = 10.0
+    public static let lifetimeSlackSeconds = 30
+    /// The collective progress limit is never below the value every earlier
+    /// run used, and is at least this many times the slowest frame.
+    public static let minimumProgressMilliseconds = 60_000
+    public static let framesPerProgressLimit = 10.0
+
+    public init(slowestPrefillTokensPerSecond: Double, slowestDecodeTokensPerSecond: Double,
+                attentionDoublingTokens: Double) {
+        self.slowestPrefillTokensPerSecond = slowestPrefillTokensPerSecond
+        self.slowestDecodeTokensPerSecond = slowestDecodeTokensPerSecond
+        self.attentionDoublingTokens = attentionDoublingTokens
+    }
+
+    /// Measured rows (driver clock, median after one warm-up, registered weights):
+    /// - 9B: Mac A alone 1,030 to 1,062 prompt tok/s at 1,024 to 8,192 tokens;
+    ///   decode 72 tok/s on Mac A, 77 to 81 on Mac B.
+    /// - 27B: Mac A alone 307 to 318 prompt tok/s at 1,024 to 8,192 tokens;
+    ///   decode 24 to 28 tok/s on Mac B, 29 to 31 on Mac A.
+    /// The doubling context is 32,768 for both until the long-prompt runs
+    /// measure it; a FLOP count puts it above 100,000 for these geometries,
+    /// so this is the cautious side.
+    public static let measured: [String: QualificationTimeBudget] = [
+        "registered_qwen35_9b": .init(slowestPrefillTokensPerSecond: 1030, slowestDecodeTokensPerSecond: 72,
+            attentionDoublingTokens: 32_768),
+        "registered_qwen38_27b": .init(slowestPrefillTokensPerSecond: 307, slowestDecodeTokensPerSecond: 24,
+            attentionDoublingTokens: 32_768),
+    ]
+
+    public static func forModel(_ modelID: String) -> QualificationTimeBudget? { measured[modelID] }
+
+    public func prefillSeconds(promptTokens n: Int) -> Double {
+        Double(n) / slowestPrefillTokensPerSecond * (1 + Double(n) / attentionDoublingTokens)
+    }
+
+    public func firstTokenSeconds(promptTokens: Int) -> Int {
+        Int((Self.baseSeconds + Self.margin * prefillSeconds(promptTokens: promptTokens)).rounded(.up))
+    }
+
+    public func requestSeconds(promptTokens: Int, outputTokens: Int) -> Int {
+        let decode = Self.decodeMargin * Double(outputTokens) / slowestDecodeTokensPerSecond
+        return firstTokenSeconds(promptTokens: promptTokens) + Int((decode + Self.requestSlackSeconds).rounded(.up))
+    }
+
+    /// Startup, then every request one after another, bounded by the protocol.
+    public func lifetimeSeconds(promptTokens: Int, outputTokens: Int, repetitions: Int, startupSeconds: Int) -> Int {
+        let total = startupSeconds + max(1, repetitions) * requestSeconds(promptTokens: promptTokens, outputTokens: outputTokens)
+            + Self.lifetimeSlackSeconds
+        return min(Int(ClusterWorkerLimits.deadlineNanoseconds / 1_000_000_000), total)
+    }
+
+    /// The longest one rank may wait in a collective: several of the slowest
+    /// frame (the last prompt frame, attending over the whole prompt), and
+    /// never below the earlier fixed limit.
+    public func progressTimeoutMilliseconds(promptTokens: Int, chunkTokens: Int) -> Int {
+        let frame = Double(min(chunkTokens, promptTokens)) / slowestPrefillTokensPerSecond
+            * (1 + 2 * Double(promptTokens) / attentionDoublingTokens)
+        return min(600_000, max(Self.minimumProgressMilliseconds, Int((Self.framesPerProgressLimit * frame * 1000).rounded(.up))))
+    }
+}

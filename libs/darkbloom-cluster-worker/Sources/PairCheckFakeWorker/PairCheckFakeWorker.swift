@@ -241,7 +241,7 @@ import Foundation
                               constructionConfigurationSHA256: hash("fake-construction1-\(cut)")),
                     ])
                 }, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
-                arithmeticPolicySHA256: hash("fake-arithmetic"), maxLifetimeSeconds: 300, maxRequests: 16,
+                arithmeticPolicySHA256: hash("fake-arithmetic"), maxLifetimeSeconds: 3600, maxRequests: 16,
                 supportedPrefillSchedules: [.serial, .oneChunkLookahead],
                 supportedGenerationModes: pipelineOnly ? [.pipeline] : ClusterGenerationMode.allCases)
             try FileHandle.standardOutput.write(contentsOf: ClusterRuntimeCapabilityCodec.encode(capability))

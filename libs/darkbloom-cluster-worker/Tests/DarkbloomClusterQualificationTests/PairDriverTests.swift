@@ -388,7 +388,7 @@ final class PairDriverTests: XCTestCase {
             ("coordinator without port", changed { $0.coordinator = "10.0.0.1" }),
             ("multicast coordinator", changed { $0.coordinator = "224.0.0.1:47000" }),
             ("padded port", changed { $0.coordinator = "10.0.0.1:047000" }),
-            ("lifetime", changed { $0.lifetimeSeconds = 301 }),
+            ("lifetime", changed { $0.lifetimeSeconds = 3601 }),
             ("startup beyond lifetime", changed { $0.startupSeconds = 31 }),
             ("schedule", changed { $0.prefillSchedule = "eager" }),
             ("progress timeout", changed { $0.progressTimeoutMilliseconds = 10 }),

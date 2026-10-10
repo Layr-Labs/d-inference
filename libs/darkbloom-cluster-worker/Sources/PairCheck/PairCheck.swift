@@ -31,13 +31,15 @@ import Foundation
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
-              [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N] [--rank1-delay-seconds N]
-              [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
+              [--lifetime-seconds 10...3600] [--startup-seconds N] [--request-seconds N] [--rank1-delay-seconds N]
+              [--progress-timeout-ms N] [--allow-unguarded-jaccl yes]
+              (lifetime, request and progress limits default to budgets scaled with the prompt length
+               from the model's measured single-Mac rates, never below 240 s, 100 s and 60000 ms)
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --service /ABS/darkbloom-cluster-reference --model-dir /ABS/MODEL
               [--remote-ssh DESTINATION [--ssh-option Key=Value]...] [--role LABEL] [--repetitions 1...8]
-              [--lifetime-seconds 10...300] [--startup-seconds N] [--request-seconds N]
+              [--lifetime-seconds 10...3600] [--startup-seconds N] [--request-seconds N]
           darkbloom-cluster-pair-check compare --reference REPORT.json --candidate REPORT.json
               [--near-tie-ulps N] [--allow-cut-difference yes] [--allow-schedule-difference yes]
               [--json yes] [--require VERDICT[,VERDICT]] [--model-dir /ABS/MODEL]
@@ -101,7 +103,8 @@ import Foundation
         switch sources[0] {
         case "--synthetic-tokens":
             let length = try integer(fields, "--synthetic-tokens")!, seed = try integer(fields, "--seed") ?? 0
-            guard (1...QualificationRequest.maximumPromptTokens).contains(length) else { throw Failure("--synthetic-tokens must be 1...8192") }
+            let bound = QualificationLimits.forModel(fields["--model-id"]?.first ?? QualificationRequest.modelID).maximumPromptTokens
+            guard (1...bound).contains(length) else { throw Failure("--synthetic-tokens must be 1...\(bound) for this model") }
             tokens = QualificationRequest.syntheticPrompt(count: length, seed: seed)
             source = .init(kind: "synthetic", description: "Token i is 1000 + ((seed + i) * 2654435761 mod 2^32) mod 100000; not meaningful text",
                            syntheticSeed: seed)
@@ -182,7 +185,11 @@ import Foundation
                 return value
             }
         }
-        let lifetime = try integer(fields, "--lifetime-seconds") ?? 240
+        let repetitions = try integer(fields, "--repetitions") ?? 1
+        let budgets = PairCheckBudgets(request: request, repetitions: repetitions,
+            startupSeconds: try integer(fields, "--startup-seconds"), lifetimeSeconds: try integer(fields, "--lifetime-seconds"),
+            requestSeconds: try integer(fields, "--request-seconds"), progressMilliseconds: try integer(fields, "--progress-timeout-ms"))
+        let lifetime = budgets.lifetimeSeconds
         let delay = fields["--rank1-delay-seconds"]?.first.flatMap(Double.init) ?? 2
         let modes = ["pipeline": PairConfiguration.pipelineMode, "phase-split": PairConfiguration.phaseSplitMode,
                      "pipeline-compact": PairConfiguration.pipelineCompactDecodeMode]
@@ -196,13 +203,13 @@ import Foundation
                           rdmaDevice: try required("--remote-rdma-device"), scratchDirectory: fields["--remote-scratch-dir"]?.first ?? "/tmp"),
             remoteTransport: transport, coordinator: try required("--coordinator"),
             prefillSchedule: fields["--prefill-schedule"]?.first ?? "serial_v1", recording: evidence == "final-row",
-            lifetimeSeconds: lifetime, startupSeconds: try integer(fields, "--startup-seconds") ?? min(120, lifetime),
-            requestSeconds: try integer(fields, "--request-seconds") ?? min(100, lifetime), rankOneDelaySeconds: delay,
-            progressTimeoutMilliseconds: try integer(fields, "--progress-timeout-ms") ?? 60_000,
+            lifetimeSeconds: lifetime, startupSeconds: budgets.startupSeconds,
+            requestSeconds: budgets.requestSeconds, rankOneDelaySeconds: delay,
+            progressTimeoutMilliseconds: budgets.progressMilliseconds,
             requireProgressGuard: fields["--allow-unguarded-jaccl"]?.first != "yes",
             keepRunFiles: fields["--keep-run-files"]?.first == "yes",
             preflightOnly: fields["--preflight-only"]?.first == "yes", generationMode: mode,
-            repetitions: try integer(fields, "--repetitions") ?? 1,
+            repetitions: repetitions,
             workerTransport: fields["--transport"]?.first ?? PairConfiguration.jacclTransport, sensitive: sensitive)
         if let fault = fields["--fault"]?.first {
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
@@ -222,6 +229,9 @@ import Foundation
         // lifetime, their exit, and collection, with room to spare.
         try QualificationDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
             + UInt64(lifetime + 420) * 1_000_000_000, status: 124)
+        FileHandle.standardError.write(Data(("pair-check: budgets for \(request.promptTokenIDs.count) prompt and \(request.outputCount) output tokens, "
+            + "\(repetitions) request(s): lifetime \(lifetime) s, startup \(configuration.startupSeconds) s, request \(configuration.requestSeconds) s, "
+            + "progress limit \(configuration.progressTimeoutMilliseconds.map(String.init) ?? "none") ms (\(budgets.source))\n").utf8))
         // The artifact's tokenizer, if this Mac has it, only to print readable output.
         let tokenizer = try? await PromptTokenizer.load(modelDirectory: URL(fileURLWithPath: configuration.local.modelDirectory))
         var driver = PairDriver(configuration: configuration)
@@ -274,13 +284,19 @@ import Foundation
                 return value
             }
         }
-        let lifetime = try integer(fields, "--lifetime-seconds") ?? 240
+        let repetitions = try integer(fields, "--repetitions") ?? 1
+        let budgets = PairCheckBudgets(request: request, repetitions: repetitions,
+            startupSeconds: try integer(fields, "--startup-seconds"), lifetimeSeconds: try integer(fields, "--lifetime-seconds"),
+            requestSeconds: try integer(fields, "--request-seconds"), progressMilliseconds: nil)
+        let lifetime = budgets.lifetimeSeconds
         let remote = fields["--remote-ssh"] != nil
+        FileHandle.standardError.write(Data(("solo: budgets for \(request.promptTokenIDs.count) prompt and \(request.outputCount) output tokens, "
+            + "\(repetitions) request(s): lifetime \(lifetime) s, startup \(budgets.startupSeconds) s, request \(budgets.requestSeconds) s (\(budgets.source))\n").utf8))
         let configuration = try SoloConfiguration(request: request, stageCut: cut,
             modelDirectory: try required("--model-dir"), servicePath: try required("--service"),
-            transport: transport, remote: remote, repetitions: try integer(fields, "--repetitions") ?? 1,
-            lifetimeSeconds: lifetime, startupSeconds: try integer(fields, "--startup-seconds") ?? min(120, lifetime),
-            requestSeconds: try integer(fields, "--request-seconds") ?? min(100, lifetime),
+            transport: transport, remote: remote, repetitions: repetitions,
+            lifetimeSeconds: lifetime, startupSeconds: budgets.startupSeconds,
+            requestSeconds: budgets.requestSeconds,
             role: fields["--role"]?.first ?? (remote ? "single host remote" : "single host local"), sensitive: sensitive)
         try QualificationDeadline.arm(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
             + UInt64(lifetime + 180) * 1_000_000_000, status: 124)
@@ -335,5 +351,34 @@ import Foundation
             }
         }
         Darwin.exit(required.isEmpty || required.contains(comparison.verdict) ? 0 : 3)
+    }
+}
+
+/// The pair's and the solo run's time limits: each one the operator gave, or
+/// else a budget scaled with this request's prompt from the model's measured
+/// single-Mac rates (`QualificationTimeBudget`), never below the fixed values
+/// every earlier run used (240 s lifetime, 120 s startup, 100 s request,
+/// 60,000 ms progress limit). A model without measured rates keeps those.
+struct PairCheckBudgets {
+    let lifetimeSeconds: Int, startupSeconds: Int, requestSeconds: Int, progressMilliseconds: Int
+    let source: String
+
+    init(request: QualificationRequest, repetitions: Int, startupSeconds: Int?, lifetimeSeconds: Int?,
+         requestSeconds: Int?, progressMilliseconds: Int?) {
+        let budget = QualificationTimeBudget.forModel(request.modelID)
+        let prompt = request.promptTokenIDs.count, output = request.outputCount
+        let startup = startupSeconds ?? 120
+        let derivedRequest = budget.map { max(100, $0.requestSeconds(promptTokens: prompt, outputTokens: output)) } ?? 100
+        let derivedLifetime = budget.map {
+            max(240, $0.lifetimeSeconds(promptTokens: prompt, outputTokens: output, repetitions: repetitions, startupSeconds: startup))
+        } ?? 240
+        let lifetime = lifetimeSeconds ?? derivedLifetime
+        self.lifetimeSeconds = lifetime
+        self.startupSeconds = startupSeconds ?? min(120, lifetime)
+        self.requestSeconds = requestSeconds ?? min(derivedRequest, lifetime)
+        self.progressMilliseconds = progressMilliseconds
+            ?? budget.map { $0.progressTimeoutMilliseconds(promptTokens: prompt, chunkTokens: request.chunkSize) } ?? 60_000
+        source = budget == nil ? "fixed defaults: no measured rates for \(request.modelID)"
+            : "scaled from the measured single-Mac rates of \(request.modelID) unless given"
     }
 }

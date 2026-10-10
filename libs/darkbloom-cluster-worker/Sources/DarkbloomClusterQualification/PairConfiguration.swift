@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// One Mac's side of a pair run.
@@ -32,6 +33,9 @@ public struct PairConfiguration: Sendable {
     /// qualification switches below. Passed only when one of them is set.
     public static let qualificationSwitchesArgument = "--qualification-switches"
     public static let maximumRepetitions = 8
+    /// The protocol's deadline bound. A run asks for a lifetime sized to its
+    /// requests (`QualificationTimeBudget`); the worker's capability bounds it.
+    public static let maximumLifetimeSeconds = Int(ClusterWorkerLimits.deadlineNanoseconds / 1_000_000_000)
     /// The name a recording worker reads a qualification fault from.
     public static let faultEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_FAULT"
     public static let jacclTransport = "jaccl"
@@ -193,7 +197,7 @@ public struct PairConfiguration: Sendable {
                 && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
                 "a fault is a recording phase-split run's input: RANK and name=value of lowercase letters, digits, '_', ':'")
         }
-        try require((10...300).contains(lifetimeSeconds), "lifetime must be 10...300 seconds")
+        try require((10...Self.maximumLifetimeSeconds).contains(lifetimeSeconds), "lifetime must be 10...\(Self.maximumLifetimeSeconds) seconds")
         try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
         try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
         try require((0...30).contains(rankOneDelaySeconds), "rank 1 delay must be 0...30 seconds")

@@ -59,7 +59,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         // Validates the identity, rank, profile and plan the way a worker does.
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
                                      executionPlanSHA256: executionPlanSHA256)
-        guard let executable = command.first, executable.hasPrefix("/"), (10...300).contains(lifetimeSeconds) else {
+        guard let executable = command.first, executable.hasPrefix("/"), (10...PairConfiguration.maximumLifetimeSeconds).contains(lifetimeSeconds) else {
             throw ClusterWorkerOwnerError.invalid("Invalid pair worker launch")
         }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile

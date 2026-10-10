@@ -34,7 +34,7 @@ public enum ProcessNativeMemoryRelease {
 /// work/mimo and the product's `MiMoV26WiredResidency` keep for MiMo.
 ///
 /// Qualification only for the dense Qwen stages: S00 measures whether they
-/// should hold one between requests (see handoff/S00-NO-ORPHANED-MEMORY.md).
+/// should hold one between requests (see handoff/DESIGN-no-orphaned-memory.md).
 /// It sets MLX's own per-process limit (`mlx_set_wired_limit`), never a system
 /// setting; the ceiling is the product's: never above the recommended working
 /// set, and always leaving the larger of 16 GiB and a tenth of physical memory

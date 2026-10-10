@@ -25,6 +25,10 @@ enum QwenDenseProfileIdentity {
 enum QwenRegisteredDenseModel: String, Codable, CaseIterable {
     case qwen35NineB = "registered_qwen35_9b"
     case qwen38TwentySevenB = "registered_qwen38_27b"
+    /// Qwen3.5 35B A3B: the same layer kinds with a routed-expert feed-forward.
+    case qwen35ThirtyFiveBA3B = "registered_qwen35_35b_a3b"
+    /// Qwen3.6 35B A3B: the text model of the vision and MTP artifact, alone.
+    case qwen36ThirtyFiveBA3B = "registered_qwen36_35b_a3b"
 }
 
 /// Caller-supplied metadata, not a trusted descriptor or load permission. The

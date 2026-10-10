@@ -29,7 +29,7 @@ let package = Package(
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
         ]),
         .testTarget(name: "DarkbloomClusterWorkerTests", dependencies: [
-            "DarkbloomClusterWorker",
+            "DarkbloomClusterWorker", "DarkbloomClusterQualification", "DarkbloomClusterPrompt",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
         ]),

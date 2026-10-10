@@ -31,6 +31,7 @@ task_catalog=(
   Support/WorkerJSONScanner
   Support/BoundedProbeInput
   Models/Qwen/Metadata/QwenLayerStageMetadata
+  Models/Qwen/Metadata/QwenRoutedExpertStageMetadata
   Models/Qwen/Metadata/QwenLayerStagePlan
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
   Models/Qwen/Metadata/QwenDenseProfileTypes
@@ -42,6 +43,7 @@ task_catalog=(
   Support/CanonicalJSON
   Support/ClusterMetadataHashing
   Models/Qwen/Prefill/QwenLongPrefillArithmeticEnvironment
+  Models/Qwen/Prefill/QwenResidentArithmeticPolicy
   Models/Qwen/Loading/QwenLayerStageCandidates
   Models/Qwen/Resident/QwenResidentModelDefinition
   Models/Qwen/Resident/QwenResidentAdapterDefinition

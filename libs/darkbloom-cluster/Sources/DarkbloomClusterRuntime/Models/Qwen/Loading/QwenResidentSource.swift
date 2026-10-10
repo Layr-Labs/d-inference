@@ -41,8 +41,12 @@ func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
         artifact: .init(aggregateSHA256: checkpoint.aggregate, configurationSHA256: checkpoint.configurationSHA256,
                         verifiedManifestSHA256: checkpoint.verifiedManifestSHA256),
         check: check, confirmUnchanged: checkpoint.checkUnchanged) { model, policy in
+            // The registered row says whether the files hold unsigned bytes
+            // no stage owns; the sanitizer drops those tensors, and one it
+            // kept would be refused as an unsupported source dtype.
             try PreparedQwenCheckpoint(model: model, checkpoint: checkpoint,
-                originalConfiguration: admission.configBytes, policy: policy)
+                originalConfiguration: admission.configBytes, policy: policy,
+                scope: .init(acceptsUInt8: admission.specification.unownedUInt8Tensors))
         }
     return .init(metadata: prepared.source, payload: .init(checkpoint: checkpoint, canonical: prepared.canonical))
 }

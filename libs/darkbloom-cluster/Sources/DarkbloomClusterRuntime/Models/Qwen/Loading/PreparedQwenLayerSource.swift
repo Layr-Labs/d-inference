@@ -37,10 +37,14 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
     for record in validated.tensors {
         let name = record.canonical.name, tensor = prepared.canonical[name]!
         let part = tensor.parts[0]
+        // Validation fixed the part count by name: one, or the routed experts' two.
+        let second = tensor.parts.dropFirst().first.map {
+            QwenStageSourcePart(canonicalPartName: $0.name, file: $0.tensor.storedFile, offset: $0.tensor.storedOffset)
+        }
         tensors.append(QwenStageSourceTensor(sourceName: name, canonicalPartName: part.name,
             file: part.tensor.storedFile, offset: part.tensor.storedOffset, shape: tensor.shape,
             sourceDType: String(describing: tensor.dtype),
-            loadedDType: record.loadedDType, byteCount: tensor.byteCount))
+            loadedDType: record.loadedDType, byteCount: tensor.byteCount, secondPart: second))
     }
     let mappings = try plan.parameters(canonicalSourceNames: tensors.map(\.sourceName))
     guard bytes > 0, mappings.count == tensors.count,
@@ -59,7 +63,8 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
         }
         resolved[path] = declared
     }
-    let embeddingPath = (root["model_type"] as? String == "qwen3_5" ? "language_model." : "")
+    let wrapped = QwenRoutedExpertStageMetadata.wrapperModelTypes.contains(root["model_type"] as? String ?? "")
+    let embeddingPath = (wrapped ? "language_model." : "")
         + "model.embed_tokens"
     let activation = try qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
     try check()
@@ -80,9 +85,10 @@ func validateQwenStageDenseModel(_ model: any LanguageModel, layerCount: Int) th
     }
     let mlps = model.namedModules().filter { $0.0.hasSuffix(".mlp") }
     guard mlps.count == layerCount,
-          mlps.allSatisfy({ String(describing: type(of: $0.1)) == "Qwen3NextMLP" }) else {
+          mlps.allSatisfy({ String(describing: type(of: $0.1)) == QwenRoutedExpertStageModel.feedForwardTypeName(model) }) else {
         throw ProbeError("Layer stage changed the original dense Qwen MLP topology")
     }
+    try QwenRoutedExpertStageModel.validate(model, layerCount: layerCount)
 }
 
 func qwenStageLoadedDType(_ dtype: DType, convert: Bool) -> DType {

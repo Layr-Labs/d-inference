@@ -11,6 +11,7 @@ import Foundation
 //
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
+// and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum ReferenceCheck {
     static func main() async {
@@ -91,6 +92,9 @@ import Foundation
             alarm(UInt32(seconds + 5))
             try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
             let result: QwenStagedGenerationReference.Result
+            // Counts which route the routed experts' gathers take in this run;
+            // zero attempts for a model that has none.
+            QwenRoutedExpertRouteObservation.arm()
             do {
                 result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
                     request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
@@ -117,6 +121,7 @@ import Foundation
                 Darwin.exit(handoff?.corruptSegment != nil && released ? 0 : 2)
             }
             alarm(0)
+            let route = QwenRoutedExpertRouteObservation.finish()
             if handoff?.corruptSegment != nil {
                 throw Failure("A corrupted hand-off segment was adopted without refusal")
             }
@@ -220,6 +225,14 @@ import Foundation
                 "rankRecordsJoinToThisEvidence": true,
                 "residualFramesAPairSenderWouldRefuse": result.unownedResidualFrames.count,
             ]
+            // Present for a run in which the route was requested or a routed
+            // gather was counted; a dense model's summary is as it was.
+            if route.requested || route.attempts > 0 {
+                summary["expertTileRoute"] = ["requested": route.requested, "kernelsInMetallib": route.kernelsAvailable,
+                    "routedGathers": route.attempts, "tookTheRoute": route.hits, "fellBack": route.fallbacks,
+                    "fellBackForMissingKernels": route.fallbackMetallibUnavailable,
+                    "fellBackRetracted": route.fallbackSortednessRetracted] as [String: Any]
+            }
             if !result.unownedResidualFrames.isEmpty {
                 FileHandle.standardError.write(Data(("darkbloom-cluster-reference: \(result.unownedResidualFrames.count) stage 0 "
                     + "residual(s) would be refused by a pair's sender, first at frame \(result.unownedResidualFrames[0])\n").utf8))
@@ -258,8 +271,9 @@ import Foundation
         usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]
                  [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
                --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
-          CUT is one of the registered model's cuts: 4|8|12|16 for the 9B, 4|8|...|60 for the 27B
-        """
+          CUT is one of the registered model's cuts:
+
+        """ + "    " + QwenResidentCapabilityMetadata.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
 
     /// One event per line on standard output, written at once.
     static func emit(_ event: [String: Any]) throws {

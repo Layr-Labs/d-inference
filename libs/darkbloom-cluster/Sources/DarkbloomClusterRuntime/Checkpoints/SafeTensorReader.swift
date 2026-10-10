@@ -45,7 +45,17 @@ struct TensorDescriptor {
     }
 }
 
-func tensorDescriptors(checkpoint: VerifiedCheckpoint) throws -> [String: TensorDescriptor] {
+/// What a caller of `tensorDescriptors` accepts beyond the dense default. The
+/// default is the original behaviour: the four stored dtypes of a dense
+/// artifact, and any other dtype anywhere in a shard is an error.
+struct TensorDescriptorScope {
+    /// Also accept `U8`: the per-group exponent bytes of MXFP4 projections.
+    var acceptsUInt8 = false
+    static let dense = TensorDescriptorScope()
+}
+
+func tensorDescriptors(checkpoint: VerifiedCheckpoint,
+                       scope: TensorDescriptorScope = .dense) throws -> [String: TensorDescriptor] {
     var result: [String: TensorDescriptor] = [:]
     for file in checkpoint.files.values.sorted(by: { $0.path < $1.path })
     where file.path.hasSuffix(".safetensors") {
@@ -73,6 +83,7 @@ func tensorDescriptors(checkpoint: VerifiedCheckpoint) throws -> [String: Tensor
             case "F32": dtype = .float32
             case "F16": dtype = .float16
             case "BF16": dtype = .bfloat16
+            case "U8" where scope.acceptsUInt8: dtype = .uint8
             default: throw ProbeError("Unsupported checkpoint tensor dtype \(dtypeName)")
             }
             var bytes = dtype.size

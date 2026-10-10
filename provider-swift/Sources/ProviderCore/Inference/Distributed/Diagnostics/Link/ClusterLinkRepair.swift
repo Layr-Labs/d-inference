@@ -20,7 +20,11 @@ enum ClusterLinkFixPlan: Equatable {
                      keeping: Bool = false) -> ClusterLinkFixPlan {
         typealias Device = ClusterLinkReadinessReport.Device
         guard !report.devices.isEmpty else { return .stop(.nothingFixable(report.state)) }
-        let onlyNeedsKeeping: (Device) -> Bool = { keeping && $0.portActive && $0.verdict == .ready && $0.addressIsTemporary }
+        // A ready port also qualifies when the network around it was read and
+        // it is not isolated: link setup v2 then gives it its own service.
+        let onlyNeedsKeeping: (Device) -> Bool = {
+            keeping && $0.portActive && $0.verdict == .ready && ($0.addressIsTemporary || $0.isolationApplies)
+        }
         let target: Device
         if let requested {
             guard let named = report.devices.first(where: { $0.device == requested }) else { return .stop(.deviceNotListed) }
@@ -72,6 +76,12 @@ public enum ClusterLinkRepair {
         var updateRecord: ((inout ClusterLinkAliasRecord) -> Void) throws -> Void
         /// Waits between two looks at a port whose GID has not appeared yet.
         var pause: () -> Void
+        /// Link setup v2: read the network around the port and isolate it.
+        /// Off in a scripted Mac that only models the first version.
+        var readsIsolation = false
+        var requestIsolationApproval: (ClusterLinkIsolationRequest) -> ClusterLinkApprovalResult = { _ in .unavailable }
+        var loadIsolationRecord: () throws -> ClusterLinkIsolationRecord = { ClusterLinkIsolationRecord() }
+        var updateIsolationRecord: ((inout ClusterLinkIsolationRecord) -> Void) throws -> Void = { _ in }
     }
 
     /// The GID follows the address within moments. This many probes, one
@@ -107,7 +117,9 @@ public enum ClusterLinkRepair {
         // The record tells an address of Darkbloom's own from any other. One
         // that cannot be read stops the fix only once there is something to do.
         let record = try? environment.loadRecord()
-        let report = ClusterLinkReadinessProbe.inspect(run: run, recorded: record ?? ClusterLinkAliasRecord())
+        let isolationRecord = environment.readsIsolation ? try? environment.loadIsolationRecord() : ClusterLinkIsolationRecord()
+        let report = ClusterLinkReadinessProbe.inspect(run: run, recorded: record ?? ClusterLinkAliasRecord(),
+            readingIsolation: environment.readsIsolation, isolationRecord: isolationRecord ?? ClusterLinkIsolationRecord())
         switch ClusterLinkFixPlan.make(for: report, device: requested, keeping: mode == .durable) {
         case .stop(let outcome):
             // A stop about a named port says which port it is about.
@@ -115,6 +127,13 @@ public enum ClusterLinkRepair {
             return .init(operation: .fix, outcome: outcome, device: named?.device, interface: named?.interface)
         case .choose(let candidates): return .init(operation: .fix, outcome: .ambiguousPorts, candidates: candidates)
         case .act(let plannedDevice, let plannedInterface): (device, interface) = (plannedDevice, plannedInterface)
+        }
+        // Link setup v2 wherever the network around the port was read: the
+        // port gets its own service, which macOS keeps, instead of a keeper.
+        if mode == .durable, let target = report.devices.first(where: { $0.device == device }), target.isolationApplies,
+           let status = target.isolation {
+            return isolate(device: device, interface: interface, status: status, aliasRecord: record,
+                isolationRecord: isolationRecord, dryRun: dryRun, in: environment)
         }
         func ended(_ outcome: ClusterLinkRepairOutcome, kept: Bool = false, plannedCommands: [String] = [],
                    manualCommands: [String] = []) -> ClusterLinkRepairResult {
@@ -184,6 +203,11 @@ public enum ClusterLinkRepair {
 
     static func remove(device requested: String?, dryRun: Bool, in environment: Environment) -> ClusterLinkRepairResult {
         typealias Alias = ClusterLinkAliasRecord.Alias
+        // What link setup v2 changed is restored first; a port it isolated
+        // has nothing of the first version left.
+        if environment.readsIsolation, let restored = removeIsolation(device: requested, dryRun: dryRun, in: environment) {
+            return restored
+        }
         guard let record = try? environment.loadRecord() else { return .init(operation: .remove, outcome: .recordUnavailable) }
         let wanted = requested.flatMap(ClusterLinkName.interface(ofDevice:))
         // A keeper whose record is gone, because the home directory was reset
@@ -275,8 +299,11 @@ public enum ClusterLinkRepair {
     private static func liveEnvironment() -> Environment? {
         guard let paths = try? ClusterUserPaths() else { return nil }
         let store = ClusterLinkAliasStore(paths: paths)
+        let isolationStore = ClusterLinkIsolationStore(paths: paths)
         return Environment(toolRunner: ClusterLinkReadinessProbe.boundedToolRunner, requestApproval: ClusterLinkApproval.request,
             machineIdentifier: ClusterLinkMachineIdentity.hardwareUUID, loadRecord: store.load, updateRecord: store.update,
-            pause: { usleep(verificationIntervalMicroseconds) })
+            pause: { usleep(verificationIntervalMicroseconds) }, readsIsolation: true,
+            requestIsolationApproval: { ClusterLinkApproval.request(isolation: $0) },
+            loadIsolationRecord: isolationStore.load, updateIsolationRecord: isolationStore.update)
     }
 }

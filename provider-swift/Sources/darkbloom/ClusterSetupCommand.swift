@@ -8,17 +8,18 @@ extension Cluster {
         static let configuration = CommandConfiguration(commandName: "setup",
             abstract: "Get this Mac's Thunderbolt RDMA link ready; the only thing asked of you is approval in a macOS prompt.",
             discussion: """
-                Checks that RDMA is enabled, waits for a Thunderbolt 5 connection to another Mac, and gives the \
-                connected port the address RDMA needs if it lacks one, with a small system job that puts the \
-                address back whenever macOS removes it. macOS shows its own approval prompt for that one \
-                change; Darkbloom never uses sudo. When not run in a terminal, or with --json, nothing is \
-                waited for or asked: the current state and the next step are printed instead, unless --yes \
-                is given. `darkbloom cluster link --remove` undoes everything this installs.
+                Checks that RDMA is enabled, waits for a Thunderbolt 5 connection to another Mac, and sets the \
+                connected port up for the cluster alone: out of every bridge, with its own network service, a \
+                fixed address, no router and no DNS, which macOS keeps also after a restart. macOS shows its \
+                own approval prompt for that one change; Darkbloom never uses sudo and never changes Internet \
+                Sharing. When not run in a terminal, or with --json, nothing is waited for or asked: the current \
+                state and the next step are printed instead, unless --yes is given. `darkbloom cluster link \
+                --remove` restores the network settings this changes.
                 """)
         @Flag(help: "Print one JSON object at the end instead of a line per step.") var json = false
         @Flag(help: "Allow the wait for a connection and the macOS approval prompt when not run in a terminal or with --json.")
         var yes = false
-        @Flag(help: "Add the address alone, without the system job that keeps it; it lasts until macOS next reconfigures the port.")
+        @Flag(help: "Add a link-local address alone, without changing the network settings; it lasts until macOS next reconfigures the port.")
         var temporary = false
         @Flag(name: .customLong("dry-run"), help: "Print the commands an approval would run, and change nothing.")
         var dryRun = false
@@ -50,10 +51,12 @@ extension Cluster {
                     lastReport = report
                     step = flow.observed(report)
                 case .awaitConnection:
-                    guard let changed = try await ClusterLinkWatchLoop.nextChange(after: lastReport) else {
+                    guard try await ClusterLinkWatchLoop.nextChange(after: lastReport) != nil else {
                         step = flow.interrupted()
                         continue
                     }
+                    // The watch reads ports only; the flow decides on a full reading.
+                    let changed = await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink() }.value
                     lastReport = changed
                     step = flow.observed(changed)
                 case .awaitKeeper:

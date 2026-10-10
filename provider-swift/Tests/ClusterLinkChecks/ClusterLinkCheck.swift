@@ -50,6 +50,18 @@ import Darwin
             ("setup flow", setupFlow),
             ("setup flow modes", setupFlowModes),
             ("assigned address", assignedAddressReport),
+            ("isolation tool text", isolationToolText),
+            ("isolation address", isolationAddress),
+            ("isolation command set", isolationCommandSet),
+            ("isolation Mac A findings", isolationMacAFindings),
+            ("isolation Mac B findings", isolationMacBFindings),
+            ("isolation plans", isolationPlans),
+            ("isolation fix outcomes", isolationFixOutcomes),
+            ("isolation remove outcomes", isolationRemoveOutcomes),
+            ("isolation record file", isolationRecordFile),
+            ("isolation setup flow", isolationSetupFlow),
+            ("isolation vocabulary", isolationVocabulary),
+            ("launch readiness", launchReadiness),
         ]
         for (_, group) in groups { group() }
         guard failures.isEmpty else {

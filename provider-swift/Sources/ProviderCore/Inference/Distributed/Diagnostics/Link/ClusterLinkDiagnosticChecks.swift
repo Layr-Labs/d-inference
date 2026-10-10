@@ -22,6 +22,17 @@ extension ClusterLinkReadinessReport {
             checks.append(.init(name: "localLinkDevice.\(device.device)",
                 outcome: device.verdict == .ready ? .passed : servingWouldUseIt ? .failed : .notObserved,
                 detail: detail.compactMap { $0 }.joined(separator: " ")))
+            // Link setup v2, where the network around the port was read. A port
+            // that is not isolated can lose its address mid-session, so it
+            // fails where serving would use it, ready or not.
+            if let isolation = device.isolation, let interface = device.interface {
+                let wouldUse = configured || (configuredDevice == nil && (state != .ready || device.verdict == .ready))
+                let findings = isolation.findings.map(\.rawValue).joined(separator: ", ")
+                checks.append(.init(name: "localLinkIsolation.\(device.device)",
+                    outcome: isolation.isolated ? .passed : wouldUse ? .failed : .notObserved,
+                    detail: isolation.isolated ? ClusterLinkSetupFlow.isolatedSentence(interface: interface)
+                        : "\(findings): " + (isolation.guidance(interface: interface) ?? "")))
+            }
         }
         // The saved name is not echoed: its syntax is wider than a device name.
         if configuredDevice != nil, !devices.isEmpty, !devices.contains(where: { $0.device == configuredDevice }) {

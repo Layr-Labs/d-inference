@@ -121,8 +121,12 @@ enum ClusterConsoleContent {
                 : byKey), .warning, from: .wired("link.wait"))]
         }
         let fix: String
+        let fixPort = snapshot.link.devices.first { $0.device == snapshot.setup.fixDevice }
         if options.dryRun {
             fix = "Press f for a dry run of the fix: it lists the commands an approval would run, and changes nothing."
+        } else if !options.temporary, fixPort?.isolationApplies == true {
+            // Link setup v2: the port gets its own network service, ready or not.
+            fix = "Press f to give that port its own network service with a fixed address, no router and no DNS, outside every bridge, which macOS keeps there. \(approval)"
         } else if snapshot.link.state == .ready {
             // A ready port is offered a fix only because nothing keeps its address.
             fix = "Press f to install the system job that keeps that address there. \(approval)"

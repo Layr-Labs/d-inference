@@ -67,6 +67,23 @@ Checks cover:
   `--temporary`, missing-address, unkept-address and `--dry-run` wordings, and
   the one bounded wait for a running keeper to put its address back.
 
+- Link setup v2 (isolating the cluster port): the readers for
+  `networksetup -listallhardwareports`, `-listnetworkserviceorder` and
+  `-getinfo`, the bridges in the network preferences and Internet Sharing's
+  `NAT.Enabled` and `NAT.SharingDevices` (`plutil -extract`), `netstat -rn`,
+  `scutil --dns` and `ipconfig getpacket`, on text captured read-only on both
+  Macs on 2026-10-09 (addresses replaced); the findings for both captured Macs
+  (Mac A: default route, DNS and DHCP lease through the cable; Mac B: bridge
+  member, Internet Sharing over the bridge and to the port, which blocks), for
+  a kernel-only bridge, an unreadable reading, a missing hardware port, a VPN
+  route into the cluster subnet and a hostile service name; the exact commands
+  of one approval on each Mac and of the restore, their AppleScript wrapper and
+  what may enter them; every `--fix` and `--remove` outcome of v2 over a
+  scripted Mac (dry runs, applied, refused, declined, unavailable, failed
+  part-way, applied without effect, unreadable record, a service without a
+  record); the record file on real files; the guided flow's v2 transcripts;
+  and the bounded wait before a rank starts, over a fake clock.
+
 Fixture addresses are documentation placeholders or derived from made-up
 machine values. No RDMA or network tool, `launchctl`, `plutil`, `osascript` or
 approval prompt is started, no setting is read or changed, and no peer is

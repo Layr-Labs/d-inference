@@ -26,9 +26,22 @@ enum ClusterLinkApproval {
         ["-e", request.appleScript]
     }
 
+    static func arguments(for request: ClusterLinkIsolationRequest) -> [String] {
+        ["-e", request.appleScript]
+    }
+
     /// Shows the prompt and waits for the answer.
     static func request(_ request: ClusterLinkPrivilegedRequest) -> ClusterLinkApprovalResult {
-        result(of: ClusterLinkToolProcess.execute(executable: executable, arguments: arguments(for: request),
+        run(arguments(for: request))
+    }
+
+    /// The same for one approval of link setup v2.
+    static func request(isolation request: ClusterLinkIsolationRequest) -> ClusterLinkApprovalResult {
+        run(arguments(for: request))
+    }
+
+    private static func run(_ arguments: [String]) -> ClusterLinkApprovalResult {
+        result(of: ClusterLinkToolProcess.execute(executable: executable, arguments: arguments,
             deadline: DispatchTime.now().uptimeNanoseconds + promptTimeoutNanoseconds,
             maximumOutputBytes: maximumOutputBytes, mergingStandardError: true))
     }

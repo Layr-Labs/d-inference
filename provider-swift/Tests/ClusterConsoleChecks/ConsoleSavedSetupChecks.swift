@@ -245,6 +245,10 @@ extension ClusterConsoleCheck {
                 // No system job is loaded or installed on this scripted Mac.
                 case .keeperJob, .keeperJobFile: return .unavailable
                 case .keeperJobFileList: return .output("")
+                // Link setup v2 reads none of this on a first-version scripted Mac.
+                case .hardwarePorts, .networkServiceOrder, .networkServiceInfo, .bridgePreferences, .internetSharingEnabled,
+                     .internetSharingDevices, .routeTable, .dnsConfiguration, .dhcpPacket:
+                    return .unavailable
                 }
             }
         }

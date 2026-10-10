@@ -184,6 +184,8 @@ struct FakeLinkTools {
     /// The `ls` of the job definitions' directory, when it is not simply the
     /// files above among a few that belong to others.
     var keeperDirectory: ClusterLinkToolOutcome?
+    /// What link setup v2 reads; none of the first version's checks reads it.
+    var isolation = FakeIsolationTools()
 
     static let macA = FakeLinkTools(deviceList: .output(LinkFixtures.deviceList(active: "rdma_en7")),
         interfaces: .output(LinkFixtures.macAInterfaces),
@@ -214,6 +216,15 @@ struct FakeLinkTools {
             let names = ["com.example.agent.plist", "io.darkbloom.other.plist"]
                 + keeperJobFiles.keys.sorted().map { "io.darkbloom.cluster-link.\($0).plist" }
             return keeperDirectory ?? .output(names.joined(separator: "\n") + "\n")
+        case .hardwarePorts: return isolation.hardwarePorts
+        case .networkServiceOrder: return isolation.serviceOrder
+        case .networkServiceInfo(let service): return isolation.serviceInfo[service] ?? .unavailable
+        case .bridgePreferences: return isolation.bridgePreferences
+        case .internetSharingEnabled: return isolation.sharingEnabled
+        case .internetSharingDevices: return isolation.sharingDevices
+        case .routeTable: return isolation.routes
+        case .dnsConfiguration: return isolation.dns
+        case .dhcpPacket(let interface): return isolation.dhcpPackets[interface] ?? .unavailable
         }
     }
 

@@ -17,15 +17,22 @@ public enum DistributedInstalledOwner {
     static let servesCommittedNativeStart = false
 
     /// `providerInstanceLock` is the ordinary provider's instance lock file.
-    static func serve(reference: ClusterConfigurationReference, providerInstanceLock: URL) throws {
+    /// `linkReady` runs immediately before the native launch with this Mac's
+    /// RDMA device; it returns once the link is usable or throws.
+    static func serve(reference: ClusterConfigurationReference, providerInstanceLock: URL,
+                      linkReady: @escaping @Sendable (String) throws -> Void = { _ in }) throws {
         // An ordinary provider on this Mac uses the same GPU and memory and
         // does not take the cluster's device scope. Refuse before anything is
         // prepared, and again immediately before the native launch.
         try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile: providerInstanceLock)
         let prepared = try DistributedInstalledPreparation.prepare(reference: reference,
             paths: ClusterUserPaths(), deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+        let device = prepared.plan.localPeer.jacclDevice
         try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO,
-            beforeNativeLaunch: { try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile: providerInstanceLock) })
+            beforeNativeLaunch: {
+                try DistributedInstalledProviderExclusion.requireNoOrdinaryProvider(lockFile: providerInstanceLock)
+                try linkReady(device)
+            })
     }
 
     static func serve(prepared: DistributedInstalledPreparation, input: Int32, output: Int32,

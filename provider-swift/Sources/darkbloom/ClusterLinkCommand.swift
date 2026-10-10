@@ -5,22 +5,27 @@ import ProviderCore
 extension Cluster {
     struct Link: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "link",
-            abstract: "Check this Mac's Thunderbolt RDMA link, watch it, or give its port the address it lacks after your approval.",
+            abstract: "Check this Mac's Thunderbolt RDMA link, watch it, or set its port up for the cluster after your approval.",
             discussion: """
-                Without options this reads local state only and contacts no peer. --fix gives the one active \
-                Thunderbolt port that lacks an IPv4 address a link-local one and installs a small system job \
-                that puts it back whenever macOS removes it, also after a restart. macOS shows its own approval \
-                prompt for that, and Darkbloom never uses sudo. --temporary adds the address alone, which lasts \
-                only until macOS next reconfigures the port. --remove takes away everything --fix installed. \
-                --dry-run prints the exact commands an approval would run, and runs nothing.
+                Without options this reads local state only and contacts no peer, including how the network \
+                around the active port is put together: bridge membership, Internet Sharing, default routes, \
+                DNS and DHCP through the port, and the port's network services. --fix isolates the active \
+                Thunderbolt port: it takes the port out of its bridge, gives it its own network service with a \
+                fixed address, no router and no DNS, and switches other services on that port off, so macOS \
+                keeps the address, also after a restart, and nothing else uses the cable. Internet Sharing is \
+                never changed; when it shares to the port directly, --fix says what to turn off and stops. \
+                macOS shows its own approval prompt once, and Darkbloom never uses sudo. --temporary adds a \
+                link-local address alone, which lasts only until macOS next reconfigures the port. --remove \
+                restores the network settings --fix changed. --dry-run prints the exact commands an approval \
+                would run, and runs nothing.
                 """)
         @Flag(help: "Print JSON instead of text; with --watch, one object per line.") var json = false
-        @Flag(help: "Give the active Thunderbolt port that lacks an IPv4 address a link-local one and keep it there, after approval in a macOS prompt.")
+        @Flag(help: "Isolate the active Thunderbolt port: its own network service with a fixed address, outside every bridge, after approval in a macOS prompt.")
         var fix = false
-        @Flag(help: "Remove the address and the system job an earlier --fix installed, after approval in a macOS prompt.") var remove = false
+        @Flag(help: "Restore the network settings an earlier --fix changed, after approval in a macOS prompt.") var remove = false
         @Flag(help: "Poll the link and print each change until interrupted.") var watch = false
         @Option(help: "With --fix or --remove: the RDMA device to act on, such as rdma_en6.") var device: String?
-        @Flag(help: "With --fix: add the address alone, without the system job that keeps it.") var temporary = false
+        @Flag(help: "With --fix: add a link-local address alone, which lasts until macOS next reconfigures the port.") var temporary = false
         @Flag(name: .customLong("dry-run"), help: "With --fix or --remove: print the commands an approval would run, and change nothing.")
         var dryRun = false
 

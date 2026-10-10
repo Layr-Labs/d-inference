@@ -118,6 +118,20 @@ ranks and both Macs for one cut), loaded bytes, load time, and active and cached
 bytes after release. Exit status is 0 only if the model object was released.
 `--hold-seconds N` keeps the loaded stage resident for N seconds first, so a
 second load can be tried against it.
+
+GPT-OSS 20B is recognised by its own pinned `config.json` and loaded by its own
+adapter (cuts 6, 8, 10 or 12). Its arithmetic environment is `MLX_ENABLE_TF32=1`
+with no `DARKBLOOM_GPTOSS_*` switch; the two other variables above are
+tolerated, because the pair driver sets all three for every rank. For that
+model the tool has one more mode, which loads no stage: it compares the experts
+as a stage holds them (the stored gate and up projections, separate) with the
+product's load-time layout (one concatenated projection) on the artifact's own
+bytes, byte for byte, and exits 0 only if every output is identical:
+
+```sh
+env MLX_ENABLE_TF32=1 darkbloom-cluster-stage-check expert-layout \
+  --model-dir /ABS/MODEL [--layers 0,11,23] [--chunk-tokens 512]
+```
 It refuses to run with a cluster transport environment set. It shows nothing
 about membership, transport or generation.
 
@@ -317,6 +331,15 @@ both.
 
 ## Limits
 
+- GPT-OSS 20B (`registered_gpt_oss_20b`) runs on its own adapter,
+  `Models/GPTOSS`: the product's `GPTOSSModel` cut into two layer stages, with
+  the class's ordinary attention caches as request state and the experts held
+  as the artifact stores them. It lists the pipeline and its compact decode
+  framing only; the phase split cannot carry a sliding-window layer's rows.
+  Its requests are raw text (`pair-check request --raw-text-file`): the chat
+  wrapper the request tool writes is not this model's. The residual that
+  crosses its cut is float32, because the product class promotes the stream
+  in its expert activation.
 - The worker accepts the registered Qwen3.5 9B and Qwen3.8 27B artifacts,
   greedy text, one request at a time. The 9B has run across two Macs. The 27B
   has passed admission, per-rank stage loads and the single-Mac reference on

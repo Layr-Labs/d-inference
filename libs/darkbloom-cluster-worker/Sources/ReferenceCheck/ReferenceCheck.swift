@@ -38,7 +38,7 @@ import Foundation
                 }
                 // As below: the artifact's configuration selects the registered
                 // model, and the cut must be one of that model's cuts.
-                let served = try QwenResidentCapabilityMetadata.registeredModel(configuration: QualificationFiles.read(
+                let served = try registeredModel(configuration: QualificationFiles.read(
                     URL(fileURLWithPath: model).appendingPathComponent("config.json"), maximumBytes: 1 << 20))
                 guard served.supportedCuts.contains(cut) else {
                     throw Failure("--stage-cut must be one of " + served.supportedCuts.map(String.init).joined(separator: ", "))
@@ -78,8 +78,11 @@ import Foundation
             // The artifact's configuration selects the registered model; the
             // request must have been written for that model and the cut must be
             // one of its cuts, before anything is hashed or loaded.
-            let registered = try QwenResidentCapabilityMetadata.registeredModel(
+            let registered = try registeredModel(
                 configuration: QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+            guard !registered.isGPTOSS || handoff == nil else {
+                throw Failure("GPT-OSS has no phase split: its hand-off cannot carry a sliding-window layer's rows")
+            }
             guard request.modelID == registered.runtimeModelID, request.profileID == registered.profileID else {
                 throw Failure("The request is for \(request.modelID); the artifact in --model-dir is \(registered.runtimeModelID)")
             }
@@ -98,10 +101,15 @@ import Foundation
             // zero attempts for a model that has none.
             QwenRoutedExpertRouteObservation.arm()
             do {
-                result = try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
-                    request: .init(requestID: request.requestUUID, promptTokenIDs: request.promptTokenIDs,
-                        stopTokenIDs: request.stopTokenIDs, chunkSize: request.chunkSize, outputCount: request.outputCount),
-                    deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff)
+                let staged = QwenStagedGenerationReference.Request(requestID: request.requestUUID,
+                    promptTokenIDs: request.promptTokenIDs, stopTokenIDs: request.stopTokenIDs,
+                    chunkSize: request.chunkSize, outputCount: request.outputCount)
+                // The registered model's own adapter runs both stages.
+                result = registered.isGPTOSS
+                    ? try GPTOSSStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
+                        request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000)
+                    : try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
+                        request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff)
             } catch let refusal as QwenStagedGenerationReference.HandoffRefusal {
                 // The outcome a fault run asks for: the adopting side refused
                 // the state, and nothing was left allocated afterwards.
@@ -273,9 +281,29 @@ import Foundation
         usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]
                  [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
                --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
-          CUT is one of the registered model's cuts:
+          CUT is one of the registered model's cuts
+          (GPT-OSS runs under MLX_ENABLE_TF32=1 with no DARKBLOOM_GPTOSS_* switch, and has no --handoff):
 
-        """ + "    " + QwenResidentCapabilityMetadata.registeredCutsUsage.replacingOccurrences(of: "\n", with: "\n    ") + "\n"
+        """ + "    " + (QwenResidentCapabilityMetadata.registeredCutsUsage + "\n" + GPTOSSResidentCapabilityMetadata.registeredCutsUsage)
+            .replacingOccurrences(of: "\n", with: "\n    ") + "\n"
+
+    /// The registered model an artifact's configuration belongs to, whichever
+    /// adapter registers it: what a request must name and the cuts it may use.
+    struct Registered {
+        let runtimeModelID: String, profileID: String
+        let supportedCuts: [Int]
+        let isGPTOSS: Bool
+    }
+    static func registeredModel(configuration: Data) throws -> Registered {
+        if GPTOSSStagedGenerationReference.handles(configuration: configuration) {
+            let model = try GPTOSSResidentCapabilityMetadata.registeredModel(configuration: configuration)
+            return .init(runtimeModelID: model.runtimeModelID, profileID: model.profileID,
+                         supportedCuts: model.supportedCuts, isGPTOSS: true)
+        }
+        let model = try QwenResidentCapabilityMetadata.registeredModel(configuration: configuration)
+        return .init(runtimeModelID: model.runtimeModelID, profileID: model.profileID,
+                     supportedCuts: model.supportedCuts, isGPTOSS: false)
+    }
 
     /// One event per line on standard output, written at once.
     static func emit(_ event: [String: Any]) throws {
@@ -303,13 +331,15 @@ import Foundation
         signal(SIGALRM) { _ in Darwin._exit(124) }
         alarm(UInt32(seconds + 5))
         try ProcessDeadline.arm(uptimeNanoseconds: started + UInt64(seconds + 5) * 1_000_000_000, status: 124)
-        let release = try QwenStagedGenerationReference.serve(modelDirectory: modelDirectory, stageCut: cut,
-            deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000,
-            ready: {
+        let isGPTOSS = (try? Data(contentsOf: modelDirectory.appendingPathComponent("config.json")))
+            .map(GPTOSSStagedGenerationReference.handles(configuration:)) ?? false
+        let service = isGPTOSS ? GPTOSSStagedGenerationReference.serve : QwenStagedGenerationReference.serve
+        let release = try service(modelDirectory, cut, started + UInt64(seconds) * 1_000_000_000,
+            {
                 try emit(["event": "ready", "stageLoadSeconds": $0.stageLoadSeconds,
                           "activeBytesBefore": $0.activeBytesBefore, "activeBytesLoaded": $0.activeBytesLoaded])
             },
-            next: {
+            {
                 // `prepare` carries the request and is answered; `start` then
                 // begins it. A pair is driven the same way: the prompt travels
                 // with the reservation, and the clock starts at the start command.
@@ -329,8 +359,8 @@ import Foundation
                 return QwenStagedGenerationReference.Request(requestID: id, promptTokenIDs: prompt,
                     stopTokenIDs: command.stopTokenIDs ?? [], chunkSize: chunk, outputCount: count)
             },
-            token: { try emit(["event": "token", "ordinal": $0, "tokenID": $1]) },
-            finished: {
+            { try emit(["event": "token", "ordinal": $0, "tokenID": $1]) },
+            {
                 try emit(["event": "finished", "reason": $0.finishReason, "tokens": $0.selectedTokenIDs.count,
                           "firstTokenNanoseconds": $0.firstTokenNanoseconds, "lastTokenNanoseconds": $0.lastTokenNanoseconds,
                           "retiredNanoseconds": $0.retiredNanoseconds, "residualCopies": $0.residualCopies,

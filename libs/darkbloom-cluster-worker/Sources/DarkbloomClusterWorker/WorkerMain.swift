@@ -44,11 +44,19 @@ import Foundation
             }
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, deadline: deadline)
             try pipes.check()
-            let runtime: any WorkerRuntime = try configuration.evidenceDirectory.map {
-                try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
+            // The registered model's own adapter executes it.
+            let runtime: any WorkerRuntime
+            if GPTOSSWorkerRuntime.handles(modelID: configuration.load.identity.modelID) {
+                runtime = try GPTOSSWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
+                    evidenceDirectory: configuration.evidenceDirectory,
                     generationMode: configuration.generationMode, qualification: qualification)
-            } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
-                    generationMode: configuration.generationMode, qualification: qualification)
+            } else {
+                runtime = try configuration.evidenceDirectory.map {
+                    try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
+                        generationMode: configuration.generationMode, qualification: qualification)
+                } ?? NativeWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
+                        generationMode: configuration.generationMode, qualification: qualification)
+            }
             startup?.disarm()
             try WorkerCoordinator(runtime: runtime, pipes: pipes).run()
             alarm(0)

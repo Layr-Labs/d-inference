@@ -101,6 +101,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
               supportedCuts: Array(stride(from: 4, through: 60, by: 4)),
               additionalArithmeticEnvironment: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1",
                                                 "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"]),
+        // GPT-OSS 20B on its own adapter; any cut is structurally legal there.
+        .init(modelID: "registered_gpt_oss_20b", profileID: "registered_gpt_oss_20b_greedy_generation_v1",
+              supportedCuts: [6, 8, 10, 12]),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }

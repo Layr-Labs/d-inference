@@ -272,7 +272,7 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
                        ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
-                        "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b"])
+                        "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_gpt_oss_20b"])
         // A model with routed experts adds its route to the three common variables; the others add nothing.
         XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))
@@ -280,6 +280,11 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(routed.supportedCuts, Array(stride(from: 4, through: 36, by: 4)))
         XCTAssertEqual(routed.arithmeticEnvironment.map { "\($0.0)=\($0.1)" }, ["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128",
             "DARKBLOOM_BF16_WEIGHTS=1", "MLX_ENABLE_TF32=1", "MLX_GATHER_QMM_EXPERT_SLICES=trust"])
+        // GPT-OSS on its own adapter: its own profile and its own cuts.
+        let gptoss = try make("registered_gpt_oss_20b")
+        XCTAssertEqual(gptoss.profileID, "registered_gpt_oss_20b_greedy_generation_v1")
+        XCTAssertEqual(gptoss.supportedCuts, [6, 8, 10, 12])
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try gptoss.encoded()), gptoss)
         for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
             XCTAssertThrowsError(try make(unknown), unknown)
         }

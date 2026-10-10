@@ -491,9 +491,13 @@ struct ResidentAdmissionA3BTests {
         let dense = try QwenLongPrefillArithmeticEnvironment.admit(QwenLongPrefillArithmeticEnvironment.requiredValues)
         #expect(try QwenResidentArithmeticPolicy.dense.admit(QwenLongPrefillArithmeticEnvironment.requiredValues) == dense)
         #expect(sha256(try canonicalJSONData(dense)) == small.arithmeticPolicySHA256)
-        // Every adapter's pairs are the runtime's rows, and the other way round.
+        // Every Qwen adapter's pairs are the runtime's Qwen rows, and the other way round.
+        // (An adapter of another family has its own rows; RegisteredModelListsTests covers every family.)
         let rows = try QwenRegisteredDenseModel.allCases.map { try QwenResidentModelDefinition(model: $0) }
-        let pairs = ClusterRuntimeAdapter.allCases.flatMap { adapter in
+        let qwenAdapters = ClusterRuntimeAdapter.allCases.filter { adapter in
+            adapter.registeredProfiles.contains { QwenRegisteredDenseModel(rawValue: $0.runtimeModelID) != nil }
+        }
+        let pairs = qwenAdapters.flatMap { adapter in
             adapter.registeredProfiles.map { "\(adapter.rawValue)|\($0.runtimeModelID)|\($0.profileID)|\(adapter.arithmeticPolicyID)" }
         }
         #expect(Set(pairs) == Set(rows.map {

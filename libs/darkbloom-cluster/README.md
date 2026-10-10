@@ -46,6 +46,7 @@ bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
 bash libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh
 bash libs/darkbloom-cluster/Tests/DeadlineChecks/run.sh
 bash libs/darkbloom-cluster/Tests/PrefillScheduleChecks/run.sh
+bash libs/darkbloom-cluster/Tests/GPTOSSStageChecks/run.sh
 ```
 
 Runtime tests (tensor verification, resident admission, generation and owned

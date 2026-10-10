@@ -34,6 +34,11 @@ task_sources=(
   Models/Qwen/Resident/QwenResidentModelDefinition
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
+  Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification
+  Models/GPTOSS/Metadata/GPTOSSLayerStagePlan
+  Models/GPTOSS/Metadata/GPTOSSStageMetadata
+  Models/GPTOSS/Metadata/GPTOSSArithmeticEnvironment
+  Models/GPTOSS/Resident/GPTOSSResidentCapabilityMetadata
 )
 task_paths=()
 for task_source in "${task_sources[@]}"; do task_paths+=("$task_runtime/$task_source.swift"); done

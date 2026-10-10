@@ -15,15 +15,18 @@ import XCTest
 final class RegisteredModelListsTests: XCTestCase {
     func testEveryRegisteredModelIsInEveryClosedList() throws {
         let runtime = QwenResidentCapabilityMetadata.registeredModels
-        let identifiers = runtime.map(\.runtimeModelID)
+        // GPT-OSS has its own closed catalog; the lists hold its rows after the Qwen ones.
+        let gptoss = GPTOSSResidentCapabilityMetadata.registeredModels
+        let identifiers = runtime.map(\.runtimeModelID) + gptoss.map(\.runtimeModelID)
         XCTAssertGreaterThanOrEqual(runtime.count, 3)
         XCTAssertEqual(Set(identifiers).count, identifiers.count, "a runtime model ID is registered twice")
 
         // The protocol: every adapter pair is a runtime row and the reverse.
         let admitted = ClusterRuntimeAdapter.admittedModels
         XCTAssertEqual(admitted.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
-                       runtime.map { "\($0.runtimeModelID) \($0.profileID)" }.sorted(),
-                       "ClusterRuntimeAdapter.registeredProfiles and the runtime catalog differ")
+                       (runtime.map { "\($0.runtimeModelID) \($0.profileID)" }
+                        + gptoss.map { "\($0.runtimeModelID) \($0.profileID)" }).sorted(),
+                       "ClusterRuntimeAdapter.registeredProfiles and the runtime catalogs differ")
 
         // The qualification request models, in the catalog's order.
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID), identifiers,
@@ -60,6 +63,34 @@ final class RegisteredModelListsTests: XCTestCase {
                         XCTAssertEqual(try WorkerConfiguration(arguments: arguments + ["--generation-mode", mode.rawValue], now: 100)
                             .generationMode, mode, name)
                     }
+                } else {
+                    XCTAssertThrowsError(try WorkerConfiguration(arguments: arguments, now: 100), "\(name) cut \(cut)")
+                }
+            }
+        }
+    }
+
+    /// GPT-OSS's rows: its request row, manifest pin, usage line and the cuts
+    /// the worker accepts are its own catalog's.
+    func testGPTOSSRowsInEveryClosedList() throws {
+        let usage = GPTOSSResidentCapabilityMetadata.registeredCutsUsage
+        for model in GPTOSSResidentCapabilityMetadata.registeredModels {
+            let name = model.runtimeModelID
+            let request = try XCTUnwrap(QualificationRequest.registeredModel(name), "\(name) has no qualification request row")
+            XCTAssertEqual(request.profileID, model.profileID, name)
+            XCTAssertEqual(request.supportedCuts, model.supportedCuts, name)
+            XCTAssertEqual(PromptTokenizer.registeredManifests.first { $0.modelID == name }?.sha256, model.manifestSHA256, name)
+            XCTAssertTrue(usage.split(separator: "\n").contains(Substring(
+                "\(name): " + model.supportedCuts.map(String.init).joined(separator: "|"))), "\(name) is missing from the usage text")
+            for cut in stride(from: 0, through: model.layerCount + 4, by: 2) {
+                let arguments = ["--model-dir", "/invented/model", "--rank", "1", "--stage-cut", String(cut),
+                    "--membership-epoch", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--model-id", name,
+                    "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
+                    "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
+                    "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
+                    "--deadline-uptime-nanoseconds", "300000000100"]
+                if model.supportedCuts.contains(cut) {
+                    XCTAssertEqual(try WorkerConfiguration(arguments: arguments, now: 100).load.stageCut, cut, name)
                 } else {
                     XCTAssertThrowsError(try WorkerConfiguration(arguments: arguments, now: 100), "\(name) cut \(cut)")
                 }

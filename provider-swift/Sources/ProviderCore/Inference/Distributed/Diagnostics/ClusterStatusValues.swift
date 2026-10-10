@@ -38,7 +38,7 @@ public struct ClusterStatusBinding: Codable, Sendable, Equatable {
         artifactSHA256 = capability.artifactSHA256; configurationModelSHA256 = capability.configurationSHA256
         planSHA256 = configuration.selectedPlanSHA256; prefillSchedule = configuration.selectedPrefillSchedule
         generationMode = configuration.selectedGenerationMode
-        maximumLifetimeSeconds = capability.maxLifetimeSeconds; maximumRequests = capability.maxRequests
+        maximumLifetimeSeconds = capability.installedSessionLifetimeSeconds; maximumRequests = capability.maxRequests
         peers = configuration.peers.map { .init(id: $0.id, rank: $0.rank, runtimeBinarySHA256: $0.runtimeBinarySHA256,
             supportedGenerationModes: ClusterGenerationSelection.supportedModes(for: $0, capability: capability)) }
     }

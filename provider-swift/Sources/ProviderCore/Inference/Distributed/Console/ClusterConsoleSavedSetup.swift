@@ -71,7 +71,7 @@ extension ClusterConsoleSavedModel {
                 .init(rank: stage.rank, peerID: configuration.peers[stage.rank].id, local: stage.rank == configuration.localRank,
                     sourceLayerStart: stage.sourceLayerStart, sourceLayerEnd: stage.sourceLayerEnd)
             },
-            maximumLifetimeSeconds: capability.maxLifetimeSeconds, maximumRequests: capability.maxRequests,
+            maximumLifetimeSeconds: capability.installedSessionLifetimeSeconds, maximumRequests: capability.maxRequests,
             maximumPromptTokens: capability.profile.maximumPromptTokens,
             maximumOutputTokens: capability.profile.maximumOutputTokens)
     }

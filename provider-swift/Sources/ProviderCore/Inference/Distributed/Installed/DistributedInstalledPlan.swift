@@ -42,9 +42,7 @@ struct DistributedInstalledPlan: Sendable {
     /// may now declare a longer ceiling for long prompts; the product does not
     /// take it until that decision is made.
     static let sessionLifetimeCeilingSeconds = 300
-    var maximumLifetimeNanoseconds: UInt64 {
-        UInt64(min(capability.maxLifetimeSeconds, Self.sessionLifetimeCeilingSeconds)) * 1_000_000_000
-    }
+    var maximumLifetimeNanoseconds: UInt64 { UInt64(capability.installedSessionLifetimeSeconds) * 1_000_000_000 }
     var configurationURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("config.json") }
     var manifestURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("manifest.json") }
 
@@ -104,5 +102,14 @@ struct DistributedInstalledPlan: Sendable {
             + (try DistributedInstalledGenerationSelection.workerArguments(configuration: configuration, capability: capability))
             + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
             + (attachment?.workerArguments ?? [])
+    }
+}
+
+extension ClusterRuntimeCapability {
+    /// The lifetime an installed session of this capability gets, and the one
+    /// status and the console report: the worker's declared ceiling, at most
+    /// the product's session lifetime (`DistributedInstalledPlan`).
+    var installedSessionLifetimeSeconds: Int {
+        min(maxLifetimeSeconds, DistributedInstalledPlan.sessionLifetimeCeilingSeconds)
     }
 }

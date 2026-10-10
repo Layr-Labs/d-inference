@@ -21,7 +21,8 @@ the provider refuses both by construction (see "Provider and coordinator").
 | C. Two workers on one Mac over the local test socket, equal to B | **Passed** on Mac A, pipeline (`exact`, ranks agree) | **Passed** on Mac A, pipeline (`exact`, ranks agree) |
 | D. Across the cable in every mode | **Ran**: all three modes completed, ranks agree, the modes agree with each other `exact`. **Against B: `divergedAtNearTie`** (an exact tie in the oracle at output index 10, broken the other way on the pair); a pass under the owner's mixed-chip rule of 2026-10-09 | **Passed**: all three modes completed, ranks agree, modes agree `exact`; against B `tokensEqualLogitsDiffer` (64 of 64 tokens equal) |
 | D. One rank ended with SIGTERM mid-decode | **Passed**: the other rank exited by itself, nothing left on either Mac | **Passed**, the same way |
-| Other cuts, longer prompts, each Mac alone, Mac B's reference, product comparison | Not run | Not run |
+| Mac B's reference; each Mac alone against the pair at 4,096 and 5,120 tokens | **Done** | **Done** |
+| Other cuts, 30 and 8,192-token references, other local-socket modes, product comparison | Not run | Not run |
 
 A local-socket pass is not a hardware pass; D is one. Everything above is one
 request (4,096 prompt tokens, 64 outputs) at one cut. `STATUS.md` in the
@@ -213,6 +214,25 @@ For the Qwen3.6 model Mac B's own reference differs from Mac A's at a 1-ulp near
 | 5,120 | Pair, compact pipeline | 1.134 s | 4,514 tok/s | 69.1 tok/s |
 | 5,120 | Pair, phase split | 1.165 s | 4,395 tok/s | 77.6 tok/s |
 
+**Pair against each Mac alone, Qwen3.5 35B A3B** (same conditions, 2026-10-10 01:17Z to 01:24Z):
+
+| Prompt | Run | First token | Prefill | Decode |
+|---|---|---:|---:|---:|
+| 4,096 | Mac A alone | 2.196 s | 1,865 tok/s | 60.7 tok/s |
+| 4,096 | Mac B alone | 1.227 s | 3,338 tok/s | 87.8 tok/s |
+| 4,096 | Pair, pipeline | 0.912 s | 4,492 tok/s | 70.7 tok/s |
+| 4,096 | Pair, compact pipeline | 0.918 s | 4,462 tok/s | 70.0 tok/s |
+| 4,096 | Pair, phase split | 0.939 s | 4,364 tok/s | 81.2 tok/s |
+| 5,120 | Mac A alone | 2.808 s | 1,823 tok/s | 63.4 tok/s |
+| 5,120 | Mac B alone | 1.536 s | 3,335 tok/s | 88.1 tok/s |
+| 5,120 | Pair, pipeline | 1.139 s | 4,496 tok/s | 70.0 tok/s |
+| 5,120 | Pair, compact pipeline | 1.134 s | 4,513 tok/s | 71.6 tok/s |
+| 5,120 | Pair, phase split | 1.169 s | 4,381 tok/s | 81.2 tok/s |
+
+For the 35B A3B the pair with the serial schedule is `exact` against the lookahead pair, and the 5,120-token request on the pair is `tokensEqualLogitsDiffer` against Mac A's reference.
+
+The pair's first token beats each Mac alone (1.3 times Mac B, 2.4 times Mac A); its decode lies between the two Macs alone. These figures are indicative: the compile lanes were not held.
+
 The adapter profile caps prompts at 8,192 tokens; 10k, 20k and 30k wait for the coordinator to raise it (not changed here).
 
 **Refusals and failures.** The first real load (an earlier build, cut 20,
@@ -244,8 +264,7 @@ form of the phase-split one.
 
 ## Not done
 
-- Everything marked "Not run" in the status table, first of all Mac B's
-  staged reference and the Qwen3.6 model's B, C and D.
+- Everything marked "Not run" in the status table.
 - `swift test` of the two packages at the final commit (the check runners
   that need no model pass; the suites that touch Metal need the GPU lane).
 - The changes on this branch have not been independently reviewed.

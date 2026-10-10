@@ -24,13 +24,21 @@ struct CheckFailure: Error, CustomStringConvertible {
 }
 
 struct Options {
-    enum Mode: String { case raw, wrapper }
+    enum Mode: String { case raw, wrapper, tp }
     var mode = Mode.raw
     var maximumMiB = 64
     var smallIterations = 2000
     var orderedMessages = 64
     var tokenSteps = 512
     var deadlineSeconds = 180
+    // Tensor-parallel probe (`--mode tp`, TensorParallelProbe.swift).
+    var hidden = 5_120
+    var rows = 512
+    var latencySmall = 2_000
+    var latencyLarge = 100
+    var chainSteps = 128
+    var chainRepeats = 5
+    var chainLazy = true
 
     init(arguments: [String]) throws {
         var index = 0
@@ -50,7 +58,7 @@ struct Options {
             switch arguments[index] {
             case "--mode":
                 guard let parsed = Mode(rawValue: try value("--mode")) else {
-                    throw CheckFailure("--mode must be raw or wrapper")
+                    throw CheckFailure("--mode must be raw, wrapper or tp")
                 }
                 mode = parsed
             case "--max-mib": maximumMiB = try bounded("--max-mib", 1...1024)
@@ -58,6 +66,13 @@ struct Options {
             case "--ordered-messages": orderedMessages = try bounded("--ordered-messages", 1...4096)
             case "--token-steps": tokenSteps = try bounded("--token-steps", 1...100_000)
             case "--deadline-seconds": deadlineSeconds = try bounded("--deadline-seconds", 5...3600)
+            case "--hidden": hidden = try bounded("--hidden", 64...65_536)
+            case "--rows": rows = try bounded("--rows", 1...8_192)
+            case "--latency-small": latencySmall = try bounded("--latency-small", 1...1_000_000)
+            case "--latency-large": latencyLarge = try bounded("--latency-large", 1...100_000)
+            case "--chain-steps": chainSteps = try bounded("--chain-steps", 1...10_000)
+            case "--chain-repeats": chainRepeats = try bounded("--chain-repeats", 1...1_000)
+            case "--no-lazy": chainLazy = false
             default: throw CheckFailure("Unknown argument \(arguments[index])")
             }
             index += 1
@@ -66,8 +81,11 @@ struct Options {
 
     /// Carried through the first agreement so mismatched launches fail on both ranks.
     var agreement: [Int32] {
-        [1, mode == .raw ? 1 : 2, Int32(maximumMiB), Int32(smallIterations),
-         Int32(orderedMessages), Int32(tokenSteps)]
+        let base: [Int32] = [1, mode == .raw ? 1 : mode == .wrapper ? 2 : 3, Int32(maximumMiB), Int32(smallIterations),
+                             Int32(orderedMessages), Int32(tokenSteps)]
+        guard mode == .tp else { return base }
+        return base + [Int32(hidden), Int32(rows), Int32(latencySmall), Int32(latencyLarge), Int32(chainSteps),
+                       Int32(chainRepeats), chainLazy ? 1 : 0]
     }
 }
 
@@ -186,6 +204,15 @@ struct RawGroup {
             try ProcessDeadline.arm(
                 uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
                     + UInt64(options.deadlineSeconds) * 1_000_000_000, status: 124)
+            if options.mode == .tp {
+                // GPU is the default device here: the chain runs the projection on it.
+                let report = try TensorParallelProbe.run(options)
+                alarm(0)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                print(String(decoding: try encoder.encode(report), as: UTF8.self))
+                Darwin.exit(report.passed ? 0 : 2)
+            }
             let report = try Device.withDefaultDevice(.cpu) {
                 try options.mode == .raw ? raw(options) : wrapper(options)
             }

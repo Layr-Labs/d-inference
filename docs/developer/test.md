@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 ## Autopilot rewards
 
@@ -2501,6 +2501,28 @@ test is not a measured speedup or proof of backend numerical parity. Use the
 separate model-backed gates for those claims. Coverage reports count executed
 code, not these evidence distinctions; retain test results and prerequisites
 alongside the report.
+
+#### Watchdog launch evidence
+
+After [rebuilding the test product](build.md#5-provider-cli-swift-with-source-matched-metallib),
+run this bounded selection from `provider-swift`:
+
+```bash
+swift test --skip-build --no-parallel --jobs 2 --force-resolved-versions \
+  --filter 'unprovenLaunchEvidencePreservesIntent|prelaunchHealthObservationRetainsIntent|partialLaunchEvidenceRequiresComparison|interruptedLaunchReceiptTimesOut|unprovenLaunchIntentDoesNotTimeOut|interruptedLaunchReceiptPromotes'
+```
+
+`provider-swift/Tests/ProviderCoreTests/Service/WatchdogRecoveryIntegrationTests.swift`
+exercises `WatchdogRecoveryService.observeHealthyProvider`, the real updater and
+disk-backed recovery store using synthetic bundles, temporary install roots and
+loopback release HTTP. Launch snapshots, process liveness and restart callbacks
+are injected; this selection uses no models or MLX kernels. It verifies missing
+and partial baseline evidence, intent retention before restart, later positive
+run/process evidence, startup timeout, one-time failure accounting and heartbeat
+promotion. Preserve raw Swift Testing results, including parameterized cases;
+the preceding XCTest summary can report zero tests. This selection does not
+execute native launchd or the controller cancellation interleaving, and does not
+qualify a signed release installation or the complete provider suite.
 
 #### Shared fixture locations
 

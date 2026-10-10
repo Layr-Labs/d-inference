@@ -33,6 +33,11 @@
 
 - Reduce dense cache-routing query copies by retaining the deepest compatible endpoint for each provider and tier. Preserve shorter valid fallbacks, complete hint values and matching/valid-holder counts; bounded scratch overflow restores the original path. The original source-bound synthetic dense workloads measured 43–46% lower CPU query time and 97–98% fewer cumulative allocated bytes; these are not new measurements of the merged coordinator or evidence of production cache-hit or model TPS gains.
 
+## Unreleased - interrupted watchdog launch recovery
+
+- Recover a candidate's launch receipt when the watchdog exits after starting it but before recording success. A running candidate that never produces a heartbeat then reaches the existing startup timeout; missing launch evidence does not count as a failed start.
+- Preserve unproven launch intent across health observations before restart. Require comparable saved and current launch evidence so an old serving process cannot acquire a false failed-start timeout when baseline evidence is missing or partial.
+
 ## Unreleased - Autopilot daily earnings floor
 
 ### Autopilot reward recording and authorization

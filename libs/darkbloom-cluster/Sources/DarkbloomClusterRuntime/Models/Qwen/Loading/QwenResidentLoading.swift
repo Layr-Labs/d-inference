@@ -11,7 +11,7 @@ struct QwenResidentLoadedStage {
 
 /// A private ordered-load gate for this separately admitted resident cut4|8|12|16
 /// scope. The existing default-half-only StageLoadBudget policy is untouched.
-private final class QwenResidentLoadGate: QwenLayerStageGate {
+final class QwenResidentLoadGate: QwenLayerStageGate {
     let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
     private var next = 0
     private var failed = false

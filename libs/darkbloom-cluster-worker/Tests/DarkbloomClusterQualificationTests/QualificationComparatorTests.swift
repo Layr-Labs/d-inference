@@ -273,7 +273,8 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
                        ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
                         "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
-                        "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd"])
+                        "registered_gpt_oss_20b", "registered_mimo_v26_flash_mopd",
+                        "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit"])
         // A model with routed experts adds its route to the three common variables; the others add nothing.
         XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))
@@ -294,6 +295,20 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(mimoRow.maximumLifetimeSeconds, 1800); XCTAssertFalse(mimoRow.hasRecordingRuntime)
         XCTAssertEqual(QualificationRequest.registeredModel(small.modelID)?.maximumLifetimeSeconds, 300)
         XCTAssertEqual(QualificationRequest.registeredModel(large.modelID)?.hasRecordingRuntime, true)
+        // A Gemma request carries its own vocabulary and its two serving values; a Qwen request keeps the Qwen bound.
+        let source = QualificationPromptSource(kind: "tokenIDs", description: "test")
+        let gemma = try QualificationRequest(requestID: UUID(), promptTokenIDs: [2, 262_143], chunkSize: 2, outputCount: 4,
+            stopTokenIDs: [1, 106], promptSource: source, modelID: "registered_gemma4_26b_qat_4bit")
+        XCTAssertEqual(gemma.profileID, "registered_gemma4_26b_qat_4bit_greedy_generation_v1")
+        XCTAssertEqual(gemma.supportedCuts, [6, 8, 10, 12, 15, 18, 24])
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try gemma.encoded()), gemma)
+        XCTAssertThrowsError(try QualificationRequest(requestID: UUID(), promptTokenIDs: [262_144], chunkSize: 1,
+            outputCount: 1, stopTokenIDs: [], promptSource: source, modelID: "registered_gemma4_26b"))
+        XCTAssertThrowsError(try QualificationRequest(requestID: UUID(), promptTokenIDs: [248_320], chunkSize: 1,
+            outputCount: 1, stopTokenIDs: [], promptSource: source))
+        XCTAssertEqual(gemma.arithmeticEnvironment.map { "\($0.0)=\($0.1)" }, ["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128",
+            "DARKBLOOM_BF16_WEIGHTS=1", "MLX_ENABLE_TF32=1", "MLX_GATHER_QMM_EXPERT_SLICES=trust",
+            "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1"])
         for unknown in ["", "registered_qwen4", "EigenLabs/Qwen3.8-27B-4bit-mtp", "registered_qwen38_27b "] {
             XCTAssertThrowsError(try make(unknown), unknown)
         }

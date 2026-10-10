@@ -26,7 +26,7 @@ final class QwenGenerationDiagnosticCapture {
         try resources.requireLive(force: true)
         try check()
         if let row {
-            guard String(describing: row.dtype) == request.profile.activationDType else {
+            guard String(describing: row.dtype) == request.profile.selectedRowDType else {
                 throw ProbeError("Diagnostic final row dtype differs from the generation profile")
             }
             let captured = try QwenRecordedLogits(row,

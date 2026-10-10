@@ -198,24 +198,25 @@ public enum QwenStagedGenerationReference {
         // that belong to no registered model have no definition and stop here.
         let configBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("config.json"),
                                                     maximumBytes: 1_048_576)
-        let specification = try QwenResidentModelDefinition(configuration: configBytes).specification
+        let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"),
+                                                      maximumBytes: 4_194_304)
+        let specification = try RegisteredResidentModels.identity(configuration: configBytes, manifest: manifestBytes)
         let identity = ClusterWorkerIdentity(membershipEpoch: UUID(),
-            modelID: specification.model.rawValue,
+            modelID: specification.runtimeModelID,
             artifactSHA256: specification.artifactSHA256,
             configurationSHA256: specification.configurationSHA256,
             peers: (0...1).map {
                 ClusterWorkerPeer(id: "staged-reference-\($0)", buildSHA256: String(repeating: "0", count: 64))
             })
-        let manifestBytes = try BoundedProbeInput.data(modelDirectory.appendingPathComponent("manifest.json"),
-                                                      maximumBytes: 4_194_304)
         // Each rank is admitted exactly as its worker would be. The device
         // matrix is the only synthetic input, and nothing opens it.
-        let admissions = try (0...1).map { rank -> QwenResidentAdmission in
+        let admissions = try (0...1).map { rank -> any LayerStageResidentAdmission in
             var environment = processEnvironment
             environment["JACCL_RANK"] = String(rank)
             environment["JACCL_IBV_DEVICES"] = matrixPath
             environment["JACCL_COORDINATOR"] = "127.0.0.1:1"
-            return try QwenResidentAdmission(configuration: .init(identity: identity, modelDirectory: modelDirectory,
+            return try LayerStageResidentFamily.admission(configuration: .init(identity: identity,
+                    modelDirectory: modelDirectory,
                     rank: rank, stageCut: stageCut, deadlineUptimeNanoseconds: deadlineUptimeNanoseconds,
                     allocatorPolicy: .disableFreedBufferCache),
                 configBytes: configBytes, manifestBytes: manifestBytes, environment: environment,
@@ -242,7 +243,7 @@ public enum QwenStagedGenerationReference {
         try control.check()
         try QwenResidentResourceEnvironment.require()
 
-        var stages: [QwenResidentLoadedStage] = []
+        var stages: [any LayerStageResidentStage] = []
         weak var retired0: Module?
         weak var retired1: Module?
         var sessions: [QwenLayerStageSession] = []
@@ -265,7 +266,7 @@ public enum QwenStagedGenerationReference {
                     try autoreleasepool {
                         // Set when the model is built, so a load that fails
                         // part-way is answered for as well.
-                        stages.append(try loadQwenResidentStage(admissions[rank], check: checked,
+                        stages.append(try admissions[rank].loadResidentStage(check: checked,
                             constructed: { if rank == 0 { retired0 = $0 } else { retired1 = $0 } }))
                     }
                     try settle()
@@ -286,7 +287,7 @@ public enum QwenStagedGenerationReference {
                 let loadedBytes = Memory.snapshot().activeMemory
                 // Each rank's named request allowance, checked live as the worker does.
                 let allowances = try (0...1).map {
-                    try QwenResidentRequestAllowance.derive(profile: stages[$0].profile, plan: plan, rank: $0,
+                    try stages[$0].requestAllowance(plan: plan, rank: $0,
                         maximumTokens: request.maximumTokens, chunkSize: min(request.chunkSize, request.promptCount),
                         bound: QwenResidentResourceEnvironment.allocationBound)
                 }
@@ -308,8 +309,7 @@ public enum QwenStagedGenerationReference {
                 // record type, with no collective between the ranks.
                 captures = try (0...1).map { rank in
                     QwenGenerationDiagnosticCapture(request: request, rank: rank,
-                        resources: try QwenGenerationDiagnosticResources(loaded: stages[rank].loaded,
-                            profile: stages[rank].profile, plan: plan, request: request, rank: rank,
+                        resources: try stages[rank].diagnosticResources(plan: plan, request: request, rank: rank,
                             requestAllowance: allowances[rank]))
                 }
 
@@ -415,6 +415,9 @@ public enum QwenStagedGenerationReference {
                         // and the first selected token, when the request continues.
                         let started = DispatchTime.now().uptimeNanoseconds
                         let activeBefore = Memory.snapshot().activeMemory
+                        guard let handoffGeometry = stages[0].handoffGeometry else {
+                            throw ProbeError("This registered model's request state does not change owner")
+                        }
                         let source = try QwenLayerStageWireSourceIdentity(
                             sourceConfigurationSHA256: receipts[0].sourceConfigurationSHA256,
                             artifactAggregateSHA256: receipts[0].verifiedAggregateSHA256,
@@ -425,7 +428,7 @@ public enum QwenStagedGenerationReference {
                             consumerStageFingerprint: plan.stages[1].fingerprint,
                             rankBuildSHA256: identity.peers.map(\.buildSHA256),
                             numericalPolicySHA256: admissions[0].arithmeticSHA256,
-                            phaseSplit: try QwenPhaseSplitPlan(plan: plan, geometry: stages[0].profile.geometry,
+                            phaseSplit: try QwenPhaseSplitPlan(plan: plan, geometry: handoffGeometry,
                                 request: request, maximumSegmentBytes: handoff.maximumSegmentBytes))
                         let chain = agreement.initialTokenChainSHA256
                         let (adopted, receipt): (QwenLayerStageSession, HandoffReceipt) = try autoreleasepool {
@@ -549,7 +552,7 @@ public enum QwenStagedGenerationReference {
                     artifactSHA256: identities[0].artifactAggregateSHA256,
                     configurationSHA256: identities[0].sourceConfigurationSHA256,
                     storageCommitmentSHA256: identities[0].storageCommitmentSHA256,
-                    arithmeticContract: admissions[0].arithmetic.contract,
+                    arithmeticContract: admissions[0].arithmeticContract,
                     arithmeticSHA256: admissions[0].arithmeticSHA256, stageCut: stageCut, layerCount: layers,
                     selectedTokenIDs: tokens, finishReason: reason.rawValue, completedFrames: completedFrames,
                     committedTokens: committed, steps: steps,

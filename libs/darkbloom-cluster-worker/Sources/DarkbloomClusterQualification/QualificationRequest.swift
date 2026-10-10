@@ -97,6 +97,13 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
             self.maximumLifetimeSeconds = maximumLifetimeSeconds; self.hasRecordingRuntime = hasRecordingRuntime
         }
     }
+    /// The three catalog entries of Gemma 4 26B share one geometry, cut list
+    /// and arithmetic contract (the provider's two serving values).
+    private static func gemma4(_ modelID: String) -> RegisteredModel {
+        .init(modelID: modelID, profileID: modelID + "_greedy_generation_v1", supportedCuts: [6, 8, 10, 12, 15, 18, 24],
+              additionalArithmeticEnvironment: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
+              vocabularySize: 262_144)
+    }
     public static let registeredModels: [RegisteredModel] = [
         .init(modelID: modelID, profileID: profileID, supportedCuts: supportedCuts),
         .init(modelID: "registered_qwen38_27b", profileID: "registered_qwen38_27b_greedy_generation_v1",
@@ -123,6 +130,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
               profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
               supportedCuts: [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44], maximumLifetimeSeconds: 1800,
               hasRecordingRuntime: false),
+        gemma4("registered_gemma4_26b_qat_4bit"), gemma4("registered_gemma4_26b"), gemma4("registered_gemma4_26b_8bit"),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }

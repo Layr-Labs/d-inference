@@ -61,8 +61,9 @@ final class QwenLayerStageSession {
             modelParameterLayout(stage.model) == receipt.parameterLayoutSHA256,
             stage.model.trainableParameters().flattened().isEmpty,
             !stage.model.namedModules().contains(where: { $0.0 == "mtp" || $0.0.hasSuffix(".mtp") }),
-            stage.model is any CBv2RecurrentMTPForwardable,
-            stage.model is any CBv2PositionedRecurrentEmbeddingForwardable || stage.model is NemotronHModel,
+            stage.model is any LayerStageFrameForwarding
+                || (stage.model is any CBv2RecurrentMTPForwardable
+                    && (stage.model is any CBv2PositionedRecurrentEmbeddingForwardable || stage.model is NemotronHModel)),
             String(describing: stage.activationDType) == receipt.embeddingActivationDType,
             [.float16, .bfloat16, .float32].contains(stage.activationDType) else {
             throw ProbeError("Stage model identity, native dtype, frozen ownership or public forwarding contract differs")
@@ -84,10 +85,12 @@ final class QwenLayerStageSession {
               request.profile.activationDType == receipt.embeddingActivationDType else {
             throw ProbeError("Generation profile differs from the actual loaded stage geometry/dtype")
         }
-        let geometry = try CBv2RequestGeometry(model: stage.model, family: .qwen35,
-            feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(stage.model),
-            layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
-            configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
+        let geometry = try (stage.model as? any LayerStageFrameForwarding)?
+            .layerStageRequestGeometry(maximumTokens: request.maximumTokens)
+            ?? CBv2RequestGeometry(model: stage.model, family: .qwen35,
+                feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(stage.model),
+                layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
+                configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
         if let adopting {
             guard stage.stageIndex == 0 else { throw ProbeError("Only the producer stage's state can be adopted") }
             // Global to the compact stage's own indices, through its layer map.
@@ -164,6 +167,10 @@ final class QwenLayerStageSession {
                 if let nemotron = stage.model as? NemotronHModel {
                     return NemotronStageForward.run(model: nemotron, stageIndex: stage.stageIndex, tokens: input,
                         residual: incoming?.array, caches: caches, evaluation: evaluation, frame: frame)
+                }
+                // A family whose product class cannot be cut forwards its own layer stage.
+                if let own = stage.model as? any LayerStageFrameForwarding {
+                    return own.layerStageForward(tokens: input, residual: incoming?.array, caches: caches, frame: frame)
                 }
                 if stage.stageIndex == 0 {
                     let native = stage.model as! any CBv2RecurrentMTPForwardable

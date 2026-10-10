@@ -41,7 +41,8 @@ extension CBv2OwnedStateSnapshot {
             globalLayerIndices.allSatisfy({ $0 >= 0 }) else {
             throw ProbeError("CBv2 snapshot needs a complete unique layer mapping and committed frontier")
         }
-        guard let confirmed = recurrent.confirmedStateSnapshot(),
+        // A geometry with no recurrent layer never has a confirmed generation.
+        guard let confirmed = geometry.recurrent.layers.isEmpty ? [:] : recurrent.confirmedStateSnapshot(),
             Set(confirmed.keys) == Set(geometry.recurrent.modelLayerIndices) else {
             throw ProbeError("CBv2 snapshot cannot inspect pending or incomplete recurrent generations")
         }
@@ -63,7 +64,8 @@ extension CBv2OwnedStateSnapshot {
         }
         for (index, optionalRow) in rows.enumerated() {
             guard let row = optionalRow, row.absoluteOffset == committedTokens,
-                row.retainedCount == committedTokens, geometry.caches[index].rows.count == 1,
+                row.retainedCount == geometry.kinds[index].retainedTokens(atFrontier: committedTokens),
+                geometry.caches[index].rows.count == 1,
                 geometry.caches[index].rows[0] === row else {
                 throw ProbeError("Snapshot row identity/frontier differs from committed request state")
             }

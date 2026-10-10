@@ -13,7 +13,8 @@ import Foundation
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
 // and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust;
 // for a Prism Hadamard pack, also DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1
-// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset.
+// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset;
+// and for a Gemma artifact MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum ReferenceCheck {
     static func main() async {
@@ -38,8 +39,7 @@ import Foundation
                 }
                 // As below: the artifact's configuration selects the registered
                 // model, and the cut must be one of that model's cuts.
-                let served = try registeredModel(configuration: QualificationFiles.read(
-                    URL(fileURLWithPath: model).appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+                let served = try registeredModel(modelDirectory: URL(fileURLWithPath: model))
                 guard served.supportedCuts.contains(cut) else {
                     throw Failure("--stage-cut must be one of " + served.supportedCuts.map(String.init).joined(separator: ", "))
                 }
@@ -78,8 +78,7 @@ import Foundation
             // The artifact's configuration selects the registered model; the
             // request must have been written for that model and the cut must be
             // one of its cuts, before anything is hashed or loaded.
-            let registered = try registeredModel(
-                configuration: QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20))
+            let registered = try registeredModel(modelDirectory: modelDirectory)
             guard !registered.isGPTOSS || handoff == nil else {
                 throw Failure("GPT-OSS has no phase split: its hand-off cannot carry a sliding-window layer's rows")
             }
@@ -284,23 +283,26 @@ import Foundation
           CUT is one of the registered model's cuts
           (GPT-OSS runs under MLX_ENABLE_TF32=1 with no DARKBLOOM_GPTOSS_* switch, and has no --handoff):
 
-        """ + "    " + (QwenResidentCapabilityMetadata.registeredCutsUsage + "\n" + GPTOSSResidentCapabilityMetadata.registeredCutsUsage)
+        """ + "    " + (RegisteredResidentModels.registeredCutsUsage + "\n" + GPTOSSResidentCapabilityMetadata.registeredCutsUsage)
             .replacingOccurrences(of: "\n", with: "\n    ") + "\n"
 
-    /// The registered model an artifact's configuration belongs to, whichever
-    /// adapter registers it: what a request must name and the cuts it may use.
+    /// The registered model an artifact belongs to, whichever adapter
+    /// registers it: what a request must name and the cuts it may use. GPT-OSS
+    /// is known by its configuration; every model of the layer-stage resident
+    /// runtime (the Qwen catalog and Gemma 4) by its configuration and manifest.
     struct Registered {
         let runtimeModelID: String, profileID: String
         let supportedCuts: [Int]
         let isGPTOSS: Bool
     }
-    static func registeredModel(configuration: Data) throws -> Registered {
+    static func registeredModel(modelDirectory: URL) throws -> Registered {
+        let configuration = try QualificationFiles.read(modelDirectory.appendingPathComponent("config.json"), maximumBytes: 1 << 20)
         if GPTOSSStagedGenerationReference.handles(configuration: configuration) {
             let model = try GPTOSSResidentCapabilityMetadata.registeredModel(configuration: configuration)
             return .init(runtimeModelID: model.runtimeModelID, profileID: model.profileID,
                          supportedCuts: model.supportedCuts, isGPTOSS: true)
         }
-        let model = try QwenResidentCapabilityMetadata.registeredModel(configuration: configuration)
+        let model = try RegisteredResidentModels.registeredModel(modelDirectory: modelDirectory)
         return .init(runtimeModelID: model.runtimeModelID, profileID: model.profileID,
                      supportedCuts: model.supportedCuts, isGPTOSS: false)
     }

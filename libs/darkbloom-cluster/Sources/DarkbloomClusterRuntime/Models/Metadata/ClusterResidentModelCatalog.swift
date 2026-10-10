@@ -7,6 +7,9 @@ import Foundation
 /// no model and no second list of identities. It is the one place a caller
 /// outside the runtime chooses an adapter, by the family of the entry it got.
 public enum ClusterResidentModelCatalog {
+    /// The runtime that executes a family's models. `qwenDense` is the
+    /// layer-stage resident runtime: the Qwen catalog (dense, routed-expert,
+    /// Prism and Nemotron rows) and Gemma 4 through its own layer-stage seam.
     public enum Family: String, Sendable { case qwenDense, gptoss, mimoV26 }
 
     public struct Entry: Equatable, Sendable {
@@ -37,6 +40,17 @@ public enum ClusterResidentModelCatalog {
             configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
     }
 
+    private static func entry(_ specification: Gemma4RegisteredSpecification) -> Entry? {
+        let model = QwenResidentCapabilityMetadata.RegisteredModel(specification)
+        guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.runtimeModelID) else { return nil }
+        return .init(family: .qwenDense, adapterID: adapter.rawValue,
+            runtimeModelID: model.runtimeModelID, profileID: model.profileID, layerCount: model.layerCount,
+            supportedCuts: model.supportedCuts, supportedPrefillSchedules: model.supportedPrefillSchedules,
+            supportedGenerationModes: model.supportedGenerationModes,
+            maximumLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
+            configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
+    }
+
     private static func entry(_ model: GPTOSSResidentCapabilityMetadata.RegisteredModel) -> Entry? {
         guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.runtimeModelID) else { return nil }
         return .init(family: .gptoss, adapterID: adapter.rawValue,
@@ -58,14 +72,22 @@ public enum ClusterResidentModelCatalog {
             configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
     }
 
-    /// Each family's models in its own catalog order: the dense family first,
-    /// then GPT-OSS, then MiMo.
+    /// Each family's models in its own catalog order: the Qwen catalog first,
+    /// then GPT-OSS, MiMo and Gemma 4.
     public static var all: [Entry] {
         QwenDenseRegisteredSpecification.all.compactMap { specification in
             QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: specification.model.rawValue)
                 .flatMap { entry($0, specification) }
         } + GPTOSSResidentCapabilityMetadata.registeredModels.compactMap { entry($0) }
           + MiMoRegisteredSpecification.all.compactMap { entry($0) }
+          + Gemma4RegisteredSpecification.all.compactMap { entry($0) }
+    }
+
+    /// One line per registered model of every family and the cuts it may be
+    /// loaded at, for a tool's usage text: read from the catalogs.
+    public static var registeredCutsUsage: String {
+        all.map { "\($0.runtimeModelID): " + $0.supportedCuts.map(String.init).joined(separator: "|") }
+            .joined(separator: "\n")
     }
 
     /// Nil for every ID that is not a registered resident model.
@@ -73,7 +95,9 @@ public enum ClusterResidentModelCatalog {
         all.first { $0.runtimeModelID == runtimeModelID }
     }
 
-    /// The registered model an artifact's `config.json` bytes belong to.
+    /// The registered model an artifact's `config.json` bytes belong to. A
+    /// configuration two entries share (Gemma 4 26B and its 8-bit entry) names
+    /// the first of them; `describe` tells them apart by the manifest.
     public static func entry(configuration: Data) throws -> Entry {
         let digest = sha256(configuration)
         guard (1...1_048_576).contains(configuration.count),
@@ -95,6 +119,11 @@ public enum ClusterResidentModelCatalog {
         }
         if GPTOSSResidentCapabilityMetadata.handles(configuration: configuration) {
             return try GPTOSSResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
+                                                                 runtimeBinarySHA256: runtimeBinarySHA256)
+        }
+        // A Gemma configuration is shared by two catalog entries; its manifest decides.
+        if Gemma4ResidentCapabilityMetadata.isRegistered(configuration: configuration) {
+            return try Gemma4ResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,
                                                                  runtimeBinarySHA256: runtimeBinarySHA256)
         }
         return try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest,

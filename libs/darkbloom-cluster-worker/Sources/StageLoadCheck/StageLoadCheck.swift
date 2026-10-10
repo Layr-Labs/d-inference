@@ -10,7 +10,8 @@ import Foundation
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
 // and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust;
 // for a Prism Hadamard pack, also DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1
-// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset.
+// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset;
+// and for a Gemma artifact MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=trust.
 
 @main enum StageLoadCheck {
     static func main() {
@@ -47,7 +48,7 @@ import Foundation
                 throw Failure("usage: --model-dir /ABS/PATH --rank 0|1 --stage-cut CUT [--deadline-seconds 10...300] [--hold-seconds 0...240]\n"
                     + "  CUT is one of the registered model's cuts (GPT-OSS's arithmetic environment is\n"
                     + "  MLX_ENABLE_TF32=1 and no DARKBLOOM_GPTOSS_* switch):\n    "
-                    + (QwenResidentCapabilityMetadata.registeredCutsUsage + "\n" + GPTOSSResidentCapabilityMetadata.registeredCutsUsage)
+                    + (RegisteredResidentModels.registeredCutsUsage + "\n" + GPTOSSResidentCapabilityMetadata.registeredCutsUsage)
                         .replacingOccurrences(of: "\n", with: "\n    ") + "\n"
                     + "  " + MiMoResidentStageLoadCheck.supportedCutsDescription
                     + " (deadline up to \(MiMoResidentStageLoadCheck.maximumDeadlineSeconds) s)\n"
@@ -86,8 +87,13 @@ import Foundation
                 print(String(decoding: try encoder.encode(receipt), as: UTF8.self))
                 released = receipt.modelReleased
             } else {
-                let receipt = try QwenResidentStageLoadCheck.run(modelDirectory: URL(fileURLWithPath: path),
-                    rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
+                // The artifact's own configuration names the layer-stage family that loads it.
+                let directory = URL(fileURLWithPath: path)
+                let receipt = try Gemma4ResidentStageLoadCheck.isRegistered(configuration: configuration ?? Data())
+                    ? Gemma4ResidentStageLoadCheck.run(modelDirectory: directory,
+                        rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
+                    : QwenResidentStageLoadCheck.run(modelDirectory: directory,
+                        rank: rank, stageCut: cut, deadlineUptimeNanoseconds: deadline, holdSeconds: hold)
                 print(String(decoding: try encoder.encode(receipt), as: UTF8.self))
                 released = receipt.modelReleased
             }

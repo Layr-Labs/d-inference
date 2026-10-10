@@ -180,15 +180,16 @@ final class CBv2OwnedRequestState {
 
     func validateState(after count: Int) throws {
         for (index, optionalRow) in rows.enumerated() {
-            guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == count,
+            let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
+            guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
                 geometry.caches[index].rows.count == 1, geometry.caches[index].rows[0] === row,
                 geometry.caches[index].positionOffsets.shape == [1],
                 geometry.caches[index].positionOffsets.dtype == .int32,
                 geometry.caches[index].positionOffsets.asArray(Int32.self) == [Int32(count)] else {
                 throw ProbeError("CBv2 KV ownership or device token frontier differs")
             }
-            let snapshot = row.snapshot(), kind = geometry.kinds[index]
-            let shape = [1, kind.kvHeads, count, kind.headDim]
+            let snapshot = row.snapshot()
+            let shape = [1, kind.kvHeads, retained, kind.headDim]
             guard snapshot.offset == count, snapshot.keys.shape == shape, snapshot.values.shape == shape,
                 snapshot.keys.dtype == geometry.kvDType, snapshot.values.dtype == geometry.kvDType else {
                 throw ProbeError("CBv2 KV shape/dtype differs from local model geometry")

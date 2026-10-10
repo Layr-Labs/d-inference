@@ -20,6 +20,9 @@ public struct PromptTokenizer: Sendable {
         // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
         ("a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996", "registered_gpt_oss_20b"),
         ("de1bd701115a9ee7e4a99ac85307b31285c63a0b0b1c22ef0c69e9b4ac10f346", "registered_mimo_v26_flash_mopd"),
+        ("c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd", "registered_gemma4_26b_qat_4bit"),
+        ("4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b", "registered_gemma4_26b"),
+        ("4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed", "registered_gemma4_26b_8bit"),
     ]
     /// Models whose chat format is not the wrapper below. Their prompts are raw
     /// text only, so a request never carries a chat format the model does not have.
@@ -36,10 +39,16 @@ public struct PromptTokenizer: Sendable {
     /// What a registered artifact's own template puts around one user turn
     /// with thinking disabled. Nemotron's template always opens with a system
     /// turn, empty when the request has none, and closes thinking at once.
+    /// Gemma's opens with its start-of-sequence token and closes the model
+    /// turn's empty thought channel. MiMo's suffix is in `assistantSuffixes`.
     static func chatWrapper(modelID: String) -> (prefix: String, suffix: String) {
-        modelID == "registered_nemotron35_lightning"
-            ? ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think></think>")
-            : (userPrefix, assistantSuffixes[modelID] ?? assistantSuffix)
+        if modelID == "registered_nemotron35_lightning" {
+            return ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think></think>")
+        }
+        if modelID.hasPrefix("registered_gemma4_") {
+            return ("<bos><|turn>user\n", "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
+        }
+        return (userPrefix, assistantSuffixes[modelID] ?? assistantSuffix)
     }
 
     public let tokenizerSHA256: String

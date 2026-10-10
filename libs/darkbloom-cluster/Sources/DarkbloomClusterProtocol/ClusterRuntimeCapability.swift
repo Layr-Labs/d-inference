@@ -21,6 +21,8 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// MiMo V2.6 text as a two-stage layer pipeline on the product's own text
     /// class: full and sliding-window attention, routed MXFP4 experts.
     case mimoV26LayerStage = "mimo-v26-layer-stage"
+    /// Gemma 4 26B as two stages of the product's own decoder layers.
+    case gemma4LayerStage = "gemma4-layer-stage"
     public var version: Int { 1 }
     /// The adapter's original pair: the first row of `registeredProfiles`.
     public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
@@ -44,6 +46,11 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             [("registered_nemotron35_lightning", "registered_nemotron35_lightning_greedy_generation_v1")]
         case .mimoV26LayerStage:
             [("registered_mimo_v26_flash_mopd", "registered_mimo_v26_flash_mopd_greedy_generation_v1")]
+        case .gemma4LayerStage:
+            // One row per catalog entry of Gemma 4 26B; the last two are one artifact.
+            [("registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_qat_4bit_greedy_generation_v1"),
+             ("registered_gemma4_26b", "registered_gemma4_26b_greedy_generation_v1"),
+             ("registered_gemma4_26b_8bit", "registered_gemma4_26b_8bit_greedy_generation_v1")]
         }
     }
     /// The one arithmetic policy a capability of this adapter may name. An
@@ -57,6 +64,7 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         case .gptossLayerStage: "gpt_oss_ordinary_cache_split_experts_bf16_defaults_v1"
         case .nemotronH: "nemotron_h_cbv2_query128_bf16_tf32_default_v1"
         case .mimoV26LayerStage: "mimo_v26_text_ordinary_cache_bf16_defaults_v1"
+        case .gemma4LayerStage: "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
         }
     }
     /// The longest session lifetime a capability of this adapter may declare:

@@ -6,7 +6,7 @@ enum QwenLayerStageGenerationSelection {
     static func token(_ logits: MLXArray, request: QwenLayerStageGenerationRequest,
                       check: () throws -> Void) throws -> Int {
         guard logits.shape == [1, request.profile.vocabularySize],
-              String(describing: logits.dtype) == request.profile.activationDType else {
+              String(describing: logits.dtype) == request.profile.selectedRowDType else {
             throw ProbeError("Generation selected row differs from admitted native shape/dtype")
         }
         let selected = argMax(logits), finite = all(isFinite(logits))

@@ -37,19 +37,20 @@ extension QwenResidentRuntime {
         // mlx_distributed_init_jaccl_with_bootstrap, so that path is not staged;
         // only direct backend initialization remains.
         let directory = configuration.modelDirectory
-        let admission = try QwenResidentAdmission(configuration: configuration,
+        // The identity's model ID selects the registered family that admits it.
+        let admission = try LayerStageResidentFamily.admission(configuration: configuration,
             configBytes: BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576),
             manifestBytes: BoundedProbeInput.data(directory.appendingPathComponent("manifest.json"), maximumBytes: 4_194_304),
             environment: ProcessInfo.processInfo.environment, now: DispatchTime.now().uptimeNanoseconds,
             read: { try BoundedProbeInput.data($0, maximumBytes: $1) })
         // The model's own row decides which modes it runs; nothing else does.
-        guard admission.definition.supportedGenerationModes.contains(mode) else {
-            throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.specification.model.rawValue)")
+        guard admission.supportedGenerationModes.contains(mode) else {
+            throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.runtimeModelID)")
         }
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
         try QwenResidentProcessLease.shared.acquire()
-        var stage: QwenResidentLoadedStage?
-        var producerStage: QwenResidentLoadedStage?
+        var stage: (any LayerStageResidentStage)?
+        var producerStage: (any LayerStageResidentStage)?
         weak var retired: Module?
         weak var retiredProducer: Module?
         do {
@@ -100,7 +101,7 @@ extension QwenResidentRuntime {
                         disagreementMessage: "Resident load membership/source/Plan/mode differs", check: checked)
                     let beforeLoad = Memory.snapshot()
                     try autoreleasepool {
-                        let value = try loadQwenResidentStage(admission, check: checked)
+                        let value = try admission.loadResidentStage(check: checked, constructed: { _ in })
                         retired = value.loaded.model; stage = value
                     }
                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
@@ -111,7 +112,7 @@ extension QwenResidentRuntime {
                         // created for it; only the rank in the environment differs.
                         var environment = ProcessInfo.processInfo.environment
                         for name in ["JACCL_RANK", "MLX_RANK"] where environment[name] != nil { environment[name] = "0" }
-                        let producerAdmission = try QwenResidentAdmission(configuration: .init(
+                        let producerAdmission = try LayerStageResidentFamily.admission(configuration: .init(
                                 identity: configuration.identity, modelDirectory: configuration.modelDirectory, rank: 0,
                                 stageCut: configuration.stageCut,
                                 deadlineUptimeNanoseconds: configuration.deadlineUptimeNanoseconds,
@@ -125,7 +126,7 @@ extension QwenResidentRuntime {
                             throw ProbeError("Producer stage admission differs from this rank's Plan or arithmetic")
                         }
                         try autoreleasepool {
-                            let value = try loadQwenResidentStage(producerAdmission, check: checked)
+                            let value = try producerAdmission.loadResidentStage(check: checked, constructed: { _ in })
                             retiredProducer = value.loaded.model; producerStage = value
                         }
                         guard let producer = producerStage,
@@ -135,7 +136,7 @@ extension QwenResidentRuntime {
                             throw ProbeError("Producer and consumer stages did not load matching verified commitments")
                         }
                     }
-                    let maximum = try QwenResidentRequestAllowance.derive(profile: loaded.profile, plan: admission.plan,
+                    let maximum = try loaded.requestAllowance(plan: admission.plan,
                         rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
                         chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
                     try configuration.allocatorPolicy.prepareReady(
@@ -152,7 +153,7 @@ extension QwenResidentRuntime {
                         elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
                         bound: QwenResidentResourceEnvironment.allocationBound)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
-                        profile: loaded.profile, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens)
+                        stage: loaded, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens)
                     try maximum.requireLive(
                         additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
                         additionalHostBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraHostBytes ?? 0, split?.extraHostBytes ?? 0]))

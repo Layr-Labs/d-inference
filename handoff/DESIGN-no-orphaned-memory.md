@@ -89,9 +89,33 @@ on the leader allows the largest margin. An owner still signals only after the
 child's own deadline plus 5 s; the child's own forced exit (bounded at 20 s)
 therefore ends a loaded rank before any SIGKILL.
 
-## Should dense Qwen stages hold a standing wired limit?
+## Should dense Qwen stages hold a standing wired limit? Not now.
 
-(Filled from the hardware measurement below.)
+Decision: dense Qwen stages keep no standing MLX wired limit between requests.
+
+- The product holds one only for MiMo (`MiMoV26WiredResidency`); for dense
+  models the provider passes no wired ticket, so this keeps product parity.
+- Measured on the pair (9B, cut 4, 8,192/128, one-chunk lookahead, all four
+  lanes held, one warm-up then three requests, off / on / off, medians of
+  requests 2-4): first token 2.818 / 2.846 / 2.872 s, decode 65.3 / 64.7 /
+  65.4 tok/s. No gain; the residency arm sits inside the spread of the two
+  runs without it.
+- Without a limit the stage is wired while in use anyway: on the 128 GiB Mac
+  wired memory rose by 4.5-5 GiB at the first request and stayed there through
+  all four requests, with no drop between them, with and without the limit.
+- A standing limit keeps memory wired that macOS cannot reclaim between
+  requests, and is the state that let the owner's unreleased exits strand
+  memory (every exit path now resets it to zero first).
+
+MiMo is a different case: about 161 GiB of sparse expert tensors under memory
+pressure on a 256 GiB Mac, where residency per command buffer collapsed decode
+to about 0.4 tok/s. Revisit for a dense stage that approaches its Mac's
+recommended working set under pressure (the 27B's phase-split rank 1 on the
+128 GiB Mac is the first candidate): pair-check `--stage-residency yes` (the
+qualification switch `DARKBLOOM_CLUSTER_STAGE_RESIDENCY=stage_wired_residency_v1`)
+measures it, and `ProcessStageResidency` already applies the product's ceiling
+(never above the recommended working set, always leaving the larger of 16 GiB
+and a tenth of physical memory unwired).
 
 ## Hardware evidence (2026-10-09, evidence/s00-20261009/hw)
 
@@ -113,6 +137,7 @@ most; idle 7.4 GiB and 5.1 GiB, 9.1-10.8 GiB while loaded and decoding).
 | Request deadline 5 s (80 tokens) | rank 0 `worker-failure`, rank 1 `request-deadline` | both 1, released |
 | Lifetime 10 s, rank 1 started 25 s late | rank 0 124 from the deadline thread inside the JACCL bootstrap | rank 1 124 |
 | Stage residency held, SIGTERM rank 1 mid-decode | 143 in 0.05 s, wired limit 5.34 GB reset to 0 | `lost-input`, dead-man |
+| Timed, residency off / on / off (1+3 requests each) | all exit 0, `shutdown-complete` | |
 
 Every worker start decided `clear` at the orphan-wired guard (7.4 GiB against
 25.6 GiB, 5.1-5.6 GiB against 16 GiB). A rank whose executor was blocked in a

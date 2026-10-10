@@ -1304,6 +1304,60 @@ still removed. Run `darkbloom cluster link --remove` before deleting
 | `commandFailed` | 4 | Approved, but one of the commands exited non-zero. After a failed keeper installation the message also names Login Items & Extensions. For a removal this is reported only when something of the fix is still found afterwards |
 | `appliedButNotReady` | 4 | `--fix`: applied, but the conditions in `unmet` do not hold: `deviceNotReady`, `bridgeMembersChanged`, `defaultRouteChanged`, `stateUnreadable` or `addressKeeperNotRunning`. What was done stays until `--remove` |
 | `removalNotVerified` | 4 | `--remove`: approved, but something of the fix is still found, or the port could not be read afterwards |
+| `isolationRefused` | 1 | `--fix` (link setup v2): a finding in `findings` that the approval cannot cure is in the way, such as `internetSharingToPort`; the message says what the owner can do. No prompt |
+| `appliedButNotIsolated` | 4 | `--fix` (link setup v2): approved, but the findings in `findings` still hold afterwards. What was done stays until `--remove` |
+
+### Link setup v2: isolating the cluster port
+
+Where the network around an active port can be read (always, on the command
+line and in the console), `--fix` without `--temporary`, `darkbloom cluster`
+and `--remove` use link setup v2 instead of the address keeper above. Design
+and reasons: `handoff/DESIGN-link-setup-v2.md`. The end state for the active
+port `P` on hardware port `H`: `P` is in no bridge, it has one network service
+`Darkbloom Cluster Link (P)` with manual IPv4 `10.219.x.y/16` (the two octets
+the link-local address above would use), no router, no DNS and link-local IPv6
+only, other enabled services on `P` are switched off with their settings kept,
+and the first version's keeper and alias are gone. macOS keeps that address
+itself, also after a restart; no Darkbloom job runs. Internet Sharing is never
+changed.
+
+Each active port in `darkbloom cluster link --json` gains `isolation`:
+`{"isolated": <bool>, "findings": [...]}`, names only. `darkbloom cluster
+doctor` adds `localLinkIsolation.<device>`: `passed` when isolated, `failed` for
+the port serving would use when not, `notObserved` for another active port.
+
+| Finding | Read from | What the approval does |
+|---|---|---|
+| `portInBridge` | `/usr/bin/plutil -extract VirtualNetworkInterfaces.Bridge json -o - /Library/Preferences/SystemConfiguration/preferences.plist` | takes `P` out of that bridge |
+| `internetSharingOverPortBridge` | `plutil -extract NAT.Enabled raw` and `NAT.SharingDevices json` of `/Library/Preferences/SystemConfiguration/com.apple.nat.plist` name `P`'s bridge | the same; sharing over the other members is left alone |
+| `internetSharingToPort` | `NAT.SharingDevices` names `P` itself | blocks: turn `P` off under Internet Sharing in System Settings, or turn sharing off |
+| `portInUnmanagedBridge` | `ifconfig -a` shows `P` in a bridge the preferences do not list | blocks: the same owner step |
+| `defaultRouteViaPort` | `/usr/sbin/netstat -rn -f inet`: a `default` row through `P` | own service without a router |
+| `dnsViaPort` | `/usr/sbin/scutil --dns`: a resolver with name servers through `P` | own service without DNS, IPv6 link-local only |
+| `dhcpLeaseOnPort` | `/usr/sbin/ipconfig getpacket P` succeeds with a DHCP reply | own service with a fixed address |
+| `portAddressMissing` | no `inet` on `P` | own service with a fixed address |
+| `clusterServiceMissing`, `clusterServiceMisconfigured` | `/usr/sbin/networksetup -listnetworkserviceorder` and `-getinfo` (manual, recorded address, `255.255.0.0`, no router, IPv6 not `Automatic`) | the service is made, or made afresh |
+| `otherServiceOnPort` | another enabled service on `P` | switched off |
+| `clusterSubnetInUse` | another interface's address or route in `10.219/16` | blocks |
+| `serviceNameUnsafe` | a service or hardware port name outside letters, digits, spaces and `( ) - . _` | blocks |
+| `hardwarePortUnknown` | `networksetup -listallhardwareports` lists no port for `P` | blocks |
+| `stateUnreadable` | a reading failed | blocks |
+
+| Item | Value | Source |
+|---|---|---|
+| Commands approved for an isolation | Under `set -e`, in order, each only when needed: `/bin/launchctl bootout system/io.darkbloom.cluster-link.P` (errors ignored), `/bin/rm -f` its plist, `/sbin/ifconfig P inet <link-local address> -alias` (errors ignored); `/usr/libexec/PlistBuddy -c 'Print :VirtualNetworkInterfaces:Bridge:B:Interfaces:i' <preferences> \| /usr/bin/grep -qx P`, `PlistBuddy -c 'Delete …:i' <preferences>`, `/sbin/ifconfig B deletem P` (errors ignored); `networksetup -removenetworkservice` of an existing service of Darkbloom's; `networksetup -createnetworkservice 'Darkbloom Cluster Link (P)' 'H'`, `-setmanual … 10.219.x.y 255.255.0.0`, `-setdnsservers … Empty`, `-setv6LinkLocal …`; `-setnetworkserviceenabled '<service>' off` for each other enabled service on `P` | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationPlan.swift` (`ClusterLinkIsolationPlan`) |
+| Commands approved for a restore | Joined with `;`, each only when needed: the first version's keeper as above, `PlistBuddy -c 'Add …:i string P' <preferences>` (position clamped to the bridge's length), `networksetup -removenetworkservice 'Darkbloom Cluster Link (P)'`, `-setnetworkserviceenabled '<service>' on` for each service the isolation switched off that is still off, `/sbin/ifconfig P inet 10.219.x.y -alias` for an address left without its service, `/sbin/ifconfig B addm P`. What is found afterwards decides `removed` | `ClusterLinkIsolationPlan.swift` (`ClusterLinkIsolationRestore`); `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationRepair.swift` (`restoreNeeded`) |
+| Verification | Up to `isolationVerificationAttempts = 15` readings one second apart: the device `ready` and no finding left | `ClusterLinkIsolationRepair.swift` (`isolate`) |
+| Record | `~/.darkbloom/cluster-device/link-isolation.json`, mode `0600`, schema `darkbloom_cluster_link_isolation_v1`: per port the address, hardware port, bridge and position, and the services switched off. Written before the prompt; an entry a declined or failed first attempt created is dropped once nothing of it is found. A service named `Darkbloom Cluster Link (P)` without an entry is still removed, and nothing else is guessed | `provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkIsolationRecord.swift` (`ClusterLinkIsolationStore`) |
+| Result | As above, plus `isolated: true` and, for the two outcomes of v2, `findings` | `ClusterLinkRepairOutcome.swift` (`ClusterLinkRepairResult`) |
+
+Before a rank starts, `cluster worker-owner --stdio` waits up to
+`waitSeconds = 20` for the saved setup's RDMA device to be `ready`, reading the
+link once a second: RDMA off or missing refuses at once, a port without its
+address or GID refuses after the wait with that state, and an unreadable link
+or an unlisted device lets the launch go ahead after the wait
+(`provider-swift/Sources/ProviderCore/Inference/Distributed/Diagnostics/Link/ClusterLinkLaunchReadiness.swift`,
+`ClusterLinkLaunchReadiness`).
 
 ### Link watch
 

@@ -39,6 +39,8 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
     /// The fix was asked for a port that is ready already, only to install
     /// the job that keeps its address.
     private var keepingOnly = false
+    /// The fix asked for is link setup v2: the port gets its own network service.
+    private var isolating = false
     private var keeperAwaited = false
     /// The active ports last named, so a second look at the same ones is not narrated twice.
     private var portsReported = [String]()
@@ -99,7 +101,9 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
             let port = ready.map { ClusterLinkName.label(device: $0.device, interface: $0.interface) } ?? "The active port"
             let address = ready?.interfaceHasIPv4Address == true ? "has its own IPv4 address and " : ""
             var found = ["Address ready: \(port) \(address)publishes the GID RDMA needs."]
-            if ready?.assignedAddress == .present, ready?.addressKept == true, let interface = ready?.interface {
+            if ready?.isolation?.isolated == true, let interface = ready?.interface {
+                found.append(Self.isolatedSentence(interface: interface))
+            } else if ready?.assignedAddress == .present, ready?.addressKept == true, let interface = ready?.interface {
                 found.append("A system job (\(ClusterLinkAddressKeeper.label(forInterface: interface))) keeps that address there.")
             } else if ready?.addressIsTemporary == true {
                 found.append(Self.temporaryAddress)
@@ -108,6 +112,21 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
         case .act(let device, let interface):
             let port = report.devices.first { $0.device == device }
             let next = "Next: run `darkbloom cluster` in a terminal on this Mac and approve the macOS prompt, or add `--yes` to allow the prompt from here."
+            // Link setup v2: the port is not isolated. Said the same way whether
+            // it is ready or lacks its address, since the one change cures both.
+            if !temporary, let port, port.isolationApplies, let isolation = port.isolation {
+                isolating = true
+                keepingOnly = port.verdict == .ready
+                let found = port.verdict == .ready
+                    ? "Address ready: \(ClusterLinkName.label(device: device, interface: interface)) publishes the GID RDMA needs, but the port is \(isolation.facts(interface: interface))"
+                    : "Thunderbolt port \(interface) has no IPv4 address of its own, which RDMA needs, and is \(isolation.facts(interface: interface))"
+                if dryRun { return Step(lines: lines + [found + "."], action: .fix(device: device)) }
+                // What the approval cannot cure is said before any prompt; the fix stops on it too.
+                guard isolation.blockers.isEmpty else { return Step(lines: lines + [found + "."], action: .fix(device: device)) }
+                guard mayPrompt else { return port.verdict == .ready ? finished(lines + [found + ".", next]) : stopped(lines + [found + ".", next]) }
+                return Step(lines: lines + [found + ", so Darkbloom will give it its own network service with a fixed address, no router and no DNS, outside every bridge, which macOS keeps there also after a restart; approve the macOS prompt to continue."],
+                    action: .fix(device: device))
+            }
             // A ready port is here only because nothing keeps the address Darkbloom gave it.
             if port?.verdict == .ready {
                 keepingOnly = true
@@ -156,7 +175,9 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
         case .fixed:
             linkState = .ready
             let lasting: String
-            if result.durable == true, let interface = result.interface {
+            if result.isolated == true, let interface = result.interface {
+                lasting = Self.isolatedSentence(interface: interface) + " `darkbloom cluster link --remove` restores the previous network settings."
+            } else if result.durable == true, let interface = result.interface {
                 lasting = "A system job (\(ClusterLinkAddressKeeper.label(forInterface: interface))) puts the address back whenever macOS removes it, also after a restart; `darkbloom cluster link --remove` removes both."
             } else {
                 lasting = Self.temporaryAddress
@@ -172,7 +193,13 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
             // Nothing was taken away: a port that was ready still is.
             let unanswered = result.outcome == .approvalDeclined ? "The macOS prompt was cancelled"
                 : "The macOS prompt could not be shown or was not answered here"
+            if isolating {
+                return finished(["\(unanswered), so the port is not isolated yet; run `darkbloom cluster` in a terminal on this Mac and approve the prompt to isolate it."])
+            }
             return finished(["\(unanswered), so nothing keeps the address yet; run `darkbloom cluster` in a terminal on this Mac and approve the prompt to keep it."])
+        case .isolationRefused where keepingOnly:
+            // The link works as it is; only the isolation has to wait for the owner.
+            return finished([result.message])
         case .approvalDeclined:
             let again = temporary ? "Run `darkbloom cluster --temporary` again and approve the prompt to finish."
                 : "Run `darkbloom cluster` again and approve the prompt to finish; `darkbloom cluster --temporary` adds the address without installing anything, until macOS next removes it."
@@ -188,6 +215,11 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
     /// The person stopped the wait for a connection.
     public mutating func interrupted() -> Step {
         stopped(["Stopped before a connection was detected; run `darkbloom cluster` again once the cable is connected."])
+    }
+
+    /// What an isolated port has, in one sentence.
+    static func isolatedSentence(interface: String) -> String {
+        "Isolated: Thunderbolt port \(interface) has its own network service (\(ClusterLinkServiceName.cluster(interface: interface))) with a fixed address, no router and no DNS, outside every bridge; macOS keeps that address, also after a restart, and nothing else routes through the cable."
     }
 
     private static let temporaryAddress = "The address is temporary: macOS removes it when it next reconfigures the port, and at a restart; run `darkbloom cluster` to keep it."

@@ -38,6 +38,11 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
     case commandFailed
     case appliedButNotReady([Unmet])
     case removalNotVerified
+    // Link setup v2.
+    /// Something the approval cannot cure is in the way; nothing was changed.
+    case isolationRefused([ClusterLinkIsolationFinding])
+    /// Approved, but these findings still hold for the port afterwards.
+    case appliedButNotIsolated([ClusterLinkIsolationFinding])
 
     public var code: String {
         switch self {
@@ -57,6 +62,8 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
         case .commandFailed: return "commandFailed"
         case .appliedButNotReady: return "appliedButNotReady"
         case .removalNotVerified: return "removalNotVerified"
+        case .isolationRefused: return "isolationRefused"
+        case .appliedButNotIsolated: return "appliedButNotIsolated"
         }
     }
 
@@ -65,10 +72,11 @@ public enum ClusterLinkRepairOutcome: Sendable, Equatable {
     public var exitCode: Int32 {
         switch self {
         case .dryRun, .alreadyReady, .alreadyAbsent, .nothingRecorded, .fixed, .removed: return 0
-        case .nothingFixable, .ambiguousPorts, .deviceNotListed, .machineIdentityUnavailable, .recordUnavailable: return 1
+        case .nothingFixable, .ambiguousPorts, .deviceNotListed, .machineIdentityUnavailable, .recordUnavailable,
+             .isolationRefused: return 1
         case .approvalDeclined: return 2
         case .approvalUnavailable: return 3
-        case .commandFailed, .appliedButNotReady, .removalNotVerified: return 4
+        case .commandFailed, .appliedButNotReady, .removalNotVerified, .appliedButNotIsolated: return 4
         }
     }
 }
@@ -89,27 +97,38 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
     /// Whether the fix installs the job that keeps the address, as opposed to
     /// adding the address alone. Nil where no fix was attempted or planned.
     public let durable: Bool?
+    /// Whether this is link setup v2: the port gets, or got, its own network
+    /// service outside every bridge. Nil for the first version's fix and removal.
+    public let isolated: Bool?
     /// Set only for `dryRun`: the exact commands an approval would run, in order.
     public let plannedCommands: [String]
     /// Set only for `approvalUnavailable`: the commands an administrator can
     /// run instead. They contain the address, so they are never encoded; the
     /// command line prints them on standard error.
     public let manualCommands: [String]
+    /// For the sentences of link setup v2 only, never encoded: the port's
+    /// hardware port name ("Thunderbolt 2") and the bridge it is or was in.
+    let hardwarePort: String?
+    let bridge: String?
 
     init(operation: Operation, outcome: ClusterLinkRepairOutcome, device: String? = nil, interface: String? = nil,
-         candidates: [String] = [], durable: Bool? = nil, plannedCommands: [String] = [], manualCommands: [String] = []) {
+         candidates: [String] = [], durable: Bool? = nil, isolated: Bool? = nil, plannedCommands: [String] = [],
+         manualCommands: [String] = [], hardwarePort: String? = nil, bridge: String? = nil) {
         self.operation = operation
         self.outcome = outcome
         self.device = device
         self.interface = interface
         self.candidates = candidates
         self.durable = durable
+        self.isolated = isolated
         self.plannedCommands = plannedCommands
         self.manualCommands = manualCommands
+        self.hardwarePort = hardwarePort
+        self.bridge = bridge
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, operation, outcome, state, unmet, device, interface, candidates, durable, plannedCommands, message
+        case schema, operation, outcome, state, unmet, findings, device, interface, candidates, durable, isolated, plannedCommands, message
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -119,10 +138,13 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
         try container.encode(outcome.code, forKey: .outcome)
         if case .nothingFixable(let state) = outcome { try container.encode(state, forKey: .state) }
         if case .appliedButNotReady(let unmet) = outcome { try container.encode(unmet, forKey: .unmet) }
+        if case .isolationRefused(let findings) = outcome { try container.encode(findings, forKey: .findings) }
+        if case .appliedButNotIsolated(let findings) = outcome { try container.encode(findings, forKey: .findings) }
         try container.encodeIfPresent(device, forKey: .device)
         try container.encodeIfPresent(interface, forKey: .interface)
         if !candidates.isEmpty { try container.encode(candidates, forKey: .candidates) }
         try container.encodeIfPresent(durable, forKey: .durable)
+        try container.encodeIfPresent(isolated, forKey: .isolated)
         if !plannedCommands.isEmpty { try container.encode(plannedCommands, forKey: .plannedCommands) }
         try container.encode(message, forKey: .message)
     }

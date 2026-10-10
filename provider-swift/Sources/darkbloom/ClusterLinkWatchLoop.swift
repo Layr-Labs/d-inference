@@ -35,7 +35,8 @@ enum ClusterLinkWatchLoop {
         let polling = Task { () -> ClusterLinkReadinessReport? in
             var previous = initial
             while !Task.isCancelled {
-                let report = await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink() }.value
+                // Ports and states only: the network settings are not read every poll.
+                let report = await Task.detached { ClusterLinkReadinessProbe.inspectLocalLink(isolation: false) }.value
                 let events = ClusterLinkWatch.events(previous: previous, current: report)
                 if !events.isEmpty {
                     try? await Task.sleep(for: .milliseconds(interruptGraceMilliseconds))

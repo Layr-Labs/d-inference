@@ -9,6 +9,8 @@ public struct ClusterUserPaths: Sendable, Equatable {
     public var deviceLeaseFile: URL { deviceDirectory.appendingPathComponent("native-device.lease") }
     /// Owner-only record of the link-local aliases `cluster link --fix` added.
     var linkAliasRecordFile: URL { deviceDirectory.appendingPathComponent("link-alias.json") }
+    /// What link setup v2 changed for each cluster port, so a removal can put it back.
+    var linkIsolationRecordFile: URL { deviceDirectory.appendingPathComponent("link-isolation.json") }
 
     public init() throws {
         try self.init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)

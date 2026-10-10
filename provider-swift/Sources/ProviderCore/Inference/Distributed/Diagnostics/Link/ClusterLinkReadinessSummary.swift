@@ -19,6 +19,7 @@ extension ClusterLinkReadinessReport.Device {
         }
         if assignedAddress == .missing { facts.append("its recorded address is missing") }
         if addressIsTemporary { facts.append("nothing keeps its address") }
+        if portActive, let isolation, let interface { facts.append(isolation.facts(interface: interface)) }
         return ClusterLinkName.label(device: device, interface: interface) + ": " + facts.joined(separator: " · ")
     }
 }

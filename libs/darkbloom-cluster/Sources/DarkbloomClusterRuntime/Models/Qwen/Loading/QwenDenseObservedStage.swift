@@ -39,6 +39,7 @@ enum QwenDenseObservedStageValidation {
         }
         for (actual, expected) in zip(inert, expectedInert) {
             let norm = expected.path == "model.norm" || expected.path.hasSuffix(".model.norm")
+                || expected.path == NemotronStageMetadata.finalNormPath
             guard actual.responsibility == expected.responsibility,
                   actual.replacementKind == (norm ? "parameter-only-replacement" : "module-replacement"),
                   actual.parameters.count == 1 else {

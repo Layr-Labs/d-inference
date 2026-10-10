@@ -1,4 +1,5 @@
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXNN
 
@@ -36,6 +37,10 @@ private final class QwenStageResidualEmbedding: Embedding {
 func installQwenStageInertParameters(model: any LanguageModel,
     stage: QwenLayerStagePlan.Stage, hiddenSize: Int, activationDType: DType
 ) throws -> [QwenStageInertModule] {
+    if model is NemotronHModel {
+        return try NemotronStageConstruction.installInertParameters(model: model, stage: stage,
+            hiddenSize: hiddenSize, activationDType: activationDType)
+    }
     let modules = Dictionary(uniqueKeysWithValues: model.namedModules())
     var replacements: [(String, Module)] = []
     var norm: (String, RMSNorm)?

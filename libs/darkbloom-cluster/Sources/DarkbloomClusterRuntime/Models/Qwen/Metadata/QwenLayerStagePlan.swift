@@ -53,11 +53,23 @@ struct QwenLayerStagePlan {
     /// Modules whose transform signs a Prism pack stores beside them; empty
     /// for every other configuration.
     private let signedPaths: Set<String>
+    /// Set for a Plan `NemotronLayerStagePlan` built: that family's names
+    /// place its tensors. Its layer kinds follow no interval, so `interval` is 0.
+    private let nemotron: NemotronLayerStagePlan.Names?
 
     init(configuration: Data, ranges: [Range<Int>], activeMTP: Bool = false) throws {
         guard !activeMTP, configuration.count <= 1_048_576,
             var root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any]
         else { throw ProbeError("Layer stages require bounded configuration and disabled active MTP") }
+        if NemotronStageMetadata.accepts(root) {
+            let built = try NemotronLayerStagePlan.make(configuration: configuration, root: root, ranges: ranges)
+            self.originalConfiguration = configuration; self.fingerprint = built.fingerprint
+            self.layers = built.layers; self.interval = 0; self.stages = built.stages; self.namespace = ""
+            self.quantizablePaths = built.names.quantizablePaths
+            self.requiredParameterNames = built.names.requiredParameterNames; self.nemotron = built.names
+            self.signedPaths = []
+            return
+        }
         let nested = root["text_config"] != nil
         let wrappers = QwenRoutedExpertStageMetadata.wrapperModelTypes + [QwenPrismStageConfiguration.rootModelType]
         guard let type = root["model_type"] as? String,
@@ -148,7 +160,7 @@ struct QwenLayerStagePlan {
         }
         self.originalConfiguration = configuration
         self.layers = layers; self.interval = interval; self.stages = stages
-        self.namespace = namespace
+        self.namespace = namespace; self.nemotron = nil
         let signed = prism?.packedPaths(namespace: namespace) ?? []
         self.signedPaths = signed
         // Only what a Prism pack declares packed may carry scales and biases.
@@ -165,6 +177,7 @@ struct QwenLayerStagePlan {
     /// conversion, name guessing, payload selection, fusion or dtype conversion.
     /// MTP/vision are explicit exclusions; every other unknown path is an error.
     func parameter(canonicalSourceName name: String) throws -> Parameter? {
+        if let nemotron { return try nemotron.parameter(name, stages: stages) }
         if QwenStageMetadata.excluded(name, namespace: namespace) { return nil }
         let pieces = name.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         // A Prism pack stores each packed module's transform signs beside it.

@@ -16,6 +16,7 @@ public struct PromptTokenizer: Sendable {
         ("db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff", "registered_qwen35_35b_a3b"),
         ("54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc", "registered_qwen36_35b_a3b"),
         ("e6871c8df1f9d30895ff5caf84a40fe902cf8771cda56a2b9f087991ca34c1e4", "registered_ternary_bonsai_2_27b"),
+        ("7a3486d633ae181dbdf0e955e24e10a143de86cdf1e91cfb3345f7978a0b4e8a", "registered_nemotron35_lightning"),
         // GPT-OSS prompts are raw text: its chat format is not the wrapper below.
         ("a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996", "registered_gpt_oss_20b"),
     ]
@@ -25,6 +26,14 @@ public struct PromptTokenizer: Sendable {
     static let userPrefix = "<|im_start|>user\n"
     /// The artifact's template with thinking disabled.
     static let assistantSuffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    /// What a registered artifact's own template puts around one user turn
+    /// with thinking disabled. Nemotron's template always opens with a system
+    /// turn, empty when the request has none, and closes thinking at once.
+    static func chatWrapper(modelID: String) -> (prefix: String, suffix: String) {
+        modelID == "registered_nemotron35_lightning"
+            ? ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n", "<|im_end|>\n<|im_start|>assistant\n<think></think>")
+            : (userPrefix, assistantSuffix)
+    }
 
     public let tokenizerSHA256: String
     /// The registered model whose manifest the tokenizer files were checked against.
@@ -67,7 +76,8 @@ public struct PromptTokenizer: Sendable {
         guard !Self.rawTextOnlyModelIDs.contains(modelID) else {
             throw QualificationError("\(modelID) has its own chat format; write its request from raw text (--raw-text-file)")
         }
-        let prefix = encodeRaw(Self.userPrefix), suffix = encodeRaw(Self.assistantSuffix)
+        let wrapper = Self.chatWrapper(modelID: modelID)
+        let prefix = encodeRaw(wrapper.prefix), suffix = encodeRaw(wrapper.suffix)
         var body = encodeRaw(userText)
         guard !body.isEmpty else { throw QualificationError("The prompt text produced no tokens") }
         var matches: Bool?

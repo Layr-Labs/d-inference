@@ -78,6 +78,28 @@ import Foundation
                 bytes = try JSONSerialization.data(withJSONObject: crossed, options: [.sortedKeys, .withoutEscapingSlashes]); bytes.append(10)
                 try capabilityCheck((try? ClusterRuntimeCapabilityCodec.decode(bytes)) == nil, "The dense adapter was accepted for the pack")
             }
+            // Nemotron: its own adapter and arithmetic policy, and one partition per resident cut.
+            try checks.yes("registered-nemotron-advertises-its-own-adapter-and-cuts") {
+                let nemotron = try QwenResidentCapabilityMetadata.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-nemotron35-lightning.configuration.json")),
+                    manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-nemotron35-lightning.manifest.json")),
+                    runtimeBinarySHA256: binary)
+                guard let row = QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: "registered_nemotron35_lightning") else {
+                    throw CapabilityCheckFailure(message: "Nemotron has no resident row")
+                }
+                try capabilityCheck(nemotron.runtimeModelID == "registered_nemotron35_lightning"
+                    && nemotron.adapterID == ClusterRuntimeAdapter.nemotronH.rawValue
+                    && nemotron.arithmeticPolicyID == "nemotron_h_cbv2_query128_bf16_tf32_default_v1",
+                    "The Nemotron capability names another model, adapter or arithmetic policy")
+                try capabilityCheck(nemotron.profile.vocabularySize == 131_072
+                    && nemotron.supportedGenerationModes == row.supportedGenerationModes, "The Nemotron profile or modes differ from its row")
+                let cuts = nemotron.partitions.map { $0.stages[0].sourceLayerEnd }
+                let ends = Set(nemotron.partitions.map { $0.stages[1].sourceLayerEnd })
+                try capabilityCheck(cuts == row.supportedCuts && ends == [52] && (1...16).contains(cuts.count),
+                    "The Nemotron partitions differ from its resident cuts")
+                try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(nemotron)) == nemotron,
+                    "The Nemotron capability does not round-trip within the byte bound")
+            }
             try checks.yes("binary-binding-remains-separate-from-model-identities") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
                 try capabilityCheck(value.runtimeBinarySHA256 != golden.runtimeBinarySHA256 && value.partitions == golden.partitions

@@ -27,8 +27,11 @@ struct QwenResidentModelDefinition {
             throw QwenDenseProfileError("Registered model has no specification")
         }
         let geometry = try specification.expectedGeometry()
-        let structural = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
-            fullAttentionInterval: geometry.fullAttentionInterval)
+        // Nemotron's layer kinds follow no interval; its structural cuts are its own.
+        let structural = model == .nemotron35Lightning
+            ? NemotronStageMetadata.structuralCuts(NemotronRegisteredLightning.kinds)
+            : try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
+                fullAttentionInterval: geometry.fullAttentionInterval)
         switch model {
         case .qwen35NineB:
             // The original resident scope, defined where it always was.
@@ -51,13 +54,19 @@ struct QwenResidentModelDefinition {
             // The 27B's geometry, so the 27B's cuts: 4, 8, ... 60.
             profileID = "registered_ternary_bonsai_2_27b_greedy_generation_v1"
             supportedCuts = structural
+        case .nemotron35Lightning:
+            // A closed list of its structural cuts, not all 32 of them: a
+            // capability carries at most sixteen partitions.
+            profileID = NemotronRegisteredLightning.profileID
+            supportedCuts = NemotronRegisteredLightning.supportedCuts
         }
         // Routed experts are token-local, so they change neither the state a
         // mode moves nor its framing; what they need is their own arithmetic
         // contract and the adapter that names it. A Prism pack's arithmetic
         // depends on two more switches of the process environment, so it has
-        // its own contract and the adapter that names it too.
-        let arithmetic: QwenResidentArithmeticPolicy = specification.routedExperts != nil ? .routedExperts
+        // its own contract and the adapter that names it too; so does Nemotron.
+        let arithmetic: QwenResidentArithmeticPolicy = model == .nemotron35Lightning ? .nemotronHybrid
+            : specification.routedExperts != nil ? .routedExperts
             : model.pack == .prismHadamard ? .prismHadamard : .dense
         let registered = (runtimeModelID: model.rawValue, profileID: profileID)
         guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.rawValue),
@@ -76,6 +85,11 @@ struct QwenResidentModelDefinition {
              .ternaryBonsai2TwentySevenB:
             // The Prism pack's state has the 27B's shapes in F32; the hand-off
             // carries each component in the profile's activation dtype.
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
+        case .nemotron35Lightning:
+            // Its state shapes are the ones a hand-off already carries (KV of
+            // an attention block, convolution and SSM state of a Mamba block)
+            // and an expert block has none, so the phase split is admissible.
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
         }
         guard supportedGenerationModes.first == .pipeline,

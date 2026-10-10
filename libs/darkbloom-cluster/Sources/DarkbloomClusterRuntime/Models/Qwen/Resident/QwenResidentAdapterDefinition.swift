@@ -13,7 +13,9 @@ enum QwenResidentAdapterDefinition {
     static func profile(specification: QwenDenseRegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
         // The model's own closed row names its profile; the 9B row is `Self.profileID`.
         let profileID = try QwenResidentModelDefinition(model: specification.model).profileID
-        return try .init(identifier: profileID, vocabularySize: 248_320,
+        let vocabularySize = specification.model == .nemotron35Lightning
+            ? NemotronRegisteredLightning.vocabularySize : 248_320
+        return try .init(identifier: profileID, vocabularySize: vocabularySize,
             hiddenSize: specification.hidden, activationDType: specification.model.pack.activationDType,
             maximumPromptTokens: 8192,
             maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)

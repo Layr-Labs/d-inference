@@ -105,7 +105,11 @@ struct QwenDenseStorageRequirement: Encodable {
         let host = selected.map(\.largestHostTensorBytes).max()!
         let fusion = try sum(selected.map(\.fusionReplacementBytes))
         let layerCount = role.stageIndex.map { plan.stages[$0].layers.count } ?? profile.geometry.layers
-        let geometry = try QwenDenseStateBudget.geometry(profile.geometry, layers: layerCount)
+        // A Nemotron stage's state follows the kinds of its own layers, not a count.
+        let geometry = profile.model == .nemotron35Lightning
+            ? try NemotronRegisteredProfile.stateGeometry(profile,
+                layers: role.stageIndex.map { plan.stages[$0].layers } ?? plan.stages.flatMap(\.layers))
+            : try QwenDenseStateBudget.geometry(profile.geometry, layers: layerCount)
         let budget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)
         let state = try QwenDenseStateBudget.finalState(geometry, pack: profile.model.pack)
         let partial = try sum([active, inert, host, fusion, budget.conservativeStateAndBoundaryBytes])

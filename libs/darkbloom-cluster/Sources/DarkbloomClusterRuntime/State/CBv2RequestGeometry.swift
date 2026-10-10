@@ -12,10 +12,17 @@ struct CBv2RequestGeometry {
     let recurrent: CBv2RecurrentStateSpec
     let kvDType: DType
     let kvCapacityBytes: Int
-
+    /// Layers of the model this geometry describes. Every one owns state in a
+    /// Qwen stage; a Nemotron stage also has layers that own none.
+    let layerCount: Int
 
     init(model: any LanguageModel, family: InferenceModelFamily, feedForwardKind: String,
          layerCount: Int, vocabularySize: Int, configurationData: Data, maximumTokens: Int) throws {
+        if let nemotron = model as? NemotronHModel {
+            self = try CBv2RequestGeometry(nemotronStage: nemotron, layerCount: layerCount,
+                vocabularySize: vocabularySize, configurationData: configurationData, maximumTokens: maximumTokens)
+            return
+        }
         guard family == .qwen35, feedForwardKind == QwenRoutedExpertStageModel.feedForwardKind(model),
               layerCount > 0, vocabularySize > 0,
               vocabularySize <= Int(Int32.max), maximumTokens > 0,
@@ -97,6 +104,6 @@ struct CBv2RequestGeometry {
         }
         _ = try recurrent.peakBytesPerRequest()
         self.kinds = kinds; self.caches = caches; self.recurrent = recurrent
-        self.kvDType = dtype; self.kvCapacityBytes = capacity
+        self.kvDType = dtype; self.kvCapacityBytes = capacity; self.layerCount = layerCount
     }
 }

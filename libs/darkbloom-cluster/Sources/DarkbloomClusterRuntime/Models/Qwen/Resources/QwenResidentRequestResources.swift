@@ -54,7 +54,8 @@ struct QwenResidentRequestAllowance {
                 try allowance($0, 1)
             }
         }
-        for layer in plan.stages[rank].sourceRange where (layer + 1) % plan.interval != 0
+        // A Plan without an interval (Nemotron) has no fused recurrent projections.
+        for layer in plan.stages[rank].sourceRange where plan.interval > 0 && (layer + 1) % plan.interval != 0
             && pack.fusesGatedDeltaInputProjections {
             for suffix in ["weight", "scales", "biases"] {
                 let parts = try ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"].map { projection in

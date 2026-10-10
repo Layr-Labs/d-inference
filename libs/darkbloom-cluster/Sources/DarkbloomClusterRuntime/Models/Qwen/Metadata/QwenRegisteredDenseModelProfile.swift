@@ -18,12 +18,15 @@ struct QwenRegisteredDenseModelProfile {
     let providerEligibilityEstablished = false
     let supportedPlanningRoles = QwenDenseStorageRole.allCases
 
-    private init(spec: QwenDenseRegisteredSpecification, configuration: Data, manifest: Data,
-                 tensors: [QwenDenseCanonicalTensor], geometry: QwenLongPrefillBudgetGeometry) {
+    /// Internal for `NemotronRegisteredProfile`, which makes the same checks
+    /// for its own configuration semantics; no other caller constructs one.
+    init(spec: QwenDenseRegisteredSpecification, configuration: Data, manifest: Data,
+         tensors: [QwenDenseCanonicalTensor], geometry: QwenLongPrefillBudgetGeometry,
+         vocabularySize: Int = 248_320) {
         self.model = spec.model; self.configuration = configuration; self.manifest = manifest
         self.configurationSHA256 = spec.configurationSHA256; self.manifestSHA256 = spec.manifestSHA256
         self.artifactAggregateSHA256 = spec.artifactSHA256; self.canonicalInventorySHA256 = spec.inventorySHA256
-        self.canonicalTensors = tensors; self.geometry = geometry; self.vocabularySize = 248_320
+        self.canonicalTensors = tensors; self.geometry = geometry; self.vocabularySize = vocabularySize
         self.manifestPayloadBytes = spec.manifestBytes; self.sourceTensorBytes = spec.sourceBytes
         self.largestSourceTensorBytes = spec.largestTensorBytes
         let pack = spec.model.pack
@@ -49,6 +52,10 @@ struct QwenRegisteredDenseModelProfile {
               QwenDenseProfileIdentity.sha256(manifest) == spec.manifestSHA256,
               expectedArtifactAggregateSHA256 == spec.artifactSHA256 else {
             throw QwenDenseProfileError("Configuration, manifest or expected artifact is not the exact registered model")
+        }
+        if spec.model == .nemotron35Lightning {
+            return try NemotronRegisteredProfile.admit(specification: spec, configuration: configuration,
+                manifest: manifest, canonicalTensors: canonicalTensors)
         }
         struct Manifest: Decodable {
             struct Entry: Decodable { let path: String, sha256: String; let size_bytes: Int }
@@ -99,6 +106,7 @@ struct QwenRegisteredDenseModelProfile {
     }
 
     func makePlanningPlan(stageCut: Int? = nil) throws -> QwenLayerStagePlan {
+        if model == .nemotron35Lightning { return try NemotronRegisteredProfile.planningPlan(self, stageCut: stageCut) }
         let cut = stageCut ?? geometry.layers / 2
         let legal = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
             fullAttentionInterval: geometry.fullAttentionInterval)

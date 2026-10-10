@@ -67,8 +67,8 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
         resolved[path] = declared
     }
     let wrapped = QwenRoutedExpertStageMetadata.wrapperModelTypes.contains(root["model_type"] as? String ?? "")
-    let embeddingPath = (wrapped ? "language_model." : "")
-        + "model.embed_tokens"
+    let embeddingPath = NemotronStageMetadata.accepts(root) ? NemotronStageMetadata.embeddingPath
+        : (wrapped ? "language_model." : "") + "model.embed_tokens"
     // A Prism pack's stream is not in the dtype of its embedding's scales.
     let activation = try prepared.prism.map { try $0.activationDType(model: model, canonical: prepared.canonical) }
         ?? qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
@@ -84,6 +84,7 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
 }
 
 func validateQwenStageDenseModel(_ model: any LanguageModel, layerCount: Int) throws {
+    if model is NemotronHModel { return try NemotronStageConstruction.validate(model, layerCount: layerCount) }
     guard model is Qwen35Model || model is Qwen35TextModel,
           let mtp = model as? any MTPCapable, !mtp.hasMTPHead else {
         throw ProbeError("Layer stages require public dense Qwen without an attached MTP head")

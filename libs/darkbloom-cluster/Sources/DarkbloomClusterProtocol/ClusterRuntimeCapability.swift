@@ -15,6 +15,9 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// alternating sliding-window and full attention with learned sinks, and
     /// routed MXFP4 experts held as the artifact stores them.
     case gptossLayerStage = "gpt-oss-layer-stage"
+    /// The same pipeline for Nemotron-H models: single-mixer blocks whose
+    /// kinds (Mamba2, mixture of experts, attention) follow an explicit list.
+    case nemotronH = "nemotron-h-layer-stage"
     public var version: Int { 1 }
     /// The adapter's original pair: the first row of `registeredProfiles`.
     public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
@@ -34,6 +37,8 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
             [("registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_27b_greedy_generation_v1")]
         case .gptossLayerStage:
             [("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1")]
+        case .nemotronH:
+            [("registered_nemotron35_lightning", "registered_nemotron35_lightning_greedy_generation_v1")]
         }
     }
     /// The one arithmetic policy a capability of this adapter may name. An
@@ -45,6 +50,7 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         case .qwen35RoutedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
         case .qwen35PrismHadamard: "qwen_cbv2_query128_tf32_prism_hadamard_f32_v1"
         case .gptossLayerStage: "gpt_oss_ordinary_cache_split_experts_bf16_defaults_v1"
+        case .nemotronH: "nemotron_h_cbv2_query128_bf16_tf32_default_v1"
         }
     }
     /// The adapter that registers a runtime model, or nil for an unregistered ID.

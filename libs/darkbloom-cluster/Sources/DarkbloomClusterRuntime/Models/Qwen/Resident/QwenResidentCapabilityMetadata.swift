@@ -16,7 +16,7 @@ public enum QwenResidentCapabilityMetadata {
               let definition = try? QwenResidentModelDefinition(configuration: configuration),
               case let spec = definition.specification,
               sha256(configuration) == spec.configurationSHA256, sha256(manifest) == spec.manifestSHA256 else {
-            throw ProbeError("Capability metadata requires the exact registered 9B, 27B, a registered 35B A3B or Bonsai 2 27B configuration and manifest")
+            throw ProbeError("Capability metadata requires the exact registered 9B, 27B, a registered 35B A3B, Bonsai 2 27B or Nemotron 3.5 Lightning configuration and manifest")
         }
         let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
         let partitions = try definition.supportedCuts.map { cut -> ClusterRuntimePartition in

@@ -19,8 +19,9 @@ struct QwenLayerStageRankStateCapture {
         for layer in stage.layers {
             let components: [String]
             switch layer.kind {
-            case "full_attention": components = ["kv.keys", "kv.values", "kv.position_offsets"]
-            case "linear_attention": components = ["conv", "ssm"]
+            case "full_attention", "attention": components = ["kv.keys", "kv.values", "kv.position_offsets"]
+            case "linear_attention", "mamba": components = ["conv", "ssm"]
+            case "moe": components = []  // a Nemotron expert block owns no request state
             default: throw ProbeError("Rank snapshot has an unsupported layer policy")
             }
             for component in components { expected.insert("\(layer.globalIndex)|\(component)") }

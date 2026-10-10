@@ -31,6 +31,9 @@ enum QwenRegisteredDenseModel: String, Codable, CaseIterable {
     case qwen36ThirtyFiveBA3B = "registered_qwen36_35b_a3b"
     /// Ternary Bonsai 2 27B: the 27B's geometry in Prism's folded 2-bit pack.
     case ternaryBonsai2TwentySevenB = "registered_ternary_bonsai_2_27b"
+    /// Nemotron 3.5 Lightning: Mamba2, mixture-of-experts and attention
+    /// blocks in an explicit pattern. Its metadata is under `Models/Nemotron`.
+    case nemotron35Lightning = "registered_nemotron35_lightning"
 }
 
 /// Caller-supplied metadata, not a trusted descriptor or load permission. The

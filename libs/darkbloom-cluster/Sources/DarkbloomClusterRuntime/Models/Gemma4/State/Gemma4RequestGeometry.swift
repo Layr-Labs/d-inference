@@ -45,5 +45,7 @@ extension CBv2RequestGeometry {
         recurrent = CBv2RecurrentStateSpec(layers: [])
         self.kvDType = kvDType
         kvCapacityBytes = capacity
+        // Every Gemma layer owns attention state.
+        layerCount = kinds.count
     }
 }

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-09
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -218,11 +218,22 @@ The unprivileged updater never touches the root fan helper; after an update run
 
 ```bash
 sudo darkbloom fan uninstall    # only if fan control was enabled
+darkbloom cluster link --remove # only if `darkbloom cluster` set up a two-Mac link; asks for approval
 darkbloom stop --uninstall      # stops the daemon, removes both LaunchAgent plists
 darkbloom unenroll              # opens System Settings to remove the MDM profile; offers to delete config + tokens
 rm -rf ~/.darkbloom ~/.config/darkbloom
 sudo rm -f /usr/local/bin/darkbloom
 ```
+
+`darkbloom cluster link --remove` (`provider-swift/Sources/darkbloom/ClusterLinkCommand.swift`)
+restores what `darkbloom cluster` changed for a two-Mac link: it removes the
+network service `Darkbloom Cluster Link (<port>)`, switches the services it
+turned off on that port on again and puts the port back into its bridge, or,
+for a link set up by an earlier version, removes the root launchd job
+`io.darkbloom.cluster-link.<port>` and the address it kept. Run it before
+deleting `~/.darkbloom`, which holds the record of what was changed; without
+the record it still removes Darkbloom's own service or job. It changes nothing
+on a Mac that never ran `darkbloom cluster`.
 
 `darkbloom stop --uninstall` (`provider-swift/Sources/darkbloom/StopCommand.swift`)
 disarms the watchdog first, deletes `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`

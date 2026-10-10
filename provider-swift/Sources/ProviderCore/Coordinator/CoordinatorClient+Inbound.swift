@@ -5,6 +5,22 @@ import Foundation
 import Network
 
 extension CoordinatorClient {
+    /// An already-resumed old timer must not poison a replacement connection.
+    /// The nonce check and refusal run without an actor suspension between them.
+    internal func expireMemberNegotiation(nonce: String, now: ContinuousClock.Instant = .now) {
+        guard !Task.isCancelled, !sessionRegistered,
+              let current = memberNegotiation, current.nonce == nonce,
+              now >= current.deadline else { return }
+        refuseMemberNegotiation()
+    }
+    internal func refuseMemberNegotiation() {
+        memberRoleFailure = true
+        sessionRegistered = false
+        memberNegotiation = nil
+        detachNativePairMember()
+        nwConnection?.cancel()
+    }
+
     /// Send a pre-encoded JSON frame on the current connection, if any. The
     /// receive path's rejections (missing/invalid encrypted body) are
     /// low-frequency, so routing them straight to the live NWConnection — rather
@@ -32,8 +48,24 @@ extension CoordinatorClient {
     internal func handleIncomingFrame(
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
-        profileAnchor: SuspendingClock.Instant = .now
+        profileAnchor: SuspendingClock.Instant = .now,
+        sourceConnection: NWConnection? = nil
     ) async {
+        // Native-pair public frames are consumed before the ordinary codec on
+        // member connections; solo connections never carry them. One that
+        // breaks the contract ends this connection.
+        if config.executionRole == .clusterMember {
+            do {
+                let wall = Date().timeIntervalSince1970 * 1_000_000_000
+                guard wall > 0, wall < Double(Int64.max) else { throw NativePairMemberError.deadline }
+                if try consumeNativePairFrame(data, sourceConnection: sourceConnection,
+                    receivedAt: DispatchTime.now().uptimeNanoseconds, wallUnixNanoseconds: Int64(wall)) { return }
+            } catch {
+                detachNativePairMember()
+                sourceConnection?.cancel()
+                return
+            }
+        }
         let parsed: CoordinatorMessage
         do {
             parsed = try CoordinatorClientCodec.decodeIncomingMessage(from: data)
@@ -42,7 +74,22 @@ extension CoordinatorClient {
             return
         }
 
+        // A member that lost trust or runtime verification may not keep an
+        // attachment: its session's native work is cancelled at once.
+        if case .trustStatus(let status) = parsed, ["untrusted", "offline"].contains(status.status) { detachNativePairMember() }
+        if case .runtimeStatus(let status) = parsed, !status.verified || !status.mismatches.isEmpty { detachNativePairMember() }
         switch parsed {
+        case .clusterMemberAccepted(let ack):
+            guard config.executionRole == .clusterMember else { return }
+            do {
+                guard var negotiation = memberNegotiation else { throw ClusterMemberControlError.negotiationFailed }
+                try negotiation.accept(ack)
+                memberNegotiation = negotiation
+                sessionRegistered = true
+                try nativePairMemberAccepted()
+                eventContinuation?.yield(.connected)
+            } catch { refuseMemberNegotiation() }
+
         case .modelsReplaceAck(let ack):
             completeModelReplacement(ack)
         case .modelsReplaceResumed(let ack):
@@ -51,6 +98,12 @@ extension CoordinatorClient {
             if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
+            if config.executionRole == .clusterMember {
+                sendOnCurrentConnection(encodeInferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
+                    identifier: "inference_error")
+                return
+            }
             // The receive callback anchored this before executor scheduling,
             // UTF-8 materialization, JSON parsing, logging, validation, or
             // base64 decoding. Downstream work must not restart the clock.

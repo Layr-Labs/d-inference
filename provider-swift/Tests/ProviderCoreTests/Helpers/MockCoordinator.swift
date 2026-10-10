@@ -34,6 +34,8 @@ public struct CapturedMessages: Sendable {
     public var drainBarriers: [String] = []
     public var appAttestShadow: [AppAttestShadowPayload] = []
     public var registers: [ProviderMessage.Register] = []
+    /// The exact bytes of each `register` frame, in arrival order.
+    public var registerFrames: [Data] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
     public var codeAttestationResponses: [ProviderMessage.CodeAttestationResponse] = []
@@ -52,6 +54,8 @@ public struct CapturedMessages: Sendable {
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
     public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
     public var capacityQuotes: [ProviderMessage.CapacityQuote] = []
+    /// Native-pair member control frames, captured verbatim (never answered).
+    public var nativePairs: [NativePairMessage] = []
     /// Raw bodies POSTed to the retired `/v1/telemetry/events` route. The
     /// provider never sends telemetry; this only catches a regression.
     public var telemetryPosts: [Data] = []
@@ -424,6 +428,22 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(msg)
     }
 
+    /// Echo a member acceptance exactly as the coordinator sends it; the
+    /// client's negotiation refuses any nonce that is not its own.
+    public func pushClusterMemberAcceptance(nonce: String, providerID: String = "mock-provider") async throws {
+        try await sendCoordinatorMessage(.clusterMemberAccepted(ClusterMemberAccepted(
+            executionRole: .clusterMember, memberRegistrationNonce: nonce, providerID: providerID)))
+    }
+
+    /// Push a native-pair coordinator frame as raw text (bypasses the
+    /// CoordinatorMessage codec exactly like the real wire).
+    public func pushNativePair(_ message: NativePairMessage) async throws {
+        let outbound: WebSocketOutboundWriter? = lock.withLock { activeOutbound }
+        guard let outbound else { throw MockCoordinatorError.noActiveWebSocket }
+        let bytes = try JSONEncoder().encode(message)
+        try await outbound.write(.text(String(decoding: bytes, as: UTF8.self)))
+    }
+
     /// Force-close the active provider WebSocket so the provider's reconnect
     /// loop kicks in.
     public func dropActiveWebSocket() async {
@@ -634,6 +654,12 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private func handleProviderMessage(_ text: String) {
         guard let data = text.data(using: .utf8) else { return }
+        // Native-pair member frames are captured raw alongside ordinary
+        // provider messages; the mock never signs or answers them.
+        if let native = try? NativePairMessage.decodePublicFrame(data) {
+            lock.withLock { captured.nativePairs.append(native) }
+            return
+        }
         guard let parsed = try? ProviderProtocolCodec.decodeProviderMessage(from: data) else {
             return
         }
@@ -642,7 +668,9 @@ public final class MockCoordinator: @unchecked Sendable {
             switch parsed {
             case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
-            case .register(let r):           captured.registers.append(r)
+            case .register(let r):
+                captured.registers.append(r)
+                captured.registerFrames.append(data)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)
             case .codeAttestationResponse(let c): captured.codeAttestationResponses.append(c)

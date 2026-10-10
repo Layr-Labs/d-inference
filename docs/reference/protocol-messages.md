@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -180,6 +180,15 @@ connection, first.
 | `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
 | `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256 (includes `mlx_metallib`); Swift omits when empty |
 | `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities) |
+| `execution_role` | `ExecutionRole` | `ProviderExecutionRole` | opt | omitted/`""` keeps ordinary solo; `"cluster_member"` is the control-only member role (empty ordinary `models`, separate `cluster_models`, fresh `member_registration_nonce`) — grants no trust or model capability |
+| `member_registration_nonce` | `string` | `String?` | opt | 64 lowercase hex chars, this connection's member negotiation nonce; invalid without the member role |
+| `cluster_models` | `[]ModelInfo` | `[ModelInfo]?` | opt | separate cluster inventory for the member role; invalid on a solo registration; old coordinators ignore it and see no routable model |
+| `cluster_membership` | `*ClusterMembership` | `ClusterMembership?` | opt | member role only (a solo registration carrying it is refused, and the provider never encodes it for one). `cluster_id`: the saved cluster label, 1–128 of `A–Z a–z 0–9 - . _`, not starting with `-`; `rank`: `0` leader or `1` follower; `policy_sha256`: 64 lowercase hex, SHA-256 of the canonical coordinator runtime policy the member installed. A claim the pair selector matches against a second member of the same account and the operator's approval catalog; it grants nothing. A member that omits it is acknowledged and never paired (`darkbloom-platform:coordinator/protocol/execution_role.go`, `ClusterMembership.Validate`; [pair formation](cluster-control-protocol.md#pair-formation)). The provider sends it only when its saved setup carries a pair approval, and derives it from the installed member control, so `policy_sha256` is the digest of exactly the policy bytes that control requires in a prepare frame (`provider-swift/Sources/ProviderCore/Protocol/ClusterMembership.swift`, `ClusterMembership`; `provider-swift/Sources/ProviderCore/Coordinator/NativePairMemberInstallation.swift`, `membership`) |
+
+An attested registration is encoded by the raw-attestation encoder, not the
+Codable one. Both write the three member fields, and only for the member role
+(`provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift`,
+`encodeRegisterPreservingRawAttestation`).
 
 A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
@@ -979,6 +988,32 @@ drift correction for the coordinator's ledger, not reservations.
 
 ## Coordinator → provider
 
+The Go side of the member fields above and of `cluster_member_accepted` is in
+`Layr-Labs/darkbloom-platform`; a `coordinator/` path named for them on this
+page is a file in that repository.
+
+### `cluster_member_accepted`
+
+Go `ClusterMemberAcceptedMessage` (`darkbloom-platform:coordinator/protocol/execution_role.go`) ·
+Swift `CoordinatorMessage.clusterMemberAccepted` (`ClusterMemberAccepted`).
+Sent once per member-role connection as the last step of handling
+[`register`](#register) (`acknowledgeClusterMember`,
+`darkbloom-platform:coordinator/api/provider/cluster_member.go`): after every check that can
+refuse the connection, and whether or not a native runtime catalog is
+configured. A refused or solo registration is sent none. One acceptance per
+negotiation, before a ten-second deadline; the negotiation is discarded on
+reconnect. It proves protocol support and connection binding only — never
+attestation, runtime approval, native-owner authorization or serving
+readiness. A solo connection ignores it. See
+[cluster-control-protocol.md](cluster-control-protocol.md).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `type` | string | String | req | exactly `cluster_member_accepted` |
+| `execution_role` | string | `ProviderExecutionRole` | req | exactly `cluster_member` |
+| `member_registration_nonce` | string | String | req | exact nonce from this connection's registration |
+| `provider_id` | string | String | req | nonempty, at most 128 UTF-8 bytes |
+
 ### `inference_request`
 
 Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
@@ -1108,13 +1143,16 @@ paused residency. Only a matching live lease can transfer residency ownership.
 Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 `backend == "mlx-swift"`; the provider replies with `load_model_status`.
 Active or explicitly paused Autopilot providers block this legacy residency path and use explicit
-`model_autopilot` commands instead.
+`model_autopilot` commands instead. Never sent to a `cluster_member` connection
+or to a device held by a verified pair (`beginVerifiedPairAwareModelCommand`,
+`darkbloom-platform:coordinator/registry/verified_pair_commands.go`).
 
 ### `prefetch_model`
 
 Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
 (`int`, opt, advisory). Download + verify only, no GPU load; the provider
-replies with `prefetch_model_status` and then `models_update`.
+replies with `prefetch_model_status` and then `models_update`. Refused for a
+`cluster_member` connection or a pair-held device, like `load_model`.
 
 ### `desired_models`
 
@@ -1133,7 +1171,9 @@ backend and attested capability guards apply. Alias entries describe aliases
 whose desired, previous, or retired build is in the provider's advertised inventory;
 an empty set revokes old targets. Revision-aware providers stage the exact artifact
 and drain before activation; ID-only providers retain the legacy prefetch path.
-Both announce completed updates through `models_update`. Source:
+Both announce completed updates through `models_update`. A `cluster_member`
+connection is offered no entries and receives only the empty set; a nonempty set
+is refused for a member connection or a pair-held device. Source:
 `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 See [revision lifecycle](../architecture/model-revisions.md).
 

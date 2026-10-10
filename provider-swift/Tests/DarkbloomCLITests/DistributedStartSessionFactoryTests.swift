@@ -1,0 +1,120 @@
+import Foundation
+import Testing
+import ProviderCore
+@testable import darkbloom
+
+@Suite("Distributed startup fresh preparation binding")
+struct DistributedStartSessionFactoryTests {
+    @Test func unchangedFilesPermitEveryFreshPreparation() throws {
+        let files = try Files(); defer { files.remove() }
+        let factory = try files.factory()
+        var calls = 0
+        for _ in 0..<2 {
+            let result = try factory.withCurrentReference(ownerConfiguration: { files.owner }) { reference in
+                calls += 1
+                #expect(reference == files.first)
+                return calls
+            }
+            #expect(result == calls)
+        }
+        #expect(calls == 2)
+    }
+
+    @Test func eitherChangedPointerRefusesBeforePreparation() throws {
+        for changed in ["selected", "owner"] {
+            let files = try Files(); defer { files.remove() }
+            let factory = try files.factory()
+            try files.write(files.other, to: changed == "selected" ? files.selected : files.owner)
+            var entered = false
+            #expect(throws: (any Error).self) {
+                try factory.withCurrentReference(ownerConfiguration: { files.owner }) { _ in entered = true }
+            }
+            #expect(!entered)
+        }
+    }
+
+    @Test func eitherPointerChangedDuringPreparationRefusesItsResult() throws {
+        for changed in ["selected", "owner"] {
+            let files = try Files(); defer { files.remove() }
+            let factory = try files.factory()
+            var entered = false
+            #expect(throws: (any Error).self) {
+                try factory.withCurrentReference(ownerConfiguration: { files.owner }) { _ in
+                    entered = true
+                    try files.write(files.other, to: changed == "selected" ? files.selected : files.owner)
+                    return "prepared metadata only"
+                }
+            }
+            #expect(entered)
+        }
+    }
+
+    @Test func defaultPathIsResolvedAgainAfterPreparation() throws {
+        let files = try Files(); defer { files.remove() }
+        let factory = try files.factory()
+        let replacement = files.root.appendingPathComponent("replacement.toml")
+        try files.write(files.other, to: replacement)
+        var currentOwner = files.owner, lookups = 0
+        #expect(throws: (any Error).self) {
+            try factory.withCurrentReference(ownerConfiguration: { lookups += 1; return currentOwner }) { _ in
+                currentOwner = replacement
+            }
+        }
+        #expect(lookups == 2)
+    }
+
+    @Test func unsafeOrMissingCurrentPointerDoesNotEnterPreparation() throws {
+        let files = try Files(); defer { files.remove() }
+        let factory = try files.factory()
+        try FileManager.default.removeItem(at: files.owner)
+        var entered = false
+        #expect(throws: (any Error).self) {
+            try factory.withCurrentReference(ownerConfiguration: { files.owner }) { _ in entered = true }
+        }
+        try FileManager.default.createSymbolicLink(at: files.owner, withDestinationURL: files.selected)
+        #expect(throws: (any Error).self) {
+            try factory.withCurrentReference(ownerConfiguration: { files.owner }) { _ in entered = true }
+        }
+        #expect(!entered)
+    }
+
+    @Test func preparationFailurePreservesItsCause() throws {
+        enum Refusal: Error, Equatable { case metadata }
+        let files = try Files(); defer { files.remove() }
+        let factory = try files.factory()
+        #expect(throws: Refusal.metadata) {
+            try factory.withCurrentReference(ownerConfiguration: { files.owner }) { _ in throw Refusal.metadata }
+        }
+    }
+
+    private struct Files {
+        let root: URL
+        let selected: URL
+        let owner: URL
+        let first: ClusterConfigurationReference
+        let other: ClusterConfigurationReference
+
+        init() throws {
+            root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("darkbloom-start-binding-\(UUID().uuidString)")
+            selected = root.appendingPathComponent("selected.toml")
+            owner = root.appendingPathComponent("owner.toml")
+            first = try .init(configuration: "/fixture/first.cluster.json", sha256: String(repeating: "a", count: 64))
+            other = try .init(configuration: "/fixture/other.cluster.json", sha256: String(repeating: "b", count: 64))
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            do { try write(first, to: selected); try write(first, to: owner) }
+            catch { remove(); throw error }
+        }
+
+        func factory() throws -> DistributedStartSessionFactory {
+            try .init(providerConfiguration: selected, ownerConfiguration: { owner })
+        }
+
+        func write(_ reference: ClusterConfigurationReference, to path: URL) throws {
+            let text = "[cluster]\nconfiguration = \"\(reference.configuration)\"\nsha256 = \"\(reference.sha256)\"\n"
+            try Data(text.utf8).write(to: path, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        }
+
+        func remove() { try? FileManager.default.removeItem(at: root) }
+    }
+}

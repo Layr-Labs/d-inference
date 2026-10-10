@@ -1,0 +1,101 @@
+import Foundation
+import ArgumentParser
+import ProviderCore
+
+extension Start {
+    /// A distributed leader loads only verified tokenizer metadata here. Its
+    /// local native owner child acquires the shared device exclusion.
+    func runLocalDistributed() async throws {
+        let configPath = try configOptions.config.map {
+            URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+        } ?? ConfigManager.defaultConfigPath()
+        let factory = try DistributedStartSessionFactory(providerConfiguration: configPath)
+        try ProcessLifecycle.acquireMediaServingLock()
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        let member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
+        // A session that stops without being asked says so at once: the wait
+        // for its workers that follows can be the whole progress limit.
+        let announce: @Sendable (DistributedInstalledStopNotice) -> Void = { printError($0.message) }
+        let session = try await factory.prepare()
+        session.installStopNoticeHandler(announce)
+        // A stop first lets a running request end at its next token, then
+        // sends shutdown and waits for both workers to end themselves. One that
+        // is still inside a collective when its peer went away needs its
+        // progress limit to do so; nothing signals it sooner.
+        let stopAllowance = session.cooperativeStopAllowanceNanoseconds
+        let token = try noAuth ? nil : LocalEndpoint.loadOrCreateToken()
+        // From the selected registered model's row, like the stop allowance.
+        let budget = try session.firstTokenBudgetPolicy()
+        let server = DistributedLocalServer(
+            session: session, config: .init(host: bind, port: port, authToken: token),
+            firstTokenBudgetPolicy: budget,
+            replacementSessionFactory: {
+                let next = try await factory.prepare()
+                next.installStopNoticeHandler(announce)
+                return next
+            })
+
+        // Keep the existing endpoint/PID and sleep-prevention ownership. The
+        // cluster leader never takes the native device gate from its own child.
+        let signals = try DistributedStartSignals()
+        defer { signals.close() }
+
+        let memberTask = Task { try await member.run() }
+        let memberExit = Task {
+            let result = await memberTask.result
+            // A terminal control loop cannot leave this leader advertised.
+            _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance)
+            return result
+        }
+        let task = Task {
+            try await member.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
+            try Task.checkCancellation()
+            try await server.start()
+            guard let boundPort = await server.status.boundPort else {
+                throw DistributedStartRuntimeError.listenerStopped
+            }
+            print("darkbloom \(ProviderCore.version) (local / distributed)")
+            print("Model: \(session.model.publicModelID)")
+            print("Listening on \(bind):\(boundPort); connection details: darkbloom local")
+            return await withFanActivityLease(providerVersion: ProviderCore.version) {
+                await server.waitUntilStopped()
+            }
+        }
+        let stop: @Sendable () -> Void = {
+            task.cancel()
+            memberTask.cancel()
+            Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance) }
+        }
+        signals.attach {
+            printError(DistributedInstalledStopNotice.requestedStopMessage(longestWaitNanoseconds: stopAllowance))
+            stop()
+        }
+        let status: DistributedLocalServerStatus
+        do {
+            status = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { stop() }
+        } catch {
+            // A separate task keeps cancellation of the command from reducing
+            // the bounded cleanup wait to an immediate cancelled sleep.
+            let cleanup = Task {
+                await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance)
+            }
+            let status = await cleanup.value
+            memberTask.cancel()
+            _ = await memberExit.value
+            if !status.cleanupComplete {
+                printError("Distributed cleanup is unresolved. Each owner keeps waiting for its worker and clears its own journal when that worker exits; `darkbloom cluster recover` reports what is left.")
+            }
+            throw error
+        }
+        memberTask.cancel()
+        let memberResult = await memberExit.value
+        guard status.cleanupComplete else {
+            throw DistributedStartRuntimeError.cleanupUnresolved
+        }
+        if status.failed { throw DistributedStartRuntimeError.sessionFailed }
+        if case .failure(let error) = memberResult, !(error is CancellationError) { throw error }
+    }
+}

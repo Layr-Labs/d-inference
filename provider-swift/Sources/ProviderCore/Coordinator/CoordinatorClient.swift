@@ -96,6 +96,20 @@ public actor CoordinatorClient {
     /// gate.
     internal var sessionRegistered = false
 
+    /// One connection's control-only member negotiation; created at connect
+    /// when `config.executionRole == .clusterMember` and discarded on every
+    /// reconnect. The nonce binds the acceptance to this exact connection.
+    var memberNegotiation: ClusterMemberNegotiation?
+    /// Set when member acceptance never arrives, arrives late, or is refused.
+    /// The reconnect loop exits instead of cycling an unacknowledged member.
+    internal var memberRoleFailure = false
+
+    /// The member control installed before the first connection, and its
+    /// attachment to the current accepted connection. The attachment is nil
+    /// until this connection's acceptance and dropped at every boundary.
+    internal var nativePairMember: NativePairMemberControl?
+    internal var nativePairConnection: NativePairMemberConnection?
+
     private let shutdownFlag = ShutdownFlag()
 
     /// Fast, thread-safe shutdown visibility for connection tasks.
@@ -243,6 +257,7 @@ public actor CoordinatorClient {
     /// registration while `shutdownRequested` is still false). Fire-and-forget:
     /// the actor is not blocked waiting for the frame to flush.
     private func closeCurrentConnection() {
+        detachNativePairMember()
         guard let connection = nwConnection else { return }
         nwConnection = nil
         // Best-effort close frame: enqueue a .goingAway close frame so the

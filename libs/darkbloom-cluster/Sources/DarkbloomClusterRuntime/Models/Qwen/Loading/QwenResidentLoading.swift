@@ -1,0 +1,115 @@
+import Foundation
+import MLX
+import MLXLMCommon
+import MLXNN
+
+struct QwenResidentLoadedStage {
+    let loaded: LoadedQwenLayerStage
+    let profile: QwenRegisteredDenseModelProfile
+    let selectedRequirement: QwenDenseStorageRequirement
+}
+
+/// A private ordered-load gate for this separately admitted resident cut4|8|12|16
+/// scope. The existing default-half-only StageLoadBudget policy is untouched.
+final class QwenResidentLoadGate: QwenLayerStageGate {
+    let active: [QwenStageActiveTensor], bounds: [Int], inert: Int, host: Int
+    private var next = 0
+    private var failed = false
+    /// This load's record at the host memory gate, and its first sample.
+    private let watch = QwenDenseStageLoadWatch("Resident load")
+    init(inventory: QwenStagePreparedInventory) throws {
+        active = inventory.active; host = active.map(\.byteCount).max() ?? 0
+        bounds = try active.map { try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount) }
+        let inertBounds = try inventory.inert.flatMap(\.parameters).map {
+            try Memory.allocationFootprintUpperBound(byteCount: $0.byteCount)
+        }
+        inert = try QwenLongPrefillCheckedBytes.sum(inertBounds)
+        let maximum = GPU.deviceInfo().maxBufferSize
+        guard !active.isEmpty, host > 0, maximum > 0,
+              bounds.allSatisfy({ $0 > 0 && $0 <= maximum }),
+              inertBounds.allSatisfy({ $0 > 0 && $0 <= maximum }) else {
+            throw ProbeError("Resident selected buffers exceed actual device bounds")
+        }
+        try observe()
+    }
+    func observe() throws {
+        do {
+            guard !failed else { throw ProbeError("Resident load gate was poisoned") }
+            let remaining = try QwenLongPrefillCheckedBytes.sum(Array(bounds.dropFirst(next)) + [inert])
+            let h = next < active.count ? host : 0
+            let scratch = h == 0 ? 0 : CheckpointAlignedReadPlan.maximumScratchAllocationBytes
+            let required = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
+                try QwenLongPrefillCheckedBytes.sum([remaining, h, h, scratch, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+            let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
+                remaining, h, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+            let os = try QwenDenseStageLoadResources.observeOS()
+            guard try watch.admits(os, bytes: required), Memory.memoryLimit >= allocator else {
+                throw ProbeError("Resident load exceeds the allocator limit")
+            }
+        } catch { failed = true; throw error }
+    }
+    func beforeRead(_ entry: QwenStageActiveTensor) throws {
+        guard active.indices.contains(next), active[next].sourceName == entry.sourceName,
+              active[next].localName == entry.localName, active[next].shape == entry.shape,
+              active[next].sourceDType == entry.sourceDType, active[next].loadedDType == entry.loadedDType,
+              active[next].byteCount == entry.byteCount else {
+            failed = true; throw ProbeError("Resident load changed its admitted ordered tensor inventory")
+        }
+        try observe(); next += 1
+    }
+    func finish() throws {
+        guard next == active.count else { failed = true; throw ProbeError("Resident load incomplete") }
+        try observe()
+    }
+}
+
+/// The model-returning seam for this Mac's own artifact; the public facade
+/// stores the result privately. All actual source, both compact inventories and
+/// allocation limits are checked before entering the selected-tensor materializer.
+///
+/// `constructed` receives the stage's model as soon as it exists, before any
+/// tensor is read. A caller that keeps a weak reference from it can tell
+/// whether the model was released after a load that failed part-way; a weak
+/// reference taken from the returned stage is never set on that path.
+func loadQwenResidentStage(_ admission: QwenResidentAdmission, check: () throws -> Void,
+                          constructed: (Module) -> Void = { _ in }) throws -> QwenResidentLoadedStage {
+    let local = try prepareQwenResidentSource(admission, check: check)
+    return try loadQwenResidentStage(admission, source: local.metadata, payload: local.payload, check: check,
+                                     constructed: constructed)
+}
+
+/// The same checks and the same materializer for any payload source: the
+/// metadata fixes every tensor before the payload supplies one.
+func loadQwenResidentStage(_ admission: QwenResidentAdmission, source prepared: QwenResidentSource,
+                          payload: some QwenLayerStagePayloadSource, check: () throws -> Void,
+                          constructed: (Module) -> Void = { _ in }) throws -> QwenResidentLoadedStage {
+    let plan = admission.plan, index = admission.configuration.rank
+    try admission.definition.arithmetic.requireNativeRoute()
+    let other = try withRandomState(MLXRandom.RandomState(seed: 7)) {
+        try inspectOtherQwenLayerStage(source: prepared.source, stage: plan.stages[1 - index], check: check)
+    }
+    try QwenDenseObservedStageValidation.validateRegistered(source: prepared.validation, profile: prepared.profile,
+        requirement: prepared.pairRequirement, plan: plan, stageIndex: 1 - index,
+        active: other.active, inert: other.inert, summary: other.summary)
+    return try autoreleasepool {
+        try withRandomState(MLXRandom.RandomState(seed: 7)) {
+            let value = try prepareQwenLayerStageModel(source: prepared.source, stage: plan.stages[index], check: check)
+            constructed(value.model)
+            try QwenDenseObservedStageValidation.validateRegistered(source: prepared.validation, profile: prepared.profile,
+                requirement: prepared.pairRequirement, plan: plan, stageIndex: index,
+                active: value.inventory.active, inert: value.inventory.inert, summary: value.inventory.summary)
+            let commitment = try qwenLayerStageStorageCommitment(source: prepared.source,
+                originalConfiguration: admission.configBytes, plan: plan,
+                inventories: [other, value.inventory].sorted { $0.summary.stageIndex < $1.summary.stageIndex })
+            let selected = try QwenDenseStorageRequirement.derive(profile: prepared.profile,
+                plan: plan, role: index == 0 ? .stage0 : .stage1)
+            let gate = try QwenResidentLoadGate(inventory: value.inventory)
+            let loaded = try materializeVerifiedQwenLayerStage(source: prepared.source, payload: payload, plan: plan,
+                stageIndex: index, model: value.model, inventory: value.inventory, commitment: commitment,
+                gate: gate, check: { try check(); try gate.observe(); try check() },
+                beforeTensor: { try check(); try gate.beforeRead($0); try check() })
+            try gate.finish(); try check()
+            return .init(loaded: loaded, profile: prepared.profile, selectedRequirement: selected)
+        }
+    }
+}

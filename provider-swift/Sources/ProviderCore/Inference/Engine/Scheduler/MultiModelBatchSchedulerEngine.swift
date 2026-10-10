@@ -288,6 +288,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        // Capture before acquisition and tokenization consume the budget.
+        // Preparation can run on another task, so the value is passed
+        // explicitly instead of being read from the task-local again.
+        let distributedRequestOrigin = DistributedRequestOrigin.current
         let templateControls = self.templateControls.resolvingPromptDate()
         // A local HTTP engine may be shared by concurrent Chat/Responses calls.
         // The fallback usage channel belongs to this request, never to the engine.
@@ -328,6 +332,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // closes the same race at the caller side.
         return try await prepareAcquiredCompletion(
             request: request, templateControls: templateControls, requestUsage: requestUsage,
+            distributedRequestOrigin: distributedRequestOrigin,
             acquired: try await acquireForCompletion(modelId: request.model))
     }
 
@@ -365,11 +370,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     private func prepareAcquiredCompletion(
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
-        requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
+        requestUsage: EngineV2RequestUsageSignal,
+        distributedRequestOrigin: ContinuousClock.Instant?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         guard let lease = acquired.nativeConsumerLease else {
             return try await prepareCompletion(request: request, templateControls: templateControls,
-                requestUsage: requestUsage, acquired: consume acquired)
+                requestUsage: requestUsage, distributedRequestOrigin: distributedRequestOrigin,
+                acquired: consume acquired)
         }
         let releaseBox = acquired.releaseToken
         // A second token cannot adopt, abandon, fire or cancel a first token's
@@ -383,7 +390,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     guard let acquired = payload.take() else { throw NativeLocalConsumerOwnershipError.invalidBinding }
                     do {
                         return try await prepareCompletion(request: request, templateControls: templateControls,
-                            requestUsage: requestUsage, acquired: consume acquired)
+                            requestUsage: requestUsage, distributedRequestOrigin: distributedRequestOrigin,
+                            acquired: consume acquired)
                     } catch {
                         await releaseBox.fire()
                         throw error
@@ -408,7 +416,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
     private func prepareCompletion(
         request: OpenAIChatCompletionRequest, templateControls: ChatTemplateControls,
-        requestUsage: EngineV2RequestUsageSignal, acquired: consuming AcquiredModel
+        requestUsage: EngineV2RequestUsageSignal,
+        distributedRequestOrigin: ContinuousClock.Instant?, acquired: consuming AcquiredModel
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         let tokenizer = acquired.tokenizer
         let modelType = acquired.modelType
@@ -681,7 +690,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         profile: profile,
                         serviceReservationID: serviceReservationID,
                         serviceReservation: serviceReservation,
-                        promptWork: promptWork
+                        promptWork: promptWork,
+                        distributedRequestOrigin: distributedRequestOrigin
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -900,7 +910,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     profile: profile,
                     serviceReservationID: serviceReservationID,
                     serviceReservation: serviceReservation,
-                    promptWork: promptWork
+                    promptWork: promptWork,
+                    distributedRequestOrigin: distributedRequestOrigin
                 )
                 do {
                     try checkFirstContentDeadline()

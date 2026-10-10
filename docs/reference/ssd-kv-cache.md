@@ -384,3 +384,19 @@ observations remain available through these surfaces.
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — key hierarchy
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/ssd-kv-cache-v1-design.md`](../design/ssd-kv-cache-v1-design.md) — superseded design records
 - Tests: `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`
+
+## Cluster cache ownership (experimental, staging)
+
+`ClusterCacheIdentity` and `ClusterCacheWriterLease`
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/ClusterCacheOwnership.swift`,
+mirrored on the coordinator side in `Layr-Labs/darkbloom-platform`) are the
+ownership contracts clustering adds on top of the epoch seam, without
+changing it: a cluster cache namespace is scoped to the authorization
+boundary plus the exact model aggregate, prompt contract, build,
+layout/shard placement, activation precision and cache epoch (fuzzy or
+absent fields cannot construct an identity — safe miss by construction),
+and writes are fenced to one authoritative owner per namespace and physical
+root (canonical root keys, exact-owner admission, strict supersession, no
+reconnect regain). No call site consumes them yet and there is no
+cross-host raw-KV reuse contract; the epoch store, durable-budget
+accounting and publication behavior are unchanged.

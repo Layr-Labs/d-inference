@@ -149,6 +149,14 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 status: HTTPResponse.Status(
                     code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
                 message: InferenceFailureCode.internalFailure.message)
+        } catch let error as PreContentDeadlineFailure {
+            // A distributed first-token budget that is already spent refuses
+            // before any SSE header or content, with the existing mapping.
+            let failure = ProviderLoop.sanitizedInferenceFailure(
+                from: error, phase: .generation)
+            return Self.openAIErrorResponse(
+                status: HTTPResponse.Status(code: Int(failure.statusCode)),
+                message: failure.message)
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {

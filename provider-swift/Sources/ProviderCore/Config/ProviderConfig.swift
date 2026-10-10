@@ -475,6 +475,9 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 }
 
 public struct ProviderConfig: Sendable, Equatable, Codable {
+    /// Inert saved cluster setup; startup requires a separate explicit
+    /// distributed opt-in. Never an approval or serving capacity.
+    public var cluster: ClusterConfigurationReference?
     public var provider: ProviderSettings
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
@@ -488,7 +491,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
         gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
-        cache: CacheSettings = CacheSettings()
+        cache: CacheSettings = CacheSettings(),
+        cluster: ClusterConfigurationReference? = nil
     ) {
         self.provider = provider
         self.backend = backend
@@ -496,6 +500,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
         self.cache = cache
+        self.cluster = cluster
     }
 
     enum CodingKeys: String, CodingKey {
@@ -505,6 +510,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
         case cache
+        case cluster
     }
 
     public init(from decoder: Decoder) throws {
@@ -518,6 +524,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         ) ?? GemmaOptimizationSettings()
         self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
         try self.cache.validate()
+        self.cluster = try container.decodeIfPresent(ClusterConfigurationReference.self, forKey: .cluster)
     }
 
     /// Generate a default config based on detected hardware.
@@ -623,7 +630,8 @@ public enum ConfigManager: Sendable {
         return config
     }
 
-    /// Save config to a file path, creating parent directories as needed.
+    /// Save config to a file path, creating parent directories as needed. The
+    /// file is replaced atomically and owner-only (`ProviderConfigFile`).
     public static func save(_ config: ProviderConfig, to path: URL) throws {
         let dir = path.deletingLastPathComponent()
         do {
@@ -636,7 +644,7 @@ public enum ConfigManager: Sendable {
 
         let toml = serialize(config)
         do {
-            try toml.write(to: path, atomically: true, encoding: .utf8)
+            try ProviderConfigFile.replace(path, with: Data(toml.utf8))
         } catch {
             throw ConfigError.writeFailed(path: path.path, underlying: error)
         }

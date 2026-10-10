@@ -577,6 +577,31 @@ public actor ProviderLoop {
     /// coordinator's per-model catalog routing filter). Set in `run()`.
     internal var coordinatorClient: CoordinatorClient?
 
+    // MARK: - Native pair member (private cluster staging, fail-closed)
+
+    /// Set when the serving configuration closes; member installation is only
+    /// valid before serving starts.
+    internal var nativePairConfigurationClosed = false
+    /// The staged member control owner; installed only in member mode.
+    /// `nativePairMemberStatus` stays nil in ordinary solo serving.
+    internal var nativePairMemberControl: NativePairMemberControl?
+
+    // MARK: - Cluster member connection state
+
+    /// Identity of the current accepted member control connection; nil while
+    /// unacknowledged or after a boundary. Never a grant by itself.
+    internal var memberConnectionID: UUID?
+    /// Whether any connection on this loop completed member acceptance; used by
+    /// `clusterMemberStopsOnDisconnect` to end the loop after a later drop.
+    internal var memberHadAcceptedConnection = false
+    /// Set when the member's accepted connection ended or trust was lost; the
+    /// event dispatcher consumes and stops instead of serving.
+    internal var memberControlRequiresStop = false
+    /// Startup member-registration wait state (single waiter).
+    internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
+    internal var memberRegistrationTimer: Task<Void, Never>?
+    internal var memberRegistrationWaitID: UUID?
+
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
     /// choke point every material slot-state change already flows through.

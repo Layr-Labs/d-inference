@@ -13,6 +13,8 @@
 // engine-error → OpenAI-envelope mapping; the caller supplies how to acquire a
 // model, resolve a tokenizer, and list the advertised catalog.
 
+import HTTPTypes
+import NIOCore
 import Foundation
 import Hummingbird
 import MLXLMServer
@@ -38,10 +40,10 @@ public struct LocalInferenceHTTPConfig: Sendable {
 /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
-        LocalDisconnectResponder<LocalAuthResponder<
+        LocalDisconnectResponder<LocalRequestOriginResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -72,7 +74,9 @@ func makeLocalInferenceApplication(
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
     responseTracker: LocalResponseTracker? = nil,
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in },
-    modelTypeProvider: (@Sendable (String) async -> String?)? = nil
+    modelTypeProvider: (@Sendable (String) async -> String?)? = nil,
+    clusterStatus: (@Sendable (String) async throws -> ClusterLiveStatus)? = nil,
+    distributedResponses: (any DistributedHTTPResponseProviding)? = nil
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
     // template-only controls. Build a lightweight engine/service facade per
@@ -100,6 +104,21 @@ func makeLocalInferenceApplication(
     }
     let service = serviceForTemplateControls(.init())
     let router = MLXServerApplication.buildRouter(service: service)
+    if let clusterStatus {
+        router.get("/v1/cluster/status") { request, _ async throws -> Response in
+            let header = HTTPField.Name(ClusterStatusCodec.nonceHeader)!
+            guard let nonce = request.headers[header], (try? ClusterStatusCodec.nonce(nonce)) != nil else {
+                return Response(status: .badRequest, headers: [.cacheControl: "no-store"])
+            }
+            do {
+                let bytes = try ClusterStatusCodec.encode(await clusterStatus(nonce))
+                return Response(status: .ok, headers: [.contentType: "application/json", .cacheControl: "no-store"],
+                    body: .init(byteBuffer: ByteBuffer(bytes: bytes)))
+            } catch {
+                return Response(status: .serviceUnavailable, headers: [.cacheControl: "no-store"])
+            }
+        }
+    }
     // Chat-completions POSTs are served by the interception responder with
     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
     // pins the Hummingbird 2 MiB default, which 413s inline media — see
@@ -107,7 +126,8 @@ func makeLocalInferenceApplication(
     // upstream router unchanged.
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service,
-        serviceForTemplateControls: serviceForTemplateControls)
+        serviceForTemplateControls: serviceForTemplateControls,
+        distributedResponses: distributedResponses)
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).
@@ -119,7 +139,10 @@ func makeLocalInferenceApplication(
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
     return Application(
-        responder: LocalDisconnectResponder(inner: authedResponder, responseTracker: responseTracker),
+        responder: LocalDisconnectResponder(
+            inner: LocalRequestOriginResponder(inner: authedResponder),
+            responseTracker: responseTracker,
+            observeConnection: distributedResponses != nil),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

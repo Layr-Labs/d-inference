@@ -1,0 +1,121 @@
+import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
+import Foundation
+
+enum WorkerFailure: Error { case invalid(String) }
+
+struct WorkerConfiguration {
+    let load: QwenResidentLoadConfiguration
+    let bootstrap: WorkerBootstrapConfiguration?
+    /// Qualification only: selects the recording runtime and its sidecar directory.
+    let evidenceDirectory: String?
+    /// When named by the owner, the worker ends itself here unless it is ready.
+    let startupDeadlineUptimeNanoseconds: UInt64?
+    /// How the two ranks divide a request (`--generation-mode`); the pipeline
+    /// when the argument is absent. Both ranks must be started with the same
+    /// mode, and it must be one the registered model's resident row lists.
+    let generationMode: ClusterGenerationMode
+    /// `--qualification-switches yes`: the explicit test flag without which a
+    /// qualification switch in the environment stops the worker at startup.
+    /// An installed owner never passes it.
+    let qualificationSwitchesPermitted: Bool
+    /// Which adapter executes the registered model `--model-id` names.
+    let family: ClusterResidentModelCatalog.Family
+    /// That model's own session bound; the dense models keep 300 seconds.
+    let maximumLifetimeNanoseconds: UInt64
+
+    init(arguments: [String], now: UInt64) throws {
+        let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
+            "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
+            "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
+        let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
+            "--generation-mode", "--qualification-switches"]
+        let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
+            (0...optionalNames.count).map { (required + $0) * 2 }
+        }
+        guard counts.contains(arguments.count) else {
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional qualification-switches flag and optional complete bootstrap triple")
+        }
+        var fields: [String: String] = [:]
+        for index in stride(from: 0, to: arguments.count, by: 2) {
+            let key = arguments[index], value = arguments[index + 1]
+            guard names.union(optionalNames).union(WorkerBootstrapConfiguration.names).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
+                  !value.contains("\0") else { throw WorkerFailure.invalid("Unknown, duplicate or empty worker argument") }
+            fields[key] = value
+        }
+        guard names.allSatisfy({ fields[$0] != nil }) else { throw WorkerFailure.invalid("Missing worker argument") }
+        func integer(_ key: String) throws -> Int {
+            guard let value = Int(fields[key]!), String(value) == fields[key] else { throw WorkerFailure.invalid("Worker integer must be canonical") }
+            return value
+        }
+        func hash(_ key: String) throws -> String {
+            let value = fields[key]!
+            guard value.utf8.count == 64, value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw WorkerFailure.invalid("Worker SHA256 must be lowercase hexadecimal")
+            }
+            return value
+        }
+        let rank = try integer("--rank"), cut = try integer("--stage-cut")
+        // The closed catalog of every adapter: an ID outside it has no entry.
+        guard let registered = ClusterResidentModelCatalog.entry(runtimeModelID: fields["--model-id"]!) else {
+            throw WorkerFailure.invalid("Worker requires a registered model ID")
+        }
+        let lifetime = UInt64(registered.maximumLifetimeSeconds) * 1_000_000_000
+        guard (0...1).contains(rank), fields["--model-dir"]!.hasPrefix("/"),
+              registered.supportedCuts.contains(cut),
+              let epoch = UUID(uuidString: fields["--membership-epoch"]!),
+              epoch.uuidString.lowercased() == fields["--membership-epoch"],
+              let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
+              String(deadline) == fields["--deadline-uptime-nanoseconds"],
+              deadline > now, deadline - now <= lifetime else {
+            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <=\(registered.maximumLifetimeSeconds)-second local lifetime")
+        }
+        family = registered.family; maximumLifetimeNanoseconds = lifetime
+        guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
+            throw WorkerFailure.invalid("Unknown worker prefill schedule")
+        }
+        // A closed choice, and one the named model's own row must list: an
+        // unknown or unsupported mode never falls back to the pipeline.
+        if let text = fields["--generation-mode"] {
+            guard let mode = ClusterGenerationMode(rawValue: text),
+                  registered.supportedGenerationModes.contains(mode) else {
+                throw WorkerFailure.invalid("Worker generation mode must be one the registered model lists: "
+                    + ClusterGenerationMode.allCases.map(\.rawValue).joined(separator: ", "))
+            }
+            generationMode = mode
+        } else { generationMode = .pipeline }
+        if let text = fields["--qualification-switches"] {
+            guard text == "yes" else { throw WorkerFailure.invalid("--qualification-switches takes only the value yes") }
+            qualificationSwitchesPermitted = true
+        } else { qualificationSwitchesPermitted = false }
+        if let text = fields["--startup-deadline-uptime-nanoseconds"] {
+            guard let startup = UInt64(text), String(startup) == text, startup > now, startup <= deadline else {
+                throw WorkerFailure.invalid("Worker startup deadline must be canonical, in the future and within its lifetime")
+            }
+            startupDeadlineUptimeNanoseconds = startup
+        } else { startupDeadlineUptimeNanoseconds = nil }
+        bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
+        if let directory = fields["--evidence-directory"] {
+            let components = directory.split(separator: "/", omittingEmptySubsequences: false)
+            guard directory.hasPrefix("/"), directory.utf8.count <= 1024, components.count > 1,
+                  components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  !directory.utf8.contains(where: { $0 < 32 || $0 == 127 }) else {
+                throw WorkerFailure.invalid("Worker evidence directory must be a normalized absolute path")
+            }
+        }
+        evidenceDirectory = fields["--evidence-directory"]
+        let peers = try (0...1).map { index -> ClusterWorkerPeer in
+            let label = fields["--peer\(index)-id"]!
+            guard label.utf8.count <= 128, label.utf8.allSatisfy({ (33...126).contains($0) }) else {
+                throw WorkerFailure.invalid("Worker peer label is invalid")
+            }
+            return .init(id: label, buildSHA256: try hash("--peer\(index)-build-sha256"))
+        }
+        guard peers[0].id != peers[1].id else { throw WorkerFailure.invalid("Worker peers must be distinct") }
+        load = .init(identity: .init(membershipEpoch: epoch, modelID: fields["--model-id"]!,
+            artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
+            modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
+            deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
+            prefillSchedule: prefillSchedule)
+    }
+}

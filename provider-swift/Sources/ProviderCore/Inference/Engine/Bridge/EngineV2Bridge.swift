@@ -86,6 +86,11 @@ public actor EngineV2Bridge {
     /// Construction-time fallback reason, retained for heartbeat reporting.
     /// Admission and resizing depend on the actual kvBackendKind only.
     public let kvBackendFallbackReason: String?
+    /// Optional distributed first-token budget policy for the staged cluster
+    /// engine path; nil on every ordinary local engine. A distributed submit
+    /// narrows the origin-anchored deadline context through it without
+    /// granting a fresh budget.
+    let distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     /// `kvBackendFallbackReason` already clamped to the heartbeat budget.
     /// Stored rather than recomputed because the reason is fixed at
     /// construction while the heartbeat rebuilds every slot's capacity every
@@ -373,6 +378,7 @@ public actor EngineV2Bridge {
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
+        distributedFirstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
@@ -382,6 +388,7 @@ public actor EngineV2Bridge {
         self.kvBackendKind = kvBackendKind
         self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
+        self.distributedFirstTokenBudgetPolicy = distributedFirstTokenBudgetPolicy
         self.advertisedContextTokens =
             Qwen4SupportPolicy.validatedContextTokens(advertisedContextTokens)
             ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)

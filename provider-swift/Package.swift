@@ -31,6 +31,10 @@ let package = Package(
     dependencies: [
         .package(path: "../libs/mlx-swift"),
         .package(path: "../libs/mlx-swift-lm"),
+        // Private cluster foundation (slice 1 staging): MLX-free membership
+        // protocol module mirrored by the native-pair public control codec.
+        // Build-graph only; no serving call site consumes it yet.
+        .package(path: "../libs/darkbloom-cluster"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -138,6 +142,11 @@ let package = Package(
                 "ProviderAppAttest",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterPlacement", package: "darkbloom-cluster"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -261,12 +270,29 @@ let package = Package(
             path: "Tests/GPTOSSOptimizationTests"
         ),
 
+        // Test-only stand-in for an installed owner and its native child, run
+        // by the native-pair member control tests over the real owner pipe and
+        // key prelude. CPU only: no model, mesh or GPU. Not a product, so no
+        // release build ships it.
+        .executableTarget(
+            name: "cluster-member-fixture-child",
+            dependencies: [
+                .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterRemote", package: "darkbloom-cluster"),
+                .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
+            ],
+            path: "Tests/ClusterMemberFixtureChild"
+        ),
+
         .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
+                "cluster-member-fixture-child",
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),

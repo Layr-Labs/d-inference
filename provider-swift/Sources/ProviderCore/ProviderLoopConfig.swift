@@ -26,6 +26,14 @@ public struct ProviderLoopConfig: Sendable {
     /// endpoint off the SAME loaded models it serves to the coordinator
     /// (unified mode). nil = coordinator-only (the default).
     public let localEndpoint: LocalInferenceHTTPConfig?
+    /// Restrictive registration role. The default stays ordinary solo; the
+    /// control-only cluster member role is reachable only by an explicit
+    /// configuration that also constructs the member control owner. It grants
+    /// no trust or model capability by itself.
+    public let executionRole: ProviderExecutionRole
+    /// Whether an accepted member connection that later drops ends the loop
+    /// (true) or permits a reconnect (false). Read only in member mode.
+    public let clusterMemberStopsOnDisconnect: Bool
 
     public init(
         coordinatorURL: String,
@@ -39,7 +47,9 @@ public struct ProviderLoopConfig: Sendable {
         modelHashFingerprints: [String: String] = [:],
         localEndpoint: LocalInferenceHTTPConfig? = nil,
         configPath: URL? = nil,
-        autopilotInventory: [ModelInfo] = []
+        autopilotInventory: [ModelInfo] = [],
+        executionRole: ProviderExecutionRole = .solo,
+        clusterMemberStopsOnDisconnect: Bool = true
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -53,5 +63,7 @@ public struct ProviderLoopConfig: Sendable {
         self.modelHashes = modelHashes
         self.modelHashFingerprints = modelHashFingerprints
         self.localEndpoint = localEndpoint
+        self.executionRole = executionRole
+        self.clusterMemberStopsOnDisconnect = clusterMemberStopsOnDisconnect
     }
 }

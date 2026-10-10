@@ -1,6 +1,25 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
+
+## App Attest provider dispatch
+
+`ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
+App Attest client against a loopback coordinator. It holds a model-load wait
+and an Apple callback to check responsive challenge/status handling, reconnect
+invalidation, absence of overlapping proof operations and key reuse. Apple and
+model work are local fixtures; these tests never contact Apple or a live
+coordinator. Build and stage the source-matched Metal library through
+`make provider-test`, or use its build/staging steps before a focused
+`swift test --skip-build --no-parallel --filter ServeLoopAppAttestTests`.
+
+`ServeLoopAppAttestInteropTests` is an opt-in peer for the platform repository's
+`TestSwiftProviderAppAttestInterop`. Set `DARKBLOOM_SWIFT_INTEROP_PACKAGE` to this
+built `provider-swift` directory when running that Go test. The driver starts
+both processes on loopback and injects proof/grant loss, reconnects and
+revocation. It seeds prior enrollment, receipt and qualified runtime facts;
+software callbacks produce signatures for the real verifier. It does not
+qualify a signed release on Apple hardware or test initial Apple enrollment.
 
 ## Autopilot rewards
 

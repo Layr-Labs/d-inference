@@ -74,20 +74,25 @@ struct QwenDenseStorageRequirement: Encodable {
                 return tensor
             }
             guard !entries.isEmpty else { throw QwenDenseProfileError("Empty admitted stage inventory") }
-            let fusion = entries.filter { entry in
+            let projections = entries.filter { entry in
                 let parts = entry.name.split(separator: ".")
                 return parts.contains("linear_attn") && parts.count >= 2 &&
                     ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"].contains(String(parts[parts.count - 2]))
             }
             let recurrentCount = stage.layers.filter { $0.kind == "linear_attention" }.count
-            guard fusion.count == (try QwenLongPrefillCheckedBytes.product([recurrentCount, 12])) else {
+            let pack = profile.model.pack
+            guard projections.count == (try QwenLongPrefillCheckedBytes.product(
+                [recurrentCount, pack.gatedDeltaInputProjectionTensors])) else {
                 throw QwenDenseProfileError("Registered affine GDN fusion triplets differ")
             }
+            // A pack whose projections the decoder does not fuse replaces none.
+            let fusion = pack.fusesGatedDeltaInputProjections ? projections : []
             stages.append(.init(stageIndex: stage.index, lowerLayer: stage.sourceRange.lowerBound,
                 upperLayer: stage.sourceRange.upperBound, stagePlanFingerprint: stage.fingerprint,
                 constructionConfigurationSHA256: QwenDenseProfileIdentity.sha256(stage.constructionConfiguration),
                 canonicalCount: entries.count, activeBytes: try sum(entries.map(\.byteCount)),
-                inertBytes: try QwenLongPrefillCheckedBytes.product([stage.index == 0 ? 2 : 1, profile.geometry.hiddenSize, 2]),
+                inertBytes: try QwenLongPrefillCheckedBytes.product([stage.index == 0 ? 2 : 1, profile.geometry.hiddenSize,
+                    pack.activationElementBytes]),
                 largestHostTensorBytes: entries.map(\.byteCount).max()!, fusionReplacementBytes: try sum(fusion.map(\.byteCount))))
         }
         guard stages.map(\.stageIndex) == [0, 1], try sum(stages.map(\.activeBytes)) == profile.sourceTensorBytes,
@@ -102,7 +107,7 @@ struct QwenDenseStorageRequirement: Encodable {
         let layerCount = role.stageIndex.map { plan.stages[$0].layers.count } ?? profile.geometry.layers
         let geometry = try QwenDenseStateBudget.geometry(profile.geometry, layers: layerCount)
         let budget = try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)
-        let state = try QwenDenseStateBudget.finalState(geometry)
+        let state = try QwenDenseStateBudget.finalState(geometry, pack: profile.model.pack)
         let partial = try sum([active, inert, host, fusion, budget.conservativeStateAndBoundaryBytes])
         return try Self(profile: profile, plan: plan, role: role, stages: stages, active: active, inert: inert,
             host: host, fusion: fusion, budget: budget, state: state, partial: partial)

@@ -29,6 +29,8 @@ enum QwenRegisteredDenseModel: String, Codable, CaseIterable {
     case qwen35ThirtyFiveBA3B = "registered_qwen35_35b_a3b"
     /// Qwen3.6 35B A3B: the text model of the vision and MTP artifact, alone.
     case qwen36ThirtyFiveBA3B = "registered_qwen36_35b_a3b"
+    /// Ternary Bonsai 2 27B: the 27B's geometry in Prism's folded 2-bit pack.
+    case ternaryBonsai2TwentySevenB = "registered_ternary_bonsai_2_27b"
 }
 
 /// Caller-supplied metadata, not a trusted descriptor or load permission. The
@@ -72,7 +74,9 @@ struct QwenDenseFinalStateGeometry: Encodable, Equatable {
     let committedTokens: Int
     let attentionLayers: Int, recurrentLayers: Int, componentCount: Int
     let kvShape: [Int], convolutionShape: [Int], ssmShape: [Int]
-    let kvDType = "bfloat16", convolutionDType = "bfloat16", ssmDType = "float32", offsetDType = "int32"
+    /// The registered pack's activation dtype; BF16 for every affine pack.
+    let kvDType: String, convolutionDType: String
+    let ssmDType = "float32", offsetDType = "int32"
     let kvBytesPerTensor: Int, convolutionBytesPerTensor: Int, ssmBytesPerTensor: Int
     let logicalBytes: Int
 }

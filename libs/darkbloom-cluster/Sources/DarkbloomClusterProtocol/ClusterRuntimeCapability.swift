@@ -7,6 +7,10 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
     /// The same two-stage layer pipeline for Qwen3.5-architecture models whose
     /// feed-forward is a routed bank of experts beside a shared expert.
     case qwen35RoutedExperts = "qwen35-routed-expert-layer-stage"
+    /// The same pipeline for a dense Qwen3.5-architecture model stored as a
+    /// Prism Hadamard pack: packed modules behind signed block transforms,
+    /// F16 scales and F32 norms, so the stream and its state are F32.
+    case qwen35PrismHadamard = "qwen35-prism-hadamard-layer-stage"
     public var version: Int { 1 }
     /// The adapter's original pair: the first row of `registeredProfiles`.
     public var runtimeModelID: String { registeredProfiles[0].runtimeModelID }
@@ -22,6 +26,8 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         case .qwen35RoutedExperts:
             [("registered_qwen35_35b_a3b", "registered_qwen35_35b_a3b_greedy_generation_v1"),
              ("registered_qwen36_35b_a3b", "registered_qwen36_35b_a3b_greedy_generation_v1")]
+        case .qwen35PrismHadamard:
+            [("registered_ternary_bonsai_2_27b", "registered_ternary_bonsai_2_27b_greedy_generation_v1")]
         }
     }
     /// The one arithmetic policy a capability of this adapter may name. An
@@ -31,6 +37,7 @@ public enum ClusterRuntimeAdapter: String, Sendable, CaseIterable {
         switch self {
         case .qwen35Dense: "qwen_cbv2_query128_bf16_tf32_default_v1"
         case .qwen35RoutedExperts: "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1"
+        case .qwen35PrismHadamard: "qwen_cbv2_query128_tf32_prism_hadamard_f32_v1"
         }
     }
     /// The adapter that registers a runtime model, or nil for an unregistered ID.

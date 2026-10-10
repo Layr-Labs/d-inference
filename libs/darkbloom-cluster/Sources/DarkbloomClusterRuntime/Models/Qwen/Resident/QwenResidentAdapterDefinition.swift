@@ -14,7 +14,8 @@ enum QwenResidentAdapterDefinition {
         // The model's own closed row names its profile; the 9B row is `Self.profileID`.
         let profileID = try QwenResidentModelDefinition(model: specification.model).profileID
         return try .init(identifier: profileID, vocabularySize: 248_320,
-            hiddenSize: specification.hidden, activationDType: "bfloat16", maximumPromptTokens: 8192,
+            hiddenSize: specification.hidden, activationDType: specification.model.pack.activationDType,
+            maximumPromptTokens: 8192,
             maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)
     }
 }

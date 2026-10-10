@@ -47,11 +47,18 @@ struct QwenResidentModelDefinition {
         case .qwen36ThirtyFiveBA3B:
             profileID = "registered_qwen36_35b_a3b_greedy_generation_v1"
             supportedCuts = structural
+        case .ternaryBonsai2TwentySevenB:
+            // The 27B's geometry, so the 27B's cuts: 4, 8, ... 60.
+            profileID = "registered_ternary_bonsai_2_27b_greedy_generation_v1"
+            supportedCuts = structural
         }
         // Routed experts are token-local, so they change neither the state a
         // mode moves nor its framing; what they need is their own arithmetic
-        // contract and the adapter that names it.
-        let arithmetic: QwenResidentArithmeticPolicy = specification.routedExperts == nil ? .dense : .routedExperts
+        // contract and the adapter that names it. A Prism pack's arithmetic
+        // depends on two more switches of the process environment, so it has
+        // its own contract and the adapter that names it too.
+        let arithmetic: QwenResidentArithmeticPolicy = specification.routedExperts != nil ? .routedExperts
+            : model.pack == .prismHadamard ? .prismHadamard : .dense
         let registered = (runtimeModelID: model.rawValue, profileID: profileID)
         guard let adapter = ClusterRuntimeAdapter.registering(runtimeModelID: model.rawValue),
               adapter.registeredProfiles.contains(where: { $0 == registered }),
@@ -65,7 +72,10 @@ struct QwenResidentModelDefinition {
         // the layer kinds and head counts), so both rows carry every mode. A
         // model that must not run one drops it from its own row here.
         switch model {
-        case .qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B:
+        case .qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B,
+             .ternaryBonsai2TwentySevenB:
+            // The Prism pack's state has the 27B's shapes in F32; the hand-off
+            // carries each component in the profile's activation dtype.
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
         }
         guard supportedGenerationModes.first == .pipeline,

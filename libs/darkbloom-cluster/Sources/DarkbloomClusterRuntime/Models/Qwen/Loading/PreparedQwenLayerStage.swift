@@ -44,7 +44,16 @@ func prepareQwenLayerStageModel(source: PreparedQwenLayerSource,
         }
         policies[path] = local
     }
-    quantize(model: model) { path, _ in policies[path]?.asTuple }
+    if let prism = source.prism {
+        // The same public packed modules the SDK installs, as shells of the
+        // stored layout: exactly the records this stage's configuration carries.
+        try prism.install(stageModel: model, constructionConfiguration: stage.constructionConfiguration,
+            policies: policies) { path in
+                localToGlobal[path + ".scales"].map { $0.split(separator: ".").dropLast().joined(separator: ".") }
+            }
+    } else {
+        quantize(model: model) { path, _ in policies[path]?.asTuple }
+    }
     try check()
     let actual = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
     let inertParameters = inert.flatMap(\.parameters)

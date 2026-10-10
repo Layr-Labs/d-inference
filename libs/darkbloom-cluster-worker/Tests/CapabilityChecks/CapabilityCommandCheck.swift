@@ -40,6 +40,44 @@ import Foundation
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(large)) == large,
                     "The 27B capability does not round-trip within the byte bound")
             }
+            // The Prism Hadamard pack has the 27B's geometry and cuts under its own adapter
+            // and arithmetic policy; its Plans are its own because its configuration is.
+            try checks.yes("registered-bonsai-is-described-under-its-own-adapter-and-policy") {
+                let large = try QwenResidentCapabilityMetadata.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen38-27b.configuration.json")),
+                    manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen38-27b.manifest.json")),
+                    runtimeBinarySHA256: binary)
+                let packed = try QwenResidentCapabilityMetadata.describe(
+                    configuration: try Data(contentsOf: fixtures.appendingPathComponent("registered-ternary-bonsai-2-27b.configuration.json")),
+                    manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-ternary-bonsai-2-27b.manifest.json")),
+                    runtimeBinarySHA256: binary)
+                try capabilityCheck(packed.runtimeModelID == "registered_ternary_bonsai_2_27b"
+                    && packed.profile.id == "registered_ternary_bonsai_2_27b_greedy_generation_v1"
+                    && packed.adapterID == ClusterRuntimeAdapter.qwen35PrismHadamard.rawValue
+                    && packed.arithmeticPolicyID == ClusterRuntimeAdapter.qwen35PrismHadamard.arithmeticPolicyID
+                    && packed.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit]
+                    && packed.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
+                    && packed.partitions.count == 15, "The Bonsai capability differs from its resident row")
+                try capabilityCheck(packed.partitions.map { $0.stages.map(\.sourceLayerEnd) }
+                    == large.partitions.map { $0.stages.map(\.sourceLayerEnd) }
+                    && Set(packed.partitions.map(\.planSHA256)).isDisjoint(with: large.partitions.map(\.planSHA256))
+                    && packed.profileFingerprint != large.profileFingerprint
+                    && packed.arithmeticPolicySHA256 != large.arithmeticPolicySHA256
+                    && large.adapterID == ClusterRuntimeAdapter.qwen35Dense.rawValue
+                    && large.arithmeticPolicyID == ClusterRuntimeAdapter.qwen35Dense.arithmeticPolicyID,
+                    "The Bonsai capability borrows the 27B's plans, profile, adapter or arithmetic")
+                try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(packed)) == packed,
+                    "The Bonsai capability does not round-trip within the byte bound")
+                // A capability that names the pack under the dense adapter or the dense policy is refused.
+                var crossed = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(packed)) as! [String: Any]
+                crossed["arithmeticPolicyID"] = ClusterRuntimeAdapter.qwen35Dense.arithmeticPolicyID
+                var bytes = try JSONSerialization.data(withJSONObject: crossed, options: [.sortedKeys, .withoutEscapingSlashes]); bytes.append(10)
+                try capabilityCheck((try? ClusterRuntimeCapabilityCodec.decode(bytes)) == nil, "The dense arithmetic policy was accepted for the pack")
+                crossed = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(packed)) as! [String: Any]
+                crossed["adapterID"] = ClusterRuntimeAdapter.qwen35Dense.rawValue
+                bytes = try JSONSerialization.data(withJSONObject: crossed, options: [.sortedKeys, .withoutEscapingSlashes]); bytes.append(10)
+                try capabilityCheck((try? ClusterRuntimeCapabilityCodec.decode(bytes)) == nil, "The dense adapter was accepted for the pack")
+            }
             try checks.yes("binary-binding-remains-separate-from-model-identities") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: String(repeating: "2", count: 64))
                 try capabilityCheck(value.runtimeBinarySHA256 != golden.runtimeBinarySHA256 && value.partitions == golden.partitions

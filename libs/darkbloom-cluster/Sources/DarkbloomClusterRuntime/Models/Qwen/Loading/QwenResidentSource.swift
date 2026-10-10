@@ -82,18 +82,25 @@ func prepareQwenResidentMetadata<Stored>(_ admission: QwenResidentAdmission,
                 throw ProbeError("Resident source differs from the exact registered model and selected Plan")
             }
             let pair = try QwenDenseStorageRequirement.derive(profile: profile, plan: rebuilt, role: .sequentialPair)
+            // What the registered pack stores decides the load conversion and
+            // the dtype every stage must then be found to run in.
+            let pack = profile.model.pack
             let identity = QwenDenseObservedSourceIdentity(aggregateSHA256: artifact.aggregateSHA256,
                 configurationSHA256: artifact.configurationSHA256,
                 verifiedManifestSHA256: artifact.verifiedManifestSHA256,
-                retainedSourceCount: prepared.sourceTensorCount, bf16ConversionEnabled: true)
+                retainedSourceCount: prepared.sourceTensorCount, bf16ConversionEnabled: pack.convertsFloat16ToBFloat16)
             let validation = try QwenDenseObservedSourceValidation.validateRegistered(observed,
                 identity: identity, profile: profile, requirement: pair, plan: rebuilt)
             let source = try finishPreparedQwenLayerSource(prepared: prepared,
                 verifiedAggregateSHA256: artifact.aggregateSHA256, model: model,
-                plan: rebuilt, policy: policy, convert: true, validated: validation, root: root,
+                plan: rebuilt, policy: policy, convert: pack.convertsFloat16ToBFloat16, validated: validation, root: root,
                 hidden: profile.geometry.hiddenSize, vocabulary: profile.vocabularySize, check: check)
             try confirmUnchanged()
-            guard source.activationDType == .bfloat16 else { throw ProbeError("Resident source is not native BF16") }
+            guard String(describing: source.activationDType) == pack.activationDType,
+                  (source.prism != nil) == (pack == .prismHadamard) else {
+                throw ProbeError(pack == .affineBFloat16 ? "Resident source is not native BF16"
+                    : "Resident source does not run in its registered pack's activation dtype")
+            }
             return (QwenResidentSource(source: source, validation: validation, profile: profile, pairRequirement: pair),
                     prepared.canonical)
         }

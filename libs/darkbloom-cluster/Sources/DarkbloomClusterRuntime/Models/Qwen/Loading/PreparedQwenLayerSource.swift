@@ -23,6 +23,9 @@ struct PreparedQwenLayerSource {
     let largestSourceBytes: Int
     let sourceTensorManifestSHA256: String
     let sourceParameterLayoutSHA256: String
+    /// A Prism Hadamard pack's verified transforms, which each stage's packed
+    /// modules are built with; nil for every other artifact.
+    var prism: QwenPrismHadamardSource? = nil
 }
 
 /// Scalar-record assembly after registered descriptor validation. Does not
@@ -66,7 +69,9 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
     let wrapped = QwenRoutedExpertStageMetadata.wrapperModelTypes.contains(root["model_type"] as? String ?? "")
     let embeddingPath = (wrapped ? "language_model." : "")
         + "model.embed_tokens"
-    let activation = try qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
+    // A Prism pack's stream is not in the dtype of its embedding's scales.
+    let activation = try prepared.prism.map { try $0.activationDType(model: model, canonical: prepared.canonical) }
+        ?? qwenStageSourceActivation(prepared, path: embeddingPath, convert: convert)
     try check()
     return PreparedQwenLayerSource(verifiedAggregateSHA256: verifiedAggregateSHA256,
         sourceTensorCount: prepared.sourceTensorCount, tensors: tensors, mappings: mappings,
@@ -75,7 +80,7 @@ func finishPreparedQwenLayerSource<Stored>(prepared: PreparedQwenCheckpoint<Stor
         largestSourceBytes: largest, sourceTensorManifestSHA256: sha256(try canonicalJSONData(tensors)),
         sourceParameterLayoutSHA256: qwenStageLayout(tensors.map {
             "\($0.sourceName):\($0.loadedDType):\($0.shape)"
-        }))
+        }), prism: prepared.prism)
 }
 
 func validateQwenStageDenseModel(_ model: any LanguageModel, layerCount: Int) throws {

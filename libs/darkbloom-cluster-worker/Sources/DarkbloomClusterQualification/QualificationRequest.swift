@@ -97,6 +97,10 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         .init(modelID: "registered_qwen36_35b_a3b", profileID: "registered_qwen36_35b_a3b_greedy_generation_v1",
               supportedCuts: Array(stride(from: 4, through: 36, by: 4)),
               additionalArithmeticEnvironment: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust"]),
+        .init(modelID: "registered_ternary_bonsai_2_27b", profileID: "registered_ternary_bonsai_2_27b_greedy_generation_v1",
+              supportedCuts: Array(stride(from: 4, through: 60, by: 4)),
+              additionalArithmeticEnvironment: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1",
+                                                "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"]),
     ]
     public static func registeredModel(_ modelID: String) -> RegisteredModel? {
         registeredModels.first { $0.modelID == modelID }

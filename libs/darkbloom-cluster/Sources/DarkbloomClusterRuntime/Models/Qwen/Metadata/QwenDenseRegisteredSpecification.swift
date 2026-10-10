@@ -20,8 +20,9 @@ struct QwenDenseRegisteredSpecification {
     /// are then read under a scope that can describe them; a stage still
     /// loads none.
     let unownedUInt8Tensors: Bool
-    /// The `model_type` the artifact's configuration must declare.
-    var rootModelType: String { routedExperts == nil ? "qwen3_5" : QwenRoutedExpertStageMetadata.rootModelType }
+    /// The `model_type` the artifact's configuration must declare: the routed
+    /// family's, or the one its pack declares (`qwen3_5` for an affine pack).
+    var rootModelType: String { routedExperts == nil ? model.pack.rootModelType : QwenRoutedExpertStageMetadata.rootModelType }
 
     private init(model: QwenRegisteredDenseModel, configurationSHA256: String, manifestSHA256: String,
                  contentInventorySHA256: String? = nil,
@@ -90,5 +91,20 @@ struct QwenDenseRegisteredSpecification {
             kvHeads: 2, routedExperts: .init(experts: 256, expertsPerToken: 8,
                                              expertIntermediate: 512, sharedIntermediate: 512),
             unownedUInt8Tensors: true),
+        // Ternary Bonsai 2 27B, catalog `ternary-bonsai-2-27b` 2026-09-17-r1: the
+        // 27B's geometry as a Prism Hadamard pack in one safetensors file.
+        // 1,655 canonical text tensors; the 402 transform-sign tensors stored
+        // beside the packed modules (11,640,832 bytes) are checked against
+        // the artifact's `hadamard.json` by the loader and are not among them.
+        // The state estimate already counts four bytes per element, which is
+        // what this pack's F32 keys, values and convolution state take.
+        .init(model: .ternaryBonsai2TwentySevenB,
+            configurationSHA256: "238de7c512cc56a733421e3fd011d88f8260739e3d00e32c5d65b7943cc9f837",
+            manifestSHA256: "e6871c8df1f9d30895ff5caf84a40fe902cf8771cda56a2b9f087991ca34c1e4",
+            artifactSHA256: "ea1e901e4946c0ba9ad70c78517548808b353db6b3a13e87a8fa20468d81244c",
+            inventorySHA256: "64bbd7171cad459855fdb40d1f489d21c6ec6f5420e27cbdbd0d2aaea1830708",
+            manifestBytes: 8_608_670_713, manifestFileCount: 8, sourceBytes: 7_662_073_856,
+            tensorCount: 1655, largestTensorBytes: 317_849_600, layers: 64, hidden: 5120,
+            queryHeads: 24, linearValueHeads: 48, namedStateBytes: 1_599_082_560),
     ]
 }

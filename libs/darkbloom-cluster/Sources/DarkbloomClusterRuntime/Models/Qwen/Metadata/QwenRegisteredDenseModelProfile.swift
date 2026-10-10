@@ -11,7 +11,9 @@ struct QwenRegisteredDenseModelProfile {
     let geometry: QwenLongPrefillBudgetGeometry
     let vocabularySize: Int, manifestPayloadBytes: Int, sourceTensorBytes: Int, largestSourceTensorBytes: Int
     let fingerprint: String
-    let requiredNativeDType = "bfloat16", requiredBF16ConversionPolicy = true
+    /// The registered pack's activation dtype and load conversion: BF16 and
+    /// converted for every affine pack.
+    let requiredNativeDType: String, requiredBF16ConversionPolicy: Bool
     let runtimeExecutionAuthorized = false, actualPayloadVerificationEstablished = false
     let providerEligibilityEstablished = false
     let supportedPlanningRoles = QwenDenseStorageRole.allCases
@@ -24,11 +26,15 @@ struct QwenRegisteredDenseModelProfile {
         self.canonicalTensors = tensors; self.geometry = geometry; self.vocabularySize = 248_320
         self.manifestPayloadBytes = spec.manifestBytes; self.sourceTensorBytes = spec.sourceBytes
         self.largestSourceTensorBytes = spec.largestTensorBytes
+        let pack = spec.model.pack
+        self.requiredNativeDType = pack.activationDType
+        self.requiredBF16ConversionPolicy = pack.convertsFloat16ToBFloat16
         self.fingerprint = QwenDenseProfileIdentity.fingerprint([
             "qwen-registered-dense-metadata-profile-v1", spec.model.rawValue,
             spec.configurationSHA256, spec.manifestSHA256, spec.artifactSHA256, spec.inventorySHA256,
             "manifest=\(spec.manifestBytes)", "source=\(spec.sourceBytes)", "count=\(spec.tensorCount)",
-            "largest=\(spec.largestTensorBytes)", "native=bfloat16", "bf16Policy=true", "executionAuthorized=false",
+            "largest=\(spec.largestTensorBytes)", "native=\(pack.activationDType)",
+            "bf16Policy=\(pack.convertsFloat16ToBFloat16)", "executionAuthorized=false",
         ])
     }
 

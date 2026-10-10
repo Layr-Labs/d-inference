@@ -272,7 +272,7 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try large.encoded()), large)
         XCTAssertEqual(QualificationRequest.registeredModels.map(\.modelID),
                        ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b",
-                        "registered_qwen36_35b_a3b"])
+                        "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b"])
         // A model with routed experts adds its route to the three common variables; the others add nothing.
         XCTAssertEqual(small.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         XCTAssertEqual(large.arithmeticEnvironment.map(\.1), PairConfiguration.arithmeticEnvironment.map(\.1))
@@ -317,6 +317,31 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertFalse(try launch(small, cut: 8).contains("MLX_GATHER_QMM_EXPERT_SLICES"))
         XCTAssertThrowsError(try pair(routed, cut: 40)); XCTAssertThrowsError(try pair(routed, cut: 6))
         for cut in [0, 2, 6, 18, 62, 64] { XCTAssertThrowsError(try pair(large, cut: cut), "27B cut \(cut)") }
+        // The Prism Hadamard pack: the 27B's cuts under its own profile, and a
+        // rank started with the two switches its arithmetic contract pins. The
+        // other models' ranks are started exactly as before.
+        let packed = try make("registered_ternary_bonsai_2_27b")
+        XCTAssertEqual(packed.profileID, "registered_ternary_bonsai_2_27b_greedy_generation_v1")
+        XCTAssertEqual(packed.supportedCuts, large.supportedCuts)
+        XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try packed.encoded()), packed)
+        crossed = packed; crossed.profileID = large.profileID
+        XCTAssertThrowsError(try crossed.validate())
+        let common = "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK='128' DARKBLOOM_BF16_WEIGHTS='1' MLX_ENABLE_TF32='1' "
+        let switches = "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE='1' DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC='1' "
+        for rank in [0, 1] {
+            let script = try pair(packed, cut: 24).launchScript(rank, artifactSHA256: String(repeating: "a", count: 64),
+                configurationSHA256: String(repeating: "b", count: 64), workerSHA256: String(repeating: "c", count: 64))
+            XCTAssertTrue(script.contains(common + switches + "JACCL_RANK='\(rank)' "), script)
+            XCTAssertTrue(script.contains("'--model-id' 'registered_ternary_bonsai_2_27b'") && script.contains("'--stage-cut' '24' "))
+            for other in [(small, 8), (large, 24)] {
+                let plain = try pair(other.0, cut: other.1).launchScript(rank, artifactSHA256: String(repeating: "a", count: 64),
+                    configurationSHA256: String(repeating: "b", count: 64), workerSHA256: String(repeating: "c", count: 64))
+                XCTAssertTrue(plain.contains(common + "JACCL_RANK='\(rank)' ") && !plain.contains("BONSAI"), plain)
+            }
+        }
+        XCTAssertEqual(packed.arithmeticEnvironment.map(\.0), ["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "DARKBLOOM_BF16_WEIGHTS",
+            "MLX_ENABLE_TF32", "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE", "DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC"])
+        XCTAssertEqual(large.arithmeticEnvironment.map(\.0), PairConfiguration.arithmeticEnvironment.map(\.0))
         for cut in [4, 8, 12, 16] { XCTAssertNoThrow(try pair(small, cut: cut)) }
         for cut in [20, 32, 60] { XCTAssertThrowsError(try pair(small, cut: cut), "9B cut \(cut)") }
     }

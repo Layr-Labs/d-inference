@@ -48,7 +48,7 @@ enum QwenDenseObservedStageValidation {
             guard parameter.localName == expected.path + ".weight",
                   parameter.shape == (norm ? [profile.geometry.hiddenSize] : [1, profile.geometry.hiddenSize]),
                   parameter.dtype == profile.requiredNativeDType,
-                  parameter.byteCount == profile.geometry.hiddenSize * 2 else {
+                  parameter.byteCount == profile.geometry.hiddenSize * profile.model.pack.activationElementBytes else {
                 throw ProbeError("Registered compact inactive parameter differs")
             }
         }

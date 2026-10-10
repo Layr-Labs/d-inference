@@ -12,6 +12,9 @@ struct QwenResidentRequestAllowance {
     /// Actual allocator bounds applied per named array. The original F32 state
     /// formula is retained; weights are already resident and charged by active
     /// memory. Fusion permits old parameters and their new banks concurrently.
+    /// A Prism Hadamard pack fuses nothing; its first forward instead leaves
+    /// one F32 copy of every packed projection's F16 scales and biases beside
+    /// them, and `fusionBytes` is the allowance for those copies.
     /// This named ledger excludes unknown workspace/whole-process peak claims.
     static func derive(profile: QwenRegisteredDenseModelProfile, plan: QwenLayerStagePlan,
                        rank: Int, maximumTokens: Int, chunkSize: Int,
@@ -45,7 +48,14 @@ struct QwenResidentRequestAllowance {
         ])
         let tensors = Dictionary(uniqueKeysWithValues: profile.canonicalTensors.map { ($0.name, $0) })
         var fused = [Int](), logical = [Int]()
-        for layer in plan.stages[rank].sourceRange where (layer + 1) % plan.interval != 0 {
+        let pack = profile.model.pack
+        if pack == .prismHadamard {
+            fused = try QwenPrismHadamardConstants.widenedBytes(profile: profile, plan: plan, rank: rank).map {
+                try allowance($0, 1)
+            }
+        }
+        for layer in plan.stages[rank].sourceRange where (layer + 1) % plan.interval != 0
+            && pack.fusesGatedDeltaInputProjections {
             for suffix in ["weight", "scales", "biases"] {
                 let parts = try ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"].map { projection in
                     let name = "language_model.model.layers.\(layer).linear_attn.\(projection).\(suffix)"

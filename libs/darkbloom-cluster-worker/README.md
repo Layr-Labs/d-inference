@@ -72,8 +72,8 @@ either stage is read. Absent, the worker runs the pipeline exactly as before.
 | `pipeline_compact_decode_v1` | The same pipeline; a decode step's messages travel as four transfers instead of eleven |
 | `phase_split_v1` | The prompt is prefilled as a pipeline. After the first selected token rank 0 hands its request state to rank 1, which holds every layer and decodes alone, and relays tokens to rank 0 in batches |
 
-The mode must be one the registered model's own row lists; both registered
-models list all three, and `--describe-runtime` reports them as
+The mode must be one the registered model's own row lists; the three dense
+models (9B, 27B, Bonsai 2 27B) list all three, and `--describe-runtime` reports them as
 `supportedGenerationModes` (omitted when a runtime runs the pipeline only, so
 such a record keeps the bytes it always had). An unknown mode is refused at
 startup; it never falls back to the pipeline. A phase-split rank 1 loads both
@@ -103,7 +103,14 @@ env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32
 
 The registered model is the one whose pinned `config.json` the directory
 holds, and the cut must be one of that model's cuts (4, 8, 12 or 16 for the
-9B; 4 through 60 in steps of 4 for the 27B).
+9B; 4 through 60 in steps of 4 for the 27B and for Bonsai 2 27B).
+
+A model's arithmetic contract can require more than those three variables.
+Ternary Bonsai 2 27B is a Prism Hadamard pack: its ranks also need
+`DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1` and
+`DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1`, with `MLX_QUANTIZED_CONSTANT_CACHE`
+unset. A rank started without them is refused before anything is read. The
+pair driver and the solo driver add a request model's own variables themselves.
 It passes the same admission and host resource gates as the worker, hashes the
 artifact, materializes only that rank's stage, then releases it. The JSON
 receipt carries the verified aggregate, the storage commitment (equal on both
@@ -315,6 +322,14 @@ both.
   has passed admission, per-rank stage loads and the single-Mac reference on
   both chips; it has not yet completed a two-Mac run (see
   [handoff/QWEN27B-PAIR.md](../../handoff/QWEN27B-PAIR.md)).
+- Ternary Bonsai 2 27B (a Prism Hadamard pack; adapter
+  `qwen35-prism-hadamard-layer-stage`) is the third dense model. It has run
+  across two Macs at cut 24 in all three generation modes with every token
+  equal to the single-Mac reference, and a rank ended mid-decode left
+  nothing behind. Its stream and state are float32. Both Macs must hold the
+  artifact: it has no pinned content inventory, so a stage cannot be received
+  from the peer. The provider's installed path has no pair-serving row or
+  rank environment for it yet.
 - The host gate admits on free pages plus part of the file cache: three
   quarters of the file-backed memory that is both above the kernel's own
   file-cache minimum and short of the point where half of the cache is

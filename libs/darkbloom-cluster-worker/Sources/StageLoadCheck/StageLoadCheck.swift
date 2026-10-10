@@ -8,7 +8,9 @@ import Foundation
 //
 // The arithmetic environment must already be set, exactly as for the worker:
 //   DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1
-// and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust.
+// and, for a model with routed experts, also MLX_GATHER_QMM_EXPERT_SLICES=trust;
+// for a Prism Hadamard pack, also DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1
+// DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1, with MLX_QUANTIZED_CONSTANT_CACHE unset.
 
 @main enum StageLoadCheck {
     static func main() {

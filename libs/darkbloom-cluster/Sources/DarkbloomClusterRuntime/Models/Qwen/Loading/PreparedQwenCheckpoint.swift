@@ -12,11 +12,19 @@ struct PreparedQwenCheckpoint<Stored: QwenStoredTensorDescribing> {
     let canonical: [String: QwenCheckpointTensor<Stored>]
     let sourceTensorCount: Int
     let expectedShapes: [String: [Int]]
+    /// The verified transforms of a Prism Hadamard pack, whose packed modules
+    /// were installed below; nil for every other artifact.
+    let prism: QwenPrismHadamardSource?
 
     /// This grants no materialization permission; the caller still validates its
     /// source inventory and its independently admitted loading/resource scope.
     init(model: any LanguageModel, descriptors: [String: Stored],
-         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil) throws {
+         policy: BaseConfiguration.PerLayerQuantization, partitionKind: QwenPartitionKind? = nil,
+         prism: QwenPrismHadamardSource? = nil) throws {
+        // A Prism pack cannot be prepared without its verified transforms.
+        guard (model is any PrismHadamardLoading) == (prism != nil) else {
+            throw ProbeError("A Prism Hadamard pack requires its verified transform metadata, and only it")
+        }
         var canonicalSources: [String: Stored] = [:]
         // Only converted MLX Qwen layouts are supported. This makes per-tensor sanitize equivalent
         // to the ordinary whole-checkpoint sanitize; raw HF norm shifting is deliberately rejected.
@@ -52,7 +60,11 @@ struct PreparedQwenCheckpoint<Stored: QwenStoredTensorDescribing> {
             }
             policies[path] = quantization
         }
-        quantize(model: model) { path, _ in policies[path]?.asTuple }
+        if let prism {
+            try prism.install(model: model, policies: policies)
+        } else {
+            quantize(model: model) { path, _ in policies[path]?.asTuple }
+        }
         let expected = Dictionary(uniqueKeysWithValues: model.parameters().flattened().map { ($0.0, $0.1.shape) })
         guard Set(expected.keys) == Set(canonical.keys) else {
             let missing = Set(expected.keys).subtracting(canonical.keys).sorted()
@@ -62,6 +74,7 @@ struct PreparedQwenCheckpoint<Stored: QwenStoredTensorDescribing> {
         self.canonical = canonical
         self.sourceTensorCount = canonicalSources.count
         self.expectedShapes = expected
+        self.prism = prism
     }
 }
 
@@ -72,7 +85,11 @@ extension PreparedQwenCheckpoint where Stored == TensorDescriptor {
          scope: TensorDescriptorScope = .dense) throws {
         try checkpoint.requireConfiguration(originalConfiguration)
         try checkpoint.checkUnchanged()
-        try self.init(model: model, descriptors: tensorDescriptors(checkpoint: checkpoint, scope: scope),
-                      policy: policy, partitionKind: partitionKind)
+        var descriptors = try tensorDescriptors(checkpoint: checkpoint, scope: scope)
+        // A Prism pack's sign tensors are checked against its transform file
+        // here and are not descriptors of the model; nil for any other model.
+        let prism = try QwenPrismHadamardSource.verify(model: model, checkpoint: checkpoint, descriptors: &descriptors)
+        try self.init(model: model, descriptors: descriptors,
+                      policy: policy, partitionKind: partitionKind, prism: prism)
     }
 }

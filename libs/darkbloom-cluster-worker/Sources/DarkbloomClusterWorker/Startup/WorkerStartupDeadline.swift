@@ -1,3 +1,4 @@
+import DarkbloomClusterRuntime
 import Darwin
 import Foundation
 
@@ -11,8 +12,10 @@ import Foundation
 /// became ready first, and the owner may treat that moment as final.
 ///
 /// Like the lifetime deadline this is a last resort, not a cleanup path: it
-/// ends the process without releasing what it holds. It is disarmed as soon as
-/// the runtime is loaded, after which ordinary control and the lifetime apply.
+/// takes the process's one forced exit (`ProcessForcedExit`), which resets
+/// MLX's wired limit and returns its cache behind the dead-man, and does not
+/// unwind the load. It is disarmed as soon as the runtime is loaded, after
+/// which ordinary control and the lifetime apply.
 final class WorkerStartupDeadline: @unchecked Sendable {
     /// Distinct from the lifetime deadline's 124.
     static let exitStatus: Int32 = 123
@@ -27,7 +30,9 @@ final class WorkerStartupDeadline: @unchecked Sendable {
 
     /// `uptimeNanoseconds` is on the `DispatchTime.now().uptimeNanoseconds` clock.
     static func arm(uptimeNanoseconds deadline: UInt64,
-                    expire: @escaping @Sendable () -> Void = { Darwin._exit(WorkerStartupDeadline.exitStatus) }) throws -> WorkerStartupDeadline {
+                    expire: @escaping @Sendable () -> Void = {
+                        ProcessForcedExit.exit(status: WorkerStartupDeadline.exitStatus, reason: "startup-deadline")
+                    }) throws -> WorkerStartupDeadline {
         let value = WorkerStartupDeadline(deadline: deadline, expire: expire)
         let retained = Unmanaged.passRetained(value).toOpaque()
         var thread: pthread_t?

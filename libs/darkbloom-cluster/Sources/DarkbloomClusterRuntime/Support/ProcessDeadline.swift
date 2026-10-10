@@ -9,10 +9,17 @@ import Darwin
 /// only sleeps and compares the uptime clock is independent of the process
 /// timer and of signal dispositions.
 ///
-/// This is the last resort, not the cleanup path. It ends the process without
-/// releasing RDMA registrations or the Metal cache, so every caller must set a
-/// shorter bound that fails in-process first (the collective progress limit,
-/// the request deadline) and treat an exit with `status` as a fault.
+/// This is the last resort, not the cleanup path. When it fires it takes the
+/// process's one forced exit (`ProcessForcedExit`): it claims the exit, arms
+/// the dead-man and runs the installed release (MLX's wired limit to zero, then
+/// the buffer cache) from this thread before ending the process with `status`.
+/// That release is safe from here while the executor is inside a native
+/// collective, and limited there: it neither tears down the JACCL group nor
+/// frees the executor's arrays (see `ProcessForcedExit`). If another path has
+/// already claimed the exit, this thread waits for that exit instead. Every
+/// caller must still set a shorter bound that fails in-process first (the
+/// collective progress limit, the request deadline) and treat an exit with
+/// `status` as a fault.
 public enum ProcessDeadline {
     private struct Arguments {
         let deadline: UInt64
@@ -28,7 +35,9 @@ public enum ProcessDeadline {
             let arguments = raw.assumingMemoryBound(to: Arguments.self).pointee
             while true {
                 let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                if now >= arguments.deadline { Darwin._exit(arguments.status) }
+                if now >= arguments.deadline {
+                    ProcessForcedExit.exit(status: arguments.status, reason: "process-deadline")
+                }
                 // Wake at least once a second so a clock step cannot strand the wait.
                 let remaining = min(arguments.deadline - now, 1_000_000_000)
                 var wait = timespec(tv_sec: Int(remaining / 1_000_000_000),

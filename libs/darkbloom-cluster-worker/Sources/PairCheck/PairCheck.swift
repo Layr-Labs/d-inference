@@ -37,7 +37,8 @@ import Foundation
               [--rank1-delay-seconds N] [--progress-timeout-ms N (default 60000)] [--allow-unguarded-jaccl yes]
               [--memory-gate record|measure (qualification: record every host memory gate decision; measure also
                                              leaves a refusal for admissible memory alone unenforced)]
-              [--stage-residency off (qualification, MiMo: no standing wired residency)]
+              [--stage-residency yes|no|off (qualification: yes = both workers hold a standing MLX wired limit for
+                                             the loaded stage; off = MiMo runs without its standing residency)]
               [--mimo-step-evidence on (qualification, MiMo: rank 1 reports each selected row's digests and top logits)]
               [--local-scratch-dir /ABS] [--remote-scratch-dir /ABS] [--keep-run-files yes] [--preflight-only yes]
           darkbloom-cluster-pair-check solo --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
@@ -227,8 +228,10 @@ import Foundation
             configuration.memoryGateMode = gate
         }
         if let residency = fields["--stage-residency"]?.first {
-            guard residency == "off" else { throw Failure("--stage-residency takes only the value off") }
-            configuration.withoutStageResidency = true
+            // yes/no: S00's standing wired limit for any stage; off: MiMo without its own residency.
+            guard ["yes", "no", "off"].contains(residency) else { throw Failure("--stage-residency takes yes, no or off") }
+            configuration.stageResidency = residency == "yes"
+            configuration.withoutStageResidency = residency == "off"
         }
         if let steps = fields["--mimo-step-evidence"]?.first {
             guard steps == "on" else { throw Failure("--mimo-step-evidence takes only the value on") }

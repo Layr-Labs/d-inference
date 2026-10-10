@@ -14,9 +14,11 @@ import DarkbloomClusterProcess
 /// retirement ceiling before signalling it.
 public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
     /// Past the session lifetime: the child's retirement allowance, the owner's
-    /// release handshake, and slack for the connection.
+    /// release handshake, and slack for the connection. An owner sizes its
+    /// child's SIGTERM-to-SIGKILL margin to the bytes the child holds (up to
+    /// 120 s), so this side allows the largest such margin.
     public static let standardOwnerRetirementAllowanceNanoseconds: UInt64 =
-        ClusterWorkerSignalPolicy.standard.allowanceNanoseconds + ClusterWorkerOwnerService.handshakeAllowanceNanoseconds + 5_000_000_000
+        ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + ClusterWorkerOwnerService.handshakeAllowanceNanoseconds + 5_000_000_000
     private let ownerRetirementAllowance: UInt64
     /// Guarded by `lock`; only ever moved later, once, when the hello arrives.
     private var ownerCeiling: UInt64

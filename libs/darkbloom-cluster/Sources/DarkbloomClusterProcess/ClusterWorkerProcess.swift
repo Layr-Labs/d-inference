@@ -59,7 +59,39 @@ public struct ClusterWorkerSignalPolicy: Sendable, Equatable {
     /// Longest an owner waits past the child's lifetime for its observed exit.
     public var allowanceNanoseconds: UInt64 { terminateMarginNanoseconds + killMarginNanoseconds + reapMarginNanoseconds }
     var isBounded: Bool {
-        [terminateMarginNanoseconds, killMarginNanoseconds, reapMarginNanoseconds].allSatisfy { $0 <= 60_000_000_000 }
+        terminateMarginNanoseconds <= 60_000_000_000 && reapMarginNanoseconds <= 60_000_000_000
+            && killMarginNanoseconds <= Self.maximumKillMarginNanoseconds
+    }
+
+    // MARK: Kill margin sized to the memory the child holds
+
+    /// Rate at which a rank is assumed to unwind and unwire what it holds once
+    /// it has SIGTERM: the owner's measured conservative figure, 2 GiB/s.
+    public static let releaseBytesPerSecond: UInt64 = 2 << 30
+    public static let minimumKillMarginNanoseconds: UInt64 = 30_000_000_000
+    public static let maximumKillMarginNanoseconds: UInt64 = 120_000_000_000
+    /// The longest allowance any sized policy can have.
+    public static let maximumAllowanceNanoseconds: UInt64 =
+        ClusterWorkerSignalPolicy.standard.terminateMarginNanoseconds + maximumKillMarginNanoseconds
+        + ClusterWorkerSignalPolicy.standard.reapMarginNanoseconds
+
+    /// SIGTERM to SIGKILL for a child that holds `plannedBytes`: the bytes at
+    /// `releaseBytesPerSecond`, never under 30 s nor over 120 s. A SIGKILL that
+    /// lands before a loaded rank has released is the path that can strand
+    /// wired memory; the flat 10 s this replaces was measured too short for a
+    /// rank of about 90 GiB. Unknown or zero bytes get the floor.
+    public static func killMarginNanoseconds(plannedBytes: UInt64) -> UInt64 {
+        let seconds = Double(plannedBytes) / Double(releaseBytesPerSecond)
+        let scaled = seconds >= Double(maximumKillMarginNanoseconds) / 1e9 ? maximumKillMarginNanoseconds : UInt64(seconds * 1e9)
+        return min(maximumKillMarginNanoseconds, max(minimumKillMarginNanoseconds, scaled))
+    }
+
+    /// The standard margins with the kill margin sized to `plannedBytes`.
+    public static func sized(plannedBytes: UInt64, childEndsItselfAtStartupDeadline: Bool = false) -> ClusterWorkerSignalPolicy {
+        .init(childEndsItselfAtStartupDeadline: childEndsItselfAtStartupDeadline,
+              terminateMarginNanoseconds: standard.terminateMarginNanoseconds,
+              killMarginNanoseconds: killMarginNanoseconds(plannedBytes: plannedBytes),
+              reapMarginNanoseconds: standard.reapMarginNanoseconds)
     }
 }
 

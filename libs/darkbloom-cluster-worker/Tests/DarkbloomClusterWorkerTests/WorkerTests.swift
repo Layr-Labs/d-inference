@@ -52,8 +52,24 @@ private final class ResultBox: @unchecked Sendable {
     var error: Error? { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Records when the coordinator would begin the process's forced exit, and
+/// whether the runtime was still loaded at that moment.
+private final class ExitRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [(reason: String, runtimeClosed: Bool)] = []
+    weak var runtime: FakeRuntime?
+    var hooks: WorkerExitHooks {
+        WorkerExitHooks(begin: { [self] reason in
+            lock.lock(); calls.append((reason, runtime?.didClose ?? true)); lock.unlock()
+        })
+    }
+    var reasons: [String] { lock.lock(); defer { lock.unlock() }; return calls.map(\.reason) }
+    var beganBeforeRelease: Bool { lock.lock(); defer { lock.unlock() }; return calls.first.map { !$0.runtimeClosed } ?? false }
+}
+
 private final class Harness {
     let runtime: FakeRuntime
+    let exits = ExitRecorder()
     let done = DispatchGroup()
     let result = ResultBox()
     private(set) var input: Int32
@@ -61,16 +77,17 @@ private final class Harness {
     private var sequence: UInt64 = 0
     init(rank: Int = 0) throws {
         runtime = FakeRuntime(rank: rank)
+        exits.runtime = runtime
         var a: [Int32] = [0, 0], b: [Int32] = [0, 0]
         guard pipe(&a) == 0, pipe(&b) == 0 else { throw WorkerFailure.invalid("Test pipe creation failed") }
         input = a[1]; output = b[0]
-        let childInput = a[0], childOutput = b[1], runtime = runtime, result = result, done = done
+        let childInput = a[0], childOutput = b[1], runtime = runtime, result = result, done = done, hooks = exits.hooks
         done.enter()
         Thread.detachNewThread {
             do {
                 let io = try WorkerPipes(input: childInput, output: childOutput,
                     deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
-                try WorkerCoordinator(runtime: runtime, pipes: io).run()
+                try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks).run()
             } catch { result.save(error) }
             close(childInput); close(childOutput); done.leave()
         }
@@ -426,6 +443,8 @@ final class WorkerTests: XCTestCase {
             XCTAssertEqual(try h.event().event, .shutdownComplete)
             XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
             XCTAssertNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
+            // A clean end never begins the forced exit.
+            XCTAssertEqual(h.exits.reasons, [])
         }
     }
 
@@ -457,6 +476,9 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertThrowsError(try h.event())
+        // The reader saw the deadline: the forced exit begins there, before release.
+        XCTAssertEqual(h.exits.reasons.first, "request-deadline")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
     }
 
     func testOutputFailurePreventsNativeStart() throws {
@@ -485,6 +507,30 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertEqual(h.runtime.startCount, 0)
+        // Lost input begins the forced exit from the reader, before the
+        // executor releases the model; the executor's own failure path joins it.
+        XCTAssertEqual(h.exits.reasons.first, "lost-input")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
+    }
+
+    func testExecutorFailureBeginsTheForcedExitBeforeLocalCleanup() throws {
+        let h = try Harness(), id = UUID()
+        try h.start(id); _ = try h.event()
+        try h.send(.cancel(.callerCancelled), id: id)
+        XCTAssertEqual(try h.event().event, .failed(.runtimeError))
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(h.exits.reasons.contains("worker-failure"), "\(h.exits.reasons)")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
+    }
+
+    func testCleanShutdownThenEOFNeverBeginsTheForcedExit() throws {
+        let h = try Harness()
+        _ = try h.event()
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        h.closeInput()
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
     }
 
     func testBufferedStartAndEarlyDecisionCannotBorrowFutureCredit() throws {

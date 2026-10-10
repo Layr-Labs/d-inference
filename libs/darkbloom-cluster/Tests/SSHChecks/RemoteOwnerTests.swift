@@ -91,6 +91,26 @@ func directory() throws -> URL {
             try require(launch.arguments.contains(option), "SSH identity policy lost \(option)")
         }
         try require(Array(launch.arguments.prefix(2)) == ["-F", "/dev/null"] && launch.environment["SSH_AUTH_SOCK"] == nil, "SSH launch reads user configuration or an agent")
+        // The operator's own agent serves the configured identity only when allowed, and only from a socket this user owns.
+        let socketPath = dir.appendingPathComponent("agent.sock").path
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in socketPath.utf8CString.withUnsafeBytes { raw.copyMemory(from: UnsafeRawBufferPointer(rebasing: $0.prefix(raw.count))) } }
+        let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+        defer { close(listener); unlink(socketPath) }
+        func agent(_ environment: [String: String]) throws -> [String] {
+            try ClusterSSHConfiguration(host: "peer.local", user: "gaj", port: 22, knownHostsFile: known, identityFile: key,
+                installedDarkbloom: "/usr/local/bin/darkbloom", environment: environment).launch().arguments
+        }
+        try require(bound == 0, "the fixture agent socket was not bound at \(socketPath)")
+        do {
+            try require(try agent(["SSH_AUTH_SOCK": socketPath]).contains("IdentityAgent=none"), "an agent was used without the operator's switch")
+            let allowed = try agent(["SSH_AUTH_SOCK": socketPath, "DARKBLOOM_CLUSTER_SSH_AGENT": "1"])
+            try require(allowed.contains("IdentityAgent=\(socketPath)") && allowed.contains("IdentitiesOnly=yes") && allowed.contains("ForwardAgent=no"),
+                "the allowed agent widened what is offered")
+            try require(try agent(["SSH_AUTH_SOCK": known.path, "DARKBLOOM_CLUSTER_SSH_AGENT": "1"]).contains("IdentityAgent=none"), "a regular file was taken as an agent")
+            try require(try agent(["SSH_AUTH_SOCK": "relative.sock", "DARKBLOOM_CLUSTER_SSH_AGENT": "1"]).contains("IdentityAgent=none"), "a relative socket was taken")
+        }
         try rejects { _ = try ClusterSSHConfiguration(host: "peer;touch-bad", user: "gaj", port: 22,
             knownHostsFile: known, identityFile: key, installedDarkbloom: "/bin/sh -c") }
     }

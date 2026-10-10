@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — watchdog restart acknowledgement
+
+- When a provider job disappears between the watchdog's launchd check and kickstart, report that no restart occurred and restore the previous crash-loop backend guard. Keep stopped or uninstalled jobs unloaded instead of recording a restart that launchd refused.
+
 ## Unreleased — provider build environment
 
 - A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.

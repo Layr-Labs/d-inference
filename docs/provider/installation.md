@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-10
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -213,6 +213,14 @@ that exact version is blocked; a newer release installs normally.
 
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).
+
+If the provider job disappears between the watchdog's loaded check and kickstart,
+the watchdog leaves it unloaded and reports that no restart occurred. A
+crash-loop backend guard staged for that attempt is rolled back to its previous
+state; an existing guard remains intact
+(`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
+`kickstartIfLoaded`; `provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift`,
+`recoverDownProvider`). Use `darkbloom start` to start a stopped provider.
 
 ## Uninstall
 

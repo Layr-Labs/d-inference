@@ -182,18 +182,20 @@ public enum LaunchAgent: Sendable {
     /// Restart in place ONLY if currently loaded (`reloadIfMissing: false`), so
     /// the watchdog recovers a crashed (loaded-but-dead) provider but never
     /// revives one the user stopped (`bootout` unloads it). Returns false if not
-    /// loaded.
+    /// loaded or if the service disappears before kickstart accepts the restart.
     @discardableResult
     public static func kickstartIfLoaded() throws -> Bool {
         guard isLoaded() else { return false }
-        try kickstartInPlace(label: label, reloadIfMissing: false)
-        return true
+        return try kickstartInPlace(label: label, reloadIfMissing: false)
     }
 
     /// `launchctl kickstart -k` — kill + relaunch the loaded service in place.
     /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
     /// job); the watchdog passes false so it never loads a job the user stopped.
-    private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
+    /// Returns whether launchctl accepted the restart or allowed reload; this
+    /// acknowledges the launch request, not the provider's subsequent health.
+    @discardableResult
+    private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws -> Bool {
         if reloadIfMissing {
             let enabled = LaunchctlControl.setEnabled(true, label: serviceLabel)
             guard enabled.succeeded else { throw LaunchAgentError.kickstartFailed(enabled.stderr) }
@@ -207,13 +209,13 @@ public enum LaunchAgent: Sendable {
             if stderr.contains("3:") || stderr.contains("could not find service") {
                 // Fall back to a fresh load only when allowed; the watchdog opts
                 // out so it can't resurrect an intentionally-stopped provider.
-                if reloadIfMissing {
-                    try loadService()
-                }
-                return
+                guard reloadIfMissing else { return false }
+                try loadService()
+                return true
             }
             throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
+        return true
     }
 
     // MARK: - Uninstall

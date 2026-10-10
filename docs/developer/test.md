@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 ## Autopilot rewards
 
@@ -2501,6 +2501,28 @@ test is not a measured speedup or proof of backend numerical parity. Use the
 separate model-backed gates for those claims. Coverage reports count executed
 code, not these evidence distinctions; retain test results and prerequisites
 alongside the report.
+
+#### Watchdog launch-adapter regression
+
+After [building the test product](build.md#5-provider-cli-swift-with-source-matched-metallib),
+run this CPU-only selection from `provider-swift`:
+
+```bash
+swift test --skip-build --no-parallel --jobs 2 --force-resolved-versions \
+  --filter 'WatchdogLaunchAdapterTests|LaunchAgentLifecycleTests|refusedKickstartRollsBackTrip|rollbackRestoresPreexistingGuard'
+```
+
+`provider-swift/Tests/ProviderCoreTests/Service/LaunchAgentLifecycleTests.swift`
+exercises the actual `WatchdogRecoveryService`, `LaunchAgent.kickstartIfLoaded`
+and disk-backed crash-loop guard with a temporary install and scripted
+`LaunchctlControl`. Missing-service responses after a successful loaded check
+must return `noLongerLoaded`, restore the exact prior guard bytes and invoke no
+trip callback. Controls cover an already absent job, successful kickstart and
+permission errors; the lifecycle suite preserves manual restart reload and
+stop/uninstall behavior. No real launchctl, model, GPU or coordinator is used.
+This selection does not establish native race frequency or fleet telemetry
+delivery. Retain the Swift Testing case results and source revisions; the
+preceding XCTest summary can report zero tests.
 
 #### Shared fixture locations
 

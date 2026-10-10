@@ -463,7 +463,7 @@ struct LaunchAgentLifecycleTests {
         let kicked = try withScriptedLaunchd(launchctl) { _ in
             try LaunchAgent.kickstartIfLoaded()
         }
-        #expect(kicked)
+        #expect(!kicked)
         #expect(launchctl.verbs == ["print", "kickstart"])
     }
 
@@ -490,5 +490,181 @@ struct LaunchAgentLifecycleTests {
             try LaunchAgent.uninstall()
         }
         #expect(launchctl.verbs == ["disable", "print"])
+    }
+}
+
+// Integration regression: the actual LaunchAgent adapter must tell
+// recovery whether the scripted launchctl accepted the restart. No product
+// implementation is replaced, and every launchctl operation is intercepted.
+private enum WatchdogLaunchScenario: String, Sendable, CustomStringConvertible {
+    case missingError3, missingDiagnostic
+    case absentBeforeRecovery, absentAtAdapterProbe, successfulKickstart, permissionFailure
+    var description: String { rawValue }
+}
+
+@Suite("Watchdog recovery through the real launch adapter", .serialized)
+struct WatchdogLaunchAdapterTests {
+    @Test("vanished service leaves no committed trip", arguments:
+        [WatchdogLaunchScenario.missingError3, .missingDiagnostic], [false, true])
+    private func vanishedServiceDoesNotCommitTrip(
+        scenario: WatchdogLaunchScenario, preexistingGuard: Bool
+    ) async throws {
+        try await exercise(scenario, preexistingGuard: preexistingGuard)
+    }
+
+    @Test("real launch adapter preserves refusal and success controls", arguments:
+        [WatchdogLaunchScenario.absentBeforeRecovery, .absentAtAdapterProbe,
+         .successfulKickstart, .permissionFailure], [false, true])
+    private func adapterControls(
+        scenario: WatchdogLaunchScenario, preexistingGuard: Bool
+    ) async throws {
+        try await exercise(scenario, preexistingGuard: preexistingGuard)
+    }
+
+    private func exercise(
+        _ scenario: WatchdogLaunchScenario, preexistingGuard: Bool
+    ) async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let home = fixture.root.appendingPathComponent("launchd-home", isDirectory: true)
+        let plist = try writeInstalledPlist(home: home)
+        let plistBefore = try Data(contentsOf: plist)
+        let guardURL = fixture.root.appendingPathComponent("kv-backend-guard.json")
+        let environment = [KVBackendGuardStore.pathEnvKey: guardURL.path]
+        let previous: KVBackendGuard? = preexistingGuard
+            ? KVBackendGuard(trippedAt: 100, providerVersion: fixture.oldVersion, crashCount: 3)
+            : nil
+        if let previous {
+            try #require(KVBackendGuardStore.write(previous, environment: environment))
+        }
+        let beforeBytes = try? Data(contentsOf: guardURL)
+        let count = preexistingGuard ? 4 : WatchdogPolicy.crashLoopTripThreshold
+        let launchctl = ScriptedLaunchctl()
+        switch scenario {
+        case .absentBeforeRecovery:
+            launchctl.answer("print", absent)
+        case .absentAtAdapterProbe:
+            launchctl.answer("print", ok, absent)
+        default:
+            launchctl.answer("print", ok)
+        }
+        switch scenario {
+        case .missingError3:
+            launchctl.answer("kickstart", failure("Could not kickstart service: 3: could not find service", status: 3))
+        case .missingDiagnostic:
+            launchctl.answer("kickstart", failure("could not find service", status: 113))
+        case .permissionFailure:
+            launchctl.answer("kickstart", failure("Could not kickstart service: 1: Operation not permitted", status: 1))
+        default:
+            launchctl.answer("kickstart", ok)
+        }
+        let stages = RecoveryRestartCounter()
+        let events = RecoveryRestartCounter()
+        let adapterCalls = RecoveryRestartCounter()
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false,
+            currentVersion: fixture.oldVersion)
+        let service = WatchdogRecoveryService(
+            updater: updater,
+            dependencies: .init(
+                kickstartIfLoaded: {
+                    adapterCalls.increment()
+                    // Verify the real staged guard reached disk before the
+                    // adapter runs; this is not an injected Boolean result.
+                    #expect(KVBackendGuardStore.read(environment: environment)?.crashCount == count)
+                    return try LaunchAgent.kickstartIfLoaded()
+                },
+                launchSnapshot: { nil },
+                providerStillLoaded: { LaunchAgent.isLoaded() },
+                processAlive: { _ in false },
+                terminateStaleLockOwner: { _ in
+                    Issue.record("process termination must never be reached")
+                    return false
+                },
+                tripKVBackendGuard: { crashCount, tripNow, version in
+                    stages.increment()
+                    return KVBackendCrashLoopGuard.stageTrip(
+                        crashCount: crashCount, now: tripNow,
+                        guardedVersion: version, lastKnownModel: nil,
+                        environment: environment,
+                        emitTelemetry: { _ in events.increment() })
+                },
+                log: { _ in }))
+        let outcome = await LaunchctlControl.$homeDirectoryForTesting.withValue(home) {
+            await LaunchctlControl.$runnerForTesting.withValue({ arguments in
+                guard let verb = arguments.first, ["print", "kickstart"].contains(verb) else {
+                    Issue.record("watchdog attempted an unexpected launchctl operation: \(arguments)")
+                    throw CocoaError(.featureUnsupported)
+                }
+                return try launchctl.run(arguments)
+            }) {
+                await LaunchctlControl.$uptimeForTesting.withValue({ launchctl.uptime }) {
+                    await LaunchctlControl.$sleepForTesting.withValue({ launchctl.sleep($0) }) {
+                        await service.recoverDownProvider(
+                            autoUpdateEnabled: false,
+                            crashLoopRestartCount: count,
+                            lastRestartVersion: fixture.oldVersion,
+                            now: 1_000)
+                    }
+                }
+            }
+        }
+        let record = KVBackendGuardStore.read(environment: environment)
+        let afterBytes = try? Data(contentsOf: guardURL)
+        let witness: [String: Any] = [
+            "scenario": scenario.rawValue,
+            "preexisting_guard": preexistingGuard,
+            "outcome": String(describing: outcome),
+            "guard_before": String(describing: previous),
+            "guard_after": String(describing: record),
+            "guard_bytes_restored": afterBytes == beforeBytes,
+            "staged_trips": stages.value,
+            "trip_events": events.value,
+            "adapter_calls": adapterCalls.value,
+            "launchctl_calls": launchctl.recorded,
+        ]
+        let witnessData = try JSONSerialization.data(withJSONObject: witness, options: [.sortedKeys])
+        print("WATCHDOG_ADAPTER_WITNESS " + String(decoding: witnessData, as: UTF8.self))
+
+        let expectedCalls: [[String]]
+        switch scenario {
+        case .absentBeforeRecovery:
+            expectedCalls = [["print", serviceTarget]]
+        case .absentAtAdapterProbe:
+            expectedCalls = [["print", serviceTarget], ["print", serviceTarget]]
+        default:
+            expectedCalls = [["print", serviceTarget], ["print", serviceTarget], ["kickstart", "-k", serviceTarget]]
+        }
+        #expect(launchctl.recorded == expectedCalls)
+        #expect(!launchctl.verbs.contains("enable") && !launchctl.verbs.contains("bootstrap"))
+        #expect(stages.value == (scenario == .absentBeforeRecovery ? 0 : 1))
+        #expect(adapterCalls.value == (scenario == .absentBeforeRecovery ? 0 : 1))
+        #expect(try Data(contentsOf: plist) == plistBefore)
+        #expect(try fixture.persistentStateIsIntact())
+
+        switch scenario {
+        case .successfulKickstart:
+            #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+            #expect(record == KVBackendGuard(
+                trippedAt: previous?.trippedAt ?? 1_000,
+                providerVersion: fixture.oldVersion, crashCount: count))
+            #expect(events.value == 1)
+        case .permissionFailure:
+            if case .failed(let reason) = outcome {
+                #expect(reason.contains("Operation not permitted"))
+            } else {
+                Issue.record("expected permission failure, got \(outcome)")
+            }
+            #expect(record == previous)
+            #expect(afterBytes == beforeBytes)
+            #expect(events.value == 0)
+        default:
+            #expect(outcome == .noLongerLoaded)
+            #expect(record == previous)
+            #expect(afterBytes == beforeBytes)
+            #expect(events.value == 0)
+        }
     }
 }

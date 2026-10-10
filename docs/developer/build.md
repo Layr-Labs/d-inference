@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -658,6 +658,12 @@ To compile all test targets without executing fixtures:
 ```bash
 (cd provider-swift && swift build --build-tests)
 ```
+
+The CPU-only [watchdog launch-adapter regression](test.md#watchdog-launch-adapter-regression)
+uses this test product without model fixtures. Build with
+`swift build --build-tests --jobs 2 --force-resolved-versions` from
+`provider-swift`; a subsequent `--skip-build` run must use the same source and
+dependency revisions.
 
 The test products include the provider/standalone lifecycle, CLI/service/fan,
 SSD-cache and benchmark harness groups described in the

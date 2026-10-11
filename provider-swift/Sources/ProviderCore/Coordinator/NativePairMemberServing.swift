@@ -51,3 +51,15 @@ public protocol NativePairMemberServingHost: AnyObject, Sendable {
     /// retired. Idempotent; an unknown epoch does nothing.
     func stopServingCommittedStart(epoch: UUID) async
 }
+
+/// Why a pair slot or a member serving host refused (kept beside the seam so
+/// the model-free check runners that compile the link members build it).
+public enum ClusterPairSlotError: Error, Sendable, Equatable {
+    /// Only a cluster member serves a pair slot, one at a time, while it is
+    /// connected and not stopping.
+    case notServing(String)
+    /// The model is not this member's registered cluster model.
+    case unknownModel
+    /// The owner was not ready, or its identity or profile differs.
+    case ownerUnavailable
+}

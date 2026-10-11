@@ -3,10 +3,20 @@ import Foundation
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
+#if canImport(Logging)
 import Logging
 
 /// Link edge refusals and connections on the member path (no payload).
 let clusterLinkMemberLog = Logger(label: "darkbloom.cluster-link")
+#else
+/// The model-free check runners compile this directory with plain swiftc,
+/// without swift-log: there the link edge lines are dropped.
+let clusterLinkMemberLog = ClusterLinkMemberLogStandIn()
+struct ClusterLinkMemberLogStandIn: Sendable {
+    func info(_ message: @autoclosure () -> String) {}
+    func warning(_ message: @autoclosure () -> String) {}
+}
+#endif
 
 /// The follower rank over the link control channel (PROD-PLAN S08), for a
 /// saved setup with a `linkControl` attachment and no SSH trust.

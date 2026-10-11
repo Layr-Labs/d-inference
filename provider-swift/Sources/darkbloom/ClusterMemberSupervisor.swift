@@ -84,6 +84,8 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             + "in \(Int(budget.limits.quickFailureWindowSeconds)) s, backoff \(budget.limits.initialBackoffSeconds)-"
             + "\(budget.limits.maxBackoffSeconds) s; heartbeat down \(Int(configuration.guardLimits.downSeconds)) s after "
             + "\(Int(configuration.guardLimits.startGraceSeconds)) s grace")
+        // What macOS keys the one-time Local Network and firewall approvals on.
+        log(ClusterMemberPermissionIdentity.current(executablePath: configuration.executable).summary)
         var updateSlot = configuration.setup.map {
             ClusterMemberUpdateSlot.nextSlot(after: Date().timeIntervalSince1970, clusterID: $0.clusterID)
         }

@@ -271,5 +271,60 @@ do {
           "summary: \(line)")
 }
 
+// MARK: - Permissions asked once: the code identity macOS keys approvals on
+
+do {
+    let app = "/Users/someone/.darkbloom/Darkbloom.app"
+    let exe = app + "/Contents/MacOS/darkbloom"
+    let release: [String: Any] = ["CFBundleIdentifier": "io.darkbloom.provider",
+                                  "NSLocalNetworkUsageDescription": "Darkbloom connects to the other Macs of your cluster."]
+    let signed = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0x10000,
+        leafCertificateSummary: "Developer ID Application: Example (TEAM123456)", teamIdentifier: "TEAM123456", infoPlist: release)
+    check(signed.verdict == .askedOnce && signed.problems.isEmpty, "signed release in the app with the usage string: asked once")
+    check(signed.bundlePath == app && signed.bundleIdentifier == "io.darkbloom.provider", "bundle found: \(signed.bundlePath ?? "nil")")
+    check(signed.summary.contains("asked once") && signed.summary.contains("team TEAM123456"), "summary: \(signed.summary)")
+
+    var older = release; older["NSLocalNetworkUsageDescription"] = nil
+    let oldRelease = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0x10000,
+        leafCertificateSummary: "Developer ID Application: Example (TEAM123456)", teamIdentifier: "TEAM123456", infoPlist: older)
+    check(oldRelease.verdict == .perBuild && oldRelease.problems.count == 1
+          && oldRelease.problems[0].contains("NSLocalNetworkUsageDescription"), "a release without the usage string cannot ask")
+    var blank = release; blank["NSLocalNetworkUsageDescription"] = "  "
+    check(ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0,
+        leafCertificateSummary: "Developer ID Application: X", teamIdentifier: "T", infoPlist: blank).verdict == .perBuild,
+          "a blank usage string does not count")
+
+    let adHoc = ClusterMemberPermissionIdentity.classify(executablePath: "/opt/build/debug/darkbloom", signatureReadable: true,
+        flags: 0x20002, leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: nil)
+    check(adHoc.signing == .adHoc && adHoc.verdict == .perBuild && adHoc.problems.count == 2, "ad-hoc build outside a bundle: \(adHoc.problems)")
+    check(adHoc.problems[0].contains("ad-hoc") && adHoc.problems[1].contains("not inside Darkbloom.app"), "problems ordered: \(adHoc.problems)")
+    check(adHoc.bundleIdentifier == nil && !adHoc.hasLocalNetworkUsageDescription, "no bundle, no usage string")
+
+    let adHocInApp = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0x2,
+        leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: release)
+    check(adHocInApp.verdict == .perBuild && adHocInApp.problems.count == 1, "ad-hoc in a bundle is still per build")
+    let development = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0,
+        leafCertificateSummary: "Apple Development: someone", teamIdentifier: "T", infoPlist: release)
+    check(development.signing == .otherCertificate && development.verdict == .perBuild, "a development certificate is not Developer ID")
+    let unsigned = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: nil,
+        leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: release)
+    check(unsigned.signing == .unsigned, "no identifier: unsigned")
+    check(ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: false, flags: nil,
+        leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: release).signing == .unknown, "unreadable signature: unknown")
+
+    check(ClusterMemberPermissionIdentity.enclosingAppBundle(of: "/A/Darkbloom.app/Contents/MacOS/darkbloom") == "/A/Darkbloom.app", "bundle path")
+    check(ClusterMemberPermissionIdentity.enclosingAppBundle(of: "/A/Darkbloom.app/Contents/Helpers/darkbloom-cluster-worker") == nil,
+          "a helper is not the bundle's main executable")
+    check(ClusterMemberPermissionIdentity.enclosingAppBundle(of: "/A/bin/darkbloom") == nil, "plain directory")
+    check(ClusterMemberPermissionIdentity.enclosingAppBundle(of: "/A/Darkbloom.app/Contents/MacOS/../MacOS/darkbloom") == "/A/Darkbloom.app",
+          "standardized path")
+
+    // Live probe of real executables when asked (model-free; reads signatures only).
+    for path in (ProcessInfo.processInfo.environment["PERMISSION_PROBE_PATHS"] ?? "").split(separator: ":").map(String.init) {
+        let live = ClusterMemberPermissionIdentity.current(executablePath: path)
+        print("probe \((path as NSString).lastPathComponent) in \(live.bundlePath == nil ? "no bundle" : "a bundle"): \(live.summary)")
+    }
+}
+
 print("cluster supervision checks: \(checks - failures)/\(checks) passed")
 exit(failures == 0 ? 0 : 1)

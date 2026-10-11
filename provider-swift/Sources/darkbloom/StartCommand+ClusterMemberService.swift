@@ -46,6 +46,14 @@ extension Start {
         print("  (\(limits.initialBackoffSeconds)-\(limits.maxBackoffSeconds) s; stops after \(limits.maxQuickFailures) failures"
             + " that each lasted under \(Int(limits.quickFailureWindowSeconds)) s) and starts again at login.")
         print("  Updates are coordinated: both members drain and update at the cluster's update slot.")
+        let identity = ClusterMemberPermissionIdentity.current(executablePath: Self.currentExecutablePath())
+        if identity.verdict == .askedOnce {
+            print("  Permissions: macOS asks once for Local Network on this Mac; click Allow when it appears.")
+        } else {
+            print("  Permissions: macOS will not ask once for this build:")
+            for problem in identity.problems { print("    - \(problem)") }
+            print("    Install the signed Darkbloom release for an always-on member.")
+        }
         print("  Logs:    \(LaunchAgent.logPath().path)")
         print()
         print("  darkbloom stop     Stop the member (and keep it stopped across reboots)")

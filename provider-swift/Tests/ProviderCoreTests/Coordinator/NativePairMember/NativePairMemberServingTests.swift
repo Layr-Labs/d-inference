@@ -144,6 +144,34 @@ struct NativePairMemberServingTests {
         } catch { await peer.close(); throw error }
     }
 
+    /// A member stop (pub2 on hardware: the leader closed its control
+    /// connection before its owner ended, so no receipt could arrive and the
+    /// coordinator fenced both devices for about two minutes): the member
+    /// ends its served start while the connection is open and returns only
+    /// after the owner released and the receipt was sent. No cancel frame.
+    @Test func aMemberStopEndsTheServedStartAndSendsTheReceiptBeforeReturning() async throws {
+        let fixture = try NativePairMemberFixture(), peer = MemberFixturePeer(installation: fixture.installations[0])
+        let host = RecordingServingHost(mock: peer.mock)
+        peer.control.servingHost = host
+        do {
+            try await peer.connect()
+            // Nothing running: returns at once.
+            #expect(await peer.control.endSessionBeforeClose(timeout: 1))
+            try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
+            _ = try await peer.wait("native_pair_prepared")
+            try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
+            _ = try await peer.wait("native_pair_hello")
+            #expect(host.served.count == 1 && host.stopped.isEmpty)
+            #expect(await peer.control.endSessionBeforeClose(timeout: 20))
+            // The receipt is already out when the stop returns.
+            #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
+            #expect(host.stopped.first == fixture.starts[0].common.epoch)
+            #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)
+            try fixture.requireRetired(0, confirmed: false)
+            await peer.close()
+        } catch { await peer.close(); throw error }
+    }
+
     /// Probe, not a requirement of this slice: a cancel that lands right after
     /// the owner's launch, before its native child reached the key exchange
     /// (here a host that fails at once). Observed 2026-10-11: the member

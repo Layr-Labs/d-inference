@@ -289,7 +289,7 @@ final class EndpointBox: @unchecked Sendable {
     /// normal order) is inside each row's first-token budget.
     static func longPromptsFitTheInstalledSession(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
-        let prompt=30_720,outputs=128
+        let prompt=30_720
         // At 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b and
         // hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
         // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up.

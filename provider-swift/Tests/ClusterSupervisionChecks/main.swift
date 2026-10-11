@@ -179,6 +179,20 @@ do {
     check(limits.startGraceSeconds == 20 && limits.downSeconds == 75, "guard overrides: positive only")
 }
 
+do {
+    var guardState = ClusterMemberLivenessGuard()
+    func beat(wedged: Double?) -> ClusterMemberHealth {
+        ClusterMemberHealth(pid: 4, version: "t", phase: .serving, writtenAt: 10_000, engineWedgedSeconds: wedged)
+    }
+    check(guardState.observe(health: beat(wedged: 179), childPID: 4, runStartedAt: 9_000, now: 10_001) == .healthy,
+          "an engine wedged for less than 180 s is left to its own recovery")
+    if case .recycle(let reason) = guardState.observe(health: beat(wedged: 180), childPID: 4, runStartedAt: 9_000, now: 10_001) {
+        check(reason.contains("wedged for 180 s"), "wedge recycle: \(reason)")
+    } else { check(false, "an engine wedged for 180 s recycles the member") }
+    check(guardState.observe(health: beat(wedged: 500), childPID: 4, runStartedAt: 9_950, now: 10_001) == .healthy,
+          "the wedge signal respects the start grace")
+}
+
 // MARK: - Link gate
 
 check(ClusterMemberLinkGate.decide(machine: .ready, device: .ready, probeFailingForSeconds: 0) == .ready, "ready starts")

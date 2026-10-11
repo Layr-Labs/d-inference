@@ -104,6 +104,7 @@ final class ClusterMemberHeartbeat: @unchecked Sendable {
     private let path: URL?
     private let lock = NSLock()
     private var registeredAt: Double?
+    private var servingSince: Double?
     private var task: Task<Void, Never>?
     static let intervalNanoseconds: UInt64 = 5_000_000_000
 
@@ -119,7 +120,7 @@ final class ClusterMemberHeartbeat: @unchecked Sendable {
         guard path != nil else { return }
         task = Task.detached { [weak self] in
             while !Task.isCancelled {
-                self?.write(.starting)
+                self?.write(.init(phase: .starting, engineWedgedSeconds: nil, warmup: nil))
                 try? await Task.sleep(nanoseconds: Self.intervalNanoseconds)
             }
         }
@@ -132,8 +133,8 @@ final class ClusterMemberHeartbeat: @unchecked Sendable {
         // Runs unsupervised too: the beat refreshes the daemon state.
         task = Task.detached { [weak self] in
             while !Task.isCancelled {
-                let phase = await loop.clusterMemberHeartbeat()
-                self?.write(phase)
+                let sample = await loop.clusterMemberHeartbeat()
+                self?.write(sample)
                 try? await Task.sleep(nanoseconds: Self.intervalNanoseconds)
             }
         }
@@ -142,17 +143,20 @@ final class ClusterMemberHeartbeat: @unchecked Sendable {
     func stop() {
         task?.cancel()
         task = nil
-        write(.stopping)
+        write(.init(phase: .stopping, engineWedgedSeconds: nil, warmup: nil))
     }
 
-    private func write(_ phase: ClusterMemberHealth.Phase) {
+    private func write(_ sample: ClusterMemberHeartbeatSample) {
         guard let path else { return }
         let now = Date().timeIntervalSince1970
-        let registered: Double? = lock.withLock {
+        let phase = sample.phase
+        let (registered, serving): (Double?, Double?) = lock.withLock {
             if phase == .registered || phase == .serving, registeredAt == nil { registeredAt = now }
-            return registeredAt
+            if phase == .serving { servingSince = servingSince ?? now } else if phase != .stopping { servingSince = nil }
+            return (registeredAt, servingSince)
         }
         ClusterSupervisionFiles.write(ClusterMemberHealth(pid: getpid(), version: ProviderCore.version, phase: phase,
-                                                          writtenAt: now, registeredAt: registered), to: path)
+            writtenAt: now, registeredAt: registered, servingSince: serving,
+            engineWedgedSeconds: sample.engineWedgedSeconds, warmup: sample.warmup), to: path)
     }
 }

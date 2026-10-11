@@ -47,11 +47,15 @@ public struct ClusterMemberHealth: Codable, Equatable, Sendable {
     /// Epoch seconds a pair first served in this run, if one has.
     public var servingSince: Double?
     public var activeRequest: ActiveRequest?
+    /// Seconds the pair's engine has been wedged (its own watchdog's verdict:
+    /// a stall with no engine steps), nil when it is not.
+    public var engineWedgedSeconds: Double?
     /// The warmup canary's result for the current pair, when one ran.
     public var warmup: String?
 
     public init(pid: Int32, version: String, phase: Phase, writtenAt: Double, registeredAt: Double? = nil,
-                servingSince: Double? = nil, activeRequest: ActiveRequest? = nil, warmup: String? = nil) {
+                servingSince: Double? = nil, activeRequest: ActiveRequest? = nil, engineWedgedSeconds: Double? = nil,
+                warmup: String? = nil) {
         self.pid = pid
         self.version = version
         self.phase = phase
@@ -59,6 +63,7 @@ public struct ClusterMemberHealth: Codable, Equatable, Sendable {
         self.registeredAt = registeredAt
         self.servingSince = servingSince
         self.activeRequest = activeRequest
+        self.engineWedgedSeconds = engineWedgedSeconds
         self.warmup = warmup
     }
 }

@@ -30,15 +30,37 @@ public struct ClusterMemberSupervisionSetup: Sendable, Equatable {
     }
 }
 
+/// What one member heartbeat reports from the loop actor.
+public struct ClusterMemberHeartbeatSample: Sendable, Equatable {
+    public let phase: ClusterMemberHealth.Phase
+    /// Seconds the pair slot's engine has been wedged (its watchdog's
+    /// "crashed" verdict: a stall with no engine steps), nil when it is not.
+    public let engineWedgedSeconds: Double?
+    public let warmup: String?
+}
+
 extension ProviderLoop {
     /// One heartbeat of a control-only member, taken ON the loop actor so a
     /// wedged loop stops beating. Refreshes the daemon state too: the launchd
     /// watchdog treats a live process whose daemon state went stale as down,
     /// and a member otherwise writes it only when it connects.
-    public func clusterMemberHeartbeat() -> ClusterMemberHealth.Phase {
-        guard isClusterMember else { return .stopping }
+    public func clusterMemberHeartbeat() -> ClusterMemberHeartbeatSample {
+        guard isClusterMember else { return .init(phase: .stopping, engineWedgedSeconds: nil, warmup: nil) }
         writeDaemonState()
-        if isShuttingDown || memberControlRequiresStop { return .stopping }
-        return memberConnectionID != nil ? .registered : .starting
+        let warmup = clusterPairWarmup?.description
+        if isShuttingDown || memberControlRequiresStop {
+            return .init(phase: .stopping, engineWedgedSeconds: nil, warmup: warmup)
+        }
+        guard let slot = clusterPairSlot, clusterPairSlotServes(slot.modelID) else {
+            clusterPairWedgedSince = nil
+            return .init(phase: memberConnectionID != nil ? .registered : .starting, engineWedgedSeconds: nil, warmup: warmup)
+        }
+        let crashed = state.backendCapacity.slots.contains { $0.model == slot.modelID && $0.state == "crashed" }
+        if crashed { clusterPairWedgedSince = clusterPairWedgedSince ?? .now } else { clusterPairWedgedSince = nil }
+        let wedged = clusterPairWedgedSince.map { since -> Double in
+            let duration = ContinuousClock.now - since
+            return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+        }
+        return .init(phase: .serving, engineWedgedSeconds: wedged, warmup: warmup)
     }
 }

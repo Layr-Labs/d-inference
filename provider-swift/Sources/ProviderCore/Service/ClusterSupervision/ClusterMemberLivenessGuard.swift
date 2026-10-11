@@ -12,6 +12,9 @@ import Foundation
 ///   start grace, because a heartbeat inherited from the previous process can
 ///   name ITS stale request (the 2026-07-06 cascade that leaked 156 GB wired).
 ///
+/// A third signal comes from the leader's pair engine itself: its watchdog's
+/// wedge verdict, held for `engineWedgedSeconds`.
+///
 /// "Busy is not dead": a slow heartbeat inside the budget is never acted on.
 public struct ClusterMemberLivenessGuard: Equatable, Sendable {
     public struct Limits: Equatable, Sendable {
@@ -22,6 +25,9 @@ public struct ClusterMemberLivenessGuard: Equatable, Sendable {
         public var noStartContextTokensPerSecond: Double = 1000
         public var noStartMarginSeconds: Double = 120
         public var noStartMaxSeconds: Double = 900
+        /// A pair engine its own watchdog has called wedged for this long is
+        /// recycled (the verdict itself already needs a 120 s stall).
+        public var engineWedgedSeconds: Double = 180
 
         public init() {}
 
@@ -82,6 +88,9 @@ public struct ClusterMemberLivenessGuard: Equatable, Sendable {
             return .downFor(seconds: down)
         }
         downSince = nil
+        if let wedged = current.engineWedgedSeconds, wedged >= limits.engineWedgedSeconds, age >= limits.startGraceSeconds {
+            return .recycle(reason: "the pair's engine has been wedged for \(Int(wedged)) s (no engine steps)")
+        }
         if let active = current.activeRequest, active.tokensEmitted == 0, active.prefillProcessedTokens == 0 {
             let limit = limits.noStartLimit(promptTokens: active.promptTokens)
             if active.secondsSinceProgress >= limit {

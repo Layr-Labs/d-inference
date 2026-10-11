@@ -187,8 +187,9 @@ A family whose plan is not a contiguous layer pipeline fails there, with the
 tensor named. It then requires the bytes to conserve: every stored tensor is
 in exactly one layer, the ingress, the egress or the excluded set.
 
-Implemented for the two registered models through `QwenLayerStagePlan`. What
-each of the six families in progress must add is at the end.
+Implemented for the two registered models through `QwenLayerStagePlan`; since
+2026-10-11 for every registered family (eleven rows, see the last status
+section). What each family supplies is at the end.
 
 ## 3. Speed estimate
 
@@ -565,7 +566,7 @@ have to change, for the private repository to take up:
 - MiMo (173 GB): placed on this pair from detected memory alone; refused on a
   pair that cannot hold it.
 
-## What each family must add
+## What each family supplies (all eight families conform since 2026-10-11)
 
 One type in the family's own directory that conforms to
 `ClusterPlacementFamily`, and one line in
@@ -680,3 +681,32 @@ What was run on the two Macs is in the task's evidence folder
 Mirrored 27B measured (2026-10-09, 18:46Z to 19:11Z, modes step only, cut 48, Mac B rank 0): the second Mac accepts the incoming connection to its rank 0 worker. Phase split: first token 4.20 s at 4,096 and 10.37 s at 8,192 (predicted 4.18 and 8.50), decode 23 to 24 tok/s (predicted 29 to 30). Pipeline in this order: first token 4.08 and 8.64 s, but decode 11.4 tok/s at every length, against 25 to 28 in the normal order; not explained. The first launch (1,024 tokens, phase split) did not become ready within 150 s; the later five did in 16 to 29 s. Token agreement (`record`) and cut 40 not run. The time model needs a per-step term for the relay and for the mirrored pipeline before it can rank orders against each other.
 
 Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33Z). Tokens: at cut 48, all six recorded runs (pipeline, compact pipeline and phase split at 1,024 and 8,192) pass against both Macs' single-Mac references (tokens equal, or a first difference at a 1-ulp near tie); ranks agree. The 11.4 tok/s was the measuring harness, not the placement: the pair driver ran on the first Mac, rank 0 on the second, and every committed token waits for the driver's decision (rank 0 blocks until it arrives; in the pipeline no next step runs meanwhile, in the phase split rank 0 answers each relayed token the same way). The harness reached the second Mac over a tunnel (median 8 ms, mean 24 ms and p90 128 ms per round trip with decode-like gaps) instead of the cable (0.6 ms). Over the cable, same binaries: pipeline 26.3 tok/s at 1,024 and 25.2 at 8,192, phase split 28.2 and 25.8 (Mac A alone 29.5 and 27.9). Cut 40 over the cable: phase split 28.8 / 27.9 / 27.1 tok/s at 1,024 / 4,096 / 8,192, first token 1.61 / 5.34 / 10.46 s. For the product: the request owner must sit on rank 0's Mac or reach it over the cable; a per-token decision across any slower control route caps decode at one round trip per token. The first-launch timeout did not recur; the second Mac's firewall lists the ad-hoc-signed worker at `bin/phase` as allowed, so a new worker path or new bytes on the Mac that listens is a new firewall decision there (the owner's "approve once" requirement). The time model still needs the relay's per-token cost (about 1.6 to 2.9 ms over the cable at cut 48).
+
+### Status, 2026-10-11: every family (supersedes the lines above where they differ)
+
+- **Every registered family conforms** to `ClusterPlacementFamily` (Qwen dense 9B and 27B, Qwen 35B A3B 3.5 and
+  3.6, Prism Bonsai 2 27B, Nemotron 3.5 Lightning, GPT-OSS 20B, MiMo V2.6, Gemma 4 26B in three packs: eleven
+  rows). `ClusterPlacementLayouts.layout` picks the family from the configuration. The cuts a capability record
+  describes are derived from each family's own stage plan, not listed per model; a record holds up to 128
+  partitions (96 KiB). The request a layout is planned for is the row's reservation; the context a rank admits at
+  load follows its memory up to 32,768 tokens.
+- **Golden plans** (`libs/darkbloom-cluster/Tests/PlacementChecks/Golden`): each artifact's layout as the plan
+  tool read it from the real tensor headers on Mac A and on Mac B (byte-equal), both Macs' recorded profiles, and
+  the digest of the plan both Macs' plan tools printed (byte-equal). The check plans each layout with the plan
+  command's own code and must print exactly that plan; the dense rows' layouts built from retained header metadata
+  equal the header reads in every field but the excluded group.
+- **The setup wizard and `darkbloom cluster plan` offer every family.** The wizard's fixtures carry every
+  family's real layout and capability record; step 4 plans all eight model folders this pair holds, each with this
+  Mac leading, fitting, at a cut its layout admits. `darkbloom cluster plan` was run on Mac A for nine models
+  (eight families and Gemma 4 QAT) with Mac B's profile fetched over the pinned SSH route: a plan and a setup per
+  Mac for each.
+- **On the pair, at the planner's cut** (rank 0 on the M3 Ultra, rank 1 on the M5 Max, over the cable; each run
+  against a staged single-Mac reference by the qualification comparator): Qwen3.5 and Qwen3.6 35B A3B (cut 20),
+  Bonsai 2 27B (32), Nemotron 3.5 (27), GPT-OSS 20B (12) and Gemma 4 26B QAT (15) all pass, and each completes a
+  16,384-token prompt with both ranks agreeing. MiMo is placed from detected memory alone (cut 41 or 42, by what
+  Mac A has free at that moment); when applications on Mac A held enough that its rank was 3.44 GiB short, the
+  planner said exactly that instead of choosing a placement the gate would refuse.
+- **With measured speeds** (the timed solo runs of the A3B rows on each Mac, as `ClusterSpeedMeasurement` files),
+  the planner moves the A3B rows from an even pipeline split to cut 12 and `phase_split_mtp_v1`: the faster M5 Max
+  holds every layer and decodes alone with the head.
+- MTP per family: `handoff/MTP-PAIR.md`.

@@ -46,8 +46,9 @@ final class GPTOSSGenerationRecording {
                 throw ProbeError("Recorded final row dtype differs from the generation profile")
             }
             let captured = try QwenRecordedLogits(row, vocabularySize: request.profile.vocabularySize, check: check)
+            // A sampled token is a draw, not the argmax of its row.
             guard let maximum = captured.record.values.max(),
-                  captured.record.values.firstIndex(of: maximum) == tokenID else {
+                  request.sampler != nil || captured.record.values.firstIndex(of: maximum) == tokenID else {
                 throw ProbeError("Recorded final row differs from the agreed target token")
             }
             finalLogits = captured

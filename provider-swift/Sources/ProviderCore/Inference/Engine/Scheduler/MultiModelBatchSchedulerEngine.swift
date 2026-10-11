@@ -330,10 +330,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // reserve) and is retained only for ProviderLoop where
         // `requestToModel[id] = modelId` pins the slot before load and
         // closes the same race at the caller side.
+        let acquired = try await acquireForCompletion(modelId: request.model)
+        // Time spent in a cluster pair's request queue is not the pair's
+        // first-token or request budget: those start when the queue lets go.
+        let origin = acquired.queueExitedAt.map { exited in distributedRequestOrigin.map { max($0, exited) } ?? exited }
+            ?? distributedRequestOrigin
         return try await prepareAcquiredCompletion(
             request: request, templateControls: templateControls, requestUsage: requestUsage,
-            distributedRequestOrigin: distributedRequestOrigin,
-            acquired: try await acquireForCompletion(modelId: request.model))
+            distributedRequestOrigin: origin, acquired: acquired)
     }
 
     /// Keep registry/acquisition snapshots out of the parent preparation frame.

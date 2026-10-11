@@ -182,6 +182,8 @@ public struct ClusterWorkerSession: Sendable {
             && r.profileID == profile.id && r.promptTokenIDs.count <= profile.maximumPromptTokens
             && r.outputCount <= profile.maximumOutputTokens && r.chunkSize <= profile.maximumChunkTokens
             && r.promptTokenIDs.count <= profile.maximumContextTokens - r.outputCount
-            && (r.promptTokenIDs + r.stopTokenIDs).allSatisfy({ $0 < profile.vocabularySize }), "Reservation exceeds resident profile/deadline")
+            && (r.promptTokenIDs + r.stopTokenIDs).allSatisfy({ $0 < profile.vocabularySize })
+            && (r.sampling?.logitBias ?? []).allSatisfy({ $0.tokenID < profile.vocabularySize })
+            && (r.sampling?.topK ?? 0) <= profile.vocabularySize, "Reservation exceeds resident profile/deadline")
     }
 }

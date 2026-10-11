@@ -4,6 +4,9 @@ import MLXLMCommon
 /// Explicit opt-in only. The caller starts and verifies its owner and supplies
 /// a tokenizer; these factories never load a local model container or weights.
 public enum DistributedEngineFactory {
+    /// The single-Mac product's output default (`slotDefaultMaxTokens`).
+    public static let defaultOutputTokens = 4096
+
     public static func makeBridge(
         owner: any DistributedResidentExecutionOwner,
         expectedIdentity: DistributedResidentIdentity,
@@ -12,7 +15,9 @@ public enum DistributedEngineFactory {
         eosTokenIDs: Set<Int>,
         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
         publicModelID: String? = nil,
-        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
+        modelType: String? = nil,
+        modelDirectory: URL? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
         guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
@@ -29,9 +34,18 @@ public enum DistributedEngineFactory {
         // Prefix reuse happens on the peers (rank-local caches, agreed before
         // the first forward). With evidence the bridge mints a receipt per
         // request and advertises the frontiers both peers hold.
+        // Product parity: the artifact's sampling defaults for the families
+        // the product honours them for (legacy greedy defaults otherwise);
+        // an omitted `max_tokens` is the product's 4,096 (the pair's output
+        // limit), cut to the context left after the prompt.
+        let modelID = publicModelID ?? expectedIdentity.modelID
+        let samplingDefaults = EngineV2SamplingDefaults.resolve(
+            modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
         return EngineV2Bridge(
-            engine: engine, modelId: publicModelID ?? expectedIdentity.modelID, tokenizer: tokenizer,
-            eosTokenIds: eosTokenIDs, defaultMaxTokens: profile.maxOutputTokens,
+            engine: engine, modelId: modelID, tokenizer: tokenizer,
+            eosTokenIds: eosTokenIDs, samplingDefaults: samplingDefaults,
+            defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
+            defaultMaxTokensContextLimit: profile.maxContextTokens,
             maxConcurrentRequests: 1, residentPrefixCacheEvidence: residentPrefixEvidence,
             kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
     }
@@ -49,13 +63,14 @@ public enum DistributedEngineFactory {
         eosTokenIDs: Set<Int>,
         modelType: String? = nil,
         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
+        modelDirectory: URL? = nil
     ) throws -> MultiModelBatchSchedulerEngine.ModelRegistryEntry {
         let bridge = try makeBridge(
             owner: owner, expectedIdentity: expectedIdentity, profile: profile,
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs,
             firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID,
-            residentPrefixEvidence: residentPrefixEvidence)
+            residentPrefixEvidence: residentPrefixEvidence, modelType: modelType, modelDirectory: modelDirectory)
         return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
                      isVLM: false, engineV2Bridge: bridge, visionGate: nil)
     }

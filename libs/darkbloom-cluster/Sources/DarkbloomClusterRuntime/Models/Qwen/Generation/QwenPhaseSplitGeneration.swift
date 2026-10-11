@@ -304,8 +304,8 @@ enum QwenPhaseSplitGeneration {
                         if terminal, recording {
                             let row = item.emitted.row(item.column)
                             let captured = try QwenRecordedLogits(row, vocabularySize: request.profile.vocabularySize, check: check)
-                            guard let maximum = captured.record.values.max(),
-                                  captured.record.values.firstIndex(of: maximum) == item.token else {
+                            guard let maximum = captured.record.values.max(), request.sampler != nil
+                                    || captured.record.values.firstIndex(of: maximum) == item.token else {
                                 throw ProbeError("Recorded final row differs from the selected token")
                             }
                             finalLogits = captured

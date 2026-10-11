@@ -15,11 +15,12 @@ extension DistributedCBv2Engine {
     }
 
     func admit(
-        _ request: CBv2Request, deadlineContext: DistributedRequestDeadlineContext,
+        _ submitted: CBv2Request, deadlineContext: DistributedRequestDeadlineContext,
         projected: CBv2FirstTokenProjectedWork? = nil,
         cancellation: DistributedAdmissionCancellation? = nil
     ) throws -> Admission {
-        try validate(request)
+        try validate(submitted)
+        let request = resolvingSeed(submitted)
         try deadlineContext.checkAdmission(at: clock.now())
         let deadline = deadlineContext.firstTokenDeadline
         guard let capacity = readyCapacity(), capacity > 0 else {
@@ -100,26 +101,26 @@ extension DistributedCBv2Engine {
 
     func validate(_ request: CBv2Request) throws {
         guard !stopping else { throw DistributedEngineError.shuttingDown }
+        // A request the pair can never serve is refused for what it is, even
+        // while another request runs.
+        if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
         guard active == nil else { throw CBv2KVError.capacityExhausted(needed: 1, available: 0) }
         guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
-        let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)
-        guard !request.promptTokens.isEmpty, request.promptTokens.count <= profile.maxPromptTokens,
-            request.maxTokens > 0, request.maxTokens <= profile.maxOutputTokens,
-            !total.overflow, total.partialValue <= profile.maxContextTokens,
-            request.promptTokens.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }),
-            request.stopTokens.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize })
-        else { throw DistributedEngineError.unsupportedRequest("token limits or vocabulary") }
-        let p = request.sampling
-        guard p.temperature == 0, p.topP == 1, p.topK == 0, p.minP == 0,
-            p.repetitionPenalty == 1, p.frequencyPenalty == 0, p.presencePenalty == 0,
-            p.seed == nil, p.logitBias.isEmpty, p.topLogprobs == 0,
-            request.multimodal == nil, request.positionState == nil,
-            request.tokenConstraint == nil, request.priority == 0,
-            request.stopStrings.count <= 16,
-            request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 })
-        else { throw DistributedEngineError.unsupportedRequest("only greedy text without MTP, constraints or logprobs") }
-        // A receipt only names this submission for the bridge's evidence; the
-        // peers decide reuse themselves (rank-local caches, agreed before the
-        // first forward) and the terminal usage reports what they reused.
+        // Sampling (temperature, top-p/k, min-p, penalties, logit bias, seed)
+        // is the decoding rank's, with the product's sampler. A receipt only
+        // names this submission for the bridge's evidence; the peers decide
+        // reuse themselves (rank-local caches, agreed before the first
+        // forward) and the terminal usage reports what they reused.
+    }
+
+    /// An omitted seed takes this engine's fallback, as the product's
+    /// sampler gives every row without a seed its engine-level seed: fixed
+    /// for this engine, random across runs. Paired with the request's own
+    /// identity, it gives each unseeded request its own random stream.
+    func resolvingSeed(_ request: CBv2Request) -> CBv2Request {
+        guard request.sampling.seed == nil else { return request }
+        var resolved = request
+        resolved.sampling.seed = fallbackSeed
+        return resolved
     }
 }

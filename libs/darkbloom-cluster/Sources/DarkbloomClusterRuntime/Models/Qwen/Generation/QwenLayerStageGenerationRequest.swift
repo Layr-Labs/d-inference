@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Software bounds supplied by a qualified model adapter, not a load/resource
@@ -64,6 +65,10 @@ struct QwenLayerStageGenerationRequest: Equatable {
     let maximumTokens: Int
     private(set) var prefillFrameCount: Int
     let fingerprint: String
+    /// How the selecting rank draws each token; nil is greedy argmax, and then
+    /// the fingerprint is exactly a greedy request's. Copies of the request
+    /// (a planned prefix, a stage session's) share the one sampler.
+    let sampler: QwenStageTokenSampler?
     /// Prompt tokens whose committed state both ranks restored from their own
     /// prefix caches before the first forward. Zero for a cold request.
     private(set) var reusedPrefixTokens = 0
@@ -79,7 +84,8 @@ struct QwenLayerStageGenerationRequest: Equatable {
     var finalCommittedTokens: Int { promptCount + outputCount - 1 }
 
     init(profile: QwenLayerStageGenerationProfile, requestID: UUID, promptTokenIDs: [Int],
-         chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>) throws {
+         chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>,
+         sampling: ClusterWorkerSampling? = nil) throws {
         guard (1...profile.maximumPromptTokens).contains(promptTokenIDs.count),
               (1...profile.maximumChunkTokens).contains(chunkSize),
               (1...profile.maximumOutputTokens).contains(outputCount),
@@ -89,15 +95,25 @@ struct QwenLayerStageGenerationRequest: Equatable {
               stopTokenIDs.allSatisfy({ (0..<profile.vocabularySize).contains($0) }) else {
             throw ProbeError("Generation request exceeds its adapter profile or token bounds")
         }
+        if let sampling {
+            guard sampling.topK <= profile.vocabularySize,
+                  sampling.logitBias.allSatisfy({ (0..<profile.vocabularySize).contains($0.tokenID) }) else {
+                throw ProbeError("Generation sampling exceeds its adapter vocabulary")
+            }
+        }
         self.profile = profile; self.requestID = requestID; self.promptTokenIDs = promptTokenIDs
         self.stopTokenIDs = stopTokenIDs; self.chunkSize = chunkSize; self.outputCount = outputCount
         maximumTokens = promptTokenIDs.count + outputCount
         prefillFrameCount = (promptTokenIDs.count - 1) / chunkSize + 1
-        fingerprint = sha256(Data([
+        sampler = try sampling.map { try QwenStageTokenSampler($0, promptTokens: promptTokenIDs) }
+        var fields = [
             "qwen-stage-generation-request-v1", profile.fingerprint, requestID.uuidString.lowercased(),
             "prompt=" + qwenGenerationTokenHash(promptTokenIDs), "chunk=\(chunkSize)", "output=\(outputCount)",
             "stop=" + stopTokenIDs.sorted().map(String.init).joined(separator: ","),
-        ].joined(separator: "\n").utf8))
+        ]
+        // Both ranks agree on the sampling values; greedy requests keep their fingerprint.
+        if let sampler { fields.append("sampling=" + sampler.fingerprint) }
+        fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 
     /// The same request with an agreed prefix plan. Prefill frames start at

@@ -23,6 +23,8 @@ public actor DistributedLocalServer {
     var monitorTask: Task<Void, Never>?
     var teardownTask: Task<Void, Never>?
     var stopWaiters: [CheckedContinuation<DistributedLocalServerStatus, Never>] = []
+    /// Requests waiting for the pipeline, oldest first (`DistributedRequestQueue`).
+    var waiting: [UUID] = []
 
     // Existing test/read-only host views refer to the retained current generation.
     var session: any DistributedLocalServerSession { generation.session }
@@ -34,7 +36,8 @@ public actor DistributedLocalServer {
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
                 publishDiscovery: Bool = true) {
         generation = .init(session: session); binding = .init(session)
-        self.config = config; defaultMaxTokens = session.profile.maxOutputTokens
+        self.config = config
+        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
@@ -45,7 +48,8 @@ public actor DistributedLocalServer {
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
          discovery: DistributedLocalDiscovery? = nil) {
         generation = .init(session: session); binding = .init(session)
-        self.config = config; defaultMaxTokens = session.profile.maxOutputTokens
+        self.config = config
+        defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
     }

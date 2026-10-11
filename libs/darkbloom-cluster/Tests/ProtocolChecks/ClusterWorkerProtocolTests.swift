@@ -53,8 +53,8 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        try promptCache()
-        print("{\"passed\":true,\"groups\":8,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache(); try sampling()
+        print("{\"passed\":true,\"groups\":9,\"modelExecution\":false,\"localPipeIO\":true}")
     }
     static func roundTrips() throws {
         let commands: [ClusterWorkerCommand] = [.reserve(reservation()), .start,
@@ -161,6 +161,68 @@ struct ClusterWorkerProtocolTests {
         var peer = try Conversation(rank: 1); try peer.start()
         try peer.event(.promptCache(reusedTokens: 2, storedFrontiers: [2])); try peer.event(.finished(.length))
         try peer.event(.retired(.clean))
+    }
+    /// Sampling: exact round trip of every value (float bit patterns, full
+    /// 64-bit seed and stream), greedy reservations unchanged on the wire,
+    /// canonical form only, and the resident profile's bounds.
+    static func sampling() throws {
+        let value = ClusterWorkerSampling(temperature: 0.7, topP: 0.95, topK: 20, minP: 0.05,
+            repetitionPenalty: 1.1, repetitionContextSize: 64, frequencyPenalty: -0.25, presencePenalty: 0.5,
+            seed: UInt64.max, stream: (1 << 63) | 12345,
+            logitBias: [.init(tokenID: 3, bias: -100), .init(tokenID: 500, bias: 2.5)])
+        let sampled = ClusterWorkerReservation(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900, sampling: value)
+        let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(sampled))
+        let decoded = try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame))
+        try check(decoded == frame, "Sampling round trip")
+        guard case .reserve(let back) = decoded.command, let s = back.sampling else { throw TestFailure(message: "Sampling lost") }
+        try check(s.temperature.bitPattern == Float(0.7).bitPattern && s.seed == UInt64.max
+            && s.stream == (1 << 63) | 12345 && s.logitBias[1].bias == 2.5, "Exact sampling values")
+        // A greedy reservation carries no sampling field at all.
+        let greedy = String(decoding: try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch,
+            sequence: 0, requestID: requestID, command: .reserve(reservation()))), as: UTF8.self)
+        try check(!greedy.contains("sampling"), "Greedy reservation bytes unchanged")
+        // Greedy with only a logit bias still needs the decoding rank's transform.
+        let biasOnly = ClusterWorkerSampling(temperature: 0, topP: 1, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 64, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2,
+            logitBias: [.init(tokenID: 7, bias: 5)])
+        try check(!biasOnly.isGreedyNoOp && !biasOnly.isStochastic && !biasOnly.admitsSpeculativeVerification, "Bias-only flags")
+        try check(value.dependsOnHistory && !value.admitsSpeculativeVerification, "Penalties depend on history")
+        func with(_ s: ClusterWorkerSampling) -> ClusterWorkerCommandFrame {
+            .init(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(.init(profileID: profile.id,
+                promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000,
+                capacityLimitBytes: 900, sampling: s)))
+        }
+        func variant(temperature: Float = 0.7, topK: Int = 20, context: Int = 64,
+                     bias: [ClusterWorkerSampling.LogitBias] = []) -> ClusterWorkerSampling {
+            .init(temperature: temperature, topP: 1, topK: topK, minP: 0, repetitionPenalty: 1,
+                repetitionContextSize: context, frequencyPenalty: 0, presencePenalty: 0, seed: 1, stream: 2, logitBias: bias)
+        }
+        for bad in [variant(temperature: 0), variant(temperature: .nan), variant(temperature: .infinity),
+                    variant(topK: -1), variant(topK: 262_145), variant(context: -1),
+                    variant(bias: [.init(tokenID: 5, bias: 1), .init(tokenID: 4, bias: 1)]),
+                    variant(bias: [.init(tokenID: 5, bias: 1), .init(tokenID: 5, bias: 2)]),
+                    variant(bias: [.init(tokenID: 262_144, bias: 1)]),
+                    variant(bias: [.init(tokenID: 1, bias: .nan)]),
+                    variant(bias: (0..<4097).map { .init(tokenID: $0, bias: 1) })] {
+            try refuses { _ = try ClusterWorkerCodec.encode(with(bad)) }
+        }
+        let raw = String(decoding: try ClusterWorkerCodec.encode(frame), as: UTF8.self)
+        for mutation in [raw.replacingOccurrences(of: "\"topK\":20", with: "\"topK\":20,\"extra\":1"),
+                         raw.replacingOccurrences(of: "\"seed\":\"ffffffffffffffff\"", with: "\"seed\":\"FFFFFFFFFFFFFFFF\""),
+                         raw.replacingOccurrences(of: "\"seed\":\"ffffffffffffffff\"", with: "\"seed\":18446744073709551615"),
+                         raw.replacingOccurrences(of: "\"logitBiasBits\":[", with: "\"logitBiasBits\":[1,"),
+                         raw.replacingOccurrences(of: "\"temperatureBits\":\(Float(0.7).bitPattern)", with: "\"temperatureBits\":0.7")] {
+            try check(mutation != raw, "Mutation applies")
+            try refuses { _ = try ClusterWorkerCodec.decodeCommand(Data(mutation.utf8)) }
+        }
+        // The session holds a logit-bias token to the resident vocabulary.
+        var c = try Conversation()
+        try c.command(.reserve(.init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 2, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 900,
+            sampling: variant(bias: [.init(tokenID: 512, bias: 1)]))))
+        try refuses { try c.event(.admitted(reservedBytes: 800)) }
+        var ok = try Conversation(); try ok.start(sampled)
     }
     static func lifecycle() throws {
         var c = try Conversation(); try c.start()

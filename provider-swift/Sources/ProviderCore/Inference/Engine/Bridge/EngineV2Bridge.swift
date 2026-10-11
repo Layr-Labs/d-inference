@@ -108,6 +108,9 @@ public actor EngineV2Bridge {
     /// that has not been admitted.
     let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
+    /// A cluster pair's context: an omitted `max_tokens` is the default cut
+    /// to what still fits after the prompt (nil everywhere else).
+    let defaultMaxTokensContextLimit: Int?
     let maxConcurrentRequests: Int
     nonisolated let performanceProfile: ServingPerformanceProfile?
     nonisolated let deadlineProfile: DeadlinePerformanceProfile?
@@ -354,6 +357,7 @@ public actor EngineV2Bridge {
         extraEOSTokens: [String] = [],
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
+        defaultMaxTokensContextLimit: Int? = nil,
         maxConcurrentRequests: Int = 4,
         performanceProfile: ServingPerformanceProfile? = nil,
         deadlineProfile: DeadlinePerformanceProfile? = nil,
@@ -404,6 +408,7 @@ public actor EngineV2Bridge {
         )
         self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
+        self.defaultMaxTokensContextLimit = defaultMaxTokensContextLimit
         self.maxConcurrentRequests = maxConcurrentRequests
         self.performanceProfile = performanceProfile
         self.deadlineProfile = deadlineProfile

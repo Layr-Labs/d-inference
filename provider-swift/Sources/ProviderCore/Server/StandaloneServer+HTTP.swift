@@ -157,6 +157,10 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(code: Int(failure.statusCode)),
                 message: failure.message)
+        } catch MultiModelBatchSchedulerEngineError.distributedRequestRefused(let refusal, let message) {
+            // A cluster pair's refusal names its rule and the model's limits
+            // (a closed template, never request content): the client sees why.
+            return Self.openAIErrorResponse(status: .badRequest, message: message, code: refusal.rawValue)
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {
@@ -186,10 +190,11 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
     /// body even on a cross-origin request.
     static func openAIErrorResponse(
         status: HTTPResponse.Status,
-        message: String
+        message: String,
+        code: String? = nil
     ) -> Response {
         let body = OpenAIErrorEnvelope(
-            error: .init(message: message, type: "invalid_request_error")
+            error: .init(message: message, type: "invalid_request_error", code: code)
         )
         let data: Data
         do {
@@ -216,6 +221,8 @@ private struct OpenAIErrorEnvelope: Encodable {
     struct ErrorObject: Encodable {
         let message: String
         let type: String
+        /// Omitted when nil, so every existing envelope is unchanged.
+        var code: String? = nil
     }
     let error: ErrorObject
 }

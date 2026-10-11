@@ -7,7 +7,7 @@
         ui-install ui-build ui-lint ui-test ui \
         landing-install landing-build landing-lint landing-test landing \
         e2e-integration e2e-benchmark e2e \
-        docs-check docs-impact-check docs-stamp \
+        docs-check docs-impact-check docs-stamp changelog-check changelog-preview \
         test build all clean
 
 help:
@@ -137,9 +137,15 @@ docs-impact-check: ## Check source changes have their mapped canonical docs (BAS
 docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target specific files)
 	./scripts/docs-stamp.sh $(FILES)
 
+changelog-check: ## Validate independent pending changelog fragments
+	python3 scripts/changelog.py check
+
+changelog-preview: ## Preview pending release notes without changing files
+	python3 scripts/changelog.py preview
+
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test docs-check ## Run all tests + docs lint
+test: coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test changelog-check docs-check ## Run all tests + docs lint
 
 build: coordinator-build prompt-sidecar-build provider-build ui-build landing-build ## Build all components
 

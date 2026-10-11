@@ -45,6 +45,8 @@ final class QwenMTPDecoder {
     /// The head's trusted history after the whole prompt (captured at `begin`
     /// when the prefix cache will keep this prompt), for `prefixHistory(at:)`.
     private(set) var keptHistory: (hidden: MLXArray, tokens: MLXArray, last: MLXArray)?
+    /// Bytes of the kept history (one copy per prompt).
+    var keptHistoryBytes: Int { keptHistory.map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes } ?? 0 }
     /// Whether `begin` keeps the history (the prefix cache stores this prompt).
     var keepsHistory = false
     /// Prompt positions restored from a prefix entry's history (0: none).

@@ -135,6 +135,17 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     agreement: unplannedAgreement, collective: collective, hiddenTap: decoder?.tap(), check: checked)
                 agreement = planned.agreement; session = planned.session; prefix = planned.summary
             }
+            // This request's capture, within what its reservation charged:
+            // older entries make room first, so the entries and this capture
+            // stay within the cache's budget together.
+            let captureLimit = prefixCache?.takeAdmittedCapture()
+            if let prefixCache, prefixCache.enabled, let owned = session, !owned.prefixCaptureFrontiers.isEmpty {
+                owned.prefixCaptureLimitBytes = captureLimit
+                owned.prefixCaptureMaximumFrontiers = prefixCache.entryLimit
+                // Conservative until measured: F32 rows and an Int32 token.
+                owned.prefixHistoryBytesPerToken = decoder == nil ? 0 : agreement.request.profile.hiddenSize * 4 + 4
+                prefixCache.makeRoom(forCapture: captureLimit ?? 0)
+            }
             if let decoder, let prefixCache, prefixCache.enabled {
                 // The head keeps this prompt's history for the entries this
                 // request stores, and a restored prefix brings its own back:
@@ -286,9 +297,21 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     if let histories {
                         for index in states.indices { states[index].speculativeHistory = histories(states[index].committedTokens) }
                     }
+                    let historyBytes = states.isEmpty ? 0 : decoder?.keptHistoryBytes ?? 0
                     prefixCache.insert(scope: qwenStagePrefixScope(agreement), tokens: agreement.request.promptTokenIDs,
-                        states: states)
+                        states: states, sharedBytes: owned.capturedSharedBytes + historyBytes)
+                    if let cost = owned.prefixCaptureCost {
+                        let tokens = max(1, agreement.request.promptCount - 1)
+                        prefixCache.record(.init(attentionBytesPerToken: cost.attentionBytesPerToken,
+                            recurrentBytesPerFrontier: cost.recurrentBytesPerFrontier,
+                            historyBytesPerToken: historyBytes > 0 ? (historyBytes + tokens - 1) / tokens
+                                : cost.historyBytesPerToken))
+                    }
                     stored = states.map(\.committedTokens)
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) held_bytes=\(prefixCache.bytesInUse)"
+                        + " budget_bytes=\(prefixCache.budgetBytes) capture_limit=\(captureLimit.map(String.init) ?? "none")"
+                        + " captured_shared=\(owned.capturedSharedBytes + historyBytes)"
+                        + " captured_own=\(states.reduce(0) { $0 + $1.ownBytes })")
                 }
                 owned.discardCapturedPrefix()
                 let prefixSummary = QwenStagePrefixSummary(reusedPromptTokens: prefix.reusedPromptTokens,

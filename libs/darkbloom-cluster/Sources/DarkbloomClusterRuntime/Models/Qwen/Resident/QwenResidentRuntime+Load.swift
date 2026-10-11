@@ -116,6 +116,7 @@ extension QwenResidentRuntime {
             // and its idle baseline (`refreshServingContext`).
             var servingContext: Int?
             var activeLoaded = 0
+            var prefixBudget: Int?
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 do {
@@ -203,6 +204,9 @@ extension QwenResidentRuntime {
                     try admitted.allowance.requireLive(additionalNativeBytes: admitted.extraNativeBytes,
                         additionalHostBytes: admitted.extraHostBytes)
                     servingContext = admitted.contextTokens
+                    prefixBudget = QwenStagePrefixCache.budget(roomBytes: admitted.roomBytes)
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"
+                        + " room_bytes=\(admitted.roomBytes)")
                     log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.runtimeModelID)"
                         + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.contextTokens)"
                         + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
@@ -238,7 +242,7 @@ extension QwenResidentRuntime {
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,
                 generationMode: mode, producerStage: producerStage, speculativeHead: speculativeHead,
                 speculativeTerms: speculativeTerms, qualificationFault: fault,
-                servingContextTokens: servingContext, activeLoadedBytes: activeLoaded)
+                servingContextTokens: servingContext, activeLoadedBytes: activeLoaded, prefixBudgetBytes: prefixBudget)
         } catch {
             let primary = error; control.fail(); speculativeHead = nil; stage = nil; producerStage = nil
             do {

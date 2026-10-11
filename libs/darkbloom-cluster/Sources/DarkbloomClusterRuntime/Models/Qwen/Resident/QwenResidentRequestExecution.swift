@@ -10,7 +10,7 @@ enum QwenResidentRequestExecution {
         guard let phaseSplit else { try reserved.requireLive(); return }
         try reserved.allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
             reserved.prefillAllowance?.extraNativeBytes ?? 0, reserved.recordingCharge?.capture.extraNativeBytes ?? 0,
-            phaseSplit.extraNativeBytes,
+            phaseSplit.extraNativeBytes, reserved.prefixCaptureBytes,
         ]), additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
             reserved.prefillAllowance?.extraHostBytes ?? 0, reserved.recordingCharge?.capture.extraHostBytes ?? 0,
             phaseSplit.extraHostBytes,

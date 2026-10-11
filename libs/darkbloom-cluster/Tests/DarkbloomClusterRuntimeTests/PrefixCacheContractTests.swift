@@ -99,7 +99,7 @@ struct PrefixCacheContractTests {
         #expect(QwenStagePrefixConfirmation.settle(local: ok, peer: nil) == .init(reusedPrefix: 0, splitFinalToken: false))
     }
 
-    @Test func entriesAreKeyedByScopeAndPromptAndEvictedByCountNotBytes() {
+    @Test func entriesAreKeyedByScopeAndPromptAndEvictedByCount() {
         let cache = QwenStagePrefixCache(entryLimit: 3)
         let prompt = Array(0..<100), scope = "plan|artifact"
         cache.insert(scope: scope, tokens: prompt, states: [state(32), state(64), state(99)])
@@ -110,7 +110,7 @@ struct PrefixCacheContractTests {
         #expect(cache.frontiers(scope: "other", tokens: prompt, maximumFrontier: 99).isEmpty)
         var changed = prompt; changed[40] = 7
         #expect(cache.frontiers(scope: scope, tokens: changed, maximumFrontier: 99) == [32])
-        // Use 32, then insert one more: the least recently used (64) goes, whatever its size.
+        // Use 32, then insert one more: the least recently used (64) goes (budget not reached).
         #expect(cache.state(scope: scope, tokens: prompt, frontier: 32)?.committedTokens == 32)
         let other = Array(200..<300)
         cache.insert(scope: scope, tokens: other, states: [state(50)])
@@ -144,5 +144,92 @@ struct PrefixCacheContractTests {
         #expect(QwenStagePrefixCache().stride(chunkSize: 512) == 512)
         #expect(QwenStagePrefixCache().stride(chunkSize: 384) == 768)
         #expect(QwenStagePrefixCache(strideTokens: 2048).stride(chunkSize: 512) == 2048)
+    }
+
+    /// A state whose recurrent arrays hold `own` bytes (Float32 elements).
+    private func sized(_ frontier: Int, own: Int) -> QwenStagePrefixState {
+        QwenStagePrefixState(committedTokens: frontier,
+            attention: [3: (keys: MLXArray([Float(frontier)]), values: MLXArray([Float(frontier)]))],
+            recurrent: [0: (conv: MLXArray.zeros([own / 8], dtype: .float32), ssm: MLXArray.zeros([own / 8], dtype: .float32))])
+    }
+
+    @Test func bytesCountEachPromptsSharedCopyOnceAndTheBudgetEvictsLeastRecentlyUsed() {
+        let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 10_000)
+        let a = Array(0..<100), b = Array(100..<200)
+        // Three frontiers of one prompt: 3 x 1,000 own + 2,000 shared once.
+        cache.insert(scope: "s", tokens: a, states: [sized(32, own: 1_000), sized(64, own: 1_000), sized(99, own: 1_000)],
+            sharedBytes: 2_000)
+        #expect(cache.bytesInUse == 5_000)
+        // The shared copy goes only with the prompt's last entry.
+        #expect(cache.evictLeastRecentlyUsed())
+        #expect(cache.bytesInUse == 4_000)
+        #expect(cache.evictLeastRecentlyUsed() && cache.evictLeastRecentlyUsed())
+        #expect(cache.bytesInUse == 0 && cache.count == 0)
+        // Within the budget: a second prompt pushes out the least recently used of the first.
+        cache.insert(scope: "s", tokens: a, states: [sized(32, own: 1_000), sized(64, own: 1_000), sized(99, own: 1_000)],
+            sharedBytes: 2_000)
+        _ = cache.state(scope: "s", tokens: a, frontier: 99)
+        cache.insert(scope: "s", tokens: b, states: [sized(50, own: 1_000), sized(99, own: 1_000)], sharedBytes: 5_000)
+        #expect(cache.bytesInUse <= 10_000)
+        #expect(cache.frontiers(scope: "s", tokens: a, maximumFrontier: 99) == [99])
+        #expect(cache.frontiers(scope: "s", tokens: b, maximumFrontier: 99) == [99, 50])
+        #expect(cache.bytesInUse == 1_000 + 2_000 + 2_000 + 5_000)
+        // Re-inserting a key replaces its entry without counting it twice.
+        cache.insert(scope: "s", tokens: b, states: [sized(99, own: 1_000)], sharedBytes: 0)
+        #expect(cache.bytesInUse == 1_000 + 2_000 + 1_000 + 5_000 + 1_000)
+        // A lower budget evicts at once; room for a capture evicts beforehand.
+        cache.setBudget(6_000)
+        #expect(cache.bytesInUse <= 6_000 && cache.budgetBytes == 6_000)
+        cache.makeRoom(forCapture: 5_500)
+        #expect(cache.bytesInUse <= 500)
+        cache.sweep()
+        #expect(cache.bytesInUse == 0)
+        // Count still bounds: three tiny entries with a limit of two.
+        let counted = QwenStagePrefixCache(entryLimit: 2)
+        counted.insert(scope: "s", tokens: a, states: [state(10), state(20), state(30)])
+        #expect(counted.count == 2 && counted.heldFrontiers == [20, 30])
+    }
+
+    @Test func theBudgetComesFromTheRoomAndTheCaptureLimitFromTheMeasuredCost() {
+        let gib = 1 << 30
+        #expect(QwenStagePrefixCache.budget(roomBytes: 26 * gib) == QwenStagePrefixCache.maximumBudgetBytes)
+        #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib) == 3 * gib)
+        #expect(QwenStagePrefixCache.budget(roomBytes: -1) == 0)
+        let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 8 * gib)
+        // Unmeasured: the budget is charged.
+        #expect(cache.captureLimit(promptCount: 20_480, chunkSize: 512) == 8 * gib)
+        #expect(cache.captureLimit(promptCount: 1, chunkSize: 512) == 0)
+        // 27B rank 1 sizes: 48 KiB a token of attention, 113 MB a frontier, 10 KiB a token of history.
+        let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: 49_152, recurrentBytesPerFrontier: 113_000_000,
+            historyBytesPerToken: 10_244)
+        cache.record(cost)
+        // 5,120 tokens: 9 grid frontiers + the split one.
+        #expect(cache.captureLimit(promptCount: 5_120, chunkSize: 512) == cost.bytes(deepest: 5_119, frontiers: 10))
+        // 30,720 tokens: 59 grid frontiers, capped at 32 by the entry limit.
+        #expect(cache.captureLimit(promptCount: 30_720, chunkSize: 512) == cost.bytes(deepest: 30_719, frontiers: 32))
+        cache.setBudget(2 * gib)
+        #expect(cache.captureLimit(promptCount: 30_720, chunkSize: 512) == 2 * gib)
+        #expect(QwenStagePrefixCache(enabled: false).captureLimit(promptCount: 5_120, chunkSize: 512) == 0)
+        // The first measurement stands.
+        cache.record(.init(attentionBytesPerToken: 1, recurrentBytesPerFrontier: 1, historyBytesPerToken: 0))
+        #expect(cache.captureCost == cost)
+        // The admitted capture is handed over once.
+        cache.admitCapture(123)
+        #expect(cache.takeAdmittedCapture() == 123 && cache.takeAdmittedCapture() == nil)
+    }
+
+    @Test func aCaptureKeepsTheSplitFrontierFirstThenTheDeepestGridFrontiersThatFit() {
+        let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: 10, recurrentBytesPerFrontier: 100,
+            historyBytesPerToken: 0)
+        let planned = [512, 1024, 1536, 2048, 2559]
+        let base = cost.bytes(deepest: 2559, frontiers: 1)
+        #expect(base == 25_590 + 100)
+        #expect(cost.kept(planned, limit: .max, maximum: 32) == Set(planned))
+        #expect(cost.kept(planned, limit: base, maximum: 32) == [2559])
+        #expect(cost.kept(planned, limit: base + 250, maximum: 32) == [2048, 1536, 2559])
+        #expect(cost.kept(planned, limit: .max, maximum: 3) == [2048, 1536, 2559])
+        #expect(cost.kept(planned, limit: base - 1, maximum: 32).isEmpty)
+        #expect(cost.kept([], limit: .max, maximum: 32).isEmpty)
+        #expect(cost.bytes(deepest: Int.max / 2, frontiers: 1) == Int.max)
     }
 }

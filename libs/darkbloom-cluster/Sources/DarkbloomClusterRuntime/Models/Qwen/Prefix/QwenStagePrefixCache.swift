@@ -18,6 +18,51 @@ struct QwenStagePrefixState {
     var adopted: QwenLayerStageAdoptedState {
         .init(committedTokens: committedTokens, attention: attention, recurrent: recurrent)
     }
+
+    /// Bytes this frontier holds alone: its recurrent arrays, compact
+    /// (`QwenLayerStageSession.capturePrefix`). Its attention rows and
+    /// speculative history are views of its prompt's one copy, counted once
+    /// per prompt (`QwenStagePrefixCache.insert(sharedBytes:)`).
+    var ownBytes: Int { recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes } }
+}
+
+/// What one capture of a loaded stage costs, measured from its first
+/// capture (the same for every request of that stage): a prompt's capture
+/// is one attention copy and one speculative history at its deepest
+/// frontier, shared by its frontiers, plus one recurrent state a frontier.
+struct QwenStagePrefixCaptureCost: Equatable {
+    /// Keys and values of every attention layer of the stage, a prompt token.
+    let attentionBytesPerToken: Int
+    /// Compact convolution and SSM state of every recurrent layer, a frontier.
+    let recurrentBytesPerFrontier: Int
+    /// The decoding rank's speculative history, a prompt token; 0 elsewhere.
+    let historyBytesPerToken: Int
+
+    /// The shared copy at `deepest` plus `frontiers` recurrent states.
+    func bytes(deepest: Int, frontiers: Int) -> Int {
+        guard deepest > 0, frontiers > 0 else { return 0 }
+        let shared = (attentionBytesPerToken.multipliedReportingOverflow(by: deepest),
+                      historyBytesPerToken.multipliedReportingOverflow(by: deepest))
+        let own = recurrentBytesPerFrontier.multipliedReportingOverflow(by: frontiers)
+        guard !shared.0.overflow, !shared.1.overflow, !own.overflow else { return Int.max }
+        let total = shared.0.partialValue.addingReportingOverflow(shared.1.partialValue)
+        let all = total.partialValue.addingReportingOverflow(own.partialValue)
+        return total.overflow || all.overflow ? Int.max : all.partialValue
+    }
+
+    /// The frontiers of `planned` (ascending; the last is the deepest, the
+    /// split frontier) that a capture within `limit` keeps: the deepest,
+    /// then the deepest grid frontiers that still fit, at most `maximum` in
+    /// all. Empty when even the deepest alone does not fit.
+    func kept(_ planned: [Int], limit: Int, maximum: Int) -> Set<Int> {
+        guard let deepest = planned.last, maximum > 0 else { return [] }
+        let base = bytes(deepest: deepest, frontiers: 1)
+        guard base <= limit else { return [] }
+        let room = limit - base
+        let more = recurrentBytesPerFrontier > 0 ? room / recurrentBytesPerFrontier : planned.count
+        let count = min(planned.count - 1, maximum - 1, more)
+        return Set(planned.dropLast().suffix(max(0, count))).union([deepest])
+    }
 }
 
 /// Rank-local resident prompt-prefix cache of one loaded stage.
@@ -29,20 +74,26 @@ struct QwenStagePrefixState {
 /// the frontiers they hold and reuse only one both hold
 /// (`QwenStagePrefixAgreement`).
 ///
-/// Eviction is least-recently-used by entry count, never by bytes. Entries
-/// are inserted only after a request retired cleanly on both ranks. A sweep
-/// drops every entry; the runtime sweeps before it releases its model and
-/// after a failed request.
+/// Eviction is least-recently-used, by entry count and within a byte budget
+/// (`budgetBytes`, derived by the runtime from the rank's admissible memory
+/// beside its serving context). Bytes are counted as held: each frontier's
+/// compact recurrent state, plus its prompt's one attention copy and history
+/// once, freed with the prompt's last entry. Entries are inserted only after
+/// a request retired cleanly on both ranks; a request's own capture is
+/// charged in its reservation (`captureLimit`) and kept within it by the
+/// stage session. A sweep drops every entry; the runtime sweeps before it
+/// releases its model and after a failed request.
 public final class QwenStagePrefixCache: @unchecked Sendable {
-    /// One entry is one frontier of one prompt: its recurrent state (tens of
-    /// MB a rank for the dense Qwen models) and a view of its prompt's
+    /// One entry is one frontier of one prompt: its recurrent state (about
+    /// 110 MB on the 27B's larger stage, compact) and a view of its prompt's
     /// attention copy, which is shared by every frontier of that prompt.
     public static let defaultEntryLimit = 32
+    /// The budget never exceeds this, however much memory the Mac has.
+    public static let maximumBudgetBytes = 8 << 30
     /// Grid frontiers kept besides `promptCount - 1`: multiples of this many
     /// tokens (rounded up to a multiple of the request's chunk size). Keeping
-    /// one costs no copy (a reference to an immutable confirmed state) but
-    /// keeps that state alive: about 110 MB a frontier on the 27B's larger
-    /// stage, so the grid is coarser than the chunk size.
+    /// one costs its compact recurrent state (about 110 MB on the 27B's
+    /// larger stage), so the grid is coarser than the chunk size.
     public static let defaultStrideTokens = 512
     /// Most frontiers one rank offers its peer for one request.
     static let maximumOffered = 32
@@ -58,17 +109,94 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         let scope: String
         let state: QwenStagePrefixState
         var lastUse: UInt64
+        let ownBytes: Int
+        let prompt: UInt64
     }
+    /// One inserted prompt's shared storage and how many entries view it.
+    private struct Prompt { let sharedBytes: Int; var entries: Int }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    private var prompts: [UInt64: Prompt] = [:]
+    private var nextPrompt: UInt64 = 0
     private var clock: UInt64 = 0
+    private var held = 0
+    private var budget: Int
+    private var measured: QwenStagePrefixCaptureCost?
     private(set) var evictions = 0
 
     public init(enabled: Bool = true, entryLimit: Int = QwenStagePrefixCache.defaultEntryLimit,
-                strideTokens: Int = QwenStagePrefixCache.defaultStrideTokens) {
+                strideTokens: Int = QwenStagePrefixCache.defaultStrideTokens,
+                budgetBytes: Int = QwenStagePrefixCache.maximumBudgetBytes) {
         self.enabled = enabled
         self.entryLimit = max(1, min(entryLimit, 1024))
         self.strideTokens = max(1, strideTokens)
+        budget = max(0, budgetBytes)
+    }
+
+    /// Bytes the entries hold now (shared copies once).
+    public var bytesInUse: Int { lock.withLock { held } }
+    /// Most bytes the entries may hold.
+    public var budgetBytes: Int { lock.withLock { budget } }
+    /// The measured capture cost of this stage, once a capture was taken.
+    var captureCost: QwenStagePrefixCaptureCost? { lock.withLock { measured } }
+
+    /// The budget for `roomBytes` of admissible memory left beside the
+    /// serving context's charge: half of it, at most `maximumBudgetBytes`.
+    /// The serving context is never reduced for the cache; the other half
+    /// stays for the desktop's own drift.
+    public static func budget(roomBytes: Int) -> Int { max(0, min(maximumBudgetBytes, roomBytes / 2)) }
+
+    /// Sets the budget and evicts least recently used entries beyond it.
+    public func setBudget(_ bytes: Int) {
+        lock.withLock { budget = max(0, bytes); evictLocked(reserving: 0) }
+    }
+
+    /// Records a measured capture cost (the first one stands; it is a
+    /// property of the loaded stage).
+    func record(_ cost: QwenStagePrefixCaptureCost) { lock.withLock { if measured == nil { measured = cost } } }
+
+    /// Most bytes a request may capture, charged in its reservation: its
+    /// whole capture plan at the measured cost, within the budget; the budget
+    /// itself until a capture of this stage was measured. Zero when off.
+    func captureLimit(promptCount: Int, chunkSize: Int) -> Int {
+        guard enabled, promptCount >= 2 else { return 0 }
+        return lock.withLock {
+            guard let measured else { return budget }
+            let grid = (promptCount - 2) / stride(chunkSize: chunkSize)
+            let frontiers = min(entryLimit, grid + 1)
+            return min(budget, measured.bytes(deepest: promptCount - 1, frontiers: frontiers))
+        }
+    }
+
+    /// The capture limit the runtime charged in the current reservation,
+    /// handed to that request's stage session once (one request at a time a
+    /// rank). Nil when no reservation set one (unbounded: references, tests).
+    private var admittedCapture: Int?
+    func admitCapture(_ bytes: Int?) { lock.withLock { admittedCapture = bytes } }
+    func takeAdmittedCapture() -> Int? { lock.withLock { defer { admittedCapture = nil }; return admittedCapture } }
+
+    /// Before a request captures up to `bytes`: evicts least recently used
+    /// entries until the entries and that capture fit the budget together.
+    /// A reused entry was just used, so it goes last.
+    func makeRoom(forCapture bytes: Int) {
+        lock.withLock { evictLocked(reserving: max(0, bytes)) }
+    }
+
+    private func remove(_ entry: Entry) {
+        entries.removeValue(forKey: entry.key)
+        held -= entry.ownBytes
+        if var prompt = prompts[entry.prompt] {
+            prompt.entries -= 1
+            if prompt.entries <= 0 { prompts.removeValue(forKey: entry.prompt); held -= prompt.sharedBytes }
+            else { prompts[entry.prompt] = prompt }
+        }
+    }
+
+    private func evictLocked(reserving: Int) {
+        while entries.count > entryLimit || (held > 0 && held > budget - min(budget, reserving)),
+              let oldest = entries.values.min(by: { $0.lastUse < $1.lastUse }) {
+            remove(oldest); evictions += 1
+        }
     }
 
     /// From the worker's environment. `DARKBLOOM_CLUSTER_PREFIX_CACHE=off`
@@ -121,19 +249,26 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     /// Inserts states of one cleanly retired request, then evicts the least
-    /// recently used entries beyond the count limit.
-    func insert(scope: String, tokens: [Int], states: [QwenStagePrefixState]) {
+    /// recently used entries beyond the count limit or the budget.
+    /// `sharedBytes` is the storage its states view together (the attention
+    /// copy and speculative history at its deepest frontier), counted once
+    /// and freed with the last of them.
+    func insert(scope: String, tokens: [Int], states: [QwenStagePrefixState], sharedBytes: Int = 0) {
         guard enabled else { return }
         lock.withLock {
+            let prompt = nextPrompt; nextPrompt += 1
+            var added = 0
             for state in states.sorted(by: { $0.committedTokens < $1.committedTokens }) {
                 guard state.committedTokens > 0, state.committedTokens <= tokens.count else { continue }
                 let key = Self.key(scope: scope, tokens: tokens[0..<state.committedTokens])
+                if let old = entries[key] { remove(old) }
                 clock += 1
-                entries[key] = Entry(key: key, scope: scope, state: state, lastUse: clock)
+                let own = state.ownBytes
+                entries[key] = Entry(key: key, scope: scope, state: state, lastUse: clock, ownBytes: own, prompt: prompt)
+                held += own; added += 1
             }
-            while entries.count > entryLimit, let oldest = entries.values.min(by: { $0.lastUse < $1.lastUse }) {
-                entries.removeValue(forKey: oldest.key); evictions += 1
-            }
+            if added > 0 { prompts[prompt] = Prompt(sharedBytes: max(0, sharedBytes), entries: added); held += max(0, sharedBytes) }
+            evictLocked(reserving: 0)
         }
     }
 
@@ -142,7 +277,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     func evictLeastRecentlyUsed() -> Bool {
         lock.withLock {
             guard let oldest = entries.values.min(by: { $0.lastUse < $1.lastUse }) else { return false }
-            entries.removeValue(forKey: oldest.key); evictions += 1
+            remove(oldest); evictions += 1
             return true
         }
     }
@@ -176,7 +311,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// Drops every entry. The arrays are released when the last reference
     /// (an entry, or a session that is adopting one) goes away.
     public func sweep() {
-        lock.withLock { entries.removeAll(keepingCapacity: false) }
+        lock.withLock { entries.removeAll(keepingCapacity: false); prompts.removeAll(); held = 0 }
     }
 
     /// Committed frontiers currently held, for tests and diagnostics.

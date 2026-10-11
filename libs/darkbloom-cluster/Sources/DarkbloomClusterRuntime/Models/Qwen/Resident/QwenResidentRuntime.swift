@@ -48,6 +48,9 @@ public final class QwenResidentRuntime {
     /// holds while idle and empty. Anything above it while idle (the prefix
     /// cache) gives way to a request, so the serving context counts it.
     private let activeLoadedBytes: Int
+    /// The prefix cache's budget derived at load; a later idle refresh may
+    /// lower the budget with the room, never raise it above this.
+    private let loadPrefixBudgetBytes: Int
 
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
@@ -55,8 +58,10 @@ public final class QwenResidentRuntime {
          speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
          qualificationFault: QwenPhaseSplitFault? = nil,
          prefixCache: QwenStagePrefixCache = .fromEnvironment(),
-         servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0) {
+         servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0, prefixBudgetBytes: Int? = nil) {
         self.prefixCache = prefixCache
+        if let prefixBudgetBytes { prefixCache.setBudget(prefixBudgetBytes) }
+        loadPrefixBudgetBytes = prefixCache.budgetBytes
         self.servingContextTokens = servingContextTokens; self.activeLoadedBytes = activeLoadedBytes
         self.admission = admission; self.control = control; self.collective = collective
         self.speculativeHead = speculativeHead; self.speculativeTerms = speculativeTerms
@@ -83,12 +88,23 @@ public final class QwenResidentRuntime {
         guard control.available, let stage else { return nil }
         let reclaimable = max(0, Memory.activeMemory - activeLoadedBytes)
         let found: Int
+        var room = 0
         do {
-            found = try Self.admittedContext(admission: admission, stage: stage, rank: collective.rank,
-                mode: generationMode, speculativeTerms: speculativeTerms, reclaimableBytes: reclaimable).contextTokens
+            let admitted = try Self.admittedContext(admission: admission, stage: stage, rank: collective.rank,
+                mode: generationMode, speculativeTerms: speculativeTerms, reclaimableBytes: reclaimable)
+            found = admitted.contextTokens; room = admitted.roomBytes
         } catch {
             guard String(describing: error).hasPrefix("Resident load refused: not even") else { return nil }
             found = min(admission.profile.maximumContextTokens, admission.profile.maximumChunkTokens + 1)
+        }
+        // The cache's budget follows the room beside the serving context (never
+        // above the one found at load), so the context and the full budget fit
+        // together; entries beyond a smaller budget are evicted now.
+        let budget = min(loadPrefixBudgetBytes, QwenStagePrefixCache.budget(roomBytes: room))
+        if budget != prefixCache.budgetBytes {
+            prefixCache.setBudget(budget)
+            log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(budget) room_bytes=\(room)"
+                + " held_bytes=\(prefixCache.bytesInUse)")
         }
         let value = min(found, admission.wireProfile.maximumContextTokens)
         if value != servingContextTokens {
@@ -232,7 +248,7 @@ public final class QwenResidentRuntime {
         let os = try QwenDenseStageLoadResources.observeOS()
         let native = QwenDenseStageLoadResources.observeNative()
         let now = DispatchTime.now().uptimeNanoseconds
-        func admits(_ context: Int) throws -> Bool {
+        func judge(_ context: Int) throws -> (admitted: Bool, roomBytes: Int) {
             let value = try charge(context)
             let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes, try sum([value.allowance.reservedBytes,
                 value.extraNativeBytes, value.extraHostBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes])
@@ -241,8 +257,10 @@ public final class QwenResidentRuntime {
                 value.extraNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes]) - max(0, reclaimableBytes)
             let decision = try QwenDenseStageLoadPolicy.decide(os, requiredBytes: free,
                 purpose: "Resident context of \(context) tokens", now: now)
-            return decision.admitted && native.allocatorLimitBytes >= allocator
+            return (decision.admitted && native.allocatorLimitBytes >= allocator,
+                    max(0, min(decision.admissibleBytes - decision.requiredBytes, native.allocatorLimitBytes - allocator)))
         }
+        func admits(_ context: Int) throws -> Bool { try judge(context).admitted }
         // One prefill frame and one output token: the least a loaded stage serves.
         let minimum = min(maximumContext, admission.profile.maximumChunkTokens + 1)
         guard let largest = try QwenResidentContextAdmission.largest(minimum: minimum,
@@ -253,7 +271,9 @@ public final class QwenResidentRuntime {
                 additionalHostBytes: smallest.extraHostBytes)
             throw ProbeError("Resident load refused: not even a request of \(minimum) context tokens fits on rank \(rank)")
         }
-        return try charge(largest)
+        var admitted = try charge(largest)
+        admitted.roomBytes = try judge(largest).roomBytes
+        return admitted
     }
 
     private func maximumRecordingCharge() throws -> QwenResidentRecordingCharge {
@@ -329,9 +349,11 @@ public final class QwenResidentRuntime {
                 }
                 charge = nil
             }
-            let reserved = QwenResidentReservation(request: request, allowance: allowance,
+            var reserved = QwenResidentReservation(request: request, allowance: allowance,
                 deadline: value.deadlineUptimeNanoseconds, mode: mode, recordingCharge: charge,
                 prefillPolicy: prefillPolicy, prefillAllowance: prefill)
+            reserved.prefixCaptureBytes = prefixCache.captureLimit(promptCount: request.promptCount,
+                chunkSize: min(request.chunkSize, request.promptCount))
             let total = try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
                 prefill?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
             if split != nil {
@@ -343,9 +365,22 @@ public final class QwenResidentRuntime {
                     throw ProbeError("Phase-split reservation exceeds its owner or readiness capacity ceiling")
                 }
             }
-            // Kept prefixes give way before a reservation is refused for memory.
-            try prefixCache.yieldingMemory { try QwenResidentRequestExecution.requireLive(reserved, phaseSplit: split) }
+            // Kept prefixes give way before a reservation is refused for memory,
+            // and this request's own capture is optional: when even an empty
+            // cache leaves no room for it, the request runs without capturing.
+            do {
+                try prefixCache.yieldingMemory { try QwenResidentRequestExecution.requireLive(reserved, phaseSplit: split) }
+            } catch where reserved.prefixCaptureBytes > 0 {
+                log("darkbloom-prefix-v1 rank=\(collective.rank) capture-dropped bytes=\(reserved.prefixCaptureBytes): \(error)")
+                reserved.prefixCaptureBytes = 0
+                try prefixCache.yieldingMemory { try QwenResidentRequestExecution.requireLive(reserved, phaseSplit: split) }
+            }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
+            if prefixCache.enabled {
+                log("darkbloom-prefix-v1 rank=\(collective.rank) capture_charge=\(reserved.prefixCaptureBytes)"
+                    + " held_bytes=\(prefixCache.bytesInUse) budget_bytes=\(prefixCache.budgetBytes)")
+            }
+            prefixCache.admitCapture(reserved.prefixCaptureBytes)
             reservation = reserved; phaseSplitAllowance = split
             return total
         }
@@ -360,7 +395,7 @@ public final class QwenResidentRuntime {
         guard let reserved = reservation, reserved.request.requestID == requestID, control.withdraw(requestID) else {
             throw ProbeError("Resident release has no matching unstarted reservation")
         }
-        reservation = nil; phaseSplitAllowance = nil
+        reservation = nil; phaseSplitAllowance = nil; prefixCache.admitCapture(nil)
     }
 
     /// Only rank0 invokes the callback, after both ranks commit/accept the token.
@@ -421,7 +456,9 @@ public final class QwenResidentRuntime {
             log("darkbloom-resident-request-v1 rank=\(collective.rank) prompt=\(reserved.request.promptCount)"
                 + " output=\(reserved.request.outputCount) reserved=\(reserved.allowance.reservedBytes)"
                 + " transient=\(reserved.allowance.transientBytes) active_before=\(before.activeMemory)"
-                + " peak=\(after.peakMemory) active_after=\(after.activeMemory) cache_after=\(after.cacheMemory)")
+                + " peak=\(after.peakMemory) active_after=\(after.activeMemory) cache_after=\(after.cacheMemory)"
+                + " prefix_capture_charge=\(reserved.prefixCaptureBytes) prefix_held=\(prefixCache.bytesInUse)"
+                + " prefix_budget=\(prefixCache.budgetBytes)")
             // Output is fully prepared and control completed before this slot
             // is cleared. A thrown encode keeps the failed owner unavailable.
             reservation = nil; phaseSplitAllowance = nil
@@ -477,4 +514,7 @@ struct QwenResidentAdmittedContext {
     let allowance: QwenResidentRequestAllowance
     let extraNativeBytes: Int
     let extraHostBytes: Int
+    /// Admissible memory (and allocator room) left beside this context's
+    /// whole ask, on the same sample; the prefix cache's budget comes from it.
+    var roomBytes = 0
 }

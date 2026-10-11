@@ -26,11 +26,15 @@ public enum DistributedInstalledOwner {
     static func memberAuthorizer(plan: DistributedInstalledPlan, attachment: ClusterNativeMemberAttachment)
         throws -> @Sendable (ClusterNativeAuthorizationStart) throws -> Void {
         let policy = try NativePairMemberPolicy(attachment.policyBytes), rank = plan.configuration.localRank
+        // A cluster approval fixes no plan: the start must name the one this
+        // Mac's setup derives (and its member registered).
+        let digits = Array(plan.partition.planSHA256.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
+        let derived = Data(stride(from: 0, to: 64, by: 2).map { digits[$0] << 4 | digits[$0 + 1] })
         return { start in
             guard start.rank == rank else {
                 throw ClusterConfigurationError.invalid("The committed native start names another rank")
             }
-            do { try policy.require(start) }
+            do { try policy.require(start, plan: policy.cluster == nil ? nil : derived) }
             catch { throw ClusterConfigurationError.invalid("The committed native start differs from this Mac's installed approval") }
         }
     }

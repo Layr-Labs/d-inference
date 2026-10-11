@@ -1061,8 +1061,20 @@ public actor ProviderLoop {
     }
 
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
+    /// The signer a cluster member registers with and countersigns its
+    /// roster with (`darkbloom cluster member-identity`): the same key the
+    /// member's loop uses.
+    public static func clusterMemberSigner() -> (any AttestationSigner)? { createAttestationSigner() }
+
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable {
+            do { return try SecureEnclaveIdentity.debugPersisted(at: path) }
+            catch { log.warning("Debug Secure Enclave key file unusable (\(error)); using the ordinary signer") }
+        }
+        #endif
 
         if PersistentEnclaveKey.isAvailable {
             do {

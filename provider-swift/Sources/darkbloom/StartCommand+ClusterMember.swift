@@ -37,7 +37,10 @@ extension Start {
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
-            let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName)
+            let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName) { metallib in
+                try ClusterMemberDeviceProfile.current(chipName: hardware.chipName, gpuCores: hardware.gpuCores,
+                    metallibSHA256: metallib)
+            }
             try prepared.requireUnchanged()
             return installation
         }

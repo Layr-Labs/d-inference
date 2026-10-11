@@ -150,6 +150,10 @@ struct StageLoadRealSamplerTests {
         #expect(continuing.components(separatedBy: "guard try watch.admits(os, bytes: ").count == 2)
         #expect(continuing.contains("extension QwenResidentRequestAllowance"))
         #expect(continuing.contains("let os = try QwenDenseStageLoadResources.observeOS()"))
+        // ...and not for the entry check's 6 GiB, which counted the request's
+        // own allocations against it on hardware.
+        #expect(!continuing.contains("QwenResidentResourceEnvironment.require()"))
+        #expect(continuing.contains("QwenResidentResourceEnvironment.requirePower()"))
     }
 
     @Test func theRequestGateAdmitsOnCountedCacheOnThisMac() throws {

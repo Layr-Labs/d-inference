@@ -24,7 +24,10 @@ extension QwenResidentRequestAllowance {
         guard additionalNativeBytes >= 0, additionalHostBytes >= 0 else {
             throw ProbeError("Invalid additional resident allowance")
         }
-        try QwenResidentResourceEnvironment.require()
+        // Power and thermal only: the entry check's 6 GiB floor would count
+        // this request's own allocations against it (hardware, round-2 fix
+        // u1: 0.58 GiB free once rank 1 had allocated a 30,848-token state).
+        try QwenResidentResourceEnvironment.requirePower()
         let os = try QwenDenseStageLoadResources.observeOS()
         let remaining = try Self.continuingRequirement(reservedBytes: reservedBytes,
             additionalBytes: QwenLongPrefillCheckedBytes.sum([additionalNativeBytes, additionalHostBytes]),

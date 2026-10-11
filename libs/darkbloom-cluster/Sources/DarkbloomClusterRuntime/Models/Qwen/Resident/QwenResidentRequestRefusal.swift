@@ -11,6 +11,7 @@ public struct ClusterResidentRequestRefusal: Error, CustomStringConvertible, Sen
     /// The gate's or check's own sentence, for whoever launched the worker.
     public let message: String
     public var description: String { message }
+    public init(reason: ClusterWorkerRefusal, message: String) { self.reason = reason; self.message = message }
 }
 
 extension QwenResidentControl {

@@ -315,6 +315,13 @@ public enum QwenStagedGenerationReference {
                       receipts[0].sourceParameterLayoutSHA256 == receipts[1].sourceParameterLayoutSHA256 else {
                     throw ProbeError("Staged reference stages did not load matching verified commitments")
                 }
+                // The same KV storage as the workers: the oracle must attend as they do.
+                // Two lanes: a phase split adopts into stage 0 while its producer is open.
+                let kvKind = try ClusterStageKVBackendKind.fromEnvironment(processEnvironment)
+                for stage in stages {
+                    try CBv2StageKVHost.install(on: stage.loaded, kind: kvKind, lanes: 2,
+                        maximumTokensPerRequest: request.maximumTokens, maximumChunkTokens: request.chunkSize)
+                }
                 let loadedBytes = Memory.snapshot().activeMemory
                 // Each rank's named request allowance, checked live as the worker does.
                 let allowances = try (0...1).map {
@@ -648,7 +655,7 @@ public enum QwenStagedGenerationReference {
                 // then the head and the stages, both streams drained, cached buffers returned.
                 sessions.removeAll()
                 speculativeHead = nil
-                stages.removeAll()
+                for stage in stages { CBv2StageKVHost.uninstall(from: stage.loaded) }; stages.removeAll()
                 try settle()
                 Memory.clearCache()
                 try settle()
@@ -684,7 +691,7 @@ public enum QwenStagedGenerationReference {
                 for session in sessions { try? session.cancel() }
                 let retired = sessions.allSatisfy(\.isClosed)
                 decoder?.release(); decoder = nil
-                sessions.removeAll(); speculativeHead = nil; stages.removeAll()
+                sessions.removeAll(); speculativeHead = nil; for stage in stages { CBv2StageKVHost.uninstall(from: stage.loaded) }; stages.removeAll()
                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
                 Memory.clearCache()
                 if let handoffRefusal {

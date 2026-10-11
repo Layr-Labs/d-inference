@@ -39,14 +39,18 @@ public final class QwenResidentRuntime {
     private var processLeaseOwned = true
     /// This rank's resident prompt-prefix cache; lives as long as the model.
     public let prefixCache: QwenStagePrefixCache
+    /// Continuous batching terms, agreed with the peer at load.
+    public let batch: QwenBatchSettings
+    /// The KV storage the stage's requests use, for whoever launched the worker.
+    public var kvBackend: String { stage?.loaded.kvHost.host?.kind.rawValue ?? "contiguous" }
 
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
          generationMode: QwenResidentGenerationMode = .pipeline, producerStage: (any LayerStageResidentStage)? = nil,
          speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
          qualificationFault: QwenPhaseSplitFault? = nil,
-         prefixCache: QwenStagePrefixCache = .fromEnvironment()) {
-        self.prefixCache = prefixCache
+         prefixCache: QwenStagePrefixCache = .fromEnvironment(), batch: QwenBatchSettings = .single) {
+        self.prefixCache = prefixCache; self.batch = batch
         self.admission = admission; self.control = control; self.collective = collective
         self.speculativeHead = speculativeHead; self.speculativeTerms = speculativeTerms
         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
@@ -386,7 +390,12 @@ public final class QwenResidentRuntime {
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     // Every rank sweeps its cache before its model goes.
                     prefixCache.sweep()
+                    // The stages' KV pools go with them; one still holding a
+                    // request's pages is a failed release.
+                    let drained = CBv2StageKVHost.uninstall(from: stage?.loaded)
+                        && CBv2StageKVHost.uninstall(from: producerStage?.loaded)
                     reservation = nil; phaseSplitAllowance = nil; speculativeHead = nil; stage = nil; producerStage = nil
+                    guard drained else { throw ProbeError("A stage KV pool still held request pages at release") }
                     guard model == nil, producerModel == nil else { throw ProbeError("Resident model remains retained") }
                     Memory.clearCache(); try error.check()
                     if generationMode.isPhaseSplit {

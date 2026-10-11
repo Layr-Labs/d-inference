@@ -23,6 +23,10 @@ extension QwenResidentRuntime {
                             qualification: QwenResidentQualificationSwitches = .refused) throws -> QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
+        // Graph-shaping terms both ranks bind into the load agreement: the
+        // stages' KV storage (paged by default) and the batch lanes.
+        let kvKind = try ClusterStageKVBackendKind.fromEnvironment(launchEnvironment)
+        let batch = try QwenBatchSettings.fromEnvironment(launchEnvironment)
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         // A recording request may be asked to commit this; fixed here, once.
@@ -108,7 +112,11 @@ extension QwenResidentRuntime {
             if let speculativeTerms, let headFiles {
                 speculativeFields = speculativeTerms.loadAgreementFields(headSHA256: headFiles.sha256)
             }
+            guard !batch.batching || mode == .pipeline else {
+                throw ProbeError("Batch lanes serve the pipeline mode only; \(mode.rawValue) keeps one request at a time")
+            }
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
+                + kvKind.loadAgreementFields + batch.loadAgreementFields
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common
             let capacity = try MLX.withError { nativeError in
@@ -171,6 +179,16 @@ extension QwenResidentRuntime {
                                 + " active_added=\(head.receipt.activeBytesAdded) load_ns=\(head.receipt.loadNanoseconds)")
                         }
                     }
+                    // Each loaded stage's shared KV storage (Qwen 3.5 stages; other
+                    // families keep their per-request contiguous storage).
+                    for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
+                        try CBv2StageKVHost.install(on: value, kind: kvKind, lanes: batch.lanes,
+                            maximumTokensPerRequest: admission.profile.maximumContextTokens,
+                            maximumChunkTokens: admission.profile.maximumChunkTokens)
+                    }
+                    if batch.batching, loaded.loaded.kvHost.host == nil {
+                        throw ProbeError("Batch lanes need a stage KV host; this model's stages keep per-request storage")
+                    }
                     let maximum = try loaded.requestAllowance(plan: admission.plan,
                         rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
                         chunkSize: admission.profile.maximumChunkTokens, bound: QwenResidentResourceEnvironment.allocationBound)
@@ -230,9 +248,11 @@ extension QwenResidentRuntime {
             return .init(admission: admission, control: control, collective: collective,
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,
                 generationMode: mode, producerStage: producerStage, speculativeHead: speculativeHead,
-                speculativeTerms: speculativeTerms, qualificationFault: fault)
+                speculativeTerms: speculativeTerms, qualificationFault: fault, batch: batch)
         } catch {
-            let primary = error; control.fail(); speculativeHead = nil; stage = nil; producerStage = nil
+            let primary = error; control.fail(); speculativeHead = nil
+            CBv2StageKVHost.uninstall(from: stage?.loaded); CBv2StageKVHost.uninstall(from: producerStage?.loaded)
+            stage = nil; producerStage = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize()

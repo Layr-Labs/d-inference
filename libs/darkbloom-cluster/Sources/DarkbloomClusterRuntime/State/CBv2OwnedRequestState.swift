@@ -6,8 +6,14 @@ import MLXLMCommon
 /// Callers must run native work inside MLX.withError and supply its check closure.
 final class CBv2OwnedRequestState {
     let geometry: CBv2RequestGeometry
-    let backend: CBv2ContiguousKVBackend
+    /// The stage host's shared backend and bank when the geometry has a host
+    /// (paged by default); otherwise this request's own contiguous storage.
+    let backend: any CBv2KVBackend
     let bank: CBv2LayerCacheBank
+    var hosted: Bool { geometry.host != nil }
+    /// This request's rows, kept after release only to prove that no cache
+    /// still binds them.
+    private var releasedRows: [CBv2SequenceKV] = []
     let recurrent: CBv2RecurrentRequestState
     private(set) var rows: [CBv2SequenceKV?]
     private var evaluation: CBv2RecurrentStateEvaluation?
@@ -25,7 +31,7 @@ final class CBv2OwnedRequestState {
     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int) throws {
         guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
             promptCount <= 32_768 - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
-        let backend = CBv2ContiguousKVBackend(config: .init(
+        let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
         let rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
             promptLength: promptCount, maxLength: promptCount + outputCount)
@@ -34,14 +40,15 @@ final class CBv2OwnedRequestState {
         catch { backend.release(rows); throw error }
         guard rows.count == geometry.kinds.count,
             rows.allSatisfy({ $0?.absoluteOffset == 0 && $0?.retainedCount == 0 }),
-            geometry.caches.allSatisfy({ $0.rows.isEmpty }),
+            // A host's caches may bind batchmates' rows; never these new ones.
+            geometry.host != nil || geometry.caches.allSatisfy({ $0.rows.isEmpty }),
             recurrent.confirmedStateSnapshot() == nil, recurrent.materializedByteCount == 0,
             !recurrent.isReleased else {
             backend.release(rows); try? recurrent.release()
             throw ProbeError("CBv2 state did not start with exclusive fresh ownership")
         }
         self.geometry = geometry; self.backend = backend
-        self.bank = CBv2LayerCacheBank(caches: geometry.caches)
+        self.bank = geometry.host?.bank ?? CBv2LayerCacheBank(caches: geometry.caches)
         self.recurrent = recurrent; self.rows = rows
         self.maximumTokens = promptCount + outputCount
     }
@@ -80,8 +87,10 @@ final class CBv2OwnedRequestState {
             }
             layers[layer.modelLayerIndex] = .init(conv: pair.conv, ssm: pair.ssm)
         }
-        let backend = CBv2ContiguousKVBackend(config: .init(
+        let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
+        // Full attention only: the backend's own direct plan (paged writes the
+        // arrays into fresh pages; contiguous copies them into its rows).
         let rows = try backend.makeSequenceState(adopting: prefix, layerKinds: geometry.kinds,
             maxLength: promptCount + outputCount)
         let recurrent: CBv2RecurrentRequestState
@@ -89,14 +98,14 @@ final class CBv2OwnedRequestState {
         catch { backend.release(rows); throw error }
         guard rows.count == geometry.kinds.count,
             rows.allSatisfy({ $0?.absoluteOffset == committed && $0?.retainedCount == committed }),
-            geometry.caches.allSatisfy({ $0.rows.isEmpty }),
+            geometry.host != nil || geometry.caches.allSatisfy({ $0.rows.isEmpty }),
             Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? []) == Set(geometry.recurrent.modelLayerIndices),
             !recurrent.isReleased else {
             backend.release(rows); try? recurrent.release()
             throw ProbeError("CBv2 adopted state did not take exclusive ownership at its frontier")
         }
         self.geometry = geometry; self.backend = backend
-        self.bank = CBv2LayerCacheBank(caches: geometry.caches)
+        self.bank = geometry.host?.bank ?? CBv2LayerCacheBank(caches: geometry.caches)
         self.recurrent = recurrent; self.rows = rows
         self.maximumTokens = promptCount + outputCount
         self.committedTokens = committed
@@ -296,6 +305,9 @@ final class CBv2OwnedRequestState {
     }
 
     func validateState(after count: Int) throws {
+        // A host's caches are shared: bind this request's rows (a no-op when
+        // they are bound already) before checking what the caches hold.
+        if hosted { _ = bank.layerCaches(rowStates: [rows]) }
         for (index, optionalRow) in rows.enumerated() {
             let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
             guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
@@ -320,7 +332,8 @@ final class CBv2OwnedRequestState {
                 throw ProbeError("CBv2 conv/SSM shape or dtype differs from its local contract")
             }
         }
-        guard backend.bytesInUse <= geometry.kvCapacityBytes else {
+        // A host's pool holds every lane; its own reservations bound it.
+        guard hosted || backend.bytesInUse <= geometry.kvCapacityBytes else {
             throw ProbeError("CBv2 KV capacity exceeded the admitted geometry")
         }
     }
@@ -337,11 +350,19 @@ final class CBv2OwnedRequestState {
         }
         evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil
         bank.releaseBoundRows()
+        releasedRows = rows.compactMap { $0 }
         backend.release(rows); rows.removeAll()
         do { try recurrent.release() } catch { cleanupError = cleanupError ?? error }
         isClosed = true
-        guard backend.bytesInUse == 0, backend.bytesReserved == 0,
-            geometry.caches.allSatisfy({ $0.rows.isEmpty }), recurrent.isReleased else {
+        // A host's pool may still hold other lanes: this request's own rows
+        // must be unbound everywhere; its own storage alone must be empty.
+        let unbound = geometry.caches.allSatisfy { cache in
+            !cache.rows.contains { row in releasedRows.contains { $0 === row } }
+        }
+        let empty = hosted ? unbound : backend.bytesInUse == 0 && backend.bytesReserved == 0
+            && geometry.caches.allSatisfy({ $0.rows.isEmpty })
+        releasedRows.removeAll()
+        guard empty, recurrent.isReleased else {
             isFailed = true
             throw cleanupError ?? ProbeError("CBv2 state retained ownership after retirement")
         }

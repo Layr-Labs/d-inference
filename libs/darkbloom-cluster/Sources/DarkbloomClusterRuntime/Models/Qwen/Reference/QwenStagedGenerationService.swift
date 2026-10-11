@@ -126,6 +126,12 @@ extension QwenStagedGenerationReference {
                       receipts[0].sourceParameterLayoutSHA256 == receipts[1].sourceParameterLayoutSHA256 else {
                     throw ProbeError("Staged service stages did not load matching verified commitments")
                 }
+                let kvKind = try ClusterStageKVBackendKind.fromEnvironment(ProcessInfo.processInfo.environment)
+                for (rank, stage) in stages.enumerated() {
+                    try CBv2StageKVHost.install(on: stage.loaded, kind: kvKind, lanes: 1,
+                        maximumTokensPerRequest: admissions[rank].profile.maximumContextTokens,
+                        maximumChunkTokens: admissions[rank].profile.maximumChunkTokens)
+                }
                 try ready(.init(stageLoadSeconds: loadSeconds, activeBytesBefore: before,
                                 activeBytesLoaded: Memory.snapshot().activeMemory))
 
@@ -220,7 +226,7 @@ extension QwenStagedGenerationReference {
                         activeBytesDuringRequest: during, activeBytesAfterRetirement: Memory.snapshot().activeMemory))
                 }
                 let peak = Memory.snapshot().peakMemory
-                stages.removeAll()
+                for stage in stages { CBv2StageKVHost.uninstall(from: stage.loaded) }; stages.removeAll()
                 try settle()
                 Memory.clearCache()
                 try settle()
@@ -231,7 +237,7 @@ extension QwenStagedGenerationReference {
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
                 for session in sessions { try? session.cancel() }
-                sessions.removeAll(); stages.removeAll()
+                sessions.removeAll(); for stage in stages { CBv2StageKVHost.uninstall(from: stage.loaded) }; stages.removeAll()
                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
                 Memory.clearCache()
                 throw primary

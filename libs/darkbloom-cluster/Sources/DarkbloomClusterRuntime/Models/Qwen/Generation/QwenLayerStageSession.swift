@@ -105,7 +105,8 @@ final class QwenLayerStageSession {
             ?? CBv2RequestGeometry(model: stage.model, family: .qwen35,
                 feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(stage.model),
                 layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
-                configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
+                configurationData: stage.configurationData, maximumTokens: request.maximumTokens,
+                host: stage.kvHost.host)
         if let adopting {
             // A hand-off adopts the producer's whole prompt; a prefix restore
             // adopts this stage's own cached state at the agreed reused prefix.

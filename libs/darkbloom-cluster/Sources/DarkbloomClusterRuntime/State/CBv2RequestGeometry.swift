@@ -15,9 +15,14 @@ struct CBv2RequestGeometry {
     /// Layers of the model this geometry describes. Every one owns state in a
     /// Qwen stage; a Nemotron stage also has layers that own none.
     let layerCount: Int
+    /// The loaded stage's shared KV storage, when its owner installed one:
+    /// then `caches` are the host's and rows come from the host's backend.
+    /// Nil keeps the per-request contiguous storage (other families).
+    var host: CBv2StageKVHost? = nil
 
     init(model: any LanguageModel, family: InferenceModelFamily, feedForwardKind: String,
-         layerCount: Int, vocabularySize: Int, configurationData: Data, maximumTokens: Int) throws {
+         layerCount: Int, vocabularySize: Int, configurationData: Data, maximumTokens: Int,
+         host: CBv2StageKVHost? = nil) throws {
         if let nemotron = model as? NemotronHModel {
             self = try CBv2RequestGeometry(nemotronStage: nemotron, layerCount: layerCount,
                 vocabularySize: vocabularySize, configurationData: configurationData, maximumTokens: maximumTokens)
@@ -43,10 +48,10 @@ struct CBv2RequestGeometry {
         let recurrent: CBv2RecurrentStateSpec
         if let model = model as? Qwen35TextModel {
             kinds = model.cbv2LayerKinds; recurrent = model.cbv2RecurrentStateSpec
-            caches = model.newCacheV2 { CBv2LayerCache(layerIndex: $0, kind: $1) }
+            caches = host?.caches ?? model.newCacheV2 { CBv2LayerCache(layerIndex: $0, kind: $1) }
         } else if let model = model as? Qwen35Model {
             kinds = model.cbv2LayerKinds; recurrent = model.cbv2RecurrentStateSpec
-            caches = model.newCacheV2 { CBv2LayerCache(layerIndex: $0, kind: $1) }
+            caches = host?.caches ?? model.newCacheV2 { CBv2LayerCache(layerIndex: $0, kind: $1) }
         } else {
             throw ProbeError("Unsupported concrete Qwen CBv2 model constructor")
         }
@@ -56,6 +61,13 @@ struct CBv2RequestGeometry {
         guard mlps.count == layerCount,
               mlps.allSatisfy({ String(describing: type(of: $0.1)) == QwenRoutedExpertStageModel.feedForwardTypeName(model) }) else {
             throw ProbeError("cbv2-contiguous requires the pinned dense MLP topology; whole-MLP substitutes are unsupported")
+        }
+        if let host {
+            // The host was built for this stage's own layers, at least this long.
+            guard host.layerKinds == kinds, host.caches.count == kinds.count,
+                  maximumTokens <= host.maximumTokensPerRequest else {
+                throw ProbeError("Stage KV host differs from this stage's attention layers or request bound")
+            }
         }
         guard !kinds.isEmpty, kinds.count == caches.count,
               let types = (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
@@ -79,8 +91,10 @@ struct CBv2RequestGeometry {
                   !kind.hasSinks, !kind.isBidirectional,
                   kind.kvHeads > 0, kind.queryHeads > 0, kind.headDim > 0,
                   kind.queryHeads % kind.kvHeads == 0,
-                  caches[index].kind == kind, caches[index].layerIndex == attentionIndices[index],
-                  caches[index].rows.isEmpty, caches[index] is any KVCache else {
+                  caches[index].kind == kind,
+                  caches[index].layerIndex == (host?.expectedLayerIndex(compact: index) ?? attentionIndices[index]),
+                  // A host's caches may hold another request's rows (a batch).
+                  host != nil || caches[index].rows.isEmpty, caches[index] is any KVCache else {
                 throw ProbeError("Unsupported Qwen CBv2 attention cache geometry")
             }
             var bytes = maximumTokens
@@ -103,7 +117,9 @@ struct CBv2RequestGeometry {
             }
         }
         _ = try recurrent.peakBytesPerRequest()
+        guard host == nil || host!.kvDType == dtype else { throw ProbeError("Stage KV host dtype differs from the stage") }
         self.kinds = kinds; self.caches = caches; self.recurrent = recurrent
         self.kvDType = dtype; self.kvCapacityBytes = capacity; self.layerCount = layerCount
+        self.host = host
     }
 }

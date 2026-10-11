@@ -196,7 +196,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         let values = lock.withLock { endpoints }
         let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline,
-            timing: prepared.plan.budgets.pairTiming, keepWarm: .standard)
+            timing: prepared.plan.budgets.pairTiming, keepWarm: .standard,
+            lanes: prepared.plan.batchLanes() ?? 1)
         lock.withLock { self.pair = pair }
         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }

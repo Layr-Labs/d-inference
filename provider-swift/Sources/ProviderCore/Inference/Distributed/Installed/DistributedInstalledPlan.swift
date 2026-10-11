@@ -70,9 +70,29 @@ struct DistributedInstalledPlan: Sendable {
         if let value = ownerEnvironment[Self.prefixCacheSwitch], value.lowercased() == "off" {
             environment[Self.prefixCacheSwitch] = "off"
         }
+        // Continuous batching (pipeline mode only): both owners must give their
+        // workers the same lane count (the workers' load agreement refuses a
+        // mismatch). A setup in a phase-split mode keeps one request at a time.
+        if let lanes = batchLanes(ownerEnvironment), lanes > 1 {
+            environment[Self.batchLanesSwitch] = String(lanes)
+        }
+        // Diagnosis only: the stages' KV storage (paged unless contiguous is named).
+        if let value = ownerEnvironment[Self.kvBackendSwitch]?.lowercased(), ["paged", "contiguous"].contains(value) {
+            environment[Self.kvBackendSwitch] = value
+        }
         return environment
     }
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
+    static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
+    static let kvBackendSwitch = "DARKBLOOM_CLUSTER_KV_BACKEND"
+
+    /// The owner's batch lanes, 1...8, in the pipeline mode; nil when unset,
+    /// out of range or in a phase-split mode (one lane).
+    func batchLanes(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Int? {
+        guard configuration.selectedGenerationMode == .pipeline, let raw = environment[Self.batchLanesSwitch],
+              let value = Int(raw), (1...8).contains(value) else { return nil }
+        return value
+    }
 
     private func baseNativeEnvironment(matrix: URL) -> [String: String] {
         ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",

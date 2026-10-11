@@ -1,7 +1,8 @@
 import Foundation
 import MLXLMCommon
 
-/// Experimental one-request engine. The injected owner, not this adapter,
+/// Experimental engine: one request at a time, or as many as the owner's batch
+/// lanes (continuous batching on the pair). The injected owner, not this adapter,
 /// implements transport, native execution, per-peer resource admission and fencing.
 /// Default/local production factories do not instantiate this type.
 public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
@@ -14,7 +15,12 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     let clock: CBv2Clock
     let observationSink: DistributedRequestObservationSink?
     var capacityLimit: Int
-    var active: DistributedRequestState?
+    /// Every request reserved or running, by state generation: at most the
+    /// owner's `concurrentRequests`.
+    var actives: [UUID: DistributedRequestState] = [:]
+    func isActive(_ state: DistributedRequestState) -> Bool { actives[state.generation] === state }
+    /// The request, for an owner that serves one at a time (and its tests).
+    var active: DistributedRequestState? { actives.count == 1 ? actives.values.first : nil }
     var invalidated = false
     var stopping = false
     var shutdownTask: Task<Void, Never>?
@@ -65,7 +71,7 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
 
     public func cancel(_ id: CBv2RequestID) {
         onQueue {
-            guard let state = active, state.request.id == id else { return }
+            guard let state = actives.values.first(where: { $0.request.id == id }) else { return }
             stop(state, reason: .cancelled)
         }
     }
@@ -73,15 +79,16 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     public func capacity() -> CBv2CapacitySnapshot {
         onQueue {
             let capacity = readyCapacity() ?? 0
-            let reserved = max(0, active?.lease.reservedBytes ?? 0)
-            let inUse = active?.lease.bytesInUse ?? 0
+            let states = Array(actives.values)
+            let reserved = states.reduce(0) { $0 + max(0, $1.lease.reservedBytes) }
+            let inUse = states.reduce(0) { $0 + $1.lease.bytesInUse }
             if inUse < 0 || inUse > reserved { invalidate() }
             return CBv2CapacitySnapshot(
-                activeRequests: active == nil ? 0 : 1, waitingRequests: 0,
+                activeRequests: states.count, waitingRequests: 0,
                 kvBytesInUse: max(0, inUse), kvBytesCapacity: invalidated ? 0 : capacity,
                 kvBytesBackendCapacity: invalidated ? 0 : capacity,
                 kvBytesReserved: reserved,
-                activeTokens: active.map { $0.request.promptTokens.count + $0.completionTokens } ?? 0)
+                activeTokens: states.reduce(0) { $0 + $1.request.promptTokens.count + $1.completionTokens })
         }
     }
 
@@ -98,10 +105,10 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     func beginShutdown() -> Task<Void, Never> {
         if let shutdownTask { return shutdownTask }
         stopping = true
-        let pending = active
-        if let pending { stop(pending, reason: .cancelled) }
+        let pending = Array(actives.values)
+        for state in pending { stop(state, reason: .cancelled) }
         let task = Task { [owner] in
-            if let pending { await pending.retired.wait() }
+            for state in pending { await state.retired.wait() }
             await owner.shutdown()
         }
         shutdownTask = task
@@ -118,6 +125,6 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
 
     func invalidate() {
         invalidated = true
-        if let active { stop(active, reason: .error("distributed peer readiness lost")) }
+        for state in Array(actives.values) { stop(state, reason: .error("distributed peer readiness lost")) }
     }
 }

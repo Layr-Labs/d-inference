@@ -41,7 +41,7 @@ extension DistributedCBv2Engine {
             detokenizer: detokenizers.makeDetokenizer(stopStrings: request.stopStrings),
             absoluteDeadline: deadlineContext.generationDeadline, firstTokenDeadline: deadline,
             admissionStartedAt: admissionStartedAt, reservedAt: clock.now())
-        active = state
+        actives[state.generation] = state
         observe(state, phase: .reserved)
         cancellation?.arm { [weak self, weak state] in
             guard let self, let state else { return }
@@ -49,7 +49,7 @@ extension DistributedCBv2Engine {
         }
         continuation.onTermination = { [weak self, generation = state.generation] _ in
             self?.onQueue {
-                guard self?.active?.generation == generation else { return }
+                guard self?.actives[generation] != nil else { return }
                 self?.stop(state, reason: .cancelled)
             }
         }
@@ -100,7 +100,9 @@ extension DistributedCBv2Engine {
 
     func validate(_ request: CBv2Request) throws {
         guard !stopping else { throw DistributedEngineError.shuttingDown }
-        guard active == nil else { throw CBv2KVError.capacityExhausted(needed: 1, available: 0) }
+        guard actives.count < max(1, owner.concurrentRequests) else {
+            throw CBv2KVError.capacityExhausted(needed: 1, available: 0)
+        }
         guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
         let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)
         guard !request.promptTokens.isEmpty, request.promptTokens.count <= profile.maxPromptTokens,

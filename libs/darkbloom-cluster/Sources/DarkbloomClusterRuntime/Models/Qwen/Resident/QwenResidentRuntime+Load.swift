@@ -123,6 +123,10 @@ extension QwenResidentRuntime {
                         retired = value.loaded.model; stage = value
                     }
                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
+                    // The layers the constructed stage holds are the plan's (oMLX U#3638).
+                    let ownStage = admission.plan.stages[collective.rank]
+                    log(try LayerStageLoadedRange.verify(model: loaded.loaded.model, plannedLayers: ownStage.layers.count,
+                        firstGlobalLayer: ownStage.sourceRange.lowerBound, rank: collective.rank, model: admission.runtimeModelID))
                     if mode.isPhaseSplit, collective.rank == 1 {
                         // Rank 1 also holds the producer stage, admitted and loaded
                         // exactly as rank 0 loads it, so it owns every layer once

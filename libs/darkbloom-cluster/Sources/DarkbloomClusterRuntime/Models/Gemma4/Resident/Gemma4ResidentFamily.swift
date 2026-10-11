@@ -53,7 +53,15 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
                 <= (try Gemma4ResidentResourceCeilings(specification: specification).namedStateByteCeiling) else {
             throw ProbeError("Resident request exceeds the model's named-state byte ceiling")
         }
-        return try budget.allowance(bound: bound)
+        let state = try budget.allowance(bound: bound)
+        // One prefill frame's attention transient at this context, as the
+        // dense allowance adds it, so a context the gate admits is one a frame runs in.
+        let logical = try Gemma4PrefillTransient.bytes(layers: plan.stages[rank].layers, chunkTokens: chunkSize,
+                                                       contextTokens: maximumTokens)
+        let transient = logical == 0 ? 0 : try bound(logical)
+        return .init(stateBytes: state.stateBytes, fusionBytes: state.fusionBytes,
+            reservedBytes: try QwenLongPrefillCheckedBytes.sum([state.reservedBytes, transient]),
+            transientBytes: transient, contextTokens: maximumTokens)
     }
 
     func diagnosticResources(plan: QwenLayerStagePlan, request: QwenLayerStageGenerationRequest, rank: Int,

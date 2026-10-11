@@ -22,9 +22,10 @@ struct GPTOSSRequestStateBudget: Encodable, Equatable {
 
     static func estimate(specification spec: GPTOSSRegisteredSpecification, layers: [GPTOSSLayerStagePlan.Layer],
                          rank: Int, maximumTokens: Int, chunkSize: Int, bound: (Int) throws -> Int) throws -> Self {
+        let limits = try spec.contextLimits()
         guard (0...1).contains(rank), !layers.isEmpty, layers.count < spec.layers,
-              (1...GPTOSSRegisteredSpecification.maximumContextTokens).contains(maximumTokens),
-              (1...GPTOSSRegisteredSpecification.maximumChunkTokens).contains(chunkSize) else {
+              (1...limits.maximumContextTokens).contains(maximumTokens),
+              (1...limits.maximumChunkTokens).contains(chunkSize) else {
             throw GPTOSSProfileError("GPT-OSS request state is outside the registered request scope")
         }
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product

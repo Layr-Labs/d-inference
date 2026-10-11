@@ -189,6 +189,11 @@ public final class GPTOSSResidentRuntime {
                             check: checked, constructed: { retired = $0 })
                     }
                     guard let loaded = stage else { throw ProbeError("Resident GPT-OSS loader returned no stage") }
+                    // The layers the constructed stage holds are the plan's (oMLX U#3638).
+                    let ownStage = admission.plan.stages[collective.rank]
+                    log(try LayerStageLoadedRange.verify(model: loaded.model, plannedLayers: ownStage.layers.count,
+                        firstGlobalLayer: ownStage.sourceRange.lowerBound, rank: collective.rank,
+                        model: admission.specification.model.rawValue))
                     let finished = DispatchTime.now().uptimeNanoseconds
                     let maximum = try GPTOSSResidentRequestAllowance.derive(plan: admission.plan, rank: collective.rank,
                         maximumTokens: admission.profile.maximumContextTokens,
@@ -206,8 +211,37 @@ public final class GPTOSSResidentRuntime {
                         hiddenSize: admission.profile.hiddenSize,
                         elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
                         bound: QwenResidentResourceEnvironment.allocationBound)
-                    try maximum.requireLive(additionalNativeBytes: prefill?.extraNativeBytes ?? 0,
-                                            additionalHostBytes: prefill?.extraHostBytes ?? 0)
+                    // The gate at load: the largest context this Mac admits now,
+                    // with the stage resident. Refused only below the smallest
+                    // useful request; each request is gated again when reserved.
+                    let policy = QwenResidentPrefillSelection.policy(configuration.prefillSchedule)
+                    func charge(_ context: Int, _ prompt: Int, _ chunk: Int) throws -> LayerStageContextGate.Charge {
+                        let allowance = try GPTOSSResidentRequestAllowance.derive(plan: admission.plan, rank: collective.rank,
+                            maximumTokens: context, chunkSize: chunk)
+                        let frames = try QwenResidentPrefillSelection.allowance(policy, rank: collective.rank,
+                            promptCount: prompt, chunkSize: chunk, hiddenSize: admission.profile.hiddenSize,
+                            elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
+                            bound: QwenResidentResourceEnvironment.allocationBound)
+                        return .init(reservedBytes: allowance.reservedBytes, extraNativeBytes: frames?.extraNativeBytes ?? 0,
+                                     extraHostBytes: frames?.extraHostBytes ?? 0)
+                    }
+                    guard let admitted = try LayerStageContextGate.admitted(profile: admission.profile, charge: charge) else {
+                        let minimum = LayerStageContextGate.minimumContextTokens(admission.profile)
+                        let prompt = min(admission.profile.maximumPromptTokens, minimum - 1)
+                        let smallest = try GPTOSSResidentRequestAllowance.derive(plan: admission.plan, rank: collective.rank,
+                            maximumTokens: minimum, chunkSize: min(admission.profile.maximumChunkTokens, prompt))
+                        try smallest.requireLive()
+                        throw ProbeError("Resident load refused: not even a request of \(minimum) context tokens fits on rank \(collective.rank)")
+                    }
+                    let atAdmitted = try GPTOSSResidentRequestAllowance.derive(plan: admission.plan, rank: collective.rank,
+                        maximumTokens: admitted.context,
+                        chunkSize: min(admission.profile.maximumChunkTokens, min(admission.profile.maximumPromptTokens, admitted.context - 1)))
+                    try atAdmitted.requireLive(additionalNativeBytes: admitted.charge.extraNativeBytes,
+                                               additionalHostBytes: admitted.charge.extraHostBytes)
+                    log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.specification.model.rawValue)"
+                        + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.context)"
+                        + " charge_at_admitted=\(atAdmitted.reservedBytes)"
+                        + " transient_at_admitted=\(atAdmitted.budget.workspaceBytes)")
                     try checked()
                     let afterLoad = Memory.snapshot()
                     // Sizes and durations only, for whoever launched this worker.

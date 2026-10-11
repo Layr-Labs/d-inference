@@ -30,6 +30,15 @@ public struct QualificationLimits: Equatable, Sendable {
     public static let declaredContextTokens: [String: Int] = [
         "registered_qwen35_9b": 262_144,
         "registered_qwen38_27b": 262_144,
+        "registered_qwen35_35b_a3b": 262_144,
+        "registered_qwen36_35b_a3b": 262_144,
+        "registered_ternary_bonsai_2_27b": 262_144,
+        "registered_nemotron35_lightning": 262_144,
+        "registered_gemma4_26b_qat_4bit": 262_144,
+        "registered_gemma4_26b": 262_144,
+        "registered_gemma4_26b_8bit": 262_144,
+        "registered_gpt_oss_20b": 131_072,
+        "registered_mimo_v26_flash_mopd": 1_048_576,
     ]
 
     /// The runtime's derivation: protocol bounds, cut to the declared context;

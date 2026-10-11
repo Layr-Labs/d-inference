@@ -21,9 +21,10 @@ struct MiMoRequestStateBudget: Encodable, Equatable {
 
     static func estimate(specification spec: MiMoRegisteredSpecification, layers: Range<Int>, rank: Int,
                          maximumTokens: Int, chunkSize: Int, bound: (Int) throws -> Int) throws -> Self {
+        let limits = try spec.contextLimits()
         guard (0...1).contains(rank), !layers.isEmpty, layers.lowerBound >= 0, layers.upperBound <= spec.layers,
-              (1...MiMoRegisteredSpecification.maximumContextTokens).contains(maximumTokens),
-              (1...MiMoRegisteredSpecification.maximumChunkTokens).contains(chunkSize) else {
+              (1...limits.maximumContextTokens).contains(maximumTokens),
+              (1...limits.maximumChunkTokens).contains(chunkSize) else {
             throw MiMoProfileError("MiMo request state is outside the registered request scope")
         }
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product

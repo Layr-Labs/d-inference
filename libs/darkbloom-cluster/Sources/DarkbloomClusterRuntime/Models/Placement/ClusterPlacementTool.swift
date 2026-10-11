@@ -19,10 +19,11 @@ public enum ClusterPlacementTool {
                                       [--local LABEL] --peer LABEL=PROFILE.json [--peer LABEL=PROFILE.json ...]
                                       [--speed MEASUREMENT.json ...] [--index INDEX.json ...] [--link LINK.json]
                                       [--prompt-tokens N] [--output-tokens N] [--regime rested|sustained (default rested)]
-                                      [--modes MODE,MODE] [--alternatives N] [--json]
+                                      [--modes MODE,MODE] [--alternatives N] [--leader LABEL] [--json]
               How the model is divided between the devices, and why. `--local` samples this Mac
               and names it LABEL; every other device is a profile file made by `device --json`
-              on that Mac. Without `--local` at least two `--peer` profiles are needed.
+              on that Mac. Without `--local` at least two `--peer` profiles are needed. `--leader`
+              keeps only placements whose rank 0 is that device (the Mac a session is started from).
         """
 
     struct Arguments {
@@ -100,7 +101,8 @@ public enum ClusterPlacementTool {
 
     static func plan(_ arguments: [String], sampleDevice: () throws -> ClusterDeviceProfile) throws -> String {
         let parsed = try Arguments(arguments, flags: ["--json"], options: ["--model-dir", "--layout", "--local", "--peer",
-            "--speed", "--index", "--link", "--prompt-tokens", "--output-tokens", "--regime", "--modes", "--alternatives"])
+            "--speed", "--index", "--link", "--prompt-tokens", "--output-tokens", "--regime", "--modes", "--alternatives",
+            "--leader"])
         let layout: ClusterModelLayout
         switch (try parsed.one("--model-dir"), try parsed.one("--layout")) {
         case (let directory?, nil): layout = try ClusterPlacementArtifact.layout(directory: URL(fileURLWithPath: directory, isDirectory: true))
@@ -122,6 +124,7 @@ public enum ClusterPlacementTool {
         policy.promptTokens = try parsed.integer("--prompt-tokens")
         policy.outputTokens = try parsed.integer("--output-tokens")
         if let alternatives = try parsed.integer("--alternatives") { policy.alternatives = min(alternatives, 256) }
+        policy.leader = try parsed.one("--leader")
         if let regime = try parsed.one("--regime") {
             guard let value = ClusterPlacementPolicy.Regime(rawValue: regime) else { throw ProbeError("--regime is sustained or rested") }
             policy.regime = value

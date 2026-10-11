@@ -84,7 +84,7 @@ struct MiMoRegisteredModelProfile {
               parsed.slidingAttention.valueHeadDim == spec.valueWidth,
               parsed.fullAttention.slidingWindow == nil, parsed.slidingAttention.slidingWindow == spec.slidingWindow,
               parsed.dtype == "bfloat16", !parsed.tieWordEmbeddings, !parsed.attentionBias,
-              parsed.maxPositionEmbeddings >= MiMoRegisteredSpecification.maximumContextTokens else {
+              parsed.maxPositionEmbeddings == spec.declaredContextTokens else {
             throw MiMoProfileError("Registered MiMo geometry differs from independently pinned expectations")
         }
         for tensor in indexedTensors { try tensor.validate() }

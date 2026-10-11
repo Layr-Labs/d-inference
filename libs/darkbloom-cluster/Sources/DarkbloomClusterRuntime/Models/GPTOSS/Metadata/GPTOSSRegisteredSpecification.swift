@@ -41,6 +41,8 @@ struct GPTOSSRegisteredSpecification {
     /// its hand-off cannot carry a sliding-window layer's rows.
     let supportedGenerationModes: [ClusterGenerationMode]
 
+    /// The earlier fixed reservation every profile started with; the row's
+    /// limits now follow from the context it declares (`contextLimits`).
     static let maximumPromptTokens = 8192, maximumChunkTokens = 512
     static let maximumOutputTokens = 128, maximumContextTokens = 8320
     /// The dtype the artifact stores its floating tensors in, and the one the
@@ -128,10 +130,18 @@ struct GPTOSSRegisteredSpecification {
         }
     }
 
+    /// The request bounds: the protocol's, cut to the context the pinned
+    /// configuration declares (`max_position_embeddings`, 131,072), as the
+    /// dense Qwen rows derive theirs (`QwenResidentContextLimits`).
+    func contextLimits() throws -> QwenResidentContextLimits {
+        try QwenResidentContextLimits(declaredContextTokens: maximumPositions)
+    }
+
     func profile() throws -> QwenLayerStageGenerationProfile {
-        try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
-            activationDType: Self.residualDType, maximumPromptTokens: Self.maximumPromptTokens,
-            maximumChunkTokens: Self.maximumChunkTokens, maximumOutputTokens: Self.maximumOutputTokens,
-            maximumContextTokens: Self.maximumContextTokens)
+        let limits = try contextLimits()
+        return try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
+            activationDType: Self.residualDType, maximumPromptTokens: limits.maximumPromptTokens,
+            maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,
+            maximumContextTokens: limits.maximumContextTokens)
     }
 }

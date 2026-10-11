@@ -40,6 +40,9 @@ struct MiMoRegisteredSpecification {
     let experts: Int, expertsPerToken: Int
     let slidingWindow: Int
     let fullKeyValueHeads: Int, slidingKeyValueHeads: Int, keyWidth: Int, valueWidth: Int
+    /// `max_position_embeddings` of the pinned configuration; the request
+    /// limits follow from it (`contextLimits`).
+    let declaredContextTokens: Int
     /// Stage 0 layer counts a pair may be loaded at, ascending. Every layer
     /// boundary is a structural cut for this architecture (each layer owns its
     /// own attention state and only the residual crosses); this row lists the
@@ -52,7 +55,8 @@ struct MiMoRegisteredSpecification {
     /// the single-Mac case this pair exists to avoid.
     let supportedGenerationModes: [ClusterGenerationMode]
 
-    // Request scope, the same as the dense rows so results are comparable.
+    // The earlier fixed reservation every profile started with; the row's
+    // limits now follow from the context it declares (`contextLimits`).
     static let maximumPromptTokens = 8192, maximumChunkTokens = 512
     static let maximumOutputTokens = 128, maximumContextTokens = 8320
 
@@ -85,6 +89,7 @@ struct MiMoRegisteredSpecification {
             fullAttentionLayers: [0, 5, 11, 17, 23, 29, 35, 41, 47], denseFeedForwardLayers: [0],
             experts: 256, expertsPerToken: 8, slidingWindow: 128,
             fullKeyValueHeads: 4, slidingKeyValueHeads: 8, keyWidth: 192, valueWidth: 128,
+            declaredContextTokens: 1_048_576,
             // Rank 1 holds 13.7 GiB at cut 44 and 105.6 GiB at cut 16; rank 0
             // holds 50.2 GiB at cut 16 and 142.0 GiB at cut 44. Which one a
             // pair can load is decided by each Mac's admissible memory when
@@ -124,10 +129,17 @@ struct MiMoRegisteredSpecification {
         return value
     }
 
+    /// The request bounds: the protocol's, cut to the declared context, as
+    /// the dense Qwen rows derive theirs (`QwenResidentContextLimits`).
+    func contextLimits() throws -> QwenResidentContextLimits {
+        try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens)
+    }
+
     func profile() throws -> QwenLayerStageGenerationProfile {
-        try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
-            activationDType: "bfloat16", maximumPromptTokens: Self.maximumPromptTokens,
-            maximumChunkTokens: Self.maximumChunkTokens, maximumOutputTokens: Self.maximumOutputTokens,
-            maximumContextTokens: Self.maximumContextTokens)
+        let limits = try contextLimits()
+        return try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
+            activationDType: "bfloat16", maximumPromptTokens: limits.maximumPromptTokens,
+            maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,
+            maximumContextTokens: limits.maximumContextTokens)
     }
 }

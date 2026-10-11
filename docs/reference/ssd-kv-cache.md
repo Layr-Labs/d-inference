@@ -17,12 +17,24 @@ The tier owns one root per user, one directory per model.
 
 | Item | Value | Code |
 |---|---|---|
-| Root | `~/Library/Caches/darkbloom/kv3/` (`FileManager.urls(for: .cachesDirectory)` + `ssdRootDirectoryName = "darkbloom/kv3"`) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
+| Root | By default `~/Library/Caches/darkbloom/kv3/`; a saved `cache.directory` selects `<directory>/darkbloom/kv3/` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
 | Per-model directory | `<root>/<modelKey>/`, `modelKey = SHA256(modelId)` first 12 hex characters | `SSDPrefixCacheFactory.swift` (`cacheDirectory`) |
 | Block file | `<tag>.dbk3`, one file per attention block or complete recurrent checkpoint ([block size](../architecture/prefix-cache.md#block-hashing)); `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
 | Epoch record | `<modelKey>/cache-epoch.json`, schema `darkbloom.cache-epoch.v1` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift` |
 | Test root | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, honoured only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` affirmative | `SSDPrefixCacheFactory.swift` (`isolatedTestRoot`) |
 | Retired root | `darkbloom/kv/` (the pre-v0.7.5 tier) is never read or written; `kv3/` is a sibling, not a subtree | `SSDPrefixCacheFactory.swift` (`ssdRootDirectoryName`) |
+
+The selected volume must pass `CacheVolume.inspect`: local writable APFS with
+ownership enabled, an operator-owned directory without group/other write access,
+and APFS encryption on external volumes. Missing storage or a UUID mismatch
+refuses cache I/O; it never redirects to the default disk. Descriptor walks check
+the pinned UUID before creating directories and opening active cache files
+(`CacheStorage.validateOpenedDirectory`, `SSDNoFollowIO`).
+
+The `.write-budget` ledger remains at the built-in root for production even when
+payloads use another disk. Existing internal usage survives disk selection and
+restart; an external volume cannot reset it. Explicit isolated test roots keep
+their own ledgers (`CacheStorage.writeBudgetRoot`).
 
 ## DBK3 file format
 
@@ -352,7 +364,9 @@ eviction change; both values stay in the vocabulary for them.
 
 ## Verification
 
-Three observable surfaces exist; there is no dedicated CLI verifier.
+`darkbloom cache status` checks saved storage settings and volume suitability;
+it does not certify hardware firmware or prove a runtime cache hit. Runtime
+observations remain available through these surfaces.
 
 | Surface | What to look for | Code |
 |---|---|---|
@@ -362,6 +376,8 @@ Three observable surfaces exist; there is no dedicated CLI verifier.
 | `darkbloom benchmark --parity` | Loads the model on both KV backends and reports the prefix-reuse probe as PASS/FAIL/UNAVAILABLE | `provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift` |
 
 ## Related
+
+- [`../provider/cache-storage.md`](../provider/cache-storage.md) — set daily writes and select a disk
 
 - [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) — layouts, reuse plan, construction gate
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — coordinator side

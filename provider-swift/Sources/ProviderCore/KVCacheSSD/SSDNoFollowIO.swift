@@ -321,19 +321,28 @@ enum SSDNoFollowIO {
         guard fanoutFD >= 0 else {
             throw posixError("openat fanout", url: fanoutURL)
         }
+        do { try CacheStorage.validateOpenedDirectory(fanoutFD, at: fanoutURL) }
+        catch { Darwin.close(fanoutFD); throw error }
         return (fanoutFD, name)
     }
 
-    private static func openDirectoryChain(_ directory: URL) throws -> Int32 {
-        let canonicalPath = canonicalDirectoryPath(directory)
+    static func prepareDirectory(_ directory: URL, configuration: CacheSettings? = nil) throws {
+        let fd = try openOrCreateDirectoryChain(directory, configuration: configuration)
+        Darwin.close(fd)
+    }
+
+    static func openDirectoryChain(_ directory: URL, enforceCacheVolume: Bool = true) throws -> Int32 {
+        let canonicalPath = CacheStorage.canonicalPath(directory.path)
         guard canonicalPath.hasPrefix("/") else {
             throw SSDBlockStoreError.ioFailure("cache path is not absolute")
         }
         var current = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard current >= 0 else { throw posixError("open root", url: directory) }
         do {
+            let configuration = CacheStorage.settings
+            var openedPath = URL(fileURLWithPath: "/", isDirectory: true)
             for component in URL(fileURLWithPath: canonicalPath).pathComponents.dropFirst() {
-                guard !component.isEmpty, component != ".", component != "..", component != "/"
+                guard validDirectoryComponent(component)
                 else { throw SSDBlockStoreError.ioFailure("unsafe cache path component") }
                 let next = component.withCString {
                     openat(current, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
@@ -343,6 +352,10 @@ enum SSDNoFollowIO {
                 }
                 Darwin.close(current)
                 current = next
+                openedPath.appendPathComponent(component, isDirectory: true)
+                if enforceCacheVolume {
+                    try CacheStorage.validateOpenedDirectory(current, at: openedPath, configuration: configuration)
+                }
             }
             return current
         } catch {
@@ -351,14 +364,18 @@ enum SSDNoFollowIO {
         }
     }
 
-    private static func openOrCreateDirectoryChain(_ directory: URL) throws -> Int32 {
-        let canonicalPath = canonicalDirectoryPath(directory)
+    private static func openOrCreateDirectoryChain(
+        _ directory: URL, configuration: CacheSettings? = nil
+    ) throws -> Int32 {
+        let configuration = configuration ?? CacheStorage.settings
+        let canonicalPath = CacheStorage.canonicalPath(directory.path)
         guard canonicalPath.hasPrefix("/") else {
             throw SSDBlockStoreError.ioFailure("cache path is not absolute")
         }
         var current = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard current >= 0 else { throw posixError("open root", url: directory) }
         do {
+            var openedPath = URL(fileURLWithPath: "/", isDirectory: true)
             for component in URL(fileURLWithPath: canonicalPath).pathComponents.dropFirst() {
                 guard validDirectoryComponent(component) else {
                     throw SSDBlockStoreError.ioFailure("unsafe cache path component")
@@ -367,6 +384,8 @@ enum SSDNoFollowIO {
                     openat(current, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
                 }
                 if next < 0, errno == ENOENT {
+                    try CacheStorage.validateCreation(at: openedPath.appendingPathComponent(component), configuration: configuration)
+                    try CacheStorage.validateOpenedDirectory(current, at: openedPath, configuration: configuration)
                     let created = component.withCString {
                         mkdirat(current, $0, S_IRWXU)
                     }
@@ -384,6 +403,8 @@ enum SSDNoFollowIO {
                 }
                 Darwin.close(current)
                 current = next
+                openedPath.appendPathComponent(component, isDirectory: true)
+                try CacheStorage.validateOpenedDirectory(current, at: openedPath, configuration: configuration)
             }
             return current
         } catch {
@@ -413,21 +434,9 @@ enum SSDNoFollowIO {
             }
         }
         guard fd >= 0 else { throw posixError("openat model root", url: url) }
+        do { try CacheStorage.validateOpenedDirectory(fd, at: url) }
+        catch { Darwin.close(fd); throw error }
         return fd
-    }
-
-    private static func canonicalDirectoryPath(_ directory: URL) -> String {
-        let rawPath = directory.path
-        // macOS exposes these immutable system aliases as symlinks. Normalize
-        // only those known aliases textually; never resolve a cache-controlled
-        // component before the O_NOFOLLOW descriptor walk.
-        if rawPath == "/var" || rawPath.hasPrefix("/var/") {
-            return "/private" + rawPath
-        }
-        if rawPath == "/tmp" || rawPath.hasPrefix("/tmp/") {
-            return "/private" + rawPath
-        }
-        return rawPath
     }
 
     private static func validDirectoryComponent(_ component: String) -> Bool {

@@ -30,6 +30,15 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn('secrets.', content)
             self.assertNotRegex(content, r'(?m)^    environment:')
 
+    def test_only_the_release_lane_compiles_the_release_environment(self):
+        selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
+        self.assertIn(selector, job(RELEASE, 'build-provider'))
+        self.assertNotIn('DARKBLOOM_RELEASE_ENVIRONMENT', job(RELEASE, 'qualify-sdk'))
+        signing = job(RELEASE, 'build-and-release')
+        for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
+            self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
+                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
+
     def test_publication_requires_both_lanes_and_production_approval(self):
         content = job(RELEASE, 'build-and-release')
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)

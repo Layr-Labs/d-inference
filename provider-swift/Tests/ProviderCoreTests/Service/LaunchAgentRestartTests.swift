@@ -67,6 +67,13 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1"])
     }
 
+    @Test func forwardsModelCDNOverride() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_R2_CDN_URL": "https://cdn.example.test", "PATH": "/usr/bin",
+        ])
+        #expect(out == ["DARKBLOOM_R2_CDN_URL": "https://cdn.example.test"])
+    }
+
     @Test func dropsEmptyAndMissingVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
         let out = LaunchAgent.passthroughEnvironment(from: [

@@ -5,9 +5,10 @@
 // donated KV is written to disk encrypted, RAM stays with live serving,
 // matching prefixes are loaded back instead of recomputed).
 //
-// Everything here is PURE and unit-testable: environment, capacity, and
-// clock are parameters with production defaults. The single production
-// gate lives in `PrefixCachePolicy`; this file owns SSD-specific knobs.
+// Environment parsers and thresholds use explicit inputs with production
+// defaults. The daily write cap resolves the invocation's saved setting before
+// its environment fallback. The production gate lives in `PrefixCachePolicy`;
+// this file owns SSD-specific knobs.
 //
 // Threat model: T-041 (the SSD tier reintroduces an at-rest artifact —
 // leak #2 is closed by HMAC-keyed names, `SSDLookupKeys`; the 30-minute
@@ -54,6 +55,10 @@ enum SSDPrefixCachePolicy {
     static func maxWriteBytesPerDay(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
+        CacheStorage.dailyWriteBytes(settings: CacheStorage.settings, environment: environment)
+    }
+
+    static func environmentMaxWriteBytesPerDay(environment: [String: String]) -> Int {
         guard let raw = environment[writeCapEnvironmentFlag],
             let gb = Double(raw.trimmingCharacters(in: .whitespaces)),
             gb >= 0, gb.isFinite, gb < Double(Int.max) / 1_000_000_000

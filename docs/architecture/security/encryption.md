@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-08
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -172,6 +172,69 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/inference/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/internal/inference/chunkkeys/chunk_key_cache.go` (`Forget`) |
 | Process logs carry no email address, IP address (`RemoteAddr` or `X-Forwarded-For`), device serial number or UDID; log lines name accounts by `account_id` (`user_id` in the access log) and providers by `provider_id`. Logs go to Datadog, so erasing a store row would not erase them | `coordinator/tests/api/log_personal_data_test.go` |
+
+## Provider cache storage
+
+The provider encrypts attention blocks and complete checkpoints before disk I/O
+using the existing DBK3 authenticated-encryption format. Keys remain in the
+Mac's Secure Enclave/Keychain hierarchy; selecting a different payload volume
+does not copy keys there. Lookup names remain keyed HMACs. Some operational
+metadata (sizes, model/layout binding and times) remains visible; the precise
+[format and observable fields](../../reference/ssd-kv-cache.md#dbk3-file-format)
+are unchanged. TTL checks on reuse, tenant binding and authentication remain in
+force. Switching locations leaves earlier ciphertext in its old location; the
+new location's maintenance does not sweep the old one or securely erase a disk.
+TTL limits ordinary cache reuse, not physical retention: detached or inaccessible
+media can retain ciphertext and metadata indefinitely. TTL/LRU deletion requires the
+selected volume to be mounted and accessible. Destroying the installation KEK
+provides a cryptographic purge for retained encrypted copies; it does not erase
+their bytes or visible metadata.
+Restart scanning seeds freshness from file modification times, so TTL is not
+an anti-rollback guarantee against a malicious disk replaying data and metadata.
+
+`darkbloom cache set --directory` accepts an existing private directory on local,
+writable APFS with ownership enabled. External volumes additionally require APFS
+encryption. The CLI pins the filesystem UUID in the provider config.
+`CacheVolume.inspect` checks suitability at selection and cache construction;
+`CacheStorage.validateOpenedDirectory` checks the opened directory's volume UUID,
+filesystem flags, ownership and extended ACLs during descriptor-based cache access.
+Each access walk also queries current encryption state for the opened volume's
+device, so decrypting a selected external volume disables further cache I/O. A missing
+mount, replacement filesystem or symlink refuses cache I/O and leaves inference
+to recompute. It never creates the missing mount or redirects payloads to another
+disk. The persistent write ledger stays on the Mac, including when payloads move.
+
+These are local storage checks, not peripheral attestation. A malicious controller
+can impersonate a device, lie about writes or retain ciphertext; an attacker able
+to clone the filesystem UUID can defeat the identity pin. Authenticated encryption
+rejects altered payloads, but does not prevent deletion, denial of service, traffic
+analysis or every replay of still-valid ciphertext. No drive model is certified
+safe by these checks. Reformatting a disk does not establish firmware trust.
+
+For a storage recommendation, prefer the Mac's built-in disk; when capacity or
+wear requires an external SSD, use a device and enclosure under the operator's
+control from a trusted supply chain. This is an operational recommendation
+[INFERENCE], not a tested vendor allowlist. Choose endurance against the configured
+host-write budget and the manufacturer's specification; host writes are not NAND
+writes. Do not attach found, loaned or otherwise untrusted peripherals merely to
+run the storage check. The check runs after macOS has enumerated the device.
+
+Evidence consulted on 2026-10-08:
+
+- [Apple's filesystem guide](https://support.apple.com/en-ie/guide/disk-utility/dsku19ed921c/mac)
+  identifies APFS encryption and external-storage support.
+- [Apple's accessory controls](https://support.apple.com/en-us/102282) let Apple
+  silicon laptop users require approval for USB/Thunderbolt accessories. Retain
+  approval prompts; that approval is not a firmware-integrity proof.
+- [Apple's DMA protections](https://support.apple.com/en-ca/guide/security/seca4960c2b5/web)
+  describe IOMMU isolation for peripheral DMA. This is not a disk authentication service.
+- [USBESAFE, RAID 2019](https://www.usenix.org/conference/raid2019/presentation/kharraz)
+  demonstrates firmware-based USB attacks, which filesystem checks cannot certify away.
+
+Code: `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/CacheStorage.swift`,
+`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift`.
+Operator steps: [cache storage](../../provider/cache-storage.md).
 
 ## Invariants
 

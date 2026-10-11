@@ -454,7 +454,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     /// public fleet. Set `private_only = true` under `[coordinator]` in config.
     public var privateOnly: Bool
 
-    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
+    public init(url: String = BuildEnvironment.current.coordinatorWebSocketURL, heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
         self.url = url
         self.heartbeatIntervalSecs = heartbeatIntervalSecs
         self.privateOnly = privateOnly
@@ -468,7 +468,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "wss://api.darkbloom.dev/ws/provider"
+        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? BuildEnvironment.current.coordinatorWebSocketURL
         self.heartbeatIntervalSecs = try container.decodeIfPresent(UInt64.self, forKey: .heartbeatIntervalSecs) ?? 5
         self.privateOnly = try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
     }
@@ -480,19 +480,22 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
     public var gemmaOptimizations: GemmaOptimizationSettings
+    public var cache: CacheSettings
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
         schedule: ScheduleConfig? = nil,
-        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings()
+        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings(),
+        cache: CacheSettings = CacheSettings()
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
         self.gemmaOptimizations = gemmaOptimizations
+        self.cache = cache
     }
 
     enum CodingKeys: String, CodingKey {
@@ -501,6 +504,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case coordinator
         case schedule
         case gemmaOptimizations = "gemma_optimizations"
+        case cache
     }
 
     public init(from decoder: Decoder) throws {
@@ -512,6 +516,8 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.gemmaOptimizations = try container.decodeIfPresent(
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
+        self.cache = try container.decodeIfPresent(CacheSettings.self, forKey: .cache) ?? CacheSettings()
+        try self.cache.validate()
     }
 
     /// Generate a default config based on detected hardware.
@@ -537,7 +543,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
-                url: "wss://api.darkbloom.dev/ws/provider",
+                url: BuildEnvironment.current.coordinatorWebSocketURL,
                 heartbeatIntervalSecs: 5
             ),
             schedule: nil

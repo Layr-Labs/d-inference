@@ -4,6 +4,26 @@ Thanks for your interest in contributing. Darkbloom is an experimental, build-in
 
 This guide covers what you need to know before opening an issue or PR.
 
+## Choose The Correct Repository
+
+[`Layr-Labs/d-inference`](https://github.com/Layr-Labs/d-inference) is the home
+for provider software and the provider app, including its on-device Swift
+backend, local APIs, and native inference. **All centralized coordinator/backend
+code belongs in
+[`Layr-Labs/darkbloom-platform`](https://github.com/Layr-Labs/darkbloom-platform).**
+That includes server APIs, auth, billing, routing, storage/schema, trust services,
+telemetry, the prompt sidecar, platform deployment code, admin and consumer console.
+
+**Do not commit, push, or upload centralized coordinator/backend code to
+`Layr-Labs/d-inference`.**
+The consumer console is being imported into darkbloom-platform. Retained
+platform copies here are temporary, not a second development home. Work in the
+platform clone and submit backend PRs to the platform repository. For a change
+spanning both repositories, keep each part in its owning repository and
+coordinate the shared contract.
+This policy does not authorize deleting retained source, changing hosting, or
+deploying services.
+
 ## Ways to contribute
 
 - **File a bug** — see [issue templates](https://github.com/Layr-Labs/d-inference/issues/new/choose).
@@ -21,6 +41,9 @@ This guide covers what you need to know before opening an issue or PR.
 ## Project layout
 
 The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md); the build-oriented layout is in [`docs/developer/build.md`](docs/developer/build.md). The short version:
+
+The inventory below includes retained platform copies. It does not override
+the repository ownership rules above.
 
 | Directory | Stack | What it is |
 |-----------|-------|------------|
@@ -44,12 +67,28 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 
 ### First-time clone
 
+Use a parent `Darkbloom/` directory with sibling clones:
+
+```text
+Darkbloom/
+  d-inference/
+  darkbloom-platform/
+```
+
 ```bash
-git clone --recurse-submodules git@github.com:Layr-Labs/d-inference.git
-cd d-inference
+mkdir -p Darkbloom
+git clone --recurse-submodules git@github.com:Layr-Labs/d-inference.git Darkbloom/d-inference
+git clone git@github.com:Layr-Labs/darkbloom-platform.git Darkbloom/darkbloom-platform
+cd Darkbloom/d-inference
 mise install
 git config core.hooksPath .githooks   # enables pre-commit + pre-push checks
 ```
+
+For coordinator/backend, admin or consumer-console work, instead enter
+`Darkbloom/darkbloom-platform` and follow its setup and contribution instructions.
+Before editing or pushing from either clone, check `git remote -v` and
+`git diff --stat` to confirm the repository and scope. External contributors
+should likewise use a fork of the repository that owns their change.
 
 ### Per-component build & test
 
@@ -69,7 +108,7 @@ Details, including the Swift nested test suites, the e2e suite, and the CI workf
 ## Workflow
 
 1. **Find or open an issue.** For non-trivial work, get rough alignment in the issue before writing code.
-2. **Fork the repo** (external contributors) or **create a branch** (members) named `<type>/<short-slug>`, e.g. `fix/provider-restart-loop`, `feat/console-ui-billing-export`, `docs/contributing-guide`.
+2. **Fork the owning repo** (external contributors) or **create a branch** (members) named `<type>/<short-slug>`, e.g. `fix/provider-restart-loop`, `feat/provider-status`, `docs/contributing-guide`. Backend and consumer-console branches belong in darkbloom-platform.
 3. **Make your change.** Keep PRs focused — one logical change per PR. Avoid drive-by refactors.
 4. **Add tests.** See "Testing" below.
 5. **Run checks locally.** `git push` runs [`.githooks/pre-push`](.githooks/pre-push): `gofmt` + `go test` when `coordinator/` changed, `eslint` + `next build` when `console-ui/` changed. Swift, Rust, and docs checks run in CI (`make test` runs them locally).
@@ -116,6 +155,10 @@ Comments: explain *why*, not *what*. Don't add comments that just restate what t
 ## Protocol changes
 
 Several surfaces have to stay in sync. If you touch one, check the others:
+
+Make the provider-side changes here and the centralized coordinator/backend
+changes in the sibling platform clone; the retained paths below are not an
+instruction to submit backend code to d-inference.
 
 - **WebSocket protocol**: `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) ↔ `coordinator/protocol/messages.go` (Go) ↔ [`docs/reference/protocol-messages.md`](docs/reference/protocol-messages.md).
 - **Provider bundle**: `.github/workflows/release-swift.yml`, canonical

@@ -35,6 +35,9 @@ enum SSDHybridCheckpointStoreFactory {
         let key = namespace(modelId: modelId, identity: identity, backendLayout: backendLayout)
         let root = wholeRoot.appendingPathComponent(String(key), isDirectory: true)
         do {
+            if SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) == nil {
+                try CacheStorage.validateSelection()
+            }
             try SSDBlockStore.prepareModelRoot(dedicatedRoot: wholeRoot, modelRoot: root)
             let material = try await SSDPrefixCacheFactory.loadKeyMaterial(
                 environment: environment, persistentTestNamespace: persistentTestNamespace)
@@ -56,6 +59,10 @@ enum SSDHybridCheckpointStoreFactory {
                     nowSeconds: Int64(Date().timeIntervalSince1970), budgetBytes: budget())
             }
             let maxWriteBytesPerDay = SSDPrefixCachePolicy.maxWriteBytesPerDay(environment: environment)
+            let writeBudget = try CacheStorage.makeWriteBudget(
+                maxWriteBytesPerDay: maxWriteBytesPerDay,
+                payloadRoot: wholeRoot,
+                isolated: SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil)
             let cache = SSDHybridCheckpointStore(config: .init(
                 modelId: modelId, identity: identity, backendLayout: backendLayout,
                 nativePrefillChunkSize: nativePrefillChunkSize,
@@ -68,7 +75,7 @@ enum SSDHybridCheckpointStoreFactory {
                 maintainWholeRoot: maintain), kekKey: material.key, kvBudget: kvBudget,
                 maxWriteBytesPerDay: maxWriteBytesPerDay,
                 usesEphemeralKey: material.ephemeral,
-                writeBudget: maxWriteBytesPerDay > 0 ? try SSDWriteBudget(root: wholeRoot) : nil)
+                writeBudget: writeBudget)
             await Task.detached(priority: .utility) {
                 cache.scanOnDisk()
                 maintain()

@@ -64,8 +64,18 @@ public struct ClusterConsoleTrust: Encodable, Sendable, Equatable {
     public let identityFileUsable: Bool
     public let error: String?
 
+    /// A setup whose follower is reached over the link control channel has no
+    /// SSH trust: nothing is pinned, and nothing is wrong with that.
+    static func observe(_ trust: ClusterConfiguration.Trust?) -> ClusterConsoleTrust {
+        guard let trust else {
+            return .init(knownHostsPinSHA256: "", knownHostsPinMatches: nil, hostKeys: [], hostKeysNotShown: 0,
+                identityFileUsable: false, error: "no SSH trust: the follower is reached over the link control channel")
+        }
+        return observe(present: trust)
+    }
+
     /// The same two checks saving a setup makes, without the save.
-    static func observe(_ trust: ClusterConfiguration.Trust) -> ClusterConsoleTrust {
+    static func observe(present trust: ClusterConfiguration.Trust) -> ClusterConsoleTrust {
         var problems = [String]()
         var identityUsable = true
         do { try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true) } catch {

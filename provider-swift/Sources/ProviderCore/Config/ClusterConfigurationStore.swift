@@ -83,7 +83,7 @@ public struct ClusterConfigurationStore: Sendable {
         let capabilityDestination = try paths.capabilityURL(sha256: capabilitySHA256)
         let reference = try ClusterConfigurationReference(configuration: destination.path, sha256: digest)
 
-        try validateTrust(configuration.trust)
+        try validateTrust(configuration.trust); try validateLinkSecret(configuration.linkControl)
         let device = try ClusterConfigurationFiles.directory(paths.deviceDirectory, create: true, privateMode: true)
         defer { Darwin.close(device.descriptor) }
         try ClusterConfigurationFiles.withLock(device, name: paths.deviceLeaseFile.lastPathComponent, requireEmpty: true, privateMode: true) {
@@ -95,7 +95,7 @@ public struct ClusterConfigurationStore: Sendable {
                 try ClusterConfigurationFiles.publish(data, parent: directory, name: destination.lastPathComponent,
                     maximum: ClusterConfigurationCodec.maximumBytes)
                 _ = try load(reference: reference)
-                try validateTrust(configuration.trust)
+                try validateTrust(configuration.trust); try validateLinkSecret(configuration.linkControl)
                 try updateProvider(reference)
             }
         }
@@ -103,7 +103,15 @@ public struct ClusterConfigurationStore: Sendable {
             capability: capabilityDestination.path, capabilitySHA256: capabilitySHA256, deviceLeaseFile: paths.deviceLeaseFile.path)
     }
 
-    private func validateTrust(_ trust: ClusterConfiguration.Trust) throws {
+    private func validateLinkSecret(_ attachment: ClusterLinkControlAttachment?) throws {
+        guard let attachment else { return }
+        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: attachment.secretFile), privateMode: true)
+    }
+
+    /// A link control setup has no SSH trust; its edge secret must be a
+    /// private regular file of this user instead.
+    private func validateTrust(_ trust: ClusterConfiguration.Trust?) throws {
+        guard let trust else { return }
         try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
         let hosts = try ClusterConfigurationFiles.read(URL(fileURLWithPath: trust.knownHostsFile), maximum: 64 * 1024)
         guard ClusterConfigurationCodec.sha256(hosts) == trust.knownHostsSHA256,

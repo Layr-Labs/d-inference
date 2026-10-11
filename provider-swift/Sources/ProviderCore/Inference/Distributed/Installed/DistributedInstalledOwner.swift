@@ -9,11 +9,11 @@ import DarkbloomClusterRemote
 public enum DistributedInstalledOwner {
     /// Whether `cluster worker-owner --stdio` can honour a start the
     /// coordinator committed for one member. Not in this build: the entry
-    /// below serves only the mesh profile of a session the leader launches,
-    /// and the installed worker refuses every owner bootstrap attachment. A
-    /// member therefore declines preparation rather than commit to a start
-    /// whose owner would be refused, which would hold both devices until the
-    /// members disconnect.
+    /// below serves the combined profile of a session the leader launches
+    /// (its start minted by the leader from the installed setup), not a
+    /// coordinator-committed start (S10). A member therefore declines
+    /// preparation rather than commit to a start whose owner would be
+    /// refused, which would hold both devices until the members disconnect.
     static let servesCommittedNativeStart = false
 
     /// `providerInstanceLock` is the ordinary provider's instance lock file.
@@ -47,6 +47,10 @@ public enum DistributedInstalledOwner {
         try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
             bootstrapProfile: plan.bootstrap.ownerProfile,
+            // The committed native start of the combined profile is admitted
+            // only when it is the one this Mac derives from its own setup.
+            authorizeNativeStart: plan.bootstrap.ownerProfile?.carriesNativeStart == true
+                ? DistributedInstalledNativeStart.authorizer(plan: plan) : nil,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
             }, native: { binding, deadline, attachment in

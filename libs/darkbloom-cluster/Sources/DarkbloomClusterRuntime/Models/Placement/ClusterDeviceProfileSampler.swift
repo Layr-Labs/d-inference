@@ -24,7 +24,17 @@ public enum ClusterDeviceProfileSampler {
             gpuRecommendedWorkingSetBytes: Int(min(gpu.maxRecommendedWorkingSetSize, UInt64(Int.max))),
             gpuMaximumBufferBytes: gpu.maxBufferSize,
             // The limit the load gate compares with, in a process that has not changed it.
-            allocatorLimitBytes: Memory.memoryLimit, memory: memory, power: power())
+            allocatorLimitBytes: Memory.memoryLimit, memory: memory, power: power(),
+            wiredLimitBytes: wiredLimitBytes(physical: memory.physicalMemoryBytes))
+    }
+
+    /// `iogpu.wired_limit_mb` in bytes when the operator set it; nil when it
+    /// is 0 (the system default, which the GPU's recommended working set
+    /// reports) or unreadable.
+    static func wiredLimitBytes(physical: Int) -> Int? {
+        guard let megabytes = integer("iogpu.wired_limit_mb"), megabytes > 0 else { return nil }
+        let bytes = megabytes * 1_048_576
+        return bytes <= physical ? bytes : nil
     }
 
     static func text(_ name: String) -> String? {

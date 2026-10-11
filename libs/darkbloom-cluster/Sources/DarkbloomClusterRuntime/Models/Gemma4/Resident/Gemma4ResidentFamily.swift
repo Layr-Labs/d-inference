@@ -85,3 +85,22 @@ extension Gemma4ResidentLoadedStage: LayerStageResidentStage {
     /// A sliding layer's ring has no hand-off yet, so this family does not hand over.
     var handoffGeometry: QwenLongPrefillBudgetGeometry? { nil }
 }
+
+/// Kept beside the request path that uses it, so that the ledger itself stays
+/// free of the resident runtime (the placement family reads it without MLX).
+extension Gemma4StateBudget {
+    /// The same ledger with every named array at the allocator's own bound.
+    func allowance(bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
+        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
+        func charge(_ bytes: Int, _ count: Int) throws -> Int {
+            let rounded = try bound(bytes)
+            guard bytes > 0, rounded >= bytes else { throw ProbeError("Resident allocator bound is invalid") }
+            return try product([rounded, count])
+        }
+        let layers = fullLayers + slidingLayers
+        let state = try sum([charge(fullKVBytes, 2 * fullLayers), charge(ringKVBytes, 2 * slidingLayers),
+            charge(slidingViewKVBytes, 2 * slidingLayers), charge(4, layers),
+            charge(largestSingleHostStateComponentBytes, 1), charge(boundaryBytes, 2), charge(logitsBytes, 2)])
+        return .init(stateBytes: state, fusionBytes: 0, reservedBytes: state)
+    }
+}

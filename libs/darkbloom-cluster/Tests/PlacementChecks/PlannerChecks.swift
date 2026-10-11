@@ -159,13 +159,13 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
 
 /// Every placement of two devices, by plain loops, each evaluated alone.
 func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout,
-                    cuts: [Int]) throws -> [ClusterPlacementCandidate] {
+                    cuts: [Int], policy: ClusterPlacementPolicy = .init()) throws -> [ClusterPlacementCandidate] {
     var result: [ClusterPlacementCandidate] = []
     for order in [[devices[0], devices[1]], [devices[1], devices[0]]] {
         for cut in cuts {
             for mode in layout.generationModes {
                 result.append(try ClusterPlacementPlanner.evaluate(devices: order, cuts: [cut], mode: mode,
-                    prefillSchedule: .oneChunkLookahead, layout: layout))
+                    prefillSchedule: .oneChunkLookahead, layout: layout, policy: policy))
             }
         }
     }
@@ -176,9 +176,9 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
 /// is refused exactly when no order, cut and mode is possible, and the
 /// chosen placement is never in a worse tier than one that exists.
 func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout,
-               _ checks: PlacementChecks) throws -> ClusterPlacementResult {
-    let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout)
-    let all = try everyPlacement(devices, layout, cuts: layout.admittedCuts)
+               _ checks: PlacementChecks, policy: ClusterPlacementPolicy = .init()) throws -> ClusterPlacementResult {
+    let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
+    let all = try everyPlacement(devices, layout, cuts: layout.admittedCuts, policy: policy)
     let possible = all.filter(\.possible)
     let aloneHolds = result.alone.contains { $0.fit.possible }
     checks.require("\(name): a division is chosen exactly when one is possible (\(possible.count) of \(all.count) are), and the model is refused exactly when none is and no Mac holds it alone",
@@ -192,7 +192,7 @@ func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: Cl
             !chosen.mode.isPhaseSplit || chosen.mode.usesSpeculativeHead == layout.generationModes.contains(.phaseSplitMTP))
     }
     checks.require("\(name): the planner considered every placement", result.candidatesConsidered == all.count)
-    checks.require("\(name): planning twice gives the same answer", try ClusterPlacementPlanner.plan(devices: devices, layout: layout) == result)
+    checks.require("\(name): planning twice gives the same answer", try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy) == result)
     return result
 }
 
@@ -214,10 +214,15 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
     }
 
     // 16 + 64: the even cut does not fit the small Mac; a smaller share does.
+    // At the earlier reference request (8,192 prompt, 128 output): at the
+    // model's largest (32,767 and 4,096) the whole model's state charged to
+    // either rank alone leaves a 16 GiB Mac too little for any share now.
     do {
         let devices = [try SyntheticMac.idle(16).device("small"), try SyntheticMac.idle(64).device("large")]
-        let result = try checkRule("16 + 64, 27B", devices, big, checks)
-        let even = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [32], mode: .pipeline, prefillSchedule: .oneChunkLookahead, layout: big)
+        var reference = ClusterPlacementPolicy(); reference.promptTokens = 8192; reference.outputTokens = 128
+        let result = try checkRule("16 + 64, 27B", devices, big, checks, policy: reference)
+        let even = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [32], mode: .pipeline, prefillSchedule: .oneChunkLookahead,
+                                                        layout: big, policy: reference)
         checks.require("16 + 64: the even cut does not fit the 16 GiB Mac now", even.tier > 0)
         checks.require("16 + 64: placed now, with the small Mac holding the smaller share",
             result.chosen?.tier == 0 && share(result.chosen!, of: "small") < share(result.chosen!, of: "large")
@@ -449,6 +454,7 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
                     try SyntheticMac.idle(128).device("fast", speed: measured(prefill: 780, decode: 27))]
         func first(_ prompt: Int) throws -> (pair: Double, alone: Double, asFast: [String]) {
             var policy = ClusterPlacementPolicy(); policy.modes = [.pipeline]; policy.promptTokens = prompt; policy.regime = .rested
+            policy.outputTokens = 128
             let r = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: policy)
             return (r.chosen!.rested.firstTokenSeconds, r.alone.first { $0.device == "fast" }!.rested.firstTokenSeconds, r.aloneAsFast)
         }

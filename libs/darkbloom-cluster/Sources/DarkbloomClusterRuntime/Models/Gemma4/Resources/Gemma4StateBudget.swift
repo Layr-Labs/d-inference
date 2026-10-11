@@ -45,21 +45,6 @@ struct Gemma4StateBudget: Equatable {
             logitsBytes: logits, largestSingleHostStateComponentBytes: max(fullKV, ring),
             stateAndBoundaryBytes: total)
     }
-
-    /// The same ledger with every named array at the allocator's own bound.
-    func allowance(bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
-        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
-        func charge(_ bytes: Int, _ count: Int) throws -> Int {
-            let rounded = try bound(bytes)
-            guard bytes > 0, rounded >= bytes else { throw ProbeError("Resident allocator bound is invalid") }
-            return try product([rounded, count])
-        }
-        let layers = fullLayers + slidingLayers
-        let state = try sum([charge(fullKVBytes, 2 * fullLayers), charge(ringKVBytes, 2 * slidingLayers),
-            charge(slidingViewKVBytes, 2 * slidingLayers), charge(4, layers),
-            charge(largestSingleHostStateComponentBytes, 1), charge(boundaryBytes, 2), charge(logitsBytes, 2)])
-        return .init(stateBytes: state, fusionBytes: 0, reservedBytes: state)
-    }
 }
 
 /// Byte ceilings of the registered Gemma resident scope. A ceiling is a refusal

@@ -53,6 +53,24 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Qwen/Loading/QwenLayerStageCandidates.swift" \
   "$R/Models/Qwen/Resident/QwenResidentModelDefinition.swift" \
   "$R/Models/Qwen/Resident/QwenResidentAdapterDefinition.swift" \
+  "$R/Models/Qwen/Resources/QwenResidentContextLimits.swift" \
+  "$R/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift" \
+  "$R/Models/Nemotron/NemotronPlacementFamily.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSLayerStagePlan.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift" \
+  "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
+  "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \
+  "$R/Models/MiMo/Metadata/MiMoRequestStateBudget.swift" \
+  "$R/Models/MiMo/Metadata/MiMoPlacementFamily.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4RegisteredSpecification.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4StageGeometry.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4LayerStagePlanning.swift" \
+  "$R/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift" \
+  "$R/Models/Gemma4/Resources/Gemma4StateBudget.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4PlacementFamily.swift" \
   "$R/Models/Placement/ClusterDeviceMemoryGate.swift" \
   "$R/Models/Placement/QwenDensePlacementFamily.swift" \
   "$R/Models/Placement/ClusterPlacementArtifact.swift" \

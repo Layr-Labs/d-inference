@@ -49,10 +49,15 @@ public enum ClusterPlacementArtifact {
         return result.sorted { $0.name < $1.name }
     }
 
-    /// The layout of the artifact in a directory, from its `config.json` and
-    /// tensor headers.
+    /// The layout of the artifact in a directory, from its `config.json`, its
+    /// tensor headers and, when present, its `manifest.json` (which tells two
+    /// catalog entries that share a configuration apart).
     public static func layout(directory: URL) throws -> ClusterModelLayout {
         let configuration = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
-        return try ClusterPlacementLayouts.layout(configuration: configuration, tensors: storedTensors(directory: directory))
+        let manifestURL = directory.appendingPathComponent("manifest.json")
+        let manifest = FileManager.default.fileExists(atPath: manifestURL.path)
+            ? try BoundedProbeInput.data(manifestURL, maximumBytes: 4_194_304) : nil
+        return try ClusterPlacementLayouts.layout(configuration: configuration, tensors: storedTensors(directory: directory),
+                                                  manifest: manifest)
     }
 }

@@ -30,20 +30,31 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     public let allocatorLimitBytes: Int
     public let memory: ClusterDeviceMemory
     public let power: ClusterDevicePower
+    /// `sysctl iogpu.wired_limit_mb` when the operator has set it (nonzero),
+    /// in bytes; nil when it is the system default or the profile predates
+    /// this field. The owner's planner takes a Mac's capacity from it (Mac B
+    /// of the pair this was written on: 107.5 GB by default).
+    public let wiredLimitBytes: Int?
 
     public init(chip: String, performanceCores: Int, efficiencyCores: Int, gpuCores: Int?,
                 osVersion: String, osBuild: String, physicalMemoryBytes: Int,
                 gpuRecommendedWorkingSetBytes: Int, gpuMaximumBufferBytes: Int, allocatorLimitBytes: Int,
-                memory: ClusterDeviceMemory, power: ClusterDevicePower) throws {
+                memory: ClusterDeviceMemory, power: ClusterDevicePower, wiredLimitBytes: Int? = nil) throws {
         schema = Self.schemaName
         self.chip = chip; self.performanceCores = performanceCores; self.efficiencyCores = efficiencyCores
         self.gpuCores = gpuCores; self.osVersion = osVersion; self.osBuild = osBuild
         self.physicalMemoryBytes = physicalMemoryBytes
         self.gpuRecommendedWorkingSetBytes = gpuRecommendedWorkingSetBytes
         self.gpuMaximumBufferBytes = gpuMaximumBufferBytes; self.allocatorLimitBytes = allocatorLimitBytes
-        self.memory = memory; self.power = power
+        self.memory = memory; self.power = power; self.wiredLimitBytes = wiredLimitBytes
         try validate()
     }
+
+    /// What the GPU keeps resident on this Mac: the wired limit the operator
+    /// set, else the system's default, which is what the GPU reports as its
+    /// recommended working set. A range whose weights, request state and
+    /// attention transient exceed it is ranked after every range that fits.
+    public var residentCapacityBytes: Int { wiredLimitBytes ?? gpuRecommendedWorkingSetBytes }
 
     /// A profile from another Mac is untrusted input: bounded, plain text
     /// labels and counters that cannot contradict each other.
@@ -56,7 +67,8 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
               (0...1024).contains(performanceCores), (0...1024).contains(efficiencyCores),
               performanceCores + efficiencyCores > 0, gpuCores.map({ (1...4096).contains($0) }) ?? true,
               physicalMemoryBytes > 0, physicalMemoryBytes == memory.physicalMemoryBytes,
-              gpuRecommendedWorkingSetBytes >= 0, gpuMaximumBufferBytes >= 0, allocatorLimitBytes >= 0 else {
+              gpuRecommendedWorkingSetBytes >= 0, gpuMaximumBufferBytes >= 0, allocatorLimitBytes >= 0,
+              wiredLimitBytes.map({ $0 > 0 && $0 <= physicalMemoryBytes }) ?? true else {
             throw ClusterPlacementError("Device profile is malformed")
         }
         try memory.validate()

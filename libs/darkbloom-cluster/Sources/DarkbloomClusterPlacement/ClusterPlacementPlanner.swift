@@ -61,9 +61,13 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     public let needBytes: Int
     public let admissibleNowBytes: Int
     public let fit: ClusterPlacementFit
-    /// False when weights and request state exceed what the GPU says an
-    /// application may keep resident on that Mac.
+    /// False when weights, request state and the attention transient exceed
+    /// what that Mac keeps resident (its wired limit, else the GPU's
+    /// recommended working set).
     public let withinGPUWorkingSet: Bool
+    /// One prefill frame's attention transient at the reference request,
+    /// included in `requestNeedBytes`. Nil in a result written before it was priced.
+    public let transientBytes: Int?
 }
 
 public struct ClusterPlacementPrediction: Codable, Equatable, Sendable {
@@ -355,7 +359,10 @@ public enum ClusterPlacementPlanner {
             }
             let context = prompt + outputs
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
-            let state = max(layout.requestChargeEveryRankBytes, ownState)
+            // One prefill frame's attention transient at the full context, on
+            // the rank's largest layer: layers run one after another.
+            let transient = loads.map { $0.transientBytes(chunk: min(layout.maximumChunkTokens, prompt), context: context) }.max() ?? 0
+            let state = max(layout.requestChargeEveryRankBytes(context: context), ownState)
             let work = loads.reduce(0) { $0 + $1.requestWorkBytes }
             var extra = 0
             // A producer keeps the next chunk's residual beside the current one.
@@ -367,13 +374,14 @@ public enum ClusterPlacementPlanner {
                 let moving = last ? earlier.reduce(0) { $0 + $1.stateBytes(tokens: prompt) } : own.stateBytes(tokens: prompt)
                 extra += 2 * moving
             }
-            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + memory.loadingHeadroomBytes)
+            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + memory.loadingHeadroomBytes)
             let need = max(loadNeed, held + requestNeed)
             return .init(rank: rank, device: device.label, firstLayer: own.layers.lowerBound, endLayer: own.layers.upperBound,
                 weightsBytes: held, loadNeedBytes: loadNeed, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: held, largestTensorBytes: largest),
-                withinGPUWorkingSet: held + state + work + extra <= device.profile.gpuRecommendedWorkingSetBytes)
+                withinGPUWorkingSet: held + state + work + extra + transient <= device.profile.residentCapacityBytes,
+                transientBytes: transient)
         }
 
         func prediction(_ regime: ClusterPlacementPolicy.Regime, order: [ClusterPlacementDevice],

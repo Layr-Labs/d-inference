@@ -9,7 +9,7 @@ import ProviderCoreFoundation
 /// refuse member startup. No recovery or journal clearing occurs here.
 public struct ClusterMemberPreparation: Sendable {
     public let model: ModelInfo
-    private let validation: DistributedInstalledValidation
+    let validation: DistributedInstalledValidation
 
     public static func prepare(reference: ClusterConfigurationReference) throws -> Self {
         let paths = try ClusterUserPaths()

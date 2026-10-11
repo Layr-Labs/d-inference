@@ -138,7 +138,7 @@ struct CoordinatorWireVectorTests {
     /// with and without a resume claim, and a rank registration) for the
     /// coordinator's own decoder to check. Does nothing otherwise.
     @Test func exportsRegisterFramesForTheCoordinatorDecoderWhenAsked() throws {
-        guard let directory = ProcessInfo.processInfo.environment["DARKBLOOM_WIRE_VECTOR_OUT"] else { return }
+        guard let directory = ProcessInfo.processInfo.environment["DARKBLOOM_WIRE_VECTOR_OUT"], !directory.isEmpty else { return }
         let fixture = try Registration()
         let roster = try fixture.decode(fixture.registration)
         let rank = try ClusterMembership(clusterID: "studio-pair", rank: 1, policySHA256: String(repeating: "b", count: 64))

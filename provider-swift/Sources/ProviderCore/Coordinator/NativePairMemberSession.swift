@@ -129,15 +129,15 @@ final class NativePairMemberSession: @unchecked Sendable {
               !stopped, DispatchTime.now().uptimeNanoseconds < leaseDeadline else { throw NativePairMemberError.inactive }
         switch message.type {
         case "native_pair_lease":
-            // "DBNL" v1: renewal ordinal, new expiry; the frame repeats it.
-            guard committed, payload.count == 21, payload.prefix(5) == Data([68, 66, 78, 76, 1]) else { throw NativePairMemberError.binding }
-            let renewal = payload[5..<13].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
-            let expiry = payload[13..<21].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
-            guard renewal > leaseRenewal, expiry <= UInt64(Int64.max), Int64(expiry) == message.expiresAtUnixNano,
-                  Int64(expiry) > wallUnixNanoseconds, UInt64(Int64(expiry) - wallUnixNanoseconds)
+            // "DBNL" v1: renewal ordinal, new expiry; the frame repeats it
+            // (`NativePairLeaseRenewal`, the coordinator's shared vector).
+            guard committed, let lease = NativePairLeaseRenewal(payload: payload) else { throw NativePairMemberError.binding }
+            let expiry = lease.expiresAtUnixNano
+            guard lease.renewal > leaseRenewal, expiry == message.expiresAtUnixNano,
+                  expiry > wallUnixNanoseconds, UInt64(expiry - wallUnixNanoseconds)
                     <= Self.leaseTimeToLiveNanoseconds + Self.clockAllowanceNanoseconds else { throw NativePairMemberError.deadline }
-            leaseRenewal = renewal; leaseExpiresUnix = Int64(expiry)
-            leaseDeadline = max(leaseDeadline, receivedAt + UInt64(Int64(expiry) - wallUnixNanoseconds))
+            leaseRenewal = lease.renewal; leaseExpiresUnix = expiry
+            leaseDeadline = max(leaseDeadline, receivedAt + UInt64(expiry - wallUnixNanoseconds))
             timer?.schedule(deadline: .init(uptimeNanoseconds: leaseDeadline))
         case "native_pair_owner_start":
             guard !committed, outcome == "prepared", receivedAt < prepareDeadline,

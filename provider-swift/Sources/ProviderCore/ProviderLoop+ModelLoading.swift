@@ -200,10 +200,9 @@ extension ProviderLoop {
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
         if isClusterMember {
-            // A member loads nothing: only its live pair slot is resident.
-            guard clusterPairSlotServes(modelId) else {
-                throw InferenceError.modelLoadFailed("Cluster pair slot is not serving")
-            }
+            // A member loads nothing: only its live pair slot is resident, and
+            // anything else keeps the member guard's own refusal.
+            guard clusterPairSlotServes(modelId) else { throw ClusterMemberControlError.incompatibleConfiguration }
             return
         }
         try requireNativeMiMoProcessWorkAllowed()

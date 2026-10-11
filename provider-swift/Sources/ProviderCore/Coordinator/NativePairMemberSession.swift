@@ -51,6 +51,9 @@ final class NativePairMemberSession: @unchecked Sendable {
     private var endpoint: ClusterRemoteWorkerEndpoint?
     private var timer: DispatchSourceTimer?
     private var outcome: String = "preparing"
+    /// Set once `runOwned` returned: the receipt was sent, or the session
+    /// ended without one.
+    private var ownedRunFinished = false
     /// What serves this start once its owner launched (S10); nil keeps the
     /// session to the key prelude and release, as before.
     private let servingHost: (any NativePairMemberServingHost)?
@@ -113,6 +116,17 @@ final class NativePairMemberSession: @unchecked Sendable {
         condition.unlock()
         nativeMemberLog.warning("committed session \(start.common.epoch): grant lease expired")
         cancel(notify: true)
+    }
+
+    /// Waits until the owned run returned (its release receipt sent, or the
+    /// session ended without one) or the deadline passed. Returns whether it
+    /// returned. Blocks the calling thread.
+    func waitUntilFinished(deadline: Date) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        while !ownedRunFinished {
+            if !condition.wait(until: deadline) { return ownedRunFinished }
+        }
+        return true
     }
 
     /// A dropped control connection: an established session keeps its owner
@@ -291,6 +305,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         condition.lock()
         let reusable = cancelJoined && ((!committed && !launched) || (clean && outcome == "released"))
         timer?.cancel(); timer = nil
+        ownedRunFinished = true; condition.broadcast()
         condition.unlock()
         onFinished(self, reusable)
     }

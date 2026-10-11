@@ -89,6 +89,17 @@ final class NativePairMemberControl: @unchecked Sendable {
             cancel?.cancel(notify: false); start?.run()
         } catch { detach(expected); throw NativePairMemberError.binding }
     }
+    /// A graceful member stop, while the control connection is still open:
+    /// end the running session (native cleanup of its owner; a no-op once the
+    /// owner already released) and wait, bounded, until it finished, so its
+    /// authenticated release receipt reaches the coordinator before the
+    /// connection closes. Returns whether no session is left running.
+    func endSessionBeforeClose(timeout: TimeInterval) async -> Bool {
+        guard let current = lock.withLock({ session }) else { return true }
+        current.cancel(notify: false)
+        let deadline = Date().addingTimeInterval(timeout)
+        return await Task.detached { current.waitUntilFinished(deadline: deadline) }.value
+    }
     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
         lock.withLock {
             guard session === old else { return }

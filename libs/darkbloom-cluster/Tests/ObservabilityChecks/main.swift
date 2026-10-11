@@ -147,6 +147,9 @@ func classifierChecks() {
         ("Worker startup exhausted its deadline", [], .startupTimedOut),
         ("The serving session stopped without being asked to", ["rank 1 ended: its owner exited with status 75"], .collectiveStall),
         ("The serving session stopped without being asked to", ["rank 1 ended: its owner exited with status 1"], .peerLost),
+        ("Native owner did not establish bilateral readiness", ["darkbloom-worker-exit-v1 rank=0 termination=exited(75)"], .collectiveStall),
+        ("Native owner did not establish bilateral readiness",
+         ["darkbloom-worker-exit-v1 rank=0 termination=signalled(6)\ndarkbloom-worker-tail-v1 GPT-OSS stage load exceeds the allocator limit: needs 9 of 8 bytes"], .memoryGateRefused),
         // The owner's oMLX launch failures (paraphrased failure modes, notes/03 section 9).
         ("JACCL requires a full RDMA connectivity matrix", [], .linkNotReady),
         ("worker exited while its Mac remained reachable", [], .peerLost),

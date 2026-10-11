@@ -157,7 +157,7 @@ public enum ClusterFailureClassifier {
         Rule("bootstrap", #"native key relay deadline expired|bootstrap (?:deadline|round|exchange)s? (?:expired|timed out|stalled)|readiness precedes authenticated bootstrap|syn_sent|mesh rounds? (?:timed out|did not)|prelude (?:timed out|deadline)"#, .bootstrapStalled),
         Rule("rdma-matrix", #"full rdma connectivity matrix|rdma (?:device|port) .*(?:down|missing|not found|unavailable)|no rdma device|link (?:is )?not ready|ibv_open_device|rdma is (?:off|disabled)"#, .linkNotReady),
         Rule("rdma-completion", #"work completion error|\[jaccl\][^\n]*status=\d"#, .rdmaCompletionError),
-        Rule("collective-guard", #"collective progress (?:guard|limit)|no-progress stall|no progress for|collective_stall|progress guard (?:fired|expired)|guard exit|exit(?:ed)? (?:with )?(?:status |code )?75\b"#, .collectiveStall),
+        Rule("collective-guard", #"collective progress (?:guard|limit)|no-progress stall|no progress for|collective_stall|progress guard (?:fired|expired)|guard exit|exit(?:ed)? (?:with )?(?:status |code )?75\b|termination=exited\(75\)"#, .collectiveStall),
         Rule("rank-lease", #"rank lease (?:lapsed|expired)|lease renewal refused|lease (?:expired|lapsed)"#, .rankLeaseExpired),
         Rule("runtime-mismatch", #"executable bytes differ from the expected binary|runtime description differs from the saved capability|installed worker changed while|has no collective progress guard|worker policy or device geometry differs|native launch differs from installed owner binding|importerror"#, .workerRuntimeMismatch),
         Rule("version", #"unsupported worker protocol version|protocol version|versions? (?:do not match|mismatch|differ)|python local=\S+ remote="#, .versionMismatch),

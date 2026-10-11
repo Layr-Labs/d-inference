@@ -11,21 +11,18 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case mimoV26(MiMoResidentRuntime)
     }
     private let owner: Owner
+    /// The owner's bootstrap connection and native key, held for the worker's lifetime.
+    private let attachment: WorkerOwnerAttachment?
     /// Written and read only by the native executor.
     private(set) var lastPromptCache: (reused: Int, stored: [Int]) = (0, [])
     private(set) var lastRequestTelemetry: ClusterWorkerRequestTelemetry?
     init(_ configuration: QwenResidentLoadConfiguration, family: ClusterResidentModelCatalog.Family = .qwenDense,
-         bootstrap: WorkerBootstrapConfiguration? = nil,
+         attachment: WorkerOwnerAttachment? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
          qualification: QwenResidentQualificationSwitches = .refused) throws {
-        // STAGING DIVERGENCE: the owner-authenticated JACCL bootstrap needs the
-        // mlx-c bootstrap bridge (`mlx_distributed_init_jaccl_with_bootstrap`),
-        // which the pinned mlx-c does not carry. The flags are still parsed so
-        // the argument contract is stable; supplying them is refused here
-        // rather than silently falling back to the direct native bootstrap.
-        guard bootstrap == nil else {
-            throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
-        }
+        // With the owner's attachment, the exchange it installed creates the
+        // JACCL group (no coordinator socket); a load that did not use it stops.
+        self.attachment = attachment
         switch family {
         case .qwenDense:
             owner = .qwenDense(try .load(configuration, generationMode: generationMode,
@@ -36,6 +33,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .gptoss:
             throw WorkerFailure.invalid("GPT-OSS runs on its own worker runtime, not the native wrapper")
         }
+        try JACCLOwnerBootstrap.requireConsumedIfInstalled()
     }
     var readiness: ClusterWorkerReady? {
         switch owner {

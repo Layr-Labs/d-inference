@@ -3,21 +3,24 @@ import DarkbloomClusterRemote
 
 /// How the two native ranks find each other, decided in one place.
 ///
-/// The owner-authenticated exchange relays every bootstrap round through both
-/// authenticated owners. It needs a runtime bridge that this build's pinned
-/// runtime does not carry, and the installed worker refuses its arguments.
-/// Until that bridge is pinned, the installed path uses the runtime's own
-/// exchange on the configured link address and says so in its status: nothing
-/// vouches for the peer that answers there.
+/// The owner-authenticated exchange (S07) relays every bootstrap round through
+/// both authenticated owners and the leader's relay: first the native key
+/// prelude (the two workers agree an X25519 key bound to the committed start
+/// the leader minted, which each owner admits only when it matches its own
+/// installed setup), then JACCL's four mesh rounds over the same connections,
+/// through the pinned mlx-c bridge. JACCL opens no TCP coordinator socket of
+/// its own (the owner's oMLX lesson: Thunderbolt bootstrap sockets stuck in
+/// SYN_SENT), and nothing unauthenticated answers on the link.
 ///
-/// The argument and owner contracts for the authenticated exchange stay in
-/// place; switching back is this one value.
+/// The direct native exchange (JACCL's own coordinator socket on the
+/// configured link address, which nothing vouches for) stays selectable here
+/// for diagnosis only; it is never a fallback.
 public enum DistributedInstalledBootstrap: String, Codable, Sendable {
     case directNative, ownerAuthenticated
 
     /// The selection for this build.
-    public static let installed: DistributedInstalledBootstrap = .directNative
+    public static let installed: DistributedInstalledBootstrap = .ownerAuthenticated
 
     public var ownerAuthenticated: Bool { self == .ownerAuthenticated }
-    var ownerProfile: ClusterOwnerBootstrapProfile? { self == .ownerAuthenticated ? .mesh2 : nil }
+    var ownerProfile: ClusterOwnerBootstrapProfile? { self == .ownerAuthenticated ? .nativeKeyPreludeMesh2 : nil }
 }

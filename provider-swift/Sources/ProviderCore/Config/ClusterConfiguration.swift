@@ -28,11 +28,17 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     public let requestTimeoutSeconds: Int
     public let peers: [Peer]
     public let coordinator: Coordinator
-    public let trust: Trust
+    /// The existing SSH trust the leader's session uses to reach the follower.
+    /// Absent exactly when the follower is reached over the link control
+    /// channel (`linkControl`): such a setup has no SSH configuration at all.
+    public let trust: Trust?
     public let tokenizerFiles: [TokenizerFile]
     /// Present only on a Mac set up to be paired by the coordinator. Omission
     /// preserves an existing setup and its saved bytes; null is rejected.
     public private(set) var nativeMember: ClusterNativeMemberAttachment?
+    /// Present only on a setup whose follower is reached over the link control
+    /// channel (PROD-PLAN S08). Omission preserves an existing setup's bytes.
+    public private(set) var linkControl: ClusterLinkControlAttachment?
 
     public enum Role: String, Codable, Sendable { case leader, follower }
     public struct Peer: Codable, Sendable, Equatable {
@@ -105,8 +111,16 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         // After the peers: the refusal names the workers the record describes.
         try ClusterGenerationSelection.requireSupport(for: selectedGenerationMode, peers: peers, capability: capability)
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
-        try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)
-            && trust.identityFile != trust.knownHostsFile && ClusterConfigurationSyntax.hash(trust.knownHostsSHA256), "Invalid existing SSH trust inputs")
+        if let linkControl {
+            // A coordinator-paired setup (`nativeMember`) may carry it too: the
+            // members of a committed start reach each other over the link (S10).
+            try require(trust == nil, "A setup reached over the link control channel has no SSH trust")
+            try linkControl.validate()
+        } else {
+            guard let trust else { throw ClusterConfigurationError.invalid("Missing existing SSH trust inputs") }
+            try require(ClusterConfigurationSyntax.sshPath(trust.identityFile) && ClusterConfigurationSyntax.sshPath(trust.knownHostsFile)
+                && trust.identityFile != trust.knownHostsFile && ClusterConfigurationSyntax.hash(trust.knownHostsSHA256), "Invalid existing SSH trust inputs")
+        }
         try require((1...16).contains(tokenizerFiles.count)
             && Set(tokenizerFiles.map(\.path)).count == tokenizerFiles.count
             && tokenizerFiles.contains(where: { $0.purpose == .tokenizer }), "Missing or duplicate tokenizer metadata pins")

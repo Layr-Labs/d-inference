@@ -39,16 +39,17 @@ struct WorkerConfiguration {
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
             "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth"]
-        let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
+        let bootstrapCounts = [0, WorkerBootstrapConfiguration.names.count, WorkerBootstrapConfiguration.names.count + 1]
+        let counts = bootstrapCounts.map { names.count + $0 }.flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag, optional keep-warm switch and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag, optional keep-warm switch and optional complete bootstrap triple with its optional native start")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
             let key = arguments[index], value = arguments[index + 1]
-            guard names.union(optionalNames).union(WorkerBootstrapConfiguration.names).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
+            guard names.union(optionalNames).union(WorkerBootstrapConfiguration.allNames).contains(key), fields[key] == nil, !value.isEmpty, value.utf8.count <= 4096,
                   !value.contains("\0") else { throw WorkerFailure.invalid("Unknown, duplicate or empty worker argument") }
             fields[key] = value
         }

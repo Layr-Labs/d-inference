@@ -22,7 +22,7 @@ build_module() {
     DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
     DarkbloomClusterSecurity) task_dependencies+=(-lDarkbloomClusterBootstrap) ;;
     DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity) ;;
-    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation) ;;
+    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
   esac
   xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
     -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
@@ -46,7 +46,7 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Config/ClusterNativeMemberAttachment.swift" \
+  "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
@@ -54,6 +54,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusDiscovery.swift \
@@ -67,13 +68,14 @@ build_module InstalledContract \
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
 for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker ClusterDiagnosticsCheck; do
+  task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
-    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
+    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE) ;;
     ClusterDiagnosticsCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_diagnostics/ClusterDiagnosticsCheck.swift" "$task_diagnostics/ClusterLinkFindingsCheck.swift") ;;
   esac
-  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
+  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
 done
 

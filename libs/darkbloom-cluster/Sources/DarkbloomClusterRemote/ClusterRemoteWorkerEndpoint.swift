@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
+import DarkbloomClusterSecurity
 
 /// One authenticated SSH owner connection. The SSH process is only transport;
 /// nativeCleanupObserved requires that owner's current-incarnation terminal.
@@ -12,7 +13,7 @@ import DarkbloomClusterProcess
 /// device journal, so without a release acknowledgement this endpoint closes its
 /// command stream (the owner's order to fence) and lets the owner run to its own
 /// retirement ceiling before signalling it.
-public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
+public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unchecked Sendable {
     /// Past the session lifetime: the child's retirement allowance, the owner's
     /// release handshake, and slack for the connection. An owner sizes its
     /// child's SIGTERM-to-SIGKILL margin to the bytes the child holds (up to
@@ -52,7 +53,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     private let nativeKeyRelay: ClusterOwnerNativeKeyRelay?
     private var selectedBootstrapProfile: ClusterOwnerBootstrapProfile? { nativeKeyRelay == nil ? bootstrapRelay?.profile : .nativeKeyPrelude }
     private var selectedBootstrapDeadline: UInt64? { nativeKeyRelay?.deadlineUptimeNanoseconds ?? bootstrapRelay?.deadlineUptimeNanoseconds }
-    private let bootstrapRelay: ClusterOwnerBootstrapRelay?
+    private let bootstrapRelay: (any ClusterOwnerBootstrapExchange)?
+    /// The committed native start of this rank under the combined profile.
+    private let relayStart: ClusterNativeAuthorizationStart?
     private var bootstrapReplies: [(UInt64, Data)] = []
     private var bootstrapBusy = false
     private var nextBootstrapSequence: UInt64 = 0
@@ -115,7 +118,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            bootstrapRelay: ClusterOwnerBootstrapRelay?) throws {
+                            bootstrapRelay: (any ClusterOwnerBootstrapExchange)?) throws {
         try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
@@ -135,7 +138,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
 
     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
-                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws {
+                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)? = nil) throws {
         try self.init(transport: configuration.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
             lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
@@ -144,7 +147,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     // callers cannot substitute an arbitrary shell/transport through this API.
     init(transport: ClusterWorkerLaunch, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
-         lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
+         lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)? = nil,
          nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil,
          ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws {
         let ceiling = lifetimeDeadlineUptimeNanoseconds.addingReportingOverflow(ownerRetirementAllowanceNanoseconds)
@@ -152,7 +155,15 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         ownerRetirementAllowance = ownerRetirementAllowanceNanoseconds
         ownerCeiling = ceiling.partialValue
         self.nativeKeyRelay = nativeKeyRelay
-        self.leaseID = nativeKeyRelay?.start.leaseID ?? UUID()
+        // Under the combined profile the relay holds this rank's committed
+        // start, and the owner's lease is the one that start names.
+        let relayStart = bootstrapRelay?.profile.carriesNativeStart == true ? bootstrapRelay?.nativeStart(rank: rank) : nil
+        guard bootstrapRelay?.profile.carriesNativeStart != true
+            || (relayStart?.rank == rank && relayStart?.common.epoch == expectedIdentity.membershipEpoch) else {
+            throw OwnerWire.invalid("Bootstrap relay lacks this rank's committed native start")
+        }
+        self.relayStart = relayStart
+        self.leaseID = nativeKeyRelay?.start.leaseID ?? relayStart?.leaseID ?? UUID()
         guard bootstrapRelay == nil || nativeKeyRelay == nil else { throw OwnerWire.invalid("Ambiguous bootstrap relay") }
         try nativeKeyRelay?.requireBinding(identity: expectedIdentity, rank: rank, plan: executionPlanSHA256)
         if let nativeKeyRelay {
@@ -230,7 +241,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             lock.withLock { offeredLifetime = offered }
             let open = OwnerWire(kind: "open", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
                 incarnation: nil, sequence: 0, clusterID: clusterID, remaining: offered, bootstrapProfile: selectedBootstrapProfile,
-                nativeStart: nativeKeyRelay?.start.canonicalBytes,
+                nativeStart: nativeKeyRelay?.start.canonicalBytes ?? relayStart?.canonicalBytes,
                 nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(firstGrant, nativeKeyRelay!.deadlineUptimeNanoseconds))
             try pipe.write(open.encoded(commandStream: true), until: min(firstGrant, now + 5_000_000_000)); sequence += 1
             var sentFence = false, sentRelease = false
@@ -351,8 +362,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                   frame.sequence == nextWireEvent else { throw OwnerWire.invalid("Remote owner epoch/lease/replay differs") }
             if frame.kind == "hello" {
                 guard nextWireEvent == 0, incarnation == nil, frame.bootstrapProfile == selectedBootstrapProfile, let inc = frame.incarnation, let launch = frame.launchID else { throw OwnerWire.invalid("Repeated owner incarnation") }
-                if let nativeKeyRelay {
-                    guard inc == nativeKeyRelay.start.ownerIncarnation, launch == nativeKeyRelay.start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
+                if let start = nativeKeyRelay?.start ?? relayStart {
+                    guard inc == start.ownerIncarnation, launch == start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
                 }
                 incarnation = inc; launchID = launch
                 // The open was the first grant; renewals follow one interval on.
@@ -382,7 +393,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     guard event.membershipEpoch == expectedIdentity.membershipEpoch, event.sequence == nextNativeEvent,
                           incoming.count < 32 else { throw OwnerWire.invalid("Native event replay or queue bound") }
                     if case .ready(let value) = event.event {
-                        guard nativeKeyRelay == nil, nextNativeEvent == 0, bootstrapRelay == nil || nextBootstrapSequence == 4, value.identity == expectedIdentity, value.profile == expectedProfile,
+                        guard nativeKeyRelay == nil, nextNativeEvent == 0, bootstrapRelay.map({ nextBootstrapSequence == UInt64($0.profile.rounds) }) ?? true,
+                              value.identity == expectedIdentity, value.profile == expectedProfile,
                               value.rank == rank, value.executionPlanSHA256 == executionPlanSHA256 else { throw OwnerWire.invalid("Remote readiness differs") }
                         ready = value
                     } else { guard nextNativeEvent > 0 else { throw OwnerWire.invalid("Event precedes readiness") } }

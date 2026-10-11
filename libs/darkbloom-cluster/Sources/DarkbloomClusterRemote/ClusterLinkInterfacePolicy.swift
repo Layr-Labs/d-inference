@@ -198,15 +198,24 @@ public struct ClusterLinkSystemInterfaceInspector: ClusterLinkInterfaceInspectin
     /// (link setup v2, or a port with its own service), else the configured
     /// bridge that contains it and holds an address (today's Thunderbolt
     /// Bridge with Internet Sharing). Nil when neither carries IPv4.
-    public static func carrierInterface(forPort port: String) -> String? {
+    ///
+    /// With `reaching`, only an interface holding an address on the peer's
+    /// subnet counts: a port can carry a self-assigned link-local address
+    /// while its bridge holds the address the peer is reached on, and dialing
+    /// from the port would refuse the peer as not on the link.
+    public static func carrierInterface(forPort port: String, reaching peer: ClusterLinkIPv4Address? = nil) -> String? {
         guard ClusterLinkInterfaceAdmission.isInterfaceName(port), if_nametoindex(port) != 0 else { return nil }
-        if !addresses(of: port).0.isEmpty { return port }
+        let carries: ([ClusterLinkInterfaceAddress]) -> Bool = { addresses in
+            guard let peer else { return !addresses.isEmpty }
+            return addresses.contains { $0.contains(peer) && $0.address != peer }
+        }
+        if carries(addresses(of: port).0) { return port }
         guard let preferences = SCPreferencesCreate(nil, "darkbloom-link-control" as CFString, nil),
               let virtual = SCPreferencesGetValue(preferences, "VirtualNetworkInterfaces" as CFString) as? [String: Any],
               let bridges = virtual["Bridge"] as? [String: Any] else { return nil }
         for name in bridges.keys.sorted() where ClusterLinkInterfaceAdmission.isInterfaceName(name) {
             guard let members = bridgeMembers(of: name), members.contains(port), if_nametoindex(name) != 0,
-                  !addresses(of: name).0.isEmpty else { continue }
+                  carries(addresses(of: name).0) else { continue }
             return name
         }
         return nil

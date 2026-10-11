@@ -36,9 +36,9 @@ public struct ClusterNumericsClass: Hashable, Comparable, Sendable, CustomString
     public static func local() -> ClusterNumericsClass? {
         var size = 0
         guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 1, size <= 256 else { return nil }
-        var buffer = [CChar](repeating: 0, count: size)
+        var buffer = [UInt8](repeating: 0, count: size)
         guard sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0) == 0 else { return nil }
-        return ClusterNumericsClass(chipName: String(cString: buffer))
+        return ClusterNumericsClass(chipName: String(decoding: buffer.prefix(while: { $0 != 0 }), as: UTF8.self))
     }
 
     public static let appleM3Ultra = ClusterNumericsClass(chipName: "Apple M3 Ultra")!

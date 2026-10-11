@@ -143,6 +143,13 @@ struct StageLoadRealSamplerTests {
             #expect(text.contains("let os = try QwenDenseStageLoadResources.observeOS()"), "\(file) does not sample")
             #expect(!text.contains("QwenDenseStageLoadPolicy.minimumActualFreeBytes"), "\(file) names the old free-page floor")
         }
+        // A running request's check (round 2) asks the same request's watch,
+        // so the harm guard compares with the reservation's first sample.
+        let continuing = try Self.source("Resources/QwenResidentContinuingRequest.swift")
+        #expect(comparison.numberOfMatches(in: continuing, range: NSRange(continuing.startIndex..., in: continuing)) == 0)
+        #expect(continuing.components(separatedBy: "guard try watch.admits(os, bytes: ").count == 2)
+        #expect(continuing.contains("extension QwenResidentRequestAllowance"))
+        #expect(continuing.contains("let os = try QwenDenseStageLoadResources.observeOS()"))
     }
 
     @Test func theRequestGateAdmitsOnCountedCacheOnThisMac() throws {

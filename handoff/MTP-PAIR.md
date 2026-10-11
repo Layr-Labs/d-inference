@@ -28,7 +28,8 @@ No SDK change.
 
 ## What both ranks agree to
 
-The mode, `QwenMTPTerms` (schema, `depth` 1…4, default 4 = the product drafter's maximum, verification
+The mode, `QwenMTPTerms` (schema, `depth` 1…4, default the row's own `QwenMTPTerms.standard(for:)`: 3 on the
+35B A3B rows, measured fastest there, and 4 = the product drafter's maximum on the dense rows; verification
 `captured_window_exact_greedy`) and the digest of the head's files from the verified manifest are bound into the
 load agreement before either stage is read; the request agreement carries `mtpEnabled` and the terms. The depth is
 fixed for a session (`--mtp-depth` on the worker, the pair driver and the reference), so a run is repeatable; the
@@ -53,7 +54,7 @@ three files it read afterwards and requires the manifest digests. A verified rea
 | Family (registered row) | Head in the artifact | `phase_split_mtp_v1` | Why / what is missing |
 |---|---|---|---|
 | Qwen3.5 9B, Qwen3.8 27B | inline `mtp.`, one dense layer | **on** | as above |
-| Qwen3.5 35B A3B, Qwen3.6 35B A3B | inline `mtp.`, one routed-expert layer (split gate/up, as the SDK's `Qwen35MTPDecoderLayer` keys it) | **on** | same head type (`Qwen35InlineMTPAssistant`), same loader and decoder; the row lists the mode |
+| Qwen3.5 35B A3B, Qwen3.6 35B A3B | inline `mtp.`, one routed-expert layer (split gate/up, as the SDK's `Qwen35MTPDecoderLayer` keys it) | **on**, depth 3 by default | same head type (`Qwen35InlineMTPAssistant`), same loader and decoder; the row lists the mode; Qwen3.6 keeps the head in a 5.26 GB shard shared with the trunk, which the re-hash after load reads again (bound 8 GiB) |
 | Prism Bonsai 2 27B | none (`mtp_num_hidden_layers` 0) | off | nothing to run |
 | GPT-OSS 20B, Gemma 4 26B | none | off | pipeline-only rows (a hand-off cannot carry a sliding layer's ring) |
 | Nemotron 3.5 Lightning | inline `mtp.layers.*` (attention + MoE, 0.70 GiB), SDK `NemotronH35MTPAssistant` | off | five pieces, below |
@@ -99,8 +100,17 @@ decode on this pair at the cable's per-token latency, the gain would have to be 
 Hardware runs, figures and the comparison verdicts are in the task's evidence folder `mtp2-20261010`
 (`STATUS.md`); the A3B rows' runs are in `universal-20261010` (`STATUS.md`, `hw/a35`, `hw/a36`).
 
-First A3B figures (Qwen3.5 35B A3B, cut 20, 4,096-token prompt, 64 outputs, prefix cache off, rank 1 on the M5 Max):
-the speculative pair against the staged speculative reference `divergedAtNearTie` (index 36), and against the plain
-phase split's reference at the same index as the plain pair (10): the pass rule. Decode 67.6 tok/s against 69.3 for
-the plain phase split: 21 rounds, 59 drafts, 42 accepted (3 tokens a round), but a five-token verify window through
-the routed experts costs about 34 ms against 14.5 ms for one token, so depth 4 gains nothing on this model here.
+A3B figures (cut 20, 4,096-token prompt, 64 outputs, prefix cache off, rank 1 on the M5 Max, decode tok/s; every
+speculative run passes against the plain phase split's staged reference: tokens equal, or a first difference at a
+near tie):
+
+| Row | Plain phase split | depth 2 | depth 3 | depth 4 | Verify window per round, depth 3 / depth 4 |
+|---|---|---|---|---|---|
+| Qwen3.5 35B A3B | 69.3 | 104.8 (26 rounds, 36/47 accepted) | **114.0** (21, 41/53) | 67.6 (21, 42/59) | 16.5 / 33.9 ms |
+| Qwen3.6 35B A3B | 73.3 | 100.9 (25, 39/47) | **105.8** (19, 42/48) | 47.6 (18, 44/56) | 20.6 / 61.9 ms |
+
+A window of five rows through the routed experts costs two to three times a window of four, which more than eats
+the extra accepted draft; depth 3 is therefore the A3B rows' default (`QwenMTPTerms.standard(for:)`). With no depth
+declared (the product's way), both rows then ran depth 3 on the pair: 114.4 tok/s (Qwen3.5, `divergedAtNearTie` at
+10, as the plain pair) and 121.3 tok/s (Qwen3.6, tokens equal). Why five rows
+cost so much more than four in the routed-expert matmul is an MLX kernel question for the optimisation phase.

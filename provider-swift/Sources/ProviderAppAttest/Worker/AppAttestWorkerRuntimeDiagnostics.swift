@@ -108,8 +108,11 @@ public struct AppAttestWorkerRuntimeDiagnostics: Codable, Sendable, Equatable {
         let copyStatus = SecCodeCopySelf([], &code)
         guard copyStatus == errSecSuccess, let code else { return (copyStatus, nil) }
         var values: CFDictionary?
-        // Dynamic status requires the running SecCode, not its static file view.
-        let status = SecCodeCopySigningInformation(code,
+        // SecCode.h explicitly accepts a running SecCodeRef here, despite the
+        // C parameter's SecStaticCodeRef spelling. Preserve that CF object rather
+        // than calling SecCodeCopyStaticCode, which discards dynamic status.
+        let dynamicCode = unsafeBitCast(code, to: SecStaticCode.self)
+        let status = SecCodeCopySigningInformation(dynamicCode,
             SecCSFlags(rawValue: kSecCSSigningInformation | kSecCSDynamicInformation), &values)
         return (status, values as? [String: Any])
     }

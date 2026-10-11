@@ -22,6 +22,15 @@ final class NativePairMemberControl: @unchecked Sendable {
         set { lock.withLock { servingHostReference = newValue } }
     }
     var status: String { lock.withLock { session?.status ?? "idle" } }
+    /// The heartbeat's `cluster_session` (S16): present only while an owner
+    /// runs for a session; the data-plane properties are what its worker
+    /// published in its readiness.
+    var sessionStatus: ClusterSessionStatus? {
+        guard let current = lock.withLock({ session }), let plane = current.dataPlaneObservation else { return nil }
+        let value = ClusterSessionStatus(epoch: current.epoch, generation: current.generation,
+            encryptedDataPlane: plane.encrypted, peerVerified: plane.peerVerified)
+        return value.isValid ? value : nil
+    }
     /// A new connection. A session away in its disconnect grace (its
     /// registration on this connection claimed it with `resume`) moves to it;
     /// the coordinator then renews its grant here.

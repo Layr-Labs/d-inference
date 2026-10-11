@@ -49,6 +49,16 @@ final class NativePairMemberSession: @unchecked Sendable {
     private var serving = false
     private let onFinished: @Sendable (NativePairMemberSession, Bool) -> Void
     var status: String { condition.lock(); defer { condition.unlock() }; return outcome }
+    /// S16: nil unless this session's owner is launched and not stopped;
+    /// then what its worker published in its readiness (both false before it
+    /// is ready, or when its data plane is not keyed).
+    var dataPlaneObservation: (encrypted: Bool, peerVerified: Bool)? {
+        condition.lock(); let live = launched && !stopped, endpoint = endpoint; condition.unlock()
+        guard live, endpoint != nil else { return nil }
+        // This build's worker readiness carries no data-plane record (S16's
+        // worker adds it): its data plane is plaintext, and it says so.
+        return (false, false)
+    }
     /// Whether a dropped control connection leaves this session in its grace:
     /// committed, keys exchanged, owner launched, not stopped.
     var survivesDisconnect: Bool {

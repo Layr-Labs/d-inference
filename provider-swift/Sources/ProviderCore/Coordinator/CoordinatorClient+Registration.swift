@@ -133,7 +133,9 @@ extension CoordinatorClient {
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
             idleUnloadMins: config.idleUnloadMins,
-            modelAutopilot: modelAutopilot
+            modelAutopilot: modelAutopilot,
+            // S16: a member's current session and its data-plane protection.
+            clusterSession: nativePairMember?.sessionStatus
         )
 
         do {

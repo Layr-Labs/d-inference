@@ -6,17 +6,24 @@ import Foundation
 /// A ceiling is a refusal bound. It is not a memory grant, a fit on any Mac or
 /// a claim about the whole process; the live resource gates stay in force.
 struct QwenResidentResourceCeilings: Equatable {
-    /// The resident profile's largest request: 8,192 prompt plus 128 output
-    /// tokens, prefilled in chunks of at most 512.
+    /// The earlier reservation's largest request: 8,192 prompt plus 128 output
+    /// tokens, prefilled in chunks of at most 512. Each row's pinned integer is
+    /// the state estimate at it, kept as a check of the formula.
     static let maximumContextTokens = 8320
     static let maximumChunkTokens = 512
 
+    /// The request bounds of this model (`QwenResidentContextLimits`): derived
+    /// from its declared context, or the earlier reservation without one.
+    let limits: QwenResidentContextLimits
     /// Largest manifest payload the verified loader will hash for this model.
     let maximumManifestPayloadBytes: Int
-    /// Ceiling for the conservative named-state estimate of one request.
-    let namedStateByteCeiling: Int
-    /// That estimate at the largest request, recomputed from the registered
-    /// geometry and required to equal the independently pinned integer.
+    /// Ceiling for the conservative named-state estimate of one request. For a
+    /// model that declares its context, that estimate at its largest context,
+    /// computed from its configuration geometry with the formula every request
+    /// is charged by (no pinned integer); otherwise the row's own value below.
+    private(set) var namedStateByteCeiling: Int
+    /// That estimate at the reservation's largest request, recomputed from the
+    /// registered geometry and required to equal the independently pinned integer.
     let maximumNamedStateBytes: Int
 
     init(model: QwenRegisteredDenseModel) throws {
@@ -73,6 +80,15 @@ struct QwenResidentResourceCeilings: Equatable {
               maximumNamedStateBytes == pinnedMaximumNamedStateBytes,
               maximumNamedStateBytes <= namedStateByteCeiling else {
             throw QwenDenseProfileError("Registered resident ceilings differ from the model's own byte vector")
+        }
+        // Long context: the ceiling grows with the context the model declares
+        // and with nothing else. A model without a declared context keeps its
+        // row's ceiling, sized for the reservation.
+        limits = try QwenResidentContextLimits(specification: specification)
+        if limits.declaredContextTokens != nil {
+            namedStateByteCeiling = try QwenLongPrefillTensorBudget.estimate(
+                geometry: specification.expectedGeometry(), maximumTokens: limits.maximumContextTokens,
+                chunkSize: limits.maximumChunkTokens).conservativeStateAndBoundaryBytes
         }
     }
 }

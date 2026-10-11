@@ -13,9 +13,12 @@ enum QwenResidentAdapterDefinition {
         let profileID = try QwenResidentModelDefinition(model: specification.model).profileID
         let vocabularySize = specification.model == .nemotron35Lightning
             ? NemotronRegisteredLightning.vocabularySize : 248_320
+        // Prompt, output and context follow from the protocol and the model's
+        // declared context, not from a table (`QwenResidentContextLimits`).
+        let limits = try QwenResidentContextLimits(specification: specification)
         return try .init(identifier: profileID, vocabularySize: vocabularySize,
             hiddenSize: specification.hidden, activationDType: specification.model.pack.activationDType,
-            maximumPromptTokens: 8192,
-            maximumChunkTokens: 512, maximumOutputTokens: 128, maximumContextTokens: 8320)
+            maximumPromptTokens: limits.maximumPromptTokens, maximumChunkTokens: limits.maximumChunkTokens,
+            maximumOutputTokens: limits.maximumOutputTokens, maximumContextTokens: limits.maximumContextTokens)
     }
 }

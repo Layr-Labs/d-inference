@@ -6,6 +6,11 @@ struct QwenResidentRequestAllowance {
     let stateBytes: Int
     let fusionBytes: Int
     let reservedBytes: Int
+    /// One prefill frame's attention transient at this request's context
+    /// (`QwenResidentPrefillTransient`), included in `reservedBytes`.
+    var transientBytes = 0
+    /// Prompt plus output tokens this allowance was derived for; 0 when unknown.
+    var contextTokens = 0
     /// This request's record at the host memory gate, and its first sample.
     let watch = QwenDenseStageLoadWatch("Resident request")
 
@@ -77,7 +82,15 @@ struct QwenResidentRequestAllowance {
             role: rank == 0 ? .stage0 : .stage1)
         guard try sum(logical) == selected.fusionReplacementBytes else { throw ProbeError("Resident fusion ownership differs") }
         let fusion = try sum(fused)
-        return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion]))
+        // The attention transient of one prefill frame at this context: what
+        // the owner's planner and prefill guard price beside the KV (oMLX
+        // U#3651), so a context the gate admits is one the frame can run in.
+        let stageHasAttention = plan.stages[rank].sourceRange.contains { ($0 + 1) % plan.interval == 0 }
+        let transientLogical = try QwenResidentPrefillTransient.bytes(geometry: g, stageHasAttention: stageHasAttention,
+            chunkTokens: chunkSize, contextTokens: maximumTokens)
+        let transient = transientLogical == 0 ? 0 : try allowance(transientLogical, 1)
+        return .init(stateBytes: state, fusionBytes: fusion, reservedBytes: try sum([state, fusion, transient]),
+            transientBytes: transient, contextTokens: maximumTokens)
     }
 
     func requireLive(additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
@@ -91,8 +104,15 @@ struct QwenResidentRequestAllowance {
                 QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([Memory.activeMemory, Memory.cacheMemory,
             reservedBytes, additionalNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
-        guard try watch.admits(os, bytes: free), Memory.memoryLimit >= allocator else {
-            throw ProbeError("Resident request exceeds the allocator limit")
+        do {
+            guard try watch.admits(os, bytes: free), Memory.memoryLimit >= allocator else {
+                throw ProbeError("Resident request exceeds the allocator limit")
+            }
+        } catch {
+            // Name the context the refusal was for: the gate's own sentence
+            // names the bytes; the operator needs the tokens to act on it.
+            guard contextTokens > 0 else { throw error }
+            throw ProbeError("A request of \(contextTokens) context tokens (prompt plus output) on this rank: \(error)")
         }
     }
 }

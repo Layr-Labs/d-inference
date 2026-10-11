@@ -636,7 +636,7 @@ struct PhaseSplitContractTests {
         // The 9B's profile and its cut-4 Plan are the ones the capability
         // fixture pinned before this work, and the pipeline over JACCL adds
         // nothing to the load agreement.
-        #expect(try PhaseSplitFixture.request().profile.fingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff")
+        #expect(try PhaseSplitFixture.request().profile.fingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
         #expect(try PhaseSplitFixture.plan(cut: 4).fingerprint == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
         #expect(QwenResidentGenerationMode.pipeline.loadAgreementFields.isEmpty && ClusterTransport.jaccl.loadAgreementFields.isEmpty)
     }

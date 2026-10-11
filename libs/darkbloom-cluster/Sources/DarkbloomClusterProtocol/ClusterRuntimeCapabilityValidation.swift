@@ -25,7 +25,11 @@ enum ClusterRuntimeCapabilityValidation {
             && (1...ClusterWorkerLimits.outputTokens).contains(p.maximumOutputTokens)
             && (1...p.maximumPromptTokens).contains(p.maximumChunkTokens)
             && (1...ClusterWorkerLimits.contextTokens).contains(p.maximumContextTokens)
-            && p.maximumPromptTokens <= p.maximumContextTokens - p.maximumOutputTokens
+            // Each maximum leaves room for at least one token of the other; a
+            // request's own prompt plus output is held to the context by the
+            // reservation checks, so a long prompt and a long output need not
+            // both fit at once.
+            && p.maximumPromptTokens < p.maximumContextTokens && p.maximumOutputTokens < p.maximumContextTokens
             ,
             "Runtime profile exceeds protocol geometry")
         try workerRequire(value.arithmeticPolicyID == adapter.arithmeticPolicyID,

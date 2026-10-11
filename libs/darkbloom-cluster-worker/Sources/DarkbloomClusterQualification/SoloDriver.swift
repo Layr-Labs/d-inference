@@ -11,6 +11,9 @@ import Foundation
 /// never signals it: on any failure the input is closed and the process ends
 /// by itself, at the latest at the lifetime it was started with.
 public struct SoloConfiguration: Sendable {
+    /// A solo run is a tool run, not a session: it keeps a bounded lifetime, up to
+    /// the protocol's deadline bound (the reference service's `--deadline-seconds`).
+    public static let maximumLifetimeSeconds = 3600
     public var request: QualificationRequest
     public var stageCut: Int
     public var modelDirectory: String
@@ -43,7 +46,7 @@ public struct SoloConfiguration: Sendable {
         try require(PairConfiguration.isPath(modelDirectory), "model directory must be a plain absolute path")
         try require(PairConfiguration.isPath(servicePath), "service must be a plain absolute path")
         try require((1...PairConfiguration.maximumRepetitions).contains(repetitions), "repetitions must be 1...8")
-        try require((10...300).contains(lifetimeSeconds), "lifetime must be 10...300 seconds")
+        try require((10...Self.maximumLifetimeSeconds).contains(lifetimeSeconds), "lifetime must be 10...\(Self.maximumLifetimeSeconds) seconds")
         try require((2...lifetimeSeconds).contains(startupSeconds), "startup timeout must be 2 seconds up to the lifetime")
         try require((5...lifetimeSeconds).contains(requestSeconds), "request timeout must be 5 seconds up to the lifetime")
         try require(!transport.isEmpty && transport[0].hasPrefix("/")

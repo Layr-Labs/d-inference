@@ -68,3 +68,31 @@ These compile the actual sources with Swift 6 and warnings as errors in a
 temporary build directory and run deterministic local checks. They use no
 model, no GPU, no network peer, and no RDMA; they do not qualify cross-host
 execution.
+
+## Long prompts in a family adapter
+
+The protocol bounds one request at 32,768 context tokens (`ClusterWorkerLimits`).
+The 8,192-prompt, 128-output profile every adapter started with was a
+reservation, not a property of the models. A family takes long prompts in six
+steps, the way the dense Qwen models do:
+
+1. Limits: `QwenResidentContextLimits(declaredContextTokens:)` from the model's
+   own `max_position_embeddings`. A model on the Qwen resident runtime records
+   it as one row of `QwenDenseRegisteredSpecification.declaredContextTokensByModel`;
+   a model without a row keeps the reservation, its pinned state ceiling and
+   its admission.
+2. State ceiling: the family's own state estimate at `maximumContextTokens`,
+   computed from configuration geometry, not a pinned integer.
+3. Charge: each request's reserved bytes add one prefill frame's attention
+   transient, `QwenResidentPrefillTransient.bytes(geometry:stageHasAttention:chunkTokens:contextTokens:)`
+   (a sliding-window layer attends over its window, not the whole context).
+4. Load: `QwenResidentContextAdmission.largest(minimum:maximum:admits:)` finds
+   the largest context the host gate admits with the stage resident; the load
+   is refused only below one frame and one output, and every request is still
+   gated live when it is reserved and while it runs.
+5. Lifetime: none. A session has no fixed lifetime or request count; each
+   rank holds a renewed lease (`ClusterLeaseDeadline`), so a long prompt needs
+   no per-adapter ceiling (handoff/DESIGN-no-fixed-lifetime.md).
+6. Tools: a `QualificationLimits.declaredContextTokens` row and a measured
+   `QualificationTimeBudget` row, so the pair and solo budgets scale with the
+   prompt instead of staying sized for 8,192 tokens.

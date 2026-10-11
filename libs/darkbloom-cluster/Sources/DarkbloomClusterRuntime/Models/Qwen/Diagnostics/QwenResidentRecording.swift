@@ -26,8 +26,9 @@ struct QwenResidentRecordingCharge {
 
     static func derive(base: QwenResidentRequestAllowance, rank: Int, vocabularySize: Int,
                        activationDType: String, bound: (Int) throws -> Int) throws -> Self {
-        guard base.stateBytes > 0, base.fusionBytes >= 0,
-              base.reservedBytes == (try QwenLongPrefillCheckedBytes.sum([base.stateBytes, base.fusionBytes])) else {
+        guard base.stateBytes > 0, base.fusionBytes >= 0, base.transientBytes >= 0,
+              base.reservedBytes == (try QwenLongPrefillCheckedBytes.sum([base.stateBytes, base.fusionBytes,
+                  base.transientBytes])) else {
             throw ProbeError("Recording charge requires a consistent original request allowance")
         }
         let capture = try QwenGenerationDiagnosticBudget.derive(rank: rank, vocabularySize: vocabularySize,

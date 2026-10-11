@@ -34,7 +34,7 @@ import Foundation
                 guard fields["--serve"] == "yes", fields["--request"] == nil, fields["--report"] == nil,
                       fields["--handoff"] == nil, let model = fields["--model-dir"], model.hasPrefix("/"),
                       let cut = fields["--stage-cut"].flatMap(Int.init),
-                      let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds) else {
+                      let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...3600).contains(seconds) else {
                     throw Failure(usage)
                 }
                 // As below: the artifact's configuration selects the registered
@@ -48,7 +48,7 @@ import Foundation
             guard let model = fields["--model-dir"], model.hasPrefix("/"),
                   let requestPath = fields["--request"], let reportPath = fields["--report"],
                   let cut = fields["--stage-cut"].flatMap(Int.init),
-                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...300).contains(seconds),
+                  let seconds = Int(fields["--deadline-seconds"] ?? "240"), (10...3600).contains(seconds),
                   ["in-process", nil].contains(fields["--handoff"]) else {
                 throw Failure(usage)
             }
@@ -279,9 +279,9 @@ import Foundation
     }
 
     static let usage = """
-        usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...300]
+        usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...3600]
                  [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
-               --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...300]
+               --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...3600]
           CUT is one of the registered model's cuts
           (GPT-OSS runs under MLX_ENABLE_TF32=1 with no DARKBLOOM_GPTOSS_* switch, and has no --handoff):
 

@@ -63,10 +63,12 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public static let modelID = "registered_qwen35_9b"
     public static let profileID = "registered_qwen35_9b_greedy_generation_v1"
     public static let vocabularySize = 248_320
-    public static let maximumPromptTokens = 8192
-    public static let maximumChunkTokens = 512
-    public static let maximumOutputTokens = 128
-    public static let maximumContextTokens = 8320
+    /// The earlier fixed profile, kept for callers that name it. A request is
+    /// held to its own model's limits (`limits`, `QualificationLimits`).
+    public static let maximumPromptTokens = QualificationLimits.reservation.maximumPromptTokens
+    public static let maximumChunkTokens = QualificationLimits.reservation.maximumChunkTokens
+    public static let maximumOutputTokens = QualificationLimits.reservation.maximumOutputTokens
+    public static let maximumContextTokens = QualificationLimits.reservation.maximumContextTokens
     public static let supportedCuts = [4, 8, 12, 16]
     public static let maximumFileBytes = 1 << 20
 
@@ -176,10 +178,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         try require(schema == Self.currentSchema, "unknown schema")
         try require(UUID(uuidString: requestID)?.uuidString.lowercased() == requestID, "request ID must be a lowercase UUID")
         try require(Self.registeredModel(modelID)?.profileID == profileID, "the model and profile must be one registered pair")
-        try require((1...Self.maximumPromptTokens).contains(promptTokenIDs.count), "prompt must have 1...8192 tokens")
-        try require((1...Self.maximumChunkTokens).contains(chunkSize), "chunk size must be 1...512")
-        try require((1...Self.maximumOutputTokens).contains(outputCount), "output count must be 1...128")
-        try require(promptTokenIDs.count <= Self.maximumContextTokens - outputCount, "prompt plus output exceeds 8320 tokens")
+        if let refusal = limits.refusal(promptTokens: promptTokenIDs.count, outputTokens: outputCount, chunkTokens: chunkSize) {
+            try require(false, refusal + " for \(modelID)")
+        }
         let vocabulary = Self.registeredModel(modelID)?.vocabularySize ?? Self.vocabularySize
         try require(promptTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "prompt token outside the vocabulary")
         try require(stopTokenIDs.count <= 256 && stopTokenIDs == Array(Set(stopTokenIDs)).sorted()

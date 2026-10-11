@@ -66,6 +66,7 @@ final class EndpointBox: @unchecked Sendable {
         try ordinaryProviderExclusion(fixture)
         try generationModeSelection(fixture,prepared)
         try perModelBudgets(fixture,prepared)
+        try longPromptsFitTheInstalledSession(fixture)
         try pairServingStaysWithheld(fixture)
         try unreadableCapabilityRecord(fixture)
         try await phaseSplitSession(fixture)
@@ -76,7 +77,7 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -280,6 +281,26 @@ final class EndpointBox: @unchecked Sendable {
         // Every model the runtime registers has exactly one row.
         let registered=ClusterRuntimeAdapter.qwen35Dense.registeredProfiles.map(\.runtimeModelID)
         try require(Table.rows.map(\.runtimeModelID)==registered,"the table and the runtime's registered models differ")
+    }
+    /// No session lifetime (handoff/DESIGN-no-fixed-lifetime.md): a 30,720-token
+    /// prompt with 128 outputs is bounded only by each row's own request
+    /// budgets. The pair's measured first token at 30,720 tokens (both Macs,
+    /// normal order) is inside each row's first-token budget.
+    static func longPromptsFitTheInstalledSession(_ f:InstalledFixture) throws {
+        typealias Table=DistributedInstalledPairServingTable
+        let prompt=30_720,outputs=128
+        // At 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b and
+        // hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
+        // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up.
+        let measured:[String:(decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(67,15.61),
+            "registered_qwen38_27b":(23,39.91)]
+        for row in Table.rows {
+            let budgets:DistributedInstalledTimeBudgets
+            switch row.pairServing { case .open(let value): budgets=value; case .withheld(let value): budgets=value }
+            guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }
+            let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
+            try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
+        }
     }
     /// The 27B is not open to pair serving. Nothing in the installed path can
     /// start it: not a setup, not a mode, not its budgets.

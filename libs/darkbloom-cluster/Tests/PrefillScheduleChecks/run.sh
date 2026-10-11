@@ -50,6 +50,8 @@ task_catalog=(
   Models/Qwen/Prefill/QwenResidentArithmeticPolicy
   Models/Qwen/Loading/QwenLayerStageCandidates
   Models/Qwen/Resident/QwenResidentModelDefinition
+  Models/Qwen/Resources/QwenResidentContextLimits
+  Models/Qwen/Resources/QwenResidentContextLimits+Registered
   Models/Qwen/Resident/QwenResidentAdapterDefinition
   Models/Qwen/Resident/QwenResidentCapabilityMetadata
   Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification

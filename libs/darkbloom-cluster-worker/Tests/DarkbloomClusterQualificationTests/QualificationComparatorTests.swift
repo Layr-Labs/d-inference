@@ -236,10 +236,15 @@ final class QualificationRequestTests: XCTestCase {
                       outputCount: output, stopTokenIDs: stops, promptSource: .init(kind: "tokenIDs", description: "test"))
         }
         XCTAssertNoThrow(try make()); XCTAssertNoThrow(try make(prompt: 8192, chunk: 512, output: 128))
+        // Derived from the protocol and the declared 262,144-token context:
+        // the long-context sizes the owner asked for, and the protocol's edges.
+        for prompt in [5120, 10_240, 20_480, 30_720] { XCTAssertNoThrow(try make(prompt: prompt, chunk: 512, output: 128)) }
+        XCTAssertNoThrow(try make(prompt: 32_767, chunk: 512, output: 1)); XCTAssertNoThrow(try make(prompt: 28_672, output: 4096))
         XCTAssertNoThrow(try make(stops: [248_044, 248_046]))
-        XCTAssertThrowsError(try make(prompt: 0)); XCTAssertThrowsError(try make(prompt: 8193, output: 1))
+        XCTAssertThrowsError(try make(prompt: 0)); XCTAssertThrowsError(try make(prompt: 32_768, output: 1))
+        XCTAssertThrowsError(try make(prompt: 30_720, output: 2049))
         XCTAssertThrowsError(try make(chunk: 513)); XCTAssertThrowsError(try make(chunk: 0))
-        XCTAssertThrowsError(try make(output: 129)); XCTAssertThrowsError(try make(output: 0))
+        XCTAssertThrowsError(try make(output: 4097)); XCTAssertThrowsError(try make(output: 0))
         XCTAssertThrowsError(try make(first: 248_320)); XCTAssertThrowsError(try make(first: -1))
         XCTAssertThrowsError(try make(stops: [9, 3])); XCTAssertThrowsError(try make(stops: [3, 3]))
         // A stored request is checked again when read, including its prompt hash.
@@ -405,5 +410,74 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertThrowsError(try PairEvidence.decode(Data("{}".utf8), rank: 0))
         XCTAssertThrowsError(try PairEvidence.join([try .decode(record(rank: 0, tokens: [5, 7]), rank: 0), try .decode(record(rank: 1), rank: 1)]))
         XCTAssertThrowsError(try PairEvidence.join([try .decode(record(rank: 0, plan: "q"), rank: 0), try .decode(record(rank: 1), rank: 1)]))
+    }
+}
+
+final class QualificationLongContextTests: XCTestCase {
+    func testLimitsAreDerivedFromTheDeclaredContextAndTheProtocol() {
+        let dense = QualificationLimits.forModel("registered_qwen38_27b")
+        XCTAssertEqual(dense, QualificationLimits.forModel("registered_qwen35_9b"))
+        XCTAssertEqual(dense.maximumContextTokens, 32_768); XCTAssertEqual(dense.maximumPromptTokens, 32_767)
+        XCTAssertEqual(dense.maximumOutputTokens, 4096); XCTAssertEqual(dense.maximumChunkTokens, 512)
+        // A smaller declared context binds before the protocol does.
+        let small = QualificationLimits.derived(declaredContextTokens: 4096)
+        XCTAssertEqual(small.maximumContextTokens, 4096); XCTAssertEqual(small.maximumPromptTokens, 4095)
+        XCTAssertEqual(small.maximumOutputTokens, 4095)
+        // A model without a declared context here keeps the earlier reservation.
+        XCTAssertEqual(QualificationLimits.forModel("registered_some_other_model"), .reservation)
+        XCTAssertNil(dense.refusal(promptTokens: 30_720, outputTokens: 128, chunkTokens: 512))
+        XCTAssertEqual(dense.refusal(promptTokens: 30_720, outputTokens: 2049, chunkTokens: 512),
+                       "prompt plus output exceeds 32768 tokens")
+        XCTAssertNotNil(QualificationLimits.reservation.refusal(promptTokens: 8193, outputTokens: 1, chunkTokens: 512))
+    }
+
+    func testBudgetsScaleWithThePromptAndNeverShrinkBelowTheEarlierValues() throws {
+        let large = try XCTUnwrap(QualificationTimeBudget.forModel("registered_qwen38_27b"))
+        let small = try XCTUnwrap(QualificationTimeBudget.forModel("registered_qwen35_9b"))
+        // Monotone in the prompt, and more than linear: attention grows with context.
+        let sizes = [1024, 5120, 10_240, 20_480, 30_720]
+        let firsts = sizes.map { large.firstTokenSeconds(promptTokens: $0) }
+        XCTAssertEqual(firsts, firsts.sorted()); XCTAssertEqual(Set(firsts).count, firsts.count)
+        XCTAssertGreaterThan(large.prefillSeconds(promptTokens: 30_720), 6 * large.prefillSeconds(promptTokens: 5120))
+        // The 27B's first token at 30,720 on the slower Mac: 30,720 / 307 s times
+        // (1 + 30,720 / 32,768), with half again and 10 s on top.
+        XCTAssertEqual(large.firstTokenSeconds(promptTokens: 30_720), 301)
+        XCTAssertLessThan(small.firstTokenSeconds(promptTokens: 30_720), large.firstTokenSeconds(promptTokens: 30_720))
+        // A fixed 60 s collective limit holds for these models' frames; the
+        // limit scales only once a frame on the slower Mac needs it.
+        XCTAssertEqual(large.progressTimeoutMilliseconds(promptTokens: 30_720, chunkTokens: 512), 60_000)
+        let slow = QualificationTimeBudget(slowestPrefillTokensPerSecond: 20, slowestDecodeTokensPerSecond: 5,
+                                           attentionDoublingTokens: 32_768)
+        XCTAssertGreaterThan(slow.progressTimeoutMilliseconds(promptTokens: 30_720, chunkTokens: 512), 600_000 - 1)
+        // Lifetime: startup plus every request, bounded by the protocol's deadline.
+        XCTAssertEqual(large.lifetimeSeconds(promptTokens: 30_720, outputTokens: 128, repetitions: 4, startupSeconds: 150),
+                       150 + 4 * large.requestSeconds(promptTokens: 30_720, outputTokens: 128) + 30)
+        XCTAssertEqual(large.lifetimeSeconds(promptTokens: 32_000, outputTokens: 4096, repetitions: 8, startupSeconds: 150), 3600)
+        XCTAssertNil(QualificationTimeBudget.forModel("registered_some_other_model"))
+    }
+
+    func testDriverBudgetsDefaultToTheScaledValuesAndKeepTheEarlierFloors() throws {
+        func request(_ prompt: Int, model: String) throws -> QualificationRequest {
+            try .init(requestID: UUID(), promptTokenIDs: Array(repeating: 5, count: prompt), chunkSize: 512, outputCount: 128,
+                      stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "test"), modelID: model)
+        }
+        let short = PairCheckBudgetsProbe.make(try request(1024, model: "registered_qwen35_9b"), repetitions: 4)
+        XCTAssertGreaterThanOrEqual(short.lifetime, 240); XCTAssertLessThan(short.lifetime, 300)
+        XCTAssertEqual(short.request, 100); XCTAssertEqual(short.progress, 60_000)
+        let long = PairCheckBudgetsProbe.make(try request(30_720, model: "registered_qwen38_27b"), repetitions: 4)
+        XCTAssertGreaterThan(long.request, 300); XCTAssertGreaterThan(long.lifetime, 4 * 300)
+        XCTAssertLessThanOrEqual(long.lifetime, SoloConfiguration.maximumLifetimeSeconds)
+    }
+}
+
+/// The driver's budget rule, restated over the library types: the executable
+/// target that holds `PairCheckBudgets` is not linked into this test bundle.
+enum PairCheckBudgetsProbe {
+    static func make(_ request: QualificationRequest, repetitions: Int) -> (lifetime: Int, request: Int, progress: Int) {
+        guard let budget = QualificationTimeBudget.forModel(request.modelID) else { return (240, 100, 60_000) }
+        let prompt = request.promptTokenIDs.count, output = request.outputCount
+        let lifetime = max(240, budget.lifetimeSeconds(promptTokens: prompt, outputTokens: output, repetitions: repetitions, startupSeconds: 120))
+        return (lifetime, min(max(100, budget.requestSeconds(promptTokens: prompt, outputTokens: output)), lifetime),
+                budget.progressTimeoutMilliseconds(promptTokens: prompt, chunkTokens: request.chunkSize))
     }
 }

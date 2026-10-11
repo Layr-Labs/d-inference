@@ -49,6 +49,7 @@ extension Cluster {
             case .fenced(let reason): line("session fenced: \(reason)")
             case .cleanup: line("session cleanup observed")
             case .released(let cleanly): line("session released " + (cleanly ? "cleanly" : "without its owner's proof"))
+            case .linkRefused(let reason): line("link refused: \(reason)")
             }
         }
 

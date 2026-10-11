@@ -152,6 +152,15 @@ public enum ClusterLinkInterfaceAdmission {
         return usable.min { (rank($0), $0.address.value) < (rank($1), $1.address.value) }
     }
 
+    /// The first candidate (a port first, then its bridges) holding an
+    /// address on `address`'s subnet; nil when none does.
+    public static func carrier(reaching address: ClusterLinkIPv4Address,
+                               candidates: [(name: String, addresses: [ClusterLinkInterfaceAddress])]) -> String? {
+        candidates.first { candidate in
+            candidate.addresses.contains { !$0.address.isUnspecified && $0.contains(address) }
+        }?.name
+    }
+
     /// The kernel's interface-name shape: a letter, then letters and digits, at most 15 bytes.
     public static func isInterfaceName(_ text: String) -> Bool {
         let bytes = Array(text.utf8)
@@ -201,15 +210,38 @@ public struct ClusterLinkSystemInterfaceInspector: ClusterLinkInterfaceInspectin
     public static func carrierInterface(forPort port: String) -> String? {
         guard ClusterLinkInterfaceAdmission.isInterfaceName(port), if_nametoindex(port) != 0 else { return nil }
         if !addresses(of: port).0.isEmpty { return port }
-        guard let preferences = SCPreferencesCreate(nil, "darkbloom-link-control" as CFString, nil),
-              let virtual = SCPreferencesGetValue(preferences, "VirtualNetworkInterfaces" as CFString) as? [String: Any],
-              let bridges = virtual["Bridge"] as? [String: Any] else { return nil }
-        for name in bridges.keys.sorted() where ClusterLinkInterfaceAdmission.isInterfaceName(name) {
-            guard let members = bridgeMembers(of: name), members.contains(port), if_nametoindex(name) != 0,
-                  !addresses(of: name).0.isEmpty else { continue }
+        for name in configuredBridges(containing: port) where if_nametoindex(name) != 0 && !addresses(of: name).0.isEmpty {
             return name
         }
         return nil
+    }
+
+    /// The carrier for a Thunderbolt port that reaches `address` (the other
+    /// Mac's link address for a client, this Mac's own for a listener): the
+    /// port itself when one of its addresses is on that subnet, else a
+    /// configured bridge containing the port with such an address. Today's
+    /// second Mac holds only a link-local alias on the port while Internet
+    /// Sharing's subnet sits on the bridge: that resolves to the bridge.
+    /// Falls back to `carrierInterface(forPort:)`, so admission still names
+    /// the refusal when nothing reaches the address.
+    public static func carrierInterface(forPort port: String, reaching address: ClusterLinkIPv4Address) -> String? {
+        guard ClusterLinkInterfaceAdmission.isInterfaceName(port), if_nametoindex(port) != 0 else { return nil }
+        var candidates = [(name: port, addresses: addresses(of: port).0)]
+        for name in configuredBridges(containing: port) where if_nametoindex(name) != 0 {
+            candidates.append((name: name, addresses: addresses(of: name).0))
+        }
+        return ClusterLinkInterfaceAdmission.carrier(reaching: address, candidates: candidates) ?? carrierInterface(forPort: port)
+    }
+
+    /// Bridges in the network preferences whose configured members include
+    /// `port`, by name; read-only.
+    private static func configuredBridges(containing port: String) -> [String] {
+        guard let preferences = SCPreferencesCreate(nil, "darkbloom-link-control" as CFString, nil),
+              let virtual = SCPreferencesGetValue(preferences, "VirtualNetworkInterfaces" as CFString) as? [String: Any],
+              let bridges = virtual["Bridge"] as? [String: Any] else { return [] }
+        return bridges.keys.sorted().filter { name in
+            ClusterLinkInterfaceAdmission.isInterfaceName(name) && bridgeMembers(of: name)?.contains(port) == true
+        }
     }
 
     private static func memberKind(_ name: String, wifi: Set<String>) -> ClusterLinkInterfaceKind {

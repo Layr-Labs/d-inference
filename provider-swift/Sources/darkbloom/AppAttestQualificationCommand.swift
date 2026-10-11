@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
@@ -9,35 +10,103 @@ import ProviderCore
 enum AppAttestQualificationCommand {
     static let argument = "--app-attest-qualification-v1"
     static let environmentKey = "DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION"
+    static let appKitEnvironmentKey = "DARKBLOOM_NATIVE_APPKIT_QUALIFICATION"
 
     enum Failure: String, Error {
         case optInRequired, invalidArguments, loopbackRequired, privateDirectoryRequired
         case invalidTestInput, workerNotReaped, unexpectedReply
-        case incompleteQualification, executableUnavailable
+        case incompleteQualification, executableUnavailable, mainThreadRequired
     }
 
     static func runIfRequested(_ arguments: [String]) async {
         guard arguments.first == argument else { return }
         do {
-            guard ProcessInfo.processInfo.environment[environmentKey] == "1",
+            await execute(try Inputs(arguments))
+        } catch {
+            fail(error)
+        }
+    }
+
+    static func requestsAppKitHost(_ arguments: [String]) -> Bool {
+        arguments.first == argument && ProcessInfo.processInfo.environment[appKitEnvironmentKey] == "1"
+    }
+
+    @MainActor private static var retainedDelegate: QualificationAppDelegate?
+
+    @MainActor static func runHosted(_ arguments: [String]) -> Never {
+        do {
+            let inputs = try Inputs(arguments)
+            guard Thread.isMainThread else { throw Failure.mainThreadRequired }
+            let app = NSApplication.shared
+            let delegate = QualificationAppDelegate(inputs: inputs)
+            retainedDelegate = delegate
+            app.delegate = delegate
+            app.setActivationPolicy(.accessory)
+            app.run()
+            fail(Failure.incompleteQualification)
+        } catch {
+            fail(error)
+        }
+    }
+
+    private struct Inputs: Sendable {
+        let url: String
+        let scope: String
+        let token: String
+        let binaryHash: String
+        let scenario: String
+
+        init(_ arguments: [String]) throws {
+            guard ProcessInfo.processInfo.environment[AppAttestQualificationCommand.environmentKey] == "1",
                   AppAttestWorkerSelection.qualificationCandidateEnabled else { throw Failure.optInRequired }
-            guard arguments.count == 4,
+            guard arguments.count == 4, arguments[0] == AppAttestQualificationCommand.argument,
                   ["worker-recovery", "transport-resumption"].contains(arguments[3]) else { throw Failure.invalidArguments }
-            let url = try coordinatorURL(arguments[1])
+            url = try AppAttestQualificationCommand.coordinatorURL(arguments[1])
             let directory = try PrivateInputs(path: arguments[2])
-            let token = try directory.hexadecimalFile("auth-token")
+            token = try directory.hexadecimalFile("auth-token")
             let expectedHash = try directory.hexadecimalFile("binary-sha256")
-            let identity = try SignedReleaseIdentity.verifyCurrent(expectedBinarySHA256: expectedHash, expectedVersion: ProviderCore.version)
-            try await run(url: url, scope: "native-qualification:\(url):\(directory.path)", token: token,
-                          binaryHash: identity.executableSHA256, scenario: arguments[3])
+            binaryHash = try SignedReleaseIdentity.verifyCurrent(expectedBinarySHA256: expectedHash,
+                expectedVersion: ProviderCore.version).executableSHA256
+            scope = "native-qualification:\(url):\(directory.path)"
+            scenario = arguments[3]
+        }
+    }
+
+    @MainActor private final class QualificationAppDelegate: NSObject, NSApplicationDelegate {
+        let inputs: Inputs
+        private var qualification: Task<Never, Never>?
+
+        init(inputs: Inputs) {
+            self.inputs = inputs
+            super.init()
+        }
+
+        func applicationDidFinishLaunching(_: Notification) {
+            // Unlike ProviderAppDelegate this host never registers APNs or
+            // starts a provider lifecycle. Capture before any async suspension.
+            let diagnostics = AppAttestWorkerRuntimeDiagnostics.capture()
+            AppAttestQualificationCommand.record("appkit_did_finish_launching", fields: ["parent_pid": getpid(), "main_thread": Thread.isMainThread])
+            let inputs = inputs
+            qualification = Task { await AppAttestQualificationCommand.execute(inputs, parentDiagnostics: diagnostics) }
+        }
+    }
+
+    private static func execute(_ inputs: Inputs, parentDiagnostics: AppAttestWorkerRuntimeDiagnostics? = nil) async -> Never {
+        do {
+            try await run(url: inputs.url, scope: inputs.scope, token: inputs.token,
+                binaryHash: inputs.binaryHash, scenario: inputs.scenario, parentDiagnostics: parentDiagnostics)
             _exit(0)
         } catch {
-            let reason = (error as? Failure)?.rawValue
-                ?? (error as? AppAttestWorkerError)?.rawValue
-                ?? String(describing: error)
-            record("qualification_failed", fields: ["reason": reason])
-            _exit(78)
+            fail(error)
         }
+    }
+
+    private static func fail(_ error: Error) -> Never {
+        let reason = (error as? Failure)?.rawValue
+            ?? (error as? AppAttestWorkerError)?.rawValue
+            ?? String(describing: error)
+        record("qualification_failed", fields: ["reason": reason])
+        _exit(78)
     }
 
     static func coordinatorURL(_ value: String) throws -> String {
@@ -49,9 +118,10 @@ enum AppAttestQualificationCommand {
         return value
     }
 
-    private static func run(url: String, scope: String, token: String, binaryHash: String, scenario: String) async throws {
-        let parentDiagnostics = try JSONEncoder().encode(AppAttestWorkerRuntimeDiagnostics.capture())
-        record("parent_runtime_diagnostics", fields: ["snapshot": try JSONSerialization.jsonObject(with: parentDiagnostics)])
+    private static func run(url: String, scope: String, token: String, binaryHash: String, scenario: String,
+                            parentDiagnostics: AppAttestWorkerRuntimeDiagnostics?) async throws {
+        let encodedDiagnostics = try JSONEncoder().encode(parentDiagnostics ?? AppAttestWorkerRuntimeDiagnostics.capture())
+        record("parent_runtime_diagnostics", fields: ["snapshot": try JSONSerialization.jsonObject(with: encodedDiagnostics)])
         let endpoint = NodeKeyPair.generate()
         let hardware = try HardwareDetector.detect()
         let os = ProcessInfo.processInfo.operatingSystemVersion

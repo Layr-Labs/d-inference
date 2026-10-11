@@ -41,6 +41,26 @@ private final class QualificationBundleAnchor {}
         }
     }
 
+    @Test func appKitHostPreservesPreflightBeforeApplicationStartup() throws {
+        let arguments = ["--app-attest-qualification-v1", "ws://127.0.0.1:8080/ws/provider", "/must-not-read", "worker-recovery"]
+        let absent = try run(arguments, environment: ["DARKBLOOM_NATIVE_APPKIT_QUALIFICATION": "1"])
+        #expect(absent.status == 78)
+        #expect(absent.output.contains("optInRequired"))
+        var environment = enabled
+        environment["DARKBLOOM_NATIVE_APPKIT_QUALIFICATION"] = "1"
+        let missing = try run(arguments, environment: environment)
+        #expect(missing.status == 78)
+        #expect(missing.output.contains("privateDirectoryRequired"))
+        #expect(!missing.output.contains("appkit_did_finish_launching"))
+        #expect(!missing.output.contains("parent_runtime_diagnostics"))
+        var remote = arguments
+        remote[1] = "wss://api.darkbloom.dev/ws/provider"
+        let rejected = try run(remote, environment: environment)
+        #expect(rejected.status == 78)
+        #expect(rejected.output.contains("loopbackRequired"))
+        #expect(!rejected.output.contains("appkit_did_finish_launching"))
+    }
+
     private var enabled: [String: String] {
         ["DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION": "1", "DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION": "1"]
     }

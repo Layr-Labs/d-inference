@@ -143,7 +143,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 probeFailingForSeconds: Int(now - (failingSince ?? now)))
             switch decision {
             case .ready:
-                if lastLogged != nil { log("cluster link \(device) is ready") }
+                log("cluster link \(device) is ready" + (lastLogged == nil ? "" : " after waiting"))
                 return true
             case .proceedUnverified:
                 log("cluster link readings keep failing; starting the member and letting its own launch check decide")

@@ -288,4 +288,62 @@ struct PrefixCacheContractTests {
         #expect(cost.kept([], limit: .max, maximum: 32).isEmpty)
         #expect(cost.bytes(deepest: Int.max / 2, frontiers: 1) == Int.max)
     }
+
+    /// The session captures only the frontiers after the prefix it reuses,
+    /// and nothing on a repeat of the whole prompt; the reservation charges
+    /// that, not the whole prompt as if cold. Otherwise a phantom capture
+    /// charge makes kept entries (possibly the one this request reuses) give
+    /// way under memory pressure for a capture that never happens.
+    @Test func aRequestIsChargedOnlyWhatItCapturesAfterThePrefixThisRankHolds() {
+        let gib = 1 << 30
+        let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 8 * gib)
+        let prompt = Array(0..<5_120), scope = "plan|artifact|chunk=512"
+        // Cold and unmeasured: the budget.
+        #expect(cache.captureLimit(scope: scope, tokens: prompt, chunkSize: 512) == 8 * gib)
+        cache.insert(scope: scope, tokens: prompt, states: [state(4_608), state(5_119)])
+        // A repeat of the whole prompt reuses its split frontier and captures nothing, measured or not.
+        #expect(cache.captureLimit(scope: scope, tokens: prompt, chunkSize: 512) == 0)
+        let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: 49_152, recurrentBytesPerFrontier: 113_000_000,
+            historyBytesPerToken: 10_244)
+        cache.record(cost)
+        #expect(cache.captureLimit(scope: scope, tokens: prompt, chunkSize: 512) == 0)
+        // Another scope holds nothing for it: the whole plan (9 grid frontiers + the split one).
+        #expect(cache.captureLimit(scope: "other", tokens: prompt, chunkSize: 512)
+            == cost.bytes(deepest: 5_119, frontiers: 10))
+        // A longer prompt that extends it reuses 5,119: the grid frontiers 5,120 ... 9,728 after it
+        // (10) and its own split frontier; its attention copy is still the whole prompt's.
+        let longer = prompt + Array(20_000..<25_120)
+        #expect(cache.captureLimit(scope: scope, tokens: longer, chunkSize: 512)
+            == cost.bytes(deepest: 10_239, frontiers: 11))
+        // A prompt that differs before the held frontiers is cold.
+        var changed = longer; changed[100] = 7
+        #expect(cache.captureLimit(scope: scope, tokens: changed, chunkSize: 512)
+            == cache.captureLimit(promptCount: changed.count, chunkSize: 512))
+        // Within the budget and the entry limit as before.
+        cache.setBudget(gib)
+        #expect(cache.captureLimit(scope: scope, tokens: longer, chunkSize: 512) == gib)
+        #expect(cache.captureLimit(scope: scope, tokens: prompt, chunkSize: 512) == 0)
+        #expect(QwenStagePrefixCache(enabled: false).captureLimit(scope: scope, tokens: prompt, chunkSize: 512) == 0)
+    }
+
+    /// Models stay loaded until unloaded, so the budget follows the room in
+    /// both directions: a load during a memory dip does not keep the cache
+    /// small (and prefix reuse off on the pair) for as long as it stays loaded.
+    @Test func theIdleRefreshFollowsTheRoomInBothDirections() {
+        let mib = 1 << 20
+        // Loaded during a dip: 256 MiB.
+        let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 256 * mib)
+        #expect(cache.refreshBudget(roomBytes: 4_096 * mib) && cache.budgetBytes == 2_048 * mib)
+        // Drift within one 256 MiB step changes nothing.
+        #expect(!cache.refreshBudget(roomBytes: 4_096 * mib + 100 * mib) && cache.budgetBytes == 2_048 * mib)
+        #expect(cache.refreshBudget(roomBytes: 64 * 1_024 * mib)
+            && cache.budgetBytes == QwenStagePrefixCache.maximumBudgetBytes)
+        // Lowered with the room: entries beyond the new budget go at once.
+        cache.insert(scope: "s", tokens: Array(0..<100),
+            states: [sized(50, own: 300 * mib), sized(99, own: 300 * mib)], sharedBytes: 100 * mib)
+        #expect(cache.bytesInUse == 700 * mib)
+        #expect(cache.refreshBudget(roomBytes: 1_024 * mib) && cache.budgetBytes == 512 * mib)
+        #expect(cache.bytesInUse <= 512 * mib && cache.heldFrontiers == [99])
+        #expect(cache.refreshBudget(roomBytes: 0) && cache.budgetBytes == 0 && cache.count == 0 && cache.bytesInUse == 0)
+    }
 }

@@ -174,6 +174,20 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         }
     }
 
+    // VERIFY STUB (failing-first run only): old behaviour, the held prefix is ignored.
+    func captureLimit(scope: String, tokens: [Int], chunkSize: Int) -> Int {
+        captureLimit(promptCount: tokens.count, chunkSize: chunkSize)
+    }
+
+    // VERIFY STUB (failing-first run only): old behaviour, lowered and never raised.
+    @discardableResult func refreshBudget(roomBytes: Int) -> Bool {
+        lock.withLock {
+            let target = min(budget, Self.budget(roomBytes: roomBytes))
+            guard target != budget else { return false }
+            budget = target; evictLocked(reserving: 0); return true
+        }
+    }
+
     /// The capture limit the runtime charged in the current reservation,
     /// handed to that request's stage session once (one request at a time a
     /// rank). Nil when no reservation set one (unbounded: references, tests).

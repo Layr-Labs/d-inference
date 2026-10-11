@@ -613,6 +613,9 @@ public actor ProviderLoop {
     internal var clusterPairServingEpoch: UUID?
     internal var clusterPairServingStopped = false
     internal var clusterPairServingForming = false
+    /// The follower member's link serving of its committed starts; retained
+    /// here because the session control holds its serving host weakly.
+    internal var clusterPairFollower: DistributedMemberLinkFollower?
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the

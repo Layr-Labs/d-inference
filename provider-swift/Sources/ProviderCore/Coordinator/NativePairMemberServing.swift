@@ -30,6 +30,10 @@ public struct NativePairMemberServingStart: @unchecked Sendable {
     public let endpoint: any ClusterWorkerEndpoint
     /// The current grant's end on this Mac's uptime clock when serving began.
     public let leaseDeadlineUptimeNanoseconds: UInt64
+    /// The owner's combined bootstrap, whose mesh rounds wait for the serving
+    /// host: the leader attaches the pair's mesh relay, the follower the link
+    /// proxy to it. Nil for the prelude-only profile.
+    public var mesh: ClusterOwnerCommittedBootstrap? = nil
 
     public var rank: Int { start.rank }
     public var membershipEpoch: UUID { start.common.epoch }

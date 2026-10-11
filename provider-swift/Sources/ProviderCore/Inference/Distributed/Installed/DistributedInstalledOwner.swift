@@ -2,19 +2,38 @@ import Foundation
 import Darwin
 import DarkbloomClusterProcess
 import DarkbloomClusterRemote
+import DarkbloomClusterSecurity
 
 /// Blocking entry for the fixed authenticated `cluster worker-owner --stdio`
 /// command. Both leader-local and follower owners load their own saved setup.
 /// The parent does not hold this owner's native-device exclusion.
 public enum DistributedInstalledOwner {
     /// Whether `cluster worker-owner --stdio` can honour a start the
-    /// coordinator committed for one member. Not in this build: the entry
-    /// below serves the combined profile of a session the leader launches
-    /// (its start minted by the leader from the installed setup), not a
-    /// coordinator-committed start (S10). A member therefore declines
-    /// preparation rather than commit to a start whose owner would be
-    /// refused, which would hold both devices until the members disconnect.
-    static let servesCommittedNativeStart = false
+    /// coordinator committed for one member (S10). It can: on a setup saved
+    /// for coordinator pairing the owner admits the committed start that its
+    /// installed approval covers (`memberAuthorizer`), runs the combined
+    /// profile, and its worker publishes readiness. A member whose setup
+    /// cannot reach its follower still declines preparation
+    /// (`NativePairMemberInstallation`), so nothing is committed that this
+    /// Mac could not start and later release.
+    static let servesCommittedNativeStart = true
+
+    /// The owner's own admission of a start the coordinator committed to this
+    /// member: its own rank, and every digest, limit and generation of the
+    /// approval this Mac installed (the same check the member's session made
+    /// before it prepared). The epoch and the owner, lease and launch
+    /// identifiers are the coordinator's.
+    static func memberAuthorizer(plan: DistributedInstalledPlan, attachment: ClusterNativeMemberAttachment)
+        throws -> @Sendable (ClusterNativeAuthorizationStart) throws -> Void {
+        let policy = try NativePairMemberPolicy(attachment.policyBytes), rank = plan.configuration.localRank
+        return { start in
+            guard start.rank == rank else {
+                throw ClusterConfigurationError.invalid("The committed native start names another rank")
+            }
+            do { try policy.require(start) }
+            catch { throw ClusterConfigurationError.invalid("The committed native start differs from this Mac's installed approval") }
+        }
+    }
 
     /// `providerInstanceLock` is the ordinary provider's instance lock file.
     /// `linkReady` runs immediately before the native launch with this Mac's
@@ -48,9 +67,12 @@ public enum DistributedInstalledOwner {
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
             bootstrapProfile: plan.bootstrap.ownerProfile,
             // The committed native start of the combined profile is admitted
-            // only when it is the one this Mac derives from its own setup.
+            // only when it is the one this Mac derives from its own setup, or,
+            // on a setup saved for coordinator pairing, when its installed
+            // approval covers the start the coordinator committed.
             authorizeNativeStart: plan.bootstrap.ownerProfile?.carriesNativeStart == true
-                ? DistributedInstalledNativeStart.authorizer(plan: plan) : nil,
+                ? try plan.configuration.nativeMember.map { try memberAuthorizer(plan: plan, attachment: $0) }
+                    ?? DistributedInstalledNativeStart.authorizer(plan: plan) : nil,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
             }, native: { binding, deadline, attachment in

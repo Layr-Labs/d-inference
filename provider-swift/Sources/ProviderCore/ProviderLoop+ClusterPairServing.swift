@@ -1,5 +1,7 @@
 import Foundation
 import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
+import DarkbloomClusterRemote
 
 // The leader member serving the pair's committed starts (S10).
 //
@@ -42,17 +44,34 @@ public struct ClusterPairServingContext: Sendable {
     /// The production owner: `ClusterWorkerPair` over the session's endpoint
     /// (rank 0) and the follower's (`follower`: the link endpoint, S08), with
     /// keep-warm on, under the pipe owner the installed session uses.
+    ///
+    /// Under the combined profile both owners' mesh rounds meet in one
+    /// mesh-only relay here: rank 0's from this Mac's owner (its committed
+    /// bootstrap's mesh rounds are attached to it) and rank 1's from the
+    /// follower's owner over the link (`follower` opens the link endpoint with
+    /// it). Each owner's native key prelude already went through its own
+    /// member session and the coordinator.
     public static func pairOwner(
         profile: DistributedResidentExecutionProfile, chunkTokens: Int, startupAllowanceNanoseconds: UInt64,
         timing: ClusterWorkerPairTiming = .standard,
-        follower: @escaping @Sendable (NativePairMemberServingStart) throws -> any ClusterWorkerEndpoint
+        follower: @escaping @Sendable (NativePairMemberServingStart, ClusterOwnerBootstrapRelay?) throws -> any ClusterWorkerEndpoint
     ) -> @Sendable (NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner {
         { start in
             guard start.rank == 0 else { throw ClusterPairSlotError.notServing("only the leader builds the pair") }
-            let peer = try follower(start)
+            let now = DispatchTime.now().uptimeNanoseconds
+            var relay: ClusterOwnerBootstrapRelay?
+            if let mesh = start.mesh {
+                let value = try ClusterOwnerBootstrapRelay(identity: start.identity,
+                    executionPlanSHA256: start.executionPlanSHA256, profile: .mesh2,
+                    deadlineUptimeNanoseconds: min(mesh.deadlineUptimeNanoseconds, now + ClusterWorkerLease.maximumNanoseconds))
+                try mesh.attachMesh(value)
+                relay = value
+            }
+            let peer: any ClusterWorkerEndpoint
+            do { peer = try follower(start, relay) } catch { relay?.cancel(); throw error }
             // A failed wait for readiness already asked both ranks to clean up.
             let pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
-                startupDeadline: DispatchTime.now().uptimeNanoseconds + startupAllowanceNanoseconds,
+                startupDeadline: now + startupAllowanceNanoseconds,
                 timing: timing, keepWarm: .standard)
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens) }
             catch { Task { await pair.shutdown() }; throw error }
@@ -72,6 +91,19 @@ extension ProviderLoop: NativePairMemberServingHost {
         }
         clusterPairServing = context
         control.servingHost = self
+    }
+
+    /// Installs the follower's serving of its committed starts over the link
+    /// before `run()`, after the member's pair installation. Only a rank-1
+    /// installation under the combined profile serves this way.
+    func installClusterPairFollower(_ follower: DistributedMemberLinkFollower) throws {
+        guard isClusterMember, coordinatorClient == nil, clusterPairServing == nil, clusterPairFollower == nil,
+              let control = nativePairMemberControl, control.installation.rank == 1,
+              control.installation.bootstrap == .preludeThenMesh else {
+            throw ClusterPairSlotError.notServing("no follower pair installation served over the link")
+        }
+        clusterPairFollower = follower
+        control.servingHost = follower
     }
 
     public func serveCommittedStart(_ start: NativePairMemberServingStart) async throws {

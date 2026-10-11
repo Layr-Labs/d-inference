@@ -6,6 +6,11 @@ extension Start {
     /// Shared by the follower-only command and the local leader. Pins the
     /// attested metallib without requireMetal, a container, or the solo device gate.
     func makeClusterMemberLoop(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false) async throws -> ProviderLoop {
+        try await makeClusterMemberLoopAndPreparation(reference: reference, stopOnDisconnect: stopOnDisconnect).loop
+    }
+
+    func makeClusterMemberLoopAndPreparation(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false)
+        async throws -> (loop: ProviderLoop, prepared: ClusterMemberPreparation) {
         let prepared = try await Task.detached(priority: .userInitiated) {
             try ClusterMemberPreparation.prepare(reference: reference)
         }.value
@@ -52,7 +57,7 @@ extension Start {
                 throw ClusterConfigurationError.invalid("This Mac cannot register the saved pair approval: it needs its attestation signing key and the approved chip and model")
             }
         }
-        return loop
+        return (loop, prepared)
     }
 
     func runClusterMember() async throws {
@@ -63,7 +68,15 @@ extension Start {
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
-        let loop = try await makeClusterMemberLoop(reference: factory.reference)
+        let (loop, prepared) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
+        // A setup saved for coordinator pairing over the link serves the
+        // pair's committed starts (S10): the leader hosts the link listener
+        // and publishes the pair slot, the follower serves its rank over it.
+        let pairLink = try await prepared.installPairServing(on: loop) { line in
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            FileHandle.standardOutput.write(Data("\(stamp) cluster-member follower: \(line)\n".utf8))
+        }
+        defer { pairLink?.stop() }
         let signals = try DistributedStartSignals()
         defer { signals.close() }
         let task = Task { try await loop.run() }

@@ -18,6 +18,10 @@ final class NativePairMemberSession: @unchecked Sendable {
     /// connection to come back, matching the coordinator's grace; its lease
     /// ends it sooner if that comes first.
     static let disconnectGraceNanoseconds: UInt64 = 90_000_000_000
+    /// The combined bootstrap (prelude through the coordinator, then the mesh
+    /// rounds through the link) completes within this of the owner's launch,
+    /// or the owner is cleaned up and the session releases.
+    static let bootstrapAllowanceNanoseconds: UInt64 = 30_000_000_000
     let start: ClusterNativeAuthorizationStart
     let epoch: String
     let generation: UInt64
@@ -220,21 +224,37 @@ final class NativePairMemberSession: @unchecked Sendable {
             // The owner is opened with one rank-lease grant, never past the
             // coordinator's current one; its endpoint renews it until this
             // session stops it, which the coordinator's lease decides.
-            let firstGrant = min(lifetimeDeadline, DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.maximumNanoseconds)
-            let relay = try ClusterOwnerNativeKeyRelay(start: start, deadlineUptimeNanoseconds: firstGrant,
-                exchange: { [weak self] round, bytes in
-                    guard let self else { throw NativePairMemberError.inactive }; return try self.exchange(round, bytes)
-                }, cancel: { [weak self] in self?.ownerInvalidated() })
+            let now = DispatchTime.now().uptimeNanoseconds
+            let firstGrant = min(lifetimeDeadline, now + ClusterWorkerLease.maximumNanoseconds)
+            let prelude: @Sendable (UInt64, Data) throws -> Data = { [weak self] round, bytes in
+                guard let self else { throw NativePairMemberError.inactive }; return try self.exchange(round, bytes)
+            }
+            // The combined profile (S10): the prelude through this session, the
+            // mesh rounds through the serving host, all before the bootstrap
+            // bound. The prelude alone publishes no readiness (fixtures).
+            var bootstrap: ClusterOwnerCommittedBootstrap?
+            var relay: ClusterOwnerNativeKeyRelay?
+            switch installation.bootstrap {
+            case .preludeThenMesh:
+                bootstrap = try ClusterOwnerCommittedBootstrap(start: start, identity: installation.sessionIdentity(start),
+                    executionPlanSHA256: installation.executionPlanSHA256,
+                    deadlineUptimeNanoseconds: min(firstGrant, now + Self.bootstrapAllowanceNanoseconds),
+                    prelude: prelude, invalidated: { [weak self] in self?.ownerInvalidated() })
+            case .nativeKeyPrelude:
+                relay = try ClusterOwnerNativeKeyRelay(start: start, deadlineUptimeNanoseconds: firstGrant,
+                    exchange: prelude, cancel: { [weak self] in self?.ownerInvalidated() })
+            }
             // The committed obligation is retained even if launch throws or a
             // concurrent cancel wins between this check and actual Process.run.
             condition.lock(); let allowed = !stopped && committed; condition.unlock()
             guard allowed else { throw NativePairMemberError.inactive }
-            let created = try installation.launch(start: start, until: firstGrant, relay: relay)
+            let created = try bootstrap.map { try installation.launch(start: start, until: firstGrant, bootstrap: $0) }
+                ?? installation.launch(start: start, until: firstGrant, relay: relay!)
             condition.lock(); endpoint = created; launched = true; let cancelled = stopped
             if !cancelled, servingHost != nil { serving = true }
             condition.unlock()
             if cancelled { created.requestNativeCleanup() }
-            else if let host = servingHost { beginServing(host, endpoint: created) }
+            else if let host = servingHost { beginServing(host, endpoint: created, mesh: bootstrap) }
             // No fixed lifetime: wait in slices, each up to the current
             // grant's cleanup bound, which every renewal moves on.
             while true {
@@ -265,10 +285,11 @@ final class NativePairMemberSession: @unchecked Sendable {
     }
     /// Hands the launched owner to the serving host. A host that cannot serve
     /// ends the session: cancellation, native cleanup, release.
-    private func beginServing(_ host: any NativePairMemberServingHost, endpoint: ClusterRemoteWorkerEndpoint) {
+    private func beginServing(_ host: any NativePairMemberServingHost, endpoint: ClusterRemoteWorkerEndpoint,
+                              mesh: ClusterOwnerCommittedBootstrap?) {
         let value = NativePairMemberServingStart(start: start, identity: installation.sessionIdentity(start),
             profile: installation.profile, executionPlanSHA256: installation.executionPlanSHA256,
-            endpoint: endpoint, leaseDeadlineUptimeNanoseconds: lifetimeDeadline)
+            endpoint: endpoint, leaseDeadlineUptimeNanoseconds: lifetimeDeadline, mesh: mesh)
         Task.detached { [weak self] in
             do { try await host.serveCommittedStart(value) } catch { self?.cancel(notify: true) }
         }

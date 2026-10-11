@@ -1,7 +1,21 @@
 import Foundation
 import DarkbloomClusterProcess
+import DarkbloomClusterRemote
 import MLXLMCommon
 import ProviderCoreFoundation
+
+/// What a member's pair serving keeps open for the life of its process: the
+/// leader's link listener, or the follower's link client and server.
+public final class ClusterMemberPairLink: @unchecked Sendable {
+    let leader: DistributedInstalledLinkLeader?
+    let follower: DistributedMemberLinkFollower?
+    init(leader: DistributedInstalledLinkLeader?, follower: DistributedMemberLinkFollower?) {
+        self.leader = leader; self.follower = follower
+    }
+    /// After the loop stopped: fences what the follower serves and waits
+    /// (bounded) for its release, then closes the edge.
+    public func stop() { follower?.stop(); leader?.stop() }
+}
 
 extension ClusterMemberPreparation {
     /// The leader's serving context for its pair's committed starts (S10),
@@ -11,7 +25,7 @@ extension ClusterMemberPreparation {
     /// and the follower's. `follower` supplies rank 1's endpoint for one start
     /// (the link endpoint, S08). Only the plan's rank 0 serves.
     public func pairServingContext(
-        follower: @escaping @Sendable (NativePairMemberServingStart) throws -> any ClusterWorkerEndpoint
+        follower: @escaping @Sendable (NativePairMemberServingStart, ClusterOwnerBootstrapRelay?) throws -> any ClusterWorkerEndpoint
     ) async throws -> ClusterPairServingContext {
         let plan = validation.plan, installed = validation.model
         guard plan.configuration.localRank == 0 else {
@@ -38,5 +52,46 @@ extension ClusterMemberPreparation {
             makeOwner: ClusterPairServingContext.pairOwner(profile: profile, chunkTokens: plan.configuration.chunkTokens,
                 startupAllowanceNanoseconds: plan.budgets.startupAllowanceNanoseconds, timing: plan.budgets.pairTiming,
                 follower: follower))
+    }
+
+    /// Installs this member's serving of its pair's committed starts (S10)
+    /// on a member loop that has its pair installation, before `run()`. Only
+    /// a setup saved for coordinator pairing whose follower is reached over
+    /// the link control channel serves; any other returns nil. The leader
+    /// hosts the link listener and publishes the pair slot; the follower dials
+    /// the leader and serves its own owner over the link.
+    public func installPairServing(on loop: ProviderLoop, followerEvents: @escaping @Sendable (String) -> Void = { _ in })
+        async throws -> ClusterMemberPairLink? {
+        let configuration = validation.plan.configuration
+        guard configuration.nativeMember != nil, configuration.linkControl != nil else { return nil }
+        try requireUnchanged()
+        if configuration.localRank == 0 {
+            let link = try DistributedInstalledLinkLeader(configuration: configuration)
+            do {
+                let clusterID = configuration.clusterID
+                let context = try await pairServingContext { start, relay in
+                    // The follower member dials in when it starts; a start
+                    // never waits long on one that is not there.
+                    try link.waitForFollower(until: DispatchTime.now().uptimeNanoseconds + 10_000_000_000)
+                    return try link.memberEndpoint(start: start, clusterID: clusterID, relay: relay)
+                }
+                try await loop.installClusterPairServing(context)
+            } catch { link.stop(); throw error }
+            return .init(leader: link, follower: nil)
+        }
+        let follower = try DistributedMemberLinkFollower(configuration: configuration) { event in
+            switch event {
+            case .connected: followerEvents("link connected")
+            case .disconnected: followerEvents("link disconnected")
+            case .opened: followerEvents("leader opened a session")
+            case .refused(let reason): followerEvents("session refused: \(reason)")
+            case .fenced(let reason): followerEvents("session fenced: \(reason)")
+            case .cleanup: followerEvents("session cleanup observed")
+            case .released(let cleanly): followerEvents("session released " + (cleanly ? "cleanly" : "without its owner's proof"))
+            }
+        }
+        try await loop.installClusterPairFollower(follower)
+        follower.start()
+        return .init(leader: nil, follower: follower)
     }
 }

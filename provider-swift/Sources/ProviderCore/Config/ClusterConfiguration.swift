@@ -112,8 +112,9 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         try ClusterGenerationSelection.requireSupport(for: selectedGenerationMode, peers: peers, capability: capability)
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {
+            // A coordinator-paired setup (`nativeMember`) may carry it too: the
+            // members of a committed start reach each other over the link (S10).
             try require(trust == nil, "A setup reached over the link control channel has no SSH trust")
-            try require(nativeMember == nil, "A link control setup is not a coordinator-paired setup")
             try linkControl.validate()
         } else {
             guard let trust else { throw ClusterConfigurationError.invalid("Missing existing SSH trust inputs") }

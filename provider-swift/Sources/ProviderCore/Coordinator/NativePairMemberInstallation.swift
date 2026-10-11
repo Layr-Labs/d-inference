@@ -22,16 +22,27 @@ public struct NativePairMemberInstallation: Sendable {
     /// committed. When it cannot, the member declines preparation, so nothing
     /// is ever committed that this Mac could not start and later release.
     let ownerServesCommittedStart: Bool
+    /// How the committed owner's native ranks meet. The prelude alone proves
+    /// the key exchange and publishes no readiness (fixtures); a setup whose
+    /// follower is reached over the link control channel runs the combined
+    /// profile: the prelude through the coordinator, then the mesh rounds
+    /// through the serving host (S10).
+    let bootstrap: Bootstrap
+    public enum Bootstrap: Sendable, Equatable { case nativeKeyPrelude, preludeThenMesh }
 
+    /// `meshOverLink`: the saved setup reaches the follower over the link
+    /// control channel, the only way a committed start can serve in this
+    /// build. Without it the member declines preparation.
     public init(expectedCoordinatorPolicy: Data, rank: Int, clusterID: String,
                 identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
                 installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
-                metallib: URL, resourceLibrary: URL, chip: String) throws {
+                metallib: URL, resourceLibrary: URL, chip: String, meshOverLink: Bool = false) throws {
         try self.init(expectedCoordinatorPolicy: expectedCoordinatorPolicy, rank: rank, clusterID: clusterID,
             identity: identity, profile: profile, installedOwner: installedOwner, ownerSHA256: ownerSHA256,
             nativeExecutable: nativeExecutable, metallib: metallib, resourceLibrary: resourceLibrary,
             chip: chip, leaseDirectory: ClusterUserPaths().deviceDirectory,
-            ownerServesCommittedStart: DistributedInstalledOwner.servesCommittedNativeStart)
+            ownerServesCommittedStart: DistributedInstalledOwner.servesCommittedNativeStart && meshOverLink,
+            bootstrap: meshOverLink ? .preludeThenMesh : .nativeKeyPrelude)
     }
     // Same existing canonical-style private directory checks; only fixtures
     // select a temporary scope and their own owner. Production uses
@@ -40,7 +51,7 @@ public struct NativePairMemberInstallation: Sendable {
          identity: ClusterWorkerIdentity, profile: ClusterWorkerProfile,
          installedOwner: URL, ownerSHA256: String, nativeExecutable: URL,
          metallib: URL, resourceLibrary: URL, chip: String, leaseDirectory: URL,
-         ownerServesCommittedStart: Bool = true) throws {
+         ownerServesCommittedStart: Bool = true, bootstrap: Bootstrap = .nativeKeyPrelude) throws {
         let policy = try NativePairMemberPolicy(expectedCoordinatorPolicy)
         guard (0...1).contains(rank), identity.peers.count == 2,
               ClusterConfigurationSyntax.hash(ownerSHA256), policy.chips.contains(chip),
@@ -52,7 +63,7 @@ public struct NativePairMemberInstallation: Sendable {
         self.identity = identity; self.profile = profile
         localOwner = try .init(installedDarkbloom: installedOwner); self.ownerSHA256 = ownerSHA256
         artifacts = [nativeExecutable, metallib, resourceLibrary]; self.chip = chip; self.leaseDirectory = leaseDirectory
-        self.ownerServesCommittedStart = ownerServesCommittedStart
+        self.ownerServesCommittedStart = ownerServesCommittedStart; self.bootstrap = bootstrap
     }
     /// The claim this member registers. Its `policySHA256` is the digest of
     /// exactly the policy bytes a prepare frame must carry.
@@ -84,6 +95,15 @@ public struct NativePairMemberInstallation: Sendable {
         try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
             expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
             executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay)
+    }
+    /// The combined profile: the owner's open carries the committed start,
+    /// its prelude goes through the session and its mesh rounds wherever the
+    /// serving host attaches them.
+    func launch(start: ClusterNativeAuthorizationStart, until: UInt64,
+                bootstrap: ClusterOwnerCommittedBootstrap) throws -> ClusterRemoteWorkerEndpoint {
+        try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
+            expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
+            executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, bootstrapRelay: bootstrap)
     }
     /// The installed worker identity under the start's membership epoch.
     func sessionIdentity(_ start: ClusterNativeAuthorizationStart) -> ClusterWorkerIdentity {

@@ -48,6 +48,9 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
+  "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
+  "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
+  "$task_sources/Coordinator/NativePairMemberServing.swift" "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \

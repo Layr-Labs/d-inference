@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import DarkbloomClusterSecurity
 import Foundation
 
@@ -114,8 +115,7 @@ public enum ClusterLinkPairing {
         var peer: ClusterLinkControlPeer?
         var commit: ClusterPairingStore.Commit?
         var result: Swift.Result<Result, ClusterPairingError>?
-        var offerTokens = ClusterPairingPolicy.offerBurst
-        var offerRefill = DispatchTime.now().uptimeNanoseconds
+        var offers = ClusterPairingOfferBucket()
         var askedPerson = false
 
         init(options: Options, participant: ClusterPairingParticipant, hooks: ClusterPairingHooks, store: ClusterPairingStore,
@@ -243,12 +243,7 @@ public enum ClusterLinkPairing {
             do { try store.checkGate() } catch let ClusterPairingError.lockedOut(until) {
                 refuse(.lockedOut(untilEpochSeconds: until), retryAfter: until); return
             } catch { refuse(.busy); return }
-            let now = DispatchTime.now().uptimeNanoseconds
-            offerTokens = min(ClusterPairingPolicy.offerBurst,
-                offerTokens + Double(now - offerRefill) / 1e9 / ClusterPairingPolicy.offerIntervalSeconds)
-            offerRefill = now
-            guard offerTokens >= 1 else { refuse(.rateLimited); return }
-            offerTokens -= 1
+            guard offers.allow(nowNanoseconds: DispatchTime.now().uptimeNanoseconds) else { refuse(.rateLimited); return }
             do {
                 session = try ClusterPairingSession(role: .listener, participant: participant, hooks: hooks)
                 store.audit("offer_received", ["peer_pin": String((message.identityKey.map(ClusterPairingPin.of) ?? "").prefix(16))])
@@ -325,5 +320,31 @@ public enum ClusterLinkPairing {
             result = value
             finished.signal()
         }
+    }
+}
+
+extension ClusterLinkPairing {
+    /// The link interface to pair over when none is named: the one interface
+    /// with IPv4 that the Thunderbolt-only policy admits (and, for a
+    /// connector, whose subnet holds the listener's address). Nil when there
+    /// is none or more than one; the command then asks for `--interface`.
+    public static func automaticInterface(reaching peer: ClusterLinkIPv4Address? = nil,
+                                          inspector: any ClusterLinkInterfaceInspecting = ClusterLinkSystemInterfaceInspector()) -> String? {
+        var names = Set<String>()
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            if let address = entry.pointee.ifa_addr, address.pointee.sa_family == sa_family_t(AF_INET) {
+                names.insert(String(cString: entry.pointee.ifa_name))
+            }
+            cursor = entry.pointee.ifa_next
+        }
+        let admitted = names.sorted().filter { name in
+            (try? ClusterLinkInterfaceAdmission.select(interface: name, localAddress: nil, peerAddress: peer,
+                                                       policy: .thunderboltOnly, inspector: inspector)) != nil
+        }
+        return admitted.count == 1 ? admitted[0] : nil
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import DarkbloomClusterProcess
+import DarkbloomClusterSecurity
 import ProviderCoreFoundation
 
 /// Validates this Mac's installed setup without retaining a device lease. The
@@ -39,6 +40,18 @@ public struct ClusterMemberPreparation: Sendable {
 
     public func requireUnchanged() throws { try validation.requireUnchanged() }
 
+    /// DEBUG builds only: a harness that shuttles the members' public roster
+    /// values by hand (`darkbloom cluster member-identity`) may skip the
+    /// pairing check with `DARKBLOOM_DEBUG_ROSTER_UNPAIRED=1`. A release build
+    /// always requires the pairing.
+    static var rosterWithoutPairingAllowed: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_ROSTER_UNPAIRED"] == "1"
+        #else
+        return false
+        #endif
+    }
+
     /// Nil unless the saved setup carries a pair approval. Built only from
     /// this Mac's verified installation: the approval must be unexpired and
     /// cover this chip, and the owner, native executable, metallib and
@@ -63,6 +76,18 @@ public struct ClusterMemberPreparation: Sendable {
         if attachment.isRoster, let saved = attachment.roster, let pins = attachment.memberPins {
             guard let device else { throw ClusterConfigurationError.invalid("A roster registration needs this Mac's device profile") }
             let configuration = plan.configuration
+            // The roster's other members must be the keys this Mac pinned in the
+            // pairing ceremony (S17): a setup file alone never adds trust.
+            if !Self.rosterWithoutPairingAllowed {
+                guard pins.indices.contains(configuration.localRank) else {
+                    throw ClusterConfigurationError.invalid("The saved roster pins do not name this Mac's rank")
+                }
+                do {
+                    try ClusterPairingRosterCheck.verify(roster: saved, localPin: pins[configuration.localRank], store: .default())
+                } catch {
+                    throw ClusterConfigurationError.invalid("The saved roster is not backed by this Mac's pairing: \(error)")
+                }
+            }
             do {
                 roster = try NativePairMemberRoster(clusterID: configuration.clusterID, rank: configuration.localRank,
                     roster: saved, rankPins: pins, policyBytes: policy.bytes, model: policy.model,

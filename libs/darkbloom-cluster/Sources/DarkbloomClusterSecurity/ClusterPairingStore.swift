@@ -387,3 +387,19 @@ public final class ClusterPairingStore: @unchecked Sendable {
         return result
     }
 }
+
+extension ClusterPairingParticipant {
+    /// A participant whose roster generation and cluster label come from
+    /// this Mac's earlier pairing with the same peer, if any: re-pairing keeps
+    /// the label and raises the generation. `clusterID` overrides the label.
+    public static func storeBacked(identity: any ClusterPairingIdentity, name: String, interface: String,
+                                   attestation: @escaping @Sendable (Data) throws -> Data, store: ClusterPairingStore,
+                                   clusterID: String? = nil) -> ClusterPairingParticipant {
+        ClusterPairingParticipant(identity: identity, name: name, interface: interface, attestation: attestation,
+            knownGeneration: { peerPin in ((try? store.load())?.pairing(peerPin: peerPin)?.roster.generation) ?? 0 },
+            clusterLabel: { localPin, peerPin in
+                clusterID ?? ((try? store.load())?.pairing(peerPin: peerPin)?.clusterID)
+                    ?? ClusterPairingLabel.derived(pins: [localPin, peerPin])
+            })
+    }
+}

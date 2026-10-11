@@ -376,3 +376,24 @@ enum ClusterPairingDerivation {
         for shift in stride(from: 56, through: 0, by: -8) { data.append(UInt8(truncatingIfNeeded: value >> UInt64(shift))) }
     }
 }
+
+/// The listener's rate limit on new offers: a token bucket on the monotonic
+/// clock, `offerBurst` at once and one more every `offerIntervalSeconds` (the
+/// owner's oMLX `pair_request_rate_limiter`, per link instead of per address).
+public struct ClusterPairingOfferBucket: Sendable, Equatable {
+    private var tokens = ClusterPairingPolicy.offerBurst
+    private var last: UInt64?
+
+    public init() {}
+
+    public mutating func allow(nowNanoseconds: UInt64) -> Bool {
+        if let last, nowNanoseconds > last {
+            tokens = min(ClusterPairingPolicy.offerBurst,
+                tokens + Double(nowNanoseconds - last) / 1e9 / ClusterPairingPolicy.offerIntervalSeconds)
+        }
+        last = max(last ?? 0, nowNanoseconds)
+        guard tokens >= 1 else { return false }
+        tokens -= 1
+        return true
+    }
+}

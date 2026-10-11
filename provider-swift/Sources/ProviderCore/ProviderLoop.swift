@@ -1066,6 +1066,21 @@ public actor ProviderLoop {
     /// member's loop uses.
     public static func clusterMemberSigner() -> (any AttestationSigner)? { createAttestationSigner() }
 
+    /// The signer the pairing ceremony (S17) pins, chosen exactly as the
+    /// member's attestation signer is, and whether it outlives this process:
+    /// a pin is worth storing only when the next start signs with the same key.
+    public static func clusterPairingSigner() -> (signer: any AttestationSigner, persistent: Bool)? {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable, let key = try? SecureEnclaveIdentity.debugPersisted(at: path) {
+            return (key, true)
+        }
+        #endif
+        if PersistentEnclaveKey.isAvailable, let key = try? PersistentEnclaveKey.loadOrCreateVerified() { return (key, true) }
+        if let key = try? SecureEnclaveIdentity.createEphemeral() { return (key, false) }
+        return nil
+    }
+
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
         #if DEBUG

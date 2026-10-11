@@ -208,7 +208,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var nextProbe = started + configuration.guardLimits.intervalSeconds
         var lastHealthPhase: ClusterMemberHealth.Phase?
         while process.isRunning {
-            await sleepInterruptibly(seconds: 0.5, wakeWhen: { !process.isRunning })
+            // A plain sleep: during an operator stop the member may take long
+            // to drain, and an interruptible sleep would spin.
+            try? await Task.sleep(nanoseconds: 500_000_000)
             let now = Date().timeIntervalSince1970
             guard process.isRunning, now >= nextProbe else { continue }
             nextProbe = now + configuration.guardLimits.intervalSeconds
@@ -367,9 +369,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         ClusterSupervisionFiles.write(state, to: configuration.statePath)
     }
 
-    private func sleepInterruptibly(seconds: Double, wakeWhen: () -> Bool = { false }) async {
+    private func sleepInterruptibly(seconds: Double) async {
         let deadline = Date().timeIntervalSince1970 + seconds
-        while !isStopping, !wakeWhen(), Date().timeIntervalSince1970 < deadline {
+        while !isStopping, Date().timeIntervalSince1970 < deadline {
             let remaining = deadline - Date().timeIntervalSince1970
             try? await Task.sleep(nanoseconds: UInt64(max(0.01, min(0.5, remaining)) * 1_000_000_000))
         }

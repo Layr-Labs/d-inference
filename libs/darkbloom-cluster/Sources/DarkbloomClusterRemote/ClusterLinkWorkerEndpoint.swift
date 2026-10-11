@@ -294,6 +294,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private var nextRenewalAt: UInt64
     private var renewalsSent: UInt64 = 0
     private var writerStopped = false
+    private var renewalsSuspended = false
+    /// Checks only: the leader goes silent on the lease while the link stays up.
+    func suspendRenewalsForTesting() { lock.withLock { renewalsSuspended = true } }
 
     public var readiness: ClusterWorkerReady? { lock.withLock { invalid ? nil : ready } }
     public var nativeCleanupObserved: Bool { lock.withLock { cleanup } }
@@ -312,7 +315,8 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     /// grant, on this Mac's clock.
     public init(transport: any ClusterLinkWorkerTransport, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
                 profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
-                lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)?) throws {
+                lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)?,
+                router: ClusterLinkWorkerRouter? = nil) throws {
         let now = DispatchTime.now().uptimeNanoseconds
         guard lifetimeDeadlineUptimeNanoseconds > now,
               lifetimeDeadlineUptimeNanoseconds - now <= ClusterWorkerLease.maximumNanoseconds else {
@@ -342,6 +346,8 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
         _ = try open.encoded()
         outgoing.append(open)
         nativeEnded.enter(); ownerEnded.enter()
+        // Registered before the open is written, so no reply can miss it.
+        router?.register(self)
         let writer = Thread { [weak self] in self?.writeLoop() }
         writer.name = "darkbloom.link-worker.writer"
         writer.start()
@@ -432,7 +438,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 }
                 // The rank lease is renewed only while this endpoint keeps the
                 // follower: never once it failed, fenced or saw cleanup.
-                if !invalid && !cleanup && now >= nextRenewalAt {
+                if !invalid && !cleanup && !renewalsSuspended && now >= nextRenewalAt {
                     var renew = ClusterLinkWorkerWire(kind: .renew, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0)
                     renew.remainingNanoseconds = ClusterWorkerLease.ttlNanoseconds
                     // Before queued commands: a renewal must not wait behind a long reserve.

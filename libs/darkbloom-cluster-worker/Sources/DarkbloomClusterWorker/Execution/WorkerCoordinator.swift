@@ -465,6 +465,10 @@ final class WorkerCoordinator: @unchecked Sendable {
         try publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: committed), requestID: id)
     }
 
+    fileprivate func publishLanePromptCache(_ id: UUID, reused: Int, stored: [Int]) throws {
+        try publish(.promptCache(reusedTokens: reused, storedFrontiers: stored), requestID: id)
+    }
+
     fileprivate func publishLaneFinished(_ id: UUID, reason: ClusterWorkerFinishReason) throws {
         try publish(.finished(reason), requestID: id)
         try publish(.retired(.clean), requestID: id)
@@ -483,5 +487,8 @@ private final class LaneHost: QwenBatchServingHost {
     func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] { try coordinator.awaitLaneDecisions(requestIDs) }
     func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws {
         try coordinator.publishLaneFinished(requestID, reason: reason)
+    }
+    func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
+        try coordinator.publishLanePromptCache(requestID, reused: reusedTokens, stored: storedFrontiers)
     }
 }

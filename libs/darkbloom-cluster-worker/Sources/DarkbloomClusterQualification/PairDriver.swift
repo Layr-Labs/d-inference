@@ -522,6 +522,7 @@ public struct PairDriver: Sendable {
                 let concluded = collector.wait(until: deadline + 5_000_000_000)
                 let result = collector.snapshot
                 var value = row(result.tokens, result.finish ?? "none")
+                value.reusedPromptTokens = collector.reused
                 if let first = result.stamps.first, let last = result.stamps.last {
                     value.firstTokenSeconds = Double(first - started) / 1e9
                     value.decodeSeconds = Double(last - first) / 1e9

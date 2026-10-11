@@ -7,7 +7,9 @@ import Foundation
 enum QwenBatchWire {
     static let maximumLanes = 8
     static let headerWords = 16 + maximumLanes * slotWords + 1
-    static let slotWords = 16
+    static let slotWords = 28
+    /// Prefix frontiers rank 0 offers for a joining lane, deepest first.
+    static let maximumOffers = 8
     static let replyWords = 8 + maximumLanes * 2 + 1
     static let openingWords = 16
     static let headerMagic: Int32 = 0x4251_4831   // "BQH1"
@@ -118,6 +120,13 @@ enum QwenBatchWire {
         /// For a joining slot: the first 16 bytes of the request fingerprint,
         /// which rank 1 compares with the request its own owner gave it.
         var fingerprintWords: [Int32] = [0, 0, 0, 0]
+        /// For a joining slot: the prefix frontiers rank 0 holds for the
+        /// prompt, deepest first (empty when either cache is off).
+        var offers: [Int] = []
+        /// For a confirming slot (the step after its join): the prefix both
+        /// ranks reuse, rank 0's decision from rank 1's restore.
+        var confirming = false
+        var reusedPrefix = 0
     }
 
     /// The first 16 bytes of a hex SHA-256 as four words.
@@ -151,6 +160,10 @@ enum QwenBatchWire {
                 w[base + 10] = Int32(slot.frameCount) | (slot.finalChunk ? Int32(1 << 30) : 0)
                 w[base + 11] = reasonCode(slot.leaveReason)
                 w.replaceSubrange((base + 12)...(base + 15), with: slot.fingerprintWords)
+                w[base + 16] = Int32(min(slot.offers.count, maximumOffers))
+                for (i, offer) in slot.offers.prefix(maximumOffers).enumerated() { w[base + 17 + i] = Int32(offer) }
+                w[base + 25] = slot.confirming ? 1 : 0
+                w[base + 26] = Int32(slot.reusedPrefix)
             }
             w[headerWords - 1] = checksum(w[0..<(headerWords - 1)])
             return w
@@ -175,6 +188,12 @@ enum QwenBatchWire {
                 slot.frameCount = Int(w[base + 10] & 0x3FFF_FFFF); slot.finalChunk = w[base + 10] & Int32(1 << 30) != 0
                 slot.leaveReason = state == .leaving ? try reason(w[base + 11]) : nil
                 slot.fingerprintWords = Array(w[(base + 12)...(base + 15)])
+                let offered = Int(w[base + 16])
+                guard (0...maximumOffers).contains(offered), [0, 1].contains(w[base + 25]), w[base + 26] >= 0 else {
+                    throw ProbeError("Batch header slot prefix fields are malformed")
+                }
+                slot.offers = (0..<offered).map { Int(w[base + 17 + $0]) }
+                slot.confirming = w[base + 25] == 1; slot.reusedPrefix = Int(w[base + 26])
                 return slot
             }
         }
@@ -184,17 +203,24 @@ enum QwenBatchWire {
         var step: Int
         /// Per slot: the token rank 1 selected in this step, or -1.
         var tokens: [Int]
+        /// Per slot: for a lane that joined in this step, the prefix frontier
+        /// rank 1 restored (0 for none).
+        var restored: [Int]
 
         var words: [Int32] {
             var w = [Int32](repeating: 0, count: replyWords)
             w[0] = replyMagic; w[1] = Int32(truncatingIfNeeded: step); w[2] = Int32(truncatingIfNeeded: step >> 31)
             w[3] = Int32(tokens.count)
-            for (index, token) in tokens.enumerated() { w[8 + 2 * index] = Int32(token) }
+            for (index, token) in tokens.enumerated() {
+                w[8 + 2 * index] = Int32(token); w[9 + 2 * index] = Int32(restored[index])
+            }
             w[replyWords - 1] = checksum(w[0..<(replyWords - 1)])
             return w
         }
 
-        init(step: Int, tokens: [Int]) { self.step = step; self.tokens = tokens }
+        init(step: Int, tokens: [Int], restored: [Int]? = nil) {
+            self.step = step; self.tokens = tokens; self.restored = restored ?? tokens.map { _ in 0 }
+        }
 
         init(words w: [Int32], expectedStep: Int, lanes: Int) throws {
             guard w.count == replyWords, w[0] == replyMagic, w[replyWords - 1] == checksum(w[0..<(replyWords - 1)]),
@@ -202,6 +228,8 @@ enum QwenBatchWire {
                 throw ProbeError("Batch reply from rank 1 is malformed or from another step")
             }
             step = expectedStep; tokens = (0..<lanes).map { Int(w[8 + 2 * $0]) }
+            restored = (0..<lanes).map { Int(w[9 + 2 * $0]) }
+            guard restored.allSatisfy({ $0 >= 0 }) else { throw ProbeError("Batch reply restore fields are malformed") }
         }
     }
 }

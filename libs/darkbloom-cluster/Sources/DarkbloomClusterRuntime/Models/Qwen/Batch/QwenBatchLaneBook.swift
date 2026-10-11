@@ -14,6 +14,10 @@ public protocol QwenBatchServingHost: AnyObject {
     func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool]
     /// Both ranks: the request finished cleanly here and its native state retired.
     func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws
+    /// Both ranks, just before `publishFinished`: prompt tokens this rank
+    /// restored from its prefix cache and the frontiers it kept afterwards.
+    /// Called only when either is not empty.
+    func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws
 }
 
 /// The lanes one rank holds: reserved, started (waiting to join the loop),

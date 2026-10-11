@@ -536,3 +536,48 @@ func checkProfiles(_ checks: PlacementChecks) throws {
         _ = try SyntheticMac.idle(64).profile(chip: "bad\nchip")
     }
 }
+
+/// Round-2 fix: a placement is planned for the requested context with the
+/// devices' live admissible memory, and among the equally fast placements the
+/// one that keeps the most room on its tightest Mac is chosen, so the Mac with
+/// less admissible memory holds less.
+func checkRequestedContext(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    // Mac A idle; Mac B with desktop applications holding most of its memory,
+    // and 15 % faster at prefill, so the fastest cut gives it more layers.
+    func speed(_ prefill: Double) -> ClusterDeviceSpeed {
+        .init(source: .measured, absolute: true, rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: 27),
+            sustained: nil, hashBytesPerSecond: 2e9, materializeBytesPerSecond: 4e9, explanation: "constructed")
+    }
+    let a = try SyntheticMac.idle(256).device("a", speed: speed(1000))
+    let b = try SyntheticMac(physicalGiB: 128, freeGiB: 22, inactiveCacheGiB: 10).device("b", speed: speed(1150))
+    var policy = ClusterPlacementPolicy()
+    policy.leader = "a"; policy.promptTokens = 20_480; policy.outputTokens = 128; policy.modes = [.pipeline]
+    var refused = false
+    do { _ = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy) } catch { refused = true }
+    checks.require("requested context: a 20,480-token request beyond the layout's planned one needs the family's charge", refused)
+    // The family's every-rank charge grows with the context (KV of every attention layer).
+    policy.largestContextTokens = 32_768
+    policy.requestChargeEveryRankBytes = big.requestChargeEveryRankBytes * 20_608 / big.maximumContextTokens
+    let plain = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy)
+    policy.preferHeadroomWithinTies = true
+    let preferring = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy)
+    let reservation = try ClusterPlacementPlanner.evaluate(devices: [a, b], cuts: [32], mode: .pipeline,
+        prefillSchedule: .oneChunkLookahead, layout: big)
+    let atContext = try ClusterPlacementPlanner.evaluate(devices: [a, b], cuts: [32], mode: .pipeline,
+        prefillSchedule: .oneChunkLookahead, layout: big, policy: policy)
+    checks.require("requested context: a rank's request need is priced at the requested context",
+        atContext.ranks[1].requestNeedBytes > reservation.ranks[1].requestNeedBytes)
+    func share(_ c: ClusterPlacementCandidate?, _ label: String) -> Int {
+        c?.ranks.first { $0.device == label }.map { $0.endLayer - $0.firstLayer } ?? -1
+    }
+    let fastest = plain.chosen.map { $0.prediction(.rested).requestSeconds } ?? 0
+    checks.require("requested context: placed now for the requested context", plain.chosen?.tier == 0 && preferring.chosen?.tier == 0)
+    checks.require("requested context: the preferred placement keeps more room on its tightest Mac",
+        (preferring.chosen?.smallestHeadroomShare ?? -1) >= (plain.chosen?.smallestHeadroomShare ?? 0))
+    checks.require("requested context: the fastest placement gives the faster, tighter Mac more layers",
+        share(plain.chosen, "b") > share(plain.chosen, "a"))
+    checks.require("requested context: preferring room, the Mac with less admissible memory holds less than it would",
+        share(preferring.chosen, "b") < share(plain.chosen, "b"))
+    checks.require("requested context: at no material cost in time (within the tie tolerance)",
+        (preferring.chosen?.prediction(.rested).requestSeconds ?? .infinity) <= fastest * (1 + policy.tieTolerance) + 1e-9)
+}

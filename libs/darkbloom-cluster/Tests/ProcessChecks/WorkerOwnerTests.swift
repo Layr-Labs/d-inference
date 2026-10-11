@@ -138,8 +138,10 @@ private struct Harness: Sendable {
         let h = try Harness(executable, behaviors: ["normal", "refuse"])
         defer { for worker in h.workers { worker.fence() } }
         try rejects { _ = try h.pair.reserve(requestID: UUID(), reservation: h.reservation()) }
-        try require(h.pair.readiness == nil, "Partial admission must quarantine the pair")
-        try require(h.workers[1].observedExit, "Failed reserve returned before its partial ownership was retired/fenced")
+        // Round 2: a rank's refusal is the request's alone. Rank 0 gave back
+        // what it had admitted; the pair is ready and both ranks still run.
+        try require(h.pair.readiness != nil, "A request-scoped refusal must not quarantine the pair")
+        try require(!h.workers[0].observedExit && !h.workers[1].observedExit, "A refusal ended a rank")
         try await h.finish()
     }
     static func asymmetricCapacity(_ executable: URL) async throws {

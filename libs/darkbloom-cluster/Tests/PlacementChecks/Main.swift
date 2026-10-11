@@ -33,6 +33,7 @@ import Foundation
             try checkLayoutBuilder(checks)
             let layouts = try checkRegisteredLayouts(inputs, checks)
             try checkDeviceMixes(layouts.nine, layouts.twentySeven, checks)
+            try checkRequestedContext(layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)

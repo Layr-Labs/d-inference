@@ -13,6 +13,10 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     private var closed = false
     private var starts = 0
     private var shutdowns = 0
+    /// Reservations to refuse for this request alone, as a live gate does.
+    var refusals = 0
+    private(set) var released: [UUID] = []
+    private var reservedID: UUID?
     init(rank: Int = 0) {
         ready = .init(identity: .init(membershipEpoch: UUID(), modelID: "registered_qwen35_9b",
             artifactSHA256: String(repeating: "a", count: 64), configurationSHA256: String(repeating: "b", count: 64),
@@ -27,8 +31,19 @@ private final class FakeRuntime: WorkerRuntime, @unchecked Sendable {
     var shutdownCount: Int { lock.lock(); defer { lock.unlock() }; return shutdowns }
     var startCount: Int { lock.lock(); defer { lock.unlock() }; return starts }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
-        lock.lock(); defer { lock.unlock() }; request = value; return 1024
+        lock.lock(); defer { lock.unlock() }
+        if refusals > 0 {
+            refusals -= 1
+            throw ClusterResidentRequestRefusal(reason: .capacity, message: "Resident request needs 11.90 GiB and has 11.39 GiB")
+        }
+        request = value; reservedID = id; return 1024
     }
+    func releaseReservation(_ id: UUID) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard reservedID == id else { throw WorkerFailure.invalid("Fake release has no reservation") }
+        released.append(id); reservedID = nil; request = nil; cancelled = false
+    }
+    func refreshServingContext() -> Int? { 6000 }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
         lock.lock(); starts += 1; let value = request!; lock.unlock()
         if ready.rank == 1 { return .length }
@@ -419,7 +434,9 @@ final class WorkerTests: XCTestCase {
         // Four renewals over 2.4 s, each good for one second: well past the first grant.
         for _ in 0..<4 { try h.renew(ttl: 1_000_000_000); Thread.sleep(forTimeInterval: 0.6) }
         try h.send(.keepWarm(ordinal: 1))
-        guard case .keptWarm(1, _) = try h.event().event else { return XCTFail("Keep-warm was not answered") }
+        guard case .keptWarm(1, _, let serving) = try h.event().event else { return XCTFail("Keep-warm was not answered") }
+        // The answer carries the serving context the runtime re-derived now.
+        XCTAssertEqual(serving, 6000)
         // The renewals took no command sequence number: keep-warm was command 0.
         XCTAssertEqual(h.runtime.pings, 1)
         try h.renew(ttl: 1_000_000_000)
@@ -508,6 +525,50 @@ final class WorkerTests: XCTestCase {
             // A clean end never begins the forced exit.
             XCTAssertEqual(h.exits.reasons, [])
         }
+    }
+
+    /// A reservation the runtime refuses for this request alone (its live
+    /// gate) is answered `refused(capacity)` and the worker keeps serving:
+    /// the next reservation is admitted and runs. Round 2: the worker exited.
+    func testRefusedReservationKeepsTheWorkerServing() throws {
+        let h = try Harness(), first = UUID(), second = UUID()
+        h.runtime.refusals = 1
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        try h.send(.reserve(h.reservation()), id: first)
+        XCTAssertEqual(try h.event().event, .refused(.capacity))
+        try h.send(.reserve(h.reservation()), id: second)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.start, id: second)
+        for ordinal in 0..<2 {
+            XCTAssertEqual(try h.event().event, .committedToken(ordinal: ordinal, tokenID: 7 + ordinal, committedTokens: 3 + ordinal))
+            try h.send(.tokenDecision(ordinal: ordinal, decision: .proceed), id: second)
+        }
+        XCTAssertEqual(try h.event().event, .finished(.length))
+        XCTAssertEqual(try h.event().event, .retired(.clean))
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
+    }
+
+    /// The owner gives back a reservation that never started because the
+    /// other rank refused the request: `cancel` is answered `retired(cancelled)`,
+    /// the runtime's reservation is released and the worker keeps serving.
+    func testCancelledUnstartedReservationIsGivenBack() throws {
+        let h = try Harness(rank: 1), first = UUID(), second = UUID()
+        guard case .ready = try h.event().event else { return XCTFail("Missing fake ready") }
+        try h.send(.reserve(h.reservation()), id: first)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.cancel(.callerCancelled), id: first)
+        XCTAssertEqual(try h.event().event, .retired(.cancelled))
+        XCTAssertEqual(h.runtime.released, [first])
+        try h.send(.reserve(h.reservation()), id: second)
+        XCTAssertEqual(try h.event().event, .admitted(reservedBytes: 1024))
+        try h.send(.start, id: second)
+        XCTAssertEqual(try h.event().event, .finished(.length))
+        XCTAssertEqual(try h.event().event, .retired(.clean))
+        try h.send(.shutdown); XCTAssertEqual(try h.event().event, .shutdownComplete)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success); XCTAssertNil(h.result.error)
+        XCTAssertEqual(h.exits.reasons, [])
     }
 
     func testFalseDecisionCleanlyStopsBeforeNextToken() throws {

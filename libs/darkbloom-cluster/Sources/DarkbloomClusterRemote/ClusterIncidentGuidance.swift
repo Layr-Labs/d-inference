@@ -44,6 +44,9 @@ public enum ClusterFailureReason: String, Codable, Sendable, CaseIterable {
     case launchInterrupted = "launch_interrupted"
     case configurationInvalid = "configuration_invalid"
     case cleanupUnresolved = "cleanup_unresolved"
+    case modelBusy = "model_busy"
+    case listenerFailed = "listener_failed"
+    case runtimeError = "runtime_error"
     case unclassified = "unclassified"
 
     /// A reason that says little by itself; a more specific one found in the
@@ -160,11 +163,14 @@ public enum ClusterFailureClassifier {
         Rule("version", #"unsupported worker protocol version|protocol version|versions? (?:do not match|mismatch|differ)|python local=\S+ remote="#, .versionMismatch),
         Rule("model-identity", #"model identity differs|resident identity differs|checkpoint aggregate mismatch|checkpoint manifest differs|artifact (?:sha-?256 )?differs|installed input identity or sha-256 differs"#, .modelIdentityMismatch),
         Rule("model-missing", #"weight file is missing|model stage is incomplete|missing [^\n]*\.safetensors|model (?:directory|folder) [^\n]*(?:missing|not found)|missing the model|not found on this peer|cannot open installed input"#, .modelMissing),
-        Rule("plan", #"installed matrix changed|not the plan you approved|plan (?:sha-?256 )?differs|plan_mismatch|budgets, roles or layer split changed|leader opened another plan"#, .planChanged),
+        Rule("plan", #"installed matrix changed|not the plan you approved|plan (?:sha-?256 )?differs|plan_mismatch|budgets, roles or layer split changed|leader opened another plan|did not activate the approved plan"#, .planChanged),
+        Rule("busy", #"while a request is (?:being )?served|model is busy|topology change refused"#, .modelBusy),
+        Rule("listener", #"bindfailed|address already in use|eaddrinuse|listener stopped during startup"#, .listenerFailed),
         Rule("unsupported", #"does not advertise|is not supported|not supported for distributed|no speculative decoding on a pair|cannot shard this model|unsupported generation mode"#, .unsupportedMode),
-        Rule("cleanup", #"cleanup is unresolved|ownership cannot be resolved|outlived its own deadline and every signal"#, .cleanupUnresolved),
-        Rule("peer-lost", #"peer (?:lost|failure|exited|closed)|peerfailure|rank \d (?:exited|ended|was lost)|worker exited while|lost (?:its|the) peer|connection reset|broken pipe|remote protocol error|ssh (?:exited|closed)"#, .peerLost),
-        Rule("worker-crash", #"signalled|terminated by signal|exited with (?:status|code)|launcher terminated|worker failed|there is no stream\(|uncaught exception|fatal error"#, .workerCrashed),
+        Rule("cleanup", #"cleanup is unresolved|ownership cannot be resolved|outlived its own deadline and every signal|remote (?:rank )?kill failed|terminate\(\) (?:threw|failed)"#, .cleanupUnresolved),
+        Rule("runtime-error", #"there is no stream\(|valueerror|typeerror|runtimeerror|materializer unavailable|fatal error|uncaught exception|scalar conversion"#, .runtimeError),
+        Rule("peer-lost", #"peer[ _](?:lost|failure|exited|closed)|peerfailure|rank \d (?:exited|ended|was lost)|worker exited while|lost (?:its|the) peer|connection reset|broken pipe|remote protocol error|ssh (?:exited|closed)"#, .peerLost),
+        Rule("worker-crash", #"signalled|terminated by signal|exited with (?:status|code)|launcher terminated|worker failed"#, .workerCrashed),
         Rule("startup-timeout", #"startup exhausted its deadline|did not establish bilateral readiness|startup deadline|preflight deadline expired|metadata deadline expired|timed out|timeout|deadline expired|bindtimedout"#, .startupTimedOut),
         Rule("interrupted", #"startupinterrupted|shuttingdown|cancellationerror|interrupted"#, .launchInterrupted),
         Rule("configuration", #"saved setup|clusterconfigurationerror|configuration"#, .configurationInvalid),
@@ -333,6 +339,15 @@ extension ClusterGuidance {
             explanation: "An owner did not confirm its worker ended and its device was released within the allowance; ownership is kept until it does.",
             steps: ["Wait a minute: each owner keeps waiting and clears its own journal when its worker exits.",
                     "Then run `darkbloom cluster recover` on both Macs to see what is left."], command: "darkbloom cluster recover"),
+        .modelBusy: .init(code: "model_busy", title: "The pair was busy serving a request",
+            explanation: "A start or topology change was refused because a request was being served; nothing was interrupted.",
+            steps: ["Retry once the request has finished, or drain the pair first."]),
+        .listenerFailed: .init(code: "listener_failed", title: "The local serving port could not be opened",
+            explanation: "The leader could not listen on its local API port, so the pair was stopped again.",
+            steps: ["Check that no other process uses the port (`darkbloom local` shows it), or choose another with --port."]),
+        .runtimeError: .init(code: "runtime_error", title: "The model runtime hit an internal error",
+            explanation: "A rank's runtime raised an error of its own while loading or serving, not a link or memory failure.",
+            steps: ["Retry once.", "If it repeats, keep the incident and the worker's log for the operator: it is a bug to fix, not a setting."]),
         .unclassified: fallback,
     ]
 }

@@ -124,7 +124,7 @@ its key agreement instead, and the setup is delivered the same way it is now
 | `session.join` | Join | `darkbloom start --cluster-member` | exists, not wired (C10: a member in this build declines every preparation, so joining cannot reach a serving pair) |
 | `session.leave` | Leave | — | none (C13) |
 | `session.drain` | Drain | `DistributedLocalServer.drain` | exists, not wired (C13: no verb or control reaches a running leader) |
-| `session.follower` | Follower live status | — | none (C13) |
+| `session.follower` | Follower live status: state, model, free and wired memory, thermal state, requests, its newest incidents, and how old the mirror is | The follower member publishes `ClusterLinkStatusMirror` every 2 s on the link control channel (`ClusterFollowerStatusReporter`); the leader's `ClusterFollowerStatusMonitor` keeps the newest per rank, records an incident when it reports a failure or goes silent, and writes `~/.darkbloom/cluster/follower-status.json`, read through `ClusterDiagnostics.status` | wired |
 
 ## Hosting, observability, export
 

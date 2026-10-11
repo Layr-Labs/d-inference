@@ -44,6 +44,10 @@ public enum ClusterHostSample {
         public let wiredBytes: UInt64?
         public let physicalBytes: UInt64
         public let thermalState: String
+        public init(freeBytes: UInt64?, wiredBytes: UInt64?, physicalBytes: UInt64, thermalState: String) {
+            self.freeBytes = freeBytes; self.wiredBytes = wiredBytes; self.physicalBytes = physicalBytes
+            self.thermalState = thermalState
+        }
     }
 
     public static func now() -> Value {

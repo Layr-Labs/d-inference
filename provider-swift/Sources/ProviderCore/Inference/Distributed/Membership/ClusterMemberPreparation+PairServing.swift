@@ -51,6 +51,7 @@ extension ClusterMemberPreparation {
             eosTokenIDs: try installed.stopTokenIDs(tokenizerEOS: tokenizer.inner.eosTokenId), profile: profile,
             firstTokenBudgetPolicy: budget, residentPrefixEvidence: evidence,
             artifactBytes: max(0, Int(validation.manifest.totalSizeBytes)),
+            observabilityFacts: plan.observabilityFacts(membershipEpoch: nil),
             makeOwner: ClusterPairServingContext.pairOwner(profile: profile, chunkTokens: plan.configuration.chunkTokens,
                 startupAllowanceNanoseconds: plan.budgets.startupAllowanceNanoseconds, timing: plan.budgets.pairTiming,
                 follower: follower))

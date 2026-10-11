@@ -14,7 +14,7 @@ public enum ClusterConsoleWiring {
         "pair.saved", "pair.hostkey", "pair.identity", "pair.approval", "pair.approve",
         "model.admitted", "model.saved", "model.ranks", "model.holdings", "model.metadata", "model.files", "model.admission",
         "session.start", "session.stop", "session.process", "session.status", "session.recover",
-        "host.local", "export.diagnostics", "observe.requests", "observe.incidents",
+        "host.local", "export.diagnostics", "observe.requests", "observe.incidents", "session.follower",
     ]
 
     /// Operator intent that is persisted and read back when the screen
@@ -69,8 +69,6 @@ public enum ClusterConsoleWiring {
         .init(id: "session.leave", title: "Leave", exists: false, reason: "No leave command exists."),
         .init(id: "session.drain", title: "Drain", exists: true,
               reason: "The running leader can drain, but no command or control reaches it."),
-        .init(id: "session.follower", title: "Follower live status", exists: false,
-              reason: "A follower exposes no status; the leader reports both ranks."),
         .init(id: "host.coordinator", title: "Serving through the coordinator", exists: true,
               reason: "A member in this build declines every pairing the coordinator offers."),
         .init(id: "host.ownerViews", title: "Coordinator's view of your pairs", exists: true,

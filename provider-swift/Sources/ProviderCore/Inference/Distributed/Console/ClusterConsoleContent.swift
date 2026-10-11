@@ -368,7 +368,9 @@ enum ClusterConsoleContent {
     static func observability(_ status: ClusterDiagnosticsReport) -> [ClusterConsoleLine] {
         var lines = [ClusterConsoleLine.heading("Incidents and requests")]
         guard let snapshot = status.observability else {
-            lines.append(.init("No incident, request or follower status has been recorded on this Mac.", .dim, from: .wired("observe.incidents")))
+            lines.append(.init("No incident has been recorded on this Mac.", .good, from: .wired("observe.incidents")))
+            lines.append(.init("No pair request has been recorded by a leader on this Mac.", .dim, from: .wired("observe.requests")))
+            lines.append(.init("No follower status has been mirrored to this Mac over the link.", .dim, from: .wired("session.follower")))
             return lines
         }
         if let incidents = snapshot.incidents {
@@ -392,6 +394,15 @@ enum ClusterConsoleContent {
             }
         } else {
             lines.append(.init("No pair request has been recorded by a leader on this Mac.", .dim, from: .wired("observe.requests")))
+        }
+        if let followers = snapshot.followers, !followers.entries.isEmpty {
+            for line in ClusterObservabilitySnapshot(incidents: nil, telemetry: nil, followers: followers).lines {
+                let stale = line.contains("STALE") || line.contains("failed")
+                lines.append(.init(line.trimmingCharacters(in: .whitespaces), stale ? .warning : .normal,
+                    indent: line.hasPrefix("  ") ? 4 : 2, from: .wired("session.follower")))
+            }
+        } else {
+            lines.append(.init("No follower status has been mirrored to this Mac over the link.", .dim, from: .wired("session.follower")))
         }
         return lines
     }

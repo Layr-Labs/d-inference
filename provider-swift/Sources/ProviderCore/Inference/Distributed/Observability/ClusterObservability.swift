@@ -144,3 +144,15 @@ extension ClusterObservability {
         return lines
     }
 }
+
+extension DistributedInstalledPlan {
+    /// A plan's identifiers, mode and cut for incidents and telemetry of a
+    /// session this process does not own (a coordinator-committed start).
+    func observabilityFacts(membershipEpoch: UUID?, diagnostics: [String] = []) -> DistributedSessionFacts {
+        .init(clusterID: configuration.clusterID, memberID: configuration.memberID, modelID: configuration.publicModelID,
+              mode: configuration.selectedGenerationMode.rawValue,
+              cut: DistributedSessionFacts.cut(partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) }),
+              membershipEpoch: membershipEpoch?.uuidString.lowercased(), diagnostics: diagnostics, terminations: [],
+              peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user))
+    }
+}

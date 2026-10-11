@@ -17,6 +17,7 @@ enum QwenResidentRequestExecution {
     }
 
     static func run(stage: any LayerStageResidentStage, producerStage: (any LayerStageResidentStage)? = nil,
+                    speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
                     generationMode: QwenResidentGenerationMode = .pipeline,
                     phaseSplitAllowance: QwenPhaseSplitAllowance? = nil,
                     qualificationFault: QwenPhaseSplitFault? = nil,
@@ -25,9 +26,11 @@ enum QwenResidentRequestExecution {
                     reserved: QwenResidentReservation,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
     ) throws -> (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) {
-        guard (generationMode == .phaseSplit) == (phaseSplitAllowance != nil),
-              (generationMode == .phaseSplit && collective.rank == 1) == (producerStage != nil) else {
-            throw ProbeError("Resident generation mode differs from its loaded stages or reservation")
+        guard generationMode.isPhaseSplit == (phaseSplitAllowance != nil),
+              (generationMode.isPhaseSplit && collective.rank == 1) == (producerStage != nil),
+              generationMode.usesSpeculativeHead == (speculativeTerms != nil),
+              (generationMode.usesSpeculativeHead && collective.rank == 1) == (speculativeHead != nil) else {
+            throw ProbeError("Resident generation mode differs from its loaded stages, head or reservation")
         }
         let receipt = stage.loaded.receipt
         let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
@@ -38,7 +41,7 @@ enum QwenResidentRequestExecution {
         // Both ranks derive the hand-off terms from their own Plan, registered
         // geometry and this request; the agreement fingerprint carries them.
         var split: QwenPhaseSplitPlan?
-        if generationMode == .phaseSplit {
+        if generationMode.isPhaseSplit {
             guard let geometry = stage.handoffGeometry else {
                 throw ProbeError("This registered model's request state does not change owner")
             }
@@ -49,7 +52,8 @@ enum QwenResidentRequestExecution {
             source: source, consumerStageFingerprint: admission.plan.stages[1].fingerprint,
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
             numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy,
-            phaseSplit: split, compactDecode: generationMode == .pipelineCompactDecode)
+            phaseSplit: split, compactDecode: generationMode == .pipelineCompactDecode,
+            speculativeHead: speculativeTerms)
         var lastResourceCheck: UInt64 = 0, ordinal = 0
         func check() throws {
             try control.check(deadline: reserved.deadline)
@@ -79,7 +83,7 @@ enum QwenResidentRequestExecution {
             // which the installed owner never makes, can be asked to commit one.
             let fault = split == nil ? nil : qualificationFault
             let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
-                producerStage: producerStage?.loaded,
+                producerStage: producerStage?.loaded, speculativeHead: speculativeHead,
                 plan: admission.plan, agreement: agreement, collective: collective,
                 resources: {
                     try stage.diagnosticResources(plan: admission.plan, request: reserved.request,
@@ -90,7 +94,7 @@ enum QwenResidentRequestExecution {
             evidence = recorded; result = recorded.execution
         } else {
             result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
-                producerStage: producerStage?.loaded,
+                producerStage: producerStage?.loaded, speculativeHead: speculativeHead,
                 plan: admission.plan, agreement: agreement, collective: collective,
                 onCommittedToken: committedToken, check: check)
             evidence = nil

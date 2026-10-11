@@ -22,7 +22,7 @@ import Foundation
             var fields: [String: String] = [:]
             let arguments = Array(CommandLine.arguments.dropFirst())
             let names = ["--model-dir", "--request", "--stage-cut", "--report", "--deadline-seconds",
-                         "--handoff", "--handoff-segment-bytes", "--handoff-corrupt-segment", "--serve"]
+                         "--handoff", "--handoff-segment-bytes", "--handoff-corrupt-segment", "--serve", "--mtp-depth"]
             guard arguments.count % 2 == 0 else { throw Failure(usage) }
             for index in stride(from: 0, to: arguments.count, by: 2) {
                 guard names.contains(arguments[index]), fields[arguments[index]] == nil else {
@@ -69,6 +69,15 @@ import Foundation
             } else if fields["--handoff-segment-bytes"] != nil || fields["--handoff-corrupt-segment"] != nil {
                 throw Failure("Hand-off options need --handoff in-process")
             }
+            // The decoding rank of phase_split_mtp_v1, in one process: after the
+            // hand-off, the model's speculative head with this fixed depth.
+            var speculativeDepth: Int?
+            if let text = fields["--mtp-depth"] {
+                guard handoff != nil, handoff?.corruptSegment == nil, let depth = Int(text), (1...4).contains(depth) else {
+                    throw Failure("--mtp-depth takes 1...4 and needs --handoff in-process")
+                }
+                speculativeDepth = depth
+            }
             let request = try QualificationRequest.read(URL(fileURLWithPath: requestPath))
             let reportURL = URL(fileURLWithPath: reportPath)
             guard !FileManager.default.fileExists(atPath: reportURL.path) else {
@@ -110,7 +119,8 @@ import Foundation
                     ? try GPTOSSStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
                         request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000)
                     : try QwenStagedGenerationReference.run(modelDirectory: modelDirectory, stageCut: cut,
-                        request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff)
+                        request: staged, deadlineUptimeNanoseconds: started + UInt64(seconds) * 1_000_000_000, handoff: handoff,
+                        speculativeDepth: speculativeDepth)
             } catch let refusal as QwenStagedGenerationReference.HandoffRefusal {
                 // The outcome a fault run asks for: the adopting side refused
                 // the state, and nothing was left allocated afterwards.
@@ -261,6 +271,19 @@ import Foundation
                 summary["handoffAdoptionSeconds"] = Double(handoff.adoptionNanoseconds) / 1e9
                 summary["handoffProducerStateRetired"] = handoff.producerStateRetired
             }
+            if let speculative = result.speculative {
+                summary["mtp"] = ["depth": speculative.depth, "rounds": speculative.rounds,
+                    "plainSteps": speculative.plainSteps, "emittedTokens": speculative.emittedTokens,
+                    "examinedByPosition": speculative.examinedByPosition, "acceptedByPosition": speculative.acceptedByPosition,
+                    "acceptanceRate": speculative.examinedByPosition.reduce(0, +) > 0
+                        ? Double(speculative.acceptedByPosition.reduce(0, +)) / Double(speculative.examinedByPosition.reduce(0, +)) : 0,
+                    "tokensPerRound": speculative.rounds > 0
+                        ? Double(speculative.emittedTokens - speculative.plainSteps) / Double(speculative.rounds) : 0,
+                    "buildSeconds": speculative.buildSeconds, "evaluateSeconds": speculative.evaluateSeconds,
+                    "settleSeconds": speculative.settleSeconds, "headLoadSeconds": speculative.headLoadSeconds,
+                    "headFileBytes": speculative.headFileBytes, "headActiveBytesAdded": speculative.headActiveBytesAdded,
+                    "headSHA256": speculative.headSHA256] as [String: Any]
+            }
             if let text = report.decodedOutput { summary["decodedOutput"] = text }
             print(String(decoding: try JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))
             Darwin.exit(released ? 0 : 2)
@@ -280,7 +303,8 @@ import Foundation
 
     static let usage = """
         usage: --model-dir /ABS/MODEL --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json [--deadline-seconds 10...3600]
-                 [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]]
+                 [--handoff in-process [--handoff-segment-bytes 4096...16777216] [--handoff-corrupt-segment INDEX]
+                  [--mtp-depth 1...4 (speculative decode after the hand-off; models whose artifact ships a head)]]
                --model-dir /ABS/MODEL --stage-cut CUT --serve yes [--deadline-seconds 10...3600]
           CUT is one of the registered model's cuts
           (GPT-OSS runs under MLX_ENABLE_TF32=1 with no DARKBLOOM_GPTOSS_* switch, and has no --handoff):

@@ -13,12 +13,13 @@ import MLX
 /// `producerStage` is the stage-0 model a phase-split rank 1 also holds. It is
 /// touched only after rank 0 has handed its request state over.
 func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
-    producerStage: LoadedQwenLayerStage? = nil,
+    producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, onCommittedToken: (Int) throws -> Bool,
     check: () throws -> Void
 ) throws -> QwenLayerStageGenerationResult {
-    try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, plan: plan, agreement: agreement,
+    try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, speculativeHead: speculativeHead,
+        plan: plan, agreement: agreement,
         collective: collective, diagnostics: nil, onCommittedToken: onCommittedToken, check: check).result
 }
 
@@ -27,7 +28,7 @@ func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 /// build/source/arithmetic, deadline and cancellation checks. There is no default
 /// diagnostic mode or permissive resource callback. Do not time this as serving.
 func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
-    producerStage: LoadedQwenLayerStage? = nil,
+    producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, resources makeResources: () throws -> QwenGenerationDiagnosticResources,
     phaseSplitFault: QwenPhaseSplitFault? = nil,
@@ -50,7 +51,7 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
         rank: collective.rank, resources: resources)
     defer { capture.discard() }
     let (result, handedOver) = try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage,
-        plan: plan, agreement: agreement,
+        speculativeHead: speculativeHead, plan: plan, agreement: agreement,
         collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault,
         onCommittedToken: onCommittedToken, check: check)
     // The core has validated both retirement acknowledgements and its final
@@ -79,7 +80,7 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 }
 
 private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
-    producerStage: LoadedQwenLayerStage?,
+    producerStage: LoadedQwenLayerStage?, speculativeHead: QwenMTPHead? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
     phaseSplitFault: QwenPhaseSplitFault? = nil,
@@ -106,6 +107,11 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             } else if producerStage != nil {
                 throw ProbeError("Only a phase-split rank1 runs with a producer stage")
             }
+            // The decoding rank of a speculative phase split holds the head; no
+            // other rank, and no other request, may be handed one.
+            guard (speculativeHead != nil) == (agreement.speculativeHead != nil && collective.rank == 1) else {
+                throw ProbeError("Speculative head differs from this rank's agreed role")
+            }
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                 material: { .generation(agreementFingerprint: agreement.fingerprint) },
@@ -114,8 +120,14 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
             var session: QwenLayerStageSession?
             var producer: QwenGenerationLookaheadProducer?
+            var decoder: QwenMTPDecoder?
             do {
-                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
+                if let speculativeHead, let terms = agreement.speculativeHead {
+                    // Before the session: the consumer stage's prompt rows are the head's history.
+                    decoder = try QwenMTPDecoder(head: speculativeHead, terms: terms, request: agreement.request)
+                }
+                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
+                    hiddenTap: decoder?.tap())
                 session = owned
                 if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
                     producer = try .init(request: agreement.request)
@@ -203,7 +215,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     let outcome = try QwenPhaseSplitGeneration.run(producerStage: producerStage, plan: plan,
                         split: split, control: control, transport: transport, session: owned,
                         selectedTokens: &selectedTokens, recording: diagnostics, fault: phaseSplitFault,
-                        onCommittedToken: onCommittedToken, check: checked)
+                        decoder: decoder, onCommittedToken: onCommittedToken, check: checked)
                     finalDecision = outcome.finalDecision; handedOver = outcome
                 }
                 guard control.phase == .retiring, !control.isFailed,
@@ -232,7 +244,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                return (QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
+                decoder?.release()
+                var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
                     completedFrames: control.completedFrames, committedTokens: control.committedTokens,
@@ -240,13 +253,16 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                         : .init(policy: agreement.prefillPolicy.rawValue, rank: collective.rank,
                             preparedAheadFrames: producer?.preparedAheadFrames ?? 0,
                             maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0),
-                    phaseSplit: handedOver?.summary), handedOver?.recorded)
+                    phaseSplit: handedOver?.summary)
+                result.mtpEnabled = agreement.speculativeHead != nil
+                return (result, handedOver?.recorded)
             } catch {
                 // Prefer a recorded native fault before invoking any cleanup. The
                 // normal withError epilogue is skipped when its body throws Swift.
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
                 producer?.cancel()
+                decoder?.release()
                 diagnostics?.discard()
                 control.cancel(); transport.retire()
                 do { try session?.cancel() }

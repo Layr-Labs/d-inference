@@ -391,7 +391,7 @@ struct MiMoResidentAdmissionTests {
         }
         let nine = try #require(ClusterResidentModelCatalog.entry(runtimeModelID: "registered_qwen35_9b"))
         #expect(nine.supportedCuts == [4, 8, 12, 16] && nine.layerCount == 32)
-        #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+        #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP])
         let mimo = try ClusterResidentModelCatalog.entry(configuration: Self.fixture("configuration"))
         #expect(mimo.family == .mimoV26 && mimo.layerCount == 48 && mimo.supportedCuts == [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44])
         #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])

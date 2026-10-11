@@ -81,8 +81,12 @@ struct QwenResidentModelDefinition {
         // the layer kinds and head counts), so both rows carry every mode. A
         // model that must not run one drops it from its own row here.
         switch model {
-        case .qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B,
-             .ternaryBonsai2TwentySevenB:
+        case .qwen35NineB, .qwen38TwentySevenB:
+            // Both artifacts ship the product's inline speculative head
+            // (`mtplx_mtp.included`, one dense decoder layer under `mtp.`),
+            // which the decoding rank of a phase split runs as the product does.
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
+        case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B, .ternaryBonsai2TwentySevenB:
             // The Prism pack's state has the 27B's shapes in F32; the hand-off
             // carries each component in the profile's activation dtype.
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]

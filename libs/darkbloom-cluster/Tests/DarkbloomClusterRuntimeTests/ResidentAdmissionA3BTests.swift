@@ -479,6 +479,9 @@ struct ResidentAdmissionA3BTests {
         var current = try #require(try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(small)) as? [String: Any])
         current["runtimeBinarySHA256"] = golden.runtimeBinarySHA256
         current.removeValue(forKey: "supportedPrefillSchedules"); current.removeValue(forKey: "supportedGenerationModes")
+        // The speculation field follows from the modes (the 9B lists the speculative phase split).
+        #expect(current["speculation"] as? String == ClusterRuntimeCapability.decodingRankSpeculation)
+        current["speculation"] = "off"
         var legacy = try JSONSerialization.data(withJSONObject: current, options: [.sortedKeys, .withoutEscapingSlashes])
         legacy.append(10)
         #expect(try ClusterRuntimeCapabilityCodec.decode(legacy) == golden)

@@ -205,6 +205,20 @@ private func reject(_ body: () throws -> Void) throws {
         let shown = try ClusterStatusBinding(configuration: split.configuration, capability: split.capability)
         try require(shown.generationMode == .phaseSplit && shown.peers.map(\.supportedGenerationModes) == [all, all], "the binding does not show the mode and each worker's support")
         try require(validation(split).first?.outcome == .passed, "an advertised mode failed the doctor")
+        // MTP on by default: the session reports it from the saved mode and what both workers advertise.
+        try require(DistributedInstalledSpeculation(mode: .phaseSplitMTP, everyMemberAdvertisesHead: true)
+            == .init(enabled: true, offReason: "none")
+            && DistributedInstalledSpeculation(mode: .phaseSplit, everyMemberAdvertisesHead: true).offReason == "setupSelectsPhaseSplitWithoutHead"
+            && DistributedInstalledSpeculation(mode: .pipeline, everyMemberAdvertisesHead: true).offReason == "generationModeRunsNoHead"
+            && DistributedInstalledSpeculation(mode: .phaseSplit, everyMemberAdvertisesHead: false).offReason == "runtimeCapabilityDisablesSpeculation",
+            "MTP posture differs from the saved mode")
+        let head: [ClusterGenerationMode] = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
+        let speculative = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-mtp"), probe: f.probe, owner: f.owner, worker: f.worker,
+            generationMode: "phase_split_mtp_v1", advertisedModes: head)
+        try require(speculative.capability.speculation == ClusterRuntimeCapability.decodingRankSpeculation
+            && DistributedInstalledSpeculation(configuration: speculative.configuration, capability: speculative.capability).enabled,
+            "a setup naming the speculative phase split does not report MTP on")
+        try require(validation(speculative).first?.outcome == .passed, "the speculative phase split failed the doctor")
         let big = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-27b"), probe: f.probe, owner: f.owner, worker: f.worker,
             advertisedModes: all, registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
         let refused = validation(big)

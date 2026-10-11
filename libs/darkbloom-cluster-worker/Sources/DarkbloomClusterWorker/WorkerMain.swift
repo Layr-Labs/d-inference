@@ -79,9 +79,11 @@ import Foundation
                 }
                 runtime = try configuration.evidenceDirectory.map {
                     try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
-                        generationMode: configuration.generationMode, qualification: qualification)
+                        generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
+                        qualification: qualification)
                 } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, bootstrap: configuration.bootstrap,
-                        generationMode: configuration.generationMode, qualification: qualification)
+                        generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
+                        qualification: qualification)
             }
             // Qualification only: a standing wired limit for the loaded stage.
             // Every exit below resets it to zero.

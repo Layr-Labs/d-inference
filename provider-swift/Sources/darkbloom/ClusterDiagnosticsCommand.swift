@@ -55,7 +55,8 @@ private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool, ho
     if let live = report.live {
         print("Live leader: \(live.ready ? "ready" : "not ready") · admission \(live.admissionAvailable ? "available" : "closed") · \(live.hostPhase)")
         print("Response authentication: \(live.authenticationConfigured ? "configured bearer" : "not configured (--no-auth)")")
-        print("Epoch: \(live.session.observedMembershipEpoch ?? "not observed") · MTP off: \(live.session.mtpOffReason)")
+        print("Epoch: \(live.session.observedMembershipEpoch ?? "not observed") · "
+            + (live.session.mtpEnabled ? "MTP: on (the decoding rank drafts with the model's head)" : "MTP off: \(live.session.mtpOffReason)"))
         print("Running generation mode: \(live.session.observedGenerationMode?.rawValue ?? "not observed")")
         if let state = live.session.admission {
             print("Requests served: \(state.requestsServed) · keep-warm exchanges: \(state.keepWarmExchanges) · active: \(state.activeRequest)")

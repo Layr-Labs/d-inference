@@ -28,6 +28,10 @@ public final class QwenResidentRuntime {
     /// that it owns every layer once rank 0 has handed its request state over.
     private var producerStage: (any LayerStageResidentStage)?
     private weak var producerModel: Module?
+    /// `phase_split_mtp_v1`, rank 1 only: the model's speculative head, bound
+    /// to both stages this rank holds. The terms are declared on both ranks.
+    private var speculativeHead: QwenMTPHead?
+    public let speculativeTerms: QwenMTPTerms?
     private var reservation: QwenResidentReservation?
     private var phaseSplitAllowance: QwenPhaseSplitAllowance?
     /// Qualification only: admitted at load from a permitted switch, nil otherwise.
@@ -37,8 +41,10 @@ public final class QwenResidentRuntime {
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
          generationMode: QwenResidentGenerationMode = .pipeline, producerStage: (any LayerStageResidentStage)? = nil,
+         speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
          qualificationFault: QwenPhaseSplitFault? = nil) {
         self.admission = admission; self.control = control; self.collective = collective
+        self.speculativeHead = speculativeHead; self.speculativeTerms = speculativeTerms
         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
         self.generationMode = generationMode; self.qualificationFault = qualificationFault
         self.producerStage = producerStage; producerModel = producerStage?.loaded.model
@@ -99,7 +105,7 @@ public final class QwenResidentRuntime {
         let extra = try prefillAllowance(policy, promptCount: admission.profile.maximumPromptTokens,
             chunkSize: admission.profile.maximumChunkTokens)
         let split = try Self.phaseSplitAllowance(generationMode, admission: admission, stage: stage,
-            rank: collective.rank, promptCount: admission.profile.maximumPromptTokens)
+            rank: collective.rank, promptCount: admission.profile.maximumPromptTokens, speculativeTerms: speculativeTerms)
         return try QwenLongPrefillCheckedBytes.sum([base, extra?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
     }
 
@@ -107,8 +113,11 @@ public final class QwenResidentRuntime {
     /// nil for the pipeline. Shared by load, readiness, reserve and start.
     static func phaseSplitAllowance(_ mode: QwenResidentGenerationMode, admission: any LayerStageResidentAdmission,
                                     stage: (any LayerStageResidentStage)?, rank: Int,
-                                    promptCount: Int) throws -> QwenPhaseSplitAllowance? {
-        guard mode == .phaseSplit else { return nil }
+                                    promptCount: Int, speculativeTerms: QwenMTPTerms? = nil) throws -> QwenPhaseSplitAllowance? {
+        guard mode.isPhaseSplit else { return nil }
+        guard mode.usesSpeculativeHead == (speculativeTerms != nil) else {
+            throw ProbeError("Speculative terms differ from the declared generation mode")
+        }
         guard let stage else { throw ProbeError("Resident model already released") }
         guard let geometry = stage.handoffGeometry else {
             throw ProbeError("This registered model's request state does not change owner")
@@ -128,7 +137,16 @@ public final class QwenResidentRuntime {
                 chunkSize: admission.profile.maximumChunkTokens,
                 bound: QwenResidentResourceEnvironment.allocationBound).fusionBytes
         }
-        return try .derive(rank: rank, shapes: shapes, producerFusionBytes: producerFusion,
+        // The decoding rank of a speculative phase split also holds the head's
+        // per-request state; its weights are resident and charged at load.
+        var speculative: QwenMTPAllowance?
+        if rank == 1, let speculativeTerms {
+            speculative = try .derive(geometry: geometry, depth: speculativeTerms.depth,
+                maximumTokens: admission.profile.maximumContextTokens, promptTokens: promptCount,
+                chunkSize: admission.profile.maximumChunkTokens, vocabularySize: admission.profile.vocabularySize,
+                bound: QwenResidentResourceEnvironment.allocationBound)
+        }
+        return try .derive(rank: rank, shapes: shapes, producerFusionBytes: producerFusion, speculative: speculative,
             bound: QwenResidentResourceEnvironment.allocationBound)
     }
 
@@ -138,7 +156,8 @@ public final class QwenResidentRuntime {
     /// One sample of the host is judged for every candidate, so the search
     /// is consistent; the caller then takes one live decision at the result.
     static func admittedContext(admission: any LayerStageResidentAdmission, stage: any LayerStageResidentStage,
-                                rank: Int, mode: QwenResidentGenerationMode) throws -> QwenResidentAdmittedContext {
+                                rank: Int, mode: QwenResidentGenerationMode,
+                                speculativeTerms: QwenMTPTerms? = nil) throws -> QwenResidentAdmittedContext {
         // The admitted profile carries the model's limits (`QwenResidentContextLimits`
         // for a registered Qwen row; the earlier reservation for a family without one).
         let maximumContext = admission.profile.maximumContextTokens
@@ -153,7 +172,8 @@ public final class QwenResidentRuntime {
                 chunkSize: chunk, hiddenSize: admission.profile.hiddenSize,
                 elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
                 bound: QwenResidentResourceEnvironment.allocationBound)
-            let split = try phaseSplitAllowance(mode, admission: admission, stage: stage, rank: rank, promptCount: prompt)
+            let split = try phaseSplitAllowance(mode, admission: admission, stage: stage, rank: rank, promptCount: prompt,
+                speculativeTerms: speculativeTerms)
             return .init(contextTokens: context, allowance: allowance,
                 extraNativeBytes: try sum([prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
                 extraHostBytes: try sum([prefill?.extraHostBytes ?? 0, split?.extraHostBytes ?? 0]))
@@ -224,7 +244,7 @@ public final class QwenResidentRuntime {
                 chunkSize: min(request.chunkSize, request.promptCount), bound: QwenResidentResourceEnvironment.allocationBound)
             let prefill = try prefillAllowance(prefillPolicy, promptCount: request.promptCount, chunkSize: request.chunkSize)
             let split = try Self.phaseSplitAllowance(generationMode, admission: admission, stage: stage,
-                rank: collective.rank, promptCount: request.promptCount)
+                rank: collective.rank, promptCount: request.promptCount, speculativeTerms: speculativeTerms)
             let charge: QwenResidentRecordingCharge?
             if mode == .recording {
                 let recording = try QwenResidentRecordingCharge.derive(base: allowance, rank: collective.rank,
@@ -311,7 +331,7 @@ public final class QwenResidentRuntime {
             }
             let split = phaseSplitAllowance
             guard split == (try Self.phaseSplitAllowance(generationMode, admission: admission, stage: stage,
-                rank: collective.rank, promptCount: reserved.request.promptCount)) else {
+                rank: collective.rank, promptCount: reserved.request.promptCount, speculativeTerms: speculativeTerms)) else {
                 throw ProbeError("Phase-split allowance changed since reservation")
             }
             // This request's allocator peak, for whoever launched the worker.
@@ -323,6 +343,7 @@ public final class QwenResidentRuntime {
                 try autoreleasepool {
                     guard let stage else { throw ProbeError("Resident model already released") }
                     return try QwenResidentRequestExecution.run(stage: stage, producerStage: producerStage,
+                        speculativeHead: speculativeHead, speculativeTerms: speculativeTerms,
                         generationMode: generationMode, phaseSplitAllowance: split,
                         qualificationFault: qualificationFault, admission: admission,
                         collective: collective, control: control, reserved: reserved,
@@ -353,10 +374,10 @@ public final class QwenResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
-                    reservation = nil; phaseSplitAllowance = nil; stage = nil; producerStage = nil
+                    reservation = nil; phaseSplitAllowance = nil; speculativeHead = nil; stage = nil; producerStage = nil
                     guard model == nil, producerModel == nil else { throw ProbeError("Resident model remains retained") }
                     Memory.clearCache(); try error.check()
-                    if generationMode == .phaseSplit {
+                    if generationMode.isPhaseSplit {
                         // Sizes only: what this process still holds after release.
                         Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                         let after = Memory.snapshot()

@@ -38,6 +38,7 @@ task_catalog=(
   Models/Nemotron/NemotronStageMetadata
   Models/Nemotron/NemotronLayerStagePlan
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
+  Models/Qwen/MTP/QwenMTPTerms
   Models/Qwen/Metadata/QwenDenseProfileTypes
   Models/Qwen/Metadata/QwenDenseRegisteredSpecification
   Models/Qwen/Generation/QwenLayerStageGenerationRequest

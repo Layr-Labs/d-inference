@@ -43,7 +43,8 @@ private enum PhaseSplitFixture {
     static func agreement(_ request: QwenLayerStageGenerationRequest, cut: Int = 4, split: Bool = true,
                           maximumSegmentBytes: Int = 16 * 1024 * 1024, relayBatchTokens: Int = 16,
                           epoch: UUID = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!,
-                          model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageGenerationAgreement {
+                          model: QwenRegisteredDenseModel = .qwen35NineB,
+                          speculativeHead: QwenMTPTerms? = nil) throws -> QwenLayerStageGenerationAgreement {
         let plan = try plan(cut: cut, model: model)
         let source = try QwenLayerStageWireSourceIdentity(
             sourceConfigurationSHA256: sha256(try configuration(model)),
@@ -55,7 +56,8 @@ private enum PhaseSplitFixture {
             rankBuildSHA256: [String(repeating: "1", count: 64), String(repeating: "1", count: 64)],
             numericalPolicySHA256: String(repeating: "3", count: 64),
             phaseSplit: split ? try QwenPhaseSplitPlan(plan: plan, geometry: try specification(model).expectedGeometry(),
-                request: request, maximumSegmentBytes: maximumSegmentBytes, relayBatchTokens: relayBatchTokens) : nil)
+                request: request, maximumSegmentBytes: maximumSegmentBytes, relayBatchTokens: relayBatchTokens) : nil,
+            speculativeHead: speculativeHead)
     }
 
     /// Deterministic bytes that differ from one position to the next.
@@ -112,7 +114,8 @@ private enum PhaseSplitFixture {
 struct PhaseSplitContractTests {
     @Test func modeIsDeclaredNeverGuessed() throws {
         // One closed list, shared with the worker's flag and the capability record.
-        #expect(QwenResidentGenerationMode.allCases.map(\.rawValue) == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1"])
+        #expect(QwenResidentGenerationMode.allCases.map(\.rawValue)
+            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"])
         #expect(ClusterGenerationMode(rawValue: "phase_split_v1") == QwenResidentGenerationMode.phaseSplit)
         // A misspelt or empty declaration is no mode at all; nothing maps it to the default.
         for bad in ["phase-split", "", "phase_split", "PHASE_SPLIT_V1", "pipeline"] { #expect(ClusterGenerationMode(rawValue: bad) == nil) }
@@ -170,11 +173,31 @@ struct PhaseSplitContractTests {
         #expect(QwenResidentQualificationSwitches.faultEnvironmentName == QwenPhaseSplitFault.environmentName)
     }
 
+    @Test func speculativeHeadTermsAreBoundOnlyToAPhaseSplit() throws {
+        #expect(QwenMTPTerms.standard.depth == QwenMTPTerms.maximumDepth && QwenMTPTerms.maximumDepth == 4)
+        #expect((try? QwenMTPTerms(depth: 0)) == nil && (try? QwenMTPTerms(depth: 5)) == nil)
+        #expect(try QwenMTPTerms(depth: 2).loadAgreementFields(headSHA256: "h")
+            == ["qwen_resident_speculative_head_v1", "depth=2", "verification=captured_window_exact_greedy", "head=h"])
+        #expect(QwenResidentGenerationMode.phaseSplitMTP.isPhaseSplit && QwenResidentGenerationMode.phaseSplitMTP.usesSpeculativeHead
+            && !QwenResidentGenerationMode.phaseSplit.usesSpeculativeHead && !QwenResidentGenerationMode.pipeline.isPhaseSplit)
+        let request = try PhaseSplitFixture.request()
+        let plain = try PhaseSplitFixture.agreement(request)
+        let speculative = try PhaseSplitFixture.agreement(request, speculativeHead: .standard)
+        let shallow = try PhaseSplitFixture.agreement(request, speculativeHead: try QwenMTPTerms(depth: 2))
+        #expect(!plain.descriptor.mtpEnabled && speculative.descriptor.mtpEnabled)
+        #expect(Set([plain.fingerprint, speculative.fingerprint, shallow.fingerprint]).count == 3)
+        // A head only on the decoding rank of a phase split, never on the pipeline.
+        #expect(throws: (any Error).self) { _ = try PhaseSplitFixture.agreement(request, split: false, speculativeHead: .standard) }
+    }
+
     @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {
         for model in QwenRegisteredDenseModel.allCases {
             let definition = try QwenResidentModelDefinition(model: model)
-            // The pipeline first; the row is what load, the worker and the capability consult.
-            #expect(definition.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+            // The pipeline first; the row is what load, the worker and the capability consult. The 9B and
+            // 27B artifacts ship the product's speculative head, so their rows also list it.
+            let head = model == .qwen35NineB || model == .qwen38TwentySevenB
+            #expect(definition.supportedGenerationModes
+                == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP] : []))
             #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model.rawValue)?.supportedGenerationModes
                 == definition.supportedGenerationModes)
         }

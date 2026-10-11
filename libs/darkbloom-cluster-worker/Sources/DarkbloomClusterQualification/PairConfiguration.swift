@@ -35,6 +35,10 @@ public struct PairConfiguration: Sendable {
     ]
     public static let pipelineMode = "pipeline_v1"
     public static let phaseSplitMode = "phase_split_v1"
+    /// The phase split with the model's speculative head on rank 1.
+    public static let phaseSplitMTPMode = "phase_split_mtp_v1"
+    /// The worker argument the speculative head's fixed depth is declared with.
+    public static let speculativeDepthArgument = "--mtp-depth"
     /// The pipeline with four transfers per decode step instead of eleven.
     public static let pipelineCompactDecodeMode = "pipeline_compact_decode_v1"
     /// The worker argument a mode other than the pipeline is declared with.
@@ -90,6 +94,9 @@ public struct PairConfiguration: Sendable {
     /// `pipeline_v1`, or `phase_split_v1`: pair prefill, then rank 0 hands its
     /// request state to rank 1, which decodes alone. Declared to both workers.
     public var generationMode: String
+    /// `phase_split_mtp_v1` only: the speculative head's draft depth, declared
+    /// to both workers. Nil: the worker's default (the product's maximum).
+    public var speculativeDepth: Int?
     /// Requests run one after another in the same loaded session, each with
     /// its own request ID. The first is the warm-up of a timing run.
     public var repetitions: Int
@@ -224,8 +231,10 @@ public struct PairConfiguration: Sendable {
         }
         try require(Self.isCoordinator(coordinator), "coordinator must be IPV4:PORT with a unicast address")
         try require(["serial_v1", "one_chunk_lookahead_v1"].contains(prefillSchedule), "unknown prefill schedule")
-        try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode].contains(generationMode),
-            "unknown generation mode")
+        try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode, Self.phaseSplitMTPMode]
+            .contains(generationMode), "unknown generation mode")
+        try require(speculativeDepth.map { (1...4).contains($0) && generationMode == Self.phaseSplitMTPMode } ?? true,
+            "a speculative depth is 1...4 and only with phase_split_mtp_v1")
         try require((1...Self.maximumRepetitions).contains(repetitions), "repetitions must be 1...\(Self.maximumRepetitions)")
         try require(repetitions == 1 || !recording, "a recording run takes one request; repeat with --evidence none")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
@@ -235,7 +244,8 @@ public struct PairConfiguration: Sendable {
         try require(stopAfterTokens.map { !recording && (1..<request.outputCount).contains($0) } ?? true,
             "a client stop is a serving-path input, after 1 or more tokens and before the output limit")
         if let faultRank, let faultValue {
-            try require((0...1).contains(faultRank) && recording && generationMode == Self.phaseSplitMode
+            try require((0...1).contains(faultRank) && recording
+                && [Self.phaseSplitMode, Self.phaseSplitMTPMode].contains(generationMode)
                 && (1...96).contains(faultValue.utf8.count)
                 && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
                 "a fault is a recording phase-split run's input: RANK and name=value of lowercase letters, digits, '_', ':'")
@@ -373,6 +383,7 @@ public struct PairConfiguration: Sendable {
         if prefillSchedule != "serial_v1" { arguments += ["--prefill-schedule", prefillSchedule] }
         // The pipeline's launch is unchanged; any other mode is declared to both ranks.
         if generationMode != Self.pipelineMode { arguments += [Self.generationModeArgument, generationMode] }
+        if let speculativeDepth { arguments += [Self.speculativeDepthArgument, String(speculativeDepth)] }
         // A worker refuses a qualification switch in its environment unless it
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.

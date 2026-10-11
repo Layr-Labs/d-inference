@@ -338,7 +338,7 @@ public enum ClusterPlacementPlanner {
             let memory = device.profile.memory, last = rank == count - 1
             // Under a phase split the last rank also loads every earlier range,
             // after its own, so that it can decode alone.
-            let loads = [own] + (mode == .phaseSplit && last ? earlier : [])
+            let loads = [own] + (mode.isPhaseSplit && last ? earlier : [])
             var held = 0, loadNeed = 0, largest = 0
             for part in loads {
                 let rounded = part.loadedBytes + part.tensorCount * memory.pageSizeBytes
@@ -357,7 +357,7 @@ public enum ClusterPlacementPlanner {
                 extra += 2 * layout.maximumChunkTokens * layout.boundaryBytesPerToken
             }
             // The state that changes owner exists on both sides while it moves.
-            if mode == .phaseSplit {
+            if mode.isPhaseSplit {
                 let moving = last ? earlier.reduce(0) { $0 + $1.stateBytes(tokens: prompt) } : own.stateBytes(tokens: prompt)
                 extra += 2 * moving
             }
@@ -391,7 +391,7 @@ public enum ClusterPlacementPlanner {
                 : Double(prompt) * sum
             first += Double(chunks * (ranges.count - 1)) * link.perChunkSeconds
             var step: Double, handoff = 0.0
-            if mode == .phaseSplit, let lastDevice = order.last {
+            if mode.isPhaseSplit, let lastDevice = order.last {
                 // After the hand-off the last rank decodes alone.
                 step = 1 / rates(lastDevice, regime).0.decodeTokensPerSecond
                 handoff = link.handoffSecondsPerByte
@@ -449,7 +449,8 @@ public enum ClusterPlacementPlanner {
         /// placements that fit now, those with comfortable headroom; among
         /// placements that do not, the fewest Macs asked for memory and the
         /// least asked; then predicted request time. Equal times are broken by the larger
-        /// smallest headroom, the lower cut, the devices' labels in rank order
+        /// smallest headroom, the lower cut, the devices' labels in rank order,
+        /// a phase split with the speculative head before the same without it,
         /// and the mode's place in the layout. Nothing depends on the order
         /// the devices were given in, so the result is the same whichever
         /// Mac asks.
@@ -475,6 +476,12 @@ public enum ClusterPlacementPlanner {
                 if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }
                 let la = a.ranks.map(\.device), lb = b.ranks.map(\.device)
                 if la != lb { return la.lexicographicallyPrecedes(lb) }
+                // The same phase split with and without the model's own
+                // speculative head: the head is the product's default, as on
+                // one Mac. The estimate does not credit its speed-up.
+                if a.mode.isPhaseSplit, b.mode.isPhaseSplit, a.mode.usesSpeculativeHead != b.mode.usesSpeculativeHead {
+                    return a.mode.usesSpeculativeHead
+                }
                 return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
             }
         }

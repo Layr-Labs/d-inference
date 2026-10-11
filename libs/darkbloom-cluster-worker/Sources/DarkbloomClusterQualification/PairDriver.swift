@@ -61,7 +61,7 @@ public struct PairDriver: Sendable {
     static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 ",
         "darkbloom-mimo-resident-load-v1 ", "darkbloom-mimo-request-v1 ", "darkbloom-mimo-resident-release-v1 ",
         "darkbloom-mimo-step-v1 ", "darkbloom-forced-exit-v1 ", "darkbloom-orphan-wired-v1 ", "darkbloom-stage-residency-v1 ",
-        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 "]
+        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 "]
     static func runtimeLines(_ diagnostics: String) -> [String] {
         diagnostics.split(separator: "\n").map(String.init).filter { line in
             runtimeLinePrefixes.contains { line.hasPrefix($0) }

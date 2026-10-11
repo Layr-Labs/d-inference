@@ -177,6 +177,26 @@ public enum QwenStagedGenerationReference {
         public let resourceAdmission: QwenResidentResourceAdmissionReport
         /// Present when the run handed stage 0's state across the in-process boundary.
         public let handoff: HandoffReceipt?
+        /// Present when the decode after the hand-off ran the speculative head.
+        public var speculative: Speculative? = nil
+    }
+
+    /// What the speculative head did in a run: per draft position how often a
+    /// round reached it and how often its draft was the target's own token.
+    public struct Speculative: Sendable {
+        public let depth: Int
+        public let rounds: Int
+        public let plainSteps: Int
+        public let emittedTokens: Int
+        public let examinedByPosition: [Int]
+        public let acceptedByPosition: [Int]
+        public let buildSeconds: Double
+        public let evaluateSeconds: Double
+        public let settleSeconds: Double
+        public let headLoadSeconds: Double
+        public let headFileBytes: Int
+        public let headActiveBytesAdded: Int
+        public let headSHA256: String
     }
 
     private static let matrixPath = "/var/empty/darkbloom-staged-reference.matrix.json"
@@ -186,10 +206,19 @@ public enum QwenStagedGenerationReference {
 
     /// Everything a run produces that is not a plain value stays inside this
     /// function, so the release at the end can be checked against weak references.
+    ///
+    /// `speculativeDepth` (needs `handoff`): after the in-process hand-off the
+    /// decode runs the model's speculative head with that fixed depth, as the
+    /// decoding rank of `phase_split_mtp_v1` does. One `Step` per emitted
+    /// token, from that token's own column of the verify window.
     public static func run(modelDirectory: URL, stageCut: Int, request value: Request,
                            deadlineUptimeNanoseconds: UInt64, topCount: Int = 4,
-                           handoff: Handoff? = nil) throws -> Result {
+                           handoff: Handoff? = nil, speculativeDepth: Int? = nil) throws -> Result {
         guard (2...16).contains(topCount) else { throw ProbeError("Reference top count must be 2...16") }
+        guard speculativeDepth == nil || handoff != nil else {
+            throw ProbeError("Speculative decode in the reference follows the in-process hand-off")
+        }
+        let speculativeTerms = try speculativeDepth.map { try QwenMTPTerms(depth: $0) }
         let processEnvironment = ProcessInfo.processInfo.environment
         guard nativeNames.allSatisfy({ processEnvironment[$0] == nil }) else {
             throw ProbeError("Staged reference refuses a cluster transport environment; it creates no collective")
@@ -247,6 +276,8 @@ public enum QwenStagedGenerationReference {
         weak var retired0: Module?
         weak var retired1: Module?
         var sessions: [QwenLayerStageSession] = []
+        var speculativeHead: QwenMTPHead?
+        var decoder: QwenMTPDecoder?
         var handoffRefusal: String?
         return try MLX.withError { nativeError in
             func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
@@ -313,10 +344,21 @@ public enum QwenStagedGenerationReference {
                             requestAllowance: allowances[rank]))
                 }
 
+                if let speculativeTerms {
+                    // After both stages, as the decoding rank loads it.
+                    guard admissions[0].supportedGenerationModes.contains(.phaseSplitMTP) else {
+                        throw ProbeError("This registered model's row has no speculative head")
+                    }
+                    let head = try QwenMTPHead(modelDirectory: modelDirectory, sourceConfiguration: configBytes,
+                        manifest: manifestBytes, producer: stages[0].loaded, consumer: stages[1].loaded, check: live)
+                    speculativeHead = head
+                    decoder = try QwenMTPDecoder(head: head, terms: speculativeTerms, request: request)
+                    try settle()
+                }
                 let requestStarted = DispatchTime.now().uptimeNanoseconds
                 for rank in 0...1 {
                     sessions.append(try QwenLayerStageSession(stage: stages[rank].loaded, plan: plan,
-                                                              generationRequest: request))
+                        generationRequest: request, hiddenTap: rank == 1 ? decoder?.tap() : nil))
                 }
                 var tokens: [Int] = [], steps: [Step] = []
                 var finalLogits: QwenRecordedLogits?
@@ -490,6 +532,58 @@ public enum QwenStagedGenerationReference {
                             adoptionNanoseconds: receipt.adoptionNanoseconds,
                             producerStateRetired: true, activeBytesBefore: activeBefore,
                             activeBytesAfter: Memory.snapshot().activeMemory)
+                        // The rest of the request decodes with the head, below.
+                        if decoder != nil { break }
+                    }
+                }
+                if let decoder, reason == nil {
+                    guard let first = tokens.last, handoffReceipt != nil else {
+                        throw ProbeError("Speculative decode starts after the hand-off and the first token")
+                    }
+                    try decoder.begin(firstToken: first)
+                    while reason == nil {
+                        try autoreleasepool {
+                            try live()
+                            let ordinal = tokens.count
+                            let offset = request.promptCount + ordinal - 1
+                            let started = DispatchTime.now().uptimeNanoseconds
+                            let emitted = try decoder.step(producer: sessions[0], consumer: sessions[1],
+                                lastToken: tokens[ordinal - 1], offset: offset,
+                                remaining: request.outputCount - ordinal, check: live)
+                            let elapsed = DispatchTime.now().uptimeNanoseconds - started
+                            decode += elapsed
+                            guard sessions[0].committedTokens == offset + emitted.tokens.count,
+                                  sessions[1].committedTokens == sessions[0].committedTokens else {
+                                throw ProbeError("Staged reference stages committed different frontiers")
+                            }
+                            for (column, token) in emitted.tokens.enumerated() {
+                                completedFrames += 1
+                                let row = emitted.row(column)
+                                // Not timed: the complete column is copied to the CPU.
+                                let captured = try QwenRecordedLogits(row, vocabularySize: request.profile.vocabularySize,
+                                    check: live)
+                                let top = topValues(captured.record.values, count: topCount)
+                                guard top.indices.first == token else {
+                                    throw ProbeError("Staged reference speculative token differs from its captured column")
+                                }
+                                steps.append(.init(ordinal: tokens.count, frameSequence: request.prefillFrameCount + tokens.count - 1,
+                                    committedTokens: offset + column + 1, tokenID: token,
+                                    topTokenIDs: top.indices, topLogits: top.values, maximumTieCount: top.tieCount,
+                                    rowSHA256: captured.record.logicalBytesSHA256,
+                                    forwardNanoseconds: elapsed / UInt64(emitted.tokens.count)))
+                                tokens.append(token); finalLogits = captured
+                                if request.stopTokenIDs.contains(token) { reason = .eos }
+                                else if tokens.count == request.outputCount { reason = .length }
+                                if reason != nil {
+                                    guard column == emitted.tokens.count - 1 else {
+                                        throw ProbeError("Speculative decode emitted past a stop")
+                                    }
+                                    let frame = try request.frame(sequence: request.prefillFrameCount + tokens.count - 2)
+                                    try captures[0].captureFinalRow(nil, frame: frame, tokenID: token, check: live)
+                                    try captures[1].captureFinalRow(row, frame: frame, tokenID: token, check: live)
+                                }
+                            }
+                        }
                     }
                 }
                 guard let reason, let last = tokens.last, let finalLogits else {
@@ -512,6 +606,18 @@ public enum QwenStagedGenerationReference {
                         throw ProbeError("Staged reference request state failed retirement")
                     }
                 }
+                let speculative = decoder.map { decoder -> Speculative in
+                    let s = decoder.statistics
+                    return Speculative(depth: s.depth, rounds: s.rounds, plainSteps: s.plainSteps,
+                        emittedTokens: s.emittedTokens, examinedByPosition: s.examinedByPosition,
+                        acceptedByPosition: s.acceptedByPosition, buildSeconds: Double(s.buildNanoseconds) / 1e9,
+                        evaluateSeconds: Double(s.evaluateNanoseconds) / 1e9, settleSeconds: Double(s.settleNanoseconds) / 1e9,
+                        headLoadSeconds: Double(speculativeHead!.receipt.loadNanoseconds) / 1e9,
+                        headFileBytes: speculativeHead!.receipt.tensorFileBytes,
+                        headActiveBytesAdded: speculativeHead!.receipt.activeBytesAdded,
+                        headSHA256: speculativeHead!.headSHA256)
+                }
+                decoder?.release(); decoder = nil
                 let requestWall = DispatchTime.now().uptimeNanoseconds - requestStarted
                 let identities = sessions.map(\.identity)
                 let source = try QwenLayerStageWireSourceIdentity(
@@ -539,8 +645,9 @@ public enum QwenStagedGenerationReference {
                 let peak = Memory.snapshot().peakMemory
 
                 // Release in the order the resident runtime uses: request state,
-                // then the stages, both streams drained, cached buffers returned.
+                // then the head and the stages, both streams drained, cached buffers returned.
                 sessions.removeAll()
+                speculativeHead = nil
                 stages.removeAll()
                 try settle()
                 Memory.clearCache()
@@ -569,14 +676,15 @@ public enum QwenStagedGenerationReference {
                     activeBytesBefore: before, activeBytesLoaded: loadedBytes, peakBytes: peak,
                     activeBytesAfterRelease: after.activeMemory, cacheBytesAfterRelease: after.cacheMemory,
                     stageModelsReleased: [retired0 == nil, retired1 == nil], resourceAdmission: .current,
-                    handoff: handoffReceipt)
+                    handoff: handoffReceipt, speculative: speculative)
             } catch {
                 var primary: Error = error
                 // Prefer a recorded native fault over a secondary Swift error.
                 do { try nativeError.check() } catch { primary = error }
                 for session in sessions { try? session.cancel() }
                 let retired = sessions.allSatisfy(\.isClosed)
-                sessions.removeAll(); stages.removeAll()
+                decoder?.release(); decoder = nil
+                sessions.removeAll(); speculativeHead = nil; stages.removeAll()
                 Stream.gpu.synchronize(); Stream.cpu.synchronize()
                 Memory.clearCache()
                 if let handoffRefusal {

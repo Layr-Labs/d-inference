@@ -132,7 +132,11 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
     public let selectionPolicy = "greedy"
     public let modality = "text"
     public let stopPolicy = "selectedTokenIDs"
-    public let speculation = "off"
+    /// "off", or the one speculative scheme a runtime may advertise: the
+    /// decoding rank of a phase split drafts with the model's own head and
+    /// keeps only the target's greedy tokens. It follows from the modes.
+    public let speculation: String
+    public static let decodingRankSpeculation = "decodingRankHeadExactGreedy"
     public let prefixReuse = false
 
     public init(runtimeBinarySHA256: String, adapterID: String, adapterVersion: Int,
@@ -149,6 +153,7 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
         self.supportedPrefillSchedules = supportedPrefillSchedules
         self.supportedGenerationModes = supportedGenerationModes
+        self.speculation = supportedGenerationModes.contains(.phaseSplitMTP) ? Self.decodingRankSpeculation : "off"
         try ClusterRuntimeCapabilityValidation.check(self)
     }
 

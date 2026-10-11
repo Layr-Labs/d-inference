@@ -227,7 +227,7 @@ enum RunCommand {
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
 
         var report = Report(mode: options.mode, role: role.label, rank: group?.rank ?? 0, size: group?.size ?? 1,
-            backend: group.map { options.backend.rawValue }, timing: group.map { _ in options.timing.rawValue },
+            backend: group.map { _ in options.backend.rawValue }, timing: group.map { _ in options.timing.rawValue },
             correctnessOnly: options.backend == .ring && group != nil, chip: chipName(),
             modelConfigurationSHA256: configurationSHA, modelID: request.modelID, requestID: request.requestID,
             promptTokens: request.promptTokenIDs.count, promptTokenIDsSHA256: request.promptTokenIDsSHA256,
@@ -265,10 +265,10 @@ enum RunCommand {
                         run.stepP50Milliseconds, run.stepP90Milliseconds, String(run.tokenIDsSHA256.prefix(16))))
             Memory.clearCache()
         }
-        report.repeatsIdentical = Set(report.runs.map(\.tokenIDsSHA256)).count == 1
+        report.repeatsIdentical = Set(report.runs.map { $0.tokenIDsSHA256 }).count == 1
         if let group {
             report.floatingReductions = group.floatingReductions
-            report.ranksAgree = try group.digestsEqual(fnv(report.runs.map(\.tokenIDsSHA256).joined(separator: ",")))
+            report.ranksAgree = try group.digestsEqual(fnv(report.runs.map { $0.tokenIDsSHA256 }.joined(separator: ",")))
             guard try group.agree([report.repeatsIdentical && report.ranksAgree == true ? 1 : 0]) else {
                 report.passed = false
                 return report

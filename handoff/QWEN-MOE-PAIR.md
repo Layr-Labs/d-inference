@@ -247,9 +247,9 @@ lines at this branch's head):
 
 | Where | What |
 |---|---|
-| `Inference/Distributed/Installed/DistributedInstalledPlan.swift:25` | An installed plan requires the dense arithmetic policy ID by literal; a routed-expert capability is refused |
-| `Inference/Distributed/Installed/DistributedInstalledPlan.swift:68` | The worker environment sets the three dense variables only; a routed-expert rank would be refused by its own admission without `MLX_GATHER_QMM_EXPERT_SLICES=trust` |
-| `Inference/Distributed/Installed/DistributedInstalledPairServingTable.swift:110` | The pair-serving table has rows for the 9B and the 27B; every other model is refused with `noRow`. A row needs measured time budgets from a quiet pair, and a decision on the near-tie verdict above |
+| `Inference/Distributed/Installed/DistributedInstalledPlan.swift` | **Done on `work/pair-chip-policy` (2026-10-11):** a plan needs the record's adapter to register the model, to name its one arithmetic policy and to have a rank environment in `adapterArithmeticEnvironment`; routed-expert Qwen is one of them |
+| `Inference/Distributed/Installed/DistributedInstalledPlan.swift` | **Done:** a routed-expert rank is started with the three dense values and `MLX_GATHER_QMM_EXPERT_SLICES=trust`, as the pair driver starts it. Both A3B models were served by `darkbloom start --local --distributed` on the pair (cut 12, phase split, prefix reuse on): 72 and 76 completion tokens streamed, the repeat reused 23 prompt tokens |
+| `Inference/Distributed/Installed/DistributedInstalledPairServingTable.swift` | **Done:** one row of time budgets for every granted model, both A3B models among them, from the pair's own cross-cable figures (ready in 18 to 31 s, first token 1 to 8.5 s at 4,096 tokens and 8.3 to 8.7 s at 16,384). The near-tie verdict is decided (owner decision D4): it passes. Permission is the model's grant (`ClusterPairServingGrants`): M3 Ultra leads, M5 Max decodes |
 | `Server/Distributed/DistributedLocalServer+HTTP.swift:71` | The distributed server has no vision gate; the Qwen3.6 artifact's catalog entry is a vision model, and only its text path exists in the runtime |
 | Catalog and coordinator | The Qwen3.6 catalog ID promises vision and an MTP head. A pair would serve text with MTP off: that needs its own catalog statement, not a renamed model. Coordinator code is in another repository and was not touched |
 | Manifest pin | See "Artifacts": catalog-endpoint manifest bytes against CDN `manifest.json` |

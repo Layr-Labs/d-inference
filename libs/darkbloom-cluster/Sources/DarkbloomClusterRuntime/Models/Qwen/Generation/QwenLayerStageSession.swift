@@ -523,3 +523,81 @@ final class QwenLayerStageSession {
 
     deinit { try? retire(failed: !(schedule.complete || handedOff)) }
 }
+
+extension QwenLayerStageSession {
+    /// One decode frame for several sessions of the same loaded stage at once
+    /// (continuous batching), rows in the order given; each session decodes
+    /// its own `tokens[i]` at its own committed frontier. Stage 0 returns the
+    /// residual rows `[B, 1, H]`; stage 1 takes them as `residual` and
+    /// returns the logits rows `[B, V]`. The sessions must share the stage's
+    /// KV host. Any failure retires every session as failed.
+    static func decodeBatch(_ sessions: [QwenLayerStageSession], tokens: [Int], residual: MLXArray?,
+                            check: () throws -> Void) throws -> MLXArray {
+        guard let first = sessions.first, sessions.count == tokens.count,
+              Set(sessions.map { ObjectIdentifier($0) }).count == sessions.count,
+              sessions.allSatisfy({ ($0.stage.model as AnyObject) === (first.stage.model as AnyObject)
+                  && $0.stage.stageIndex == first.stage.stageIndex && $0.state.hosted }) else {
+            throw ProbeError("A batched decode needs distinct sessions of one hosted loaded stage")
+        }
+        do {
+            return try MLX.withError { error in
+                func checked() throws { try error.check(); try check() }
+                var frames: [QwenLayerStageFrame] = []
+                for (session, token) in zip(sessions, tokens) {
+                    try session.state.requireOpen()
+                    guard (0..<session.stage.vocabularySize).contains(token),
+                          session.state.committedTokens == session.schedule.committedTokens,
+                          session.hiddenTap == nil, session.windowOffset == nil else {
+                        throw ProbeError("Batched decode token, frontier or session role differs")
+                    }
+                    frames.append(try session.schedule.admitDecode(offset: session.schedule.committedTokens))
+                }
+                let rows = sessions.count, stageIndex = first.stage.stageIndex
+                if stageIndex == 0 {
+                    guard residual == nil else { throw ProbeError("Stage zero rejects a supplied residual") }
+                } else {
+                    guard let residual, residual.shape == [rows, 1, first.hiddenSize],
+                          residual.dtype == first.stage.activationDType else {
+                        throw ProbeError("Batched decode residual differs from the native [B,1,H] contract")
+                    }
+                }
+                try checked()
+                let input = MLXArray(tokens.map(Int32.init)).reshaped([rows, 1])
+                let output = try CBv2OwnedRequestState.runBatch(sessions.map(\.state), tokenCount: 1, check: checked,
+                    forward: { caches, evaluations in
+                        if stageIndex == 0 {
+                            let native = first.stage.model as! any CBv2RecurrentMTPForwardable
+                            return native.cbv2ForwardWithHidden(input, caches: caches.map { $0 as! any KVCache },
+                                recurrentState: evaluations, positionIds: nil).lastHidden
+                        }
+                        let native = first.stage.model as! any CBv2PositionedRecurrentEmbeddingForwardable
+                        return native.embeddingForward(input, inputEmbedding: residual!,
+                            cache: caches.map { $0 as! any KVCache }, recurrentState: evaluations,
+                            positionIds: nil)[0..., -1, 0...]
+                    }, validateOutput: { array in
+                        let expected = stageIndex == 0 ? [rows, 1, first.hiddenSize] : [rows, first.stage.vocabularySize]
+                        guard array.shape == expected, [.float16, .bfloat16, .float32].contains(array.dtype),
+                              stageIndex != 0 || array.dtype == first.stage.activationDType else {
+                            throw ProbeError("Batched stage output differs from the native residual/logit contract")
+                        }
+                    })
+                for (session, frame) in zip(sessions, frames) { try session.schedule.commit(frame) }
+                if stageIndex == 0 {
+                    // As for one request: the sender must own the residual alone.
+                    Stream.gpu.synchronize(); try checked()
+                }
+                return output
+            }
+        } catch {
+            for session in sessions { try? session.retire(failed: true) }
+            throw error
+        }
+    }
+
+    /// The next frame this session will run (prefill or decode), for a batch
+    /// scheduler; nil once the schedule finished.
+    var nextFrame: QwenLayerStageFrame? {
+        guard !schedule.complete, schedule.nextSequence < request.forwardCount else { return nil }
+        return try? request.frame(sequence: schedule.nextSequence)
+    }
+}

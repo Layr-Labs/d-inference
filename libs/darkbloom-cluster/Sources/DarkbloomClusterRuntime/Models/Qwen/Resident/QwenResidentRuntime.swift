@@ -21,7 +21,7 @@ public final class QwenResidentRuntime {
     public let generationMode: QwenResidentGenerationMode
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
-    private let lifecycle: QwenLayerStageResidentLifecycle
+    let lifecycle: QwenLayerStageResidentLifecycle
     private var stage: (any LayerStageResidentStage)?
     private weak var model: Module?
     /// Phase split, rank 1 only: the producer stage this rank also holds, so
@@ -41,6 +41,11 @@ public final class QwenResidentRuntime {
     public let prefixCache: QwenStagePrefixCache
     /// Continuous batching terms, agreed with the peer at load.
     public let batch: QwenBatchSettings
+    /// Batch lanes this rank holds (empty with one lane).
+    let laneBook = QwenBatchLaneBook()
+    /// True while the batch loop runs on the executor: lane reservations and
+    /// starts it applies between steps then run inside its exclusive hold.
+    var batchServing = false
     /// The KV storage the stage's requests use, for whoever launched the worker.
     public var kvBackend: String { stage?.loaded.kvHost.host?.kind.rawValue ?? "contiguous" }
 
@@ -81,6 +86,17 @@ public final class QwenResidentRuntime {
         guard control.available else { throw ProbeError("Keep-warm needs an idle resident owner") }
         return try ClusterKeepWarm.dataPlanePing(collective: collective, check: { try control.check() })
     }
+
+    /// The executor's exclusive hold. Inside the batch loop, control it applies
+    /// between steps runs in the loop's own hold.
+    func withExclusiveOperation<T>(_ body: () throws -> T) throws -> T {
+        if batchServing { return try body() }
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        return try body()
+    }
+
+    var stageForBatch: (any LayerStageResidentStage)? { stage }
 
     public var readiness: ClusterWorkerReady? {
         guard control.available, (try? control.check()) != nil else { return nil }
@@ -389,7 +405,7 @@ public final class QwenResidentRuntime {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     // Every rank sweeps its cache before its model goes.
-                    prefixCache.sweep()
+                    prefixCache.sweep(); laneBook.clear()
                     // The stages' KV pools go with them; one still holding a
                     // request's pages is a failed release.
                     let drained = CBv2StageKVHost.uninstall(from: stage?.loaded)

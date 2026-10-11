@@ -57,7 +57,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)
                 submissions[index] = .submitted
             }
-            let event = try worker.receiveWorkerEvent(until: deadline, cancelled: { self.isCancelled })
+            let event = try owner.receive(rank: index, requestID: requestID, until: deadline, cancelled: { self.isCancelled })
             guard event.requestID == requestID else { throw ClusterWorkerOwnerError.unavailable }
             if case .refused = event.event {
                 lock.withLock { submissions[index] = .refused }
@@ -151,7 +151,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
     func waitForRetirement() { retired.wait() }
 
     private func event(_ rank: Int) throws -> ClusterWorkerEvent {
-        let value = try owner.workers[rank].receiveWorkerEvent(until: reservation.deadlineUptimeNanoseconds, cancelled: { self.isCancelled })
+        let value = try owner.receive(rank: rank, requestID: requestID, until: reservation.deadlineUptimeNanoseconds,
+            cancelled: { self.isCancelled })
         guard value.requestID == requestID else { throw ClusterWorkerOwnerError.invalid("Stale worker request event") }
         return value.event
     }
@@ -255,7 +256,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             let worker = owner.workers[index]
             while !worker.nativeCleanupObserved && DispatchTime.now().uptimeNanoseconds < deadline {
                 do {
-                    let value = try worker.receiveWorkerEvent(until: deadline)
+                    let value = try owner.receive(rank: index, requestID: requestID, until: deadline)
                     guard value.requestID == requestID || value.requestID == nil else { throw ClusterWorkerOwnerError.invalid("Stale cleanup event") }
                     if value.requestID == requestID, case .retired = value.event { acknowledged[index] = true; break }
                     // In-flight committed/finished/failed records cannot undo cancellation.

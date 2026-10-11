@@ -115,6 +115,17 @@ public struct PairConfiguration: Sendable {
     public var followRequests: [QualificationRequest] = []
     /// Diagnosis: both workers keep no prompt prefixes (cold prefill always).
     public var prefixCacheOff = false
+    /// Continuous batching: both workers serve this many requests at once
+    /// (`DARKBLOOM_CLUSTER_BATCH_LANES`); one is the one-request owner.
+    public var batchLanes = 1
+    /// Both workers' stage KV storage (`DARKBLOOM_CLUSTER_KV_BACKEND`); nil
+    /// leaves the default (paged).
+    public var kvBackend: String?
+    /// Request files of the batching phase, after the repetitions: each runs
+    /// alone first (`batchSolo`), then each wave starts its first N together.
+    public var batchRequests: [QualificationRequest] = []
+    public var batchWaves: [Int] = []
+    public var batchSolo = true
     public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
@@ -381,6 +392,8 @@ public struct PairConfiguration: Sendable {
         }
         if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
         if prefixCacheOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_CACHE", "off")) }
+        if batchLanes > 1 { environment.append(("DARKBLOOM_CLUSTER_BATCH_LANES", String(batchLanes))) }
+        if let kvBackend { environment.append(("DARKBLOOM_CLUSTER_KV_BACKEND", kvBackend)) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
         if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         if stageResidency {

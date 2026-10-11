@@ -371,3 +371,91 @@ final class CBv2OwnedRequestState {
 
     deinit { try? retire(failed: true) }
 }
+
+extension CBv2OwnedRequestState {
+    /// One frame of `tokenCount` tokens for several requests of the same
+    /// hosted stage at once (continuous batching): every request's rows are
+    /// bound to the host's caches in the order given, every request binds its
+    /// own recurrent evaluation, and one forward computes all of them. Each
+    /// row attends only its own KV (both backends dispatch attention per row),
+    /// so a row's result does not depend on its batchmates.
+    ///
+    /// Any failure marks every request failed; the caller retires them all.
+    static func runBatch(_ states: [CBv2OwnedRequestState], tokenCount: Int, check: () throws -> Void,
+                         forward: ([any CBv2AttendingLayerCache], [CBv2RecurrentStateEvaluation]) throws -> MLXArray,
+                         validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
+        guard let host = states.first?.geometry.host, states.count <= host.lanes,
+              states.allSatisfy({ $0.geometry.host === host }),
+              Set(states.map { ObjectIdentifier($0) }).count == states.count else {
+            states.forEach { $0.isFailed = true }
+            throw ProbeError("A batched frame needs distinct requests of one stage KV host, within its lanes")
+        }
+        do {
+            for state in states {
+                try state.requireOpen()
+                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens else {
+                    throw ProbeError("CBv2 batched advance exceeds a request's admitted capacity")
+                }
+            }
+            let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
+            for state in states {
+                state.evaluation = try state.recurrent.bind(); state.evaluationWasStaged = false
+            }
+            let output = try forward(caches, states.map { $0.evaluation! })
+            var roots: [MLXArray] = []
+            for state in states {
+                roots += try state.evaluation!.evaluate(); state.evaluationWasStaged = true
+            }
+            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+            eval([output] + roots + cacheRoots)
+            try check()
+            try validateOutput(output)
+            let frontiers = states.map { Int32($0.committedTokens + tokenCount) }
+            for (index, cache) in caches.enumerated() {
+                guard cache.rows.count == states.count, cache.positionOffsets.shape == [states.count],
+                      cache.positionOffsets.dtype == .int32, cache.positionOffsets.asArray(Int32.self) == frontiers,
+                      host.owns(cache, at: index) else {
+                    throw ProbeError("CBv2 batched KV binding or device token frontiers differ")
+                }
+            }
+            for (lane, state) in states.enumerated() {
+                try state.validateBatchRow(lane: lane, after: state.committedTokens + tokenCount)
+            }
+            try check()
+            for state in states {
+                try state.evaluation!.commit()
+                state.evaluation = nil; state.evaluationWasStaged = false
+                state.committedTokens += tokenCount
+                guard Set(state.recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                    == Set(state.geometry.recurrent.modelLayerIndices) else {
+                    throw ProbeError("CBv2 batched recurrent generation did not commit every local layer")
+                }
+            }
+            return output
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    /// One request's rows after a batched frame: each at the new frontier and
+    /// bound at its own lane of every cache.
+    private func validateBatchRow(lane: Int, after count: Int) throws {
+        for (index, optionalRow) in rows.enumerated() {
+            let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
+            let cache = geometry.caches[index]
+            guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
+                  cache.rows.indices.contains(lane), cache.rows[lane] === row else {
+                throw ProbeError("CBv2 batched KV ownership or token frontier differs")
+            }
+        }
+        for layer in geometry.recurrent.layers {
+            guard let state = recurrent.state(modelLayerIndex: layer.modelLayerIndex),
+                let conv = state.conv, let ssm = state.ssm,
+                conv.shape == layer.convShape, conv.dtype == layer.convDType,
+                ssm.shape == layer.ssmShape, ssm.dtype == layer.ssmDType else {
+                throw ProbeError("CBv2 batched conv/SSM shape or dtype differs from its local contract")
+            }
+        }
+    }
+}

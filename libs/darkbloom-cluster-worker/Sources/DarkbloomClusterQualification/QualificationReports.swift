@@ -401,6 +401,60 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
     }
 }
 
+/// One request of a continuous-batching run, timed from its own start.
+public struct PairBatchRequestTiming: Codable, Equatable, Sendable {
+    /// Index of the request file in the run's batch list.
+    public var promptIndex: Int
+    public var requestID: String
+    public var promptTokens: Int
+    public var startOffsetSeconds: Double
+    public var firstTokenSeconds: Double?
+    public var decodeSeconds: Double?
+    public var decodeTokensPerSecond: Double?
+    public var totalSeconds: Double?
+    public var tokens: Int
+    public var selectedTokenIDsSHA256: String
+    public var finishReason: String
+    public var failure: String?
+    /// Against the same request run alone in this session: identical tokens,
+    /// or the first index where they differ.
+    public var matchesSolo: Bool?
+    public var firstDifferenceIndex: Int?
+    public var selectedTokenIDs: [Int]
+
+    public init(promptIndex: Int, requestID: String, promptTokens: Int, startOffsetSeconds: Double, tokens: [Int],
+                finishReason: String) {
+        self.promptIndex = promptIndex; self.requestID = requestID; self.promptTokens = promptTokens
+        self.startOffsetSeconds = startOffsetSeconds; self.tokens = tokens.count
+        self.selectedTokenIDsSHA256 = QualificationHash.tokenIDs(tokens); self.finishReason = finishReason
+        self.selectedTokenIDs = tokens
+    }
+}
+
+/// `concurrency` requests started together in one loaded session.
+public struct PairBatchWave: Codable, Equatable, Sendable {
+    public var concurrency: Int
+    /// First start to last finish.
+    public var wallSeconds: Double
+    public var totalTokens: Int
+    /// All tokens of the wave over its wall time.
+    public var aggregateTokensPerSecond: Double
+    /// Sum of the requests' own decode rates (tokens after the first over
+    /// first token to last token), the steady aggregate decode rate.
+    public var summedDecodeTokensPerSecond: Double?
+    public var requests: [PairBatchRequestTiming]
+    public var allMatchSolo: Bool?
+}
+
+public struct PairBatchTiming: Codable, Equatable, Sendable {
+    public var lanes: Int
+    public var kvBackend: String?
+    /// Each request file run alone, one after another: the unbatched reference.
+    public var solo: [PairBatchRequestTiming]
+    public var waves: [PairBatchWave]
+    public var note: String
+}
+
 public struct PairTiming: Codable, Equatable, Sendable {
     public var startupSeconds: Double?
     public var admissionSeconds: Double?
@@ -413,6 +467,8 @@ public struct PairTiming: Codable, Equatable, Sendable {
     public var totalSeconds: Double?
     /// Every request of the run in order; the fields above describe the first.
     public var repetitions: [PairRepetitionTiming]?
+    /// Continuous batching waves, when the run asked for them.
+    public var batch: PairBatchTiming?
     public var note: String
 
     public init(note: String) { self.note = note }

@@ -68,7 +68,12 @@ public enum ClusterPlacementFlow {
         }
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = promptTokens; policy.outputTokens = outputTokens; policy.regime = regime
-        policy.leader = leader
+        // The model's pair-serving grant can rule an order out before anything
+        // is planned (owner decision D4): the planner then ranks only the order
+        // a start would accept.
+        let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
+            runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID)
+        policy.leader = granted.leader
         policy.modes = capability.supportedGenerationModes
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]
@@ -77,6 +82,7 @@ public enum ClusterPlacementFlow {
         let devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
         var lines = ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
         var setup: ClusterPlacementSetup?
         if let chosen = result.chosen {
             let value = try ClusterPlacementSetup.synthesize(description: description, capability: capability, chosen: chosen)
@@ -85,5 +91,56 @@ public enum ClusterPlacementFlow {
             setup = value
         }
         return (lines, result, setup)
+    }
+
+    /// Which Mac must lead for the placement to be one the model's
+    /// pair-serving grant allows, read from the chip names the two profiles
+    /// carry: the last rank is the decoding rank, the other the pipeline-only
+    /// rank (`ClusterPairServingRole`). Nil leaves the planner free.
+    ///
+    /// A plan is advice and a profile is what a Mac printed about itself, so
+    /// nothing is opened here: each Mac still checks the rank it runs with its
+    /// own chip before it serves. This only keeps the planner from choosing an
+    /// order that start would refuse, and says so. A chip name with no class
+    /// (a test profile, a virtual machine) is left to that check. A model
+    /// whose grant is withheld is still planned, with the refusal in `note`,
+    /// since a plan also answers whether the pair could hold it.
+    static func leaderUnderGrant(requested: String?, members: [(id: String, chip: String)],
+                                 runtimeModelID: String, publicModelID: String) throws -> (leader: String?, note: String?) {
+        guard members.count == 2 else { return (requested, nil) }
+        let grant: ClusterPairServingGrant
+        do {
+            grant = try ClusterPairServingGrants.grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
+        } catch let refusal as ClusterPairServingRefusal {
+            return (requested, refusal.description + " A setup made from this plan is refused when it is started.")
+        }
+        let classes = members.map { ClusterNumericsClass(chipName: $0.chip) }
+        /// The refusal a start would give when `first` leads; nil when the grant allows the order.
+        func refusal(leading first: Int) -> ClusterPairServingRefusal? {
+            for (rank, member) in [first, 1 - first].enumerated() {
+                guard let numericsClass = classes[member], let role = ClusterPairServingRole.of(rank: rank, rankCount: 2) else { continue }
+                let allowed = grant.allowedNumericsClasses(for: role)
+                if !allowed.contains(numericsClass) {
+                    return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                        reason: .classNotAllowed(rank: rank, role: role, numericsClass: numericsClass, allowed: allowed.sorted()))
+                }
+            }
+            return nil
+        }
+        if let requested, let index = members.firstIndex(where: { $0.id == requested }) {
+            if let refused = refusal(leading: index) { throw refused }
+            return (requested, nil)
+        }
+        let refused = [refusal(leading: 0), refusal(leading: 1)]
+        switch (refused[0], refused[1]) {
+        case (nil, nil): return (requested, nil)
+        case (.some(let both), .some): throw both
+        default:
+            let leader = refused[0] == nil ? 0 : 1
+            func words(_ classes: Set<ClusterNumericsClass>) -> String { classes.sorted().map(\.rawValue).joined(separator: " or ") }
+            return (members[leader].id, "This model is granted pair serving with the decoding rank (the last) on "
+                + "\(words(grant.decodingRankAllowedNumericsClasses)) and the other rank on \(words(grant.pipelineRankAllowedNumericsClasses)). "
+                + "On these two Macs that leaves one order, so \(members[leader].id) leads; the other order is not planned.")
+        }
     }
 }

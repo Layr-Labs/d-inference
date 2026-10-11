@@ -117,6 +117,8 @@ func incidentChecks() throws {
           "A21 the corrupt file is kept aside for whoever investigates")
 
     // The file keeps oMLX's field names.
+    _ = try log.record(.init(severity: .error, source: "leader", stateCode: .activationLaunchFailed,
+        explanation: ClusterFailureClassifier.classify(message: "Native key relay deadline expired")))
     let text = String(decoding: try Data(contentsOf: file), as: UTF8.self)
     check(["\"state_code\"", "\"guidance_code\"", "\"reason_code\"", "\"next_seq\"", "\"schema_version\" : 1"].allSatisfy(text.contains),
           "A22 the file uses the oMLX schema names (plus reason_code)")

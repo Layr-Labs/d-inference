@@ -103,7 +103,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             mode: configuration.selectedGenerationMode.rawValue,
             cut: DistributedSessionFacts.cut(prepared.plan.partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) }),
             membershipEpoch: values.1.uuidString.lowercased(),
-            diagnostics: ordered.map { DistributedSessionFacts.tail($0.diagnosticTail) }.filter { !$0.isEmpty },
+            diagnostics: ordered.compactMap { ($0 as? ClusterRemoteWorkerEndpoint).map { DistributedSessionFacts.tail($0.diagnosticTail) } }
+                .filter { !$0.isEmpty },
             terminations: terminations, peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user))
     }
 

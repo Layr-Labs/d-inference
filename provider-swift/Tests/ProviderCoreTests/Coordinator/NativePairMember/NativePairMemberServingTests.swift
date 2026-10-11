@@ -163,7 +163,11 @@ struct NativePairMemberServingTests {
             _ = try await peer.wait("native_pair_hello")
             #expect(host.served.count == 1 && host.stopped.isEmpty)
             #expect(await peer.control.endSessionBeforeClose(timeout: 20))
-            // The receipt is already out when the stop returns.
+            // The session already ended released when the stop returns: its
+            // receipt was written (processed by the connection) before, so a
+            // close that follows cannot overtake it. The mock reads it a moment later.
+            #expect(["idle", "released"].contains(peer.control.status))
+            _ = try await peer.wait("native_pair_owner_released")
             #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
             #expect(host.stopped.first == fixture.starts[0].common.epoch)
             #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)

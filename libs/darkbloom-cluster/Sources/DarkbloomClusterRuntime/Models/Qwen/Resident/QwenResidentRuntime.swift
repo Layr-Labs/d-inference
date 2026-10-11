@@ -48,9 +48,6 @@ public final class QwenResidentRuntime {
     /// holds while idle and empty. Anything above it while idle (the prefix
     /// cache) gives way to a request, so the serving context counts it.
     private let activeLoadedBytes: Int
-    /// The prefix cache's budget derived at load; a later idle refresh may
-    /// lower the budget with the room, never raise it above this.
-    private let loadPrefixBudgetBytes: Int
 
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
@@ -61,7 +58,6 @@ public final class QwenResidentRuntime {
          servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0, prefixBudgetBytes: Int? = nil) {
         self.prefixCache = prefixCache
         if let prefixBudgetBytes { prefixCache.setBudget(prefixBudgetBytes) }
-        loadPrefixBudgetBytes = prefixCache.budgetBytes
         self.servingContextTokens = servingContextTokens; self.activeLoadedBytes = activeLoadedBytes
         self.admission = admission; self.control = control; self.collective = collective
         self.speculativeHead = speculativeHead; self.speculativeTerms = speculativeTerms
@@ -97,13 +93,12 @@ public final class QwenResidentRuntime {
             guard String(describing: error).hasPrefix("Resident load refused: not even") else { return nil }
             found = min(admission.profile.maximumContextTokens, admission.profile.maximumChunkTokens + 1)
         }
-        // The cache's budget follows the room beside the serving context (never
-        // above the one found at load), so the context and the full budget fit
+        // The cache's budget follows the room beside the serving context now, in
+        // both directions (models stay loaded until unloaded, so a dip at load
+        // must not keep it small), so the context and the full budget fit
         // together; entries beyond a smaller budget are evicted now.
-        let budget = min(loadPrefixBudgetBytes, QwenStagePrefixCache.budget(roomBytes: room))
-        if budget != prefixCache.budgetBytes {
-            prefixCache.setBudget(budget)
-            log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(budget) room_bytes=\(room)"
+        if prefixCache.refreshBudget(roomBytes: room) {
+            log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixCache.budgetBytes) room_bytes=\(room)"
                 + " held_bytes=\(prefixCache.bytesInUse)")
         }
         let value = min(found, admission.wireProfile.maximumContextTokens)
@@ -352,8 +347,18 @@ public final class QwenResidentRuntime {
             var reserved = QwenResidentReservation(request: request, allowance: allowance,
                 deadline: value.deadlineUptimeNanoseconds, mode: mode, recordingCharge: charge,
                 prefillPolicy: prefillPolicy, prefillAllowance: prefill)
-            reserved.prefixCaptureBytes = prefixCache.captureLimit(promptCount: request.promptCount,
-                chunkSize: min(request.chunkSize, request.promptCount))
+            // Only what this request's capture adds after the prefix this rank
+            // holds for it (nothing on a repeat of the whole prompt), so kept
+            // entries never give way for a capture that will not happen. The
+            // scope is the one its agreement will key the cache by; without
+            // it the whole plan is charged, as for a cold request.
+            var scope: String?
+            if prefixCache.enabled {
+                scope = try? QwenResidentRequestExecution.prefixScope(stage: stage, admission: admission, request: request)
+            }
+            reserved.prefixCaptureBytes = scope.map {
+                prefixCache.captureLimit(scope: $0, tokens: request.promptTokenIDs, chunkSize: request.chunkSize)
+            } ?? prefixCache.captureLimit(promptCount: request.promptCount, chunkSize: request.chunkSize)
             let total = try QwenLongPrefillCheckedBytes.sum([charge?.reservedBytes ?? allowance.reservedBytes,
                 prefill?.reservedBytes ?? 0, split?.reservedBytes ?? 0])
             if split != nil {

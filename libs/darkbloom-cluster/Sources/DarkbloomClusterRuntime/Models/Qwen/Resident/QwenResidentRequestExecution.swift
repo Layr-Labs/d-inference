@@ -49,6 +49,27 @@ enum QwenResidentRequestExecution {
         }
     }
 
+    /// The source identity both ranks' generation agreement carries for a
+    /// request on this loaded stage.
+    static func sourceIdentity(stage: any LayerStageResidentStage, admission: any LayerStageResidentAdmission) throws
+        -> QwenLayerStageWireSourceIdentity {
+        let receipt = stage.loaded.receipt
+        return try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
+            artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
+            storageCommitmentSHA256: receipt.storageCommitmentSHA256,
+            planFingerprint: admission.plan.fingerprint,
+            producerStageFingerprint: admission.plan.stages[0].fingerprint)
+    }
+
+    /// The prefix cache's scope of a request on this loaded stage, as its
+    /// generation agreement will key it (`qwenStagePrefixScope`), before the
+    /// agreement exists: at reservation.
+    static func prefixScope(stage: any LayerStageResidentStage, admission: any LayerStageResidentAdmission,
+                            request: QwenLayerStageGenerationRequest) throws -> String {
+        qwenStagePrefixScope(source: try sourceIdentity(stage: stage, admission: admission),
+            numericalPolicySHA256: admission.arithmeticSHA256, request: request)
+    }
+
     static func run(stage: any LayerStageResidentStage, producerStage: (any LayerStageResidentStage)? = nil,
                     speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
                     generationMode: QwenResidentGenerationMode = .pipeline,
@@ -66,12 +87,7 @@ enum QwenResidentRequestExecution {
               (generationMode.usesSpeculativeHead && collective.rank == 1) == (speculativeHead != nil) else {
             throw ProbeError("Resident generation mode differs from its loaded stages, head or reservation")
         }
-        let receipt = stage.loaded.receipt
-        let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
-            artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
-            storageCommitmentSHA256: receipt.storageCommitmentSHA256,
-            planFingerprint: admission.plan.fingerprint,
-            producerStageFingerprint: admission.plan.stages[0].fingerprint)
+        let source = try sourceIdentity(stage: stage, admission: admission)
         // Both ranks derive the hand-off terms from their own Plan, registered
         // geometry and this request; the agreement fingerprint carries them.
         var split: QwenPhaseSplitPlan?

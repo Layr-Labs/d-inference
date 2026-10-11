@@ -162,34 +162,77 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     func record(_ cost: QwenStagePrefixCaptureCost) { lock.withLock { if measured == nil { measured = cost } } }
 
     /// Most bytes a request may capture, charged in its reservation: its
-    /// whole capture plan at the measured cost, within the budget; the budget
-    /// itself until a capture of this stage was measured. Zero when off.
-    func captureLimit(promptCount: Int, chunkSize: Int, heldFrontier: Int = 0) -> Int { // VERIFY STUB: held prefix ignored
-        guard enabled, promptCount >= 2 else { return 0 }
+    /// capture plan after `heldFrontier` (the deepest prefix of its prompt
+    /// this rank holds, which it reuses), at the measured cost, within the
+    /// budget; the budget itself until a capture of this stage was measured.
+    /// A repeat of the whole prompt (its split frontier held) captures
+    /// nothing. Zero when off.
+    ///
+    /// If the peer holds less, the pair reuses less and the session plans
+    /// more frontiers than charged; it still keeps within this limit (the
+    /// split frontier and fewer grid frontiers, or nothing on a charged
+    /// repeat, whose prompt this rank already holds).
+    func captureLimit(promptCount: Int, chunkSize: Int, heldFrontier: Int = 0) -> Int {
+        guard enabled, promptCount >= 2, heldFrontier < promptCount - 1 else { return 0 }
         return lock.withLock {
             guard let measured else { return budget }
-            let grid = (promptCount - 2) / stride(chunkSize: chunkSize)
+            let step = stride(chunkSize: chunkSize)
+            // Grid frontiers after the held prefix, below the split frontier.
+            let grid = (promptCount - 2) / step - max(0, heldFrontier) / step
             let frontiers = min(entryLimit, grid + 1)
             return min(budget, measured.bytes(deepest: promptCount - 1, frontiers: frontiers))
         }
     }
 
-    // VERIFY STUB (failing-first run only): old behaviour, the held prefix is ignored.
+    /// The capture limit of a request for `tokens` under `scope`, after the
+    /// deepest frontier this rank holds for it (recency untouched).
     func captureLimit(scope: String, tokens: [Int], chunkSize: Int) -> Int {
-        captureLimit(promptCount: tokens.count, chunkSize: chunkSize)
+        guard enabled, tokens.count >= 2 else { return 0 }
+        let held = deepestFrontier(scope: scope, tokens: tokens, maximumFrontier: tokens.count - 1)
+        return captureLimit(promptCount: tokens.count, chunkSize: chunkSize, heldFrontier: held)
     }
 
-    // VERIFY STUB (failing-first run only): old behaviour, lowered and never raised.
-    @discardableResult func refreshBudget(roomBytes: Int) -> Bool {
+    /// The deepest frontier this rank holds for `tokens` under `scope`, at
+    /// most `maximumFrontier` (0: none), as `frontiers(...).first` but hashing
+    /// prefixes from the deepest held frontier down only until one matches (a
+    /// repeat hashes once). Does not touch recency.
+    func deepestFrontier(scope: String, tokens: [Int], maximumFrontier: Int) -> Int {
+        guard enabled else { return 0 }
+        let limit = min(maximumFrontier, tokens.count)
+        var keys: [Int: Set<String>] = [:]
         lock.withLock {
-            let target = min(budget, Self.budget(roomBytes: roomBytes))
+            for entry in entries.values where entry.scope == scope
+                && entry.state.committedTokens > 0 && entry.state.committedTokens <= limit {
+                keys[entry.state.committedTokens, default: []].insert(entry.key)
+            }
+        }
+        for frontier in keys.keys.sorted(by: >)
+        where keys[frontier]?.contains(Self.key(scope: scope, tokens: tokens[0..<frontier])) == true {
+            return frontier
+        }
+        return 0
+    }
+
+    /// The idle refresh: the budget follows `roomBytes`, the admissible room
+    /// left beside the serving context now (`budget(roomBytes:)`), in both
+    /// directions, so a load during a memory dip does not keep it small for as
+    /// long as the model stays loaded. Entries beyond a lower budget go now.
+    /// True when the budget changed.
+    @discardableResult func refreshBudget(roomBytes: Int) -> Bool {
+        let target = Self.budget(roomBytes: roomBytes)
+        return lock.withLock {
             guard target != budget else { return false }
             budget = target; evictLocked(reserving: 0); return true
         }
     }
 
-    // VERIFY STUB (failing-first run only): old behaviour, the session always used the estimate.
-    func historyBytesPerToken(estimate: Int) -> Int { estimate }
+    /// The decoding rank's speculative history a prompt token, as the
+    /// reservation charges it (`captureLimit`): the measured figure once a
+    /// capture of this stage was measured, else `estimate`. The session keeps
+    /// its capture by the same figure; a larger estimate there would leave a
+    /// charge with one frontier (a short prompt, or a hit in its prompt's last
+    /// stride) too small for even its split frontier, so it captured nothing.
+    func historyBytesPerToken(estimate: Int) -> Int { lock.withLock { measured?.historyBytesPerToken ?? estimate } }
 
     /// The capture limit the runtime charged in the current reservation,
     /// handed to that request's stage session once (one request at a time a

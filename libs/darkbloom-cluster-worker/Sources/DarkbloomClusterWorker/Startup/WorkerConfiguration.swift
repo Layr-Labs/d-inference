@@ -15,6 +15,10 @@ struct WorkerConfiguration {
     /// when the argument is absent. Both ranks must be started with the same
     /// mode, and it must be one the registered model's resident row lists.
     let generationMode: ClusterGenerationMode
+    /// `--mtp-depth N` (1...4): the speculative head's fixed draft depth under
+    /// `phase_split_mtp_v1`; nil means the product drafter's maximum. Both ranks
+    /// bind it into their load agreement, so they must be given the same value.
+    let speculativeTerms: QwenMTPTerms?
     /// `--qualification-switches yes`: the explicit test flag without which a
     /// qualification switch in the environment stops the worker at startup.
     /// An installed owner never passes it.
@@ -29,12 +33,12 @@ struct WorkerConfiguration {
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
-            "--generation-mode", "--qualification-switches"]
+            "--generation-mode", "--qualification-switches", "--mtp-depth"]
         let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional qualification-switches flag and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag and optional complete bootstrap triple")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -84,6 +88,13 @@ struct WorkerConfiguration {
             }
             generationMode = mode
         } else { generationMode = .pipeline }
+        if let text = fields["--mtp-depth"] {
+            guard generationMode.usesSpeculativeHead, let depth = Int(text), String(depth) == text,
+                  let terms = try? QwenMTPTerms(depth: depth) else {
+                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with --generation-mode \(ClusterGenerationMode.phaseSplitMTP.rawValue)")
+            }
+            speculativeTerms = terms
+        } else { speculativeTerms = nil }
         if let text = fields["--qualification-switches"] {
             guard text == "yes" else { throw WorkerFailure.invalid("--qualification-switches takes only the value yes") }
             qualificationSwitchesPermitted = true

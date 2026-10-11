@@ -173,9 +173,12 @@ struct QwenPhaseSplitAllowance: Encodable, Equatable {
     let extraHostBytes: Int
     var reservedBytes: Int { get throws { try QwenLongPrefillCheckedBytes.sum([extraNativeBytes, extraHostBytes]) } }
 
+    /// `speculative` is the decoding rank's per-request head storage when the
+    /// mode runs the speculative head; nil otherwise and always on rank 0.
     static func derive(rank: Int, shapes: [QwenPhaseSplitStateShape], producerFusionBytes: Int,
+                       speculative: QwenMTPAllowance? = nil,
                        bound: (Int) throws -> Int) throws -> Self {
-        guard (0...1).contains(rank), !shapes.isEmpty, producerFusionBytes >= 0 else {
+        guard (0...1).contains(rank), !shapes.isEmpty, producerFusionBytes >= 0, speculative == nil || rank == 1 else {
             throw ProbeError("Invalid phase-split allowance geometry")
         }
         var native = 0, host = 0
@@ -186,8 +189,9 @@ struct QwenPhaseSplitAllowance: Encodable, Equatable {
             host = try QwenLongPrefillCheckedBytes.sum([host, entry.byteCount])
         }
         return .init(rank: rank,
-            extraNativeBytes: try QwenLongPrefillCheckedBytes.sum([native, rank == 1 ? producerFusionBytes : 0]),
-            extraHostBytes: host)
+            extraNativeBytes: try QwenLongPrefillCheckedBytes.sum([native, rank == 1 ? producerFusionBytes : 0,
+                speculative?.extraNativeBytes ?? 0]),
+            extraHostBytes: try QwenLongPrefillCheckedBytes.sum([host, speculative?.extraHostBytes ?? 0]))
     }
 }
 
@@ -251,4 +255,6 @@ struct QwenPhaseSplitSummary: Encodable, Equatable {
     let beforeHandoff: Memory
     let afterHandoff: Memory
     let afterRetirement: Memory
+    /// Present on a decoding rank that ran the speculative head.
+    var mtp: QwenMTPStatistics? = nil
 }

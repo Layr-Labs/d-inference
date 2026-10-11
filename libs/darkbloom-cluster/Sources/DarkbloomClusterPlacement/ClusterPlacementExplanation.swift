@@ -113,6 +113,7 @@ public enum ClusterPlacementExplanation {
         case .pipeline: modeText = "pipeline (every token passes through each rank in turn)"
         case .pipelineCompactDecode: modeText = "pipeline with compact decode framing"
         case .phaseSplit: modeText = "phase split (the ranks prefill together, then the last rank, which holds every layer, decodes alone)"
+        case .phaseSplitMTP: modeText = "phase split with speculative decoding (the last rank, which holds every layer and the model's MTP head, drafts and verifies alone)"
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines
@@ -124,7 +125,7 @@ public enum ClusterPlacementExplanation {
     public static func holdings(_ c: ClusterPlacementCandidate, devices: [ClusterPlacementDevice]) -> String {
         ClusterPlacementHoldings(ranks: c.ranks.map { r in
             .init(rank: r.rank, label: r.device, firstLayer: r.firstLayer, endLayer: r.endLayer,
-                  holdsEveryEarlierLayer: c.mode == .phaseSplit && r.rank == c.ranks.count - 1 && r.rank > 0,
+                  holdsEveryEarlierLayer: c.mode.isPhaseSplit && r.rank == c.ranks.count - 1 && r.rank > 0,
                   weightsBytes: r.weightsBytes,
                   physicalMemoryBytes: devices.first { $0.label == r.device }?.profile.physicalMemoryBytes, local: false)
         }).line
@@ -234,7 +235,7 @@ public enum ClusterPlacementExplanation {
                 + "\(chosen.ranks[1].device) \(number(share[1] * 100, 0))% (\(number(tb, 3)) ms); "
                 + "the cut is the admitted position where the whole request is predicted shortest.")
         }
-        if chosen.mode == .phaseSplit {
+        if chosen.mode.isPhaseSplit {
             lines.append("The last rank holds every layer and decodes alone after the first token, because that is faster than passing each token through both.")
         }
         if let other = result.chosenForOtherRegime, other.cuts != chosen.cuts || other.ranks.map(\.device) != chosen.ranks.map(\.device) || other.mode != chosen.mode {

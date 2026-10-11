@@ -47,7 +47,7 @@ public struct ClusterPlacementBudgets: Codable, Equatable, Sendable {
             // Every stage a rank loads is loaded through the verified loader,
             // which hashes the whole artifact first; under a phase split the
             // last rank loads twice.
-            let loads = candidate.mode == .phaseSplit && rank.rank == candidate.ranks.count - 1 ? candidate.ranks.count : 1
+            let loads = candidate.mode.isPhaseSplit && rank.rank == candidate.ranks.count - 1 ? candidate.ranks.count : 1
             let seconds = Double(loads) * Double(artifactBytes) / hash + Double(rank.weightsBytes) / materialize
             if seconds > (slowest?.seconds ?? 0) { slowest = (seconds, rank.rank) }
             let rates = [device.speed.rested.prefillTokensPerSecond] + (device.speed.sustained.map { [$0.prefillTokensPerSecond] } ?? [])

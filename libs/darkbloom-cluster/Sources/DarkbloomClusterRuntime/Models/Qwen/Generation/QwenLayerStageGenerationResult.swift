@@ -14,7 +14,8 @@ struct QwenLayerStageGenerationResult: Encodable {
     let finishReason: QwenLayerStageGenerationFinishReason
     let bothRequestStatesRetired = true
     let modelRemainsResident = true
-    let mtpEnabled = false
+    /// True when the decoding rank drafted and verified with the speculative head.
+    var mtpEnabled = false
     let physicalTransferQualified = false
     let independentNumericalComparisonPerformed = false
     let externalTTFTMeasured = false

@@ -44,7 +44,7 @@ public struct ClusterPlacementHoldings: Codable, Equatable, Sendable {
         let ranges = zip(edges, edges.dropFirst()).map { layout.range($0..<$1) }
         return ranges.indices.map { index in
             let last = index == ranges.count - 1
-            let loads = [ranges[index]] + (mode == .phaseSplit && last ? Array(ranges[..<index]) : [])
+            let loads = [ranges[index]] + (mode.isPhaseSplit && last ? Array(ranges[..<index]) : [])
             return loads.reduce(0) { $0 + $1.loadedBytes + $1.tensorCount * pageSizeBytes }
         }
     }
@@ -63,7 +63,7 @@ public struct ClusterPlacementHoldings: Codable, Equatable, Sendable {
         let bytes = weightsBytes(layout: layout, boundaries: boundaries, mode: mode, pageSizeBytes: pageSizeBytes)
         return .init(ranks: labels.indices.map { index in
             .init(rank: index, label: labels[index], firstLayer: edges[index], endLayer: edges[index + 1],
-                  holdsEveryEarlierLayer: mode == .phaseSplit && index == labels.count - 1 && index > 0,
+                  holdsEveryEarlierLayer: mode.isPhaseSplit && index == labels.count - 1 && index > 0,
                   weightsBytes: bytes[index], physicalMemoryBytes: physicalMemoryBytes[labels[index]],
                   local: labels[index] == localLabel)
         })

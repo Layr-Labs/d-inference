@@ -186,6 +186,10 @@ func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: Cl
     if let chosen = result.chosen {
         checks.require("\(name): the chosen placement is in the best tier that exists", chosen.tier == possible.map(\.tier).min())
         checks.require("\(name): the chosen placement is one of the enumerated ones", all.contains(chosen))
+        // MTP on by default: a chosen phase split carries the model's head
+        // whenever the layout lists the speculative phase split.
+        checks.require("\(name): a chosen phase split runs the speculative head when the model ships one",
+            !chosen.mode.isPhaseSplit || chosen.mode.usesSpeculativeHead == layout.generationModes.contains(.phaseSplitMTP))
     }
     checks.require("\(name): the planner considered every placement", result.candidatesConsidered == all.count)
     checks.require("\(name): planning twice gives the same answer", try ClusterPlacementPlanner.plan(devices: devices, layout: layout) == result)
@@ -219,7 +223,7 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
             result.chosen?.tier == 0 && share(result.chosen!, of: "small") < share(result.chosen!, of: "large")
                 && result.chosen!.ranks.allSatisfy { $0.fit == .now })
         checks.require("16 + 64: the small Mac is not asked to hold the whole model for a phase split",
-            !(result.chosen!.mode == .phaseSplit && result.chosen!.ranks.last!.device == "small"))
+            !(result.chosen!.mode.isPhaseSplit && result.chosen!.ranks.last!.device == "small"))
         let nineResult = try checkRule("16 + 64, 9B", devices, nine, checks)
         checks.require("16 + 64, 9B: placed now", nineResult.chosen?.tier == 0)
     }

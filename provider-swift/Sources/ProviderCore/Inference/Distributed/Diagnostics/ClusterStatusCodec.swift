@@ -34,7 +34,9 @@ enum ClusterStatusCodec {
               ["starting", "serving", "rotating", "draining", "stopping", "quarantined", "stopped"].contains(value.hostPhase),
               ["prepared", "starting", "ready", "draining", "stopping", "quarantined", "released"].contains(value.session.phase),
               (0...1).contains(value.acquisitions), value.session.members.count == 2,
-              !value.session.mtpEnabled, value.session.mtpOffReason == "runtimeCapabilityDisablesSpeculation",
+              DistributedInstalledSpeculation(mode: binding.generationMode,
+                  everyMemberAdvertisesHead: binding.peers.allSatisfy { $0.supportedGenerationModes.contains(.phaseSplitMTP) })
+                  == .init(enabled: value.session.mtpEnabled, offReason: value.session.mtpOffReason),
               value.session.nativeBootstrapOwnerAuthenticated == value.session.nativeBootstrap.ownerAuthenticated,
               (1...3_600_000).contains(value.session.collectiveProgressLimitMilliseconds) else {
             throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")

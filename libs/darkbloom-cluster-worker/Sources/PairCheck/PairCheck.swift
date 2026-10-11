@@ -29,7 +29,8 @@ import Foundation
               [--local-rank 0|1 (default 0; 1 runs rank 0 on the second Mac and rank 1 here, and the
                coordinator address is then the second Mac's own link address)]
               [--evidence final-row|none] [--prefill-schedule serial_v1|one_chunk_lookahead_v1]
-              [--mode pipeline|pipeline-compact|phase-split] [--repetitions 1...8 (with --evidence none)]
+              [--mode pipeline|pipeline-compact|phase-split|phase-split-mtp] [--mtp-depth 1...4 (phase-split-mtp)]
+              [--repetitions 1...8 (with --evidence none)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
@@ -159,7 +160,7 @@ import Foundation
             "--local-rdma-device", "--remote-rdma-device", "--coordinator", "--evidence", "--prefill-schedule",
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
-            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
+            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
         func required(_ name: String) throws -> String {
@@ -193,9 +194,10 @@ import Foundation
         let lifetime = try integer(fields, "--lifetime-seconds") ?? 240
         let delay = fields["--rank1-delay-seconds"]?.first.flatMap(Double.init) ?? 2
         let modes = ["pipeline": PairConfiguration.pipelineMode, "phase-split": PairConfiguration.phaseSplitMode,
-                     "pipeline-compact": PairConfiguration.pipelineCompactDecodeMode]
+                     "pipeline-compact": PairConfiguration.pipelineCompactDecodeMode,
+                     "phase-split-mtp": PairConfiguration.phaseSplitMTPMode]
         guard let mode = modes[fields["--mode"]?.first ?? "pipeline"] else {
-            throw Failure("--mode must be pipeline, pipeline-compact or phase-split")
+            throw Failure("--mode must be pipeline, pipeline-compact, phase-split or phase-split-mtp")
         }
         var configuration = try PairConfiguration(request: request, stageCut: cut,
             local: .init(modelDirectory: try required("--local-model-dir"), workerPath: try required("--local-worker"),
@@ -221,6 +223,10 @@ import Foundation
         }
         if let stop = try integer(fields, "--stop-after-tokens") {
             configuration.stopAfterTokens = stop
+            try configuration.validate()
+        }
+        if let depth = try integer(fields, "--mtp-depth") {
+            configuration.speculativeDepth = depth
             try configuration.validate()
         }
         if let gate = fields["--memory-gate"]?.first {

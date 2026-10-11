@@ -60,6 +60,7 @@ enum QwenPhaseSplitGeneration {
                     control: QwenLayerStageGenerationControl, transport: QwenLayerStageGenerationTransport,
                     session: QwenLayerStageSession, selectedTokens: inout [Int],
                     recording: QwenGenerationDiagnosticCapture?, fault: QwenPhaseSplitFault? = nil,
+                    decoder: QwenMTPDecoder? = nil,
                     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
     ) throws -> QwenPhaseSplitOutcome {
         guard control.phase == .frame, !control.isFailed,
@@ -79,6 +80,9 @@ enum QwenPhaseSplitGeneration {
         }
         try handoffCheck()
         let before = memory()
+        guard (decoder != nil) == (transport.rank == 1 && control.agreement.speculativeHead != nil) else {
+            throw ProbeError("Speculative head differs from this rank's role in the agreed phase split")
+        }
         if transport.rank == 0 {
             return try publish(split: split, control: control, transport: transport, session: session,
                 selectedTokens: &selectedTokens, recording: recording != nil, fault: recording == nil ? nil : fault,
@@ -87,7 +91,8 @@ enum QwenPhaseSplitGeneration {
         }
         return try decodeAlone(producerStage: producerStage, plan: plan, split: split, control: control,
             transport: transport, session: session, selectedTokens: &selectedTokens, recording: recording != nil,
-            fault: recording == nil ? nil : fault, started: started, before: before, check: check, handoffCheck: handoffCheck)
+            fault: recording == nil ? nil : fault, decoder: decoder, started: started, before: before,
+            check: check, handoffCheck: handoffCheck)
     }
 
     /// Rank 0: export, send, release, then publish what rank 1 relays.
@@ -162,10 +167,16 @@ enum QwenPhaseSplitGeneration {
 
     /// Rank 1: receive, verify, adopt, then decode with both stages and no
     /// transfer per token. Tokens reach the request owner in batches.
+    ///
+    /// With a speculative head (`decoder`), each decode call is a round that
+    /// yields one to depth + 1 tokens; a batch is filled from those in order
+    /// and a round's remainder waits for the next batch. Rank 0 sees the same
+    /// relay either way.
     private static func decodeAlone(producerStage: LoadedQwenLayerStage?, plan: QwenLayerStagePlan,
         split: QwenPhaseSplitPlan, control: QwenLayerStageGenerationControl,
         transport: QwenLayerStageGenerationTransport, session: QwenLayerStageSession,
         selectedTokens: inout [Int], recording: Bool, fault: QwenPhaseSplitFault?,
+        decoder: QwenMTPDecoder?,
         started: UInt64, before: QwenPhaseSplitSummary.Memory,
         check: () throws -> Void, handoffCheck: () throws -> Void
     ) throws -> QwenPhaseSplitOutcome {
@@ -207,9 +218,15 @@ enum QwenPhaseSplitGeneration {
             var finalLogits: QwenRecordedLogits?
             var batches = 0, forwards = 0, batchLimit = 1
             guard var lastToken = control.lastTokenID else { throw ProbeError("Solo decode lacks the agreed first token") }
+            try decoder?.begin(firstToken: lastToken)
             // The next ordinal this rank will select. It runs ahead of the
             // control state, which only advances when rank 0 has answered.
             var nextOrdinal = control.selectedTokenCount
+            // Tokens decoded but not yet put in a batch, in order, and the
+            // ordinal the next decode starts at.
+            struct Decoded { let token: Int; let payload: String; let emitted: QwenMTPDecoder.Emitted; let column: Int }
+            var queue: [Decoded] = []
+            var decodedOrdinal = control.selectedTokenCount
             struct Batch { let tokenIDs: [Int]; let payloads: [String] }
             var unanswered: (relay: QwenPhaseSplitRelayPacket, batch: Batch)?
 
@@ -245,26 +262,50 @@ enum QwenPhaseSplitGeneration {
                 while tokenIDs.count < batchLimit, !terminal {
                     try autoreleasepool {
                         try check()
+                        if queue.isEmpty {
+                            let offset = request.promptCount + decodedOrdinal - 1
+                            let emitted: QwenMTPDecoder.Emitted
+                            if let decoder {
+                                emitted = try decoder.step(producer: adopted, consumer: session, lastToken: lastToken,
+                                    offset: offset, remaining: request.outputCount - decodedOrdinal, check: check)
+                            } else {
+                                guard case .hidden(let produced) = try adopted.decode(lastToken, offset: offset, check: check) else {
+                                    throw ProbeError("Adopted producer stage did not return a residual")
+                                }
+                                // The consumer stage requires an owned compact residual. One
+                                // that is not is copied bit for bit, as the reference does.
+                                var incoming = produced
+                                if !produced.hasOwnedCompactStorage { incoming = try produced.ownedCopy(check: check) }
+                                guard case .logits(let row) = try session.decode(lastToken, offset: offset, incoming: incoming, check: check) else {
+                                    throw ProbeError("Consumer stage did not return target logits")
+                                }
+                                let token = try QwenLayerStageGenerationSelection.token(row, request: request, check: check)
+                                emitted = .init(tokens: [token], payloadSHA256: [produced.payloadSHA256], logits: row, round: false)
+                            }
+                            guard !emitted.tokens.isEmpty, emitted.tokens.count == emitted.payloadSHA256.count,
+                                  decodedOrdinal + emitted.tokens.count <= request.outputCount else {
+                                throw ProbeError("Solo decode emitted past the request's output limit")
+                            }
+                            for (column, token) in emitted.tokens.enumerated() {
+                                queue.append(.init(token: token, payload: emitted.payloadSHA256[column],
+                                    emitted: emitted, column: column))
+                            }
+                            forwards += emitted.tokens.count
+                            decodedOrdinal += emitted.tokens.count
+                            lastToken = emitted.tokens[emitted.tokens.count - 1]
+                        }
+                        let item = queue.removeFirst()
                         let ordinal = firstOrdinal + tokenIDs.count
-                        let offset = request.promptCount + ordinal - 1
-                        guard case .hidden(let produced) = try adopted.decode(lastToken, offset: offset, check: check) else {
-                            throw ProbeError("Adopted producer stage did not return a residual")
+                        tokenIDs.append(item.token); payloads.append(item.payload)
+                        terminal = request.stopTokenIDs.contains(item.token) || ordinal + 1 == request.outputCount
+                        if terminal {
+                            guard queue.isEmpty else { throw ProbeError("Solo decode emitted past a stop") }
                         }
-                        // The consumer stage requires an owned compact residual. One
-                        // that is not is copied bit for bit, as the reference does.
-                        var incoming = produced
-                        if !produced.hasOwnedCompactStorage { incoming = try produced.ownedCopy(check: check) }
-                        guard case .logits(let row) = try session.decode(lastToken, offset: offset, incoming: incoming, check: check) else {
-                            throw ProbeError("Consumer stage did not return target logits")
-                        }
-                        let token = try QwenLayerStageGenerationSelection.token(row, request: request, check: check)
-                        forwards += 1
-                        tokenIDs.append(token); payloads.append(produced.payloadSHA256); lastToken = token
-                        terminal = request.stopTokenIDs.contains(token) || ordinal + 1 == request.outputCount
                         if terminal, recording {
+                            let row = item.emitted.row(item.column)
                             let captured = try QwenRecordedLogits(row, vocabularySize: request.profile.vocabularySize, check: check)
                             guard let maximum = captured.record.values.max(),
-                                  captured.record.values.firstIndex(of: maximum) == token else {
+                                  captured.record.values.firstIndex(of: maximum) == item.token else {
                                 throw ProbeError("Recorded final row differs from the selected token")
                             }
                             finalLogits = captured
@@ -308,6 +349,8 @@ enum QwenPhaseSplitGeneration {
                     entries: state.entries, logicalBytes: state.logicalByteCount, fingerprint: state.fingerprint,
                     finalLogits: finalLogits)
             }
+            let statistics = decoder?.statistics
+            decoder?.release()
             try adopted.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount,
                 lastTokenID: lastTokenID, discardedDecodeForwards: discarded)
             try session.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount,
@@ -318,8 +361,10 @@ enum QwenPhaseSplitGeneration {
                 handoffLogicalBytes: split.terms.logicalBytes, handoffNanoseconds: handed - started,
                 handoffLocalStateNanoseconds: handed - received, relayBatches: batches,
                 soloDecodeForwards: forwards, discardedDecodeForwards: discarded,
-                beforeHandoff: before, afterHandoff: after, afterRetirement: memory()), recorded: recorded)
+                beforeHandoff: before, afterHandoff: after, afterRetirement: memory(), mtp: statistics),
+                recorded: recorded)
         } catch {
+            decoder?.release()
             try? adopted.cancel()
             throw error
         }
@@ -330,7 +375,7 @@ extension QwenPhaseSplitSummary {
     /// One line a launcher can read from the worker's diagnostics. It carries
     /// sizes and durations only.
     func diagnosticLine(requestID: UUID) -> String {
-        ["darkbloom-phase-split-v1", "rank=\(rank)", "request=\(requestID.uuidString.lowercased())",
+        (["darkbloom-phase-split-v1", "rank=\(rank)", "request=\(requestID.uuidString.lowercased())",
          "handoff=\(handoffPerformed ? 1 : 0)", "entries=\(handoffEntries)", "segments=\(handoffSegments)",
          "bytes=\(handoffLogicalBytes)", "handoff_ns=\(handoffNanoseconds)",
          "local_state_ns=\(handoffLocalStateNanoseconds)", "relay_batches=\(relayBatches)",
@@ -338,6 +383,6 @@ extension QwenPhaseSplitSummary {
          "active_before=\(beforeHandoff.activeBytes)", "cache_before=\(beforeHandoff.cacheBytes)",
          "active_after_handoff=\(afterHandoff.activeBytes)", "cache_after_handoff=\(afterHandoff.cacheBytes)",
          "active_after_retirement=\(afterRetirement.activeBytes)", "cache_after_retirement=\(afterRetirement.cacheBytes)",
-        ].joined(separator: " ")
+        ] + (mtp?.diagnosticFields ?? [])).joined(separator: " ")
     }
 }

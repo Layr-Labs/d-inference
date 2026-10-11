@@ -269,7 +269,14 @@ final class WorkerTests: XCTestCase {
             let plain = try WorkerConfiguration(arguments: base, now: 100)
             XCTAssertEqual(plain.generationMode, .pipeline, "absent means the pipeline")
             XCTAssertFalse(plain.qualificationSwitchesPermitted)
+            let row = try XCTUnwrap(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes)
             for mode in ClusterGenerationMode.allCases {
+                guard row.contains(mode) else {
+                    // A mode the model's own row does not list stops the worker.
+                    XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", mode.rawValue], now: 100),
+                        "\(model) \(mode.rawValue)")
+                    continue
+                }
                 let value = try WorkerConfiguration(arguments: base + ["--generation-mode", mode.rawValue], now: 100)
                 XCTAssertEqual(value.generationMode, mode, "\(model) \(mode.rawValue)")
                 // The mode is no part of the load configuration the runtime already had.
@@ -284,6 +291,18 @@ final class WorkerTests: XCTestCase {
             XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", "phase_split_v1",
                                                                           "--generation-mode", "pipeline_v1"], now: 100))
             XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode"], now: 100))
+            // The speculative depth: only with the speculative phase split, 1...4, canonical, once.
+            if row.contains(.phaseSplitMTP) {
+                let speculative = base + ["--generation-mode", "phase_split_mtp_v1"]
+                XCTAssertNil(try WorkerConfiguration(arguments: speculative, now: 100).speculativeTerms, "absent means the default")
+                XCTAssertEqual(try WorkerConfiguration(arguments: speculative + ["--mtp-depth", "2"], now: 100).speculativeTerms?.depth, 2)
+                for bad in ["0", "5", "04", "", "four", "-1"] {
+                    XCTAssertThrowsError(try WorkerConfiguration(arguments: speculative + ["--mtp-depth", bad], now: 100), bad)
+                }
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--generation-mode", "phase_split_v1", "--mtp-depth", "4"], now: 100))
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: base + ["--mtp-depth", "4"], now: 100))
+                XCTAssertThrowsError(try WorkerConfiguration(arguments: speculative + ["--mtp-depth", "4", "--mtp-depth", "4"], now: 100))
+            }
             // It composes with every other optional argument.
             let all = try WorkerConfiguration(arguments: base + ["--prefill-schedule", "one_chunk_lookahead_v1",
                 "--generation-mode", "phase_split_v1", "--startup-deadline-uptime-nanoseconds", "90000000100",
@@ -292,10 +311,10 @@ final class WorkerTests: XCTestCase {
             XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
             XCTAssertEqual(all.evidenceDirectory, "/private/run/evidence"); XCTAssertTrue(all.qualificationSwitchesPermitted)
         }
-        // The catalog the worker checks against is the runtime's own row.
+        // The catalog the worker checks against is the runtime's own row; the 9B and 27B ship a head.
         for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_ternary_bonsai_2_27b"] {
             XCTAssertEqual(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes,
-                           [.pipeline, .pipelineCompactDecode, .phaseSplit], model)
+                           [.pipeline, .pipelineCompactDecode, .phaseSplit] + (model.contains("bonsai") ? [] : [.phaseSplitMTP]), model)
         }
     }
 

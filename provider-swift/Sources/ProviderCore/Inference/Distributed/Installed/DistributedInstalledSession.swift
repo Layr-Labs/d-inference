@@ -69,6 +69,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         let state = values.1?.admissionState
         let phase = status
+        let speculation = DistributedInstalledSpeculation(configuration: configuration, capability: prepared.plan.capability)
         let ready = values.1?.readiness != nil && members.allSatisfy(\.nativeReady)
             && state?.isValid == true && (state?.remainingLifetimeNanoseconds ?? 0) > 0
             && (phase == .ready || (phase == .draining && state?.hasActiveRequest == true))
@@ -79,7 +80,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             ready: ready, admission: state.map { .init(remainingLifetimeNanoseconds: $0.remainingLifetimeNanoseconds,
                 remainingRequests: $0.admissionsRemaining, activeRequest: $0.hasActiveRequest,
                 draining: $0.isDraining, valid: $0.isValid) }, members: members,
-            mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation",
+            mtpEnabled: speculation.enabled, mtpOffReason: speculation.offReason,
             nativeBootstrap: prepared.plan.bootstrap,
             collectiveProgressLimitMilliseconds: DistributedInstalledPlan.collectiveProgressLimitMilliseconds)
     }

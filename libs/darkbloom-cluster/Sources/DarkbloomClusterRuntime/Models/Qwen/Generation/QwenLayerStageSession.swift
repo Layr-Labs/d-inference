@@ -38,6 +38,12 @@ final class QwenLayerStageSession {
     private let producerStageFingerprint: String
     private var schedule: QwenLayerStageGenerationSchedule
     private var handedOff = false
+    /// Set only on the consumer stage of a decoding rank that runs the
+    /// speculative head: the stage then also yields its pre-norm hidden rows.
+    private let hiddenTap: QwenLayerStageHiddenTap?
+    private var windowOffset: Int?
+    private var windowCount: Int?
+    private var windowKept: Int?
 
     var committedTokens: Int { schedule.committedTokens }
     var isClosed: Bool { state.isClosed }
@@ -48,7 +54,8 @@ final class QwenLayerStageSession {
     /// at the frontier after its last prompt frame.
     init(stage: LoadedQwenLayerStage, plan: QwenLayerStagePlan,
          generationRequest request: QwenLayerStageGenerationRequest,
-         adopting: QwenLayerStageAdoptedState? = nil) throws {
+         adopting: QwenLayerStageAdoptedState? = nil,
+         hiddenTap: QwenLayerStageHiddenTap? = nil) throws {
         guard plan.stages.indices.contains(stage.stageIndex), plan.stages.count == 2,
             stage.plan.fingerprint == plan.fingerprint else { throw ProbeError("Stage session received a different source plan") }
         let descriptor = plan.stages[stage.stageIndex], receipt = stage.receipt
@@ -118,6 +125,10 @@ final class QwenLayerStageSession {
                 promptCount: request.promptCount, outputCount: request.outputCount)
             self.schedule = QwenLayerStageGenerationSchedule(request: request)
         }
+        guard hiddenTap == nil || stage.stageIndex == 1 else {
+            throw ProbeError("Only the consumer stage yields hidden rows")
+        }
+        self.hiddenTap = hiddenTap
         self.stage = stage; self.descriptor = descriptor; self.request = request
         self.adapter = CBv2SteppableLanguageModelAdapter(stage.model)
         self.hiddenSize = hidden; self.producerStageFingerprint = plan.stages[0].fingerprint
@@ -159,6 +170,7 @@ final class QwenLayerStageSession {
             try validateInput(incoming, tokens: tokens, frame: frame)
             try checked()
             let input = MLXArray(tokens.map(Int32.init)).reshaped([1, tokens.count])
+            var tapped: MLXArray?
             // nil positions use each stage's own KV absoluteOffset. Both states
             // start at zero and must match the SAME full-model tokenOffset here;
             // a stage's global layer offset never changes sequence positions.
@@ -179,6 +191,15 @@ final class QwenLayerStageSession {
                     return native.cbv2ForwardWithHidden(input,
                         caches: caches.map { $0 as! any KVCache }, recurrentState: [evaluation], positionIds: nil).lastHidden
                 }
+                if frame.phase == .prefill, let hiddenTap {
+                    // The same trunk on the same residual, through the public
+                    // forward that also returns the hidden rows; the prompt's
+                    // last row is projected exactly as the prefill entry does.
+                    let hidden = try hiddenTap.hidden(of: stage.model, tokens: input, residual: incoming!.array,
+                        caches: caches, evaluation: evaluation, captured: false).hidden
+                    tapped = hidden
+                    return frame.finalPromptChunk ? hiddenTap.lastRowLogits(hidden) : hidden[0..., -1, 0 ..< 1]
+                }
                 if frame.phase == .prefill {
                     return adapter.recurrentPrefill(tokens: input, inputEmbeddings: incoming!.array,
                         caches: caches, recurrentState: [evaluation], positionIds: nil,
@@ -196,6 +217,11 @@ final class QwenLayerStageSession {
                 }
             })
             try schedule.commit(frame)
+            if let hiddenTap, let tapped {
+                // Committed prompt rows, in order, once each.
+                eval(tapped); try checked()
+                try hiddenTap.observe(input, tapped)
+            }
             if stage.stageIndex == 0 {
                 // eval returns at the output event, which can precede the Metal
                 // completion handlers that still hold this buffer. The sender
@@ -231,6 +257,106 @@ final class QwenLayerStageSession {
             throw ProbeError("Stage boundary request/model/producer/token/frontier identity differs")
         }
         try incoming.validateOwnedArray(tokens: tokens.count, hidden: hiddenSize, dtype: stage.activationDType)
+    }
+
+    /// A speculative decode window on a decoding rank: `tokens` (`[1, S]`
+    /// int32, on device) are the last committed token followed by drafts,
+    /// starting at `offset`. Stage 0 returns the residual rows `[1, S, H]`;
+    /// stage 1 takes them as `residual` and returns the target logits
+    /// `[1, S, V]` and its pre-norm hidden rows `[1, S, H]`. Nothing is
+    /// evaluated or committed here: the caller evaluates the outputs with the
+    /// returned roots, then calls `confirmWindow`, then `settleWindow`.
+    func beginWindow(tokens: MLXArray, offset: Int, residual: MLXArray? = nil) throws
+        -> (outputs: [MLXArray], roots: [MLXArray]) {
+        do {
+            return try MLX.withError { error in
+                try state.requireOpen()
+                let count = tokens.ndim == 2 ? tokens.dim(1) : 0
+                let first = try schedule.admitDecode(offset: offset)
+                guard windowOffset == nil, tokens.ndim == 2, tokens.dim(0) == 1, (1...8).contains(count),
+                      tokens.dtype == .int32, first.tokenOffset == state.committedTokens,
+                      state.committedTokens == schedule.committedTokens,
+                      count <= request.maximumTokens - state.committedTokens,
+                      (stage.stageIndex == 0) == (residual == nil), (stage.stageIndex == 1) == (hiddenTap != nil),
+                      !(stage.model is NemotronHModel), !(stage.model is any LayerStageFrameForwarding) else {
+                    throw ProbeError("Stage window differs from the committed decode frontier or its stage contract")
+                }
+                if let residual {
+                    guard residual.shape == [1, count, hiddenSize], residual.dtype == stage.activationDType else {
+                        throw ProbeError("Stage window residual differs from the native [1,S,H] contract")
+                    }
+                }
+                try error.check()
+                let built = try state.beginWindow(tokenCount: count) { caches, evaluation in
+                    if stage.stageIndex == 0 {
+                        guard let native = stage.model as? any CBv2RecurrentCaptureMTPForwardable else {
+                            throw ProbeError("Producer stage has no captured-window forward")
+                        }
+                        // The discarded head's lazy logits are dropped here, never evaluated.
+                        return [native.cbv2ForwardWithHiddenCaptured(tokens, caches: caches.map { $0 as! any KVCache },
+                            recurrentState: [evaluation], positionIds: nil).lastHidden]
+                    }
+                    let result = try hiddenTap!.hidden(of: stage.model, tokens: tokens, residual: residual!,
+                        caches: caches, evaluation: evaluation, captured: true)
+                    return [result.logits, result.hidden]
+                }
+                let expected = stage.stageIndex == 0 ? [[1, count, hiddenSize]]
+                    : [[1, count, stage.vocabularySize], [1, count, hiddenSize]]
+                guard built.outputs.map(\.shape) == expected,
+                      built.outputs.allSatisfy({ [.float16, .bfloat16, .float32].contains($0.dtype) }),
+                      stage.stageIndex != 0 || built.outputs[0].dtype == stage.activationDType else {
+                    throw ProbeError("Stage window output differs from the native residual/logit contract")
+                }
+                try error.check()
+                windowOffset = offset; windowCount = count
+                return built
+            }
+        } catch { try fail(error) }
+    }
+
+    /// After the caller evaluated the window's outputs and roots.
+    func confirmWindow(check: () throws -> Void) throws {
+        do {
+            try MLX.withError { error in
+                guard windowOffset != nil else { throw ProbeError("No stage window is open") }
+                try state.confirmWindow(check: { try error.check(); try check() })
+            }
+        } catch { try fail(error) }
+    }
+
+    /// Keeps the first `kept` tokens of the evaluated window. Returns the roots
+    /// to evaluate before `confirmSettled`.
+    func settleWindow(keeping kept: Int) throws -> [MLXArray] {
+        do {
+            return try MLX.withError { error in
+                guard windowOffset != nil, let count = windowCount, (1...count).contains(kept) else {
+                    throw ProbeError("No stage window is open")
+                }
+                let roots = try state.settleWindow(keeping: kept)
+                windowKept = kept
+                try error.check()
+                return roots
+            }
+        } catch { try fail(error) }
+    }
+
+    /// After the caller evaluated the settled roots: the kept tokens become
+    /// that many committed decode frames.
+    func confirmSettled(check: () throws -> Void) throws {
+        do {
+            try MLX.withError { error in
+                guard let offset = windowOffset, let kept = windowKept else { throw ProbeError("No stage window was settled") }
+                try state.confirmSettled(check: { try error.check(); try check() })
+                windowOffset = nil; windowCount = nil; windowKept = nil
+                for index in 0..<kept {
+                    try schedule.commit(try schedule.admitDecode(offset: offset + index))
+                }
+                guard state.committedTokens == schedule.committedTokens else {
+                    throw ProbeError("Stage window left the schedule and the state at different frontiers")
+                }
+                try error.check()
+            }
+        } catch { try fail(error) }
     }
 
     func snapshot(includeBytes: Bool = false, check: () throws -> Void) throws -> CBv2OwnedStateSnapshot {

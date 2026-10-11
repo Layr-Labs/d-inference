@@ -13,8 +13,13 @@ extension QwenResidentRuntime {
     /// `qualification` says whether this process may honour the two
     /// qualification switches in its environment. The default refuses them: a
     /// switch that is present and not permitted stops the load here, by name.
+    ///
+    /// `speculativeTerms` applies only to `phase_split_mtp_v1` (default: the
+    /// product drafter's maximum depth); both ranks bind them into the load
+    /// agreement together with the digest of the head's verified files.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
+                            speculativeTerms requestedTerms: QwenMTPTerms? = nil,
                             qualification: QwenResidentQualificationSwitches = .refused) throws -> QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
@@ -47,10 +52,19 @@ extension QwenResidentRuntime {
         guard admission.supportedGenerationModes.contains(mode) else {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.runtimeModelID)")
         }
+        guard requestedTerms == nil || mode.usesSpeculativeHead else {
+            throw ProbeError("Speculative terms were declared for a mode without a speculative head")
+        }
+        // The head's files by their verified manifest digests, on both ranks,
+        // before either stage is read; only rank 1 loads the head itself.
+        let speculativeTerms: QwenMTPTerms? = mode.usesSpeculativeHead ? (requestedTerms ?? .standard) : nil
+        let headFiles: QwenMTPHeadFiles? = mode.usesSpeculativeHead
+            ? try QwenMTPHeadFiles(modelDirectory: directory, manifest: admission.manifestBytes) : nil
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds)
         try QwenResidentProcessLease.shared.acquire()
         var stage: (any LayerStageResidentStage)?
         var producerStage: (any LayerStageResidentStage)?
+        var speculativeHead: QwenMTPHead?
         weak var retired: Module?
         weak var retiredProducer: Module?
         do {
@@ -90,7 +104,11 @@ extension QwenResidentRuntime {
             // bound here, so a peer that was told something else stops at the
             // first exchange, before either stage is read.
             var common = try admission.loadAgreementFingerprint()
-            let agreementFields = mode.loadAgreementFields + transport.loadAgreementFields
+            var speculativeFields: [String] = []
+            if let speculativeTerms, let headFiles {
+                speculativeFields = speculativeTerms.loadAgreementFields(headSHA256: headFiles.sha256)
+            }
+            let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common
             let capacity = try MLX.withError { nativeError in
@@ -105,7 +123,7 @@ extension QwenResidentRuntime {
                         retired = value.loaded.model; stage = value
                     }
                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
-                    if mode == .phaseSplit, collective.rank == 1 {
+                    if mode.isPhaseSplit, collective.rank == 1 {
                         // Rank 1 also holds the producer stage, admitted and loaded
                         // exactly as rank 0 loads it, so it owns every layer once
                         // rank 0 hands its request state over. No collective is
@@ -135,6 +153,22 @@ extension QwenResidentRuntime {
                               producer.loaded.receipt.sourceParameterLayoutSHA256 == loaded.loaded.receipt.sourceParameterLayoutSHA256 else {
                             throw ProbeError("Producer and consumer stages did not load matching verified commitments")
                         }
+                        if mode.usesSpeculativeHead {
+                            // After both stages: the head borrows the producer's
+                            // embedding and the consumer's final norm and output head.
+                            let head = try autoreleasepool {
+                                try QwenMTPHead(modelDirectory: directory, sourceConfiguration: admission.configBytes,
+                                    manifest: admission.manifestBytes, producer: producer.loaded, consumer: loaded.loaded,
+                                    check: checked)
+                            }
+                            guard head.headSHA256 == headFiles?.sha256 else {
+                                throw ProbeError("Speculative head files differ from the agreed head")
+                            }
+                            speculativeHead = head
+                            log("darkbloom-speculative-head-v1 rank=1 depth=\(speculativeTerms?.depth ?? 0)"
+                                + " files=\(head.receipt.tensorFiles.count) file_bytes=\(head.receipt.tensorFileBytes)"
+                                + " active_added=\(head.receipt.activeBytesAdded) load_ns=\(head.receipt.loadNanoseconds)")
+                        }
                     }
                     let maximum = try loaded.requestAllowance(plan: admission.plan,
                         rank: collective.rank, maximumTokens: admission.profile.maximumContextTokens,
@@ -153,12 +187,13 @@ extension QwenResidentRuntime {
                         elementBytes: qwenStageWireElementBytes(admission.profile.activationDType),
                         bound: QwenResidentResourceEnvironment.allocationBound)
                     let split = try QwenResidentRuntime.phaseSplitAllowance(mode, admission: admission,
-                        stage: loaded, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens)
+                        stage: loaded, rank: collective.rank, promptCount: admission.profile.maximumPromptTokens,
+                        speculativeTerms: speculativeTerms)
                     try maximum.requireLive(
                         additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraNativeBytes ?? 0, split?.extraNativeBytes ?? 0]),
                         additionalHostBytes: QwenLongPrefillCheckedBytes.sum([prefill?.extraHostBytes ?? 0, split?.extraHostBytes ?? 0]))
                     try checked()
-                    if mode == .phaseSplit {
+                    if mode.isPhaseSplit {
                         // Sizes only, for whoever launched this worker.
                         let afterLoad = Memory.snapshot()
                         log("darkbloom-resident-load-v1 rank=\(collective.rank) mode=\(mode.rawValue)"
@@ -185,9 +220,10 @@ extension QwenResidentRuntime {
             try control.loaded()
             return .init(admission: admission, control: control, collective: collective,
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,
-                generationMode: mode, producerStage: producerStage, qualificationFault: fault)
+                generationMode: mode, producerStage: producerStage, speculativeHead: speculativeHead,
+                speculativeTerms: speculativeTerms, qualificationFault: fault)
         } catch {
-            let primary = error; control.fail(); stage = nil; producerStage = nil
+            let primary = error; control.fail(); speculativeHead = nil; stage = nil; producerStage = nil
             do {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize()

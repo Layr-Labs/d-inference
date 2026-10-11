@@ -12,6 +12,11 @@ final class CBv2OwnedRequestState {
     private(set) var rows: [CBv2SequenceKV?]
     private var evaluation: CBv2RecurrentStateEvaluation?
     private var evaluationWasStaged = false
+    /// Width of the speculative window that is open, if one is, and how far
+    /// its two-phase evaluation has gone.
+    private var windowTokens: Int?
+    private enum WindowPhase { case built, evaluated, settled }
+    private var windowPhase: WindowPhase?
     private(set) var committedTokens = 0
     private(set) var isClosed = false
     private(set) var isFailed = false
@@ -107,7 +112,7 @@ final class CBv2OwnedRequestState {
     }
 
     func requireOpen() throws {
-        guard !isClosed, !isFailed, evaluation == nil else {
+        guard !isClosed, !isFailed, evaluation == nil, windowPhase == nil else {
             throw ProbeError("CBv2 state is retired, failed or has unfinished work")
         }
     }
@@ -178,6 +183,118 @@ final class CBv2OwnedRequestState {
         }
     }
 
+    /// A speculative window: `tokenCount` tokens run through the stage with
+    /// every recurrent layer capturing its state per position, and nothing is
+    /// committed. Used only by a decoding rank that verifies drafted tokens.
+    ///
+    /// Two phases, so a caller can evaluate several stages' windows (and the
+    /// drafter's state) in one evaluation: `beginWindow` builds the graph and
+    /// returns its outputs and the roots that must be evaluated with them;
+    /// after the caller's `eval`, `confirmWindow` checks what the evaluation
+    /// left. `settleWindow` then keeps a prefix, again in two phases.
+    func beginWindow(tokenCount: Int,
+                     forward: ([any CBv2AttendingLayerCache], CBv2RecurrentStateEvaluation) throws -> [MLXArray]
+    ) throws -> (outputs: [MLXArray], roots: [MLXArray]) {
+        do {
+            try requireOpen()
+            guard windowTokens == nil, windowPhase == nil, tokenCount > 0,
+                  tokenCount <= maximumTokens - committedTokens else {
+                throw ProbeError("CBv2 speculative window exceeds the admitted capacity")
+            }
+            let caches = bank.layerCaches(rowStates: [rows])
+            evaluation = try recurrent.bind(); evaluationWasStaged = false
+            let outputs = try forward(caches, evaluation!)
+            let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
+            guard evaluation!.isCaptured else {
+                throw ProbeError("CBv2 speculative window did not capture its recurrent positions")
+            }
+            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+            windowTokens = tokenCount; windowPhase = .built
+            return (outputs, recurrentRoots + cacheRoots)
+        } catch {
+            isFailed = true
+            throw error
+        }
+    }
+
+    /// After the caller evaluated the roots `beginWindow` returned.
+    func confirmWindow(check: () throws -> Void) throws {
+        do {
+            guard !isClosed, !isFailed, let total = windowTokens, windowPhase == .built,
+                  evaluation != nil, evaluationWasStaged else {
+                throw ProbeError("CBv2 speculative window was not built")
+            }
+            try check()
+            for optionalRow in rows {
+                guard let row = optionalRow, row.supportsSpeculativeWrites,
+                      row.absoluteOffset == committedTokens + total else {
+                    throw ProbeError("CBv2 speculative window left an attention row it cannot roll back exactly")
+                }
+            }
+            windowPhase = .evaluated
+        } catch {
+            isFailed = true
+            throw error
+        }
+    }
+
+    /// Commits the first `kept` tokens of the evaluated window and discards
+    /// the rest: the recurrent state at that position, the attention rows
+    /// rolled back by the remainder. Returns the roots to evaluate before
+    /// `confirmSettled`.
+    func settleWindow(keeping kept: Int) throws -> [MLXArray] {
+        do {
+            guard !isClosed, !isFailed, let evaluation, evaluationWasStaged,
+                  let total = windowTokens, windowPhase == .evaluated, (1...total).contains(kept) else {
+                throw ProbeError("CBv2 speculative window is not open or keeps an impossible prefix")
+            }
+            try evaluation.commit(keepPositions: kept)
+            self.evaluation = nil; evaluationWasStaged = false; windowTokens = nil
+            if kept < total {
+                for row in rows { row?.rollback(total - kept) }
+                // The caches' device offsets ran ahead with the window.
+                bank.invalidateBoundComposition()
+            }
+            committedTokens += kept
+            _ = bank.layerCaches(rowStates: [rows])
+            // The kept state is a selection from the window; make it the only
+            // thing retained before the window's arrays are dropped.
+            var roots: [MLXArray] = geometry.caches.map { $0.positionOffsets }
+            for layer in geometry.recurrent.layers {
+                guard let state = recurrent.state(modelLayerIndex: layer.modelLayerIndex),
+                      let conv = state.conv, let ssm = state.ssm else {
+                    throw ProbeError("CBv2 speculative window committed no state for a recurrent layer")
+                }
+                roots.append(conv); roots.append(ssm)
+            }
+            windowPhase = .settled
+            return roots
+        } catch {
+            isFailed = true
+            throw error
+        }
+    }
+
+    /// After the caller evaluated the roots `settleWindow` returned.
+    func confirmSettled(check: () throws -> Void) throws {
+        do {
+            guard !isClosed, !isFailed, windowPhase == .settled, evaluation == nil else {
+                throw ProbeError("CBv2 speculative window was not settled")
+            }
+            try check()
+            try validateState(after: committedTokens)
+            guard Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                == Set(geometry.recurrent.modelLayerIndices) else {
+                throw ProbeError("CBv2 speculative window did not commit every local layer")
+            }
+            windowPhase = nil
+            try check()
+        } catch {
+            isFailed = true
+            throw error
+        }
+    }
+
     func validateState(after count: Int) throws {
         for (index, optionalRow) in rows.enumerated() {
             let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
@@ -218,7 +335,7 @@ final class CBv2OwnedRequestState {
         if let evaluation, evaluationWasStaged {
             do { try evaluation.rollback() } catch { cleanupError = error }
         }
-        evaluation = nil; evaluationWasStaged = false
+        evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil
         bank.releaseBoundRows()
         backend.release(rows); rows.removeAll()
         do { try recurrent.release() } catch { cleanupError = cleanupError ?? error }

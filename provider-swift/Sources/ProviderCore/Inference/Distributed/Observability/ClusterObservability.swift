@@ -1,6 +1,26 @@
 import DarkbloomClusterRemote
 import Foundation
+#if canImport(Logging)
 import Logging
+
+private let clusterObservabilityLogger = Logger(label: "darkbloom.cluster.incidents")
+
+/// One log line of the observability paths (fields are codes and counts).
+func clusterObservabilityLog(_ level: ClusterObservabilityLogLevel, _ message: String, _ fields: [String: String] = [:]) {
+    let metadata = fields.mapValues { Logger.MetadataValue.string($0) }
+    switch level {
+    case .info: clusterObservabilityLogger.info("\(message)", metadata: metadata)
+    case .warning: clusterObservabilityLogger.warning("\(message)", metadata: metadata)
+    case .error: clusterObservabilityLogger.error("\(message)", metadata: metadata)
+    }
+}
+#else
+/// The model-free check runners compile this file with plain swiftc, without
+/// swift-log: there the lines are dropped.
+func clusterObservabilityLog(_ level: ClusterObservabilityLogLevel, _ message: String, _ fields: [String: String] = [:]) {}
+#endif
+
+enum ClusterObservabilityLogLevel: Sendable { case info, warning, error }
 
 /// This Mac's cluster observability files (PROD-PLAN S24), under
 /// `~/.darkbloom/cluster/`: the durable incident log, the leader's pair
@@ -13,7 +33,6 @@ public final class ClusterObservability: Sendable {
     public let telemetryFile: URL
     public let followerStatusFile: URL
     private let localIdentifiers: ClusterDiagnosticRedaction.Identifiers
-    private static let logger = Logger(label: "darkbloom.cluster.incidents")
 
     public init(homeDirectory: URL, hostNames: [String] = ClusterObservability.localHostNames(),
                 userNames: [String] = [NSUserName()]) {
@@ -79,13 +98,12 @@ public final class ClusterObservability: Sendable {
     public func record(_ draft: ClusterIncidentDraft) -> ClusterIncident? {
         do {
             let incident = try incidents.record(draft)
-            Self.logger.warning("cluster incident", metadata: [
-                "seq": .stringConvertible(incident.seq), "state_code": .string(incident.stateCode),
-                "reason_code": .string(incident.reasonCode ?? "none"), "guidance_code": .string(incident.guidanceCode ?? "none"),
-                "source": .string(incident.source)])
+            clusterObservabilityLog(.warning, "cluster incident", ["seq": "\(incident.seq)", "state_code": incident.stateCode,
+                "reason_code": incident.reasonCode ?? "none", "guidance_code": incident.guidanceCode ?? "none",
+                "source": incident.source])
             return incident
         } catch {
-            Self.logger.error("cluster incident could not be recorded", metadata: ["error": .string("\(error)")])
+            clusterObservabilityLog(.error, "cluster incident could not be recorded", ["error": "\(error)"])
             return nil
         }
     }

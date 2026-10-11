@@ -1,6 +1,5 @@
 import DarkbloomClusterRemote
 import Foundation
-import Logging
 
 // The follower's status mirrored to the leader over the link control channel
 // (PROD-PLAN S24, C13), as both members of a pair run it.
@@ -12,8 +11,6 @@ import Logging
 // records an incident when the follower reports a failure or goes silent,
 // and mirrors the follower's own incidents into its log so one Mac shows the
 // pair's whole story.
-
-private let linkObservabilityLog = Logger(label: "darkbloom.cluster.link-status")
 
 /// Leader side: the board, its file and the incidents it implies.
 final class ClusterFollowerStatusMonitor: @unchecked Sendable {
@@ -99,7 +96,7 @@ final class ClusterFollowerStatusMonitor: @unchecked Sendable {
     private func record(_ transition: ClusterLinkStatusBoard.Transition) {
         switch transition {
         case .firstSeen(let rank):
-            linkObservabilityLog.info("follower status mirrored", metadata: ["rank": .stringConvertible(rank)])
+            clusterObservabilityLog(.info, "follower status mirrored", ["rank": "\(rank)"])
         case .stateChanged(let rank, _, let to, let detail) where to == .failed:
             let explanation = ClusterFailureClassifier.classify(message: detail.isEmpty ? "the follower reported failed" : detail)
             observability.record(.init(severity: .error, source: "follower", stateCode: .followerFailed,
@@ -112,7 +109,7 @@ final class ClusterFollowerStatusMonitor: @unchecked Sendable {
                 reason: .peerLost, message: "Rank \(rank)'s mirrored status stopped arriving \(Int(silent)) s ago",
                 deploymentID: clusterID, modelID: modelID, rank: Int(rank)))
         case .recovered(let rank):
-            linkObservabilityLog.info("follower status resumed", metadata: ["rank": .stringConvertible(rank)])
+            clusterObservabilityLog(.info, "follower status resumed", ["rank": "\(rank)"])
         case .incidents(let rank, let epoch, let list):
             for incident in list {
                 let severity = ClusterIncidentSeverity(rawValue: incident.severity) ?? .error
@@ -133,7 +130,7 @@ final class ClusterFollowerStatusMonitor: @unchecked Sendable {
         do {
             try ClusterLinkStatusBoardFile(updatedAt: now, entries: board.entries()).write(to: observability.followerStatusFile)
         } catch {
-            linkObservabilityLog.warning("follower status file not written", metadata: ["error": .string("\(error)")])
+            clusterObservabilityLog(.warning, "follower status file not written", ["error": "\(error)"])
         }
     }
 

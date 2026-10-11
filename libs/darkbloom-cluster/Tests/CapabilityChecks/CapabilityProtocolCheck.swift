@@ -150,7 +150,7 @@ struct CheckFailure: Error { let message: String }
         let text = String(decoding: encoded, as: UTF8.self)
         for (name, bytes) in [
             ("missing-LF", Data(encoded.dropLast())), ("extra-LF", encoded + Data([10])),
-            ("leading-space", Data([32]) + encoded), ("oversized", Data(repeating: 32, count: 16 * 1024 + 1)),
+            ("leading-space", Data([32]) + encoded), ("oversized", Data(repeating: 32, count: ClusterRuntimeCapabilityCodec.maximumBytes + 1)),
             ("duplicate-key", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1,\"adapterVersion\":1").utf8)),
             ("escaped-duplicate", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1,\"\\u0061dapterVersion\":1").utf8)),
             ("fraction", Data(text.replacingOccurrences(of: "\"adapterVersion\":1", with: "\"adapterVersion\":1.0").utf8)),

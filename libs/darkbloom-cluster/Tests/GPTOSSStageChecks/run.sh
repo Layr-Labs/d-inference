@@ -21,6 +21,7 @@ task_sources=(
   Models/Qwen/Prism/QwenPrismStageConfiguration
   Models/Qwen/Prism/QwenRegisteredPack
   Models/Qwen/Metadata/QwenDenseProfileTypes
+  Models/Qwen/Resources/QwenResidentContextLimits
   Models/Nemotron/NemotronStageMetadata
   Models/Nemotron/NemotronLayerStagePlan
   Models/Qwen/Metadata/QwenLayerStagePlan

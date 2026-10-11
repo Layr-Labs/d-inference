@@ -15,7 +15,8 @@ import CryptoKit
         #endif
         if args.count == 1 {
             switch args[0] {
-            case "--fixture-overflow": try FileHandle.standardOutput.write(contentsOf: Data(repeating: 32, count: 16385))
+            // One byte more than a capability record may hold (ClusterRuntimeCapabilityCodec.maximumBytes, 96 KiB).
+            case "--fixture-overflow": try FileHandle.standardOutput.write(contentsOf: Data(repeating: 32, count: 96 * 1024 + 1))
             case "--fixture-stderr": try FileHandle.standardError.write(contentsOf: Data("synthetic refusal\n".utf8))
             case "--fixture-exit": exit(7)
             case "--fixture-hang": signal(SIGTERM, SIG_IGN); while true { pause() }

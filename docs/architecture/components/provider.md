@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -62,6 +62,19 @@ flowchart LR
     B1 -. explicit memory opt-in .-> RAM[Resident paged blocks / recurrent checkpoints]
     PL --> SE[Secure Enclave identity / attestation]
 ```
+
+### Same-process reconnects
+
+`ProviderLoop.run` in `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`
+captures the existing process key in `CoordinatorClient`'s endpoint-resumption
+responder. `CoordinatorClient.connectAndRun` gives every real socket a fresh
+registration nonce and clears its resume state on teardown. The
+[protocol-1 response](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+is synchronous and origin-bound, with no Apple operation or model-state change.
+It proves custody only; current authorization is still the platform's decision.
+Unexpected disconnect still cancels in-flight requests. This path neither
+persists the process key nor changes update/restart behavior or the existing
+shadow event handling.
 
 ### Process boundaries
 

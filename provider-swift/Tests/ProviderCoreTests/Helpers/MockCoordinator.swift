@@ -33,6 +33,7 @@ import NIOCore
 public struct CapturedMessages: Sendable {
     public var drainBarriers: [String] = []
     public var appAttestShadow: [AppAttestShadowPayload] = []
+    public var appAttestResume: [AppAttestResumeResponse] = []
     public var registers: [ProviderMessage.Register] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
@@ -360,6 +361,10 @@ public final class MockCoordinator: @unchecked Sendable {
 
     // MARK: Push helpers
 
+    public func pushAppAttestResume(_ challenge: AppAttestResumeChallenge) async throws {
+        try await sendCoordinatorMessage(.appAttestResume(challenge))
+    }
+
     public func pushAppAttestShadow(_ payload: AppAttestShadowPayload) async throws {
         try await sendCoordinatorMessage(.appAttestShadow(payload))
     }
@@ -650,6 +655,7 @@ public final class MockCoordinator: @unchecked Sendable {
             switch parsed {
             case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
+            case .appAttestResume(let p): captured.appAttestResume.append(p)
             case .register(let r):           captured.registers.append(r)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)

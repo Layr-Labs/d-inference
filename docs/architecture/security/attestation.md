@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the
@@ -59,6 +59,15 @@ This dispatch change adds no retry, grace period or trusted lifetime; the
 coordinator still verifies fresh evidence and enforces expiry and revocation.
 Synchronous actor occupation, system suspension, Apple service availability and
 transport failure remain separate availability limits.
+
+The separate [endpoint-resumption candidate](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+answers directly in `CoordinatorClient` using the fixed process key and a fresh
+socket nonce. It does no Apple work and creates no local authorization. The
+existing responsive `app_attest_shadow` and `trust_status` handling above is
+unchanged. Only a matching platform implementation can use the custody response
+with retained evidence; it must preserve original proof deadlines and current
+authorization/revocation checks. Provider support alone is not deployment or
+native qualification evidence.
 
 ## Presentation and dispatch history
 

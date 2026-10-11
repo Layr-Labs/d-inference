@@ -1,5 +1,14 @@
 version: "1.1"
 created: "2026-05-14"
+# Provider endpoint-resumption scope 2026-10-11: protocol 1 proves custody of the
+# fixed process X25519 key on one registered socket, with a fresh socket nonce,
+# strict bounded transcript and direct origin-bound reply. It grants no local
+# trust and extends no Apple proof lifetime. Backend policy remains platform-owned.
+# Logout stops the credential-holding process before revocation/local deletion;
+# only HTTP 204 confirms remote revocation. Offline local logout is not remote
+# invalidation. This scope does not revalidate older threat entries or qualify
+# native Apple behavior. See docs/reference/protocol-messages.md and
+# docs/architecture/security/identity-binding.md.
 # Provider App Attest dispatch review 2026-10-10: suspended model/inference work
 # no longer delays challenge handling, grant application or connection invalidation.
 # Existing proof verification, native-call admission, expiry and revocation remain

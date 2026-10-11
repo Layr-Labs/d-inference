@@ -32,7 +32,8 @@ extension CoordinatorClient {
     internal func handleIncomingFrame(
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
-        profileAnchor: SuspendingClock.Instant = .now
+        profileAnchor: SuspendingClock.Instant = .now,
+        connection: NWConnection? = nil
     ) async {
         let parsed: CoordinatorMessage
         do {
@@ -156,6 +157,9 @@ extension CoordinatorClient {
 
         case .appAttestShadow(let payload):
             eventContinuation?.yield(.appAttestShadow(payload))
+
+        case .appAttestResume(let challenge):
+            if let connection { answerAppAttestResume(challenge, on: connection) }
 
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(

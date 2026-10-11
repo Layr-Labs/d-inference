@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -55,6 +55,13 @@ evidence; see [shared-device cleanup](../architecture/account-erasure.md#shared-
 Autopilot earnings-floor qualification is a separate historical check: a new
 authorization does not qualify a declaration received before that grant. See
 the [reward policy](../reference/pricing-model.md#autopilot-rewards).
+
+The provider's [endpoint-resumption candidate](../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+proves continued custody of a process key on a fresh connection. It is not a new
+Apple proof or a consumer-verifiable serving credential, and does not extend
+proof validity. Continue to read the coordinator's current verdict and the
+request's dispatch snapshot; provider support alone does not establish that
+the matching platform implementation is deployed.
 
 ## Read verification in chat and network stats
 

@@ -1,6 +1,25 @@
 # Test
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
+
+## Provider endpoint resumption and logout
+
+Stage C's synthetic tests require neither real Apple calls nor credentials:
+
+| Coverage | Suites / sources |
+|---|---|
+| Exact shared Go vector, authenticated bytes, reflection, malformed fields, time bounds and protocol negotiation | `provider-swift/Tests/ProviderCoreTests/Crypto/AppAttestResumeTests.swift`; fixture `provider-swift/Tests/ProviderCoreTests/Fixtures/app-attest-resumption-v1.json` |
+| Real loopback WebSocket reconnect, fresh socket nonce, stale callback rejection, one response per socket and unchanged model state | `provider-swift/Tests/ProviderCoreTests/Coordinator/AppAttestResumeTransportTests.swift` |
+| Stop-before-revoke/delete, missing token, stop/deletion failures, exact HTTP 204 and redirect/offline refusal | `provider-swift/Tests/ProviderCoreTests/Auth/ProviderLogoutTests.swift` |
+| Logout flags, real current-process identity refusal and accurate completion messages | `provider-swift/Tests/DarkbloomCLITests/LogoutCommandTests.swift` |
+
+After `swift build --build-tests` and source-matched metallib staging, run
+`swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|LogoutCommand'`
+from `provider-swift/`. Keep test state paths isolated as in
+`scripts/run-provider-tests.sh`; these tests must never stop an operator process.
+The existing coordinator and serve-loop App Attest suites remain regression
+coverage. These transport tests do not establish native Apple qualification or
+end-to-end platform authorization.
 
 ## App Attest provider dispatch
 

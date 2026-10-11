@@ -60,7 +60,12 @@ extension CoordinatorClient {
         // WebSocket server-response validation fail.
         let scheme = url.scheme?.lowercased()
         let useTLS = (scheme == "wss" || scheme == "https")
-        let params = useTLS ? NWParameters.tls : NWParameters.tcp
+        // A debug build may pin a local test coordinator's certificate
+        // (`CoordinatorDebugCertificatePin`); release builds always use the
+        // system's trust evaluation.
+        let params = useTLS
+            ? (CoordinatorDebugCertificatePin.tlsOptions().map { NWParameters(tls: $0) } ?? NWParameters.tls)
+            : NWParameters.tcp
 
         // Disable Nagle's algorithm (TCP_NODELAY). Without this, the kernel
         // batches small WebSocket frames (~200 bytes each) and delays sending

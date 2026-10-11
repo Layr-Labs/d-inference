@@ -703,9 +703,15 @@ Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33
 - **On the pair, at the planner's cut** (rank 0 on the M3 Ultra, rank 1 on the M5 Max, over the cable; each run
   against a staged single-Mac reference by the qualification comparator): Qwen3.5 and Qwen3.6 35B A3B (cut 20),
   Bonsai 2 27B (32), Nemotron 3.5 (27), GPT-OSS 20B (12) and Gemma 4 26B QAT (15) all pass, and each completes a
-  16,384-token prompt with both ranks agreeing. MiMo is placed from detected memory alone (cut 41 or 42, by what
-  Mac A has free at that moment); when applications on Mac A held enough that its rank was 3.44 GiB short, the
-  planner said exactly that instead of choosing a placement the gate would refuse.
+  16,384-token prompt with both ranks agreeing. MiMo is placed from detected memory alone (cut 38 to 42, by what
+  each Mac has free at that moment); when applications on Mac A held enough that its rank was 3.52 GiB short, the
+  planner said exactly that instead of choosing a placement the gate would refuse. From fresh profiles at 19:12Z
+  (cut 41, all four lanes) MiMo ran the short, 4,096- and 16,384-token requests across the cable (both ranks' token
+  chains equal; 16,384: first token 45.6 s, decode 24.8 tok/s). Against the Mac A staged reference of 2026-10-09
+  (cut 34): short `tokensEqualLogitsDiffer`; 4,096 first differs at token 50, where the pair's own row is an exact tie
+  (`divergedAtNearTie` read from the pair's row; that reference recorded no rows). A Mac A reference at cut 41 was
+  refused by the gate at its second stage with the applications open: one Mac holding MiMo in one process is the case
+  the planner reports as not fitting (161.8 GiB).
 - **With measured speeds** (the timed solo runs of the A3B rows on each Mac, as `ClusterSpeedMeasurement` files),
   the planner moves the A3B rows from an even pipeline split to cut 12 and `phase_split_mtp_v1`: the faster M5 Max
   holds every layer and decodes alone with the head.

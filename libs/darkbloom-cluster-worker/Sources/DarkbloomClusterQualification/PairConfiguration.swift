@@ -156,6 +156,10 @@ public struct PairConfiguration: Sendable {
     public var tamperRank: Int?
     public var tamperValue: String?
     public static let tamperEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"
+    /// Qualification: both ranks rekey every n records per direction instead
+    /// of the data plane's 262,144, so one request crosses key generations.
+    public var rekeyRecords: Int?
+    public static let rekeyEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_REKEY"
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -274,6 +278,8 @@ public struct PairConfiguration: Sendable {
         try require(wrongPinRank.map { (0...1).contains($0) } ?? true, "a wrong pin names rank 0 or 1")
         try require((tamperValue == nil && wrongPinRank == nil) || dataPlane == ClusterWorkerDataPlane.encrypted,
             "a data-plane fault needs the encrypted data plane")
+        try require(rekeyRecords.map { (2...262_144).contains($0) && dataPlane == ClusterWorkerDataPlane.encrypted } ?? true,
+            "a rekey interval is 2...262144 records and needs the encrypted data plane")
         try require(tamperValue.map { v in (3...64).contains(v.utf8.count) && v.utf8.allSatisfy {
             (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 58 } } ?? true,
             "a tamper fault is KIND:ORDINAL")
@@ -413,6 +419,7 @@ public struct PairConfiguration: Sendable {
             environment.append((Self.stageResidencyEnvironment, Self.stageResidencyPolicy))
         }
         if tamperRank == rank, let tamperValue { environment.append((Self.tamperEnvironment, tamperValue)) }
+        if let rekeyRecords { environment.append((Self.rekeyEnvironment, "records:\(rekeyRecords)")) }
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
             "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
@@ -429,7 +436,7 @@ public struct PairConfiguration: Sendable {
         // The credential itself is the first line of the worker's input.
         if dataPlane == ClusterWorkerDataPlane.encrypted { arguments += ["--data-plane", ClusterWorkerDataPlaneTrust.argument] }
         if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency
-            || mimoStepEvidence || stageResidency || tamperValue != nil {
+            || mimoStepEvidence || stageResidency || tamperValue != nil || rekeyRecords != nil {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")

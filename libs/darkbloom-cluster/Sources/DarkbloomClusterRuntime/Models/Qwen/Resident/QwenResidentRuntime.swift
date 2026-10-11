@@ -361,6 +361,8 @@ public final class QwenResidentRuntime {
                 + " output=\(reserved.request.outputCount) reserved=\(reserved.allowance.reservedBytes)"
                 + " transient=\(reserved.allowance.transientBytes) active_before=\(before.activeMemory)"
                 + " peak=\(after.peakMemory) active_after=\(after.activeMemory) cache_after=\(after.cacheMemory)")
+            // S16: the session's record counters and key generations so far.
+            collective.logDataPlaneStatus()
             // Output is fully prepared and control completed before this slot
             // is cleared. A thrown encode keeps the failed owner unavailable.
             reservation = nil; phaseSplitAllowance = nil
@@ -381,6 +383,7 @@ public final class QwenResidentRuntime {
         guard operation.try() else { throw ProbeError("Cannot release a running native request") }
         defer { operation.unlock() }
         try control.beginClose()
+        collective.logDataPlaneStatus()
         do {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in

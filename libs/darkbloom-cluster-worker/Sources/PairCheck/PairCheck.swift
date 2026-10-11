@@ -40,6 +40,7 @@ import Foundation
               [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]
               [--data-plane-fault RANK:wrong-pin | RANK:KIND:ORDINAL (qualification: a wrong pin on that rank, or one
                                   flipped ciphertext byte of its ORDINAL-th KIND record, e.g. 0:residualPayload:3)]
+              [--data-plane-rekey-records N (qualification: both ranks rekey every N records per direction, 2...262144)]
               [--startup-seconds N] [--request-seconds N]
               [--rank1-delay-seconds N] [--progress-timeout-ms N] [--allow-unguarded-jaccl yes]
               (request and progress limits default to budgets scaled with the prompt length from the model's
@@ -172,7 +173,7 @@ import Foundation
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
-            "--data-plane", "--data-plane-fault"]
+            "--data-plane", "--data-plane-fault", "--data-plane-rekey-records"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -276,6 +277,10 @@ import Foundation
             }
             if parts[1] == "wrong-pin" { configuration.wrongPinRank = rank }
             else { configuration.tamperRank = rank; configuration.tamperValue = String(parts[1]) }
+            try configuration.validate()
+        }
+        if let records = try integer(fields, "--data-plane-rekey-records") {
+            configuration.rekeyRecords = records
             try configuration.validate()
         }
         if let stop = try integer(fields, "--stop-after-tokens") {

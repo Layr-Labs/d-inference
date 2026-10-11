@@ -184,6 +184,7 @@ public final class Collective {
     /// Called once, right after the group exists and before any other transfer.
     public func establishDataPlane(credential: ClusterDataPlaneCredential, scopeSHA256: Data,
                                    tamper: CollectiveRecordTamper? = nil,
+                                   rekey: ClusterRecordRekeyPolicy = .dataPlane,
                                    check: () throws -> Void) throws -> ClusterDataPlaneReceipt {
         guard protected == nil, dataPlane == nil, size == 2, credential.rank == rank else {
             throw ProbeError("The data plane is keyed once, by this rank's own credential")
@@ -215,13 +216,12 @@ public final class Collective {
             let io = try CollectiveRecordByteIO(collective: self,
                 maximumFrameBytes: limits.maximumPlaintextBytes + ClusterRecordTransferAccounting.framingBytes,
                 tamper: tamper)
-            let (transport, receipt) = try exchange.makeTransport(io: io, limits: limits, rekey: .dataPlane)
+            let (transport, receipt) = try exchange.makeTransport(io: io, limits: limits, rekey: rekey)
             protected = try CollectiveAuthenticatedRecords(transport: transport, io: io)
             protectedIO = io; dataPlane = receipt
             log("darkbloom-data-plane-v1 rank=\(rank) protection=\(ClusterWorkerDataPlane.encrypted) peer_verified=1"
                 + " transcript=\(receipt.transcriptHex) edge=\(receipt.edgeHex) record_bytes=\(limits.maximumPlaintextBytes)"
-                + " rekey_records=\(ClusterRecordRekeyPolicy.dataPlane.records) rekey_bytes=\(ClusterRecordRekeyPolicy.dataPlane.bytes)"
-                + " rekey_seconds=\(ClusterRecordRekeyPolicy.dataPlane.seconds)")
+                + " rekey_records=\(rekey.records) rekey_bytes=\(rekey.bytes) rekey_seconds=\(rekey.seconds)")
             return receipt
         } catch {
             exchange.invalidate()
@@ -237,6 +237,18 @@ public final class Collective {
 
     /// Records sealed and opened and the key generations in use.
     public var dataPlaneStatus: ClusterRecordTransportStatus? { protected?.status }
+
+    /// One line with what the keyed data plane carried in this session, for
+    /// the launcher's evidence: records and plaintext bytes each way and the
+    /// key generation each direction reached. Nothing for a plaintext plane.
+    public func logDataPlaneStatus() {
+        guard let status = dataPlaneStatus else { return }
+        let codec = status.codec
+        log("darkbloom-data-plane-status-v1 rank=\(rank) active=\(status.active ? 1 : 0)"
+            + " sealed_records=\(codec.sealedRecords) opened_records=\(codec.openedRecords)"
+            + " sealed_bytes=\(codec.sealedPlaintextBytes) opened_bytes=\(codec.openedPlaintextBytes)"
+            + " send_generation=\(codec.sendGeneration) receive_generation=\(codec.receiveGeneration)")
+    }
 
     /// Fail closed at once: later transfers refuse.
     public func invalidateDataPlane() { protected?.invalidate() }

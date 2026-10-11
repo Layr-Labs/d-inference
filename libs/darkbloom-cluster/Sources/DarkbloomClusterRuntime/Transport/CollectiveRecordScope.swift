@@ -87,3 +87,23 @@ public struct CollectiveRecordTamper: Sendable, Equatable {
         return .init(type: type, ordinal: ordinal)
     }
 }
+
+/// Qualification only (`DARKBLOOM_CLUSTER_QUALIFICATION_REKEY=records:<n>`,
+/// honoured only with the qualification switches): the data plane's rekey
+/// policy with a new key every n records per direction instead of 262,144,
+/// so a short request crosses several key generations. Both ranks must be
+/// given the same value: the policy is bound into the record keys.
+public enum CollectiveRecordRekeyOverride {
+    public static let environmentName = QwenResidentQualificationSwitches.rekeyEnvironmentName
+
+    public static func admit(environment: [String: String]) throws -> ClusterRecordRekeyPolicy? {
+        guard let text = environment[environmentName] else { return nil }
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == "records", let records = UInt64(parts[1]), String(records) == parts[1],
+              (2...ClusterRecordRekeyPolicy.dataPlane.records).contains(records) else {
+            throw ProbeError("\(environmentName) takes records:<2...\(ClusterRecordRekeyPolicy.dataPlane.records)>")
+        }
+        let standard = ClusterRecordRekeyPolicy.dataPlane
+        return try ClusterRecordRekeyPolicy(records: records, bytes: standard.bytes, seconds: standard.seconds)
+    }
+}

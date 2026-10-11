@@ -659,6 +659,30 @@ final class PairDriverTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
     }
 
+    func testAShortRekeyIntervalReachesBothRanksAsAQualificationSwitch() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2, recording: false)
+        configuration.rekeyRecords = 64
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+            XCTAssertEqual(environment["DARKBLOOM_CLUSTER_QUALIFICATION_REKEY"], "records:64")
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            XCTAssertEqual(arguments.firstIndex(of: "--qualification-switches").map { arguments[$0 + 1] }, "yes")
+        }
+        assertEndedByItself(report, sides, configuration)
+        var invalid = configuration
+        invalid.dataPlane = "plaintext"
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.rekeyRecords = 1
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.rekeyRecords = 262_145
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
     func testThePlaintextDataPlaneRemainsForTheOverheadComparison() throws {
         let sides = try Sides(modes: ["ok", "ok"])
         var configuration = try sides.configuration(outputCount: 2)

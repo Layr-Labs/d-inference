@@ -36,12 +36,17 @@ extension QwenResidentRuntime {
         // A recording request may be asked to commit this; fixed here, once.
         var fault: QwenPhaseSplitFault?
         var tamper: CollectiveRecordTamper?
+        var rekey: ClusterRecordRekeyPolicy?
         if qualification.permitted {
             transport = try ClusterTransport.admit(environment: launchEnvironment)
             fault = try QwenPhaseSplitFault.admit(environment: launchEnvironment)
             tamper = try CollectiveRecordTamper.admit(environment: launchEnvironment)
             guard tamper == nil || credential != nil else {
                 throw ProbeError("\(CollectiveRecordTamper.environmentName) needs a keyed data plane")
+            }
+            rekey = try CollectiveRecordRekeyOverride.admit(environment: launchEnvironment)
+            guard rekey == nil || credential != nil else {
+                throw ProbeError("\(CollectiveRecordRekeyOverride.environmentName) needs a keyed data plane")
             }
             // The host memory gate's record or measure mode, the same switch for every adapter.
             if let gate = try QwenDenseStageLoadMeasurement.requested(environment: launchEnvironment) {
@@ -127,7 +132,7 @@ extension QwenResidentRuntime {
             let loadAgreement = common
             if let credential {
                 try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
-                    loadAgreement: loadAgreement, tamper: tamper, check: { try control.check() })
+                    loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, check: { try control.check() })
             }
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }

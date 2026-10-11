@@ -131,6 +131,10 @@ public final class GPTOSSResidentRuntime {
         guard tamper == nil || credential != nil else {
             throw ProbeError("\(CollectiveRecordTamper.environmentName) needs a keyed data plane")
         }
+        let rekey = qualification.permitted ? try CollectiveRecordRekeyOverride.admit(environment: environment) : nil
+        guard rekey == nil || credential != nil else {
+            throw ProbeError("\(CollectiveRecordRekeyOverride.environmentName) needs a keyed data plane")
+        }
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         if qualification.permitted { transport = try ClusterTransport.admit(environment: environment) }
@@ -183,7 +187,7 @@ public final class GPTOSSResidentRuntime {
                 : sha256(try canonicalJSONData([plainAgreement] + ClusterDataPlaneAgreement.loadAgreementFields))
             if let credential {
                 try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
-                    loadAgreement: loadAgreement, tamper: tamper, check: { try control.check() })
+                    loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, check: { try control.check() })
             }
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }

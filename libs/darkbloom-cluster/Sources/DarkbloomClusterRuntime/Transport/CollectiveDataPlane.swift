@@ -11,7 +11,8 @@ enum ClusterDataPlaneAgreement {
     static let loadAgreementFields = ["cluster-data-plane-v1", ClusterWorkerDataPlane.encrypted]
 
     static func establish(collective: Collective, credential: ClusterDataPlaneCredential, loadAgreement: String,
-                          tamper: CollectiveRecordTamper?, check: () throws -> Void) throws {
+                          tamper: CollectiveRecordTamper?, rekey: ClusterRecordRekeyPolicy? = nil,
+                          check: () throws -> Void) throws {
         let values = Array(loadAgreement.utf8)
         guard values.count == 64, values.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw ProbeError("Data-plane scope requires the canonical load agreement digest")
@@ -19,7 +20,8 @@ enum ClusterDataPlaneAgreement {
         func digit(_ c: UInt8) -> UInt8 { c <= 57 ? c - 48 : c - 87 }
         let scope = Data(stride(from: 0, to: 64, by: 2).map { digit(values[$0]) << 4 | digit(values[$0 + 1]) })
         let started = DispatchTime.now().uptimeNanoseconds
-        _ = try collective.establishDataPlane(credential: credential, scopeSHA256: scope, tamper: tamper, check: check)
+        _ = try collective.establishDataPlane(credential: credential, scopeSHA256: scope, tamper: tamper,
+            rekey: rekey ?? .dataPlane, check: check)
         log("darkbloom-data-plane-exchange-v1 rank=\(collective.rank) transport=\(collective.transportLabel)"
             + " exchange_ns=\(DispatchTime.now().uptimeNanoseconds - started)")
     }

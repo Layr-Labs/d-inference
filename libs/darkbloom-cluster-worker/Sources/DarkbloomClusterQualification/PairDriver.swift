@@ -67,7 +67,8 @@ public struct PairDriver: Sendable {
         "darkbloom-mimo-resident-load-v1 ", "darkbloom-mimo-request-v1 ", "darkbloom-mimo-resident-release-v1 ",
         "darkbloom-mimo-step-v1 ", "darkbloom-forced-exit-v1 ", "darkbloom-orphan-wired-v1 ", "darkbloom-stage-residency-v1 ",
         "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 ",
-        "darkbloom-data-plane-v1 ", "darkbloom-data-plane-exchange-v1 ", "darkbloom-data-plane-tamper-v1 "]
+        "darkbloom-data-plane-v1 ", "darkbloom-data-plane-exchange-v1 ", "darkbloom-data-plane-tamper-v1 ",
+        "darkbloom-data-plane-status-v1 "]
     /// The two workers' credential lines for one run (S16).
     static func dataPlaneLines(_ c: PairConfiguration) throws -> [Data?] {
         let identities = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]

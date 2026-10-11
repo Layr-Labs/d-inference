@@ -48,22 +48,59 @@ three files it read afterwards and requires the manifest digests. A verified rea
   load and `mtp_*` fields (rounds, drafted, accepted per position, time in build/evaluate/settle) on its
   `darkbloom-phase-split-v1` line.
 
-## MiMo and Nemotron
+## Which families run the head
 
-- **Nemotron 3.5 Lightning** (inline `mtp.layers.*`, 0.70 GiB, SDK `NemotronH35MTPAssistant`) already runs the
-  phase split. What is missing for `phase_split_mtp_v1`: (1) a captured-window forward through
-  `NemotronStageForward` (per-position conv and SSM capture for the Mamba blocks, attention rollback; the session's
-  window refuses a `NemotronHModel` today); (2) the head is trained on the **post-norm** target hidden, so the
-  consumer-stage tap must hand it the normalised rows (the Qwen head applies the target norm itself); (3) the head's
-  loader against a layerless NemotronH35 target sharing stage 0's embedding and stage 1's norm and head;
-  (4) `QwenMTPDecoder` generalised over `CBv2MTPRequestStatefulDrafter`; (5) the mode in its resident row.
-- **MiMo V2.6** (three unquantised MTP layers, 1.84 GiB) runs only the pipeline modes on this pair: the whole model
-  (about 173 GB) does not fit the 128 GB Mac, so no rank can hold every layer and a phase split, with or without the
-  head, is impossible. MTP for MiMo needs the pipeline-mode per-round protocol (head and an embedding copy on the
-  last rank, drafts sent back each round, both ranks committing the kept position before either runs again). Not
-  built.
+| Family (registered row) | Head in the artifact | `phase_split_mtp_v1` | Why / what is missing |
+|---|---|---|---|
+| Qwen3.5 9B, Qwen3.8 27B | inline `mtp.`, one dense layer | **on** | as above |
+| Qwen3.5 35B A3B, Qwen3.6 35B A3B | inline `mtp.`, one routed-expert layer (split gate/up, as the SDK's `Qwen35MTPDecoderLayer` keys it) | **on** | same head type (`Qwen35InlineMTPAssistant`), same loader and decoder; the row lists the mode |
+| Prism Bonsai 2 27B | none (`mtp_num_hidden_layers` 0) | off | nothing to run |
+| GPT-OSS 20B, Gemma 4 26B | none | off | pipeline-only rows (a hand-off cannot carry a sliding layer's ring) |
+| Nemotron 3.5 Lightning | inline `mtp.layers.*` (attention + MoE, 0.70 GiB), SDK `NemotronH35MTPAssistant` | off | five pieces, below |
+| MiMo V2.6 | three unquantised MTP layers (1.84 GiB), SDK `MiMoV26MTPAssistant` | off | no phase split is possible on this pair; a pipeline-mode head is not built, below |
+
+### Nemotron 3.5 Lightning: what `phase_split_mtp_v1` needs
+
+The phase split itself runs (the decoding rank holds both `NemotronH35Model` stages). Missing, in order:
+
+1. **SDK: captured stage entries.** The stages run through the public seam `NemotronHModel.cbv2StageResidual` /
+   `cbv2StageLogits` (`libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH.swift`, "Layer-stage seam"). Both call
+   the internal `cbv2Hidden(_:caches:recurrentState:captureMTP:inputEmbedding:appliesFinalNorm:)` without
+   `captureMTP`; a verify window needs the per-position Mamba conv/SSM capture (`captureMTP: true`, as
+   `NemotronH35Model.cbv2ForwardWithHiddenCaptured` in `NemotronH35MTPCapture.swift` does for the whole model).
+   This is an SDK change (the pinned `libs/mlx-swift-lm`), which the Qwen work avoided.
+2. **Runtime window.** `QwenLayerStageSession.openWindow` refuses `NemotronHModel` (the guard
+   `!(stage.model is NemotronHModel)`); it needs a captured branch in `NemotronStageForward`
+   (`Models/Nemotron/NemotronRequestGeometry.swift`) and the attention rollback the Qwen path already has.
+3. **Post-norm hidden.** The Nemotron head is trained on the target's hidden **after** `norm_f`; the consumer-stage
+   tap (`QwenLayerStageHiddenTap`) hands the Qwen head the pre-norm rows (the Qwen head applies the norm itself).
+4. **Head loader.** `NemotronH35MTPAssistant.load(from:target:)` takes a `NemotronH35Model`; it needs a layerless
+   target sharing stage 0's embedding and stage 1's `norm_f` and `lm_head` (as `QwenMTPHead` builds a layerless
+   `Qwen35TextModel`), plus the manifest re-hash of the head's files.
+5. **Decoder and row.** `QwenMTPDecoder` is written against `Qwen35InlineMTPAssistant`; it needs to take any
+   `CBv2MTPRequestStatefulDrafter` (the SDK protocol both assistants conform to), then the mode goes into the
+   Nemotron resident row (`QwenResidentModelDefinition`) and its capability then advertises the speculation.
+
+### MiMo V2.6: why not, and what a pipeline head would need
+
+The whole model is about 173 GB; the 128 GB Mac cannot hold every layer, so no rank can be the decoding rank of a
+phase split, with or without the head (the planner never offers `phase_split_v1` for MiMo on this pair). A head in
+the pipeline modes needs a per-round protocol that does not exist: the head (1.84 GiB) and a copy of the
+embedding on the last rank; each round the last rank drafts `k` tokens, sends them back across the cable, both ranks
+run the verify window `[last, d1..dk]` through their stages (one cable crossing each way per round instead of per
+token), the last rank picks the kept prefix, and both ranks commit the kept position and roll back the rest before
+either runs again. MiMo's state is attention KV only, but 39 of its 48 layers are sliding-window (128) rings, so the
+rollback must restore the ring rows a rejected draft overwrote. The comparator,
+the relay batches and the request agreement would need the round as a new frame kind. Not built; with pipeline
+decode on this pair at the cable's per-token latency, the gain would have to be measured before it is worth it.
 
 ## Evidence
 
 Hardware runs, figures and the comparison verdicts are in the task's evidence folder `mtp2-20261010`
-(`STATUS.md`).
+(`STATUS.md`); the A3B rows' runs are in `universal-20261010` (`STATUS.md`, `hw/a35`, `hw/a36`).
+
+First A3B figures (Qwen3.5 35B A3B, cut 20, 4,096-token prompt, 64 outputs, prefix cache off, rank 1 on the M5 Max):
+the speculative pair against the staged speculative reference `divergedAtNearTie` (index 36), and against the plain
+phase split's reference at the same index as the plain pair (10): the pass rule. Decode 67.6 tok/s against 69.3 for
+the plain phase split: 21 rounds, 59 drafts, 42 accepted (3 tokens a round), but a five-token verify window through
+the routed experts costs about 34 ms against 14.5 ms for one token, so depth 4 gains nothing on this model here.

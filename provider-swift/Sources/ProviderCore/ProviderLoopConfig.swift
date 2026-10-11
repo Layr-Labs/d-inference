@@ -34,6 +34,12 @@ public struct ProviderLoopConfig: Sendable {
     /// Whether an accepted member connection that later drops ends the loop
     /// (true) or permits a reconnect (false). Read only in member mode.
     public let clusterMemberStopsOnDisconnect: Bool
+    /// Cluster member only: the models whose pair-serving grant this Mac's
+    /// rank has passed (`ClusterMemberPreparation.requirePairServingGrant`).
+    /// A member serves no solo inference, so for these models the single-Mac
+    /// requirements, which a pair is not judged by, do not keep them out of
+    /// the member's registration and pair approval. Ignored in every other role.
+    public let pairServingGrantedModelIDs: Set<String>
 
     public init(
         coordinatorURL: String,
@@ -49,7 +55,8 @@ public struct ProviderLoopConfig: Sendable {
         configPath: URL? = nil,
         autopilotInventory: [ModelInfo] = [],
         executionRole: ProviderExecutionRole = .solo,
-        clusterMemberStopsOnDisconnect: Bool = true
+        clusterMemberStopsOnDisconnect: Bool = true,
+        pairServingGrantedModelIDs: Set<String> = []
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -65,5 +72,14 @@ public struct ProviderLoopConfig: Sendable {
         self.localEndpoint = localEndpoint
         self.executionRole = executionRole
         self.clusterMemberStopsOnDisconnect = clusterMemberStopsOnDisconnect
+        self.pairServingGrantedModelIDs = pairServingGrantedModelIDs
+    }
+
+    /// Whether this configuration admits a model: by the single-Mac
+    /// requirements, or, for a cluster member only, by the pair-serving grant
+    /// its rank passed for that model.
+    func admitsModel(_ modelID: String) -> Bool {
+        (executionRole == .clusterMember && pairServingGrantedModelIDs.contains(modelID))
+            || ModelRuntimeRequirements.isEligible(modelID: modelID, available: runtimeCapabilities)
     }
 }

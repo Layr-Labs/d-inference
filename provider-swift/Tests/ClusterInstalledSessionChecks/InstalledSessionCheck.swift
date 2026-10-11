@@ -78,7 +78,7 @@ final class EndpointBox: @unchecked Sendable {
         try generationModeSelection(fixture,prepared)
         try perModelBudgets(fixture,prepared)
         try longPromptsFitTheInstalledSession(fixture)
-        try pairServingStaysWithheld(fixture)
+        try pairServingGrant(fixture)
         try unreadableCapabilityRecord(fixture)
         try await phaseSplitSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
@@ -88,7 +88,7 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, open 27B pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -279,7 +279,7 @@ final class EndpointBox: @unchecked Sendable {
         let nine=DistributedInstalledTimeBudgets(startupAllowanceNanoseconds:90_000_000_000,firstTokenBaseMilliseconds:10_000,firstTokenMillisecondsPerPromptToken:1,
             admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,stopMarginNanoseconds:15_000_000_000,
             cleanStopWaitNanoseconds:10_000_000_000)
-        try require(Table.qwen35.pairServing == .open(nine),"the 9B's budgets changed, or the 9B is no longer open")
+        try require(Table.qwen35.budgets == nine,"the 9B's budgets changed")
         try require(prepared.plan.budgets==nine,"the plan did not take its budgets from the selected model's row")
         try require(nine.pairTiming == ClusterWorkerPairTiming(admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,cleanStopWaitNanoseconds:10_000_000_000),"the 9B's pair timing differs from its row")
         let (session,_)=try session(f,prepared)
@@ -290,7 +290,7 @@ final class EndpointBox: @unchecked Sendable {
             generationMode:"phase_split_v1",advertisedModes:allModes).prepare()
         try require(split.plan.budgets==nine,"the generation mode changed a time budget")
         // The 27B's row is open (S08); its figures follow from its own measurements.
-        guard case .open(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not open") }
+        let big=Table.qwen38.budgets
         let slowestStageLoad=13.7,phaseSplitFactor=12.3/7.3,slowPrefillTokensPerSecond=300.0
         try require(Double(big.startupAllowanceNanoseconds)/1e9 >= 5*slowestStageLoad*phaseSplitFactor
             && big.startupAllowanceNanoseconds <= 150_000_000_000,"27B startup allowance is not five whole-model loads inside half a session")
@@ -317,30 +317,50 @@ final class EndpointBox: @unchecked Sendable {
         let measured:[String:(decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(67,15.61),
             "registered_qwen38_27b":(23,39.91)]
         for row in Table.rows {
-            let budgets:DistributedInstalledTimeBudgets
-            switch row.pairServing { case .open(let value): budgets=value; case .withheld(let value): budgets=value }
+            let budgets=row.budgets
             guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }
             let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
             try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
         }
     }
-    /// The 27B is open to pair serving on the installed path (S08): its setups
-    /// prepare in every mode, under its own budgets, whatever the public name.
-    /// A registered model without a row is still refused.
-    static func pairServingStaysWithheld(_ f:InstalledFixture) throws {
+    /// Pair serving is granted per registered model with the chip classes each
+    /// role may run on (owner decision D4). The 27B is granted on the M3 Ultra
+    /// and the M5 Max for either role: its setups prepare in every mode, under
+    /// its own budgets, whatever the public name, and the plan admits exactly
+    /// the listed classes for the rank it runs. A registered model without a
+    /// row is still refused.
+    static func pairServingGrant(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
         for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
             let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
                 generationMode:mode,advertisedModes:allModes,registered:model)
             let prepared=try big.prepare()
-            guard case .open(let budgets)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not open") }
-            try require(prepared.plan.budgets==budgets,"the 27B was prepared under another row's budgets")
+            try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
+            try require(prepared.plan.grant==ClusterPairServingGrants.qwen38_27b,"the 27B was prepared under another model's grant")
+            // The fixture is the leader: rank 0 of two, the pipeline-only rank.
+            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip)) }
+            for chip in ["Apple M4 Max","Apple M5 Pro","Apple M1 (Virtual)"] {
+                let refused=try refusal{try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip))}
+                try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
+                    && refused.contains("policy decision"),"\(chip) was not refused for the 27B's rank 0: \(refused)")
+            }
         }
+        // The 9B was checked with the M3 Ultra leading only: an M5 Max cannot run its rank 0.
+        let nine=try f.prepare()
+        try require(nine.plan.grant==ClusterPairServingGrants.qwen35_9b,"the 9B was prepared under another model's grant")
+        try nine.plan.requireLocalRankGranted(numericsClass:.appleM3Ultra)
+        let led=try refusal{try nine.plan.requireLocalRankGranted(numericsClass:.appleM5Max)}
+        try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains("apple_m5_max"),"9B led by the M5 Max: \(led)")
+        // Budgets and grant are keyed on the runtime's model, whatever the public name.
         let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
-        guard case .open(let budgets)=Table.qwen38.pairServing, renamed==budgets else { throw CheckFailure(message:"renamed 27B budgets differ") }
+        try require(renamed==Table.qwen38.budgets,"renamed 27B budgets differ")
+        try require(try ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")==ClusterPairServingGrants.qwen38_27b,
+            "renamed 27B grant differs")
         let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
+        let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
+        try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
     }
     /// A worker whose description this build cannot read is a mixed install,
     /// and the refusal says so instead of reporting a difference.

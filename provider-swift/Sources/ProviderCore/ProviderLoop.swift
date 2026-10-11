@@ -822,8 +822,7 @@ public actor ProviderLoop {
         var unsupportedModelIds: [String] = []
         var ineligibleModelIds: [String] = []
         for model in config.models where advertised[model.id] == nil {
-            guard ModelRuntimeRequirements.isEligible(
-                modelID: model.id, available: config.runtimeCapabilities)
+            guard config.admitsModel(model.id)
             else {
                 ineligibleModelIds.append(model.id)
                 continue

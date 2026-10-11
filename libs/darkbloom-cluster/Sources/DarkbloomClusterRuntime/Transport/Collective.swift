@@ -243,11 +243,7 @@ public final class Collective {
     /// key generation each direction reached. Nothing for a plaintext plane.
     public func logDataPlaneStatus() {
         guard let status = dataPlaneStatus else { return }
-        let codec = status.codec
-        log("darkbloom-data-plane-status-v1 rank=\(rank) active=\(status.active ? 1 : 0)"
-            + " sealed_records=\(codec.sealedRecords) opened_records=\(codec.openedRecords)"
-            + " sealed_bytes=\(codec.sealedPlaintextBytes) opened_bytes=\(codec.openedPlaintextBytes)"
-            + " send_generation=\(codec.sendGeneration) receive_generation=\(codec.receiveGeneration)")
+        log("darkbloom-data-plane-status-v1 rank=\(rank) " + status.lineFields)
     }
 
     /// Fail closed at once: later transfers refuse.

@@ -332,6 +332,58 @@ func checkPinRefusals() throws {
     }
 }
 
+// MARK: Qualification rekey interval and the status line
+
+func checkQualificationRekeyAndStatusLine() throws {
+    // Only `records:<n>`, canonical, 2...262144; byte and age limits stay the data plane's.
+    let policy = try ClusterRecordRekeyPolicy.qualification("records:2")
+    try require(policy.records == 2 && policy.bytes == ClusterRecordRekeyPolicy.dataPlane.bytes
+        && policy.seconds == ClusterRecordRekeyPolicy.dataPlane.seconds, "records only")
+    try require(try ClusterRecordRekeyPolicy.qualification("records:262144") == .dataPlane, "the data plane's own interval")
+    for text in ["records:1", "records:262145", "records:064", "records:+64", "records:", "records:64:1", "bytes:64",
+                 "Records:64", "records: 64", "64", ""] {
+        try refuses(ClusterRecordError.invalidConfiguration, "qualification rekey '\(text)'") {
+            _ = try ClusterRecordRekeyPolicy.qualification(text)
+        }
+    }
+    // Both ranks keyed with it: one session crosses generations both ways, and
+    // each rank's status line mirrors its peer's.
+    let members = Members()
+    let a = try ClusterDataPlaneKeyExchange(credential: members.credential(0), scopeSHA256: scope)
+    let b = try ClusterDataPlaneKeyExchange(credential: members.credential(1), scopeSHA256: scope)
+    try exchange(a, b)
+    let frames = Frames(), l = try ClusterRecordLimits(maximumPlaintextBytes: 4096)
+    let (ta, _) = try a.makeTransport(io: MemoryIO(0, frames), limits: l, rekey: policy)
+    let (tb, _) = try b.makeTransport(io: MemoryIO(1, frames), limits: l, rekey: policy)
+    for index in 0..<7 {
+        let payload = Data(repeating: UInt8(index), count: 10 + index)
+        let expectation = try ClusterRecordTransferExpectation(context: context(), length: .exact(payload.count))
+        try ta.send(payload, expecting: expectation, check: {})
+        try require(try tb.receive(expecting: expectation, check: {}) == payload, "rank 0 to 1 across generations")
+        if index < 3 {
+            try tb.send(payload, expecting: expectation, check: {})
+            try require(try ta.receive(expecting: expectation, check: {}) == payload, "rank 1 to 0 across generations")
+        }
+    }
+    try require(ta.status.codec.sendGeneration == 3 && tb.status.codec.receiveGeneration == 3, "7 records: generation 3")
+    try require(tb.status.codec.sendGeneration == 1 && ta.status.codec.receiveGeneration == 1, "3 records: generation 1")
+    try require(ta.status.lineFields == "active=1 sealed_records=7 opened_records=3 sealed_bytes=91 opened_bytes=33"
+        + " send_generation=3 receive_generation=1", "status line fields: \(ta.status.lineFields)")
+    try require(tb.status.lineFields == "active=1 sealed_records=3 opened_records=7 sealed_bytes=33 opened_bytes=91"
+        + " send_generation=1 receive_generation=3", "peer's status line mirrors")
+    // One rank keyed with another interval: the first record is refused and poisons it.
+    let c = try ClusterDataPlaneKeyExchange(credential: members.credential(0), scopeSHA256: scope)
+    let d = try ClusterDataPlaneKeyExchange(credential: members.credential(1), scopeSHA256: scope)
+    try exchange(c, d)
+    let mixed = Frames()
+    let (tc, _) = try c.makeTransport(io: MemoryIO(0, mixed), limits: l, rekey: policy)
+    let (td, _) = try d.makeTransport(io: MemoryIO(1, mixed), limits: l, rekey: .dataPlane)
+    let expectation = try ClusterRecordTransferExpectation(context: context(), length: .exact(3))
+    try tc.send(Data([1, 2, 3]), expecting: expectation, check: {})
+    try refusesAny("intervals differ") { _ = try td.receive(expecting: expectation, check: {}) }
+    try require(!td.status.active && td.status.lineFields.hasPrefix("active=0 "), "poisoned, and the line says so")
+}
+
 enum NativeTrafficKeyDerivationProbe {
     static func anyTag() throws -> Data { Data(repeating: 0x5a, count: 32) }
 }
@@ -347,11 +399,12 @@ struct DataPlaneChecks {
             ("tamper, replay, wrong key, wrong record kind", checkTamperReplayWrongKey),
             ("pinned exchange: one transcript, keyed records both ways, tamper poisons, once only", checkPinnedExchange),
             ("pin refusals: wrong pin, forged certificate, substituted key, wrong epoch/scope/rank, replayed hello, bad tag, malformed", checkPinRefusals),
+            ("qualification rekey interval: refusals, keyed transport crosses generations, status lines mirror, mismatch refused", checkQualificationRekeyAndStatusLine),
         ]
         for (label, body) in groups {
             do { try body() } catch { print("FAIL " + label + ": \(error)"); throw error }
             print("PASS " + label)
         }
-        print("PASS 6 data-plane rekey and pinned-exchange CPU groups; no native/network qualification")
+        print("PASS 7 data-plane rekey and pinned-exchange CPU groups; no native/network qualification")
     }
 }

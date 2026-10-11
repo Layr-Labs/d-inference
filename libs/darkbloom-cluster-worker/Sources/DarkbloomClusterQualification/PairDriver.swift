@@ -84,6 +84,35 @@ public struct PairDriver: Sendable {
         }
     }
 
+    /// S16: the two ranks' last data-plane status lines agree when each
+    /// direction's sealed records, bytes and send generation equal the peer's
+    /// opened records, bytes and receive generation. Nil unless both ranks
+    /// wrote one (a plaintext plane, or a rank that failed before its status).
+    static func dataPlaneRecordAgreement(_ lines: [[String]]) -> (agree: Bool, rotations: Int)? {
+        let prefix = "darkbloom-data-plane-status-v1 "
+        let names = ["sealed_records", "opened_records", "sealed_bytes", "opened_bytes", "send_generation", "receive_generation"]
+        guard lines.count == 2 else { return nil }
+        var status: [[String: UInt64]] = []
+        for (rank, rankLines) in lines.enumerated() {
+            guard let line = rankLines.last(where: { $0.hasPrefix(prefix) }) else { return nil }
+            var fields: [String: UInt64] = [:]
+            for pair in line.dropFirst(prefix.count).split(separator: " ") {
+                let parts = pair.split(separator: "=", omittingEmptySubsequences: false)
+                guard parts.count == 2, let value = UInt64(parts[1]) else { return nil }
+                fields[String(parts[0])] = value
+            }
+            guard fields["rank"] == UInt64(rank), names.allSatisfy({ fields[$0] != nil }) else { return nil }
+            status.append(fields)
+        }
+        let agree = (0...1).allSatisfy { rank in
+            let own = status[rank], peer = status[1 - rank]
+            return own["sealed_records"] == peer["opened_records"] && own["sealed_bytes"] == peer["opened_bytes"]
+                && own["send_generation"] == peer["receive_generation"] && own["active"] == 1
+        }
+        let rotations = status.reduce(UInt64(0)) { $0 + $1["send_generation"]! }
+        return (agree, Int(clamping: rotations))
+    }
+
     static func runtimeLines(_ diagnostics: String) -> [String] {
         diagnostics.split(separator: "\n").map(String.init).filter { line in
             runtimeLinePrefixes.contains { line.hasPrefix($0) }
@@ -179,6 +208,9 @@ public struct PairDriver: Sendable {
             if planes.count == 2, planes.allSatisfy({ $0 != nil }) {
                 report.encryptedDataPlane = planes[0] == planes[1] && planes[0]!.protection == ClusterWorkerDataPlane.encrypted
                 report.peerVerified = report.encryptedDataPlane == true && planes.allSatisfy { $0!.peerVerified }
+            }
+            if let records = Self.dataPlaneRecordAgreement(ranks.map { $0.runtimeLines ?? [] }) {
+                report.dataPlaneRecordsAgree = records.agree; report.dataPlaneKeyRotations = records.rotations
             }
             return report
         }

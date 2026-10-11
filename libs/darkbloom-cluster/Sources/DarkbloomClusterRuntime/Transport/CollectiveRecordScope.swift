@@ -98,12 +98,8 @@ public enum CollectiveRecordRekeyOverride {
 
     public static func admit(environment: [String: String]) throws -> ClusterRecordRekeyPolicy? {
         guard let text = environment[environmentName] else { return nil }
-        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts[0] == "records", let records = UInt64(parts[1]), String(records) == parts[1],
-              (2...ClusterRecordRekeyPolicy.dataPlane.records).contains(records) else {
+        do { return try ClusterRecordRekeyPolicy.qualification(text) } catch {
             throw ProbeError("\(environmentName) takes records:<2...\(ClusterRecordRekeyPolicy.dataPlane.records)>")
         }
-        let standard = ClusterRecordRekeyPolicy.dataPlane
-        return try ClusterRecordRekeyPolicy(records: records, bytes: standard.bytes, seconds: standard.seconds)
     }
 }

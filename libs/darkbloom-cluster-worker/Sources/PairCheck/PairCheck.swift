@@ -349,6 +349,9 @@ import Foundation
                 + ", tokens \(timing.tokens) \(timing.selectedTokenIDsSHA256.prefix(16))")
         }
         if let agree = report.repetitionsAgreeOnTokens { lines.append("repeated requests select the same tokens: \(agree)") }
+        if let agree = report.dataPlaneRecordsAgree {
+            lines.append("data plane: records agree \(agree), key rotations \(report.dataPlaneKeyRotations ?? 0)")
+        }
         for rank in report.ranks { for line in rank.runtimeLines ?? [] { lines.append("\(rank.role): \(line)") } }
         lines.append("report: \(reportURL.lastPathComponent)")
         print(lines.joined(separator: "\n"))

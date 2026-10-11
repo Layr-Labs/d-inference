@@ -769,6 +769,32 @@ final class PairDriverTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.contains("10.0.0.2") })
     }
 
+    /// S16: each rank's last status line; what one sealed the other opened.
+    func testDataPlaneStatusLinesAgreeOnlyWhenEveryRecordWasOpened() {
+        let rank0 = ["darkbloom-data-plane-status-v1 rank=0 active=1 sealed_records=40 opened_records=30 sealed_bytes=900 "
+                + "opened_bytes=70 send_generation=0 receive_generation=0",
+            "darkbloom-data-plane-status-v1 rank=0 active=1 sealed_records=435 opened_records=356 sealed_bytes=67731754 "
+                + "opened_bytes=91354 send_generation=6 receive_generation=5"]
+        let rank1 = ["darkbloom-resident-release-v1 rank=1 active=4024 cache=0",
+            "darkbloom-data-plane-status-v1 rank=1 active=1 sealed_records=356 opened_records=435 sealed_bytes=91354 "
+                + "opened_bytes=67731754 send_generation=5 receive_generation=6"]
+        XCTAssertEqual(PairDriver.runtimeLines((rank0 + rank1).joined(separator: "\n")).count, 4)
+        let agreed = PairDriver.dataPlaneRecordAgreement([rank0, rank1])
+        XCTAssertEqual(agreed?.agree, true); XCTAssertEqual(agreed?.rotations, 11)
+        // A record sealed and never opened, or a generation the peer did not follow.
+        let lost = rank1.map { $0.replacingOccurrences(of: "opened_records=435", with: "opened_records=434") }
+        XCTAssertEqual(PairDriver.dataPlaneRecordAgreement([rank0, lost])?.agree, false)
+        let behind = rank1.map { $0.replacingOccurrences(of: "receive_generation=6", with: "receive_generation=5") }
+        XCTAssertEqual(PairDriver.dataPlaneRecordAgreement([rank0, behind])?.agree, false)
+        let poisoned = rank1.map { $0.replacingOccurrences(of: "active=1", with: "active=0") }
+        XCTAssertEqual(PairDriver.dataPlaneRecordAgreement([rank0, poisoned])?.agree, false)
+        // Nothing to compare: a plaintext plane, one rank without a line, the ranks swapped, a malformed field.
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([[], []]))
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([rank0, [rank1[0]]]))
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([rank1, rank0]))
+        XCTAssertNil(PairDriver.dataPlaneRecordAgreement([rank0, rank1.map { $0.replacingOccurrences(of: "sealed_bytes=91354", with: "sealed_bytes=x") }]))
+    }
+
     func testMiMoStepLinesAreKeptVerbatim() {
         let step = "darkbloom-mimo-step-v1 rank=1 i=28 boundary=abababababababab row=cdcdcdcdcdcdcdcd "
             + "dtype=bfloat16 top=279_41bc0000_264_41bb0000_11_41ba0000_7_41b90000"

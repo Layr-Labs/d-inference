@@ -459,6 +459,11 @@ public struct PairReport: Codable, Equatable, Sendable {
     public var dataPlane: String?
     public var encryptedDataPlane: Bool?
     public var peerVerified: Bool?
+    /// S16: from each rank's last `darkbloom-data-plane-status-v1` line, whether
+    /// every record one rank sealed the other opened (records, bytes and key
+    /// generation, both directions), and how many key rotations the session made.
+    public var dataPlaneRecordsAgree: Bool?
+    public var dataPlaneKeyRotations: Int?
 
     public init(outcome: String, failure: String?, identity: QualificationIdentity?, evidence: QualificationEvidence?,
                 ranks: [PairRankReport], workerHashesIdentical: Bool?, metallibHashesIdentical: Bool?, recording: Bool,

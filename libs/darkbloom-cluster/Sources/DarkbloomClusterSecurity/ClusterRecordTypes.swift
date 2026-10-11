@@ -144,6 +144,17 @@ public struct ClusterRecordRekeyPolicy: Sendable, Equatable {
     /// minutes per direction, whichever comes first.
     public static let dataPlane = try! ClusterRecordRekeyPolicy(records: 262_144, bytes: 2 << 30, seconds: 600)
 
+    /// Qualification only: `records:<n>`, canonical decimal, 2...262,144. The
+    /// data plane's policy with a new key every n records per direction (its
+    /// byte and age limits unchanged), so one short request crosses several
+    /// key generations. Anything else is refused, never read loosely.
+    public static func qualification(_ text: String) throws -> ClusterRecordRekeyPolicy {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == "records", let records = UInt64(parts[1]), String(records) == parts[1],
+              (2...dataPlane.records).contains(records) else { throw ClusterRecordError.invalidConfiguration }
+        return try ClusterRecordRekeyPolicy(records: records, bytes: dataPlane.bytes, seconds: dataPlane.seconds)
+    }
+
     /// The sender rotates before a generation's limits are reached.
     func fits(_ limits: ClusterRecordLimits) -> Bool {
         records <= limits.maximumRecordsPerDirection

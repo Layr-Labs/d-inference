@@ -69,7 +69,7 @@ def main():
     groups = [('codec', sorted((HERE / 'Codec').glob('*.swift')), [str(HERE / 'Codec/vectors.json')]),
               ('adapter', sorted((HERE / 'Adapter').glob('*.swift')), []),
               ('dataplane', sorted((HERE / 'DataPlane').glob('*.swift')), [])]
-    expected_lines = {'codec': 9, 'adapter': 9, 'dataplane': 7}
+    expected_lines = {'codec': 9, 'adapter': 9, 'dataplane': 8}
     paths = runtime + bootstrap + [path for _, sources, _ in groups for path in sources]
     paths += [HERE / 'Codec/vectors.json', HERE / 'owned_process.py', HERE / 'run.py']
     before = snapshot(paths)
@@ -109,10 +109,10 @@ def main():
         (output / 'source-recheck.json').write_text(json.dumps({'unchanged': unchanged}) + '\n')
         if not unchanged:
             raise ValueError('Sources changed during CPU checks')
-    (output / 'checks.json').write_text(json.dumps({'passed': True, 'passedGroups': 22,
+    (output / 'checks.json').write_text(json.dumps({'passed': True, 'passedGroups': 23,
         'steps': receipts, 'sourceUnchanged': True, 'nativeBridgeCompiled': False,
         'modelExecuted': False, 'networkUsed': False}, indent=2, sort_keys=True) + '\n')
-    print('PASS 22 record codec/adapter/data-plane CPU groups; no native bridge or network qualification')
+    print('PASS 23 record codec/adapter/data-plane CPU groups; no native bridge or network qualification')
 
 
 if __name__ == '__main__':

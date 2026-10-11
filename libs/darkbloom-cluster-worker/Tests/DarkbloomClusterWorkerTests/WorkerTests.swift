@@ -362,7 +362,10 @@ final class WorkerTests: XCTestCase {
         // Without the flag each switch is refused by name, whatever its value,
         // including an empty or unknown one: present is enough.
         for (name, values) in [("DARKBLOOM_CLUSTER_TRANSPORT", ["local-socket-test", "jaccl", "", "tcp"]),
-                               ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", ["handoff_corrupt_segment=3", "handoff_stall_after_segment=2:1500", "", "x"])] {
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_FAULT", ["handoff_corrupt_segment=3", "handoff_stall_after_segment=2:1500", "", "x"]),
+                               // S16: the data-plane tamper fault and the short rekey interval.
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER", ["residualPayload:3", "", "x"]),
+                               ("DARKBLOOM_CLUSTER_QUALIFICATION_REKEY", ["records:64", "", "x"])] {
             for value in values {
                 let message = refusal(false, [name: value])
                 XCTAssertNotNil(message, "\(name)=\(value) must be refused without the flag")

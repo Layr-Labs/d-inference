@@ -406,6 +406,8 @@ public final class GPTOSSResidentRuntime {
             + " token_chain_sha256=\(result.tokenChainSHA256) ms=\((finished - started) / 1_000_000)"
             + " first_token_ms=\(firstToken.map { String(($0 - started) / 1_000_000) } ?? "none")"
             + " active=\(memory.activeMemory) peak=\(memory.peakMemory)")
+        // S16: the session's record counters and key generations so far.
+        collective.logDataPlaneStatus()
         return (QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
             committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
@@ -420,6 +422,7 @@ public final class GPTOSSResidentRuntime {
         guard operation.try() else { throw ProbeError("Cannot release a running native request") }
         defer { operation.unlock() }
         try control.beginClose()
+        collective.logDataPlaneStatus()
         do {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in

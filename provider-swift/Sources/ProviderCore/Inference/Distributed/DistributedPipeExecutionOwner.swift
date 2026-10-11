@@ -51,7 +51,11 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         guard p.temperature == 0, p.topP == 1, p.topK == 0, p.minP == 0, p.repetitionPenalty == 1,
               p.frequencyPenalty == 0, p.presencePenalty == 0, p.seed == nil, p.logitBias.isEmpty, p.topLogprobs == 0,
               request.multimodal == nil, request.positionState == nil, request.tokenConstraint == nil,
-              request.priority == 0, request.prefixCacheReceiptID == nil,
+              // A prefix receipt only names the submission for the bridge's
+              // evidence; the peers decide reuse themselves. The engine admits
+              // it, and the bridge mints one for every request once the prefix
+              // evidence is present (prefix reuse on by default).
+              request.priority == 0,
               request.stopStrings.count <= 16, request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 }) else {
             throw DistributedEngineError.unsupportedRequest("worker supports only greedy text; stop strings stay in the provider")
         }

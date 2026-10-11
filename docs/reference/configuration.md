@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-11
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -1104,7 +1104,9 @@ selector matches the two registrations itself (see
    --capability-sha256 <hex>`. The two setups share `clusterID`; one has
    `role` `leader` (rank 0) and the other `follower` (rank 1).
 3. On each Mac, run `darkbloom start --cluster-member` with a coordinator URL
-   whose scheme is `wss`, signed in to the same account.
+   whose scheme is `wss`, signed in to the same account. Add `--always-on` to
+   install it as the always-on service instead of running it in the
+   foreground ([always-on members](../provider/cluster-always-on.md)).
 
 | `nativeMember` field | Type | Rule |
 |---|---|---|

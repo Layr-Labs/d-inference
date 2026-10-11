@@ -102,6 +102,7 @@
 - [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
 - [`provider/direct-mode.md`](provider/direct-mode.md): serve a local OpenAI-compatible endpoint without the coordinator.
 - [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.
+- [`provider/cluster-always-on.md`](provider/cluster-always-on.md): run a cluster member as an always-on service (link wait, restart budget, coordinated update, permissions asked once).
 - [`provider/fan-control.md`](provider/fan-control.md): the opt-in root fan helper.
 - [`provider/beta-features.md`](provider/beta-features.md): `darkbloom beta` toggles and retired flags.
 - [`provider/troubleshooting.md`](provider/troubleshooting.md): symptom → check → fix, including "connected but not routable" and the `doctor` check names.

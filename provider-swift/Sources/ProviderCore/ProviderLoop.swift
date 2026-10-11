@@ -601,6 +601,21 @@ public actor ProviderLoop {
     internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
     internal var memberRegistrationTimer: Task<Void, Never>?
     internal var memberRegistrationWaitID: UUID?
+    /// The pair slot this leader member serves (S09), at most one; nil on a
+    /// follower and whenever the pair is not ready.
+    internal var clusterPairSlot: ClusterPairSlotHandle?
+    /// Keeps the member's published capacity current while a pair slot exists.
+    internal var clusterPairCapacityTask: Task<Void, Never>?
+    /// The leader's serving context for committed starts (S10), and the one
+    /// start it serves: its epoch, whether the session asked it to stop, and
+    /// whether the pair is still forming.
+    internal var clusterPairServing: ClusterPairServingContext?
+    internal var clusterPairServingEpoch: UUID?
+    internal var clusterPairServingStopped = false
+    internal var clusterPairServingForming = false
+    /// The follower member's link serving of its committed starts; retained
+    /// here because the session control holds its serving host weakly.
+    internal var clusterPairFollower: DistributedMemberLinkFollower?
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
@@ -1046,8 +1061,20 @@ public actor ProviderLoop {
     }
 
     /// Try persistent keychain-backed SE key first; fall back to ephemeral CryptoKit key.
+    /// The signer a cluster member registers with and countersigns its
+    /// roster with (`darkbloom cluster member-identity`): the same key the
+    /// member's loop uses.
+    public static func clusterMemberSigner() -> (any AttestationSigner)? { createAttestationSigner() }
+
     private static func createAttestationSigner() -> (any AttestationSigner)? {
         let log = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_SE_KEY_FILE"], path.hasPrefix("/"),
+           SecureEnclaveIdentity.isAvailable {
+            do { return try SecureEnclaveIdentity.debugPersisted(at: path) }
+            catch { log.warning("Debug Secure Enclave key file unusable (\(error)); using the ordinary signer") }
+        }
+        #endif
 
         if PersistentEnclaveKey.isAvailable {
             do {

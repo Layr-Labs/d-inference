@@ -21,7 +21,11 @@ task_module() { # name, extra flags..., then sources after --
 }
 task_module DarkbloomClusterProtocol -- "$task_shared"/Sources/DarkbloomClusterProtocol/*.swift
 task_module DarkbloomClusterProcess -lDarkbloomClusterProtocol -- "$task_shared"/Sources/DarkbloomClusterProcess/*.swift
-task_module DarkbloomClusterQualification -enable-testing -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -- \
+# The pair driver issues the workers' data-plane credentials (S16).
+task_module DarkbloomClusterBootstrap -- "$task_shared"/Sources/DarkbloomClusterBootstrap/*.swift
+task_module DarkbloomClusterSecurity -lDarkbloomClusterBootstrap -- "$task_shared"/Sources/DarkbloomClusterSecurity/*.swift
+task_module DarkbloomClusterQualification -enable-testing -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -lDarkbloomClusterSecurity -lDarkbloomClusterBootstrap -- \
   "$task_package"/Sources/DarkbloomClusterQualification/*.swift
 xcrun swiftc "${task_flags[@]}" -parse-as-library -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol \
   -Xlinker -rpath -Xlinker "$task_build" \
@@ -29,6 +33,7 @@ xcrun swiftc "${task_flags[@]}" -parse-as-library -I "$task_build" -L "$task_bui
 mkdir -p "$task_build/Qualification.xctest/Contents/MacOS"
 xcrun swiftc "${task_flags[@]}" -emit-library -module-name QualificationChecks -I "$task_build" -L "$task_build" \
   -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterQualification \
+  -lDarkbloomClusterSecurity -lDarkbloomClusterBootstrap \
   -F "$task_platform/Library/Frameworks" -I "$task_platform/usr/lib" -L "$task_platform/usr/lib" -framework XCTest \
   -Xlinker -rpath -Xlinker "$task_build" -Xlinker -rpath -Xlinker "$task_platform/Library/Frameworks" \
   -Xlinker -rpath -Xlinker "$task_platform/usr/lib" -Xlinker -bundle \

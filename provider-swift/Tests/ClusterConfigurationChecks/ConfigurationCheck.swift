@@ -252,6 +252,45 @@ import DarkbloomClusterProtocol
         try Data("tampered saved record".utf8).write(to: URL(fileURLWithPath: result.configuration))
         try rejected { _ = try store.load(reference: savedReference) }
         try require(try Data(contentsOf: pointer) == oldPointer, "Refused save replaced pointer")
-        print("Cluster configuration: 12 schema/store groups passed; fabricated metadata and local files only")
+
+        // A setup whose follower is reached over the link control channel (S08):
+        // no SSH trust at all, an edge secret file instead; never both.
+        let secret = root.appendingPathComponent("link-secret")
+        try Data((String(repeating: "ab", count: 32) + "\n").utf8).write(to: secret)
+        try require(chmod(secret.path, 0o600) == 0, "Cannot make private fixture secret")
+        let attachment: [String: Any] = ["schema": "darkbloom_cluster_link_control_v1", "port": 47431,
+            "linkEpoch": "0b6f2c1e-4d1a-4c3b-9a55-7f1e2d3c4b5a", "edgeID": "5e4d3c2b-1a09-4f8e-8d7c-6b5a49382716", "secretFile": secret.path]
+        var linked = object; linked.removeValue(forKey: "trust"); linked["linkControl"] = attachment
+        let linkSetup = try decode(linked)
+        try require(linkSetup.trust == nil && linkSetup.linkControl?.port == 47431 && linkSetup.linkControl?.secretFile == secret.path,
+            "Link control setup not read as one without SSH trust")
+        let linkBytes = try ClusterConfigurationCodec.encode(linkSetup, capability: capability, capabilitySHA256: capabilityHash)
+        try require(!String(decoding: linkBytes, as: UTF8.self).contains("\"trust\"")
+            && (try ClusterConfigurationCodec.decode(linkBytes, capability: capability, capabilitySHA256: capabilityHash)) == linkSetup,
+            "Link control setup round trip gained SSH trust or changed")
+        var linkFollower = linked; linkFollower["role"] = "follower"; linkFollower["memberID"] = "peer-1"
+        try require(try decode(linkFollower).localRank == 1, "Link control follower rank differs")
+        var both = linked; both["trust"] = object["trust"]; try rejected { _ = try decode(both) }
+        var nullLink = linked; nullLink["linkControl"] = NSNull(); try rejected { _ = try decode(nullLink) }
+        let badAttachments: [(String, Any?)] = [("port", 80), ("port", 70000), ("port", "47431"), ("schema", "other"),
+            ("linkEpoch", "0B6F2C1E-4D1A-4C3B-9A55-7F1E2D3C4B5A"), ("edgeID", attachment["linkEpoch"]!), ("edgeID", "edge"),
+            ("secretFile", "relative/secret"), ("secretFile", "/Users/fixture/a b"), ("extra", true), ("port", nil)]
+        for (field, value) in badAttachments {
+            var bad = attachment; bad[field] = value
+            var setup = linked; setup["linkControl"] = bad; try rejected { _ = try decode(setup) }
+        }
+        let linkInput = root.appendingPathComponent("link-input.json")
+        try bytes(linked, pretty: true).write(to: linkInput)
+        func saveLink() throws -> ClusterConfigurationSaveResult {
+            try store.save(configurationInput: linkInput, capabilityInput: capabilityInput, capabilitySHA256: capabilityHash) { _ in }
+        }
+        try require(chmod(secret.path, 0o644) == 0, "Cannot loosen fixture secret")
+        try rejected { _ = try saveLink() }
+        try require(chmod(secret.path, 0o600) == 0, "Cannot restore fixture secret")
+        let linkSaved = try saveLink()
+        try require(try store.load(reference: .init(configuration: linkSaved.configuration, sha256: ClusterConfigurationCodec.sha256(
+            Data(contentsOf: URL(fileURLWithPath: linkSaved.configuration))))).configuration.linkControl == linkSetup.linkControl,
+            "Saved link control setup differs")
+        print("Cluster configuration: 13 schema/store groups passed; fabricated metadata and local files only")
     }
 }

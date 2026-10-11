@@ -96,6 +96,51 @@ public struct ClusterWorkerProfile: Equatable, Sendable {
     }
 }
 
+/// The data-plane credential of one worker (S16): its per-epoch signing key,
+/// its member's certificate over that key, its member's identity and the
+/// identity it pins for its peer (P-256: 32-byte private key, 64-byte raw
+/// signature, 65-byte X9.63 public keys). The owner writes it once, as the
+/// first line of the worker's control pipe, before any other line; it never
+/// appears on a command line, in the environment or in a log.
+public struct ClusterWorkerDataPlaneTrust: Equatable, Sendable {
+    public let membershipEpoch: UUID
+    public let rank: Int
+    public let workerSigningKey: Data
+    public let workerCertificate: Data
+    public let memberIdentity: Data
+    public let peerPin: Data
+    public init(membershipEpoch: UUID, rank: Int, workerSigningKey: Data, workerCertificate: Data,
+                memberIdentity: Data, peerPin: Data) throws {
+        try workerRequire((0...1).contains(rank) && workerSigningKey.count == 32 && workerCertificate.count == 64
+            && memberIdentity.count == 65 && peerPin.count == 65 && memberIdentity != peerPin,
+            "Invalid data-plane credential")
+        self.membershipEpoch = membershipEpoch; self.rank = rank; self.workerSigningKey = workerSigningKey
+        self.workerCertificate = workerCertificate; self.memberIdentity = memberIdentity; self.peerPin = peerPin
+    }
+    /// What `--data-plane` names on the worker's command line.
+    public static let argument = "encrypted_v1"
+}
+
+/// What a ready worker states about its data plane. Both ranks of one keyed
+/// session report the same transcript and edge; an owner compares them.
+public struct ClusterWorkerDataPlane: Equatable, Sendable {
+    public static let encrypted = "encrypted_v1"
+    /// `encrypted_v1`: every transfer between the ranks is an authenticated,
+    /// encrypted record (AES-256-GCM, directional keys, rekeyed by count,
+    /// bytes and age). The only value a worker reports.
+    public let protection: String
+    /// The peer's hello verified against the identity this worker pins.
+    public let peerVerified: Bool
+    public let transcriptSHA256: String
+    public let edgeID: String
+    public init(protection: String, peerVerified: Bool, transcriptSHA256: String, edgeID: String) {
+        self.protection = protection; self.peerVerified = peerVerified
+        self.transcriptSHA256 = transcriptSHA256; self.edgeID = edgeID
+    }
+    /// True only for the protection a public route may rely on.
+    public var encryptedAndVerified: Bool { protection == Self.encrypted && peerVerified }
+}
+
 /// This worker's local readiness. The owner must aggregate both workers.
 public struct ClusterWorkerReady: Equatable, Sendable {
     public let identity: ClusterWorkerIdentity
@@ -103,10 +148,14 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     public let profile: ClusterWorkerProfile
     public let executionPlanSHA256: String
     public let requestCapacityBytes: Int
+    /// Nil: a worker started without a data-plane credential (plaintext
+    /// transfers; qualification and diagnosis only).
+    public let dataPlane: ClusterWorkerDataPlane?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, requestCapacityBytes: Int) {
+                executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
+        self.dataPlane = dataPlane
     }
 }
 

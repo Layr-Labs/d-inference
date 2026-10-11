@@ -17,4 +17,13 @@ public struct ClusterRecordTransportStatus: Sendable, Equatable {
     public let active: Bool
     public let operationInFlight: Bool
     public let codec: ClusterRecordStatus
+
+    /// The fields of the runtime's `darkbloom-data-plane-status-v1` line:
+    /// counts and generations only, never key material. One rank's sealed
+    /// figures equal its peer's opened figures when nothing was lost.
+    public var lineFields: String {
+        "active=\(active ? 1 : 0) sealed_records=\(codec.sealedRecords) opened_records=\(codec.openedRecords)"
+            + " sealed_bytes=\(codec.sealedPlaintextBytes) opened_bytes=\(codec.openedPlaintextBytes)"
+            + " send_generation=\(codec.sendGeneration) receive_generation=\(codec.receiveGeneration)"
+    }
 }

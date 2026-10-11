@@ -11,6 +11,13 @@ extension ProviderLoop {
               let signer, loopConfig.hardware.chipName == installation.chip, loopConfig.models.contains(where: { $0.id == installation.policy.model }),
               ModelRuntimeRequirements.isEligible(modelID: installation.policy.model,
                   available: loopConfig.runtimeCapabilities) else { throw NativePairMemberError.unconfigured }
+        // A roster registration names this member by the pin of the key that
+        // signs its registration: a roster made for another key is refused.
+        if let roster = installation.roster {
+            guard ClusterMemberPin.of(sePublicKey: signer.publicKeyBase64) == roster.memberPin else {
+                throw NativePairMemberError.unconfigured
+            }
+        }
         nativePairMemberControl = NativePairMemberControl(installation: installation, signer: signer)
     }
     public var nativePairMemberStatus: String? { nativePairMemberControl?.status }

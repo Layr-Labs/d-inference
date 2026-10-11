@@ -2,19 +2,42 @@ import Foundation
 import Darwin
 import DarkbloomClusterProcess
 import DarkbloomClusterRemote
+import DarkbloomClusterSecurity
 
 /// Blocking entry for the fixed authenticated `cluster worker-owner --stdio`
 /// command. Both leader-local and follower owners load their own saved setup.
 /// The parent does not hold this owner's native-device exclusion.
 public enum DistributedInstalledOwner {
     /// Whether `cluster worker-owner --stdio` can honour a start the
-    /// coordinator committed for one member. Not in this build: the entry
-    /// below serves only the mesh profile of a session the leader launches,
-    /// and the installed worker refuses every owner bootstrap attachment. A
-    /// member therefore declines preparation rather than commit to a start
-    /// whose owner would be refused, which would hold both devices until the
-    /// members disconnect.
-    static let servesCommittedNativeStart = false
+    /// coordinator committed for one member (S10). It can: on a setup saved
+    /// for coordinator pairing the owner admits the committed start that its
+    /// installed approval covers (`memberAuthorizer`), runs the combined
+    /// profile, and its worker publishes readiness. A member whose setup
+    /// cannot reach its follower still declines preparation
+    /// (`NativePairMemberInstallation`), so nothing is committed that this
+    /// Mac could not start and later release.
+    static let servesCommittedNativeStart = true
+
+    /// The owner's own admission of a start the coordinator committed to this
+    /// member: its own rank, and every digest, limit and generation of the
+    /// approval this Mac installed (the same check the member's session made
+    /// before it prepared). The epoch and the owner, lease and launch
+    /// identifiers are the coordinator's.
+    static func memberAuthorizer(plan: DistributedInstalledPlan, attachment: ClusterNativeMemberAttachment)
+        throws -> @Sendable (ClusterNativeAuthorizationStart) throws -> Void {
+        let policy = try NativePairMemberPolicy(attachment.policyBytes), rank = plan.configuration.localRank
+        // A cluster approval fixes no plan: the start must name the one this
+        // Mac's setup derives (and its member registered).
+        let digits = Array(plan.partition.planSHA256.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
+        let derived = Data(stride(from: 0, to: 64, by: 2).map { digits[$0] << 4 | digits[$0 + 1] })
+        return { start in
+            guard start.rank == rank else {
+                throw ClusterConfigurationError.invalid("The committed native start names another rank")
+            }
+            do { try policy.require(start, plan: policy.cluster == nil ? nil : derived) }
+            catch { throw ClusterConfigurationError.invalid("The committed native start differs from this Mac's installed approval") }
+        }
+    }
 
     /// `providerInstanceLock` is the ordinary provider's instance lock file.
     /// `linkReady` runs immediately before the native launch with this Mac's
@@ -44,12 +67,19 @@ public enum DistributedInstalledOwner {
         let plan = prepared.plan, features = prepared.validation.workerFeatures
         try prepared.requireUnchanged()
         try features.requireProgressGuard()
-        try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
+        try ClusterWorkerOwnerService.serveKeyed(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
             bootstrapProfile: plan.bootstrap.ownerProfile,
+            // The committed native start of the combined profile is admitted
+            // only when it is the one this Mac derives from its own setup, or,
+            // on a setup saved for coordinator pairing, when its installed
+            // approval covers the start the coordinator committed.
+            authorizeNativeStart: plan.bootstrap.ownerProfile?.carriesNativeStart == true
+                ? try plan.configuration.nativeMember.map { try memberAuthorizer(plan: plan, attachment: $0) }
+                    ?? DistributedInstalledNativeStart.authorizer(plan: plan) : nil,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
-            }, native: { binding, deadline, attachment in
+            }, native: { binding, deadline, attachment, dataPlaneTrust in
                 // The bootstrap is this build's one selection, never a fallback:
                 // an attachment is required exactly when that selection is the
                 // owner-authenticated exchange. No native path accepts an
@@ -60,6 +90,10 @@ public enum DistributedInstalledOwner {
                 }
                 try prepared.requireUnchanged()
                 try DistributedInstalledFiles.check(deadline)
+                // S16: a credential is honoured only by a worker that keys its data plane.
+                guard dataPlaneTrust == nil || features.acceptsDataPlane else {
+                    throw ClusterConfigurationError.invalid("The installed worker does not key its data plane; install a worker built with it")
+                }
                 try beforeNativeLaunch()
                 // The worker has no fixed lifetime: `deadline` is its first
                 // rank-lease grant, which its supervisor renews while this
@@ -69,8 +103,9 @@ public enum DistributedInstalledOwner {
                 return try ClusterWorkerProcess(launch: .init(
                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                     arguments: plan.nativeArguments(binding: binding, deadline: deadline,
-                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment),
-                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
+                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment,
+                        dataPlane: dataPlaneTrust != nil),
+                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL), initialInput: dataPlaneTrust),
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
                     startupDeadline: startup, initialLeaseDeadline: deadline,

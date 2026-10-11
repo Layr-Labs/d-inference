@@ -1,6 +1,8 @@
+import CryptoKit
 import Darwin
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 import Foundation
 
 /// Runs one request on a two-rank pair: rank 0 on this Mac, rank 1 on the
@@ -64,7 +66,53 @@ public struct PairDriver: Sendable {
     static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 ",
         "darkbloom-mimo-resident-load-v1 ", "darkbloom-mimo-request-v1 ", "darkbloom-mimo-resident-release-v1 ",
         "darkbloom-mimo-step-v1 ", "darkbloom-forced-exit-v1 ", "darkbloom-orphan-wired-v1 ", "darkbloom-stage-residency-v1 ",
-        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 "]
+        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 ",
+        "darkbloom-data-plane-v1 ", "darkbloom-data-plane-exchange-v1 ", "darkbloom-data-plane-tamper-v1 ",
+        "darkbloom-data-plane-status-v1 "]
+    /// The two workers' credential lines for one run (S16).
+    static func dataPlaneLines(_ c: PairConfiguration) throws -> [Data?] {
+        let identities = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]
+        let stranger = P256.Signing.PrivateKey()
+        return try (0...1).map { rank -> Data? in
+            let pin = ClusterDataPlanePin((rank == c.wrongPinRank ? stranger : identities[1 - rank]).publicKey)
+            let credential = try ClusterDataPlaneCredential.issue(identity: identities[rank], epoch: c.membershipEpoch,
+                rank: rank, peerPin: pin)
+            let fields = credential.wireFields
+            return try ClusterWorkerCodec.encode(ClusterWorkerDataPlaneTrust(membershipEpoch: c.membershipEpoch, rank: rank,
+                workerSigningKey: fields.workerSigningKey, workerCertificate: fields.workerCertificate,
+                memberIdentity: fields.memberIdentity, peerPin: fields.peerPin))
+        }
+    }
+
+    /// S16: the two ranks' last data-plane status lines agree when each
+    /// direction's sealed records, bytes and send generation equal the peer's
+    /// opened records, bytes and receive generation. Nil unless both ranks
+    /// wrote one (a plaintext plane, or a rank that failed before its status).
+    static func dataPlaneRecordAgreement(_ lines: [[String]]) -> (agree: Bool, rotations: Int)? {
+        let prefix = "darkbloom-data-plane-status-v1 "
+        let names = ["sealed_records", "opened_records", "sealed_bytes", "opened_bytes", "send_generation", "receive_generation"]
+        guard lines.count == 2 else { return nil }
+        var status: [[String: UInt64]] = []
+        for (rank, rankLines) in lines.enumerated() {
+            guard let line = rankLines.last(where: { $0.hasPrefix(prefix) }) else { return nil }
+            var fields: [String: UInt64] = [:]
+            for pair in line.dropFirst(prefix.count).split(separator: " ") {
+                let parts = pair.split(separator: "=", omittingEmptySubsequences: false)
+                guard parts.count == 2, let value = UInt64(parts[1]) else { return nil }
+                fields[String(parts[0])] = value
+            }
+            guard fields["rank"] == UInt64(rank), names.allSatisfy({ fields[$0] != nil }) else { return nil }
+            status.append(fields)
+        }
+        let agree = (0...1).allSatisfy { rank in
+            let own = status[rank], peer = status[1 - rank]
+            return own["sealed_records"] == peer["opened_records"] && own["sealed_bytes"] == peer["opened_bytes"]
+                && own["send_generation"] == peer["receive_generation"] && own["active"] == 1
+        }
+        let rotations = status.reduce(UInt64(0)) { $0 + $1["send_generation"]! }
+        return (agree, Int(clamping: rotations))
+    }
+
     static func runtimeLines(_ diagnostics: String) -> [String] {
         diagnostics.split(separator: "\n").map(String.init).filter { line in
             runtimeLinePrefixes.contains { line.hasPrefix($0) }
@@ -110,6 +158,10 @@ public struct PairDriver: Sendable {
                 ranks[rank].shutdownCompleteObserved = endpoint.shutdownCompleteObserved
                 ranks[rank].leaseRenewalsSent = endpoint.renewalsSent
                 ranks[rank].keepWarmExchanges = endpoint.keepWarmAnswered
+                if let plane = endpoint.dataPlane {
+                    ranks[rank].dataPlane = plane.protection; ranks[rank].peerVerified = plane.peerVerified
+                    ranks[rank].dataPlaneTranscriptSHA256 = plane.transcriptSHA256
+                }
                 ranks[rank].exitObserved = endpoint.launched && seen && endpoint.termination != nil
                 if let termination = endpoint.termination {
                     if termination.signalled { ranks[rank].exitSignal = termination.status }
@@ -142,7 +194,7 @@ public struct PairDriver: Sendable {
             }
             let launched = endpoints.filter(\.launched)
             let stream = evidence?.selectedTokenIDs
-            return PairReport(outcome: outcome, failure: failure.map { redact($0) }, identity: identity, evidence: evidence,
+            var report = PairReport(outcome: outcome, failure: failure.map { redact($0) }, identity: identity, evidence: evidence,
                 ranks: ranks, workerHashesIdentical: hashesEqual, metallibHashesIdentical: metallibEqual,
                 recording: c.recording, ranksAgreeOnTokens: ranksAgree,
                 bothExitsObserved: launched.allSatisfy { $0.termination != nil },
@@ -151,6 +203,16 @@ public struct PairDriver: Sendable {
                 promptSource: c.request.promptSource, decodedOutput: stream.flatMap { decode?($0) },
                 generationMode: c.generationMode, repetitionsAgreeOnTokens: repetitionsAgree,
                 workerTransport: c.workerTransport)
+            report.dataPlane = c.dataPlane
+            let planes = endpoints.map(\.dataPlane)
+            if planes.count == 2, planes.allSatisfy({ $0 != nil }) {
+                report.encryptedDataPlane = planes[0] == planes[1] && planes[0]!.protection == ClusterWorkerDataPlane.encrypted
+                report.peerVerified = report.encryptedDataPlane == true && planes.allSatisfy { $0!.peerVerified }
+            }
+            if let records = Self.dataPlaneRecordAgreement(ranks.map { $0.runtimeLines ?? [] }) {
+                report.dataPlaneRecordsAgree = records.agree; report.dataPlaneKeyRotations = records.rotations
+            }
+            return report
         }
 
         // 1. Both sides, before anything is launched.
@@ -235,13 +297,18 @@ public struct PairDriver: Sendable {
             artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
             peers: c.peerIDs.map { .init(id: $0, buildSHA256: workerSHA256) })
         do {
+            // S16: two member identities for this run, each rank pinning the
+            // other's; a worker gets only its own per-epoch credential, as the
+            // first line of its input (over the transport for the second Mac).
+            let lines = try c.dataPlane == ClusterWorkerDataPlane.encrypted ? Self.dataPlaneLines(c) : [nil, nil]
             endpoints = try (0...1).map { rank in
                 try PairWorkerEndpoint(command: c.command(rank, script: c.launchScript(rank,
                         artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,
                         workerSHA256: workerSHA256)),
                     expectedIdentity: workerIdentity, rank: rank, profile: capability.profile,
                     executionPlanSHA256: partition.planSHA256,
-                    stopRenewalsAfterNanoseconds: c.stopRenewalsAfterSeconds.map { UInt64($0 * 1e9) })
+                    stopRenewalsAfterNanoseconds: c.stopRenewalsAfterSeconds.map { UInt64($0 * 1e9) },
+                    initialLine: lines[rank])
             }
         } catch { return finish("refused", "cannot prepare the workers: \(error)") }
         let begun = DispatchTime.now().uptimeNanoseconds
@@ -279,6 +346,14 @@ public struct PairDriver: Sendable {
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         log("pair-check: both ranks ready after \(String(format: "%.1f", timing.startupSeconds!)) s")
+        if c.dataPlane == ClusterWorkerDataPlane.encrypted {
+            guard let plane = pair.readiness?.dataPlane, plane.encryptedAndVerified else {
+                return finish("failed", "the ranks did not report one encrypted, peer-verified data plane")
+            }
+            log("pair-check: data plane \(plane.protection), peers verified against their pins, transcript \(plane.transcriptSHA256.prefix(16))")
+        } else if pair.readiness?.dataPlane != nil {
+            return finish("failed", "a plaintext run reported a keyed data plane")
+        }
 
         // 5 and 6. Reserve on both ranks, start, and let rank 0's committed
         // tokens continue; once per repetition, in the same loaded session.

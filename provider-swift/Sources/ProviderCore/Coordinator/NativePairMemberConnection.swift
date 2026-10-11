@@ -7,6 +7,8 @@ final class NativePairMemberConnection: @unchecked Sendable {
     let nonce: String
     private let connection: NWConnection
     private let signer: any AttestationSigner
+    /// This member's Secure Enclave signer, for the data-plane certificate.
+    var memberSigner: any AttestationSigner { signer }
     private let onInvalidation: @Sendable (NativePairMemberConnection) -> Void
     private let lock = NSLock(), writer = NSLock()
     private var live = true, sequence: UInt64 = 0, waiting = 0

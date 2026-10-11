@@ -27,7 +27,7 @@ extension ClusterConsoleCheck {
             "the pairing is read from the saved configuration: \(String(describing: pairing))")
         expect(pairing?.trust.knownHostsPinMatches == true && pairing?.trust.identityFileUsable == true && pairing?.trust.error == nil,
             "the trust files are as they were saved")
-        expectEqual(pairing?.trust.knownHostsPinSHA256, fixture.configuration.trust.knownHostsSHA256, "the pin shown is the saved one")
+        expectEqual(pairing?.trust.knownHostsPinSHA256, fixture.configuration.trust?.knownHostsSHA256, "the pin shown is the saved one")
         expect(pairing?.pairApproval == nil, "no coordinator approval is saved in this fixture")
         let model = saved.model
         expect(model?.publicModelID == "fixture/public-model" && model?.runtimeModelID == fixture.capability.runtimeModelID
@@ -158,12 +158,12 @@ extension ClusterConsoleCheck {
             notAfter: "2033-05-18T03:33:20Z", allowedChips: ["Apple M4"]), "the saved pair approval is read field for field")
 
         // Trust inputs that changed after the save are seen, not assumed.
-        let hosts = URL(fileURLWithPath: fixture.configuration.trust.knownHostsFile)
+        let hosts = URL(fileURLWithPath: fixture.configuration.trust!.knownHostsFile)
         try Data("bench ssh-ed25519 \(Data("fixture-host-key-blob".utf8).base64EncodedString()) note\n".utf8).write(to: hosts)
         let changed = ClusterConsoleSavedSetup.read(reference: fixture.reference, paths: fixture.paths, deadline: deadline)
         expect(changed.pairing?.trust.knownHostsPinMatches == false, "a known-hosts file that changed no longer matches its pin")
         expect(changed.pairing?.trust.hostKeys.map(\.kind) == [.host] && changed.pairing?.trust.hostKeysNotShown == 0, "its key is still described")
-        chmod(fixture.configuration.trust.identityFile, 0o644)
+        chmod(fixture.configuration.trust!.identityFile, 0o644)
         let loose = ClusterConsoleSavedSetup.read(reference: fixture.reference, paths: fixture.paths, deadline: deadline)
         expect(loose.pairing?.trust.identityFileUsable == false && loose.pairing?.trust.error?.contains("identity file") == true,
             "an identity file others can read is not usable")

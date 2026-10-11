@@ -58,7 +58,7 @@ enum ClusterSetupLocalReader {
         if let configuration = saved ?? inbox {
             let local = configuration.peers[configuration.localRank]
             value = .init(workerExecutable: local.workerExecutable, modelDirectory: local.modelDirectory, clusterID: configuration.clusterID,
-                knownHostsFile: configuration.trust.knownHostsFile, sshPort: local.port, leads: configuration.role == .leader)
+                knownHostsFile: configuration.trust?.knownHostsFile, sshPort: local.port, leads: configuration.role == .leader)
         } else if let description, let member = description.members.first(where: { $0.id == localMemberID }) {
             value = .init(workerExecutable: member.workerExecutable, modelDirectory: member.modelDirectory, clusterID: description.clusterID,
                 knownHostsFile: member.trust.knownHostsFile, sshPort: member.port, leads: true)

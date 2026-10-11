@@ -34,6 +34,10 @@ extension ProviderLoop {
             memberConnectionID = nil
             memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
         case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _):
+            // A leader serving its pair slot handles the request like any
+            // provider; the handler checks the requested model. Every other
+            // member refuses it with the retryable no-model answer.
+            if clusterPairSlot != nil { return false }
             rejectClusterMemberInference(id, send: send)
             return true
         case .loadModel(let id):

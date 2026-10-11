@@ -21,20 +21,25 @@ struct WorkerConfiguration {
     let qualificationSwitchesPermitted: Bool
     /// Which adapter executes the registered model `--model-id` names.
     let family: ClusterResidentModelCatalog.Family
-    /// That model's own session bound; the dense models keep 300 seconds.
-    let maximumLifetimeNanoseconds: UInt64
+    /// The rank lease (S03). `--deadline-uptime-nanoseconds` is its first
+    /// deadline, at most one lease grant away; the owner renews it on the
+    /// control pipe while it keeps this worker. There is no fixed lifetime.
+    let lease: ClusterLeaseDeadline
+    /// Keep-warm tier 1 (`--keep-warm on|off`, on unless off is named): a GPU
+    /// pulse every half second while idle, once the first request has run.
+    let keepWarm: Bool
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
-            "--generation-mode", "--qualification-switches"]
+            "--generation-mode", "--qualification-switches", "--keep-warm"]
         let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional qualification-switches flag and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional qualification-switches flag, optional keep-warm switch and optional complete bootstrap triple")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -60,7 +65,7 @@ struct WorkerConfiguration {
         guard let registered = ClusterResidentModelCatalog.entry(runtimeModelID: fields["--model-id"]!) else {
             throw WorkerFailure.invalid("Worker requires a registered model ID")
         }
-        let lifetime = UInt64(registered.maximumLifetimeSeconds) * 1_000_000_000
+        let lifetime = ClusterWorkerLease.maximumNanoseconds
         guard (0...1).contains(rank), fields["--model-dir"]!.hasPrefix("/"),
               registered.supportedCuts.contains(cut),
               let epoch = UUID(uuidString: fields["--membership-epoch"]!),
@@ -68,9 +73,15 @@ struct WorkerConfiguration {
               let deadline = UInt64(fields["--deadline-uptime-nanoseconds"]!),
               String(deadline) == fields["--deadline-uptime-nanoseconds"],
               deadline > now, deadline - now <= lifetime else {
-            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a <=\(registered.maximumLifetimeSeconds)-second local lifetime")
+            throw WorkerFailure.invalid("Worker requires a registered model ID, rank0|1, one of that model's cuts and a first lease deadline at most \(lifetime / 1_000_000_000) seconds away")
         }
-        family = registered.family; maximumLifetimeNanoseconds = lifetime
+        family = registered.family
+        lease = ClusterLeaseDeadline(uptimeNanoseconds: deadline)
+        switch fields["--keep-warm"] {
+        case nil, "on": keepWarm = true
+        case "off": keepWarm = false
+        default: throw WorkerFailure.invalid("--keep-warm takes on or off")
+        }
         guard let prefillSchedule = ClusterPrefillSchedule(rawValue: fields["--prefill-schedule"] ?? ClusterPrefillSchedule.serial.rawValue) else {
             throw WorkerFailure.invalid("Unknown worker prefill schedule")
         }
@@ -89,12 +100,13 @@ struct WorkerConfiguration {
             qualificationSwitchesPermitted = true
         } else { qualificationSwitchesPermitted = false }
         if let text = fields["--startup-deadline-uptime-nanoseconds"] {
-            guard let startup = UInt64(text), String(startup) == text, startup > now, startup <= deadline else {
-                throw WorkerFailure.invalid("Worker startup deadline must be canonical, in the future and within its lifetime")
+            guard let startup = UInt64(text), String(startup) == text, startup > now,
+                  startup - now <= ClusterWorkerLimits.deadlineNanoseconds else {
+                throw WorkerFailure.invalid("Worker startup deadline must be canonical, in the future and within an hour")
             }
             startupDeadlineUptimeNanoseconds = startup
         } else { startupDeadlineUptimeNanoseconds = nil }
-        bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: deadline)
+        bootstrap = try WorkerBootstrapConfiguration.parse(fields, now: now, lifetime: ClusterWorkerLimits.deadlineNanoseconds)
         if let directory = fields["--evidence-directory"] {
             let components = directory.split(separator: "/", omittingEmptySubsequences: false)
             guard directory.hasPrefix("/"), directory.utf8.count <= 1024, components.count > 1,
@@ -116,6 +128,6 @@ struct WorkerConfiguration {
             artifactSHA256: try hash("--artifact-sha256"), configurationSHA256: try hash("--configuration-sha256"), peers: peers),
             modelDirectory: URL(fileURLWithPath: fields["--model-dir"]!), rank: rank, stageCut: cut,
             deadlineUptimeNanoseconds: deadline, allocatorPolicy: .disableFreedBufferCache,
-            prefillSchedule: prefillSchedule)
+            prefillSchedule: prefillSchedule, lease: lease)
     }
 }

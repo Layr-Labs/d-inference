@@ -39,9 +39,12 @@ extension CoordinatorClient {
         nativePairConnection = try nativePairMember.attach(nonce: negotiation.nonce, connection: connection)
     }
 
-    /// Every connection boundary drops the attachment. Detaching cancels the
-    /// session's native work independently of any signer or WebSocket write;
-    /// the control keeps a committed obligation it could not release.
+    /// Every connection boundary drops the attachment. A session that is not
+    /// yet established is cancelled at once, independently of any signer or
+    /// WebSocket write; an established one keeps its owner for the disconnect
+    /// grace (never past its grant lease) and is claimed again with `resume`
+    /// on the next connection. The control keeps a committed obligation it
+    /// could not release.
     internal func detachNativePairMember() {
         if let nativePairConnection { nativePairMember?.detach(nativePairConnection) }
         nativePairConnection = nil

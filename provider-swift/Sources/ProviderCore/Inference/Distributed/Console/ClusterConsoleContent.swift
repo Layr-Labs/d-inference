@@ -273,7 +273,7 @@ enum ClusterConsoleContent {
             lines.append(.init("No model is selected: a model is chosen by the saved setup, and none is read.", .dim, from: .wired("model.saved")))
             return lines
         }
-        lines.append(.init("Saved setup serves \(model.publicModelID) as \(model.runtimeModelID): artifact \(ClusterConsoleText.short(model.artifactSHA256)), Plan \(ClusterConsoleText.short(model.planSHA256)), \(model.prefillSchedule) prefill, at most \(model.maximumRequests) requests and \(model.maximumLifetimeSeconds) seconds per session.", from: .wired("model.saved")))
+        lines.append(.init("Saved setup serves \(model.publicModelID) as \(model.runtimeModelID): artifact \(ClusterConsoleText.short(model.artifactSHA256)), Plan \(ClusterConsoleText.short(model.planSHA256)), \(model.prefillSchedule) prefill. The model stays loaded and serving until the cluster is stopped; a session has no time or request limit.", from: .wired("model.saved")))
         let members = status.live?.session.members ?? []
         for stage in model.stages {
             let count = stage.sourceLayerEnd - stage.sourceLayerStart
@@ -345,7 +345,7 @@ enum ClusterConsoleContent {
             live.ready ? .good : .warning, from: .wired("host.local")))
         lines.append(.init("Epoch \(live.session.observedMembershipEpoch ?? "not observed"); native bootstrap \(live.session.nativeBootstrap.rawValue)\(live.session.nativeBootstrapOwnerAuthenticated ? "" : " (the peer that answers is not authenticated)"); collective progress limit \(live.session.collectiveProgressLimitMilliseconds) ms.", from: source))
         if let admission = live.session.admission {
-            lines.append(.init("Lifetime remaining \(admission.remainingLifetimeNanoseconds / 1_000_000_000) s; admissions remaining \(admission.remainingRequests); \(admission.activeRequest ? "a request is active" : "no active request")\(admission.draining ? "; draining" : "").", from: source))
+            lines.append(.init("Requests served \(admission.requestsServed); keep-warm exchanges \(admission.keepWarmExchanges); \(admission.activeRequest ? "a request is active" : "no active request")\(admission.draining ? "; draining" : "").", from: source))
         }
         for member in live.session.members {
             var text = "Rank \(member.rank), \(member.peerID): \(member.transport.rawValue); native \(member.nativeReady ? "ready" : "not ready"); cleanup \(member.nativeCleanupObserved ? "observed" : "not observed"); release \(member.ownerReleaseAcknowledged ? "acknowledged" : "not acknowledged")"

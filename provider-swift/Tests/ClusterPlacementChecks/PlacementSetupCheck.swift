@@ -90,8 +90,7 @@ import Foundation
             profile: .init(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320, maximumPromptTokens: 8192,
                 maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320),
             profileFingerprint: hash("e"), partitions: [partition(4, "6"), partition(8, "7"), partition(12, "8"), partition(16, "9")],
-            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"), maxLifetimeSeconds: 300,
-            maxRequests: 16, supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: ClusterGenerationMode.allCases)
+            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"), supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: ClusterGenerationMode.allCases)
         let capabilityHash = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability))
         func member(_ id: String, _ address: String, _ device: String) -> [String: Any] {
             ["id": id, "host": id + ".local", "port": 22, "user": "fixture", "ownerExecutable": "/Users/fixture/bin/darkbloom",

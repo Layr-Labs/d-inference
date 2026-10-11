@@ -37,7 +37,6 @@ struct DistributedInstalledPlan: Sendable {
     static let collectiveProgressLimitMilliseconds = 60_000
 
     var localPeer: ClusterConfiguration.Peer { configuration.peers[configuration.localRank] }
-    var maximumLifetimeNanoseconds: UInt64 { UInt64(capability.maxLifetimeSeconds) * 1_000_000_000 }
     var configurationURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("config.json") }
     var manifestURL: URL { URL(fileURLWithPath: localPeer.modelDirectory).appendingPathComponent("manifest.json") }
 
@@ -80,7 +79,11 @@ struct DistributedInstalledPlan: Sendable {
               binding.rank == configuration.localRank, binding.profile == capability.profile,
               binding.executionPlanSHA256 == partition.planSHA256,
               deadline > DispatchTime.now().uptimeNanoseconds,
-              startupDeadline.map({ $0 <= deadline }) ?? true,
+              deadline - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLease.maximumNanoseconds,
+              // The worker's rank lease is renewed while it loads, so its
+              // startup deadline may outlast the first grant (never an hour).
+              startupDeadline.map({ $0 > DispatchTime.now().uptimeNanoseconds
+                  && $0 - DispatchTime.now().uptimeNanoseconds <= ClusterWorkerLimits.deadlineNanoseconds }) ?? true,
               attachment?.profile == bootstrap.ownerProfile else {
             throw ClusterConfigurationError.invalid("Native launch differs from installed owner binding")
         }

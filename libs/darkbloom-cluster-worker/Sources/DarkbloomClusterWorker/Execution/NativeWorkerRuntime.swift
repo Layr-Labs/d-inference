@@ -59,6 +59,18 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26(let runtime): runtime.cancel(requestID: id)
         }
     }
+    func keepWarmPulse() throws -> UInt64 {
+        switch owner {
+        case .qwenDense(let runtime): try runtime.keepWarmPulse()
+        case .mimoV26(let runtime): try runtime.keepWarmPulse()
+        }
+    }
+    func dataPlanePing() throws -> UInt64 {
+        switch owner {
+        case .qwenDense(let runtime): try runtime.dataPlanePing()
+        case .mimoV26(let runtime): try runtime.dataPlanePing()
+        }
+    }
     func shutdown() throws {
         switch owner {
         case .qwenDense(let runtime): try runtime.shutdown()

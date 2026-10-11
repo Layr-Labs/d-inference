@@ -79,7 +79,7 @@ enum ConsoleFixtures {
             prefillSchedule: ClusterPrefillSchedule.serial.rawValue,
             stages: [.init(rank: 0, peerID: "peer-0", local: role == .leader, sourceLayerStart: 0, sourceLayerEnd: 4),
                      .init(rank: 1, peerID: "peer-1", local: role == .follower, sourceLayerStart: 4, sourceLayerEnd: 32)],
-            maximumLifetimeSeconds: 300, maximumRequests: 16, maximumPromptTokens: 8192, maximumOutputTokens: 128)
+            maximumPromptTokens: 8192, maximumOutputTokens: 128)
     }
 
     /// What the plan tool beside the worker would report for the fixture model: rank 0 its four layers, rank 1 the rest.
@@ -108,7 +108,6 @@ enum ConsoleFixtures {
             "generationMode": ClusterGenerationMode.pipeline.rawValue,
             "peers": [["id": "peer-0", "rank": 0, "runtimeBinarySHA256": pin("3"), "supportedGenerationModes": [ClusterGenerationMode.pipeline.rawValue]],
                       ["id": "peer-1", "rank": 1, "runtimeBinarySHA256": pin("3"), "supportedGenerationModes": [ClusterGenerationMode.pipeline.rawValue]]],
-            "maximumLifetimeSeconds": 300, "maximumRequests": 16,
         ] as [String: Any]))
     }
 
@@ -119,7 +118,7 @@ enum ConsoleFixtures {
         return .init(schema: ClusterLiveStatus.schemaName, nonce: "n", binding: binding, authenticationConfigured: true, hostPhase: host,
             session: .init(binding: binding, phase: phase, observedMembershipEpoch: ready ? "11111111-2222-3333-4444-555555555555" : nil,
                 observedPrefillSchedule: ready ? .serial : nil, observedGenerationMode: ready ? .pipeline : nil, ready: ready,
-                admission: ready ? .init(remainingLifetimeNanoseconds: 281_000_000_000, remainingRequests: 15, activeRequest: false, draining: false, valid: true) : nil,
+                admission: ready ? .init(requestsServed: 1, keepWarmExchanges: 12, activeRequest: false, draining: false, valid: true) : nil,
                 members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
                     nativeReady: capacity[$0] != nil, requestCapacityBytes: capacity[$0], nativeCleanupObserved: false,
                     ownerReleaseAcknowledged: false, ownerTermination: nil) },

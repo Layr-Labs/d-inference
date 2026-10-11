@@ -87,7 +87,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         _ = try capability.selection(planSHA256: selectedPlanSHA256)
         try capability.requireSupport(for: selectedPrefillSchedule)
         try require((1...capability.profile.maximumChunkTokens).contains(chunkTokens)
-            && (1...capability.maxLifetimeSeconds).contains(requestTimeoutSeconds), "Cluster request bounds exceed the runtime capability")
+            && (1...3600).contains(requestTimeoutSeconds), "Cluster request bounds exceed the runtime capability")
         try require(peers.count == 2 && peers.map(\.rank) == [0, 1]
             && Set(peers.map(\.id)).count == 2, "Expected two distinct peers in rank order")
         try require(peers[localRank].id == memberID, "Leader/follower role does not match the local ranked member")

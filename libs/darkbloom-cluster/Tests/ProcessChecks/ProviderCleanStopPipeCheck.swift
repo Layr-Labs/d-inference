@@ -33,7 +33,7 @@ private final class Flag: @unchecked Sendable {
         let workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), rank == 0 ? "normal" : "clean-stop"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: startup, lifetimeDeadline: now + 30_000_000_000)
+                startupDeadline: startup, initialLeaseDeadline: now + 30_000_000_000)
         }
         for worker in workers { try worker.launch() }
         let pair = try ClusterWorkerPair(workers: workers, startupDeadline: startup, timing: .init(admissionWaitNanoseconds: 5_000_000_000,

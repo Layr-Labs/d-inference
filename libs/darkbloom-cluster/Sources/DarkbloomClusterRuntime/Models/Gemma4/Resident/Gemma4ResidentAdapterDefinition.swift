@@ -5,8 +5,6 @@ import Foundation
 /// pair may be loaded at and how a request may be divided. Describing it
 /// allocates nothing and admits no request.
 enum Gemma4ResidentAdapterDefinition {
-    static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
-    static let maximumRequests = 16
     static let supportedCuts = Gemma4LayerStagePlanning.supportedCuts
     static let supportedPrefillSchedules: [ClusterPrefillSchedule] = [.serial, .oneChunkLookahead]
     /// The pipeline only. Handing a sliding layer's window from one rank to the

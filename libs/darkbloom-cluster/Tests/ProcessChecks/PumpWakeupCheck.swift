@@ -103,7 +103,7 @@ private final class Tokens: @unchecked Sendable {
         let workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: now + 3_000_000_000, lifetimeDeadline: lifetime)
+                startupDeadline: now + 3_000_000_000, initialLeaseDeadline: lifetime)
         }
         defer { for worker in workers { worker.fence() } }
         for worker in workers { try worker.launch() }

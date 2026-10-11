@@ -31,7 +31,7 @@ import DarkbloomClusterProcess
         defer { try? pipe.fileHandleForWriting.close(); if filtered { finished.wait() } }
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
             output: filtered ? pipe.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
-            clusterID: "installed-fixture", leaseDirectory: directory, maximumLifetimeNanoseconds: 20_000_000_000,
+            clusterID: "installed-fixture", leaseDirectory: directory,
             bootstrapProfile: nil, binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fixture epoch differs") }
                 return try .init(clusterID: "installed-fixture", ownerIncarnation: incarnation, leaseID: lease,
@@ -46,7 +46,7 @@ import DarkbloomClusterProcess
                         ? String(behavior.dropFirst(8).split(separator: ",")[rank]) : "normal"],
                     environment: ["FIXTURE_READY_PATH": ProcessInfo.processInfo.environment["FIXTURE_READY_PATH"]!]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
-                    executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, lifetimeDeadline: deadline)
+                    executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, initialLeaseDeadline: deadline)
             })
         if behavior == "nonzero-owner" { exit(7) }
     }

@@ -41,8 +41,6 @@ struct GPTOSSRegisteredSpecification {
     /// its hand-off cannot carry a sliding-window layer's rows.
     let supportedGenerationModes: [ClusterGenerationMode]
 
-    static let maximumLifetimeNanoseconds: UInt64 = 300_000_000_000
-    static let maximumRequests = 16
     static let maximumPromptTokens = 8192, maximumChunkTokens = 512
     static let maximumOutputTokens = 128, maximumContextTokens = 8320
     /// The dtype the artifact stores its floating tensors in, and the one the

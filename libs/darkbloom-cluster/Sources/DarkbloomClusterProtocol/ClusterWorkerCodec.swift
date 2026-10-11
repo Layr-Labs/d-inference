@@ -15,8 +15,30 @@ public enum ClusterWorkerCodec {
             value["kind"] = "tokenDecision"; value["ordinal"] = ordinal; value["decision"] = decision.rawValue
         case .cancel(let reason): value["kind"] = "cancel"; value["reason"] = reason.rawValue
         case .shutdown: value["kind"] = "shutdown"
+        case .keepWarm(let ordinal): value["kind"] = "keepWarm"; value["ordinal"] = ordinal
         }
         return try encoded(value, maximum: ClusterWorkerLimits.commandBytes)
+    }
+
+    /// A rank-lease renewal line: outside the request sequence, so it carries
+    /// no sequence and no request ID.
+    public static func encode(_ renewal: ClusterWorkerLeaseRenewal) throws -> Data {
+        try encoded(["version": ClusterWorkerLimits.version, "kind": "extendDeadline",
+            "membershipEpoch": renewal.membershipEpoch.uuidString.lowercased(),
+            "renewal": NSNumber(value: renewal.renewal), "ttlNanoseconds": NSNumber(value: renewal.ttlNanoseconds)],
+            maximum: ClusterWorkerLimits.commandBytes)
+    }
+
+    /// One control-pipe line: a lease renewal or a sequenced command.
+    public static func decodeControl(_ data: Data) throws -> ClusterWorkerControlLine {
+        var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)
+        guard r.peekString("kind") == "extendDeadline" else { return .command(try decodeCommand(data)) }
+        try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
+        _ = try r.string("kind")
+        let renewal = try ClusterWorkerLeaseRenewal(membershipEpoch: r.uuid("membershipEpoch"), renewal: r.uint("renewal"),
+            ttlNanoseconds: r.uint("ttlNanoseconds"))
+        try r.finish()
+        return .extendDeadline(renewal)
     }
 
     public static func encode(_ frame: ClusterWorkerEventFrame) throws -> Data {
@@ -34,6 +56,8 @@ public enum ClusterWorkerCodec {
         case .retired(let outcome): value["kind"] = "retired"; value["outcome"] = outcome.rawValue
         case .unavailable(let reason): value["kind"] = "unavailable"; value["reason"] = reason.rawValue
         case .shutdownComplete: value["kind"] = "shutdownComplete"
+        case .keptWarm(let ordinal, let microseconds):
+            value["kind"] = "keptWarm"; value["ordinal"] = ordinal; value["microseconds"] = microseconds
         }
         return try encoded(value, maximum: ClusterWorkerLimits.eventBytes)
     }
@@ -48,6 +72,7 @@ public enum ClusterWorkerCodec {
         case "tokenDecision": command = .tokenDecision(ordinal: try r.int("ordinal"), decision: try r.enumeration("decision"))
         case "cancel": command = .cancel(try r.enumeration("reason"))
         case "shutdown": command = .shutdown
+        case "keepWarm": command = .keepWarm(ordinal: try r.int("ordinal"))
         default: throw ClusterWorkerProtocolError.invalid("Unknown worker command")
         }
         try r.finish()
@@ -69,6 +94,7 @@ public enum ClusterWorkerCodec {
         case "retired": event = .retired(try r.enumeration("outcome"))
         case "unavailable": event = .unavailable(try r.enumeration("reason"))
         case "shutdownComplete": event = .shutdownComplete
+        case "keptWarm": event = .keptWarm(ordinal: try r.int("ordinal"), microseconds: try r.int("microseconds"))
         default: throw ClusterWorkerProtocolError.invalid("Unknown worker event")
         }
         try r.finish()

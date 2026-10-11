@@ -25,7 +25,7 @@ private final class OwnedFixtureChild: @unchecked Sendable {
         let behavior = CommandLine.arguments[3]
         let child = OwnedFixtureChild()
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO, output: STDOUT_FILENO,
-            clusterID: "cpu-test", leaseDirectory: directory, maximumLifetimeNanoseconds: 10_000_000_000, bootstrapProfile: nil,
+            clusterID: "cpu-test", leaseDirectory: directory, bootstrapProfile: nil,
             binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw OwnerWire.invalid("Fixture epoch differs") }
                 return try .init(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: lease,
@@ -33,7 +33,7 @@ private final class OwnedFixtureChild: @unchecked Sendable {
             }, native: { binding, deadline, _ in
                 let value = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [], environment: [:]),
                     expectedIdentity: binding.identity, rank: 0, profile: binding.profile,
-                    executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, lifetimeDeadline: deadline)
+                    executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, initialLeaseDeadline: deadline)
                 child.remember(value)
                 return value
             })

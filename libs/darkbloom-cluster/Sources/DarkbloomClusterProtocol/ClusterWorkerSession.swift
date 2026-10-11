@@ -4,7 +4,7 @@ import Foundation
 /// peer agreement, scheduler or fencing implementation. Do not use it as a
 /// total-order mirror of two independently arriving pipes on the provider side.
 public struct ClusterWorkerSession: Sendable {
-    private enum Phase { case loading, idle, reserving, reserved, running, decision, retiring, shuttingDown, closed }
+    private enum Phase { case loading, idle, warming, reserving, reserved, running, decision, retiring, shuttingDown, closed }
     private let identity: ClusterWorkerIdentity
     private let rank: Int
     private let profile: ClusterWorkerProfile
@@ -12,7 +12,12 @@ public struct ClusterWorkerSession: Sendable {
     private var phase = Phase.loading
     private var commandSequence: UInt64 = 0
     private var eventSequence: UInt64 = 0
+    /// The most recent request IDs, oldest first, to refuse a replay. A window
+    /// of `requestReplayWindow` IDs, never a count of requests: a session has
+    /// no request limit and no lifetime.
     private var seen = Set<UUID>()
+    private var seenOrder: [UUID] = []
+    private var keepWarmOrdinal: Int?
     private var requestID: UUID?
     private var request: ClusterWorkerReservation?
     private var capacity = 0
@@ -47,9 +52,8 @@ public struct ClusterWorkerSession: Sendable {
                 try workerRequire(phase == .idle && locallyAvailable && requestID == nil,
                     "Worker is not available for a reservation")
                 guard let id = frame.requestID else { throw ClusterWorkerProtocolError.invalid("Missing request") }
-                try workerRequire(seen.count < ClusterWorkerLimits.requestsPerEpoch && !seen.contains(id),
-                    "Request ID replay or epoch request limit")
-                seen.insert(id); requestID = id; request = value; phase = .reserving
+                try workerRequire(!seen.contains(id), "Request ID replay")
+                remember(id); requestID = id; request = value; phase = .reserving
                 tokenCount = 0; lastToken = nil; lastDecision = nil; finishReason = nil; cancellation = nil; nativeFailure = false
             case .start:
                 try current(frame.requestID); try workerRequire(phase == .reserved, "Request is not admitted")
@@ -66,6 +70,10 @@ public struct ClusterWorkerSession: Sendable {
             case .shutdown:
                 try workerRequire(requestID == nil && (phase == .idle || phase == .loading), "Shutdown precedes local retirement")
                 locallyAvailable = false; phase = .shuttingDown
+            case .keepWarm(let ordinal):
+                try workerRequire(phase == .idle && locallyAvailable && requestID == nil
+                    && ordinal > (keepWarmOrdinal ?? 0), "Keep-warm needs an idle, available worker and a new ordinal")
+                keepWarmOrdinal = ordinal; phase = .warming
             }
             commandSequence += 1
         } catch { protocolFailed = true; locallyAvailable = false; throw error }
@@ -132,9 +140,22 @@ public struct ClusterWorkerSession: Sendable {
             case .shutdownComplete:
                 try workerRequire(phase == .shuttingDown && requestID == nil, "Unrequested shutdown acknowledgment")
                 phase = .closed
+            case .keptWarm(let ordinal, _):
+                try workerRequire(phase == .warming && ordinal == keepWarmOrdinal, "Unrequested keep-warm acknowledgment")
+                phase = .idle
             }
             eventSequence += 1
         } catch { protocolFailed = true; locallyAvailable = false; throw error }
+    }
+
+    /// True while a keep-warm exchange is outstanding: no request may start.
+    public var keepWarmOutstanding: Bool { phase == .warming }
+
+    private mutating func remember(_ id: UUID) {
+        seen.insert(id); seenOrder.append(id)
+        if seenOrder.count > ClusterWorkerLimits.requestReplayWindow {
+            seen.remove(seenOrder.removeFirst())
+        }
     }
 
     private func current(_ id: UUID?) throws {

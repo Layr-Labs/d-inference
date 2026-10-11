@@ -29,7 +29,7 @@ private func seconds(_ value: Double) -> UInt64 { UInt64(value * 1_000_000_000) 
         let begin = now()
         let value = try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), behavior], environment: [:]),
             expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-            startupDeadline: begin + seconds(startup), lifetimeDeadline: begin + seconds(lifetime), retirement: retirement)
+            startupDeadline: begin + seconds(startup), initialLeaseDeadline: begin + seconds(lifetime), retirement: retirement)
         try value.launch()
         return value
     }

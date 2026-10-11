@@ -245,7 +245,7 @@ struct NativePairMemberContractTests {
     /// own clock. The member measures on its clock at receipt: a prepare that
     /// leaves it more than 30 seconds, or none, is refused.
     @Test func prepareMustLeaveBetweenZeroAndThirtySecondsOnTheMembersClock() throws {
-        let fixture = try MemberContractFixture(lifetimeSeconds: 300, preparationSeconds: 30)
+        let fixture = try MemberContractFixture(lifetimeSeconds: 120, preparationSeconds: 30)
         let connection = NativePairMemberConnection(nonce: String(repeating: "b", count: 64),
             connection: deadConnection(), signer: ContractSigner(), onInvalidation: { _ in })
         defer { connection.invalidate() }
@@ -262,6 +262,38 @@ struct NativePairMemberContractTests {
         #expect(throws: NativePairMemberError.deadline) { _ = try session(memberClockBehindBy: 1) }
         // At or past the deadline nothing is left.
         #expect(throws: NativePairMemberError.binding) { _ = try session(memberClockBehindBy: -30_000_000_000) }
+    }
+
+    /// The coordinator's grant lease (S15): there is no fixed session
+    /// lifetime, so a grant is bounded by the lease's time to live plus the
+    /// five seconds a member's clock may trail; a renewal needs a committed
+    /// session.
+    @Test func aGrantBeyondTheLeaseIsRefusedAndARenewalNeedsACommit() throws {
+        let connection = NativePairMemberConnection(nonce: String(repeating: "b", count: 64),
+            connection: deadConnection(), signer: ContractSigner(), onInvalidation: { _ in })
+        defer { connection.invalidate() }
+        func session(_ fixture: MemberContractFixture) throws -> NativePairMemberSession {
+            try NativePairMemberSession(installation: fixture.installations[0], connection: connection,
+                message: try fixture.prepareMessage(0, nonce: connection.nonce, sequence: 1),
+                receivedAt: DispatchTime.now().uptimeNanoseconds,
+                wallUnixNanoseconds: fixture.prepareUnix - 5_000_000_000) { _, _ in }
+        }
+        // 126 s is more than 120 s plus the 5 s allowance.
+        #expect(throws: NativePairMemberError.deadline) { _ = try session(try MemberContractFixture(lifetimeSeconds: 126)) }
+        // The old 300-second fixed lifetime is no longer a grant.
+        #expect(throws: NativePairMemberError.deadline) { _ = try session(try MemberContractFixture(lifetimeSeconds: 300)) }
+        let fixture = try MemberContractFixture(lifetimeSeconds: 120)
+        let value = try session(fixture)
+        var payload = Data("DBNL\u{01}".utf8)
+        for shift in stride(from: 56, through: 0, by: -8) { payload.append(UInt8(truncatingIfNeeded: UInt64(1) >> shift)) }
+        let renewed = fixture.expiresUnix + 40_000_000_000
+        for shift in stride(from: 56, through: 0, by: -8) { payload.append(UInt8(truncatingIfNeeded: UInt64(renewed) >> shift)) }
+        let lease = try NativePairMessage(type: "native_pair_lease", memberNonce: connection.nonce,
+            epoch: withUnsafeBytes(of: fixture.starts[0].common.epoch.uuid) { memberHex(Data($0)) },
+            generation: 7, sequence: 2, payload: payload,
+            prepareBeforeUnixNano: fixture.prepareUnix, expiresAtUnixNano: renewed)
+        #expect(throws: NativePairMemberError.binding) { try value.accept(lease) }
+        #expect(value.expiresUnixNanoseconds == fixture.expiresUnix)
     }
 
     @Test func controlHoldsNoSessionUntilAPrepareArrives() throws {

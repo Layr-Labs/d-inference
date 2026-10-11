@@ -23,7 +23,7 @@ private struct Failure: Error {}
         let workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: deadline, lifetimeDeadline: deadline + 15_000_000_000)
+                startupDeadline: deadline, initialLeaseDeadline: deadline + 15_000_000_000)
         }
         defer { for worker in workers { worker.fence() } }
         for worker in workers { try worker.launch() }

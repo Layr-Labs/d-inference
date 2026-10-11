@@ -25,18 +25,14 @@ final class LocalHostTestSession: DistributedLocalServerSession, @unchecked Send
     var lifetimeNanoseconds: UInt64 = 5_000_000_000
     var drainEntered = false
     var holdDrain = false
-    private var exhausted = false
     private var invalid = false
     let ack = LocalHostLatch(), drained = LocalHostLatch()
     var expectedIdentity: DistributedResidentIdentity { base.identity }
     var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
-    var httpAdmissionAvailable: Bool { lock.withLock { phase == .ready && !exhausted } }
-    var httpSessionExhausted: Bool { lock.withLock { exhausted } }
+    var httpAdmissionAvailable: Bool { lock.withLock { phase == .ready } }
     var httpSessionInvalid: Bool { lock.withLock { invalid } }
-    func exhaustRequests() { lock.withLock { exhausted = true } }
     func invalidatePairBeforeStatusCallback() { lock.withLock { invalid = true } }
     func loseSession() { lock.withLock { phase = .quarantined } }
-    var lifetimeDeadlineUptimeNanoseconds: UInt64? { lock.withLock { lifetime } }
     var nativeCleanupObserved: Bool { lock.withLock { nativeCleanup } }
     var validationCount: Int { lock.withLock { validations } }
     var startCount: Int { lock.withLock { starts } }

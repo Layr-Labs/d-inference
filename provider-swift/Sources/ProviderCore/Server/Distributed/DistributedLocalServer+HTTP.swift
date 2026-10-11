@@ -23,16 +23,13 @@ extension DistributedLocalServer {
             hostPhase: phase.rawValue, session: observation, boundPort: port,
             acquisitions: pin == nil ? 0 : 1, failed: failed, ready: ready,
             admissionAvailable: ready && pin == nil && admission?.valid == true
-                && admission?.activeRequest == false && admission?.draining == false
-                && (admission?.remainingRequests ?? 0) > 0,
+                && admission?.activeRequest == false && admission?.draining == false,
             quarantined: phase == .quarantined || observation.phase == "quarantined")
     }
 
     func didBind(_ channel: any Channel) {
         guard phase == .starting,
               let port = channel.localAddress?.port, let port = UInt16(exactly: port), port != 0,
-              let deadline = session.lifetimeDeadlineUptimeNanoseconds,
-              DispatchTime.now().uptimeNanoseconds < deadline,
               session.status == .ready, session.readiness() != nil else {
             failed = true; beginTeardown(drainUntil: nil); return
         }

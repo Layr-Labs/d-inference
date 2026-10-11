@@ -26,7 +26,7 @@ private struct Harness: Sendable {
         workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), behaviors[rank]], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: deadline, lifetimeDeadline: lifetime)
+                startupDeadline: deadline, initialLeaseDeadline: lifetime)
         }
         do { for worker in workers { try worker.launch() }; pair = try .init(workers: workers, startupDeadline: deadline) }
         catch { for worker in workers { worker.fence() }; throw error }
@@ -155,13 +155,16 @@ private struct Harness: Sendable {
         try rejects { _ = try tooSmall.pair.reserve(requestID: UUID(), reservation: tooSmall.reservation(capacity: 2100)) }
         try await tooSmall.finish()
     }
+    /// A first lease grant (1 s) that lapses before the owner's first renewal
+    /// (5 s): the owner fences each child and observes it end by itself.
+    /// There is no lifetime: an owner that renews keeps its child.
     static func processLifetime(_ executable: URL) async throws {
         let h = try Harness(executable, lifetimeSeconds: 1)
         defer { for worker in h.workers { worker.fence() } }
-        try rejects { _ = try h.pair.reserve(requestID: UUID(), reservation: h.reservation()) }
         let end = ContinuousClock.now.advanced(by: .seconds(4))
         while !h.workers.allSatisfy(\.observedExit) && ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(10)) }
-        try require(h.workers.allSatisfy(\.observedExit) && h.pair.readiness == nil, "Idle process lifetime needs independent exit observation")
+        try require(h.workers.allSatisfy(\.observedExit) && h.pair.readiness == nil, "A lapsed lease needs independent exit observation")
+        try require(h.workers.allSatisfy { $0.sentSignals.isEmpty }, "A lapsed lease ended its child with a signal")
         try await h.finish()
     }
     static func blockedFailureCallback(_ executable: URL) async throws {

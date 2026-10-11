@@ -28,6 +28,13 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
   -Xlinker -rpath -Xlinker "$task_build" \
   "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/WorkerOwnerTests.swift" -o "$task_build/check"
 "$task_build/check" "$task_build/fake-worker"
+if [[ -n "${PROCESS_CHECKS_LONG_SECONDS:-}" ]]; then
+  xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
+    -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+    -Xlinker -rpath -Xlinker "$task_build" \
+    "$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_root/Tests/ProcessChecks/LongSessionCheck.swift" -o "$task_build/long-session"
+  "$task_build/long-session" "$task_build/fake-worker" "$PROCESS_CHECKS_LONG_SECONDS"
+fi
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-as-library \
   -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
   -Xlinker -rpath -Xlinker "$task_build" \

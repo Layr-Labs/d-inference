@@ -243,12 +243,15 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
         XCTAssertNil(unused.terminal?.native.launchID)
     }
 
-    func testLifetimeAndReservationLimitsUseLocalClockWithoutExtension() throws {
+    /// The owner's lease is not a lifetime: a request keeps its own deadline
+    /// (the leader renews the lease while it runs), and an unrenewed lease
+    /// still fences at its last grant, on the local clock.
+    func testLeaseAndReservationLimitsUseLocalClock() throws {
         XCTAssertThrowsError(try ClusterOwnerLeaseState(binding: binding(), now: UInt64.max, remainingLifetimeNanoseconds: 1))
         XCTAssertThrowsError(try ClusterOwnerLeaseState(binding: binding(), now: 100, remainingLifetimeNanoseconds: 0))
         var state = try loaded()
         XCTAssertEqual(try send(.reserve(requestID: requestID, capacityLimitBytes: 80, remainingNanoseconds: 2000), to: &state),
-                       .forwardReserve(requestID, localDeadlineUptimeNanoseconds: 1100))
+                       .forwardReserve(requestID, localDeadlineUptimeNanoseconds: 2110))
         try state.observeTime(600)
         try state.observeTime(1099)
         XCTAssertFalse(state.status.quarantined)
@@ -256,6 +259,22 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
         XCTAssertTrue(state.requiresNativeFence)
         XCTAssertEqual(state.status.chargedRequestBytes, 80)
         XCTAssertThrowsError(try state.observeTime(1099))
+    }
+
+    /// A renewal moves the lease on; past an unrenewed lease nothing revives it.
+    func testLeaseRenewalMovesTheDeadlineAndALapsedLeaseStaysFenced() throws {
+        var state = try loaded()
+        try state.renewLease(now: 1000, ttl: 30_000)
+        XCTAssertEqual(state.lifetimeDeadlineUptimeNanoseconds, 31_000)
+        try state.observeTime(20_000)
+        XCTAssertFalse(state.status.quarantined)
+        try state.renewLease(now: 25_000, ttl: 1_000)
+        XCTAssertEqual(state.lifetimeDeadlineUptimeNanoseconds, 31_000, "a renewal never shortens the lease")
+        XCTAssertThrowsError(try state.renewLease(now: 26_000, ttl: ClusterWorkerLease.maximumNanoseconds + 1))
+        var lapsed = try loaded()
+        try lapsed.observeTime(1100)
+        XCTAssertTrue(lapsed.requiresNativeFence)
+        XCTAssertThrowsError(try lapsed.renewLease(now: 1200, ttl: 30_000))
     }
 
     func testReadinessAndAdmissionUseActualBindingAndBoundedCapacity() throws {

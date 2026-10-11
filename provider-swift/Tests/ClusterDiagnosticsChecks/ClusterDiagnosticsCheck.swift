@@ -76,7 +76,7 @@ private func reject(_ body: () throws -> Void) throws {
         let sample = ClusterLiveStatus(schema: ClusterLiveStatus.schemaName, nonce: nonce, binding: binding,
             authenticationConfigured: true, hostPhase: "serving", session: .init(binding: binding, phase: "ready",
                 observedMembershipEpoch: epoch, observedPrefillSchedule: .serial, observedGenerationMode: .pipeline, ready: true,
-                admission: .init(remainingLifetimeNanoseconds: 8_000_000_000, remainingRequests: 16, activeRequest: false, draining: false, valid: true),
+                admission: .init(requestsServed: 0, keepWarmExchanges: 0, activeRequest: false, draining: false, valid: true),
                 members: (0..<2).map { .init(peerID: "peer-\($0)", rank: $0, transport: $0 == 0 ? .localPipes : .authenticatedSSH,
                     nativeReady: true, requestCapacityBytes: 1024, nativeCleanupObserved: false, ownerReleaseAcknowledged: false, ownerTermination: nil) },
                 mtpEnabled: false, mtpOffReason: "runtimeCapabilityDisablesSpeculation",
@@ -102,7 +102,9 @@ private func reject(_ body: () throws -> Void) throws {
         try reject { _ = try decode(changed { $0["boundPort"] = 8001 }) }
         try reject { _ = try decode(changed { $0["ready"] = false }) }
         try reject { _ = try decode(changed { var b = $0["binding"] as! [String: Any]; b["planSHA256"] = String(repeating: "0", count: 64); $0["binding"] = b }) }
-        for (key, value) in [("remainingRequests", 17), ("remainingLifetimeNanoseconds", 11_000_000_000)] {
+        // Counters only: no lifetime or request count exists to report; a
+        // negative counter or a retired field is refused.
+        for (key, value) in [("requestsServed", -1), ("keepWarmExchanges", -1), ("remainingRequests", 16), ("remainingLifetimeNanoseconds", 1)] {
             try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; var a = s["admission"] as! [String: Any]; a[key] = value; s["admission"] = a; $0["session"] = s }) }
         }
         try reject { _ = try decode(changed { var s = $0["session"] as! [String: Any]; s["observedPrefillSchedule"] = "one_chunk_lookahead_v1"; $0["session"] = s }) }

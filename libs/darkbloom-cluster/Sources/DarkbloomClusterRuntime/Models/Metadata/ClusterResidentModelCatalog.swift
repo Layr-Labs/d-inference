@@ -21,8 +21,6 @@ public enum ClusterResidentModelCatalog {
         public let supportedCuts: [Int]
         public let supportedPrefillSchedules: [ClusterPrefillSchedule]
         public let supportedGenerationModes: [ClusterGenerationMode]
-        /// The longest lifetime one worker session of this model may be given.
-        public let maximumLifetimeSeconds: Int
         public let configurationSHA256: String
         public let manifestSHA256: String
     }
@@ -36,7 +34,6 @@ public enum ClusterResidentModelCatalog {
             runtimeModelID: model.runtimeModelID, profileID: model.profileID, layerCount: model.layerCount,
             supportedCuts: model.supportedCuts, supportedPrefillSchedules: model.supportedPrefillSchedules,
             supportedGenerationModes: model.supportedGenerationModes,
-            maximumLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
             configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
     }
 
@@ -47,7 +44,6 @@ public enum ClusterResidentModelCatalog {
             runtimeModelID: model.runtimeModelID, profileID: model.profileID, layerCount: model.layerCount,
             supportedCuts: model.supportedCuts, supportedPrefillSchedules: model.supportedPrefillSchedules,
             supportedGenerationModes: model.supportedGenerationModes,
-            maximumLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
             configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
     }
 
@@ -57,7 +53,6 @@ public enum ClusterResidentModelCatalog {
             runtimeModelID: model.runtimeModelID, profileID: model.profileID, layerCount: model.layerCount,
             supportedCuts: model.supportedCuts, supportedPrefillSchedules: model.supportedPrefillSchedules,
             supportedGenerationModes: model.supportedGenerationModes,
-            maximumLifetimeSeconds: model.maximumLifetimeSeconds,
             configurationSHA256: model.configurationSHA256, manifestSHA256: model.manifestSHA256)
     }
 
@@ -68,7 +63,6 @@ public enum ClusterResidentModelCatalog {
             layerCount: specification.layers, supportedCuts: specification.supportedCuts,
             supportedPrefillSchedules: specification.supportedPrefillSchedules,
             supportedGenerationModes: specification.supportedGenerationModes,
-            maximumLifetimeSeconds: Int(MiMoRegisteredSpecification.maximumLifetimeNanoseconds / 1_000_000_000),
             configurationSHA256: specification.configurationSHA256, manifestSHA256: specification.manifestSHA256)
     }
 

@@ -39,7 +39,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
     public let executionPlanSHA256: String
-    public let localLifetimeDeadlineUptimeNanoseconds: UInt64
+    /// The rank lease this endpoint has granted the owner, on this Mac's
+    /// clock (S03): the open's first grant, then each renewal's send time plus
+    /// the time to live. There is no fixed lifetime; it moves while this
+    /// endpoint keeps the owner and stops when it is fenced or released.
+    public var localLifetimeDeadlineUptimeNanoseconds: UInt64 { lock.withLock { leaseDeadline } }
+    private var leaseDeadline: UInt64
+    private var nextRenewalAt: UInt64 = 0
+    private var renewalsSent: UInt64 = 0
     let clusterID: String
     let leaseID: UUID
     private let nativeKeyRelay: ClusterOwnerNativeKeyRelay?
@@ -155,14 +162,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             identity: expectedIdentity, profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256)
         let now = DispatchTime.now().uptimeNanoseconds
         guard lifetimeDeadlineUptimeNanoseconds > now,
-              lifetimeDeadlineUptimeNanoseconds - now <= ClusterWorkerLimits.deadlineNanoseconds else { throw OwnerWire.invalid("Invalid remote lifetime") }
+              lifetimeDeadlineUptimeNanoseconds - now <= ClusterWorkerLease.maximumNanoseconds else { throw OwnerWire.invalid("Invalid first lease grant") }
         if let bootstrapRelay {
             guard bootstrapRelay.identity == expectedIdentity, bootstrapRelay.executionPlanSHA256 == executionPlanSHA256,
                   bootstrapRelay.deadlineUptimeNanoseconds <= lifetimeDeadlineUptimeNanoseconds else { throw OwnerWire.invalid("Bootstrap relay configuration differs") }
         }
         self.bootstrapRelay = bootstrapRelay
         self.clusterID = clusterID; self.expectedIdentity = expectedIdentity; expectedProfile = profile; self.rank = rank
-        self.executionPlanSHA256 = executionPlanSHA256; localLifetimeDeadlineUptimeNanoseconds = lifetimeDeadlineUptimeNanoseconds
+        self.executionPlanSHA256 = executionPlanSHA256; leaseDeadline = lifetimeDeadlineUptimeNanoseconds
         process.executableURL = transport.executable; process.arguments = transport.arguments; process.environment = transport.environment
         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
         let pipe = try ClusterOwnerPipe(input: output.fileHandleForReading.fileDescriptor, output: input.fileHandleForWriting.fileDescriptor, readingCommands: false)
@@ -217,22 +224,26 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         var sequence: UInt64 = 0
         do {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard now < localLifetimeDeadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
-            let offered = localLifetimeDeadlineUptimeNanoseconds - now
+            let firstGrant = localLifetimeDeadlineUptimeNanoseconds
+            guard now < firstGrant else { throw ClusterWorkerOwnerError.deadline }
+            let offered = firstGrant - now
             lock.withLock { offeredLifetime = offered }
             let open = OwnerWire(kind: "open", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
                 incarnation: nil, sequence: 0, clusterID: clusterID, remaining: offered, bootstrapProfile: selectedBootstrapProfile,
                 nativeStart: nativeKeyRelay?.start.canonicalBytes,
-                nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(localLifetimeDeadlineUptimeNanoseconds, nativeKeyRelay!.deadlineUptimeNanoseconds))
-            try pipe.write(open.encoded(commandStream: true), until: min(localLifetimeDeadlineUptimeNanoseconds, now + 5_000_000_000)); sequence += 1
+                nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(firstGrant, nativeKeyRelay!.deadlineUptimeNanoseconds))
+            try pipe.write(open.encoded(commandStream: true), until: min(firstGrant, now + 5_000_000_000)); sequence += 1
             var sentFence = false, sentRelease = false
             while process.isRunning {
                 let now = DispatchTime.now().uptimeNanoseconds
                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
-                let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?) in
+                let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?, Bool) in
                     let bootstrap = !invalid && !bootstrapReplies.isEmpty ? bootstrapReplies.removeFirst() : nil
-                    let next = bootstrap == nil && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
-                    return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap)
+                    // The rank lease is renewed only while this endpoint keeps
+                    // the owner: never once it failed, fenced or saw cleanup.
+                    let renew = !invalid && !cleanup && !fenceRequested && !releaseRequested && incarnation != nil && now >= nextRenewalAt
+                    let next = bootstrap == nil && !renew && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
+                    return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap, renew)
                 }
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
@@ -241,6 +252,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                         frame = OwnerWire(kind: "release", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentRelease = true
                     } else if work.1 && !sentFence {
                         frame = OwnerWire(kind: "fence", epoch: expectedIdentity.membershipEpoch, lease: leaseID, incarnation: incarnation, sequence: sequence); sentFence = true
+                    } else if work.5 {
+                        var renewal = OwnerWire(kind: "renew", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
+                            incarnation: incarnation, sequence: sequence)
+                        renewal.remaining = ClusterWorkerLease.ttlNanoseconds
+                        frame = renewal
+                        lock.withLock {
+                            renewalsSent += 1; nextRenewalAt = now + ClusterWorkerLease.renewNanoseconds
+                            leaseDeadline = max(leaseDeadline, now + ClusterWorkerLease.ttlNanoseconds)
+                            // The owner's lease ends no later than the renewal's
+                            // arrival plus the time to live, and so its ceiling.
+                            let ceiling = (now + ClusterWorkerLease.ttlNanoseconds).addingReportingOverflow(ownerRetirementAllowance)
+                            if !ceiling.overflow { ownerCeiling = max(ownerCeiling, ceiling.partialValue + 5_000_000_000) }
+                        }
                     } else if let (round, bytes) = work.4 {
                         frame = OwnerWire(kind: "bootstrapReply", epoch: expectedIdentity.membershipEpoch,
                             lease: leaseID, incarnation: incarnation, sequence: sequence,
@@ -331,6 +355,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     guard inc == nativeKeyRelay.start.ownerIncarnation, launch == nativeKeyRelay.start.launchID else { throw OwnerWire.invalid("Committed native owner IDs differ") }
                 }
                 incarnation = inc; launchID = launch
+                // The open was the first grant; renewals follow one interval on.
+                nextRenewalAt = DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.renewNanoseconds
                 // See ownerRetirementDeadlineUptimeNanoseconds: the owner's own
                 // lifetime, and so its ceiling, ends no later than this.
                 let latest = DispatchTime.now().uptimeNanoseconds.addingReportingOverflow(offeredLifetime)

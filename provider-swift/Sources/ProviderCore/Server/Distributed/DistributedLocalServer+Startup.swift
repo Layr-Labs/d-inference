@@ -11,7 +11,7 @@ extension DistributedLocalServer {
     }
 
     func prepareGeneration(_ target: DistributedLocalServerGeneration,
-                           phase expected: DistributedLocalServerPhase) async throws -> UInt64 {
+                           phase expected: DistributedLocalServerPhase) async throws {
         try requirePreparing(target, phase: expected)
         let session = target.session
         guard DistributedLocalSessionBinding(session) == binding else {
@@ -25,23 +25,18 @@ extension DistributedLocalServer {
         try firstTokenBudgetPolicy?.validate(maximumPromptTokens: session.profile.maxPromptTokens)
         try await session.start()
         try requirePreparing(target, phase: expected)
-        guard let lifetime = session.lifetimeDeadlineUptimeNanoseconds,
-              lifetime > DispatchTime.now().uptimeNanoseconds else {
-            throw DistributedLocalServerError.lifetimeExpired
-        }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(
             owner: session, expectedIdentity: session.expectedIdentity,
             publicModelID: session.model.publicModelID, profile: session.profile,
             tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
             firstTokenBudgetPolicy: firstTokenBudgetPolicy)
-        return lifetime
     }
 
     func prepareAndBind(_ target: DistributedLocalServerGeneration, timeout: Duration) async throws {
-        let lifetime = try await prepareGeneration(target, phase: .starting)
+        try await prepareGeneration(target, phase: .starting)
         try requirePreparing(target, phase: .starting)
         try responseRouter.publish(target.responses)
-        startLifetimeMonitor(target, deadline: lifetime)
+        startSessionMonitor(target)
         let application = makeApplication()
         serviceTask = Task {
             do { try await application.runService(gracefulShutdownSignals: []) }

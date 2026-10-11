@@ -55,8 +55,6 @@ public struct ClusterConsoleSavedModel: Encodable, Sendable, Equatable {
     public let planSHA256: String
     public let prefillSchedule: String
     public let stages: [Stage]
-    public let maximumLifetimeSeconds: Int
-    public let maximumRequests: Int
     public let maximumPromptTokens: Int
     public let maximumOutputTokens: Int
 }
@@ -71,7 +69,6 @@ extension ClusterConsoleSavedModel {
                 .init(rank: stage.rank, peerID: configuration.peers[stage.rank].id, local: stage.rank == configuration.localRank,
                     sourceLayerStart: stage.sourceLayerStart, sourceLayerEnd: stage.sourceLayerEnd)
             },
-            maximumLifetimeSeconds: capability.maxLifetimeSeconds, maximumRequests: capability.maxRequests,
             maximumPromptTokens: capability.profile.maximumPromptTokens,
             maximumOutputTokens: capability.profile.maximumOutputTokens)
     }

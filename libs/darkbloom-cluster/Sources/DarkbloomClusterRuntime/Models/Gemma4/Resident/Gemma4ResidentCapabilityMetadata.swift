@@ -40,8 +40,6 @@ public enum Gemma4ResidentCapabilityMetadata {
             profileFingerprint: profile.fingerprint, partitions: partitions,
             arithmeticPolicyID: Gemma4ArithmeticEnvironment.contract,
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
-            maxLifetimeSeconds: Int(Gemma4ResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
-            maxRequests: Gemma4ResidentAdapterDefinition.maximumRequests,
             supportedPrefillSchedules: Gemma4ResidentAdapterDefinition.supportedPrefillSchedules,
             supportedGenerationModes: Gemma4ResidentAdapterDefinition.supportedGenerationModes)
     }

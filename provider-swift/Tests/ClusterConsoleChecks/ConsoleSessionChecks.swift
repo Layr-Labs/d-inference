@@ -153,7 +153,7 @@ extension ClusterConsoleCheck {
         let serving = pty.screenText
         expect(serving.contains("Rank 0, peer-0: localPipes; native ready;") && serving.contains("Rank 1, peer-1: authenticatedSSH; native ready;"),
             "each rank's readiness comes from its worker")
-        expect(serving.contains("admissions remaining 16"), "admissions come from the session")
+        expect(serving.contains("Requests served 0"), "the request count comes from the session; there is no admission limit")
         expect(serving.contains("Rank 0, peer-0: admitted and loaded, by the leader's status;")
             && serving.contains("Rank 1, peer-1: admitted and loaded, by the leader's status;"),
             "per-rank admission is what each worker reported, read from the leader's status: \(pty.screen.filter { $0.contains("Rank") })")

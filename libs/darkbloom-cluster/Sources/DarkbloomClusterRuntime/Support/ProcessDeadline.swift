@@ -22,24 +22,35 @@ import Darwin
 /// `status` as a fault.
 public enum ProcessDeadline {
     private struct Arguments {
-        let deadline: UInt64
+        let lease: ClusterLeaseDeadline
         let status: Int32
+        let reason: StaticString
     }
 
     /// `uptimeNanoseconds` is on the `DispatchTime.now().uptimeNanoseconds` clock.
+    /// A fixed deadline, for a bounded check or tool run.
     public static func arm(uptimeNanoseconds deadline: UInt64, status: Int32) throws {
+        try arm(lease: ClusterLeaseDeadline(uptimeNanoseconds: deadline), status: status, reason: "process-deadline")
+    }
+
+    /// A renewable deadline: the thread reads `lease` on every wake, so a
+    /// renewal moves the end without re-arming. A worker that stops being
+    /// renewed ends here within its time to live, through the forced exit.
+    public static func arm(lease: ClusterLeaseDeadline, status: Int32, reason: StaticString = "lease-expired") throws {
         let arguments = UnsafeMutablePointer<Arguments>.allocate(capacity: 1)
-        arguments.initialize(to: .init(deadline: deadline, status: status))
+        arguments.initialize(to: .init(lease: lease, status: status, reason: reason))
         var thread: pthread_t?
         let created = pthread_create(&thread, nil, { raw in
             let arguments = raw.assumingMemoryBound(to: Arguments.self).pointee
             while true {
                 let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                if now >= arguments.deadline {
-                    ProcessForcedExit.exit(status: arguments.status, reason: "process-deadline")
+                let deadline = arguments.lease.uptimeNanoseconds
+                if now >= deadline {
+                    ProcessForcedExit.exit(status: arguments.status, reason: "\(arguments.reason)")
                 }
-                // Wake at least once a second so a clock step cannot strand the wait.
-                let remaining = min(arguments.deadline - now, 1_000_000_000)
+                // Wake at least once a second so a renewal is seen and a clock
+                // step cannot strand the wait.
+                let remaining = min(deadline - now, 1_000_000_000)
                 var wait = timespec(tv_sec: Int(remaining / 1_000_000_000),
                                     tv_nsec: Int(remaining % 1_000_000_000))
                 nanosleep(&wait, nil)

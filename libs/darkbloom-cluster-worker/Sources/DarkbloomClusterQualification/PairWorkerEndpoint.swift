@@ -10,7 +10,13 @@ import Foundation
 /// This endpoint never signals anything. "Native cleanup" here means closing
 /// the worker's input and waiting for the process to end by itself: a worker
 /// that loses its input releases its model and exits, and one blocked in a
-/// native call ends at the lifetime it was started with. The library's own
+/// native call ends when its rank lease lapses.
+///
+/// The worker has no fixed lifetime. It is launched with a first rank-lease
+/// grant (S03) and this endpoint, its owner, renews the lease every five
+/// seconds on the worker's input for as long as it keeps the worker. A driver
+/// that dies stops the renewals with it; `stopRenewalsAfterNanoseconds` stops
+/// them on purpose, to show that the worker then ends within the time to live. The library's own
 /// `ClusterWorkerProcess` terminates and then kills its child two seconds
 /// after a fence, which a qualification run on a loaded model must not do.
 public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendable {
@@ -23,7 +29,12 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public let expectedProfile: ClusterWorkerProfile
     public let rank: Int
     public let executionPlanSHA256: String
-    private let lifetimeNanoseconds: UInt64
+    /// Qualification only: stop renewing the rank lease this long after the
+    /// launch, with the input still open.
+    private let stopRenewalsAfterNanoseconds: UInt64?
+    private var leaseDeadline: UInt64 = 0
+    private var renewalsValue: UInt64 = 0
+    private var lastRenewalAt: UInt64?
     private let process = Process()
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
@@ -49,26 +60,25 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     private var stderrLine = Data()
     private var eventLog: [String] = []
     private var tokenEvents = 0
+    private var keepWarmEvents = 0
+    /// Keep-warm exchanges this rank answered.
+    public var keepWarmAnswered: Int { lock.withLock { keepWarmEvents } }
     private var shutdownSent = false
     private var shutdownComplete = false
     private var admittedValue: Bool?
     private var refusalValue: String?
 
     public init(command: [String], expectedIdentity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, lifetimeSeconds: Int,
-                maximumLifetimeSeconds: Int = 300) throws {
+                executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil) throws {
         // Validates the identity, rank, profile and plan the way a worker does.
-        // The lifetime bound is the model's own (300 s, or 1,800 s for MiMo), as the
-        // configuration already checked; a fixed 300 here refused every MiMo launch.
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
                                      executionPlanSHA256: executionPlanSHA256)
-        guard let executable = command.first, executable.hasPrefix("/"),
-              (10...max(10, maximumLifetimeSeconds)).contains(lifetimeSeconds) else {
+        guard let executable = command.first, executable.hasPrefix("/") else {
             throw ClusterWorkerOwnerError.invalid("Invalid pair worker launch")
         }
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256
-        lifetimeNanoseconds = UInt64(lifetimeSeconds) * 1_000_000_000
+        self.stopRenewalsAfterNanoseconds = stopRenewalsAfterNanoseconds
         writer = DispatchQueue(label: "darkbloom.pair-check.writer.\(rank)")
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = Array(command.dropFirst())
@@ -102,6 +112,9 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     }
     /// The worker's process ID on its own Mac, once its launch line arrived.
     public var workerProcessID: Int32? { lock.withLock { preamble?.processID } }
+    /// Rank-lease renewals written to the worker, and when the last one was.
+    public var renewalsSent: UInt64 { lock.withLock { renewalsValue } }
+    public var lastRenewalUptimeNanoseconds: UInt64? { lock.withLock { lastRenewalAt } }
     public var faultDescription: String? { lock.withLock { fault.map { "\($0)" } } }
 
     private func zip2<A, B>(_ a: A?, _ b: B?) -> (A, B)? {
@@ -135,11 +148,39 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                 throw error
             }
             launchedAt = started
+            leaseDeadline = started + ClusterWorkerLease.ttlNanoseconds
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close()
         try? diagnostics.fileHandleForWriting.close()
         Thread.detachNewThread { [self] in readEvents(); streams.leave() }
         Thread.detachNewThread { [self] in readDiagnostics(); streams.leave() }
+        Thread.detachNewThread { [self] in renewLease() }
+    }
+
+    /// The rank lease: one `extendDeadline` line every renewal interval, queued
+    /// behind any command already written, until the input closes, the worker
+    /// exits or the qualification fault says to stop.
+    private func renewLease() {
+        // The launch deadline is the first grant; renewals follow one interval on.
+        Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let state = lock.withLock { () -> (stop: Bool, renewal: UInt64, started: UInt64) in
+                (inputClosed || terminationValue != nil || fault != nil, renewalsValue + 1, launchedAt ?? now)
+            }
+            if state.stop { return }
+            if let limit = stopRenewalsAfterNanoseconds, now - state.started >= limit { return }
+            if let value = try? ClusterWorkerLeaseRenewal(membershipEpoch: expectedIdentity.membershipEpoch, renewal: state.renewal),
+               let bytes = try? ClusterWorkerCodec.encode(value) {
+                lock.withLock {
+                    guard !inputClosed else { return }
+                    renewalsValue = state.renewal; lastRenewalAt = now
+                    leaseDeadline = max(leaseDeadline, now + ClusterWorkerLease.ttlNanoseconds)
+                    writer.async { [self] in try? input.fileHandleForWriting.write(contentsOf: bytes) }
+                }
+            }
+            Thread.sleep(forTimeInterval: Double(ClusterWorkerLease.renewNanoseconds) / 1e9)
+        }
     }
 
     /// Waits for the launch line that carries the worker's clock.
@@ -223,6 +264,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             case .failed(let reason): eventLog.append("failed:\(reason.rawValue)")
             case .unavailable(let reason): eventLog.append("unavailable:\(reason.rawValue)")
             case .shutdownComplete: eventLog.append("shutdownComplete"); shutdownComplete = true
+            case .keptWarm: keepWarmEvents += 1
             }
             switch frame.event {
             case .unavailable, .failed: readyValue = nil; return notificationLocked()
@@ -264,10 +306,11 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public var readiness: ClusterWorkerReady? { lock.withLock { fault == nil && !inputClosed ? readyValue : nil } }
     public var nativeCleanupObserved: Bool { lock.withLock { terminationValue != nil || (launchedAt == nil && fault != nil) } }
 
-    /// On this Mac's clock, never later than the worker's own deadline: the
-    /// worker started its lifetime after this process started the launch.
+    /// The rank lease this endpoint last granted, on this Mac's clock: never
+    /// later than the worker's own deadline, which counts from when it read
+    /// the launch or the renewal. It moves while the endpoint keeps the worker.
     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 {
-        lock.withLock { (launchedAt ?? DispatchTime.now().uptimeNanoseconds) + lifetimeNanoseconds }
+        lock.withLock { launchedAt == nil ? DispatchTime.now().uptimeNanoseconds + ClusterWorkerLease.ttlNanoseconds : leaseDeadline }
     }
 
     public func setInvalidationHandler(_ value: @escaping @Sendable () -> Void) {
@@ -282,14 +325,15 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     /// The launch line gave one reading of that clock, taken between this
     /// process starting the launch and reading the line, so the difference
     /// between the clocks is known to within that interval. The earlier bound
-    /// is used and the result is capped at the worker's own deadline.
+    /// is used. It is not capped by the worker's lease, which this endpoint
+    /// renews while the request runs.
     func workerDeadline(forLocal deadline: UInt64) throws -> UInt64 {
         try lock.withLock {
             guard let preamble, let preambleAt else { throw ClusterWorkerOwnerError.unavailable }
             let offset = Int64(bitPattern: preamble.uptimeNanoseconds) - Int64(bitPattern: preambleAt)
             let translated = Int64(bitPattern: deadline) + offset
             guard translated > 0 else { throw ClusterWorkerOwnerError.deadline }
-            return min(UInt64(translated), preamble.deadlineUptimeNanoseconds)
+            return UInt64(translated)
         }
     }
 

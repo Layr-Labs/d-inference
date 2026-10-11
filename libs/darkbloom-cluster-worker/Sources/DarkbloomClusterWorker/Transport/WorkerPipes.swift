@@ -1,18 +1,26 @@
 import Darwin
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Foundation
 
 /// One control reader and one native-executor writer. No Foundation pipe read
 /// that waits to fill a buffer, unbounded line, or resettable request deadline.
+///
+/// Every record is bounded by the codec and the line framer. There is no bound
+/// on the total bytes over a worker's life: a worker lives as long as its owner
+/// renews its rank lease, and lease renewals and events accumulate without end.
 final class WorkerPipes: @unchecked Sendable {
-    let input: Int32, output: Int32, deadline: UInt64
+    let input: Int32, output: Int32
+    /// The rank lease; reads and writes stop once it has lapsed.
+    let lease: ClusterLeaseDeadline
     private let inputFlags: Int32, outputFlags: Int32
-    private var inputBytes = 0, outputBytes = 0
-    private static let maximumInputBytes = 32 * 1024 * 1024
-    private static let maximumOutputBytes = 8 * 1024 * 1024
 
-    init(input: Int32, output: Int32, deadline: UInt64) throws {
-        self.input = input; self.output = output; self.deadline = deadline
+    convenience init(input: Int32, output: Int32, deadline: UInt64) throws {
+        try self.init(input: input, output: output, lease: ClusterLeaseDeadline(uptimeNanoseconds: deadline))
+    }
+
+    init(input: Int32, output: Int32, lease: ClusterLeaseDeadline) throws {
+        self.input = input; self.output = output; self.lease = lease
         inputFlags = fcntl(input, F_GETFL); outputFlags = fcntl(output, F_GETFL)
         guard inputFlags >= 0, outputFlags >= 0 else { throw WorkerFailure.invalid("Worker pipe descriptors are unavailable") }
         guard fcntl(input, F_SETFL, inputFlags | O_NONBLOCK) == 0 else { throw WorkerFailure.invalid("Cannot configure worker input") }
@@ -23,13 +31,7 @@ final class WorkerPipes: @unchecked Sendable {
     }
 
     func check() throws {
-        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw WorkerFailure.invalid("Worker absolute lifetime expired") }
-    }
-
-    func requireNoEarlyInput() throws {
-        var value = pollfd(fd: input, events: Int16(POLLIN), revents: 0)
-        let count = poll(&value, 1, 0)
-        guard count == 0 else { throw WorkerFailure.invalid("Input or EOF arrived before worker readiness") }
+        guard DispatchTime.now().uptimeNanoseconds < lease.uptimeNanoseconds else { throw WorkerFailure.invalid("Worker rank lease expired") }
     }
 
     /// nil is a poll tick; empty Data is actual EOF.
@@ -43,14 +45,13 @@ final class WorkerPipes: @unchecked Sendable {
         var bytes = [UInt8](repeating: 0, count: ClusterWorkerLineDecoder.readChunkBytes)
         let received = bytes.withUnsafeMutableBytes { Darwin.read(input, $0.baseAddress, $0.count) }
         if received < 0 && [EINTR, EAGAIN, EWOULDBLOCK].contains(errno) { return nil }
-        guard received >= 0, received <= Self.maximumInputBytes - inputBytes else { throw WorkerFailure.invalid("Worker input failed or exceeded total byte bound") }
-        inputBytes += received
+        guard received >= 0 else { throw WorkerFailure.invalid("Worker input failed") }
         return Data(bytes.prefix(received))
     }
 
     func write(_ data: Data, requestDeadline: UInt64? = nil) throws {
-        guard data.count <= ClusterWorkerLimits.eventBytes, data.count <= Self.maximumOutputBytes - outputBytes else {
-            throw WorkerFailure.invalid("Worker output exceeded bounded event/total bytes")
+        guard data.count <= ClusterWorkerLimits.eventBytes else {
+            throw WorkerFailure.invalid("Worker output exceeded the bounded event size")
         }
         try data.withUnsafeBytes { bytes in
             var offset = 0
@@ -69,7 +70,6 @@ final class WorkerPipes: @unchecked Sendable {
                 guard ready >= 0, value.revents & Int16(POLLNVAL | POLLERR | POLLHUP) == 0 else { throw WorkerFailure.invalid("Worker output poll failed") }
             }
         }
-        outputBytes += data.count
     }
 
     deinit {

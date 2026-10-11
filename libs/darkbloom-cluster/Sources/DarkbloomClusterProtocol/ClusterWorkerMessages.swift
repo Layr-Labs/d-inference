@@ -16,7 +16,48 @@ public enum ClusterWorkerLimits {
     public static let vocabularySize = 262_144
     public static let deadlineNanoseconds: UInt64 = 3_600_000_000_000
     public static let capacityBytes = 1 << 50
-    public static let requestsPerEpoch = 4096
+    /// How many recent request IDs a session remembers in order to refuse a
+    /// replayed one. A window, never a cap: a session serves any number of
+    /// requests for as long as its owner keeps it.
+    public static let requestReplayWindow = 4096
+    /// Keep-warm ordinals are positive and below this.
+    public static let keepWarmOrdinals = Int(Int32.max)
+}
+
+/// The rank lease between a worker's owner and the worker (S03). A worker has
+/// no fixed lifetime: it is armed at launch, before any weights load, with a
+/// deadline at most `maximumNanoseconds` away, and its owner renews it every
+/// `renewNanoseconds` with an `extendDeadline` line that moves the deadline to
+/// `ttlNanoseconds` after the line arrives. An owner that stops renewing (it
+/// stopped, died, or lost its link) leaves the worker to end by itself within
+/// the time to live, through the process's one forced exit, which releases
+/// MLX's wired memory first. Renewals travel on the worker's control pipe,
+/// never on the data plane.
+public enum ClusterWorkerLease {
+    public static let renewNanoseconds: UInt64 = 5_000_000_000
+    public static let ttlNanoseconds: UInt64 = 30_000_000_000
+    /// The longest a launch deadline or one renewal may grant.
+    public static let maximumNanoseconds: UInt64 = 120_000_000_000
+}
+
+/// One renewal of the rank lease: the deadline moves to `ttlNanoseconds` after
+/// the worker reads it. `renewal` counts up from 1 and is for the log only.
+public struct ClusterWorkerLeaseRenewal: Equatable, Sendable {
+    public let membershipEpoch: UUID
+    public let renewal: UInt64
+    public let ttlNanoseconds: UInt64
+    public init(membershipEpoch: UUID, renewal: UInt64, ttlNanoseconds: UInt64 = ClusterWorkerLease.ttlNanoseconds) throws {
+        try workerRequire(renewal > 0 && renewal < UInt64(Int64.max)
+            && (1...ClusterWorkerLease.maximumNanoseconds).contains(ttlNanoseconds), "Invalid lease renewal")
+        self.membershipEpoch = membershipEpoch; self.renewal = renewal; self.ttlNanoseconds = ttlNanoseconds
+    }
+}
+
+/// A line on the worker's control pipe: a sequenced request command, or a
+/// rank-lease renewal, which is outside the request sequence.
+public enum ClusterWorkerControlLine: Equatable, Sendable {
+    case command(ClusterWorkerCommandFrame)
+    case extendDeadline(ClusterWorkerLeaseRenewal)
 }
 
 public struct ClusterWorkerPeer: Equatable, Sendable {
@@ -101,6 +142,10 @@ public enum ClusterWorkerCommand: Equatable, Sendable {
     case tokenDecision(ordinal: Int, decision: ClusterWorkerTokenDecision)
     case cancel(ClusterWorkerCancellationReason)
     case shutdown
+    /// Keep-warm tier 2: while idle, exchange one 1x16 record with the peer on
+    /// the data plane so its queue pairs stay awake. The owner sequences it to
+    /// both ranks; never while a request is reserved or running.
+    case keepWarm(ordinal: Int)
 }
 
 public enum ClusterWorkerEvent: Equatable, Sendable {
@@ -114,6 +159,8 @@ public enum ClusterWorkerEvent: Equatable, Sendable {
     case retired(ClusterWorkerRetirement)
     case unavailable(ClusterWorkerCancellationReason)
     case shutdownComplete
+    /// The keep-warm exchange of that ordinal completed in `microseconds`.
+    case keptWarm(ordinal: Int, microseconds: Int)
 }
 
 public struct ClusterWorkerCommandFrame: Equatable, Sendable {

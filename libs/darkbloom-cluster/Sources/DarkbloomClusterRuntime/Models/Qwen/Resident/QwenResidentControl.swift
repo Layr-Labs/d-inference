@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Only cancellation/readiness state crosses the worker's control thread.
@@ -7,16 +8,24 @@ final class QwenResidentControl: @unchecked Sendable {
     private let lock = NSLock()
     private var phase = Phase.loading
     private var cancelled = false
+    /// Recent request IDs, to refuse a replay: a window, never a request count.
     private var used = Set<UUID>()
-    let deadline: UInt64
+    private var usedOrder: [UUID] = []
+    private let fixedDeadline: UInt64
+    private let lease: ClusterLeaseDeadline?
+    /// The process's deadline now: the rank lease's when leased. A leased
+    /// owner has no fixed lifetime and no request limit.
+    var deadline: UInt64 { lease?.uptimeNanoseconds ?? fixedDeadline }
 
-    init(deadline: UInt64) { self.deadline = deadline }
-    var available: Bool { locked { if case .idle = phase { return !cancelled && used.count < QwenResidentAdmission.maximumRequests }; return false } }
+    init(deadline: UInt64, lease: ClusterLeaseDeadline? = nil) { fixedDeadline = deadline; self.lease = lease }
+    var available: Bool { locked { if case .idle = phase { return !cancelled }; return false } }
     func loaded() throws { try locked { guard case .loading = phase, !cancelled else { throw ProbeError("Resident load invalidated") }; phase = .idle } }
     func reserve(_ id: UUID) throws {
         try locked {
-            guard case .idle = phase, !cancelled, used.count < QwenResidentAdmission.maximumRequests,
-                  used.insert(id).inserted else { throw ProbeError("Resident owner busy, unavailable or request UUID reused") }
+            guard case .idle = phase, !cancelled, used.insert(id).inserted else {
+                throw ProbeError("Resident owner busy, unavailable or request UUID reused") }
+            usedOrder.append(id)
+            if usedOrder.count > ClusterWorkerLimits.requestReplayWindow { used.remove(usedOrder.removeFirst()) }
             phase = .reserved(id)
         }
     }

@@ -42,8 +42,6 @@ public enum QwenResidentCapabilityMetadata {
             profileFingerprint: profile.fingerprint, partitions: partitions,
             arithmeticPolicyID: definition.arithmetic.contract,
             arithmeticPolicySHA256: sha256(try canonicalJSONData(arithmetic)),
-            maxLifetimeSeconds: Int(QwenResidentAdapterDefinition.maximumLifetimeNanoseconds / 1_000_000_000),
-            maxRequests: QwenResidentAdapterDefinition.maximumRequests,
             supportedPrefillSchedules: definition.supportedPrefillSchedules,
             supportedGenerationModes: definition.supportedGenerationModes)
     }

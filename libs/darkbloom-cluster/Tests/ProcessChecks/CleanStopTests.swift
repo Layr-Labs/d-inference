@@ -28,7 +28,7 @@ private struct Pair: Sendable {
         workers = try (0..<2).map { rank in
             try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), behaviors[rank]], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: startup, lifetimeDeadline: lifetime)
+                startupDeadline: startup, initialLeaseDeadline: lifetime)
         }
         do {
             for worker in workers { try worker.launch() }

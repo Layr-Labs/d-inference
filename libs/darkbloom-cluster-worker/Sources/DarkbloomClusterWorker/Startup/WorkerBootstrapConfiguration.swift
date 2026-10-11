@@ -8,6 +8,8 @@ struct WorkerBootstrapConfiguration {
     let ownerProcessID: Int32
     let deadlineUptimeNanoseconds: UInt64
 
+    /// `lifetime` bounds how far away the bootstrap deadline may be. A worker
+    /// has no fixed lifetime; its rank lease is renewed during the bootstrap.
     static func parse(_ fields: [String: String], now: UInt64, lifetime: UInt64) throws -> Self? {
         let supplied = names.filter { fields[$0] != nil }
         if supplied.isEmpty { return nil } // Legacy experimental native TCP bootstrap.
@@ -17,7 +19,7 @@ struct WorkerBootstrapConfiguration {
               pid > 1, String(pid) == pidText,
               let deadlineText = fields["--bootstrap-deadline-uptime-nanoseconds"],
               let deadline = UInt64(deadlineText), String(deadline) == deadlineText,
-              deadline > now, deadline <= lifetime else {
+              deadline > now, deadline - now <= lifetime else {
             throw WorkerFailure.invalid("Bootstrap requires the complete bounded local attachment")
         }
         return .init(path: path, ownerProcessID: pid, deadlineUptimeNanoseconds: deadline)

@@ -82,19 +82,17 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         public let additionalArithmeticEnvironment: [String: String]
         /// The model's own vocabulary: no prompt or stop ID may reach it.
         public let vocabularySize: Int
-        /// The longest lifetime one worker session of this model may be given.
-        public let maximumLifetimeSeconds: Int
         /// Only the dense adapter has a recording runtime (`--evidence final-row`).
         public let hasRecordingRuntime: Bool
 
         public init(modelID: String, profileID: String, supportedCuts: [Int],
                     additionalArithmeticEnvironment: [String: String] = [:],
                     vocabularySize: Int = QualificationRequest.vocabularySize,
-                    maximumLifetimeSeconds: Int = 300, hasRecordingRuntime: Bool = true) {
+                    hasRecordingRuntime: Bool = true) {
             self.modelID = modelID; self.profileID = profileID; self.supportedCuts = supportedCuts
             self.additionalArithmeticEnvironment = additionalArithmeticEnvironment
             self.vocabularySize = vocabularySize
-            self.maximumLifetimeSeconds = maximumLifetimeSeconds; self.hasRecordingRuntime = hasRecordingRuntime
+            self.hasRecordingRuntime = hasRecordingRuntime
         }
     }
     /// The three catalog entries of Gemma 4 26B share one geometry, cut list
@@ -125,10 +123,10 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         .init(modelID: "registered_gpt_oss_20b", profileID: "registered_gpt_oss_20b_greedy_generation_v1",
               supportedCuts: [6, 8, 10, 12]),
         // MiMo V2.6 Flash: each rank hashes 173 GB and reads up to 110 GB
-        // before it is ready, so its session bound is its own.
+        // before it is ready; its launcher gives it a longer startup timeout.
         .init(modelID: "registered_mimo_v26_flash_mopd",
               profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
-              supportedCuts: [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44], maximumLifetimeSeconds: 1800,
+              supportedCuts: [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44],
               hasRecordingRuntime: false),
         gemma4("registered_gemma4_26b_qat_4bit"), gemma4("registered_gemma4_26b"), gemma4("registered_gemma4_26b_8bit"),
     ]
@@ -143,8 +141,6 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         PairConfiguration.arithmeticEnvironment
             + (Self.registeredModel(modelID)?.additionalArithmeticEnvironment ?? [:]).sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
-    /// The session bound of the model this request names.
-    public var maximumLifetimeSeconds: Int { Self.registeredModel(modelID)?.maximumLifetimeSeconds ?? 300 }
 
     public var schema: String
     public var requestID: String

@@ -140,7 +140,7 @@ private func copy(_ name: String, into directory: URL) throws -> String {
             let now = DispatchTime.now().uptimeNanoseconds
             return try ClusterWorkerProcess(launch: .init(executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: [], environment: [:]),
                 expectedIdentity: fixtureIdentity, rank: 0, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
-                startupDeadline: now + 10 * s, lifetimeDeadline: now + 20 * s, retirement: policy)
+                startupDeadline: now + 10 * s, initialLeaseDeadline: now + 20 * s, retirement: policy)
         }
         _ = try process(P.sized(plannedBytes: 400 * gib))
         let beyond = P(terminateMarginNanoseconds: 5 * s, killMarginNanoseconds: 121 * s, reapMarginNanoseconds: 5 * s)

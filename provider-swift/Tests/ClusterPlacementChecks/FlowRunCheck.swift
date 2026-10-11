@@ -57,7 +57,7 @@ import Foundation
             profile: .init(id: "registered_qwen35_9b_greedy_generation_v1", vocabularySize: 248320, maximumPromptTokens: 8192,
                 maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320),
             profileFingerprint: hash("e"), partitions: [partition(4, "6"), partition(8, "7"), partition(12, "8"), partition(16, "9")],
-            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"), maxLifetimeSeconds: 300, maxRequests: 16)
+            arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1", arithmeticPolicySHA256: hash("5"))
         let capabilityData = try ClusterRuntimeCapabilityCodec.encode(capability)
         let capabilityURL = try write("capability.json", capabilityData)
         let capabilityHash = ClusterConfigurationCodec.sha256(capabilityData)

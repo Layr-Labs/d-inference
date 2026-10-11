@@ -13,11 +13,28 @@ public struct ClusterMembership: Codable, Sendable, Equatable {
     public let rank: Int
     /// Lowercase hex SHA-256 of the installed canonical coordinator policy.
     public let policySHA256: String
+    /// The session this member's previous connection belonged to, claimed on
+    /// a new connection while that session is in its disconnect grace. A
+    /// claim only: the coordinator verifies the member's attested identity.
+    public var resume: Resume?
+
+    public struct Resume: Codable, Sendable, Equatable {
+        /// The session's epoch, 32 lowercase hex, and membership generation.
+        public let epoch: String
+        public let generation: UInt64
+        public init(epoch: String, generation: UInt64) { self.epoch = epoch; self.generation = generation }
+    }
 
     enum CodingKeys: String, CodingKey {
         case clusterID = "cluster_id"
         case rank
         case policySHA256 = "policy_sha256"
+        case resume
+    }
+
+    /// This membership with a resume claim, or as it is without one.
+    public func resuming(_ claim: Resume?) -> ClusterMembership {
+        var value = self; value.resume = claim; return value
     }
 
     public init(clusterID: String, rank: Int, policySHA256: String) throws {
@@ -36,5 +53,6 @@ public struct ClusterMembership: Codable, Sendable, Equatable {
             clusterID: container.decode(String.self, forKey: .clusterID),
             rank: container.decode(Int.self, forKey: .rank),
             policySHA256: container.decode(String.self, forKey: .policySHA256))
+        resume = try container.decodeIfPresent(Resume.self, forKey: .resume)
     }
 }

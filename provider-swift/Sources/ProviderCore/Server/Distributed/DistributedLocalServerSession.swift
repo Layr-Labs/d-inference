@@ -10,9 +10,7 @@ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
     var status: DistributedInstalledSessionStatus { get }
     var httpAdmissionAvailable: Bool { get }
     var httpSessionInvalid: Bool { get }
-    var httpSessionExhausted: Bool { get }
     var httpCanRotate: Bool { get }
-    var lifetimeDeadlineUptimeNanoseconds: UInt64? { get }
     func validateModelInputs() throws
     func start() async throws
     func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus
@@ -29,14 +27,10 @@ extension DistributedInstalledSession: DistributedLocalServerSession {
     var httpCanRotate: Bool { canRotate }
     var httpAdmissionAvailable: Bool { status == .ready && admissionState?.canAdmit() == true }
     var httpSessionInvalid: Bool { admissionState?.isValid == false }
-    var httpSessionExhausted: Bool {
-        guard let state = admissionState else { return false }
-        return state.isValid && state.admissionsRemaining == 0 && !state.hasActiveRequest
-    }
 }
 
 public enum DistributedLocalServerPhase: String, Sendable {
-    case prepared, starting, serving, rotating, draining, stopping, quarantined, stopped
+    case prepared, starting, serving, draining, stopping, quarantined, stopped
 }
 
 public struct DistributedLocalServerStatus: Sendable {
@@ -51,6 +45,6 @@ public struct DistributedLocalServerStatus: Sendable {
 }
 
 public enum DistributedLocalServerError: Error, Sendable {
-    case alreadyStarted, startupInterrupted, bindFailed, bindTimedOut, lifetimeExpired
-    case replacementIdentityChanged, replacementNotPrepared, replacementNotReleased
+    case alreadyStarted, startupInterrupted, bindFailed, bindTimedOut
+    case replacementIdentityChanged
 }

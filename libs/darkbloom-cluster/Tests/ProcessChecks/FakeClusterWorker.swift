@@ -9,6 +9,7 @@ import DarkbloomClusterBootstrap
         guard [3, 9].contains(CommandLine.arguments.count), let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
         let behavior = CommandLine.arguments[2]
         // A stand-in's own hard deadline: no check, passing or failing, leaves one behind.
+        // Like a real worker's lease, each renewal from its owner pushes it out again.
         alarm(60)
         if behavior.hasPrefix("bootstrap") {
             guard CommandLine.arguments.count == 9, CommandLine.arguments[3] == "--bootstrap-socket-path",
@@ -30,7 +31,7 @@ import DarkbloomClusterBootstrap
         var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
         func emit(_ event: ClusterWorkerEvent) throws {
             let id: UUID?
-            switch event { case .ready, .unavailable, .shutdownComplete: id = nil; default: id = requestID }
+            switch event { case .ready, .unavailable, .shutdownComplete, .keptWarm: id = nil; default: id = requestID }
             let frame = ClusterWorkerEventFrame(membershipEpoch: fixtureIdentity.membershipEpoch, sequence: sequence, requestID: id, event: event)
             try session.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
             try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(frame)); sequence += 1
@@ -54,7 +55,7 @@ import DarkbloomClusterBootstrap
             if count < 0 { if errno == EINTR { continue }; exit(74) }
             let bytes = Data(buffer.prefix(count))
             for line in try decoder.append(bytes) {
-                let command = try ClusterWorkerCodec.decodeCommand(line)
+                guard case .command(let command) = try ClusterWorkerCodec.decodeControl(line) else { alarm(60); continue } // a rank-lease renewal
                 try session.accept(command, now: DispatchTime.now().uptimeNanoseconds)
                 switch command.command {
                 case .reserve(let value):
@@ -104,6 +105,8 @@ import DarkbloomClusterBootstrap
                 case .cancel:
                     if behavior == "hang" || behavior == "stall" { continue }
                     try emit(.retired(.cancelled))
+                case .keepWarm(let ordinal):
+                    try emit(.keptWarm(ordinal: ordinal, microseconds: 1))
                 case .shutdown:
                     // "slow-shutdown": releasing takes half a second. Status 21
                     // reports that the command stream was closed before the

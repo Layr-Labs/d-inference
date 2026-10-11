@@ -48,7 +48,7 @@ final class RecordingServingHost: NativePairMemberServingHost, @unchecked Sendab
 /// coordinator: the session hands its launched owner to the serving host and
 /// sends its release receipt only after the host retired what it served.
 /// Control flow and ownership only, never a pair, mesh or model.
-@Suite("Owned native member serving a committed start", .serialized, .timeLimit(.minutes(2)))
+@Suite("Owned native member serving a committed start", .serialized, .timeLimit(.minutes(3)))
 struct NativePairMemberServingTests {
     @Test func bothMembersHandTheirOwnerToTheHostAndReleaseOnlyAfterItRetired() async throws {
         let fixture = try NativePairMemberFixture()
@@ -159,10 +159,16 @@ struct NativePairMemberServingTests {
             _ = try await peer.wait("native_pair_prepared")
             try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
             _ = try await peer.wait("native_pair_cancel")
-            await withKnownIssue("an early cancel can quarantine the member", isIntermittent: true) {
-                _ = try await peer.wait("native_pair_owner_released")
+            // Longer than the ordinary 8 s wait: tells a slow cleanup from a
+            // member that never releases.
+            let began = ContinuousClock.now
+            while ContinuousClock.now - began < .seconds(45),
+                  !peer.mock.snapshot().nativePairs.contains(where: { $0.type == "native_pair_owner_released" }) {
+                try await Task.sleep(for: .milliseconds(50))
             }
-            print("s09-probe: control \(peer.control.status), frames \(peer.mock.snapshot().nativePairs.map(\.type))")
+            let released = peer.mock.snapshot().nativePairs.contains { $0.type == "native_pair_owner_released" }
+            print("s09-probe: released \(released) after \(ContinuousClock.now - began), control \(peer.control.status), frames \(peer.mock.snapshot().nativePairs.map(\.type))")
+            withKnownIssue("an early cancel can quarantine the member", isIntermittent: true) { #expect(released) }
             await peer.close()
         } catch { await peer.close(); throw error }
     }

@@ -113,10 +113,11 @@ import DarkbloomClusterSecurity
                     if behavior == "delayed-exit" { usleep(250_000); exit(7) }
                     if behavior == "partial" { try FileHandle.standardOutput.write(contentsOf: Data("{\"kind\":".utf8)); exit(0) }
                     if behavior == "stderr" { try FileHandle.standardError.write(contentsOf: Data(repeating: 120, count: 1_100_000)); continue }
-                    // "chatty": more than 1 MiB of diagnostics, written slowly (as a long
-                    // session's per-request lines are), then a normal request.
+                    // "chatty": more than 1 MiB of diagnostics in all (1.125 MiB), written
+                    // slowly as a long session's per-request lines are (about 0.8 MiB per
+                    // 10 s, under the owner's flood bound), then a normal request.
                     if behavior == "chatty" {
-                        for _ in 0..<40 { try FileHandle.standardError.write(contentsOf: Data(repeating: 121, count: 32_768)); usleep(300_000) }
+                        for _ in 0..<48 { try FileHandle.standardError.write(contentsOf: Data(repeating: 121, count: 24_576)); usleep(300_000) }
                     }
                     if rank == 1 {
                         if behavior == "telemetry" {

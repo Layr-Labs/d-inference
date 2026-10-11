@@ -142,6 +142,7 @@ private struct Harness: Sendable {
         defer { for worker in c.workers { worker.fence() } }
         let lease = try c.pair.reserve(requestID: UUID(), reservation: c.reservation(seconds: 30))
         let captured = Captured(); try lease.start { captured.append($0); return true }
+        try progress("telemetryAndDiagnostics:chatty")
         try await c.awaitRetirement(lease, seconds: 25); lease.releaseResources()
         try require(captured.clean && c.pair.readiness != nil, "Slow diagnostics past 1 MiB do not fail the worker")
         try require(c.workers[0].diagnosticBytesTotal > 1_048_576 && c.workers[0].diagnosticTail.count <= 65_536,

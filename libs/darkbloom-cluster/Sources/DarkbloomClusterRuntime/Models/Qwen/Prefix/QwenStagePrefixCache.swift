@@ -81,8 +81,10 @@ struct QwenStagePrefixCaptureCost: Equatable {
 /// once, freed with the prompt's last entry. Entries are inserted only after
 /// a request retired cleanly on both ranks; a request's own capture is
 /// charged in its reservation (`captureLimit`) and kept within it by the
-/// stage session. A sweep drops every entry; the runtime sweeps before it
-/// releases its model and after a failed request.
+/// stage session. Neither ever fails a request for memory: kept entries give
+/// way first (`yieldingMemory`), then the request's own capture
+/// (`withdrawCapture`). A sweep drops every entry; the runtime sweeps before
+/// it releases its model and after a failed request.
 public final class QwenStagePrefixCache: @unchecked Sendable {
     /// One entry is one frontier of one prompt: its recurrent state (about
     /// 110 MB on the 27B's larger stage, compact) and a view of its prompt's
@@ -176,8 +178,48 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// handed to that request's stage session once (one request at a time a
     /// rank). Nil when no reservation set one (unbounded: references, tests).
     private var admittedCapture: Int?
-    func admitCapture(_ bytes: Int?) { lock.withLock { admittedCapture = bytes } }
+    /// A new reservation starts with its capture in place.
+    func admitCapture(_ bytes: Int?) {
+        lock.withLock { admittedCapture = bytes; captureHook = nil; captureWithdrawn = false }
+    }
     func takeAdmittedCapture() -> Int? { lock.withLock { defer { admittedCapture = nil }; return admittedCapture } }
+
+    /// The running request's capture, as its stage session holds it: `withdraw`
+    /// releases what it captured and stops any further capture (set by the
+    /// driver once the session's capture plan is set, cleared at its end).
+    private var captureHook: (() -> Void)?
+    private var captureWithdrawn = false
+    private(set) var captureWithdrawals = 0
+
+    /// Registers the running request's capture. If the running check already
+    /// withdrew it, `withdraw` runs at once.
+    func beginCapture(withdraw: @escaping () -> Void) {
+        let already = lock.withLock { () -> Bool in
+            if captureWithdrawn { return true }
+            captureHook = withdraw; return false
+        }
+        if already { withdraw() }
+    }
+
+    func endCapture() { lock.withLock { captureHook = nil } }
+
+    /// Whether the running request's capture was withdrawn.
+    var captureWasWithdrawn: Bool { lock.withLock { captureWithdrawn } }
+
+    /// The running check's step before it would fail its request for memory:
+    /// the request's own capture is optional, so it is withdrawn (released,
+    /// nothing more captured, nothing stored for this request) and the request
+    /// goes on charged without it. Applies before the capture starts too: a
+    /// capture not yet handed to the session is handed over as zero.
+    func withdrawCapture() {
+        let hook = lock.withLock { () -> (() -> Void)? in
+            if admittedCapture != nil { admittedCapture = 0 }
+            captureWithdrawn = true; captureWithdrawals += 1
+            defer { captureHook = nil }
+            return captureHook
+        }
+        hook?()
+    }
 
     /// Before a request captures up to `bytes`: evicts least recently used
     /// entries until the entries and that capture fit the budget together.

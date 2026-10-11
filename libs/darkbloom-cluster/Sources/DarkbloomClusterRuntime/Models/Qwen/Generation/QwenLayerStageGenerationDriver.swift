@@ -162,6 +162,18 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                         + " frontier=\(reused)")
                 }
             }
+            if let prefixCache, prefixCache.enabled, let owned = session {
+                // The running check may withdraw this capture when memory runs
+                // short (`QwenStagePrefixCache.withdrawCapture`): the session lets
+                // go of its frontiers and the head of its history, and the
+                // request goes on. The head keeps a history only for a prompt
+                // the session keeps.
+                decoder?.historyWanted = { [weak owned] in owned?.keepsPrefixCapture ?? false }
+                prefixCache.beginCapture { [weak owned, weak decoder] in
+                    owned?.withdrawPrefixCapture(); decoder?.dropKeptHistory()
+                }
+            }
+            defer { prefixCache?.endCapture() }
             diagnostics?.request = agreement.request
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
@@ -311,7 +323,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     log("darkbloom-prefix-v1 rank=\(collective.rank) held_bytes=\(prefixCache.bytesInUse)"
                         + " budget_bytes=\(prefixCache.budgetBytes) capture_limit=\(captureLimit.map(String.init) ?? "none")"
                         + " captured_shared=\(owned.capturedSharedBytes + historyBytes)"
-                        + " captured_own=\(states.reduce(0) { $0 + $1.ownBytes })")
+                        + " captured_own=\(states.reduce(0) { $0 + $1.ownBytes })"
+                        + " capture_withdrawn=\(owned.prefixCaptureWithdrawn)")
                 }
                 owned.discardCapturedPrefix()
                 let prefixSummary = QwenStagePrefixSummary(reusedPromptTokens: prefix.reusedPromptTokens,

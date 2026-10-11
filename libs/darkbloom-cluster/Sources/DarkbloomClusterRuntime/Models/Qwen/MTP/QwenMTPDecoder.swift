@@ -49,6 +49,10 @@ final class QwenMTPDecoder {
     var keptHistoryBytes: Int { keptHistory.map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes } ?? 0 }
     /// Whether `begin` keeps the history (the prefix cache stores this prompt).
     var keepsHistory = false
+    /// Asked at `begin` as well: whether this request's stage session still
+    /// keeps the prompt (its capture fit its limit and was not withdrawn), so
+    /// no history is held that no entry will use.
+    var historyWanted: (() -> Bool)?
     /// Prompt positions restored from a prefix entry's history (0: none).
     private(set) var adoptedHistoryTokens = 0
     private let stopTokens: Set<Int>
@@ -92,7 +96,7 @@ final class QwenMTPDecoder {
         guard !released, carry == nil, let promptFrontier else {
             throw ProbeError("Speculative head starts without a complete observed prompt")
         }
-        if keepsHistory, request.promptCount >= 2,
+        if keepsHistory, historyWanted?() ?? true, request.promptCount >= 2,
            let checkpoint = head.assistant.capturePrefixCheckpoint(requestState: state,
                targetInputCount: request.promptCount),
            let arrays = head.assistant.encodePrefixCheckpoint(checkpoint), arrays.count == 3 {
@@ -238,6 +242,10 @@ final class QwenMTPDecoder {
         statistics.emittedTokens += 1
         return Emitted(tokens: [token], payloadSHA256: [produced.payloadSHA256], logits: row, round: false)
     }
+
+    /// The running check withdrew this request's prefix capture: the kept
+    /// history goes with it, and `begin` keeps none. Drafts never depend on it.
+    func dropKeptHistory() { keepsHistory = false; keptHistory = nil }
 
     /// Releases the head's request state. Idempotent.
     func release() {

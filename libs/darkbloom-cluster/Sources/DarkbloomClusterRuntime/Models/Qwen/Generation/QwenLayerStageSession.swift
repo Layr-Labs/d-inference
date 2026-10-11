@@ -59,6 +59,9 @@ final class QwenLayerStageSession {
     /// Measured at the first capture frontier; decides what is kept.
     private(set) var prefixCaptureCost: QwenStagePrefixCaptureCost?
     private var prefixKept: Set<Int>?
+    /// Set when the running check withdrew this request's capture
+    /// (`withdrawPrefixCapture`): nothing more is captured or kept.
+    private(set) var prefixCaptureWithdrawn = false
     /// Recurrent state captured at each frontier, keyed by global layer.
     private var capturedRecurrent: [Int: [Int: (conv: MLXArray, ssm: MLXArray)]] = [:]
     /// Attention state captured once, at the deepest frontier; shallower
@@ -404,6 +407,7 @@ final class QwenLayerStageSession {
         guard frontier == state.committedTokens, frontier < request.promptCount else {
             throw ProbeError("Prefix capture differs from the committed prompt frontier")
         }
+        guard !prefixCaptureWithdrawn else { return }
         let global = Dictionary(uniqueKeysWithValues: descriptor.layers.map { ($0.localIndex, $0.globalIndex) })
         let confirmed = state.geometry.recurrent.layers.isEmpty ? [:] : (state.recurrent.confirmedStateSnapshot() ?? [:])
         var recurrent: [Int: (conv: MLXArray, ssm: MLXArray)] = [:]
@@ -469,6 +473,20 @@ final class QwenLayerStageSession {
     }
 
     func discardCapturedPrefix() { capturedRecurrent.removeAll(); capturedAttention = nil; prefixKept = nil }
+
+    /// The running check withdrew this request's capture to keep the request
+    /// going: what was captured is let go now (its storage returns once the
+    /// last reference goes), and no later frontier is captured. Exactness is
+    /// untouched: captures are copies or immutable confirmed states, and the
+    /// frames do not depend on them.
+    func withdrawPrefixCapture() {
+        prefixCaptureWithdrawn = true
+        capturedRecurrent.removeAll(); capturedAttention = nil
+    }
+
+    /// Whether this request keeps its prompt for the cache: its deepest
+    /// frontier was captured within its limit and not withdrawn.
+    var keepsPrefixCapture: Bool { !prefixCaptureWithdrawn && capturedAttention != nil }
 
     func snapshot(includeBytes: Bool = false, check: () throws -> Void) throws -> CBv2OwnedStateSnapshot {
         do {

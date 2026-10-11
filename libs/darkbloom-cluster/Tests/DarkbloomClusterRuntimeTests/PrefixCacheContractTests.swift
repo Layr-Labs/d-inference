@@ -219,6 +219,61 @@ struct PrefixCacheContractTests {
         #expect(cache.takeAdmittedCapture() == 123 && cache.takeAdmittedCapture() == nil)
     }
 
+    @Test func theRunningCheckWithdrawsTheCaptureBeforeItWouldFailTheRequest() throws {
+        // Withdrawn before the session took it: handed over as zero, and a
+        // later registration lets go at once.
+        let cache = QwenStagePrefixCache()
+        cache.admitCapture(4_000)
+        cache.withdrawCapture()
+        #expect(cache.takeAdmittedCapture() == 0 && cache.captureWasWithdrawn)
+        var released = 0
+        cache.beginCapture { released += 1 }
+        #expect(released == 1)
+        cache.endCapture()
+        // The next reservation starts with its capture in place; a withdrawal
+        // while the session captures runs its hook once.
+        cache.admitCapture(4_000)
+        #expect(!cache.captureWasWithdrawn && cache.takeAdmittedCapture() == 4_000)
+        cache.beginCapture { released += 1 }
+        #expect(released == 1)
+        cache.withdrawCapture(); cache.withdrawCapture()
+        #expect(released == 2 && cache.captureWasWithdrawn && cache.captureWithdrawals == 3)
+        cache.endCapture()
+
+        // The running check: kept entries give way first; with them gone the
+        // capture is withdrawn and the request is checked again without it.
+        let pressured = QwenStagePrefixCache()
+        pressured.insert(scope: "s", tokens: Array(0..<10), states: [state(3), state(5)])
+        pressured.admitCapture(1_000)
+        _ = pressured.takeAdmittedCapture()
+        var withdrawn = false
+        pressured.beginCapture { withdrawn = true }
+        var asked: [Int] = []
+        let charge = try QwenResidentRequestExecution.checkRunning(captureBytes: 1_000, prefixCache: pressured,
+            rank: 1, live: { capture in
+                asked.append(capture)
+                if capture > 0 { throw ProbeError("needs memory") }
+            })
+        #expect(charge == 0 && withdrawn && pressured.count == 0)
+        #expect(asked == [1_000, 1_000, 1_000, 0])
+        // From then on it is checked without the capture.
+        let next = try QwenResidentRequestExecution.checkRunning(captureBytes: charge, prefixCache: pressured,
+            rank: 1, live: { capture in asked.append(capture) })
+        #expect(next == 0 && asked.last == 0)
+        // A refusal with neither entries nor a capture left fails the request.
+        #expect(throws: ProbeError.self) {
+            _ = try QwenResidentRequestExecution.checkRunning(captureBytes: 0, prefixCache: pressured, rank: 1,
+                live: { _ in throw ProbeError("needs memory") })
+        }
+        // A request that fits keeps its capture, and the entries stay.
+        let roomy = QwenStagePrefixCache()
+        roomy.insert(scope: "s", tokens: Array(0..<10), states: [state(3)])
+        roomy.admitCapture(1_000)
+        let kept = try QwenResidentRequestExecution.checkRunning(captureBytes: 1_000, prefixCache: roomy, rank: 1,
+            live: { _ in })
+        #expect(kept == 1_000 && roomy.count == 1 && !roomy.captureWasWithdrawn)
+    }
+
     @Test func aCaptureKeepsTheSplitFrontierFirstThenTheDeepestGridFrontiersThatFit() {
         let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: 10, recurrentBytesPerFrontier: 100,
             historyBytesPerToken: 0)

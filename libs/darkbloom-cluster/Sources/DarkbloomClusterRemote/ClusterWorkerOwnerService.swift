@@ -44,7 +44,7 @@ public enum ClusterWorkerOwnerService {
     public static func serveConfigured(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
                              bootstrapProfile: ClusterOwnerBootstrapProfile?,
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
-                             binding: BindingFactory, native: @escaping AttachedNativeFactory) throws {
+                             binding: BindingFactory, native: AttachedNativeFactory) throws {
         try serveKeyed(input: input, output: output, clusterID: clusterID, leaseDirectory: leaseDirectory,
             bootstrapProfile: bootstrapProfile, authorizeNativeStart: authorizeNativeStart, binding: binding,
             native: { binding, deadline, attachment, trust in

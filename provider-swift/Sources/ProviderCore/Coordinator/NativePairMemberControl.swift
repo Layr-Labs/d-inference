@@ -75,15 +75,24 @@ final class NativePairMemberControl: @unchecked Sendable {
                             self?.finished(old, reusable: reusable)
                         }
                     session = value; start = value
+                } else if message.type == "native_pair_cancel" {
+                    // A cancel only stops. It names its session by epoch,
+                    // generation and preparation time and is honoured whatever
+                    // grant expiry it repeats: the coordinator sends a cancel
+                    // with the session's first grant even after renewals moved
+                    // it, and a strict check turned that cancel into a dropped
+                    // control connection (no receipt, a quarantined session, the
+                    // member refused on its next registration; hardware pub4).
+                    // A cancel for a session that already ended is ignored.
+                    guard Data(base64Encoded: message.payload) == Data([68, 66, 78, 67, 1]) else { throw NativePairMemberError.binding }
+                    if let current = session, message.epoch == current.epoch, message.generation == current.generation,
+                       message.prepareBeforeUnixNano == current.prepareUnixNanoseconds { cancel = current }
                 } else {
                     guard let current = session, message.epoch == current.epoch,
                           message.generation == current.generation,
                           message.prepareBeforeUnixNano == current.prepareUnixNanoseconds,
                           message.type == "native_pair_lease" || message.expiresAtUnixNano == current.expiresUnixNanoseconds else { throw NativePairMemberError.binding }
-                    if message.type == "native_pair_cancel" {
-                        guard Data(base64Encoded: message.payload) == Data([68, 66, 78, 67, 1]) else { throw NativePairMemberError.binding }
-                        cancel = current
-                    } else { try current.accept(message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds) }
+                    try current.accept(message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds)
                 }
             }
             cancel?.cancel(notify: false); start?.run()

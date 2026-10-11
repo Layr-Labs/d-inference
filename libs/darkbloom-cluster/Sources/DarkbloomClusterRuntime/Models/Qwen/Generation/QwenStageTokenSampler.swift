@@ -26,10 +26,8 @@ import MLXLMCommon
 /// token per step.
 ///
 /// One instance per request, used only by the native executor that selects.
-final class QwenStageTokenSampler: Equatable {
+final class QwenStageTokenSampler {
     let wire: ClusterWorkerSampling
-    /// Every value of `wire`, for the request fingerprint both ranks agree on.
-    let fingerprint: String
     private let parameters: CBv2SamplingParams
     private let stream: CBv2RequestID
     private let promptTokens: [Int]
@@ -38,9 +36,9 @@ final class QwenStageTokenSampler: Equatable {
     /// history and the next output index.
     private(set) var selected: [Int] = []
 
-    init(_ wire: ClusterWorkerSampling, promptTokens: [Int]) throws {
-        guard !wire.isGreedyNoOp else { throw ProbeError("Greedy text needs no sampler") }
-        self.wire = wire; self.promptTokens = promptTokens
+    init(_ state: QwenStageSamplingState) {
+        let wire = state.wire
+        self.wire = wire; promptTokens = state.promptTokens
         parameters = CBv2SamplingParams(temperature: wire.temperature, topP: wire.topP, topK: wire.topK,
             minP: wire.minP, repetitionPenalty: wire.repetitionPenalty,
             repetitionContextSize: wire.repetitionContextSize, frequencyPenalty: wire.frequencyPenalty,
@@ -50,16 +48,6 @@ final class QwenStageTokenSampler: Equatable {
         stream = CBv2RequestID(wire.stream)
         // The seed is always resolved by the provider; the fallback is never used.
         sampler = CBv2DefaultSampler(fallbackSeed: wire.seed)
-        func bits(_ value: Float) -> String { String(value.bitPattern) }
-        fingerprint = sha256(Data(([
-            "qwen-stage-sampling-v1", bits(wire.temperature), bits(wire.topP), String(wire.topK), bits(wire.minP),
-            bits(wire.repetitionPenalty), String(wire.repetitionContextSize), bits(wire.frequencyPenalty),
-            bits(wire.presencePenalty), String(wire.seed), String(wire.stream),
-        ] + wire.logitBias.map { "\($0.tokenID):\(bits($0.bias))" }).joined(separator: "|").utf8))
-    }
-
-    static func == (lhs: QwenStageTokenSampler, rhs: QwenStageTokenSampler) -> Bool {
-        lhs.fingerprint == rhs.fingerprint
     }
 
     /// Speculative decoding may verify this request's drafts.
@@ -95,5 +83,17 @@ final class QwenStageTokenSampler: Equatable {
     func commitRound(_ tokens: [Int]) {
         selected += tokens
         sampler.mtpRoundDidCommit(requestIDs: [stream])
+    }
+}
+
+extension QwenLayerStageGenerationRequest {
+    /// The selecting rank's sampler for a sampled request; nil for greedy
+    /// text. Created on first use and shared by every copy of the request.
+    var sampler: QwenStageTokenSampler? {
+        guard let sampling else { return nil }
+        if let existing = sampling.tokenSampler as? QwenStageTokenSampler { return existing }
+        let created = QwenStageTokenSampler(sampling)
+        sampling.tokenSampler = created
+        return created
     }
 }

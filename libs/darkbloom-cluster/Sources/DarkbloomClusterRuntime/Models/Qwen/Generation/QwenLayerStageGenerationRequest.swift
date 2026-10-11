@@ -67,8 +67,10 @@ struct QwenLayerStageGenerationRequest: Equatable {
     let fingerprint: String
     /// How the selecting rank draws each token; nil is greedy argmax, and then
     /// the fingerprint is exactly a greedy request's. Copies of the request
-    /// (a planned prefix, a stage session's) share the one sampler.
-    let sampler: QwenStageTokenSampler?
+    /// (a planned prefix, a stage session's) share the one state, so the
+    /// selecting rank's sampler (`sampler`, created on first use) and its
+    /// history follow the request.
+    let sampling: QwenStageSamplingState?
     /// Prompt tokens whose committed state both ranks restored from their own
     /// prefix caches before the first forward. Zero for a cold request.
     private(set) var reusedPrefixTokens = 0
@@ -105,14 +107,14 @@ struct QwenLayerStageGenerationRequest: Equatable {
         self.stopTokenIDs = stopTokenIDs; self.chunkSize = chunkSize; self.outputCount = outputCount
         maximumTokens = promptTokenIDs.count + outputCount
         prefillFrameCount = (promptTokenIDs.count - 1) / chunkSize + 1
-        sampler = try sampling.map { try QwenStageTokenSampler($0, promptTokens: promptTokenIDs) }
+        self.sampling = try sampling.map { try QwenStageSamplingState($0, promptTokens: promptTokenIDs) }
         var fields = [
             "qwen-stage-generation-request-v1", profile.fingerprint, requestID.uuidString.lowercased(),
             "prompt=" + qwenGenerationTokenHash(promptTokenIDs), "chunk=\(chunkSize)", "output=\(outputCount)",
             "stop=" + stopTokenIDs.sorted().map(String.init).joined(separator: ","),
         ]
         // Both ranks agree on the sampling values; greedy requests keep their fingerprint.
-        if let sampler { fields.append("sampling=" + sampler.fingerprint) }
+        if let state = self.sampling { fields.append("sampling=" + state.fingerprint) }
         fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 
@@ -177,4 +179,33 @@ struct QwenLayerStageGenerationRequest: Equatable {
 func qwenGenerationTokenHash(_ tokens: [Int]) -> String {
     // The existing native Boundary.tokenHash convention, without importing MLX.
     sha256(Data(tokens.map(String.init).joined(separator: ",").utf8))
+}
+
+/// A sampled request's agreed values (MLX-free): the wire sampling, the prompt
+/// the penalties see, and the fingerprint both ranks bind into the request.
+/// The rank that selects tokens keeps the product's sampler here
+/// (`QwenStageTokenSampler`, created on first use), so every copy of the
+/// request draws from one history.
+final class QwenStageSamplingState: Equatable {
+    let wire: ClusterWorkerSampling
+    let promptTokens: [Int]
+    /// Every value of `wire`.
+    let fingerprint: String
+    /// The selecting rank's `QwenStageTokenSampler`; nil until first used.
+    var tokenSampler: AnyObject?
+
+    init(_ wire: ClusterWorkerSampling, promptTokens: [Int]) throws {
+        guard !wire.isGreedyNoOp else { throw ProbeError("Greedy text needs no sampler") }
+        self.wire = wire; self.promptTokens = promptTokens
+        func bits(_ value: Float) -> String { String(value.bitPattern) }
+        fingerprint = sha256(Data(([
+            "qwen-stage-sampling-v1", bits(wire.temperature), bits(wire.topP), String(wire.topK), bits(wire.minP),
+            bits(wire.repetitionPenalty), String(wire.repetitionContextSize), bits(wire.frequencyPenalty),
+            bits(wire.presencePenalty), String(wire.seed), String(wire.stream),
+        ] + wire.logitBias.map { "\($0.tokenID):\(bits($0.bias))" }).joined(separator: "|").utf8))
+    }
+
+    static func == (lhs: QwenStageSamplingState, rhs: QwenStageSamplingState) -> Bool {
+        lhs.fingerprint == rhs.fingerprint
+    }
 }

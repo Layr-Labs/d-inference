@@ -164,7 +164,9 @@ import Foundation
             for _ in 0..<500 where other == nil {
                 other = try? Data(contentsOf: file("identity-rank\(1 - rank)")); if other == nil || other!.count != 65 { other = nil; usleep(10_000) }
             }
-            guard let other else { exit(77) }
+            // No peer hello ever came (the peer died or never started): like the
+            // real worker's failed key exchange, this rank ends by itself, status 1.
+            guard let other else { exit(1) }
             guard other == trust.peerPin else { exit(1) } // peer not pinned: refused before any key
             // A tampering rank's first protected record will reach its peer.
             if tampers { try? Data([1]).write(to: file("tamper-rank\(rank)")) }

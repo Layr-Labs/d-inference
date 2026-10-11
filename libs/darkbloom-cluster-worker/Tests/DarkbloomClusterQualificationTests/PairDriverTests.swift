@@ -353,7 +353,10 @@ final class PairDriverTests: XCTestCase {
         let started = Date()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "failed")
-        XCTAssertTrue(report.failure?.contains("not ready within 3 s: rank 1 remote") == true, report.failure ?? "")
+        // With the keyed data plane (the default) rank 0 cannot be ready
+        // either: its key exchange waits for the peer that never answers.
+        XCTAssertTrue(report.failure?.contains("not ready within 3 s: ") == true
+            && report.failure?.contains("rank 1 remote") == true, report.failure ?? "")
         // It ignored its input, renewals included, and ended at the first
         // lease grant it was launched with: no lifetime, only the lease.
         XCTAssertEqual(report.ranks[1].exitStatus, 124)

@@ -70,9 +70,9 @@ public final class ClusterLinkControlHost: @unchecked Sendable {
     /// The interface to listen on for a link's RDMA device (`rdma_en7` ->
     /// `en7`): the port itself when it carries IPv4 (link setup v2), else the
     /// Thunderbolt Bridge that contains it (today's Internet Sharing setup).
-    public static func listenInterface(forDevice device: String) -> String? {
+    public static func listenInterface(forDevice device: String, reaching peer: ClusterLinkIPv4Address? = nil) -> String? {
         guard device.hasPrefix("rdma_") else { return nil }
-        return ClusterLinkSystemInterfaceInspector.carrierInterface(forPort: String(device.dropFirst("rdma_".count)))
+        return ClusterLinkSystemInterfaceInspector.carrierInterface(forPort: String(device.dropFirst("rdma_".count)), reaching: peer)
     }
 }
 

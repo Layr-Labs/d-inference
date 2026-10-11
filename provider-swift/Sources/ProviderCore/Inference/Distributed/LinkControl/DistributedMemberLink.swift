@@ -55,11 +55,12 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
         guard configuration.role == .follower, configuration.nativeMember != nil, let link = configuration.linkControl else {
             throw ClusterConfigurationError.invalid("Only a follower member saved for coordinator pairing over the link serves its rank there")
         }
-        let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration,
-            peerAddress: try DistributedInstalledLinkEdge.leaderAddress(configuration))
+        let leader = try DistributedInstalledLinkEdge.leaderAddress(configuration)
+        let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration, peerAddress: leader)
         let box = self.box
         client = try ClusterLinkControlClient(configuration: .init(
-            interface: try DistributedInstalledLinkEdge.interface(device: configuration.peers[configuration.localRank].jacclDevice),
+            interface: try DistributedInstalledLinkEdge.interface(device: configuration.peers[configuration.localRank].jacclDevice,
+                reaching: leader),
             port: UInt16(link.port), policy: .thunderboltOnly, edge: edge)) { event, _ in
             switch event {
             case .connected: events(.connected)

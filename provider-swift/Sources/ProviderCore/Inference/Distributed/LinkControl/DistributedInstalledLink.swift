@@ -40,8 +40,9 @@ enum DistributedInstalledLinkEdge {
     }
 
     /// The interface that carries IPv4 for this Mac's link device.
-    static func interface(device: String) throws -> String {
-        guard let name = ClusterLinkControlHost.listenInterface(forDevice: device) else {
+    /// `reaching`: the follower's dial picks the interface on the leader's subnet.
+    static func interface(device: String, reaching peer: ClusterLinkIPv4Address? = nil) throws -> String {
+        guard let name = ClusterLinkControlHost.listenInterface(forDevice: device, reaching: peer) else {
             throw ClusterConfigurationError.invalid("No interface carries IPv4 for the link device \(device)")
         }
         return name
@@ -131,7 +132,8 @@ public enum DistributedInstalledLinkFollower {
         }
         let box = Box()
         let client = try ClusterLinkControlClient(configuration: .init(
-            interface: try DistributedInstalledLinkEdge.interface(device: plan.localPeer.jacclDevice),
+            interface: try DistributedInstalledLinkEdge.interface(device: plan.localPeer.jacclDevice,
+                reaching: try DistributedInstalledLinkEdge.leaderAddress(plan.configuration)),
             port: UInt16(plan.configuration.linkControl!.port), policy: .thunderboltOnly, edge: edge)) { event, _ in
             switch event {
             case .connected: events(.connected)

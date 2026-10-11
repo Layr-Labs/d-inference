@@ -151,9 +151,12 @@ public final class ClusterLinkStatusPublisher: @unchecked Sendable {
     public func makeMessage() -> ClusterLinkStatusMirror {
         let value = snapshot(), host = sample()
         let next = lock.withLock { () -> UInt64 in sequence += 1; return sequence }
-        return .init(epoch: epoch, rank: rank, state: value.state, modelID: value.modelID.map { String($0.prefix(256)) },
+        // The edge refuses a status whose text exceeds its byte bounds: cut by UTF-8 bytes.
+        return .init(epoch: epoch, rank: rank, state: value.state,
+                     modelID: value.modelID.map { ClusterIncidentLog.bounded(ClusterIncidentLog.printable($0), 256) },
                      activeRequestID: value.activeRequestID, freeMemoryBytes: host.freeBytes, wiredMemoryBytes: host.wiredBytes,
-                     linkReady: value.linkReady, detail: String(value.detail.prefix(240)), sequence: next,
+                     linkReady: value.linkReady, detail: ClusterIncidentLog.bounded(ClusterIncidentLog.printable(value.detail), 240),
+                     sequence: next,
                      sentAt: Date().timeIntervalSince1970, uptimeSeconds: UInt64(max(0, Date().timeIntervalSince(started))),
                      thermalState: host.thermalState, physicalMemoryBytes: host.physicalBytes,
                      requestsServed: value.requestsServed, incidentEpoch: value.incidentEpoch,

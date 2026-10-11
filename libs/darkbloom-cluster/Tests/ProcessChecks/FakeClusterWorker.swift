@@ -113,7 +113,15 @@ import DarkbloomClusterSecurity
                     if behavior == "delayed-exit" { usleep(250_000); exit(7) }
                     if behavior == "partial" { try FileHandle.standardOutput.write(contentsOf: Data("{\"kind\":".utf8)); exit(0) }
                     if behavior == "stderr" { try FileHandle.standardError.write(contentsOf: Data(repeating: 120, count: 1_100_000)); continue }
+                    // "chatty": more than 1 MiB of diagnostics, written slowly (as a long
+                    // session's per-request lines are), then a normal request.
+                    if behavior == "chatty" {
+                        for _ in 0..<40 { try FileHandle.standardError.write(contentsOf: Data(repeating: 121, count: 32_768)); usleep(300_000) }
+                    }
                     if rank == 1 {
+                        if behavior == "telemetry" {
+                            try emit(.requestTelemetry(.init(handoffNanoseconds: 81_000_000, handoffBytes: 1_000, mtpDrafted: 10, mtpAccepted: 8)))
+                        }
                         let reason: ClusterWorkerFinishReason = reservation!.stopTokenIDs.contains(9) ? .eos
                             : behavior == "clean-stop" ? .clientStop : .length
                         try emit(.finished(reason)); try emit(.retired(.clean)); if behavior == "exhausted" { try emit(.unavailable(.runtimeError)) }
@@ -137,6 +145,7 @@ import DarkbloomClusterSecurity
                         if reason == .clientStop { usleep(250_000) }
                         else if reason == nil, [1, 3, 7, 15, 31].contains(selected) { usleep(80_000) }
                     }
+                    if reason != nil, behavior == "telemetry" { try emit(.requestTelemetry(.init(handoffNanoseconds: 70_000_000))) }
                     if let reason { try emit(.finished(reason)); try emit(.retired(.clean)); if behavior == "exhausted" { try emit(.unavailable(.runtimeError)) } }
                     else {
                         try emit(.committedToken(ordinal: selected, tokenID: 9 + selected,

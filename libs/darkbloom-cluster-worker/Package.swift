@@ -15,6 +15,7 @@ let package = Package(
         .executable(name: "darkbloom-cluster-reference", targets: ["ReferenceCheck"]),
         .executable(name: "darkbloom-cluster-pair-check", targets: ["PairCheck"]),
         .executable(name: "darkbloom-cluster-plan", targets: ["PlacementPlan"]),
+        .executable(name: "darkbloom-cluster-tp-check", targets: ["TensorParallelCheck"]),
     ],
     dependencies: [
         .package(path: "../darkbloom-cluster"),
@@ -74,6 +75,12 @@ let package = Package(
         .testTarget(name: "DarkbloomClusterQualificationTests", dependencies: [
             "DarkbloomClusterQualification", "PairCheckFakeWorker",
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
+        ]),
+        // Tensor parallel for the dense Qwen models: the unsharded reference, the
+        // single-process oracle and one rank of a two-rank run, plus the comparator.
+        .executableTarget(name: "TensorParallelCheck", dependencies: [
+            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
+            .product(name: "MLX", package: "mlx-swift"),
         ]),
         // Two-rank transport qualification: real collectives, no model.
         .executableTarget(name: "CollectiveCheck", dependencies: [

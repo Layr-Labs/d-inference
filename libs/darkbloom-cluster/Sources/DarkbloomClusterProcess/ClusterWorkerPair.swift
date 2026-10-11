@@ -15,6 +15,15 @@ public struct ClusterWorkerPairReadiness: Sendable {
     public let executionPlanSHA256: String
     /// Sum of named local request allowances, never a sum of physical RAM.
     public let requestCapacityBytes: Int
+    /// The data plane both ranks report (S16): present only when both report
+    /// the same encrypted, peer-verified session (one transcript, one edge).
+    /// Nil when both ranks run without a credential.
+    public let dataPlane: ClusterWorkerDataPlane?
+    /// What a public route may require (decision D1 / S20): every transfer
+    /// between the ranks encrypted and authenticated, each peer verified
+    /// against its pin.
+    public var encryptedDataPlane: Bool { dataPlane?.protection == ClusterWorkerDataPlane.encrypted }
+    public var peerVerified: Bool { dataPlane?.encryptedAndVerified == true }
 }
 
 /// How long a pair's owner waits for a rank to answer. None of these waits
@@ -94,8 +103,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
                   let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
             let sum = a.requestCapacityBytes.addingReportingOverflow(b.requestCapacityBytes)
             guard !sum.overflow, sum.partialValue <= ClusterWorkerLimits.capacityBytes else { return nil }
+            // One keyed session or none: ranks that disagree are not a pair.
+            guard a.dataPlane == b.dataPlane, a.dataPlane.map({ $0.peerVerified }) ?? true else { return nil }
             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
-                requestCapacityBytes: sum.partialValue)
+                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane)
         }
     }
 

@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 @_spi(Benchmark) import DarkbloomClusterRuntime
+import DarkbloomClusterSecurity
 import Foundation
 
 /// The same resident owner driven through its recording entry, selected only by
@@ -19,7 +20,8 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
          evidenceDirectory: String, generationMode: ClusterGenerationMode = .pipeline,
          speculativeTerms: QwenMTPTerms? = nil,
-         qualification: QwenResidentQualificationSwitches = .refused) throws {
+         qualification: QwenResidentQualificationSwitches = .refused,
+         dataPlane: ClusterDataPlaneCredential? = nil) throws {
         guard bootstrap == nil else {
             throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
         }
@@ -30,7 +32,7 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .oneChunkLookahead: policy = .oneChunkLookahead
         }
         owner = try .load(configuration, generationMode: generationMode, speculativeTerms: speculativeTerms,
-            qualification: qualification)
+            qualification: qualification, dataPlane: dataPlane)
     }
 
     /// The recording ceiling: the serving allowance plus the capture terms.

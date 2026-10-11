@@ -29,6 +29,34 @@ public enum ClusterWorkerCodec {
             maximum: ClusterWorkerLimits.commandBytes)
     }
 
+    /// The data-plane credential line (S16): the first line of a worker's
+    /// control pipe, outside the request sequence. Base64 fields.
+    public static func encode(_ trust: ClusterWorkerDataPlaneTrust) throws -> Data {
+        try encoded(["version": ClusterWorkerLimits.version, "kind": "dataPlaneTrust",
+            "membershipEpoch": trust.membershipEpoch.uuidString.lowercased(), "rank": trust.rank,
+            "workerSigningKey": trust.workerSigningKey.base64EncodedString(),
+            "workerCertificate": trust.workerCertificate.base64EncodedString(),
+            "memberIdentity": trust.memberIdentity.base64EncodedString(),
+            "peerPin": trust.peerPin.base64EncodedString()], maximum: 4096)
+    }
+
+    public static func decodeDataPlaneTrust(_ data: Data) throws -> ClusterWorkerDataPlaneTrust {
+        var r = try reader(data, maximum: 4096)
+        try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
+        try workerRequire(try r.string("kind") == "dataPlaneTrust", "Expected the data-plane credential line")
+        func bytes(_ key: String) throws -> Data {
+            guard let value = Data(base64Encoded: try r.string(key)) else {
+                throw ClusterWorkerProtocolError.invalid("Expected base64: " + key)
+            }
+            return value
+        }
+        let value = try ClusterWorkerDataPlaneTrust(membershipEpoch: r.uuid("membershipEpoch"), rank: r.int("rank"),
+            workerSigningKey: bytes("workerSigningKey"), workerCertificate: bytes("workerCertificate"),
+            memberIdentity: bytes("memberIdentity"), peerPin: bytes("peerPin"))
+        try r.finish()
+        return value
+    }
+
     /// One control-pipe line: a lease renewal or a sequenced command.
     public static func decodeControl(_ data: Data) throws -> ClusterWorkerControlLine {
         var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)
@@ -142,6 +170,14 @@ public enum ClusterWorkerCodec {
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {
+        var value = readyFields(r)
+        if let d = r.dataPlane {
+            value["dataPlane"] = ["protection": d.protection, "peerVerified": d.peerVerified,
+                                  "transcriptSHA256": d.transcriptSHA256, "edgeID": d.edgeID]
+        }
+        return value
+    }
+    private static func readyFields(_ r: ClusterWorkerReady) -> [String: Any] {
         ["identity": ["membershipEpoch": r.identity.membershipEpoch.uuidString.lowercased(), "modelID": r.identity.modelID,
             "artifactSHA256": r.identity.artifactSHA256, "configurationSHA256": r.identity.configurationSHA256,
             "peers": r.identity.peers.map { ["id": $0.id, "buildSHA256": $0.buildSHA256] }],
@@ -162,8 +198,16 @@ public enum ClusterWorkerCodec {
         let profile = try ClusterWorkerProfile(id: p.string("id"), vocabularySize: p.int("vocabularySize"),
             maximumPromptTokens: p.int("maximumPromptTokens"), maximumOutputTokens: p.int("maximumOutputTokens"),
             maximumChunkTokens: p.int("maximumChunkTokens"), maximumContextTokens: p.int("maximumContextTokens"))
+        var dataPlane: ClusterWorkerDataPlane?
+        if r.values["dataPlane"] != nil {
+            var d = WorkerObject(try r.object("dataPlane"))
+            dataPlane = try ClusterWorkerDataPlane(protection: d.string("protection"), peerVerified: d.bool("peerVerified"),
+                transcriptSHA256: d.string("transcriptSHA256"), edgeID: d.string("edgeID"))
+            try d.finish()
+        }
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
-            executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"))
+            executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
+            dataPlane: dataPlane)
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

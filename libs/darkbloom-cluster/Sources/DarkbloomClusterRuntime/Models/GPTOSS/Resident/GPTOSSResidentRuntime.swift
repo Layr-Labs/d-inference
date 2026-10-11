@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 import Foundation
 import MLX
 import MLXNN
@@ -52,7 +53,7 @@ public final class GPTOSSResidentRuntime {
         self.generationMode = generationMode
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
-            requestCapacityBytes: capacity)
+            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane)
     }
 
     /// Keep-warm tier 1: one asynchronous pulse on a dedicated stream of this
@@ -111,7 +112,8 @@ public final class GPTOSSResidentRuntime {
         let capacity = try QwenLongPrefillCheckedBytes.sum([baseReady.requestCapacityBytes,
             capture.extraHostBytes, capture.extraNativeBytes])
         return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
-            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
+            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity,
+            dataPlane: baseReady.dataPlane)
     }
 
     /// `generationMode` is the caller's declaration (the worker's
@@ -120,9 +122,15 @@ public final class GPTOSSResidentRuntime {
     /// this process may honour the qualification switches in its environment.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
-                            qualification: QwenResidentQualificationSwitches = .refused) throws -> GPTOSSResidentRuntime {
+                            qualification: QwenResidentQualificationSwitches = .refused,
+                            dataPlane credential: ClusterDataPlaneCredential? = nil) throws -> GPTOSSResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
+        // A keyed data plane (S16); its qualification fault only with the switches.
+        let tamper = qualification.permitted ? try CollectiveRecordTamper.admit(environment: environment) : nil
+        guard tamper == nil || credential != nil else {
+            throw ProbeError("\(CollectiveRecordTamper.environmentName) needs a keyed data plane")
+        }
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         if qualification.permitted { transport = try ClusterTransport.admit(environment: environment) }
@@ -170,13 +178,19 @@ public final class GPTOSSResidentRuntime {
                 try admission.jaccl.requireInitialized(rank: collective.rank, worldSize: collective.size,
                                                        transport: collective.transport)
             }
-            let loadAgreement = try admission.loadAgreementFingerprint(mode: mode, transport: transport)
+            let plainAgreement = try admission.loadAgreementFingerprint(mode: mode, transport: transport)
+            let loadAgreement = credential == nil ? plainAgreement
+                : sha256(try canonicalJSONData([plainAgreement] + ClusterDataPlaneAgreement.loadAgreementFields))
+            if let credential {
+                try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
+                    loadAgreement: loadAgreement, tamper: tamper, check: { try control.check() })
+            }
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 do {
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
-                        disagreementMessage: "Resident GPT-OSS load membership/source/Plan/mode differs", check: checked)
+                        disagreementMessage: "Resident GPT-OSS load membership/source/Plan/mode differs", scope: .session(.loadAgreement, "resident-load-intent"), check: checked)
                     let beforeLoad = Memory.snapshot()
                     let started = DispatchTime.now().uptimeNanoseconds
                     var verified = started
@@ -221,7 +235,7 @@ public final class GPTOSSResidentRuntime {
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                         disagreementMessage: "Resident GPT-OSS peers did not load matching verified stage commitments",
-                        check: checked)
+                        scope: .session(.loadedReady, "resident-loaded"), check: checked)
                     try checked()
                     return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0])
                 } catch {

@@ -31,6 +31,8 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
     /// compiles without the rest of the runtime.
     public static let memoryGateEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_MEMORY_GATE"
     public static let stageResidencyEnvironmentName = "DARKBLOOM_CLUSTER_STAGE_RESIDENCY"
+    /// One flipped ciphertext byte on the keyed data plane (S16); the peer must refuse it.
+    public static let tamperEnvironmentName = "DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"
     public static let stageResidencyValue = "stage_wired_residency_v1"
     /// The worker argument that permits the two switches, with the value `yes`.
     public static let permittingArgument = "--qualification-switches"
@@ -50,7 +52,7 @@ public struct QwenResidentQualificationSwitches: Equatable, Sendable {
         }
         guard !permitted else { return }
         for name in [Self.transportEnvironmentName, Self.faultEnvironmentName, Self.memoryGateEnvironmentName,
-                     Self.stageResidencyEnvironmentName]
+                     Self.stageResidencyEnvironmentName, Self.tamperEnvironmentName]
             where environment[name] != nil {
             throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(Self.permittingArgument) yes; it is refused, not ignored")

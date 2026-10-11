@@ -359,6 +359,12 @@ public struct PairRankReport: Codable, Equatable, Sendable {
     public var leaseRenewalsSent: UInt64?
     /// Keep-warm data-plane exchanges this worker answered (S27 tier 2).
     public var keepWarmExchanges: Int?
+    /// S16: what this rank reported at readiness: `encrypted_v1` and whether it
+    /// verified its peer against its pin; the transcript digest (not secret)
+    /// is equal on both ranks of one keyed session.
+    public var dataPlane: String?
+    public var peerVerified: Bool?
+    public var dataPlaneTranscriptSHA256: String?
 
     public init(role: String, rank: Int) { self.role = role; self.rank = rank }
 }
@@ -448,6 +454,11 @@ public struct PairReport: Codable, Equatable, Sendable {
     /// `jaccl`, or `local-socket-test` when both ranks ran on one Mac over a
     /// loopback socket: a correctness run, not RDMA, and not a pair timing.
     public var workerTransport: String?
+    /// S16: the data plane the run asked for (`encrypted_v1` or `plaintext`),
+    /// and whether both ranks reported one encrypted, peer-verified session.
+    public var dataPlane: String?
+    public var encryptedDataPlane: Bool?
+    public var peerVerified: Bool?
 
     public init(outcome: String, failure: String?, identity: QualificationIdentity?, evidence: QualificationEvidence?,
                 ranks: [PairRankReport], workerHashesIdentical: Bool?, metallibHashesIdentical: Bool?, recording: Bool,

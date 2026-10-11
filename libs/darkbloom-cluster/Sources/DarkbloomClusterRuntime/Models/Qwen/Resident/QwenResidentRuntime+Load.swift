@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 import Foundation
 import MLX
 import MLXNN
@@ -17,19 +18,31 @@ extension QwenResidentRuntime {
     /// `speculativeTerms` applies only to `phase_split_mtp_v1` (default: the
     /// product drafter's maximum depth); both ranks bind them into the load
     /// agreement together with the digest of the head's verified files.
+    ///
+    /// `dataPlane` (S16): this rank's credential. When present, the two ranks
+    /// key their data plane right after the group exists, each verifying the
+    /// other's hello against the identity it pins, and every later transfer
+    /// (agreements, residuals, hand-off, tokens, relays, prefix plan, keep-warm)
+    /// is an authenticated, encrypted record. Nil keeps the plaintext path.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
                             speculativeTerms requestedTerms: QwenMTPTerms? = nil,
-                            qualification: QwenResidentQualificationSwitches = .refused) throws -> QwenResidentRuntime {
+                            qualification: QwenResidentQualificationSwitches = .refused,
+                            dataPlane credential: ClusterDataPlaneCredential? = nil) throws -> QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         // A recording request may be asked to commit this; fixed here, once.
         var fault: QwenPhaseSplitFault?
+        var tamper: CollectiveRecordTamper?
         if qualification.permitted {
             transport = try ClusterTransport.admit(environment: launchEnvironment)
             fault = try QwenPhaseSplitFault.admit(environment: launchEnvironment)
+            tamper = try CollectiveRecordTamper.admit(environment: launchEnvironment)
+            guard tamper == nil || credential != nil else {
+                throw ProbeError("\(CollectiveRecordTamper.environmentName) needs a keyed data plane")
+            }
             // The host memory gate's record or measure mode, the same switch for every adapter.
             if let gate = try QwenDenseStageLoadMeasurement.requested(environment: launchEnvironment) {
                 try QwenDenseStageLoadMeasurement.shared.enable(gate, permittedBy: qualification)
@@ -109,14 +122,19 @@ extension QwenResidentRuntime {
                 speculativeFields = speculativeTerms.loadAgreementFields(headSHA256: headFiles.sha256)
             }
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
+                + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common
+            if let credential {
+                try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
+                    loadAgreement: loadAgreement, tamper: tamper, check: { try control.check() })
+            }
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 do {
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
-                        disagreementMessage: "Resident load membership/source/Plan/mode differs", check: checked)
+                        disagreementMessage: "Resident load membership/source/Plan/mode differs", scope: .session(.loadAgreement, "resident-load-intent"), check: checked)
                     let beforeLoad = Memory.snapshot()
                     try autoreleasepool {
                         let value = try admission.loadResidentStage(check: checked, constructed: { _ in })
@@ -214,7 +232,7 @@ extension QwenResidentRuntime {
                         loaded.loaded.receipt.storageCommitmentSHA256, loaded.loaded.receipt.sourceParameterLayoutSHA256]))
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
-                        disagreementMessage: "Resident peers did not load matching verified stage commitments", check: checked)
+                        disagreementMessage: "Resident peers did not load matching verified stage commitments", scope: .session(.loadedReady, "resident-loaded"), check: checked)
                     try checked()
                     return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0,
                         split?.reservedBytes ?? 0])

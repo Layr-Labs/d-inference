@@ -37,6 +37,9 @@ import Foundation
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
+              [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]
+              [--data-plane-fault RANK:wrong-pin | RANK:KIND:ORDINAL (qualification: a wrong pin on that rank, or one
+                                  flipped ciphertext byte of its ORDINAL-th KIND record, e.g. 0:residualPayload:3)]
               [--startup-seconds N] [--request-seconds N]
               [--rank1-delay-seconds N] [--progress-timeout-ms N] [--allow-unguarded-jaccl yes]
               (request and progress limits default to budgets scaled with the prompt length from the model's
@@ -168,7 +171,8 @@ import Foundation
             "--idle-seconds", "--keep-warm", "--stop-renewals-after-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
-            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache"]
+            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
+            "--data-plane", "--data-plane-fault"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -256,6 +260,22 @@ import Foundation
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }
             configuration.faultRank = rank; configuration.faultValue = String(parts[1])
+            try configuration.validate()
+        }
+        if let plane = fields["--data-plane"]?.first {
+            guard [PairConfiguration.encryptedDataPlane, PairConfiguration.plaintextDataPlane].contains(plane) else {
+                throw Failure("--data-plane takes encrypted_v1 or plaintext")
+            }
+            configuration.dataPlane = plane
+        }
+        if let fault = fields["--data-plane-fault"]?.first {
+            // RANK:wrong-pin, or RANK:KIND:ORDINAL (one flipped ciphertext byte).
+            let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, let rank = Int(parts[0]) else {
+                throw Failure("--data-plane-fault takes RANK:wrong-pin or RANK:KIND:ORDINAL")
+            }
+            if parts[1] == "wrong-pin" { configuration.wrongPinRank = rank }
+            else { configuration.tamperRank = rank; configuration.tamperValue = String(parts[1]) }
             try configuration.validate()
         }
         if let stop = try integer(fields, "--stop-after-tokens") {

@@ -64,10 +64,12 @@ def main():
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     runtime = sorted(RUNTIME.glob('*.swift'))
     bootstrap = sorted(BOOTSTRAP.glob('*.swift'))
-    if len(runtime) != 13 or len(bootstrap) != 6:
+    if len(runtime) != 14 or len(bootstrap) != 6:
         raise ValueError('Update the CPU check source closure when changing the record module')
     groups = [('codec', sorted((HERE / 'Codec').glob('*.swift')), [str(HERE / 'Codec/vectors.json')]),
-              ('adapter', sorted((HERE / 'Adapter').glob('*.swift')), [])]
+              ('adapter', sorted((HERE / 'Adapter').glob('*.swift')), []),
+              ('dataplane', sorted((HERE / 'DataPlane').glob('*.swift')), [])]
+    expected_lines = {'codec': 9, 'adapter': 9, 'dataplane': 7}
     paths = runtime + bootstrap + [path for _, sources, _ in groups for path in sources]
     paths += [HERE / 'Codec/vectors.json', HERE / 'owned_process.py', HERE / 'run.py']
     before = snapshot(paths)
@@ -100,17 +102,17 @@ def main():
                 raise ValueError('Sources changed while compiling')
             receipts.append(run_owned([str(binary)] + arguments, output, name + '-fixture', 10))
             lines = (output / (name + '-fixture.stdout')).read_text().splitlines()
-            if len(lines) != 9 or not all(line.startswith('PASS ') for line in lines):
+            if len(lines) != expected_lines[name] or not all(line.startswith('PASS ') for line in lines):
                 raise ValueError('Incomplete ' + name + ' fixture output')
     finally:
         unchanged = snapshot(paths) == before
         (output / 'source-recheck.json').write_text(json.dumps({'unchanged': unchanged}) + '\n')
         if not unchanged:
             raise ValueError('Sources changed during CPU checks')
-    (output / 'checks.json').write_text(json.dumps({'passed': True, 'passedGroups': 16,
+    (output / 'checks.json').write_text(json.dumps({'passed': True, 'passedGroups': 22,
         'steps': receipts, 'sourceUnchanged': True, 'nativeBridgeCompiled': False,
         'modelExecuted': False, 'networkUsed': False}, indent=2, sort_keys=True) + '\n')
-    print('PASS 16 record codec/adapter CPU groups; no native bridge or network qualification')
+    print('PASS 22 record codec/adapter/data-plane CPU groups; no native bridge or network qualification')
 
 
 if __name__ == '__main__':

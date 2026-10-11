@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 @_spi(Benchmark) import DarkbloomClusterRuntime
+import DarkbloomClusterSecurity
 import Foundation
 
 /// The GPT-OSS layer-stage adapter behind the worker's runtime contract. One
@@ -16,13 +17,15 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
 
     init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
          evidenceDirectory: String?, generationMode: ClusterGenerationMode = .pipeline,
-         qualification: QwenResidentQualificationSwitches = .refused) throws {
+         qualification: QwenResidentQualificationSwitches = .refused,
+         dataPlane: ClusterDataPlaneCredential? = nil) throws {
         guard bootstrap == nil else {
             throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
         }
         // Opened before any model work: an unusable directory fails the launch.
         sink = try evidenceDirectory.map { try WorkerEvidenceSink(path: $0) }
-        owner = try .load(configuration, generationMode: generationMode, qualification: qualification)
+        owner = try .load(configuration, generationMode: generationMode, qualification: qualification,
+            dataPlane: dataPlane)
     }
 
     var readiness: ClusterWorkerReady? {

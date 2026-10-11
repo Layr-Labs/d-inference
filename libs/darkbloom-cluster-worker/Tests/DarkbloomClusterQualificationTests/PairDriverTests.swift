@@ -594,6 +594,79 @@ final class PairDriverTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
     }
 
+    // MARK: S16 data plane (the fake stands in for the pinned exchange and a refused record)
+
+    func testEncryptedDataPlaneIsTheDefaultAndBothRanksReportOnePinnedSession() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        let configuration = try sides.configuration(outputCount: 2)
+        XCTAssertEqual(configuration.dataPlane, "encrypted_v1")
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.dataPlane, "encrypted_v1")
+        XCTAssertEqual(report.encryptedDataPlane, true); XCTAssertEqual(report.peerVerified, true)
+        XCTAssertEqual(report.ranks.map(\.dataPlane), ["encrypted_v1", "encrypted_v1"])
+        XCTAssertEqual(report.ranks.map(\.peerVerified), [true, true])
+        XCTAssertNotNil(report.ranks[0].dataPlaneTranscriptSHA256)
+        XCTAssertEqual(report.ranks[0].dataPlaneTranscriptSHA256, report.ranks[1].dataPlaneTranscriptSHA256)
+        for rank in 0...1 {
+            let observed = try sides.observed(configuration, rank)
+            let arguments = try XCTUnwrap(observed["arguments"] as? [String])
+            XCTAssertEqual(arguments.firstIndex(of: "--data-plane").map { arguments[$0 + 1] }, "encrypted_v1")
+            // The credential travels on the input only: never an argument or a variable.
+            let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+            XCTAssertFalse((arguments + Array(environment.keys) + Array(environment.values)).contains { $0.contains("dataPlaneTrust") || $0.count > 200 })
+        }
+        let text = String(decoding: try QualificationReportFiles.encode(report), as: UTF8.self)
+        XCTAssertFalse(text.contains("workerSigningKey"))
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    func testAWrongPinStopsThePairBeforeReadinessAndBothRanksEnd() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.wrongPinRank = 1
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "failed")
+        XCTAssertTrue(report.failure?.contains("before the pair was ready") == true, report.failure ?? "")
+        XCTAssertEqual(report.ranks.map(\.admitted), [nil, nil])
+        XCTAssertNil(report.evidence)
+        assertEndedByItself(report, sides, configuration)
+    }
+
+    func testATamperedRecordFailsTheRequestAndBothRanksEndByThemselves() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2, recording: false)
+        configuration.tamperRank = 0; configuration.tamperValue = "residualPayload:1"
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "failed")
+        XCTAssertEqual(report.ranks[1].events.last, "failed:runtimeError")
+        XCTAssertEqual(report.ranks[1].exitStatus, 1)
+        XCTAssertEqual(report.ranks[0].exitStatus, 1)
+        let observed = try sides.observed(configuration, 0)
+        let environment = try XCTUnwrap(observed["environment"] as? [String: String])
+        XCTAssertEqual(environment["DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"], "residualPayload:1")
+        XCTAssertNil((try sides.observed(configuration, 1)["environment"] as? [String: String])?["DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"])
+        assertEndedByItself(report, sides, configuration)
+        var invalid = configuration
+        invalid.dataPlane = "plaintext"
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = configuration; invalid.tamperValue = "residualPayload:1; id"
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
+    func testThePlaintextDataPlaneRemainsForTheOverheadComparison() throws {
+        let sides = try Sides(modes: ["ok", "ok"])
+        var configuration = try sides.configuration(outputCount: 2)
+        configuration.dataPlane = "plaintext"
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.dataPlane, "plaintext"); XCTAssertNil(report.encryptedDataPlane)
+        XCTAssertFalse((try sides.observed(configuration, 0)["arguments"] as? [String] ?? []).contains("--data-plane"))
+        assertEndedByItself(report, sides, configuration)
+    }
+
     func testOwnerStopIsAServingPathInputWithinTheOutputLimit() throws {
         // The fake rank 1 always reports a length finish, so the stop itself is
         // exercised with real workers; here, only what the driver admits.

@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
+import DarkbloomClusterSecurity
 import Foundation
 
 /// Exactly one native executor uses this wrapper; cancel is the facade's
@@ -16,7 +17,8 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     init(_ configuration: QwenResidentLoadConfiguration, family: ClusterResidentModelCatalog.Family = .qwenDense,
          bootstrap: WorkerBootstrapConfiguration? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
-         qualification: QwenResidentQualificationSwitches = .refused) throws {
+         qualification: QwenResidentQualificationSwitches = .refused,
+         dataPlane: ClusterDataPlaneCredential? = nil) throws {
         // STAGING DIVERGENCE: the owner-authenticated JACCL bootstrap needs the
         // mlx-c bootstrap bridge (`mlx_distributed_init_jaccl_with_bootstrap`),
         // which the pinned mlx-c does not carry. The flags are still parsed so
@@ -28,10 +30,11 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         switch family {
         case .qwenDense:
             owner = .qwenDense(try .load(configuration, generationMode: generationMode,
-                speculativeTerms: speculativeTerms, qualification: qualification))
+                speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane))
         case .mimoV26:
             guard speculativeTerms == nil else { throw WorkerFailure.invalid("MiMo has no speculative decoding on a pair") }
-            owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification))
+            owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification,
+                dataPlane: dataPlane))
         case .gptoss:
             throw WorkerFailure.invalid("GPT-OSS runs on its own worker runtime, not the native wrapper")
         }

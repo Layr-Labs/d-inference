@@ -32,18 +32,23 @@ struct WorkerConfiguration {
     /// Keep-warm tier 1 (`--keep-warm on|off`, on unless off is named): a GPU
     /// pulse every half second while idle, once the first request has run.
     let keepWarm: Bool
+    /// `--data-plane encrypted_v1` (S16): the first line of the control pipe is
+    /// this worker's data-plane credential, and every transfer to the peer is an
+    /// authenticated, encrypted record after a pinned key exchange. Absent: the
+    /// plaintext data plane (diagnosis and qualification only).
+    let dataPlaneEncrypted: Bool
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
-            "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth"]
+            "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane"]
         let counts = [names.count, names.count + WorkerBootstrapConfiguration.names.count].flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag, optional keep-warm switch and optional complete bootstrap triple")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag, optional keep-warm switch, optional data-plane protection and optional complete bootstrap triple")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -81,6 +86,11 @@ struct WorkerConfiguration {
         }
         family = registered.family
         lease = ClusterLeaseDeadline(uptimeNanoseconds: deadline)
+        switch fields["--data-plane"] {
+        case nil: dataPlaneEncrypted = false
+        case ClusterWorkerDataPlaneTrust.argument: dataPlaneEncrypted = true
+        default: throw WorkerFailure.invalid("--data-plane takes only \(ClusterWorkerDataPlaneTrust.argument)")
+        }
         switch fields["--keep-warm"] {
         case nil, "on": keepWarm = true
         case "off": keepWarm = false

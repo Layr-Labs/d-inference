@@ -140,6 +140,22 @@ public struct PairConfiguration: Sendable {
     /// Both workers hold a standing MLX wired limit for their loaded stage
     /// (`stage_wired_residency_v1`). Qualification only.
     public var stageResidency = false
+    /// S16: `encrypted_v1` (the default): both workers key their data plane
+    /// with credentials this driver issues for the run from two per-run member
+    /// identities, each pinning the other's; every transfer between the ranks
+    /// is then an authenticated, encrypted record. `plaintext` only for the
+    /// overhead comparison.
+    public var dataPlane = ClusterWorkerDataPlane.encrypted
+    public static let plaintextDataPlane = "plaintext"
+    public static let encryptedDataPlane = ClusterWorkerDataPlane.encrypted
+    /// Qualification: this rank pins an identity that is not its peer's; its
+    /// key exchange must refuse the peer's hello before any key.
+    public var wrongPinRank: Int?
+    /// Qualification: this rank flips one ciphertext byte of the n-th record
+    /// of a kind it sends (`residualPayload:3`); its peer must refuse it.
+    public var tamperRank: Int?
+    public var tamperValue: String?
+    public static let tamperEnvironment = "DARKBLOOM_CLUSTER_QUALIFICATION_TAMPER"
     public var membershipEpoch: UUID
     /// Strings that must never appear in a report (destination, addresses, names).
     public var sensitive: [String]
@@ -251,6 +267,16 @@ public struct PairConfiguration: Sendable {
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
         try require((faultRank == nil) == (faultValue == nil), "a fault needs both its rank and its value")
+        try require([ClusterWorkerDataPlane.encrypted, Self.plaintextDataPlane].contains(dataPlane),
+            "the data plane is encrypted_v1 or plaintext")
+        try require((tamperRank == nil) == (tamperValue == nil), "a tamper fault needs both its rank and its value")
+        try require(tamperRank.map { (0...1).contains($0) } ?? true, "a tamper fault names rank 0 or 1")
+        try require(wrongPinRank.map { (0...1).contains($0) } ?? true, "a wrong pin names rank 0 or 1")
+        try require((tamperValue == nil && wrongPinRank == nil) || dataPlane == ClusterWorkerDataPlane.encrypted,
+            "a data-plane fault needs the encrypted data plane")
+        try require(tamperValue.map { v in (3...64).contains(v.utf8.count) && v.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 58 } } ?? true,
+            "a tamper fault is KIND:ORDINAL")
         try require(stopAfterTokens.map { !recording && (1..<request.outputCount).contains($0) } ?? true,
             "a client stop is a serving-path input, after 1 or more tokens and before the output limit")
         if let faultRank, let faultValue {
@@ -386,6 +412,7 @@ public struct PairConfiguration: Sendable {
         if stageResidency {
             environment.append((Self.stageResidencyEnvironment, Self.stageResidencyPolicy))
         }
+        if tamperRank == rank, let tamperValue { environment.append((Self.tamperEnvironment, tamperValue)) }
         var arguments = ["--model-dir", side.modelDirectory, "--rank", String(rank), "--stage-cut", String(stageCut),
             "--membership-epoch", membershipEpoch.uuidString.lowercased(), "--model-id", request.modelID,
             "--artifact-sha256", artifactSHA256, "--configuration-sha256", configurationSHA256,
@@ -399,8 +426,10 @@ public struct PairConfiguration: Sendable {
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.
         if !keepWarm { arguments += ["--keep-warm", "off"] }
+        // The credential itself is the first line of the worker's input.
+        if dataPlane == ClusterWorkerDataPlane.encrypted { arguments += ["--data-plane", ClusterWorkerDataPlaneTrust.argument] }
         if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency
-            || mimoStepEvidence || stageResidency {
+            || mimoStepEvidence || stageResidency || tamperValue != nil {
             arguments += [Self.qualificationSwitchesArgument, "yes"]
         }
         let fixed = environment.map { "\($0.0)=\(Self.quoted($0.1))" }.joined(separator: " ")

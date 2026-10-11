@@ -54,7 +54,7 @@ public final class QwenResidentRuntime {
         self.producerStage = producerStage; producerModel = producerStage?.loaded.model
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
-            requestCapacityBytes: capacity)
+            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane)
     }
 
     /// Keep-warm tier 1: one asynchronous pulse on a dedicated stream of this
@@ -93,7 +93,8 @@ public final class QwenResidentRuntime {
         let capacity = try recordingCapacity(prefillPolicy)
         try control.check()
         return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
-            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
+            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity,
+            dataPlane: baseReady.dataPlane)
     }
 
     private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,

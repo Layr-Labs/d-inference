@@ -41,7 +41,14 @@ final class QwenMTPDecoder {
     let terms: QwenMTPTerms
     let request: QwenLayerStageGenerationRequest
     private let head: QwenMTPHead
-    private let state: any CBv2MTPRequestState
+    private var state: any CBv2MTPRequestState
+    /// The head's trusted history after the whole prompt (captured at `begin`
+    /// when the prefix cache will keep this prompt), for `prefixHistory(at:)`.
+    private(set) var keptHistory: (hidden: MLXArray, tokens: MLXArray, last: MLXArray)?
+    /// Whether `begin` keeps the history (the prefix cache stores this prompt).
+    var keepsHistory = false
+    /// Prompt positions restored from a prefix entry's history (0: none).
+    private(set) var adoptedHistoryTokens = 0
     private let stopTokens: Set<Int>
     /// The last prompt row the consumer stage produced, pre-norm.
     private var promptFrontier: MLXArray?
@@ -83,8 +90,42 @@ final class QwenMTPDecoder {
         guard !released, carry == nil, let promptFrontier else {
             throw ProbeError("Speculative head starts without a complete observed prompt")
         }
+        if keepsHistory, request.promptCount >= 2,
+           let checkpoint = head.assistant.capturePrefixCheckpoint(requestState: state,
+               targetInputCount: request.promptCount),
+           let arrays = head.assistant.encodePrefixCheckpoint(checkpoint), arrays.count == 3 {
+            // One compact copy of the prompt's trusted history, materialized
+            // now, before the first round folds the queued rows into the head.
+            eval(arrays)
+            keptHistory = (arrays[0], arrays[1], arrays[2])
+        }
         carry = (firstToken, promptFrontier)
         self.promptFrontier = nil
+    }
+
+    /// Before any prompt row of this request is observed: start the head from
+    /// a prefix entry's history instead of empty, so that it drafts from the
+    /// whole prompt. `prefixTokens` are the prompt's first `history.frontier`
+    /// tokens; the product's checkpoint codec checks them against the history.
+    /// False (and the head stays as it was) when the history does not fit.
+    func adopt(_ history: QwenMTPPrefixHistory, prefixTokens: [Int]) -> Bool {
+        guard !released, carry == nil, promptFrontier == nil, adoptedHistoryTokens == 0,
+              state.committedInputCount == 0, history.frontier == prefixTokens.count, history.frontier >= 2 else {
+            return false
+        }
+        // The codec compares the tokens in place: give it its own contiguous copy.
+        let tokens = MLXArray(prefixTokens.dropFirst().map(Int32.init), [1, prefixTokens.count - 1])
+        eval(tokens)
+        guard let checkpoint = head.assistant.decodePrefixCheckpoint(tensors: [history.hidden, tokens, history.last],
+                  prefixTokens: prefixTokens),
+              let restored = head.assistant.restorePrefixCheckpoint(checkpoint) else { return false }
+        do { try head.assistant.configureRequestState(restored, maximumSequenceLength: request.maximumTokens) }
+        catch { head.assistant.releaseRequestState(restored); return false }
+        head.assistant.releaseRequestState(state)
+        state = restored
+        adoptedHistoryTokens = history.frontier
+        statistics.restoredHistoryTokens = history.frontier
+        return true
     }
 
     /// Decodes from `lastToken` (the last selected token, not yet fed to the
@@ -200,9 +241,51 @@ final class QwenMTPDecoder {
     func release() {
         guard !released else { return }
         released = true
+        // `keptHistory` stays: it is this request's copy for the prefix
+        // entries stored after retirement, not the head's request state.
         carry = nil; promptFrontier = nil
         head.assistant.releaseRequestState(state)
     }
 
     deinit { release() }
+}
+
+/// The speculative head's trusted history at one prompt frontier `f`, as the
+/// product's own prefix checkpoint holds it (`Qwen35InlineMTPAssistant`,
+/// `qwen-trusted-normalized-history-v1`): the head-normalized target rows of
+/// positions `0 ..< f-1`, each paired with the next prompt token, and the
+/// normalized row of position `f-1`, which pairs with the first token after
+/// the frontier. Kept with the decoding rank's prefix entry; every frontier of
+/// one prompt views one copy. The rows are what a cold request's head observes
+/// for the same positions, bit for bit, so restoring them gives a hit the same
+/// drafts, acceptance and decode rate as a cold request. Drafts are verified
+/// by the target either way: tokens never depend on this.
+struct QwenMTPPrefixHistory {
+    let frontier: Int
+    /// `[1, f-1, H]`, `[1, f-1]` (int32) and `[1, 1, H]`.
+    let hidden: MLXArray
+    let tokens: MLXArray
+    let last: MLXArray
+
+    /// Views at `frontier` of a history captured at `prompt` (`2 <= frontier
+    /// <= prompt`): `hidden` and `tokens` hold `prompt - 1` rows, `last` the
+    /// row of position `prompt - 1`. Nil for a frontier outside that range.
+    static func view(hidden: MLXArray, tokens: MLXArray, last: MLXArray, prompt: Int,
+                     frontier: Int) -> QwenMTPPrefixHistory? {
+        guard prompt >= 2, (2...prompt).contains(frontier), hidden.ndim == 3, tokens.ndim == 2, last.ndim == 3,
+              hidden.dim(1) == prompt - 1, tokens.dim(1) == prompt - 1, last.dim(1) == 1 else { return nil }
+        if frontier == prompt { return .init(frontier: frontier, hidden: hidden, tokens: tokens, last: last) }
+        return .init(frontier: frontier, hidden: hidden[0..., 0 ..< (frontier - 1), 0...],
+            tokens: tokens[0..., 0 ..< (frontier - 1)], last: hidden[0..., (frontier - 1) ..< frontier, 0...])
+    }
+}
+
+extension QwenMTPDecoder {
+    /// After the whole prompt was observed (`begin`): the head's history at
+    /// `frontier`, for the prefix entry this request stores there.
+    func prefixHistory(at frontier: Int) -> QwenMTPPrefixHistory? {
+        guard let kept = keptHistory else { return nil }
+        return .view(hidden: kept.hidden, tokens: kept.tokens, last: kept.last, prompt: request.promptCount,
+            frontier: frontier)
+    }
 }

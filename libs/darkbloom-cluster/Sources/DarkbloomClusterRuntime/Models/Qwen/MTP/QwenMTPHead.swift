@@ -33,6 +33,9 @@ struct QwenMTPAllowance: Encodable, Equatable {
         // The prompt's normalized hidden rows queued for the first round, and
         // one chunk of tapped rows while it is observed.
         let queued = try product([promptTokens, geometry.hiddenSize, 2])
+        // The compact copy of that history kept for the prefix cache's
+        // entries of this prompt (`QwenMTPDecoder.begin`).
+        let kept = try product([promptTokens, geometry.hiddenSize, 2])
         let tapped = try product([min(chunkSize, promptTokens), geometry.hiddenSize, 2])
         // One verify window: logits, both stages' residual and hidden rows, and
         // every recurrent layer's state captured at each of its positions.
@@ -42,7 +45,7 @@ struct QwenMTPAllowance: Encodable, Equatable {
         let rows = try product([3, width, geometry.hiddenSize, 4])
         let captured = try product([width, geometry.recurrentLayers,
             try sum([budget.convolutionBytesPerLayer, budget.ssmBytesPerLayer])])
-        let native = try sum([try rounded(headKV), try rounded(queued), try rounded(tapped), try rounded(logits),
+        let native = try sum([try rounded(headKV), try rounded(queued), try rounded(kept), try rounded(tapped), try rounded(logits),
             try rounded(rows), try rounded(captured)])
         // Host copies: the window's argmax, drafts and per-token residual rows.
         let host = try sum([try product([width, geometry.hiddenSize, 2]), 4096])
@@ -62,6 +65,10 @@ struct QwenMTPStatistics: Encodable, Equatable {
     var buildNanoseconds: UInt64 = 0
     var evaluateNanoseconds: UInt64 = 0
     var settleNanoseconds: UInt64 = 0
+    /// Prompt positions whose head history was restored from a prefix entry
+    /// instead of observed in this request (0: the head saw only this
+    /// request's computed rows).
+    var restoredHistoryTokens = 0
 
     init(depth: Int) {
         self.depth = depth
@@ -78,7 +85,8 @@ struct QwenMTPStatistics: Encodable, Equatable {
          "mtp_emitted=\(emittedTokens)", "mtp_drafted=\(drafted)", "mtp_accepted=\(accepted)",
          "mtp_examined_by_position=" + examinedByPosition.map(String.init).joined(separator: "-"),
          "mtp_accepted_by_position=" + acceptedByPosition.map(String.init).joined(separator: "-"),
-         "mtp_build_ns=\(buildNanoseconds)", "mtp_evaluate_ns=\(evaluateNanoseconds)", "mtp_settle_ns=\(settleNanoseconds)"]
+         "mtp_build_ns=\(buildNanoseconds)", "mtp_evaluate_ns=\(evaluateNanoseconds)", "mtp_settle_ns=\(settleNanoseconds)",
+         "mtp_history_restored=\(restoredHistoryTokens)"]
     }
 }
 

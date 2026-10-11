@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import Foundation
+import MLX
 
 /// Executes one already-reserved request inside the runtime's autorelease and
 /// publication scopes. Returns CPU values; the runtime retains model ownership.
@@ -16,6 +17,14 @@ enum QwenResidentRequestExecution {
         ]))
     }
 
+    /// While the request runs: what it still needs, given that this process's
+    /// allocator grew by `grown` bytes since the request started.
+    static func requireContinuing(_ reserved: QwenResidentReservation, phaseSplit: QwenPhaseSplitAllowance?,
+                                  grown: Int) throws {
+        try reserved.requireContinuing(grown: grown, additionalNativeBytes: phaseSplit?.extraNativeBytes ?? 0,
+            additionalHostBytes: phaseSplit?.extraHostBytes ?? 0)
+    }
+
     static func run(stage: any LayerStageResidentStage, producerStage: (any LayerStageResidentStage)? = nil,
                     speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
                     generationMode: QwenResidentGenerationMode = .pipeline,
@@ -24,6 +33,7 @@ enum QwenResidentRequestExecution {
                     admission: any LayerStageResidentAdmission,
                     collective: Collective, control: QwenResidentControl,
                     reserved: QwenResidentReservation, prefixCache: QwenStagePrefixCache? = nil,
+                    activeAtStart: Int? = nil,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
     ) throws -> (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) {
         guard generationMode.isPhaseSplit == (phaseSplitAllowance != nil),
@@ -59,9 +69,19 @@ enum QwenResidentRequestExecution {
             try control.check(deadline: reserved.deadline)
             let now = DispatchTime.now().uptimeNanoseconds
             if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
+                // Admitted at its reservation; from here it asks only for what
+                // it still needs (`requireContinuing`). A caller without the
+                // allocator's start figure keeps the reservation's own check.
+                func live() throws {
+                    if let activeAtStart {
+                        try requireContinuing(reserved, phaseSplit: phaseSplitAllowance,
+                            grown: Memory.activeMemory - activeAtStart)
+                    } else {
+                        try requireLive(reserved, phaseSplit: phaseSplitAllowance)
+                    }
+                }
                 // Kept prefixes give way to the request's own admission.
-                if let prefixCache { try prefixCache.yieldingMemory { try requireLive(reserved, phaseSplit: phaseSplitAllowance) } }
-                else { try requireLive(reserved, phaseSplit: phaseSplitAllowance) }
+                if let prefixCache { try prefixCache.yieldingMemory { try live() } } else { try live() }
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
             }
             try control.check(deadline: reserved.deadline)

@@ -256,7 +256,8 @@ public final class MiMoResidentRuntime {
         defer { operation.unlock() }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
         try control.check(); try control.reserve(requestID)
-        do {
+        // Nothing below allocates: a throw is a refusal of this request alone.
+        return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard stage != nil else { throw ProbeError("Resident model already released") }
             let allowance = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
@@ -269,7 +270,18 @@ public final class MiMoResidentRuntime {
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = .init(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds)
             return allowance.reservedBytes
-        } catch { control.fail(); throw error }
+        }
+    }
+
+    /// Gives back a reservation that never started, when the pair's owner
+    /// cancels it because the other rank refused the request.
+    public func releaseReservation(requestID: UUID) throws {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard let reserved = reservation, reserved.request.requestID == requestID, control.withdraw(requestID) else {
+            throw ProbeError("Resident release has no matching unstarted reservation")
+        }
+        reservation = nil
     }
 
     /// Only rank 0 invokes the callback, after both ranks commit and accept the

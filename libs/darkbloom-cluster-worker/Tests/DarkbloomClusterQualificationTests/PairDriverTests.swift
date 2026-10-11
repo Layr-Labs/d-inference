@@ -362,18 +362,48 @@ final class PairDriverTests: XCTestCase {
         assertEndedByItself(report, sides, configuration)
     }
 
-    func testRefusedReservationStartsNothingAndBothWorkersEnd() throws {
+    func testRefusedReservationStartsNothingAndThePairShutsDownCleanly() throws {
         let sides = try Sides(modes: ["ok", "refuse"])
         let configuration = try sides.configuration()
         let report = PairDriver(configuration: configuration).run()
         XCTAssertEqual(report.outcome, "refused")
-        XCTAssertTrue(report.failure?.contains("rank 1 remote refused the reservation (capacity)") == true, report.failure ?? "")
+        XCTAssertTrue(report.failure?.contains("refused before it started (capacity)") == true, report.failure ?? "")
         XCTAssertEqual(report.ranks[0].admitted, true); XCTAssertEqual(report.ranks[1].admitted, false)
         XCTAssertEqual(report.ranks[1].refusal, "capacity")
-        // The admitted rank was cancelled; neither saw a start, so no token exists.
+        // The admitted rank gave its reservation back; neither saw a start, so
+        // no token exists. Only the request failed: both ranks stayed ready and
+        // ended through an acknowledged shutdown (round 2: both exited 1).
         XCTAssertFalse(report.ranks[0].events.contains { $0.hasPrefix("committedToken") })
+        XCTAssertEqual(report.ranks[0].events, ["ready", "admitted", "retired:cancelled", "shutdownComplete"])
+        XCTAssertEqual(report.ranks[1].events, ["ready", "refused:capacity", "shutdownComplete"])
+        XCTAssertEqual(report.ranks.map(\.exitStatus), [0, 0])
+        XCTAssertEqual(report.timing.refusedRequests?.map(\.refusingRanks), [[1]])
+        XCTAssertEqual(report.timing.refusedRequests?.first?.refusedUpFront, false)
         XCTAssertNil(report.evidence)
-        assertEndedByItself(report, sides, configuration)
+        XCTAssertEqual(report.noWorkerProcessLeft, true)
+        XCTAssertFalse(sides.signalled(configuration))
+    }
+
+    /// The production rule for a refusal: the request fails alone and the
+    /// same session serves the next one.
+    func testRefusedRequestLeavesThePairServingTheNextRequest() throws {
+        let sides = try Sides(modes: ["ok", "refuse-once"])
+        var configuration = try sides.configuration(outputCount: 3, recording: false)
+        configuration.followRequests = [try QualificationRequest(requestID: UUID(), promptTokenIDs: Array(1...20),
+            chunkSize: 16, outputCount: 3, stopTokenIDs: [], promptSource: .init(kind: "tokenIDs", description: "next"))]
+        try configuration.validate()
+        let report = PairDriver(configuration: configuration).run()
+        XCTAssertEqual(report.outcome, "completed", report.failure ?? "")
+        XCTAssertEqual(report.timing.refusedRequests?.map(\.ordinal), [0])
+        XCTAssertEqual(report.timing.refusedRequests?.first?.reason, "capacity")
+        XCTAssertEqual(report.timing.repetitions?.count, 1)
+        XCTAssertEqual(report.timing.repetitions?.first?.promptTokens, 20)
+        XCTAssertEqual(report.timing.repetitions?.first?.tokens, 3)
+        XCTAssertEqual(report.ranks[1].events.prefix(2), ["ready", "refused:capacity"])
+        XCTAssertTrue(report.ranks[0].events.contains("retired:cancelled"))
+        XCTAssertEqual(report.ranks.map(\.exitStatus), [0, 0])
+        XCTAssertEqual(report.ranks.map(\.shutdownCompleteObserved), [true, true])
+        XCTAssertEqual(report.noWorkerProcessLeft, true)
     }
 
     func testWorkerThatExitsDuringTheRequestCancelsThePeer() throws {

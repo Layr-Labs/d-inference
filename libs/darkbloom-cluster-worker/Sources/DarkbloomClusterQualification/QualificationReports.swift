@@ -141,6 +141,31 @@ public struct QualificationStateEntry: Codable, Equatable, Sendable {
     }
 }
 
+/// The prefix plan both ranks agreed for a recorded request: prompt tokens
+/// restored from the prefix caches, and whether the last prompt token ran in a
+/// frame of its own (which the cache does so that the state after all but the
+/// last token is an exact frame boundary). Both change only the prefill
+/// framing; absent for a run without the prefix cache.
+public struct QualificationPrefillPlan: Codable, Equatable, Sendable {
+    public var reusedPromptTokens: Int
+    public var splitFinalPromptToken: Bool
+    public init(reusedPromptTokens: Int, splitFinalPromptToken: Bool) {
+        self.reusedPromptTokens = reusedPromptTokens; self.splitFinalPromptToken = splitFinalPromptToken
+    }
+
+    /// Prefill frames of a prompt of `prompt` tokens in frames of `chunk`
+    /// under this plan, as the runtime frames it (frames end on the chunk
+    /// grid from the reused prefix; a split last token runs alone).
+    public func prefillFrames(prompt: Int, chunk: Int) -> Int? {
+        guard prompt >= 1, chunk >= 1, reusedPromptTokens >= 0, reusedPromptTokens < prompt else { return nil }
+        let split = splitFinalPromptToken && prompt >= 2
+        let last = split ? prompt - 1 : prompt
+        var frames = 0, offset = reusedPromptTokens
+        while offset < last { offset = min(last, (offset / chunk + 1) * chunk); frames += 1 }
+        return frames + (split ? 1 : 0)
+    }
+}
+
 public struct QualificationEvidence: Codable, Equatable, Sendable {
     public var selectedTokenIDs: [Int]
     public var finishReason: String
@@ -150,6 +175,10 @@ public struct QualificationEvidence: Codable, Equatable, Sendable {
     public var finalLogits: QualificationFinalLogits?
     public var stateEntries: [QualificationStateEntry]?
     public var stateSHA256: String?
+    /// The agreed prefix plan of a pair run with the prefix cache on; nil for
+    /// a run without it (and for the single-Mac reference, which frames the
+    /// prompt in fixed chunks from offset zero).
+    public var prefillPlan: QualificationPrefillPlan?
 
     public init(selectedTokenIDs: [Int], finishReason: String, completedFrames: Int? = nil, committedTokens: Int? = nil,
                 steps: [QualificationStep]? = nil, finalLogits: QualificationFinalLogits? = nil,
@@ -389,6 +418,9 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
     /// runs more than one request file.
     public var promptTokens: Int?
     public var promptTokenIDsSHA256: String?
+    /// The pair's serving context when this request was reserved
+    /// (`ClusterWorkerPair.servingContextTokens`).
+    public var servingContextTokens: Int?
 
     public init(requestID: String, admissionSeconds: Double, firstTokenSeconds: Double, prefillTokensPerSecond: Double,
                 decodeSeconds: Double, decodeTokensPerSecond: Double?, totalSeconds: Double,
@@ -398,6 +430,31 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
         self.decodeSeconds = decodeSeconds; self.decodeTokensPerSecond = decodeTokensPerSecond
         self.totalSeconds = totalSeconds; self.secondTokenGapSeconds = secondTokenGapSeconds
         self.tokens = tokens; self.selectedTokenIDsSHA256 = selectedTokenIDsSHA256; self.finishReason = finishReason
+    }
+}
+
+/// A request the pair refused before it started: refused up front because it
+/// is longer than the pair's serving context, or refused by a rank's live gate
+/// at reservation and given back by the other rank. Only this request failed;
+/// the session went on to the next one.
+public struct PairRefusedRequest: Codable, Equatable, Sendable {
+    public var ordinal: Int
+    public var requestID: String
+    public var promptTokens: Int
+    public var outputTokens: Int
+    /// `ClusterWorkerRefusal` raw value.
+    public var reason: String
+    /// The pair's serving context when it was refused.
+    public var servingContextTokens: Int
+    /// True when no rank was asked (longer than the serving context).
+    public var refusedUpFront: Bool
+    /// Ranks whose own reservation answer was a refusal.
+    public var refusingRanks: [Int]
+    public init(ordinal: Int, requestID: String, promptTokens: Int, outputTokens: Int, reason: String,
+                servingContextTokens: Int, refusedUpFront: Bool, refusingRanks: [Int]) {
+        self.ordinal = ordinal; self.requestID = requestID; self.promptTokens = promptTokens
+        self.outputTokens = outputTokens; self.reason = reason; self.servingContextTokens = servingContextTokens
+        self.refusedUpFront = refusedUpFront; self.refusingRanks = refusingRanks
     }
 }
 
@@ -413,6 +470,11 @@ public struct PairTiming: Codable, Equatable, Sendable {
     public var totalSeconds: Double?
     /// Every request of the run in order; the fields above describe the first.
     public var repetitions: [PairRepetitionTiming]?
+    /// Requests refused before they started; the session served on.
+    public var refusedRequests: [PairRefusedRequest]?
+    /// Each rank's serving context at readiness and the pair's at the end.
+    public var servingContextAtReady: [Int?]?
+    public var servingContextAtEnd: Int?
     public var note: String
 
     public init(note: String) { self.note = note }

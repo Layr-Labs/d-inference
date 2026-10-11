@@ -133,6 +133,7 @@ import Foundation
         do {
             var session = try ClusterWorkerSession(identity: identity, rank: rank, profile: profile, executionPlanSHA256: plan(cut: cut))
             var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
+            var reservations = 0, admittedNotStarted = false
             func emit(_ event: ClusterWorkerEvent) throws {
                 let id: UUID?
                 switch event { case .ready, .unavailable, .shutdownComplete: id = nil; default: id = requestID }
@@ -185,11 +186,17 @@ import Foundation
                     case .reserve(let value):
                         requestID = command.requestID; reservation = value; selected = 0
                         let current = uptime()
-                        if behavior.mode == "refuse" { try emit(.refused(.capacity)) }
+                        reservations += 1
+                        // "refuse": every reservation, as a rank whose gate refuses
+                        // for memory; "refuse-once": the first only.
+                        if behavior.mode == "refuse" || (behavior.mode == "refuse-once" && reservations == 1) {
+                            try emit(.refused(.capacity)); admittedNotStarted = false
+                        }
                         else if value.deadlineUptimeNanoseconds <= current || value.deadlineUptimeNanoseconds > deadline {
                             try emit(.refused(.deadline))
-                        } else { try emit(.admitted(reservedBytes: 4096)) }
+                        } else { try emit(.admitted(reservedBytes: 4096)); admittedNotStarted = true }
                     case .start:
+                        admittedNotStarted = false
                         if behavior.mode == "exit-on-start" { exit(9) }
                         if behavior.mode == "stall-on-start" { continue }
                         let request = reservation!
@@ -211,7 +218,11 @@ import Foundation
                                 committedTokens: request.promptTokenIDs.count + selected)); selected += 1
                         }
                     case .cancel:
-                        // A real worker reports the failure, releases and exits.
+                        // A reservation that never started is given back and the
+                        // worker serves on (the pair's other rank refused the
+                        // request). Otherwise a real worker reports the failure,
+                        // releases and exits.
+                        if admittedNotStarted { admittedNotStarted = false; try emit(.retired(.cancelled)); continue }
                         try emit(.failed(.runtimeError)); exit(1)
                     case .keepWarm(let ordinal):
                         try emit(.keptWarm(ordinal: ordinal, microseconds: 1))

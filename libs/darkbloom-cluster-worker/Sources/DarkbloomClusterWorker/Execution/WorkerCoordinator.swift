@@ -59,6 +59,8 @@ final class WorkerCoordinator: @unchecked Sendable {
     private var keepWarmArmed = false
     private var lastActivity: UInt64 = DispatchTime.now().uptimeNanoseconds
     private var keepWarmBackoffUntil: UInt64 = 0
+    /// The request this executor admitted and has not started; executor only.
+    private var admittedNotStarted: UUID?
 
     /// Before load. `membershipEpoch` is the configured epoch every lease
     /// renewal must carry; `renewal` is told each renewal's time to live, for
@@ -131,6 +133,11 @@ final class WorkerCoordinator: @unchecked Sendable {
                     do {
                         let bytes = try runtime.reserve(command.requestID!, value)
                         try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
+                        admittedNotStarted = command.requestID
+                    } catch let refusal as ClusterResidentRequestRefusal where runtime.readiness != nil {
+                        // This request alone: the runtime gave the reservation
+                        // back and stays available (its own log line names why).
+                        try publish(.refused(refusal.reason), requestID: command.requestID)
                     } catch {
                         let available = runtime.readiness != nil
                         try publish(.refused(available ? .unsupported : .unavailable), requestID: command.requestID)
@@ -138,6 +145,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                 case .start:
                     let id = command.requestID!
+                    admittedNotStarted = nil
                     let reason = try runtime.start(id) { ordinal, token, frontier in
                         try self.publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: frontier), requestID: id)
                         return try self.nextDecision() == .proceed
@@ -155,9 +163,12 @@ final class WorkerCoordinator: @unchecked Sendable {
                     if runtime.readiness == nil { try publish(.unavailable(.runtimeError), requestID: nil) }
                 case .keepWarm(let ordinal):
                     // Tier 2. A failure of the data plane is a failed worker:
-                    // it ends cleanly through the failure path below.
+                    // it ends cleanly through the failure path below. The
+                    // answer carries the serving context re-derived now.
                     let elapsed = try runtime.dataPlanePing()
-                    try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max)))), requestID: nil)
+                    let serving = runtime.refreshServingContext().map { min($0, ready?.profile.maximumContextTokens ?? $0) }
+                    try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max))),
+                        servingContextTokens: serving), requestID: nil)
                 case .shutdown:
                     condition.lock(); keepWarmArmed = false; condition.unlock()
                     try runtime.shutdown()
@@ -165,7 +176,15 @@ final class WorkerCoordinator: @unchecked Sendable {
                     try publish(.shutdownComplete, requestID: nil)
                     return
                 case .cancel:
-                    throw WorkerFailure.invalid("Request cancelled before native start or after its return")
+                    // The owner gives back a reservation that never started
+                    // (the other rank refused the request): release it and
+                    // stay available. Any other cancel here is a failure.
+                    guard let id = command.requestID, activeRequest() == id, admittedNotStarted == id else {
+                        throw WorkerFailure.invalid("Request cancelled before native start or after its return")
+                    }
+                    try runtime.releaseReservation(id)
+                    admittedNotStarted = nil
+                    try publish(.retired(.cancelled), requestID: id)
                 case .tokenDecision:
                     throw WorkerFailure.invalid("Token decision escaped its callback credit")
                 }

@@ -23,6 +23,8 @@ enum ClusterWorkerValidation {
             && (1...ClusterWorkerLimits.outputTokens).contains(p.maximumOutputTokens)
             && (1...p.maximumPromptTokens).contains(p.maximumChunkTokens)
             && (p.maximumPromptTokens...ClusterWorkerLimits.contextTokens).contains(p.maximumContextTokens), "Invalid worker profile")
+        try workerRequire(value.servingContextTokens.map { (1...p.maximumContextTokens).contains($0) } ?? true,
+            "Invalid serving context")
     }
     static func reservation(_ value: ClusterWorkerReservation) throws {
         try workerRequire(text(value.profileID, maximum: 128)
@@ -65,8 +67,9 @@ enum ClusterWorkerValidation {
             try workerRequire(value.identity.membershipEpoch == frame.membershipEpoch, "Ready epoch differs")
         case .admitted(let bytes):
             try workerRequire((1...ClusterWorkerLimits.capacityBytes).contains(bytes), "Invalid reserved bytes")
-        case .keptWarm(let ordinal, let microseconds):
-            try workerRequire((1..<ClusterWorkerLimits.keepWarmOrdinals).contains(ordinal) && microseconds >= 0,
+        case .keptWarm(let ordinal, let microseconds, let serving):
+            try workerRequire((1..<ClusterWorkerLimits.keepWarmOrdinals).contains(ordinal) && microseconds >= 0
+                && (serving.map { (1...ClusterWorkerLimits.contextTokens).contains($0) } ?? true),
                 "Invalid keep-warm acknowledgment")
         case .committedToken(let ordinal, let token, let committed):
             try workerRequire((0..<ClusterWorkerLimits.outputTokens).contains(ordinal)

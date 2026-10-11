@@ -37,6 +37,26 @@ final class QwenResidentControl: @unchecked Sendable {
         try locked { guard case .running(let expected) = phase, expected == id, !cancelled else {
             throw ProbeError("Resident request invalidated before completion") }; phase = .idle }
     }
+    /// Gives back a reservation that never started: the owner is idle again
+    /// and takes the next request. False (and nothing changes) unless `id` is
+    /// the reservation held now and no cancel or failure has ended it.
+    @discardableResult
+    func release(_ id: UUID) -> Bool {
+        locked {
+            guard case .reserved(let current) = phase, current == id, !cancelled else { return false }
+            phase = .idle; return true
+        }
+    }
+    /// Gives back a reservation the owner cancelled before it started (the
+    /// pair's other rank refused the request): idle again, cancel cleared.
+    /// False unless `id` is the reservation held now.
+    @discardableResult
+    func withdraw(_ id: UUID) -> Bool {
+        locked {
+            guard case .reserved(let current) = phase, current == id else { return false }
+            phase = .idle; cancelled = false; return true
+        }
+    }
     func fail() { locked { cancelled = true; phase = .failed } }
     func cancel(_ id: UUID) {
         locked {

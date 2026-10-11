@@ -140,11 +140,46 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
         XCTAssertThrowsError(try send(.start(requestID: requestID), to: &state))
         XCTAssertThrowsError(try state.observeRetired(requestID: requestID, retirement: .clean))
         XCTAssertEqual(state.status.chargedRequestBytes, 60)
+        // Cancelled before it started (the pair's other rank refused the
+        // request): the native worker gave the reservation back and serves on.
         try state.observeRetired(requestID: requestID, retirement: .cancelled)
         _ = try send(.release(requestID: requestID), to: &state)
         try state.observeRequestResourcesReleased(requestID: requestID)
-        XCTAssertFalse(state.status.ready)
-        XCTAssertTrue(state.requiresNativeFence)
+        XCTAssertTrue(state.status.ready)
+        XCTAssertFalse(state.requiresNativeFence)
+        XCTAssertEqual(state.status.chargedRequestBytes, 0)
+        XCTAssertNoThrow(try send(.reserve(requestID: UUID(), capacityLimitBytes: 10, remainingNanoseconds: 10), to: &state))
+    }
+
+    /// A refusal for memory (or deadline, or profile) is the request's alone:
+    /// the charge goes, the lease stays ready and takes the next reservation.
+    /// Before round-2 fixes every refusal quarantined the lease, which ended
+    /// the pair session with it.
+    func testRefusalForMemoryKeepsTheLeaseServing() throws {
+        var state = try loaded()
+        _ = try send(.reserve(requestID: requestID, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &state)
+        try state.observeRefused(requestID: requestID, reason: .capacity)
+        XCTAssertEqual(state.status.chargedRequestBytes, 0)
+        XCTAssertTrue(state.status.ready)
+        XCTAssertFalse(state.requiresNativeFence)
+        XCTAssertFalse(state.status.quarantined)
+        let next = UUID()
+        XCTAssertEqual(try send(.reserve(requestID: next, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &state),
+                       .forwardReserve(next, localDeadlineUptimeNanoseconds: 610))
+        // The refused ID stays in the replay window.
+        var again = try loaded()
+        _ = try send(.reserve(requestID: requestID, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &again)
+        try again.observeRefused(requestID: requestID, reason: .capacity)
+        XCTAssertThrowsError(try send(.reserve(requestID: requestID, capacityLimitBytes: 80, remainingNanoseconds: 500), to: &again))
+    }
+
+    /// A reservation cancelled after it started is still a poisoned session.
+    func testCancelAfterStartStillQuarantines() throws {
+        var state = try reserved()
+        _ = try send(.start(requestID: requestID), to: &state)
+        _ = try send(.cancel(requestID: requestID, reason: .callerCancelled), to: &state)
+        try state.observeRetired(requestID: requestID, retirement: .cancelled)
+        XCTAssertTrue(state.status.quarantined)
     }
 
 

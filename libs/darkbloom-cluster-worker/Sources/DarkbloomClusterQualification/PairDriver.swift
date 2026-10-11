@@ -64,7 +64,8 @@ public struct PairDriver: Sendable {
     static let runtimeLinePrefixes = ["darkbloom-resident-load-v1 ", "darkbloom-phase-split-v1 ", "darkbloom-resident-release-v1 ",
         "darkbloom-mimo-resident-load-v1 ", "darkbloom-mimo-request-v1 ", "darkbloom-mimo-resident-release-v1 ",
         "darkbloom-mimo-step-v1 ", "darkbloom-forced-exit-v1 ", "darkbloom-orphan-wired-v1 ", "darkbloom-stage-residency-v1 ",
-        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 "]
+        "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 ",
+        "darkbloom-request-refused-v1 ", "darkbloom-serving-context-v1 "]
     static func runtimeLines(_ diagnostics: String) -> [String] {
         diagnostics.split(separator: "\n").map(String.init).filter { line in
             runtimeLinePrefixes.contains { line.hasPrefix($0) }
@@ -275,15 +276,20 @@ public struct PairDriver: Sendable {
         do {
             pair = try ClusterWorkerPair(workers: endpoints,
                 startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
-                keepWarm: c.keepWarm ? .standard : .off)
+                keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
-        log("pair-check: both ranks ready after \(String(format: "%.1f", timing.startupSeconds!)) s")
+        timing.servingContextAtReady = endpoints.map { $0.readiness?.servingContextTokens }
+        log("pair-check: both ranks ready after \(String(format: "%.1f", timing.startupSeconds!)) s; serving context "
+            + "\(pair.servingContextTokens) (rank 0 \(timing.servingContextAtReady?[0].map(String.init) ?? "?"), "
+            + "rank 1 \(timing.servingContextAtReady?[1].map(String.init) ?? "?"))")
 
         // 5 and 6. Reserve on both ranks, start, and let rank 0's committed
         // tokens continue; once per repetition, in the same loaded session.
         let announce = self.log
-        var lease: ClusterWorkerRequest!
+        var finalLease: ClusterWorkerRequest?
+        var refused: [PairRefusedRequest] = []
+        var firstRefused = false
         var result: (tokens: [Int], stamps: [UInt64], finish: String?, failure: String?, concluded: UInt64?) = ([], [], nil, nil, nil)
         var reason = ""
         var repetitions: [PairRepetitionTiming] = []
@@ -308,11 +314,30 @@ public struct PairDriver: Sendable {
             // The first request carries the request file's ID, which names the
             // recorded evidence. A repeated request needs an ID of its own.
             let requestID = repetition == 0 ? c.request.requestUUID : UUID()
+            let serving = pair.servingContextTokens
+            let refusedBefore = endpoints.map(\.refusalCount)
+            let lease: ClusterWorkerRequest
             do {
                 lease = try pair.reserve(requestID: requestID, reservation: .init(profileID: current.profileID,
                     promptTokenIDs: current.promptTokenIDs, stopTokenIDs: current.stopTokenIDs,
                     outputCount: current.outputCount, chunkSize: current.chunkSize,
                     deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity))
+            } catch ClusterWorkerOwnerError.refused(let why) {
+                // This request alone: refused up front (longer than the
+                // serving context) or by a rank's live gate and given back by
+                // the other. The pair is still valid; go on to the next request.
+                let refusing = (0...1).filter { endpoints[$0].refusalCount > refusedBefore[$0] }
+                refused.append(.init(ordinal: repetition, requestID: requestID.uuidString.lowercased(),
+                    promptTokens: current.promptTokenIDs.count, outputTokens: current.outputCount, reason: why.rawValue,
+                    servingContextTokens: serving, refusedUpFront: refusing.isEmpty, refusingRanks: refusing))
+                if repetition == 0 { firstRefused = true }
+                log("pair-check: request \(repetition + 1) of \(c.totalRequests) refused (\(why.rawValue)) before it started: "
+                    + "\(current.promptTokenIDs.count + current.outputCount) context tokens, serving context \(serving), "
+                    + (refusing.isEmpty ? "refused up front" : "refused by " + refusing.map { ranks[$0].role }.joined(separator: " and "))
+                    + "; the pair is \(pair.readiness == nil ? "NOT ready" : "still ready")")
+                timing.refusedRequests = refused
+                guard pair.readiness != nil else { return finish("failed", "the pair stopped being ready after a refused request") }
+                continue
             } catch {
                 if let rank = (0...1).first(where: { endpoints[$0].refusal != nil }) {
                     return finish("refused", "\(ranks[rank].role) refused the reservation (\(endpoints[rank].refusal!))")
@@ -320,6 +345,7 @@ public struct PairDriver: Sendable {
                 return finish("failed", "reservation failed: \(error)")
             }
             let admission = Double(DispatchTime.now().uptimeNanoseconds - now) / 1e9
+            defer { if repetition + 1 >= c.totalRequests { finalLease = lease } }
 
             let started = DispatchTime.now().uptimeNanoseconds
             let collector = Collector(stopAfter: c.stopAfterTokens) {
@@ -366,6 +392,7 @@ public struct PairDriver: Sendable {
                 measured.storedPromptFrontiers = collector.stored.isEmpty ? nil : collector.stored
                 measured.promptTokens = current.promptTokenIDs.count
                 measured.promptTokenIDsSHA256 = current.promptTokenIDsSHA256
+                measured.servingContextTokens = serving
                 repetitions.append(measured)
             }
             timing.repetitions = repetitions
@@ -382,13 +409,16 @@ public struct PairDriver: Sendable {
             }
         }
         if c.repetitions == 1 { repetitionsAgree = nil }
-        let finalLease = lease!
+        timing.servingContextAtEnd = pair.servingContextTokens
+        let lastLease = finalLease
 
         // 7. Clean shutdown: command, acknowledgement, process exit.
         let shutdownStarted = DispatchTime.now().uptimeNanoseconds
         Task.detached {
-            await finalLease.waitUntilRetired()
-            finalLease.releaseResources()
+            if let lastLease {
+                await lastLease.waitUntilRetired()
+                lastLease.releaseResources()
+            }
             await pair.shutdown()
         }
         // A clean shutdown is acknowledged in seconds; a lease that lapsed
@@ -400,6 +430,12 @@ public struct PairDriver: Sendable {
         // 8. Each rank's own record of the run.
         var evidence = QualificationEvidence(selectedTokenIDs: result.tokens, finishReason: reason)
         var ranksAgree: Bool?
+        if c.recording && firstRefused {
+            // The recorded request never ran: nothing to collect.
+            let clean = endpoints.allSatisfy { $0.shutdownCompleteObserved && $0.termination == .init(status: 0, signalled: false) }
+            return finish("refused", "the recorded request was refused before it started (\(refused.first?.reason ?? "?"))"
+                + (clean ? "; both ranks shut down cleanly" : "; a worker did not acknowledge shutdown and exit with status 0"))
+        }
         if c.recording {
             do {
                 let records = try (0...1).map { rank -> PairEvidence in
@@ -429,6 +465,10 @@ public struct PairDriver: Sendable {
             }
         }
         let clean = endpoints.allSatisfy { $0.shutdownCompleteObserved && $0.termination == .init(status: 0, signalled: false) }
+        if refused.count == c.totalRequests {
+            return finish("refused", "every request was refused before it started (\(refused.map(\.reason).joined(separator: ", ")))"
+                + (clean ? "; both ranks shut down cleanly" : "; a worker did not acknowledge shutdown and exit with status 0"))
+        }
         return finish(clean ? "completed" : "failed",
             clean ? nil : "the request completed but a worker did not acknowledge shutdown and exit with status 0",
             evidence: evidence, ranksAgree: ranksAgree)

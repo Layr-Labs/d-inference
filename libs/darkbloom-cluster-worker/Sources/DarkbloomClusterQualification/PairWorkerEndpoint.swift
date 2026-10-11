@@ -67,6 +67,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     private var shutdownComplete = false
     private var admittedValue: Bool?
     private var refusalValue: String?
+    private var refusals = 0
 
     public init(command: [String], expectedIdentity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil) throws {
@@ -105,6 +106,8 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     public var shutdownCompleteObserved: Bool { lock.withLock { shutdownComplete } }
     public var admitted: Bool? { lock.withLock { admittedValue } }
     public var refusal: String? { lock.withLock { refusalValue } }
+    /// Reservation refusals this rank answered with, in this session.
+    public var refusalCount: Int { lock.withLock { refusals } }
     public var readyObserved: Bool { lock.withLock { readyAt != nil } }
     public var diagnosticTail: String {
         let text = String(decoding: lock.withLock { stderrTail }, as: UTF8.self)
@@ -255,7 +258,9 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             switch frame.event {
             case .ready: eventLog.append("ready")
             case .admitted: eventLog.append("admitted"); admittedValue = true
-            case .refused(let reason): eventLog.append("refused:\(reason.rawValue)"); admittedValue = false; refusalValue = reason.rawValue
+            case .refused(let reason):
+                eventLog.append("refused:\(reason.rawValue)"); admittedValue = false; refusalValue = reason.rawValue
+                refusals += 1
             case .committedToken:
                 if tokenEvents == 0 { eventLog.append("committedToken") }
                 tokenEvents += 1

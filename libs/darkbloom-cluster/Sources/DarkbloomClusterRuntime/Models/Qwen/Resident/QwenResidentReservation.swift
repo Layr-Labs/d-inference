@@ -11,6 +11,16 @@ struct QwenResidentReservation {
     let prefillPolicy: QwenResidentPrefillPolicy
     let prefillAllowance: QwenGenerationPrefillAllowance?
 
+    /// The live check of this admitted request while it runs, with `grown`
+    /// bytes already allocated since it started (`requireContinuing`).
+    func requireContinuing(grown: Int, additionalNativeBytes: Int = 0, additionalHostBytes: Int = 0) throws {
+        try allowance.requireContinuing(grownBytes: grown,
+            additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([additionalNativeBytes,
+                prefillAllowance?.extraNativeBytes ?? 0, recordingCharge?.capture.extraNativeBytes ?? 0]),
+            additionalHostBytes: QwenLongPrefillCheckedBytes.sum([additionalHostBytes,
+                prefillAllowance?.extraHostBytes ?? 0, recordingCharge?.capture.extraHostBytes ?? 0]))
+    }
+
     func requireLive() throws {
         if let prefillAllowance {
             try allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([

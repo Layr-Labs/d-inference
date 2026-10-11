@@ -109,6 +109,12 @@ extension DistributedCBv2Engine {
             request.promptTokens.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }),
             request.stopTokens.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize })
         else { throw DistributedEngineError.unsupportedRequest("token limits or vocabulary") }
+        // Within the profile but longer than what the owner serves now (a
+        // rank's live admissible memory): refused up front, retryably.
+        if let serving = owner.readiness()?.servingContextTokens, total.partialValue > serving {
+            throw DistributedEngineError.refusedForCapacity(requestedContextTokens: total.partialValue,
+                servingContextTokens: serving, reason: "capacity")
+        }
         let p = request.sampling
         guard p.temperature == 0, p.topP == 1, p.topK == 0, p.minP == 0,
             p.repetitionPenalty == 1, p.frequencyPenalty == 0, p.presencePenalty == 0,

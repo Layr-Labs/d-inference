@@ -62,9 +62,18 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// allocator. The allocator's rounding is bounded here by one 16 KiB page
     /// per array.
     var requestChargeEveryRankBytes: Int {
+        requestChargeEveryRankBytes(contextTokens: min(profile.maximumContextTokens, Self.planningLimits.maximumContextTokens))
+    }
+
+    /// The model's largest context (`QwenResidentContextLimits`), which ranks
+    /// admit at load when memory allows; a placement may be planned for it.
+    var largestContextTokens: Int { profile.maximumContextTokens }
+
+    /// The same charge at another context: what a placement planned for that
+    /// request has to fit on every rank.
+    func requestChargeEveryRankBytes(contextTokens: Int) -> Int {
         guard let b = try? QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-            maximumTokens: min(profile.maximumContextTokens, Self.planningLimits.maximumContextTokens),
-            chunkSize: maximumChunkTokens) else { return 0 }
+            maximumTokens: contextTokens, chunkSize: maximumChunkTokens) else { return 0 }
         let arrays = 6 * b.recurrentLayers + 3 * b.attentionLayers + 3
         return 3 * b.recurrentLayers * (b.convolutionBytesPerLayer + b.ssmBytesPerLayer)
             + b.attentionLayers * (b.kvCapacityBytesPerAttentionLayer + 4)

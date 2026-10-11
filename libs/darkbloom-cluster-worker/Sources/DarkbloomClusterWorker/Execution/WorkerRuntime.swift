@@ -18,8 +18,19 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// The last started request's prefix cache: prompt tokens restored, and
     /// frontiers kept. Read after `start` returns, on the same executor.
     var lastPromptCache: (reused: Int, stored: [Int]) { get }
+    /// Gives back a reservation that never started (the owner cancelled it
+    /// because the pair's other rank refused the request); the runtime is idle
+    /// and available again. Throws when it cannot, which fails the worker.
+    func releaseReservation(_ id: UUID) throws
+    /// Re-derives, while idle, the longest context this rank's host memory
+    /// gate admits now; nil when it does not derive one or cannot now.
+    func refreshServingContext() -> Int?
 }
 
 extension WorkerRuntime {
     var lastPromptCache: (reused: Int, stored: [Int]) { (0, []) }
+    func releaseReservation(_ id: UUID) throws {
+        throw WorkerFailure.invalid("This runtime cannot give back a reservation")
+    }
+    func refreshServingContext() -> Int? { nil }
 }

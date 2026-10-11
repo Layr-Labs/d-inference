@@ -206,13 +206,19 @@ enum QwenDenseStageLoadPolicy {
     /// cannot be judged (invalid, stale, critical pressure, swap under
     /// pressure); a judged refusal is returned with its sentence. `baseline`
     /// is the first sample of the load or request this decision belongs to.
+    ///
+    /// `floor` is the least admissible memory the decision asks for whatever
+    /// the requirement: the 6 GiB floor for a load or a reservation; a request
+    /// that was admitted and is running asks only for what it still needs
+    /// (`QwenResidentRequestAllowance.requireContinuing`).
     static func decide(_ os: QwenDenseStageLoadOSObservation, requiredBytes: Int, purpose: String,
-                       now: UInt64, since baseline: QwenDenseStageLoadBaseline? = nil) throws -> QwenDenseStageLoadAdmission {
+                       now: UInt64, since baseline: QwenDenseStageLoadBaseline? = nil,
+                       floor: Int = minimumAdmissibleBytes) throws -> QwenDenseStageLoadAdmission {
         try validateOS(os, now: now)
-        guard requiredBytes >= 0, !purpose.isEmpty else { throw ProbeError("Invalid resource requirement") }
+        guard requiredBytes >= 0, floor >= 0, !purpose.isEmpty else { throw ProbeError("Invalid resource requirement") }
         let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
         let page = os.pageSizeBytes
-        let required = max(minimumAdmissibleBytes, requiredBytes)
+        let required = max(floor, requiredBytes)
         // First kernel bound: its file-cache minimum. The kernel's formula on
         // this snapshot, rounded up, and the kernel's own figure when that is
         // larger. The sysctl alone can be stale.

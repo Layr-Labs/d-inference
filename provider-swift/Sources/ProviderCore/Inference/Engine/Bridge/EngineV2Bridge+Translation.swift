@@ -307,6 +307,14 @@ enum EngineV2Translation {
                 return "engine_v2 backend ineligible: \(reason)"
             }
         }
+        if case DistributedEngineError.refusedForCapacity(let requested, let serving, let reason)? = error as? DistributedEngineError {
+            // A pair refused this request alone for capacity (its serving
+            // context, or a rank's host memory gate). Retryable capacity: the
+            // canonical prefix maps it to 503 and the budget wording to
+            // `request_exceeds_node_budget`.
+            return "token_budget_exhausted: request requires \(requested) context tokens "
+                + "but only \(serving) available on this cluster pair now (\(reason))"
+        }
         // Unknown throw: do NOT claim capacity exhaustion (which would be
         // retried) — surface as a generic generation failure (500).
         return "engine_v2 submit failed: \(error.localizedDescription)"

@@ -135,6 +135,22 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     agreement: unplannedAgreement, collective: collective, hiddenTap: decoder?.tap(), check: checked)
                 agreement = planned.agreement; session = planned.session; prefix = planned.summary
             }
+            if let decoder, let prefixCache, prefixCache.enabled {
+                // The head keeps this prompt's history for the entries this
+                // request stores, and a restored prefix brings its own back:
+                // the head then drafts from the whole prompt, as a cold
+                // request's does. Exactness never depends on it.
+                decoder.keepsHistory = prefix.splitFinalToken
+                let reused = prefix.reusedPromptTokens
+                if reused > 0 {
+                    let tokens = Array(unplannedAgreement.request.promptTokenIDs[0..<reused])
+                    let history = prefixCache.state(scope: qwenStagePrefixScope(agreement),
+                        tokens: unplannedAgreement.request.promptTokenIDs, frontier: reused)?.speculativeHistory
+                    let adopted = history.map { decoder.adopt($0, prefixTokens: tokens) } ?? false
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) mtp-history=\(adopted ? "restored" : "absent")"
+                        + " frontier=\(reused)")
+                }
+            }
             diagnostics?.request = agreement.request
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
@@ -256,12 +272,20 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                decoder?.release()
+                // The head's history at each kept frontier, taken before the
+                // decoder lets go of it.
+                let histories = decoder.map { decoder in
+                    { (frontier: Int) in decoder.prefixHistory(at: frontier) }
+                }
+                defer { decoder?.release() }
                 // Both ranks retired cleanly: only now do this rank's captured
                 // frontiers become reusable. A failed request stores nothing.
                 var stored: [Int] = []
                 if let prefixCache, prefixCache.enabled {
-                    let states = owned.capturedPrefixStates()
+                    var states = owned.capturedPrefixStates()
+                    if let histories {
+                        for index in states.indices { states[index].speculativeHistory = histories(states[index].committedTokens) }
+                    }
                     prefixCache.insert(scope: qwenStagePrefixScope(agreement), tokens: agreement.request.promptTokenIDs,
                         states: states)
                     stored = states.map(\.committedTokens)

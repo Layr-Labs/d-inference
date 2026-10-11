@@ -33,6 +33,9 @@ import Foundation
               [--repetitions N (with --evidence none; no session limit)]
               [--idle-seconds S[,S...] (idle gaps before requests 2, 3, ...; the list repeats)]
               [--keep-warm on|off (S27 keep-warm, both tiers; default on)]
+              [--follow-request REQUEST.json (repeatable; run once each after the repetitions, same session)]
+              [--serving-context-check on|off (default on: a request longer than the pair's serving context is
+                                              refused before either rank is asked; off sends it to the ranks' gates)]
               [--stop-renewals-after-seconds S (qualification: stop renewing both rank leases; workers must end)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
@@ -168,7 +171,8 @@ import Foundation
             "--idle-seconds", "--keep-warm", "--stop-renewals-after-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
-            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache"]
+            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
+            "--serving-context-check"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -252,6 +256,10 @@ import Foundation
             configuration.followRequests = try follow.map { try QualificationRequest.read(URL(fileURLWithPath: $0)) }
             try configuration.validate()
         }
+        if let check = fields["--serving-context-check"]?.first {
+            guard ["on", "off"].contains(check) else { throw Failure("--serving-context-check takes on or off") }
+            configuration.servingContextCheck = check == "on"
+        }
         if let fault = fields["--fault"]?.first {
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }
@@ -322,6 +330,15 @@ import Foundation
                 timing.decodeTokensPerSecond ?? 0, timing.totalSeconds)
                 + ", prompt \(timing.promptTokens.map(String.init) ?? "?"), reused \(timing.reusedPromptTokens ?? 0)"
                 + ", tokens \(timing.tokens) \(timing.selectedTokenIDsSHA256.prefix(16))")
+        }
+        for item in report.timing.refusedRequests ?? [] {
+            lines.append("request \(item.ordinal + 1): refused (\(item.reason)) before it started, "
+                + "\(item.promptTokens + item.outputTokens) context tokens, serving context \(item.servingContextTokens), "
+                + (item.refusedUpFront ? "refused up front" : "refused by rank " + item.refusingRanks.map(String.init).joined(separator: ",")))
+        }
+        if let ready = report.timing.servingContextAtReady {
+            lines.append("serving context: at ready " + ready.map { $0.map(String.init) ?? "?" }.joined(separator: "/")
+                + ", at end \(report.timing.servingContextAtEnd.map(String.init) ?? "?")")
         }
         if let agree = report.repetitionsAgreeOnTokens { lines.append("repeated requests select the same tokens: \(agree)") }
         for rank in report.ranks { for line in rank.runtimeLines ?? [] { lines.append("\(rank.role): \(line)") } }

@@ -10,6 +10,10 @@ struct QwenStagePrefixState {
     let committedTokens: Int
     let attention: [Int: (keys: MLXArray, values: MLXArray)]
     let recurrent: [Int: (conv: MLXArray, ssm: MLXArray)]
+    /// On the decoding rank of a speculative pair: the head's trusted history
+    /// at this frontier, so that a request restoring it drafts from the whole
+    /// prompt as a cold request does, not only from its computed suffix.
+    var speculativeHistory: QwenMTPPrefixHistory? = nil
 
     var adopted: QwenLayerStageAdoptedState {
         .init(committedTokens: committedTokens, attention: attention, recurrent: recurrent)

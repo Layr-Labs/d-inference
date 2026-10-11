@@ -43,6 +43,21 @@ public struct ClusterPlacementPolicy: Sendable {
     /// rank 0's Mac, so a Mac that cannot reach the other one cannot lead.
     /// Each Mac alone is still evaluated, and nothing else changes.
     public var leader: String?
+    /// A request longer than the layout's planned one (its maximum prompt
+    /// plus output), up to this context: the family's own largest, which
+    /// its ranks admit at load when memory allows. Nil plans within the
+    /// layout's limits only. Set together with `requestChargeEveryRankBytes`.
+    public var largestContextTokens: Int?
+    /// What the family's request gate charges every rank at the requested
+    /// context (`ClusterModelLayout.requestChargeEveryRankBytes` is at the
+    /// layout's planned request). Nil uses the layout's.
+    public var requestChargeEveryRankBytes: Int?
+    /// For a requested context: among the placements of the first tier that
+    /// are predicted within `tieTolerance` of the fastest, the one whose
+    /// tightest rank keeps the largest share of its need in reserve comes
+    /// first. With the devices' live admissible memory in their profiles,
+    /// that keeps less on the Mac with less room, at no material cost in time.
+    public var preferHeadroomWithinTies = false
     public init() {}
 }
 
@@ -193,8 +208,18 @@ public enum ClusterPlacementPlanner {
         for device in devices { try device.profile.validate() }
         let prompt = policy.promptTokens ?? layout.maximumPromptTokens
         let outputs = policy.outputTokens ?? layout.maximumOutputTokens
-        guard (1...layout.maximumPromptTokens).contains(prompt), (1...layout.maximumOutputTokens).contains(outputs) else {
-            throw ClusterPlacementError("The reference request is outside the model profile's limits")
+        if let largest = policy.largestContextTokens {
+            // A requested context beyond the layout's planned request, within
+            // the family's own largest; the family's charge at it comes with it.
+            guard policy.requestChargeEveryRankBytes != nil, largest <= ClusterWorkerLimits.contextTokens,
+                  prompt >= 1, outputs >= 1, prompt + outputs <= largest,
+                  prompt <= ClusterWorkerLimits.promptTokens, outputs <= ClusterWorkerLimits.outputTokens else {
+                throw ClusterPlacementError("The requested context is outside the model's largest context")
+            }
+        } else {
+            guard (1...layout.maximumPromptTokens).contains(prompt), (1...layout.maximumOutputTokens).contains(outputs) else {
+                throw ClusterPlacementError("The reference request is outside the model profile's limits")
+            }
         }
         let modes = layout.generationModes.filter { policy.modes?.contains($0) ?? true }
         let schedules = layout.prefillSchedules.filter { policy.schedules?.contains($0) ?? true }
@@ -204,7 +229,8 @@ public enum ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let admitted = try context.candidates(.admitted)
-        let ranked = context.ordered(admitted.filter(\.possible), regime: policy.regime)
+        let ranked = context.preferringHeadroom(context.ordered(admitted.filter(\.possible), regime: policy.regime),
+            regime: policy.regime)
         let other: ClusterPlacementPolicy.Regime = policy.regime == .sustained ? .rested : .sustained
         let structural = context.ordered(try context.candidates(.structural).filter(\.possible), regime: policy.regime).first
         let anyBoundary = context.ordered(try context.candidates(.anyBoundary).filter(\.possible), regime: policy.regime).first
@@ -355,7 +381,7 @@ public enum ClusterPlacementPlanner {
             }
             let context = prompt + outputs
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
-            let state = max(layout.requestChargeEveryRankBytes, ownState)
+            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes, ownState)
             let work = loads.reduce(0) { $0 + $1.requestWorkBytes }
             var extra = 0
             // A producer keeps the next chunk's residual beside the current one.
@@ -490,6 +516,23 @@ public enum ClusterPlacementPlanner {
                 }
                 return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
             }
+        }
+
+        /// `policy.preferHeadroomWithinTies`: the leading placements of the
+        /// first group predicted within the tie tolerance of the fastest, by
+        /// the largest smallest headroom share, then time; the rest as ordered.
+        func preferringHeadroom(_ ordered: [ClusterPlacementCandidate],
+                                regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
+            guard policy.preferHeadroomWithinTies, let first = ordered.first, first.tier == 0 else { return ordered }
+            let fastest = ordered.filter { $0.tier == 0 }.map { $0.prediction(regime).requestSeconds }.min() ?? 0
+            let limit = fastest * (1 + policy.tieTolerance)
+            let close = ordered.filter { $0.tier == 0 && $0.withinGPUWorkingSet && $0.prediction(regime).requestSeconds <= limit }
+            guard close.count > 1 else { return ordered }
+            let preferred = close.sorted { a, b in
+                if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
+                return a.prediction(regime).requestSeconds < b.prediction(regime).requestSeconds
+            }
+            return preferred + ordered.filter { candidate in !close.contains(candidate) }
         }
 
         func alone(_ device: ClusterPlacementDevice) -> ClusterPlacementAlone {

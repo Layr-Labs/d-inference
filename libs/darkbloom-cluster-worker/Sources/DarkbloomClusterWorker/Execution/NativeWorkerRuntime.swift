@@ -59,6 +59,18 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         lastPromptCache = (result.reusedPromptTokens, result.storedPromptFrontiers)
         return result.finishReason
     }
+    func releaseReservation(_ id: UUID) throws {
+        switch owner {
+        case .qwenDense(let runtime): try runtime.releaseReservation(requestID: id)
+        case .mimoV26(let runtime): try runtime.releaseReservation(requestID: id)
+        }
+    }
+    func refreshServingContext() -> Int? {
+        switch owner {
+        case .qwenDense(let runtime): runtime.refreshServingContext()
+        case .mimoV26: nil
+        }
+    }
     func cancel(_ id: UUID) {
         switch owner {
         case .qwenDense(let runtime): runtime.cancel(requestID: id)

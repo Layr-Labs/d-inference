@@ -39,14 +39,25 @@ public final class QwenResidentRuntime {
     private var processLeaseOwned = true
     /// This rank's resident prompt-prefix cache; lives as long as the model.
     public let prefixCache: QwenStagePrefixCache
+    /// The longest context this rank's host memory gate admits with its
+    /// weights resident: found at load, re-derived while idle
+    /// (`refreshServingContext`). Reported in the readiness and on every
+    /// keep-warm answer, so the pair's owner refuses a longer request up front.
+    public private(set) var servingContextTokens: Int?
+    /// Allocator active bytes once the model was loaded: what this process
+    /// holds while idle and empty. Anything above it while idle (the prefix
+    /// cache) gives way to a request, so the serving context counts it.
+    private let activeLoadedBytes: Int
 
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
          generationMode: QwenResidentGenerationMode = .pipeline, producerStage: (any LayerStageResidentStage)? = nil,
          speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
          qualificationFault: QwenPhaseSplitFault? = nil,
-         prefixCache: QwenStagePrefixCache = .fromEnvironment()) {
+         prefixCache: QwenStagePrefixCache = .fromEnvironment(),
+         servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0) {
         self.prefixCache = prefixCache
+        self.servingContextTokens = servingContextTokens; self.activeLoadedBytes = activeLoadedBytes
         self.admission = admission; self.control = control; self.collective = collective
         self.speculativeHead = speculativeHead; self.speculativeTerms = speculativeTerms
         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
@@ -54,7 +65,38 @@ public final class QwenResidentRuntime {
         self.producerStage = producerStage; producerModel = producerStage?.loaded.model
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
-            requestCapacityBytes: capacity)
+            requestCapacityBytes: capacity,
+            servingContextTokens: servingContextTokens.map { min($0, admission.wireProfile.maximumContextTokens) })
+    }
+
+    /// Re-derives the serving context from this Mac's live admissible memory
+    /// while idle: the same search as at load (`admittedContext`), counting
+    /// what the prefix cache holds as memory a request gets back (the cache
+    /// gives way before a reservation is refused). Not even the smallest
+    /// useful request fitting reports that smallest one, so a longer request
+    /// is refused up front and a shorter one is still gated at reservation.
+    /// Nil (and nothing changes) while a request is reserved or running, or
+    /// when the host cannot be judged now. Allocates nothing.
+    public func refreshServingContext() -> Int? {
+        guard operation.try() else { return nil }
+        defer { operation.unlock() }
+        guard control.available, let stage else { return nil }
+        let reclaimable = max(0, Memory.activeMemory - activeLoadedBytes)
+        let found: Int
+        do {
+            found = try Self.admittedContext(admission: admission, stage: stage, rank: collective.rank,
+                mode: generationMode, speculativeTerms: speculativeTerms, reclaimableBytes: reclaimable).contextTokens
+        } catch {
+            guard String(describing: error).hasPrefix("Resident load refused: not even") else { return nil }
+            found = min(admission.profile.maximumContextTokens, admission.profile.maximumChunkTokens + 1)
+        }
+        let value = min(found, admission.wireProfile.maximumContextTokens)
+        if value != servingContextTokens {
+            log("darkbloom-serving-context-v1 rank=\(collective.rank) tokens=\(value) previous=\(servingContextTokens ?? 0)"
+                + " reclaimable=\(reclaimable)")
+        }
+        servingContextTokens = value
+        return value
     }
 
     /// Keep-warm tier 1: one asynchronous pulse on a dedicated stream of this
@@ -93,7 +135,8 @@ public final class QwenResidentRuntime {
         let capacity = try recordingCapacity(prefillPolicy)
         try control.check()
         return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
-            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
+            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity,
+            servingContextTokens: baseReady.servingContextTokens)
     }
 
     private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
@@ -159,9 +202,13 @@ public final class QwenResidentRuntime {
     /// the schedule's and the mode's named storage at that context's prompt.
     /// One sample of the host is judged for every candidate, so the search
     /// is consistent; the caller then takes one live decision at the result.
+    /// `reclaimableBytes` is memory this process holds now that a request
+    /// would get back first (the idle prefix cache); it is taken off each
+    /// candidate's ask. Zero at load.
     static func admittedContext(admission: any LayerStageResidentAdmission, stage: any LayerStageResidentStage,
                                 rank: Int, mode: QwenResidentGenerationMode,
-                                speculativeTerms: QwenMTPTerms? = nil) throws -> QwenResidentAdmittedContext {
+                                speculativeTerms: QwenMTPTerms? = nil,
+                                reclaimableBytes: Int = 0) throws -> QwenResidentAdmittedContext {
         // The admitted profile carries the model's limits (`QwenResidentContextLimits`
         // for a registered Qwen row; the earlier reservation for a family without one).
         let maximumContext = admission.profile.maximumContextTokens
@@ -188,9 +235,10 @@ public final class QwenResidentRuntime {
         func admits(_ context: Int) throws -> Bool {
             let value = try charge(context)
             let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes, try sum([value.allowance.reservedBytes,
-                value.extraNativeBytes, value.extraHostBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+                value.extraNativeBytes, value.extraHostBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes])
+                - max(0, reclaimableBytes))
             let allocator = try sum([native.activeBytes, native.cacheBytes, value.allowance.reservedBytes,
-                value.extraNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+                value.extraNativeBytes, QwenDenseStageLoadPolicy.allocatorHeadroomBytes]) - max(0, reclaimableBytes)
             let decision = try QwenDenseStageLoadPolicy.decide(os, requiredBytes: free,
                 purpose: "Resident context of \(context) tokens", now: now)
             return decision.admitted && native.allocatorLimitBytes >= allocator
@@ -241,7 +289,9 @@ public final class QwenResidentRuntime {
         defer { operation.unlock() }
         let request = try admission.request(value, id: requestID, now: DispatchTime.now().uptimeNanoseconds)
         try control.check(); try control.reserve(requestID)
-        do {
+        // Nothing below allocates: a throw gives the reservation back and is
+        // a refusal of this request alone (`ClusterResidentRequestRefusal`).
+        return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard let stage else { throw ProbeError("Resident model already released") }
             let allowance = try stage.requestAllowance(
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
@@ -298,7 +348,19 @@ public final class QwenResidentRuntime {
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = reserved; phaseSplitAllowance = split
             return total
-        } catch { control.fail(); throw error }
+        }
+    }
+
+    /// Gives back a reservation that never started, when the pair's owner
+    /// cancels it because the other rank refused the request: nothing was
+    /// allocated for it, and this rank is idle and available again.
+    public func releaseReservation(requestID: UUID) throws {
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        guard let reserved = reservation, reserved.request.requestID == requestID, control.withdraw(requestID) else {
+            throw ProbeError("Resident release has no matching unstarted reservation")
+        }
+        reservation = nil; phaseSplitAllowance = nil
     }
 
     /// Only rank0 invokes the callback, after both ranks commit/accept the token.
@@ -352,7 +414,7 @@ public final class QwenResidentRuntime {
                         generationMode: generationMode, phaseSplitAllowance: split,
                         qualificationFault: qualificationFault, admission: admission,
                         collective: collective, control: control, reserved: reserved, prefixCache: prefixCache,
-                        onCommittedToken: onCommittedToken)
+                        activeAtStart: before.activeMemory, onCommittedToken: onCommittedToken)
                 }
             }, prepare: { try prepare($0.0, $0.1) })
             let after = Memory.snapshot()

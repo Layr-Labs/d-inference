@@ -40,6 +40,7 @@ struct WorkerObject {
         return value
     }
     mutating func optionalUUID(_ key: String) throws -> UUID? { values[key] == nil ? nil : try uuid(key) }
+    mutating func optionalInt(_ key: String) throws -> Int? { values[key] == nil ? nil : try int(key) }
     mutating func enumeration<T: RawRepresentable>(_ key: String) throws -> T where T.RawValue == String {
         guard let value = T(rawValue: try string(key)) else { throw ClusterWorkerProtocolError.invalid("Unknown enum: " + key) }
         return value

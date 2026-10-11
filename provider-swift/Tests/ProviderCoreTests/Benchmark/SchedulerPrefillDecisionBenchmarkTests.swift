@@ -392,7 +392,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
     private func reproducibility(
         sourceSHA: String? = String(repeating: "c", count: 40),
         powerSource: String = "ac",
-        precision: String? = "native"
+        precision: String? = "native",
+        checkpointPrecision: String? = "native"
     ) -> SchedulerPrefillDecisionReport.Reproducibility {
         let posture = SchedulerPrefillDecisionReport.PowerThermalPosture(
             powerSource: powerSource,
@@ -416,7 +417,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                 gpuCores: 40),
             postureAtStart: posture,
             postureAtEnd: posture,
-            resolvedKVQuantization: precision)
+            resolvedKVQuantization: precision,
+            resolvedKVCheckpointQuantization: checkpointPrecision)
     }
 
     private func signedArtifact(
@@ -435,7 +437,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
         iterations: Int = 10,
         throughputRatio: Double = 0.97,
         precision: String? = "native",
-        backend: String = "contiguous"
+        backend: String = "contiguous",
+        checkpointPrecision: String? = "native"
     ) -> [SchedulerPrefillDecisionReport.Result] {
         SchedulerPrefillDecisionScenarios.qwenEvaluationWorkloads.flatMap {
             workload in
@@ -447,7 +450,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                         cap: cap,
                         throughputRatio: throughputRatio,
                         precision: precision,
-                        backend: backend)
+                        backend: backend,
+                        checkpointPrecision: checkpointPrecision)
                 }
             }
         }
@@ -459,7 +463,8 @@ struct SchedulerPrefillDecisionEvaluatorTests {
         cap: Int,
         throughputRatio: Double,
         precision: String?,
-        backend: String
+        backend: String,
+        checkpointPrecision: String?
     ) -> SchedulerPrefillDecisionReport.Result {
         let ttft: [Double]
         switch (workload.name, cap) {
@@ -508,14 +513,16 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                 executedGroups: cap == 0 ? 1 : 0,
                 executedRows: cap == 0 ? 4 : 0),
             resolvedKVBackend: backend,
-            resolvedKVQuantization: precision)
+            resolvedKVQuantization: precision,
+            resolvedKVCheckpointQuantization: checkpointPrecision)
     }
 
     private func signedReport(
-        precision: String = "native", backend: String = "paged"
+        precision: String = "native", backend: String = "paged",
+        checkpointPrecision: String = "native"
     ) -> SchedulerPrefillDecisionReport {
-        let values = results(precision: precision, backend: backend)
-        let metadata = reproducibility(precision: precision)
+        let values = results(precision: precision, backend: backend, checkpointPrecision: checkpointPrecision)
+        let metadata = reproducibility(precision: precision, checkpointPrecision: checkpointPrecision)
         let identity = modelIdentity()
         let artifact = signedArtifact(metadata)
         let evaluation = SchedulerPrefillDecisionEvaluator.evaluate(
@@ -549,18 +556,61 @@ struct SchedulerPrefillDecisionEvaluatorTests {
         "signed current reports bind every known resolved profile to cells and run identity",
         arguments: EngineV2KVQuantizationSelection.allCases)
     func signedPrecisionRoundTrip(precision: EngineV2KVQuantizationSelection) throws {
-        let source = signedReport(precision: precision.rawValue)
+        let checkpointPrecision: EngineV2KVQuantizationSelection = precision == .native ? .balanced : precision
+        let source = signedReport(precision: precision.rawValue, checkpointPrecision: checkpointPrecision.rawValue)
         let decoded = try JSONDecoder().decode(
             SchedulerPrefillDecisionReport.self,
             from: JSONEncoder().encode(source))
         #expect(decoded.schemaVersion == 4)
         #expect(decoded.reproducibility?.resolvedKVQuantization == precision.rawValue)
         #expect(decoded.results.allSatisfy { $0.resolvedKVQuantization == precision.rawValue })
+        #expect(decoded.reproducibility?.resolvedKVCheckpointQuantization == checkpointPrecision.rawValue)
+        #expect(decoded.results.allSatisfy { $0.resolvedKVCheckpointQuantization == checkpointPrecision.rawValue })
         #expect(decoded.signedArtifactIdentity == source.signedArtifactIdentity)
         #expect(decoded.modelIdentity == source.modelIdentity)
         #expect(decoded.reproducibility == source.reproducibility)
         #expect(SchedulerPrefillDecisionExitStatus.value(for: decoded) == 0)
         #expect(!decoded.evaluation.releaseCandidateCertified)
+    }
+
+    @Test("checkpoint precision aggregates independently and stays unknown for mixed or missing observations")
+    func checkpointPrecisionAggregation() throws {
+        let source = signedReport(checkpointPrecision: "balanced")
+        #expect(SchedulerPrefillDecisionKVProvenance.runPrecision(results: source.results) == "native")
+        #expect(SchedulerPrefillDecisionKVProvenance.runPrecision(
+            results: source.results, keyPath: \.resolvedKVCheckpointQuantization) == "balanced")
+        for replacement in [Optional<String>.none, "native"] {
+            let decoded = try decodedReport(source) { object in
+                var rows = object["results"] as! [[String: Any]]
+                if let replacement {
+                    rows[0]["resolvedKVCheckpointQuantization"] = replacement
+                } else {
+                    rows[0].removeValue(forKey: "resolvedKVCheckpointQuantization")
+                }
+                object["results"] = rows
+            }
+            #expect(SchedulerPrefillDecisionKVProvenance.runPrecision(
+                results: decoded.results, keyPath: \.resolvedKVCheckpointQuantization) == nil)
+            #expect(SchedulerPrefillDecisionKVProvenance.runPrecision(results: decoded.results) == "native")
+        }
+    }
+
+    @Test("historical reports without checkpoint metadata retain their live precision qualification")
+    func absentCheckpointPrecisionRemainsUnknown() throws {
+        let decoded = try decodedReport(signedReport()) { object in
+            var rows = object["results"] as! [[String: Any]]
+            for index in rows.indices {
+                rows[index].removeValue(forKey: "resolvedKVCheckpointQuantization")
+            }
+            object["results"] = rows
+            var metadata = object["reproducibility"] as! [String: Any]
+            metadata.removeValue(forKey: "resolvedKVCheckpointQuantization")
+            object["reproducibility"] = metadata
+        }
+        #expect(decoded.reproducibility?.resolvedKVCheckpointQuantization == nil)
+        #expect(decoded.results.allSatisfy { $0.resolvedKVCheckpointQuantization == nil })
+        #expect(SchedulerPrefillDecisionKVProvenance.runPrecision(results: decoded.results) == "native")
+        #expect(SchedulerPrefillDecisionExitStatus.value(for: decoded) == 0)
     }
 
     @Test(

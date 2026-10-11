@@ -93,6 +93,13 @@ class IntegrationWorkflowTests(unittest.TestCase):
         self.assertIsNone(field(gates[2], "DARKBLOOM_TESTBED_MAX_CONCURRENT", 10))
         self.assertIsNone(field(gates[2], "DARKBLOOM_CBV2_KV_QUANTIZATION", 10))
         self.assertIn('if [ -n "${DARKBLOOM_CBV2_KV_QUANTIZATION:-}" ]; then', gates[2])
+        self.assertIsNone(field(gates[2], "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION", 10))
+        self.assertIn('if [ -n "${DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION:-}" ]; then', gates[2])
+
+    def test_exact_cache_gate_keeps_native_storage_and_execution(self):
+        exact = self.ids["exact_cache"]
+        self.assertEqual(field(exact, "DARKBLOOM_CBV2_KV_QUANTIZATION", 10), "native")
+        self.assertEqual(field(exact, "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION", 10), "native")
 
     def test_command_assertion_accepts_only_additive_coverage(self):
         command = "go test ./e2e/ -count=1 -v -timeout 25m -p=1 -run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$'"
@@ -128,8 +135,13 @@ class IntegrationWorkflowTests(unittest.TestCase):
 
     def test_actual_default_smoke_refuses_precision_override_before_tests(self):
         script = run_command(self.ids["smoke"])
-        for precision in (None, "native", "balanced"):
-            with self.subTest(precision=precision), tempfile.TemporaryDirectory() as temporary:
+        overrides = [(None, None)] + [
+            (key, precision)
+            for key in ("DARKBLOOM_CBV2_KV_QUANTIZATION", "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION")
+            for precision in ("native", "balanced")
+        ]
+        for key, precision in overrides:
+            with self.subTest(key=key, precision=precision), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 tools = root / "tools"
                 tools.mkdir()
@@ -147,8 +159,9 @@ class IntegrationWorkflowTests(unittest.TestCase):
                        "RUNNER_TEMP": str(root), "E2E_COVER_PKG": "fixture/pkg"}
                 env.pop("DARKBLOOM_CBV2_PAGED_KV", None)
                 env.pop("DARKBLOOM_CBV2_KV_QUANTIZATION", None)
-                if precision is not None:
-                    env["DARKBLOOM_CBV2_KV_QUANTIZATION"] = precision
+                env.pop("DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION", None)
+                if key is not None:
+                    env[key] = precision
                 result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
                                         text=True, capture_output=True, timeout=10)
                 if precision is None:

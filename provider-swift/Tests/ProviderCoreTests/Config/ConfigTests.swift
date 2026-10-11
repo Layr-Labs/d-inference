@@ -174,7 +174,9 @@ import Testing
         #expect(!emittedKeys.contains(retired))
     }
     #expect(emittedKeys.contains("engine_v2_kv_quantization"))
-    #expect(decoded.backend.engineV2KVQuantization == "balanced")
+    #expect(emittedKeys.contains("engine_v2_kv_checkpoint_quantization"))
+    #expect(decoded.backend.engineV2KVQuantization == "native")
+    #expect(decoded.backend.engineV2KVCheckpointQuantization == "balanced")
     #expect(decoded.backend.retiredKeysPresent.isEmpty)
 }
 

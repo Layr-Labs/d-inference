@@ -69,9 +69,12 @@ public struct SchedulerPrefillDecisionReport: Codable, Sendable {
         public let hardware: HardwareIdentity
         public let postureAtStart: PowerThermalPosture
         public let postureAtEnd: PowerThermalPosture
-        /// Actual engine precision shared by every measured cell. Nil for
+        /// Actual live engine precision shared by every measured cell. Nil for
         /// historical reports without precision provenance or mixed runs.
         public let resolvedKVQuantization: String?
+        /// Effective checkpoint codec precision, not the requested setting.
+        /// Nil for historical reports or mixed runs; native means uncompressed.
+        public let resolvedKVCheckpointQuantization: String?
     }
 
     public struct SignedArtifactIdentity: Codable, Sendable, Equatable {
@@ -147,6 +150,8 @@ public struct SchedulerPrefillDecisionReport: Codable, Sendable {
         /// never inferred from a requested flag or the checkpoint's weights.
         /// Nil for simulation and historical reports without this provenance.
         public let resolvedKVQuantization: String?
+        /// Effective checkpoint codec precision copied from the same build.
+        public let resolvedKVCheckpointQuantization: String?
     }
 
     public struct EvaluationThresholds: Codable, Sendable, Equatable {

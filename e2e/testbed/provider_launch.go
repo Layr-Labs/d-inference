@@ -83,6 +83,9 @@ func buildProviderStartSpec(coordinatorURL, root string, cfg ProviderConfig, ind
 		}
 		env[EnvKVQuantization] = precision
 	}
+	if precision, supplied := os.LookupEnv(EnvCheckpointQuantization); supplied {
+		env[EnvCheckpointQuantization] = precision
+	}
 	if cfg.AuthTokenPath != "" {
 		env["DARKBLOOM_AUTH_TOKEN_PATH"] = cfg.AuthTokenPath
 	}

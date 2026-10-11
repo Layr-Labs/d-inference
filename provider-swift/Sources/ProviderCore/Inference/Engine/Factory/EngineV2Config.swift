@@ -235,6 +235,7 @@ public enum EngineV2Factory {
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
                 kvQuantization: build.kvQuantization,
+                kvCheckpointQuantization: build.kvCheckpointQuantization,
                 pagedPageSize: pagedPageSize,
                 // Same value the INFO event below reports, but on a channel
                 // that cannot be dropped: the bridge republishes it on every

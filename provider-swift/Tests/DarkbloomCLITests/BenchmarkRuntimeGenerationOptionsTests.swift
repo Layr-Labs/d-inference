@@ -8,12 +8,14 @@ struct BenchmarkRuntimeGenerationOptionsTests {
     @Test func productionModeAndPrecisionControlsParse() throws {
         let command = try Benchmark.parse([
             "--runtime-generation", "--model", "gpt-oss-20b", "--kv-backend", "paged",
-            "--kv-quantization", "native", "--runtime-prompt-file", "/tmp/public-prompt.txt",
+            "--kv-quantization", "native", "--kv-checkpoint-quantization", "k8v4",
+            "--runtime-prompt-file", "/tmp/public-prompt.txt",
             "--runtime-prompt-date", "2026-10-09", "--runtime-mtp",
             "--runtime-assistant-directory", "/tmp/offline-assistant",
         ])
         #expect(command.runtimeGeneration && command.runtimeMtp)
         #expect(command.kvQuantization == "native")
+        #expect(command.kvCheckpointQuantization == "k8v4")
         #expect(command.runtimePromptFile == "/tmp/public-prompt.txt")
         #expect(command.runtimePromptDate == "2026-10-09")
         #expect(command.runtimeAssistantDirectory == "/tmp/offline-assistant")
@@ -40,6 +42,7 @@ struct BenchmarkRuntimeGenerationOptionsTests {
             try Benchmark.parse(["--runtime-generation"])
                 .nativeBlockModeError(modelType: "diffusion_gemma") != nil)
         let ordinary = try Benchmark.parse([])
-        #expect(!ordinary.runtimeGeneration && ordinary.kvQuantization == nil)
+        #expect(!ordinary.runtimeGeneration && ordinary.kvQuantization == nil
+            && ordinary.kvCheckpointQuantization == nil)
     }
 }

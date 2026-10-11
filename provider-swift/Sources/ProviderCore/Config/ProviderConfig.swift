@@ -188,18 +188,22 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// an explicit "paged" VLM slot gets paged like any other.
     /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` forces contiguous;
     /// live quantization then refuses until native precision is selected.
-    /// A resolved-contiguous slot also gets NO SSD prefix
-    /// cache (`PrefixCachePolicy.adoptionIsExact`).
+    /// Eligible complete checkpoints keep their independent storage codec
+    /// when live execution resolves to contiguous.
     /// See `EngineV2KVBackendPolicy`.
     public var engineV2KVBackend: String
     /// Optional per-model override map (`engine_v2_kv_backend_by_model`
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
-    /// Live attention precision; balanced K4/V4 is the default. MiMo stays native.
+    /// Live attention precision; native is the default. MiMo stays native.
     /// Explicit contiguous storage requires native precision.
     public var engineV2KVQuantization: String
     public var engineV2KVQuantizationByModel: [String: String]
+    /// Requested precision for eligible complete checkpoints; balanced K4/V4
+    /// is the default, independent of live attention. MiMo stays native.
+    public var engineV2KVCheckpointQuantization: String
+    public var engineV2KVCheckpointQuantizationByModel: [String: String]
     /// Startup model preload (default true) for coordinator and standalone
     /// serving. An explicit `preload_models` list takes precedence; otherwise
     /// previously loaded models go first, then the selected models. The
@@ -303,8 +307,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
-        engineV2KVQuantization: String = "balanced",
+        engineV2KVQuantization: String = "native",
         engineV2KVQuantizationByModel: [String: String] = [:],
+        engineV2KVCheckpointQuantization: String = "balanced",
+        engineV2KVCheckpointQuantizationByModel: [String: String] = [:],
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -330,6 +336,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.engineV2KVQuantization = engineV2KVQuantization
         self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
+        self.engineV2KVCheckpointQuantization = engineV2KVCheckpointQuantization
+        self.engineV2KVCheckpointQuantizationByModel = engineV2KVCheckpointQuantizationByModel
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -357,6 +365,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case engineV2KVBackendByModel = "engine_v2_kv_backend_by_model"
         case engineV2KVQuantization = "engine_v2_kv_quantization"
         case engineV2KVQuantizationByModel = "engine_v2_kv_quantization_by_model"
+        case engineV2KVCheckpointQuantization = "engine_v2_kv_checkpoint_quantization"
+        case engineV2KVCheckpointQuantizationByModel = "engine_v2_kv_checkpoint_quantization_by_model"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -405,9 +415,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
             try container.decodeIfPresent(
                 [String: String].self, forKey: .engineV2KVBackendByModel) ?? [:]
         self.engineV2KVQuantization =
-            try container.decodeIfPresent(String.self, forKey: .engineV2KVQuantization) ?? "balanced"
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVQuantization) ?? "native"
         self.engineV2KVQuantizationByModel =
             try container.decodeIfPresent([String: String].self, forKey: .engineV2KVQuantizationByModel) ?? [:]
+        self.engineV2KVCheckpointQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVCheckpointQuantization) ?? "balanced"
+        self.engineV2KVCheckpointQuantizationByModel =
+            try container.decodeIfPresent([String: String].self, forKey: .engineV2KVCheckpointQuantizationByModel) ?? [:]
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =
@@ -450,6 +464,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
         try container.encode(engineV2KVQuantization, forKey: .engineV2KVQuantization)
         try container.encode(engineV2KVQuantizationByModel, forKey: .engineV2KVQuantizationByModel)
+        try container.encode(engineV2KVCheckpointQuantization, forKey: .engineV2KVCheckpointQuantization)
+        try container.encode(engineV2KVCheckpointQuantizationByModel, forKey: .engineV2KVCheckpointQuantizationByModel)
         try container.encode(startupPreload, forKey: .startupPreload)
         try container.encode(preloadModels, forKey: .preloadModels)
         try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)

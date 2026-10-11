@@ -5,7 +5,7 @@ import ProviderCore
 enum SchedulerPrefillDecisionKVProvenance {
     static func environment(
         modelType: String?, modelID: String,
-        global: String, byModel: [String: String],
+        global: String = "native", byModel: [String: String] = [:],
         environment: [String: String]
     ) throws -> [String: String] {
         let precision = try EngineV2KVQuantizationPolicy.resolve(
@@ -17,9 +17,10 @@ enum SchedulerPrefillDecisionKVProvenance {
     }
 
     static func runPrecision(
-        results: [SchedulerPrefillDecisionReport.Result]
+        results: [SchedulerPrefillDecisionReport.Result],
+        keyPath: KeyPath<SchedulerPrefillDecisionReport.Result, String?> = \.resolvedKVQuantization
     ) -> String? {
-        let profiles = results.compactMap(\.resolvedKVQuantization)
+        let profiles = results.compactMap { $0[keyPath: keyPath] }
         guard !results.isEmpty, profiles.count == results.count,
             Set(profiles).count == 1
         else { return nil }

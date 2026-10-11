@@ -127,8 +127,10 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
-        kvQuantizationConfig: String = "balanced",
+        kvQuantizationConfig: String = "native",
         kvQuantizationConfigByModel: [String: String] = [:],
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
         mtpAcceptanceConfig: String? = nil,
         mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -155,6 +157,8 @@ enum EngineV2SlotFactory {
             kvBackendConfigByModel: kvBackendConfigByModel,
             kvQuantizationConfig: kvQuantizationConfig,
             kvQuantizationConfigByModel: kvQuantizationConfigByModel,
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel,
             mtpAcceptanceConfig: mtpAcceptanceConfig,
             mtpAcceptanceConfigByModel: mtpAcceptanceConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
@@ -189,8 +193,10 @@ enum EngineV2SlotFactory {
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
-        kvQuantizationConfig: String = "balanced",
+        kvQuantizationConfig: String = "native",
         kvQuantizationConfigByModel: [String: String] = [:],
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
         mtpAcceptanceConfig: String? = nil,
         mtpAcceptanceConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -213,8 +219,12 @@ enum EngineV2SlotFactory {
         let kvPrecision = try EngineV2KVQuantizationPolicy.resolve(
             modelType: modelType, global: kvQuantizationConfig,
             byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelType, global: checkpointQuantizationConfig,
+            byModel: checkpointQuantizationConfigByModel, modelID: modelId,
+            environment: environment, purpose: .checkpoint)
         environment[EngineV2KVQuantizationPolicy.environmentKey] = kvPrecision.rawValue
-        logInfo("engine_v2: \(modelId) KV precision \(kvPrecision.rawValue)")
+        logInfo("engine_v2: \(modelId) live KV precision \(kvPrecision.rawValue)")
         // Check explicit fixture ownership before any cache or model preparation.
         try deadlineQualificationCacheIsolation?.validate(environment: environment)
         let deviceActivity = kvBudget?.serviceBudget.beginUnboundedActivity()
@@ -391,6 +401,7 @@ enum EngineV2SlotFactory {
         // VLM slots use the resolved serving text tower's layer kinds.
         let completePreparation = await prepareCompletePrefixCache(
             modelId: modelId, model: servingModel, preparedBackend: preparedBackend,
+            checkpointQuantization: checkpointPrecision.configuration,
             weightHash: weightHash, promptContractID: promptContractID,
             mtpDrafter: assistantHandle?.drafter, mtpConfig: mtpConfig,
             kvBudget: kvBudget, environment: environment,
@@ -444,6 +455,7 @@ enum EngineV2SlotFactory {
                     tokenizer: tokenizer.inner,
                     prefixCache: enginePrefixCache,
                     completePrefixCache: ssdHybridCheckpointStore,
+                    checkpointQuantization: completePreparation?.checkpointQuantization,
                     maxConcurrentRequests: maxConcurrentRequests,
                     mtpDrafter: assistantHandle?.drafter,
                     mtpConfig: mtpConfig,
@@ -459,7 +471,7 @@ enum EngineV2SlotFactory {
             targetKVBytesPerToken = slotKVBytesPerToken(
                 resolvedKind: preparedBackend.kind,
                 pagedPoolDType: preparedBackend.pagedPoolDType,
-                pagedLayerDTypes: preparedBackend.pagedLayerDTypes,
+                nativeLayerDTypes: preparedBackend.nativeLayerDTypes,
                 pagedPoolConfig: preparedBackend.pagedPoolConfig,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
@@ -581,6 +593,10 @@ enum EngineV2SlotFactory {
         reportGemmaOptimizations(
             model: servingModel, modelId: modelId,
             emitTelemetry: emitTelemetry, logInfo: logInfo)
+        if let store = bridge.ssdHybridCheckpointStore {
+            logInfo("engine_v2: \(modelId) checkpoint KV precision \(bridge.kvCheckpointQuantization.rawValue) "
+                + "layout=\(store.config.backendLayout)")
+        }
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
@@ -606,28 +622,26 @@ enum EngineV2SlotFactory {
     }
 
     /// Full-attention marginal KV rate used by shared request admission and
-    /// token-capacity reporting. Normal paged construction supplies the exact
-    /// per-layer table from the pool; shared rows own no storage. The scalar
-    /// branch preserves low-level fixed-pool callers. Contiguous GPT-OSS keeps
-    /// its existing native full-row adjustment. Window storage and recurrent
-    /// fixed charges are separate from this marginal rate.
+    /// token-capacity reporting. Production supplies the observed native types
+    /// for both backends; shared rows own no storage. Window storage and
+    /// recurrent fixed charges are separate from this marginal rate.
     static func slotKVBytesPerToken(
         resolvedKind: EngineV2KVBackendKind,
         pagedPoolDType: String?,
-        pagedLayerDTypes: [DType]? = nil,
+        nativeLayerDTypes: [DType]? = nil,
         pagedPoolConfig: PagedKVPoolConfig? = nil,
         layerKinds: [CBv2LayerKind],
         nominalFP16BytesPerToken: Int,
         servingModelIsGPTOSS: Bool
     ) -> Int {
-        if resolvedKind == .paged, let pagedLayerDTypes {
-            if let pagedPoolConfig {
+        if let nativeLayerDTypes {
+            if resolvedKind == .paged, let pagedPoolConfig {
                 return (try? EngineV2Factory.physicalFullKVBytesPerToken(
-                    layerKinds: layerKinds, dtypes: pagedLayerDTypes,
+                    layerKinds: layerKinds, dtypes: nativeLayerDTypes,
                     config: pagedPoolConfig)) ?? Int.max
             }
             return EngineV2Factory.nativeFullKVBytesPerToken(
-                layerKinds: layerKinds, dtypes: pagedLayerDTypes)
+                layerKinds: layerKinds, dtypes: nativeLayerDTypes)
         }
         let capability = CBv2PrefixReuseCapability.derive(
             layerKinds: layerKinds,

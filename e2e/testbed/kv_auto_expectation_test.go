@@ -36,7 +36,7 @@ func heartbeatAutoKVSlot(r *registry.Registry, model, backend, state string, bud
 }
 
 func TestAutomaticKVPrewarmPackedAndMiMoUseRegisteredTypes(t *testing.T) {
-	for _, precision := range []string{"", "balanced", " K4V4 ", "int4", "on", "k8v4", "k8v8", "int8"} {
+	for _, precision := range []string{"balanced", " K4V4 ", "int4", "on", "k8v4", "k8v8", "int8"} {
 		t.Run(precision, func(t *testing.T) {
 			r := registry.New(kvExpectationLogger())
 			// Arbitrary IDs ensure the policy comes from registration metadata.
@@ -107,7 +107,7 @@ func TestAutomaticKVPrewarmRejectsEarlierSlotEviction(t *testing.T) {
 }
 
 func TestAutomaticKVPrewarmNativeAcceptsActualResolvedBackends(t *testing.T) {
-	for _, precision := range []string{"native", "off", "0", " NATIVE\n"} {
+	for _, precision := range []string{"", " \n", "native", "off", "0", " NATIVE\n"} {
 		for _, backend := range []string{KVBackendPaged, KVBackendContiguous} {
 			t.Run(precision+"/"+backend, func(t *testing.T) {
 				r := registry.New(kvExpectationLogger())
@@ -243,6 +243,28 @@ func TestProviderStartSpecPreservesKVPrecisionForOwnedHosts(t *testing.T) {
 				t.Fatal("precision override changed the requested automatic backend")
 			}
 		})
+	}
+}
+
+func TestProviderStartSpecKeepsCheckpointPrecisionIndependent(t *testing.T) {
+	for _, backend := range []string{KVBackendAuto, KVBackendPaged, KVBackendContiguous} {
+		for _, precision := range []string{"native", "balanced", "k8v4", "k8v8", "", "invalid"} {
+			t.Run(backend+"/"+precision, func(t *testing.T) {
+				t.Setenv(EnvKVQuantization, "native")
+				t.Setenv(EnvCheckpointQuantization, precision)
+				spec, err := buildProviderStartSpec("http://127.0.0.1:8123", t.TempDir(),
+					ProviderConfig{ModelID: "model", KVBackend: backend}, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if actual, present := spec.Environment[EnvCheckpointQuantization]; !present || actual != precision {
+					t.Fatalf("checkpoint override lost: got %q present=%t, want %q", actual, present, precision)
+				}
+				if spec.Environment[EnvKVQuantization] != "native" {
+					t.Fatal("checkpoint precision changed live precision")
+				}
+			})
+		}
 	}
 }
 

@@ -21,6 +21,10 @@ const nativeAutoBackend = "native_auto"
 // the same precision that automatic benchmark prewarm checks.
 const EnvKVQuantization = "DARKBLOOM_CBV2_KV_QUANTIZATION"
 
+// EnvCheckpointQuantization selects only the encoded checkpoint representation.
+// It does not change the inference backend asserted by automatic prewarm.
+const EnvCheckpointQuantization = "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"
+
 func automaticBackendExpectation(modelType, precision string) (string, error) {
 	// Match the provider's unconditional SDK MiMo exclusion before parsing an
 	// override. Use actual registration metadata, never an artifact-ID list.
@@ -31,9 +35,9 @@ func automaticBackendExpectation(modelType, precision string) (string, error) {
 		return "", fmt.Errorf("automatic KV prewarm requires registered model_type")
 	}
 	switch strings.ToLower(strings.TrimSpace(precision)) {
-	case "", "balanced", "k4v4", "int4", "on", "k8v4", "k8v8", "int8":
+	case "balanced", "k4v4", "int4", "on", "k8v4", "k8v8", "int8":
 		return KVBackendPaged, nil
-	case "native", "off", "0":
+	case "", "native", "off", "0":
 		return nativeAutoBackend, nil
 	default:
 		return "", fmt.Errorf("invalid KV precision %q for automatic benchmark prewarm", precision)

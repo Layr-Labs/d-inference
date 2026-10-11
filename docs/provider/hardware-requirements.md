@@ -10,12 +10,13 @@ memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
 
-Balanced live KV compression reduces older attention-history storage while
-retaining native recent, speculative, recurrent and assistant state. It does
-not reduce model-load quotations, OS reserves, activation floors or minimum
-serveable KV headroom. Actual packed rows, metadata and transient ownership
-determine request capacity; the RAM-tier table remains subject to the same
-load gate. MiMo remains native. Precision and rollback controls are in the
+Native live inference is the default. Independent checkpoint compression can
+reduce encoded older-row storage, not the native serving allocation or measured
+process RAM. Optional live-packed precision retains native recent, speculative,
+recurrent and assistant state; its actual rows, metadata and transient owners
+determine capacity. Neither mode reduces model-load quotations, OS reserves,
+activation floors or minimum serveable KV headroom. The RAM-tier table remains
+subject to the same load gate. Precision controls and fallback are in the
 [CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
 
 ## Registering interest for unsupported hardware

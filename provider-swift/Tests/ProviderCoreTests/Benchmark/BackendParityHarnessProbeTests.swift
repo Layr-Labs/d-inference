@@ -144,7 +144,7 @@ struct BackendParityHarnessProbeTests {
         }
     }
 
-    @Test("both parity backends remain eligible under the balanced provider default")
+    @Test("both parity backends stay native under explicit live precision overrides")
     func parityPinsNativeForBothBackends() throws {
         for raw in ["balanced", "k8v4", "k8v8", "native"] {
             let environment = Harness.engineEnvironment(

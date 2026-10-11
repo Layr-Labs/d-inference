@@ -22,6 +22,8 @@ public enum RuntimeGenerationBenchmark {
         let renderDate: String
         let resolvedBackend: String
         let kvQuantization: String
+        let kvCheckpointQuantization: String
+        let checkpointBackendLayout: String?
         let mtpRequested: Bool
         let mtpActive: Bool
         let mtpMetrics: MTPBenchmarkMetrics
@@ -48,7 +50,7 @@ public enum RuntimeGenerationBenchmark {
     public static func run(
         modelID: String, modelDirectory: URL, prompt: String, maxTokens: Int,
         backend: String, mtpEnabled: Bool = false, assistantDirectory: URL? = nil,
-        renderDate: String
+        renderDate: String, checkpointQuantizationConfig: String = "balanced"
     ) async throws -> (json: String, succeeded: Bool) {
         guard maxTokens > 0, maxTokens <= 131_072, prompt.utf8.count <= 4 << 20,
             let date = PromptRenderDate(renderDate),
@@ -85,7 +87,8 @@ public enum RuntimeGenerationBenchmark {
                 container: container, tokenizer: tokenizer, verifiedWeightHash: verified,
                 kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: mtpEnabled,
                 assistantDirectory: assistantDirectory,
-                useProductionKVGrant: true, kvBackendConfig: backend, requirePersistentKey: false,
+                useProductionKVGrant: true, kvBackendConfig: backend,
+                checkpointQuantizationConfig: checkpointQuantizationConfig, requirePersistentKey: false,
                 environment: environment)
             do {
                 let stopTokens = await session.stopTokenIDs()
@@ -140,6 +143,8 @@ public enum RuntimeGenerationBenchmark {
                     promptTokens: prepared.tokens, renderDate: prepared.renderDate,
                     resolvedBackend: session.backend,
                     kvQuantization: session.kvQuantization.rawValue,
+                    kvCheckpointQuantization: session.kvCheckpointQuantization.rawValue,
+                    checkpointBackendLayout: session.checkpointBackendLayout,
                     mtpRequested: mtpEnabled,
                     mtpActive: session.rawEngine.mtpMetricsSnapshot() != nil,
                     mtpMetrics: MTPBenchmarkEngineMetrics.snapshot(engine: session.rawEngine),

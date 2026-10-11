@@ -41,6 +41,8 @@ public struct DiffusionGemmaBenchmarkResult: Sendable {
     public let weightHash: String
     public let backend: String
     public let kvQuantization: String
+    public var kvCheckpointQuantization: String = "native"
+    public var checkpointBackendLayout: String? = nil
     public let loadMilliseconds: Double
     public let grant: EngineV2BenchmarkProductionGrant
 }
@@ -56,7 +58,8 @@ extension EngineV2Factory {
     @_spi(Benchmarking)
     public static func runDiffusionGemmaBenchmark(
         modelID: String, directory: URL, prompt: String, iterations: Int,
-        maxTokens: Int, backend: String = "auto"
+        maxTokens: Int, backend: String = "auto",
+        checkpointQuantizationConfig: String = "balanced"
     ) async throws -> DiffusionGemmaBenchmarkResult {
         guard iterations > 0, maxTokens > 0,
             ["auto", "contiguous", "paged"].contains(backend) else {
@@ -105,6 +108,7 @@ extension EngineV2Factory {
                 owner: loadedOwner, budget: budget, permit: permit, modelID: modelID,
                 directory: directory, hash: hash, prompt: prompt, iterations: iterations,
                 maxTokens: maxTokens, backend: backend, environment: environment,
+                checkpointQuantizationConfig: checkpointQuantizationConfig,
                 loadStart: start)
             await owner?.releaseAfterExternalResources()
             owner = nil
@@ -123,7 +127,8 @@ extension EngineV2Factory {
     private static func runLoadedDiffusionBenchmark(
         owner: EngineV2NewcomerBox, budget: GlobalKVCacheBudget, permit: PendingModelLoadLease,
         modelID: String, directory: URL, hash: String, prompt: String, iterations: Int,
-        maxTokens: Int, backend: String, environment: [String: String], loadStart: ContinuousClock.Instant
+        maxTokens: Int, backend: String, environment: [String: String],
+        checkpointQuantizationConfig: String, loadStart: ContinuousClock.Instant
     ) async throws -> DiffusionGemmaBenchmarkResult {
         let serving = try owner.borrowModel()
         guard let native = serving.diffusion else { throw DiffusionBenchmarkFailure.wrongArchitecture }
@@ -135,7 +140,8 @@ extension EngineV2Factory {
             modelId: modelID, modelType: "diffusion_gemma", isVLM: true, modelDirectory: directory,
             container: serving, tokenizer: tokenizer, sizing: sizing, kvBytesCapacity: grant.grantBytes,
             maxConcurrentRequests: 1, kvBudget: budget, activationReserveBytes: grant.activationReserveBytes,
-            kvBackendConfig: backend, weightHash: hash, specDecPreparation: preparation,
+            kvBackendConfig: backend, checkpointQuantizationConfig: checkpointQuantizationConfig,
+            weightHash: hash, specDecPreparation: preparation,
             environment: environment, startServingTelemetry: false)
         do {
             guard let engine = await bundle.bridge.ownedEngine as? CBv2NativeBlockEngine else {
@@ -158,6 +164,8 @@ extension EngineV2Factory {
             await bundle.bridge.shutdown()
             return .init(iterations: results, weightHash: hash, backend: kind.rawValue,
                 kvQuantization: bundle.bridge.kvQuantization.rawValue,
+                kvCheckpointQuantization: bundle.bridge.kvCheckpointQuantization.rawValue,
+                checkpointBackendLayout: bundle.bridge.ssdHybridCheckpointStore?.config.backendLayout,
                 loadMilliseconds: loadMs, grant: grant)
         } catch {
             await bundle.bridge.shutdown()

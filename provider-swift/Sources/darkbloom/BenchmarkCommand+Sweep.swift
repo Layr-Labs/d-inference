@@ -30,7 +30,8 @@ extension Benchmark {
         modelDirectory: URL,
         hardware: HardwareInfo,
         gemmaOptimizations: GemmaOptimizationSettings,
-        kvQuantization: EngineV2KVQuantizationSelection
+        kvQuantization: EngineV2KVQuantizationSelection,
+        checkpointQuantizationConfig: String
     ) async throws {
         let lengths = Self.parsePositiveInts(prefillLengths)
         guard !lengths.isEmpty else {
@@ -69,7 +70,8 @@ extension Benchmark {
             decodeIterations: decodeIterations,
             kvBackend: backend,
             gemmaOptimizations: gemmaOptimizations,
-            hardware: hardware
+            hardware: hardware,
+            checkpointQuantizationConfig: checkpointQuantizationConfig
         )
 
         // The artifact ALWAYS ships, including on a refused run: the operator
@@ -139,7 +141,8 @@ extension Benchmark {
     func runSchedulerPrefillBenchmark(
         modelID: String,
         modelDirectory: URL,
-        gemmaOptimizations: GemmaOptimizationSettings
+        gemmaOptimizations: GemmaOptimizationSettings,
+        checkpointQuantizationConfig: String
     ) async throws {
         let lengths = Self.parsePositiveInts(prefillLengths)
         guard !lengths.isEmpty else {
@@ -157,7 +160,8 @@ extension Benchmark {
             promptLengths: lengths,
             iterations: prefillIterations,
             kvBackend: try resolvedKVBackendSelection(),
-            gemmaOptimizations: gemmaOptimizations
+            gemmaOptimizations: gemmaOptimizations,
+            checkpointQuantizationConfig: checkpointQuantizationConfig
         )
 
         print(try report.jsonString())
@@ -177,7 +181,8 @@ extension Benchmark {
     func runArrivalInvarianceBenchmark(
         modelID: String,
         modelDirectory: URL,
-        gemmaOptimizations: GemmaOptimizationSettings
+        gemmaOptimizations: GemmaOptimizationSettings,
+        checkpointQuantizationConfig: String
     ) async throws {
         guard arrivalPromptTokens >= 2 else {
             printError("--arrival-prompt-tokens must be >= 2")
@@ -216,7 +221,8 @@ extension Benchmark {
             decodeTokens: arrivalDecodeTokens,
             iterations: arrivalIterations,
             kvBackend: try resolvedKVBackendSelection(),
-            gemmaOptimizations: gemmaOptimizations
+            gemmaOptimizations: gemmaOptimizations,
+            checkpointQuantizationConfig: checkpointQuantizationConfig
         )
         print(try report.jsonString())
     }

@@ -33,6 +33,9 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires the real Swift provider and local MLX checkpoint")
 	}
+	// This lane proves exact output replay, not lossy checkpoint quality.
+	t.Setenv(testbed.EnvKVQuantization, "native")
+	t.Setenv(testbed.EnvCheckpointQuantization, "native")
 	model := exactCacheRoutingTestModelID()
 	suite := testbed.NewSuite(testbed.SuiteConfig{
 		ModelSpecs:                 []testbed.ModelSpec{{ModelID: model, NumProviders: 2}},

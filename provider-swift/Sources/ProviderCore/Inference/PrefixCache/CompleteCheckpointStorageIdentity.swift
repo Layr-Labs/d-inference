@@ -12,13 +12,18 @@ struct CompleteCheckpointStorageIdentity: Sendable {
 
     let backendLayout: String
     let fingerprintFields: [String: String]
+    let checkpointQuantization: PagedKVQuantizationConfig?
 
     init?(kind: EngineV2KVBackendKind, layerDTypes: [DType], pagedConfig: PagedKVPoolConfig?,
-          target: Target = .recurrentFull) {
+          target: Target = .recurrentFull, checkpointQuantization: PagedKVQuantizationConfig? = nil) {
         guard !layerDTypes.isEmpty,
-            layerDTypes.allSatisfy({ $0 == .float16 || $0 == .bfloat16 || $0 == .float32 })
+            layerDTypes.allSatisfy({ $0 == .float16 || $0 == .bfloat16 || $0 == .float32 }),
+            checkpointQuantization == nil || pagedConfig?.quantization == nil
         else { return nil }
-        var fields = ["storage.backend": kind.rawValue, "storage.quantization": "native"]
+        self.checkpointQuantization = checkpointQuantization
+        var fields = ["storage.backend": kind.rawValue,
+                      "storage.quantization": checkpointQuantization?.identity
+                        ?? pagedConfig?.quantization?.identity ?? "native"]
         for (index, dtype) in layerDTypes.enumerated() {
             fields["storage.dtype.\(index)"] = EngineV2Factory.pagedPoolDTypeName(dtype)
         }
@@ -28,12 +33,20 @@ struct CompleteCheckpointStorageIdentity: Sendable {
             guard pagedConfig == nil else { return nil }
             switch target {
             case .recurrentFull:
-                backendLayout = CBv2CompleteCheckpointManifest.layout
+                backendLayout = checkpointQuantization == nil
+                    ? CBv2CompleteCheckpointManifest.layout
+                    : CBv2CompleteCheckpointManifest.nativeQuantizedContiguousLayout
             case .historicalAttention(let kinds):
-                guard let layers = try? CBv2CheckpointAttentionLayer.resolveContiguousAsymmetric(
-                    layerKinds: kinds, dtypes: layerDTypes) else { return nil }
-                backendLayout = CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
-                Self.appendAttentionFields(layers, includeValueHeadDimension: true, to: &fields)
+                let asymmetric = kinds.contains { $0.headDim != $0.valueHeadDim }
+                guard let layers = try? (asymmetric
+                    ? CBv2CheckpointAttentionLayer.resolveContiguousAsymmetric(layerKinds: kinds, dtypes: layerDTypes)
+                    : CBv2CheckpointAttentionLayer.resolve(layerKinds: kinds, dtypes: layerDTypes))
+                else { return nil }
+                backendLayout = checkpointQuantization == nil
+                    ? (asymmetric ? CBv2CompleteCheckpointManifest.contiguousAsymmetricLayout
+                        : CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout)
+                    : CBv2CompleteCheckpointManifest.nativeQuantizedContiguousHistoricalLayout
+                Self.appendAttentionFields(layers, includeValueHeadDimension: asymmetric, to: &fields)
             }
         case .paged:
             guard let pagedConfig, let segmentBytes = pagedConfig.segmentSizeBytes,
@@ -42,9 +55,11 @@ struct CompleteCheckpointStorageIdentity: Sendable {
             else { return nil }
             switch target {
             case .recurrentFull:
-                backendLayout = pagedConfig.quantization == nil
-                    ? CBv2CompleteCheckpointManifest.pagedLayout
-                    : CBv2CompleteCheckpointManifest.quantizedPagedLayout
+                backendLayout = checkpointQuantization != nil
+                    ? CBv2CompleteCheckpointManifest.nativeQuantizedPagedLayout
+                    : (pagedConfig.quantization == nil
+                        ? CBv2CompleteCheckpointManifest.pagedLayout
+                        : CBv2CompleteCheckpointManifest.quantizedPagedLayout)
             case .historicalAttention(let kinds):
                 let asymmetric = kinds.contains { $0.headDim != $0.valueHeadDim }
                 guard !asymmetric || pagedConfig.gatheredAttention?.admissionMode == .stepOwned(.pinnedMetal),
@@ -52,10 +67,12 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                         ? CBv2CheckpointAttentionLayer.resolvePagedAsymmetric(layerKinds: kinds, dtypes: layerDTypes)
                         : CBv2CheckpointAttentionLayer.resolve(layerKinds: kinds, dtypes: layerDTypes))
                 else { return nil }
-                backendLayout = pagedConfig.quantization != nil
-                    ? CBv2CompleteCheckpointManifest.quantizedHistoricalLayout
-                    : (asymmetric ? CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
-                        : CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+                backendLayout = checkpointQuantization != nil
+                    ? CBv2CompleteCheckpointManifest.nativeQuantizedHistoricalLayout
+                    : (pagedConfig.quantization != nil
+                        ? CBv2CompleteCheckpointManifest.quantizedHistoricalLayout
+                        : (asymmetric ? CBv2CompleteCheckpointManifest.pagedAsymmetricLayout
+                            : CBv2CompleteCheckpointManifest.historicalAttentionLayout))
                 Self.appendAttentionFields(layers, includeValueHeadDimension: asymmetric, to: &fields)
                 if asymmetric, let limits = pagedConfig.gatheredAttention {
                     fields["storage.nativeProfile"] = "mimo-native-gathered-pages-v1"
@@ -67,7 +84,6 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                 }
             }
             fields["storage.pageSize"] = String(pagedConfig.pageSize)
-            fields["storage.quantization"] = pagedConfig.quantization?.identity ?? "native"
             fields["storage.nativeOwnerIndices"] = pagedConfig.nativeLayerIndices.sorted().map(String.init).joined(separator: ",")
             fields["storage.segmentBytes"] = String(segmentBytes)
             fields["storage.maximumBufferBytes"] = String(pagedConfig.maxBufferLength)

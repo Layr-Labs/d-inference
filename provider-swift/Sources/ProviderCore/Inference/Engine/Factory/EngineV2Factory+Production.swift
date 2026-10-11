@@ -56,6 +56,7 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
+        checkpointQuantization: EngineV2KVQuantizationSelection? = nil,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any CBv2Engine {
@@ -74,6 +75,7 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             kvBackend: kvBackend,
+            checkpointQuantization: checkpointQuantization,
             maxContextLength: maxContextLength,
             environment: environment
         ).engine
@@ -103,6 +105,8 @@ extension EngineV2Factory {
         public let effectiveMaxConcurrentRequests: Int
         /// Resolved physical attention precision; SDK-owned MiMo stays native.
         public let kvQuantization: EngineV2KVQuantizationSelection
+        /// Effective complete-checkpoint encoding, independent of live precision.
+        public let kvCheckpointQuantization: EngineV2KVQuantizationSelection
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
@@ -121,6 +125,7 @@ extension EngineV2Factory {
             legacyMTPBytesPerToken: Int = 0,
             effectiveMaxConcurrentRequests: Int = 0,
             kvQuantization: EngineV2KVQuantizationSelection = .native,
+            kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
             admissionWatermarkFraction: Double? = nil
         ) {
             self.engine = engine
@@ -134,6 +139,7 @@ extension EngineV2Factory {
             self.legacyMTPBytesPerToken = legacyMTPBytesPerToken
             self.effectiveMaxConcurrentRequests = effectiveMaxConcurrentRequests
             self.kvQuantization = kvQuantization
+            self.kvCheckpointQuantization = kvCheckpointQuantization
         }
     }
 
@@ -155,6 +161,7 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
+        checkpointQuantization: EngineV2KVQuantizationSelection? = nil,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
@@ -175,11 +182,25 @@ extension EngineV2Factory {
                 layerKinds: (model as? Gemma4TextModel)?.cbv2LayerKinds ?? [],
                 gemmaAssistantActive: mtpDrafter != nil && mtpConfig.effectiveEnabled),
             pagedPreflightOverride: pagedPreflightOverride)
+        let storageQuantization: PagedKVQuantizationConfig?
+        if completePrefixCache != nil {
+            let requested = try checkpointQuantization ?? EngineV2KVQuantizationPolicy.resolve(
+                modelType: nil, modelID: modelID ?? "", environment: environment, purpose: .checkpoint)
+            storageQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
+                requested.configuration, layerKinds: preparedBackend.layerKinds,
+                layerDTypes: preparedBackend.nativeLayerDTypes,
+                pagedConfig: preparedBackend.pagedPoolConfig,
+                hasAssistantState: mtpDrafter is any CBv2MTPPrefixCheckpointCoding
+                    || mtpDrafter is any CBv2MTPRequestStatefulDrafter)
+        } else {
+            storageQuantization = nil
+        }
         return try assembleProductionBuild(
             model: model,
             tokenizer: tokenizer,
             prefixCache: prefixCache,
             completePrefixCache: completePrefixCache,
+            checkpointQuantization: storageQuantization,
             maxConcurrentRequests: maxConcurrentRequests,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
@@ -195,6 +216,7 @@ extension EngineV2Factory {
         tokenizer: any MLXLMCommon.Tokenizer,
         prefixCache: (any CBv2PrefixCache)?,
         completePrefixCache: (any CBv2CompletePrefixCache)? = nil,
+        checkpointQuantization: PagedKVQuantizationConfig? = nil,
         maxConcurrentRequests: Int,
         mtpDrafter: (any CBv2MTPDrafter)?,
         mtpConfig: CBv2MTPConfig,
@@ -241,8 +263,11 @@ extension EngineV2Factory {
         } else {
             processOwner = nil
         }
-        let admissionConfig = try (backend as? PagedKVBackend)?.pool.admissionStorageConfig(
+        var admissionConfig = try (backend as? PagedKVBackend)?.pool.admissionStorageConfig(
             AdmissionV2.Config()) ?? AdmissionV2.Config()
+        if preparedBackend.kind == .contiguous {
+            admissionConfig.layerElementBytes = preparedBackend.nativeLayerDTypes.map(\.size)
+        }
         let engine = EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
             layerKinds: preparedBackend.layerKinds,
@@ -257,6 +282,8 @@ extension EngineV2Factory {
             prefixCache: effectivePrefixCache,
             hybridPrefixCache: preparedBackend.hybridPrefixCache,
             completePrefixCache: completePrefixCache,
+            checkpointQuantization: checkpointQuantization,
+            completeCheckpointKVDTypes: preparedBackend.nativeLayerDTypes,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             processMemoryOwner: processOwner)
@@ -277,6 +304,10 @@ extension EngineV2Factory {
             legacyMTPBytesPerToken: mtpDrafter?.requestStateBytesPerToken ?? 0,
             effectiveMaxConcurrentRequests: preparedBackend.effectiveMaxConcurrentRequests,
             kvQuantization: preparedBackend.kvQuantization,
+            kvCheckpointQuantization: engine.completePrefixCache == nil ? .native
+                : checkpointQuantization.flatMap { configuration in
+                    EngineV2KVQuantizationSelection.allCases.first { $0.configuration == configuration }
+                } ?? preparedBackend.kvQuantization,
             admissionWatermarkFraction: admissionConfig.watermarkFraction)
     }
 }

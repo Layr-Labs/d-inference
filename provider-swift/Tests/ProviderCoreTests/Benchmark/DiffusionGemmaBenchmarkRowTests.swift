@@ -43,7 +43,8 @@ struct DiffusionGemmaBenchmarkRowTests {
       grantBytes: 600)
     let report = DiffusionGemmaBenchmarkResult(
       iterations: [sample], weightHash: "fixture-weights", backend: "paged",
-      kvQuantization: "balanced", loadMilliseconds: 25, grant: grant)
+      kvQuantization: "balanced", kvCheckpointQuantization: "native", checkpointBackendLayout: nil,
+      loadMilliseconds: 25, grant: grant)
     return try DiffusionGemmaBenchmarkRow(
       iteration: 2, report: report, sample: sample,
       runtimeIdentity: ["binary_sha256": "fixture-binary", "metallib_sha256": "fixture-metal"])
@@ -86,6 +87,9 @@ struct DiffusionGemmaBenchmarkRowTests {
     #expect(object["peakObservedPagedCommittedBytes"] as? Int == 64)
     #expect(object["peakObservedPagedLivePageBytes"] as? Int == 48)
     #expect(object["kvGrantBytes"] as? Int == 600)
+    #expect(object["kvQuantization"] as? String == "balanced")
+    #expect(object["kvCheckpointQuantization"] as? String == "native")
+    #expect(object["checkpointBackendLayout"] == nil)
     #expect(object["speedTargetQualified"] as? Bool == false)
     #expect(object["runtimeIdentity"] as? [String: String] == report.runtimeIdentity)
     let expectedHash = SHA256.hash(data: try JSONEncoder().encode([7, 8, 9]))

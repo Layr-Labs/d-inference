@@ -120,8 +120,8 @@ struct GPTOSSDefaultPrefixCacheWiringTests {
         #expect(!FileManager.default.fileExists(atPath: root.path))
     }
 
-    @Test("Paged kill switch falls back to contiguous and refuses historical SSD reuse")
-    func pagedFallbackStaysCold() async throws {
+    @Test("Paged kill switch preserves native contiguous historical checkpoint reuse")
+    func pagedFallbackPreservesNativeCheckpoints() async throws {
         let model = try tinyTarget()
         let prepared = try preparation(model, paged: false)
         #expect(prepared.kind == .contiguous)
@@ -130,8 +130,11 @@ struct GPTOSSDefaultPrefixCacheWiringTests {
             .appendingPathComponent("gptoss-contiguous-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let result = await construct(model, prepared, root: root)
-        #expect(result?.cache == nil)
-        #expect(result?.status.reason == .unsupportedLayout)
-        #expect(!FileManager.default.fileExists(atPath: root.path))
+        let cache = try #require(result?.cache)
+        #expect(cache.config.backendLayout == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout)
+        #expect(result?.checkpointQuantization == nil)
+        #expect(cache.config.identity.modelAggregateHash == weightHash)
+        #expect(cache.config.identity.promptContractID == promptContractID)
+        await cache.closeAndWait()
     }
 }

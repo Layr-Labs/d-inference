@@ -50,7 +50,7 @@ struct NemotronPagingPrefixIntegrationTests {
         #expect(prepared.fallbackReason == nil)
         let format = try #require(prepared.pagedPoolConfig?.quantization)
         #expect(format.keyBits == 4 && format.valueBits == 4)
-        #expect(prepared.pagedLayerDTypes == model.cbv2CompleteCheckpointKVDTypes)
+        #expect(prepared.nativeLayerDTypes == model.cbv2CompleteCheckpointKVDTypes)
         #expect(prepared.layerKinds.count == 1)
         #expect(model.cbv2RecurrentStateSpec.layers.count == 2)
         #expect(!prepared.residentPrefixCacheEnabled)
@@ -68,7 +68,7 @@ struct NemotronPagingPrefixIntegrationTests {
             supportsRecurrent: prepared.modelCapabilities.supportsRecurrentCheckpointReuse,
             supportsHistoricalAttention: false,
             modelDTypes: model.cbv2CompleteCheckpointKVDTypes,
-            nativeDTypes: prepared.pagedLayerDTypes, pagedConfig: prepared.pagedPoolConfig,
+            nativeDTypes: prepared.nativeLayerDTypes, pagedConfig: prepared.pagedPoolConfig,
             assistant: .init(drafter: assistant))
     }
 
@@ -79,7 +79,7 @@ struct NemotronPagingPrefixIntegrationTests {
         #expect(prepared.kind == .paged)
         #expect(prepared.fallbackReason == nil)
         #expect(prepared.pagedPoolConfig?.segmentSizeBytes != nil)
-        #expect(prepared.pagedLayerDTypes == model.cbv2CompleteCheckpointKVDTypes)
+        #expect(prepared.nativeLayerDTypes == model.cbv2CompleteCheckpointKVDTypes)
         #expect(prepared.layerKinds.count == 1)
         #expect(model.cbv2RecurrentStateSpec.layers.count == 2)
         #expect(!prepared.modelCapabilities.supportsPrefixReuse)

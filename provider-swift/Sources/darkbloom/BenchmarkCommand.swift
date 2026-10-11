@@ -108,8 +108,11 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var kvBackend = "auto"
 
-    @Option(name: .long, help: "Live attention KV precision: balanced (K4/V4), k8v4, k8v8 or native. MiMo always remains native. Applies to every benchmark engine; defaults to the provider environment or balanced.")
+    @Option(name: .long, help: "Live attention KV precision: balanced (K4/V4), k8v4, k8v8 or native. MiMo always remains native. Defaults to the provider config/environment or native; independent of checkpoint storage.")
     var kvQuantization: String?
+
+    @Option(name: .long, help: "Complete-checkpoint storage precision: balanced (K4/V4), k8v4, k8v8 or native. Applies to eligible checkpoint codecs, not live attention. MiMo always remains native. Defaults to the provider config/environment or balanced.")
+    var kvCheckpointQuantization: String?
 
     @Flag(name: .long, help: "Generate one request through the production CBv2 slot and print raw tokens, text, precision, timings and memory as JSON; prefix caches are off and --iterations does not apply.")
     var runtimeGeneration = false
@@ -186,10 +189,6 @@ struct Benchmark: AsyncParsableCommand {
     var teacherForcedInput: String?
 
     mutating func run() async throws {
-        if let kvQuantization {
-            let selection = try EngineV2KVQuantizationPolicy.parseSelection(kvQuantization)
-            setenv(EngineV2KVQuantizationPolicy.environmentKey, selection.rawValue, 1)
-        }
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
             throw ExitCode(2)
@@ -201,6 +200,11 @@ struct Benchmark: AsyncParsableCommand {
         if let error = schedulerPrefillOptionError() {
             printError(error)
             throw ExitCode(2)
+        }
+        // Keep explicit overrides raw until the model is known: MiMo ignores
+        // both precision controls, including malformed irrelevant values.
+        for (key, value) in kvQuantizationOverrides() {
+            setenv(key, value, 1)
         }
         if schedulerPrefillDecision {
             try await runSignedSchedulerPrefillDecision()
@@ -273,6 +277,11 @@ struct Benchmark: AsyncParsableCommand {
             modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVQuantization,
             byModel: snapshot.config.backend.engineV2KVQuantizationByModel,
             modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment)
+        let checkpointPrecision = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: selectedModel.modelType, global: snapshot.config.backend.engineV2KVCheckpointQuantization,
+            byModel: snapshot.config.backend.engineV2KVCheckpointQuantizationByModel,
+            modelID: selectedModel.id, environment: ProcessInfo.processInfo.environment,
+            purpose: .checkpoint)
         setenv(EngineV2KVQuantizationPolicy.environmentKey, precision.rawValue, 1)
 
         if let error = nativeBlockModeError(modelType: selectedModel.modelType) {
@@ -295,7 +304,8 @@ struct Benchmark: AsyncParsableCommand {
                 modelID: selectedModel.id, modelDirectory: modelPath, prompt: input,
                 maxTokens: maxTokens, backend: kvBackend, mtpEnabled: runtimeMtp,
                 assistantDirectory: runtimeAssistantDirectory.map { URL(fileURLWithPath: $0) },
-                renderDate: runtimePromptDate)
+                renderDate: runtimePromptDate,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue)
             print(result.json)
             if !result.succeeded { throw ExitCode(2) }
             return
@@ -305,7 +315,8 @@ struct Benchmark: AsyncParsableCommand {
             let result = try await TeacherForcedBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath,
                 inputURL: URL(fileURLWithPath: teacherForcedInput), backend: kvBackend,
-                gemmaOptimizations: gemmaSettings)
+                gemmaOptimizations: gemmaSettings,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue)
             // Preserve nonfinite/neutrality evidence even when inconclusive.
             print(result.json)
             if !result.controlsPassed { throw ExitCode(2) }
@@ -326,7 +337,8 @@ struct Benchmark: AsyncParsableCommand {
                 modelDirectory: modelPath,
                 hardware: hardware,
                 gemmaOptimizations: gemmaSettings,
-                kvQuantization: precision
+                kvQuantization: precision,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue
             )
             return
         }
@@ -335,7 +347,8 @@ struct Benchmark: AsyncParsableCommand {
             try await runSchedulerPrefillBenchmark(
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
-                gemmaOptimizations: gemmaSettings
+                gemmaOptimizations: gemmaSettings,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue
             )
             return
         }
@@ -344,7 +357,8 @@ struct Benchmark: AsyncParsableCommand {
             try await runArrivalInvarianceBenchmark(
                 modelID: selectedModel.id,
                 modelDirectory: modelPath,
-                gemmaOptimizations: gemmaSettings
+                gemmaOptimizations: gemmaSettings,
+                checkpointQuantizationConfig: checkpointPrecision.rawValue
             )
             return
         }
@@ -360,10 +374,22 @@ struct Benchmark: AsyncParsableCommand {
             maxTokens: maxTokens,
             hardware: hardware,
             kvBackend: kvBackend,
-            configuredMemoryReserveGB: snapshot.config.provider.memoryReserveGB
+            configuredMemoryReserveGB: snapshot.config.provider.memoryReserveGB,
+            checkpointQuantizationConfig: checkpointPrecision.rawValue
         )
 
         report.printTable()
+    }
+
+    func kvQuantizationOverrides() -> [String: String] {
+        var environment: [String: String] = [:]
+        if let kvQuantization {
+            environment[EngineV2KVQuantizationPolicy.environmentKey] = kvQuantization
+        }
+        if let kvCheckpointQuantization {
+            environment[EngineV2KVQuantizationPolicy.checkpointEnvironmentKey] = kvCheckpointQuantization
+        }
+        return environment
     }
 
     func benchmarkModeConflict() -> String? {

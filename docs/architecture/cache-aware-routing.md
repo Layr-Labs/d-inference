@@ -259,12 +259,14 @@ queued dispatch (`coordinator/registry/cache_attempt_ownership.go`,
 
 ### Protocol v2 proof
 
-Runtime cache precision belongs to the provider's concrete storage identity.
-Quantized slots advertise only the exact complete checkpoint contract they can
-restore; native and packed namespaces differ. Legacy resident-page and native
-tensor snapshot formats are bypassed for packed precision. These provider
-choices do not change proof or receipt authority. See
-[runtime KV quantization](kv-cache-quantization.md).
+Live and checkpoint precision belong to the provider's concrete storage
+identity. Native-exact, lossy-to-native and explicit live-packed checkpoints
+use distinct layouts and namespaces. A proof authenticates the token prefix
+and the provider's compatible checkpoint, not lossless numerical reconstruction
+or a latency guarantee. Legacy resident-page and native tensor snapshot formats
+remain bypassed for live-packed precision. These provider choices do not change
+proof, receipt or billing authority. See
+[execution and checkpoint precision](kv-cache-quantization.md).
 
 Each supported tier advertises a connection-scoped capability containing:
 

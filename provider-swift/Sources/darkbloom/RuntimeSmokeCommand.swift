@@ -13,7 +13,7 @@ struct RuntimeSmoke: AsyncParsableCommand {
     @Argument(help: "Internal encoded kernel shapes.")
     var shapes: [String] = []
 
-    @Option(help: "Internal resolved KV profile; packaged validation includes balanced by default.")
+    @Option(help: "Internal packed-kernel profile; packaged validation includes balanced by default.")
     var kvQuantization = "balanced"
 
     @Option(

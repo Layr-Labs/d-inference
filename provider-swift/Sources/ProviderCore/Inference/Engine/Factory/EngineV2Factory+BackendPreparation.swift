@@ -19,8 +19,9 @@ extension EngineV2Factory {
         /// and heartbeat capacity. Never advertise the pre-policy request.
         var effectiveMaxConcurrentRequests: Int { schedulerConfig.maxConcurrentRequests }
         let pagedPoolDType: String?
-        /// Immutable table read from the constructed pool for process admission.
-        let pagedLayerDTypes: [DType]?
+        /// Actual native KV types shared by live admission, token rates and
+        /// checkpoint encoding. Never inferred from weight precision.
+        let nativeLayerDTypes: [DType]
         /// Actual immutable storage geometry, captured before type erasure.
         let pagedPoolConfig: PagedKVPoolConfig?
         /// True when this preparation contains a resident physical-page
@@ -49,6 +50,7 @@ extension EngineV2Factory {
             schedulerConfig: CBv2SchedulerConfig,
             performanceProfile: ServingPerformanceProfile? = nil,
             pagedPoolDType: String?,
+            nativeLayerDTypes: [DType],
             kvQuantization: EngineV2KVQuantizationSelection = .native,
             residentPrefixCacheEnabled: Bool = false,
             hybridPrefixCache: CBv2HybridPrefixCacheConfig? = nil
@@ -67,7 +69,7 @@ extension EngineV2Factory {
             self.schedulerConfig = schedulerConfig
             self.performanceProfile = performanceProfile
             self.pagedPoolDType = pagedPoolDType
-            self.pagedLayerDTypes = (backend as? PagedKVBackend)?.pool.layerDTypes
+            self.nativeLayerDTypes = (backend as? PagedKVBackend)?.pool.layerDTypes ?? nativeLayerDTypes
             self.pagedPoolConfig = (backend as? PagedKVBackend)?.pool.config
             self.residentPrefixCacheEnabled = residentPrefixCacheEnabled
             self.hybridPrefixCache = hybridPrefixCache
@@ -211,9 +213,13 @@ extension EngineV2Factory {
                 environment: environment, mtpPerformanceConfiguration: mtpPerformanceConfiguration)
         }
 
+        var nativeKVTypes: CBv2NativeKVTypeProbe.Result?
+        var nativeKVProbeFailure: Error?
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             try EngineV2KVQuantizationPolicy.requireResolvedBackend(
                 .contiguous, selection: precision, reason: fallbackReason)
+            if let nativeKVProbeFailure { throw nativeKVProbeFailure }
+            let observed = try nativeKVTypes ?? probeNativeKVTypes(model: model, adapter: adapter)
             let (schedulerConfig, performanceProfile) = servingPolicy(for: .contiguous)
             var contiguousCapacity = cappedCapacity
             let configuredHybridCache: CBv2HybridPrefixCacheConfig?
@@ -247,10 +253,10 @@ extension EngineV2Factory {
                 schedulerConfig: schedulerConfig,
                 performanceProfile: performanceProfile,
                 pagedPoolDType: nil,
+                nativeLayerDTypes: observed.layerDTypes,
                 hybridPrefixCache: configuredHybridCache)
         }
 
-        var nativeKVTypes: CBv2NativeKVTypeProbe.Result?
         if resolvedKind == .paged {
             do {
                 if let pagedPreflightOverride {
@@ -269,6 +275,7 @@ extension EngineV2Factory {
         if resolvedKind == .paged {
             do {
                 let observed = try probeNativeKVTypes(model: model, adapter: adapter)
+                nativeKVTypes = observed
                 if let override = environment[Self.pagedPoolDTypeEnvKey],
                     !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     !observed.layerDTypes.allSatisfy({ $0 == pagedDType })
@@ -277,9 +284,9 @@ extension EngineV2Factory {
                         reason:
                             "paged dtype override differs from the loaded model's native KV types")
                 }
-                nativeKVTypes = observed
                 pagedDType = observed.layerDTypes.first ?? pagedDType
             } catch {
+                if nativeKVTypes == nil { nativeKVProbeFailure = error }
                 resolvedKind = .contiguous
                 fallbackReason = try degradeOrRefuse("native_kv_probe: \(error)")
             }
@@ -333,6 +340,7 @@ extension EngineV2Factory {
                     performanceProfile: performanceProfile,
                     pagedPoolDType: Set(nativeKVTypes.layerDTypes).count == 1
                         ? Self.pagedPoolDTypeName(paged.pool.config.dtype) : "mixed",
+                    nativeLayerDTypes: nativeKVTypes.layerDTypes,
                     kvQuantization: precision,
                     residentPrefixCacheEnabled: resolvedResidentPrefix != nil)
             } catch let error as CBv2KVError {

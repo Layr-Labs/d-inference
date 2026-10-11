@@ -18,8 +18,10 @@ extension SchedulerPrefillBenchmark {
         sourceSHA: String?,
         iterations: Int = 10,
         kvBackend: EngineV2KVBackendSelection = .auto,
-        kvQuantizationConfig: String = "balanced",
-        kvQuantizationConfigByModel: [String: String] = [:]
+        kvQuantizationConfig: String = "native",
+        kvQuantizationConfigByModel: [String: String] = [:],
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:]
     ) async throws -> SchedulerPrefillDecisionReport {
         try await SchedulerPrefillDecisionLiveHarness.run(
             modelID: modelID,
@@ -30,6 +32,8 @@ extension SchedulerPrefillBenchmark {
             kvBackend: kvBackend,
             kvQuantizationConfig: kvQuantizationConfig,
             kvQuantizationConfigByModel: kvQuantizationConfigByModel,
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel,
             signedIdentity: nil)
     }
 
@@ -44,8 +48,10 @@ extension SchedulerPrefillBenchmark {
         sourceSHA: String,
         iterations: Int = 10,
         kvBackend: EngineV2KVBackendSelection = .auto,
-        kvQuantizationConfig: String = "balanced",
+        kvQuantizationConfig: String = "native",
         kvQuantizationConfigByModel: [String: String] = [:],
+        checkpointQuantizationConfig: String = "balanced",
+        checkpointQuantizationConfigByModel: [String: String] = [:],
         signedIdentity: SignedReleaseIdentity.Verified
     ) async throws -> SchedulerPrefillDecisionReport {
         try await SchedulerPrefillDecisionLiveHarness.run(
@@ -57,6 +63,8 @@ extension SchedulerPrefillBenchmark {
             kvBackend: kvBackend,
             kvQuantizationConfig: kvQuantizationConfig,
             kvQuantizationConfigByModel: kvQuantizationConfigByModel,
+            checkpointQuantizationConfig: checkpointQuantizationConfig,
+            checkpointQuantizationConfigByModel: checkpointQuantizationConfigByModel,
             signedIdentity: signedIdentity)
     }
 }
@@ -76,6 +84,8 @@ enum SchedulerPrefillDecisionLiveHarness {
         kvBackend: EngineV2KVBackendSelection,
         kvQuantizationConfig: String,
         kvQuantizationConfigByModel: [String: String],
+        checkpointQuantizationConfig: String,
+        checkpointQuantizationConfigByModel: [String: String],
         signedIdentity: SignedReleaseIdentity.Verified?
     ) async throws -> SchedulerPrefillDecisionReport {
         let started = SchedulerPrefillDecisionMetadata.start()
@@ -102,6 +112,10 @@ enum SchedulerPrefillDecisionLiveHarness {
             modelType: modelIdentity.modelType, modelID: modelID,
             global: kvQuantizationConfig, byModel: kvQuantizationConfigByModel,
             environment: ProcessInfo.processInfo.environment)
+        let checkpointQuantization = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: modelIdentity.modelType, global: checkpointQuantizationConfig,
+            byModel: checkpointQuantizationConfigByModel, modelID: modelID,
+            environment: environment, purpose: .checkpoint)
         let iterations = max(1, iterations)
         let isVLM = ThroughputSweep.readHasVisionConfig(
             modelDirectory: modelDirectory)
@@ -167,6 +181,7 @@ enum SchedulerPrefillDecisionLiveHarness {
                     configuration: configuration,
                     cap: cap,
                     kvBackend: kvBackend,
+                    checkpointQuantization: checkpointQuantization,
                     environment: environment)
                 if !resolvedBackends.contains(parts.resolvedBackend) {
                     resolvedBackends.append(parts.resolvedBackend)
@@ -199,7 +214,8 @@ enum SchedulerPrefillDecisionLiveHarness {
                             schedulerEvidence: evidence,
                             measurement: measurement,
                             resolvedBackend: parts.resolvedBackend,
-                            resolvedQuantization: parts.kvQuantization))
+                            resolvedQuantization: parts.kvQuantization,
+                            resolvedCheckpointQuantization: parts.kvCheckpointQuantization))
                     }
                 } catch {
                     await SchedulerPrefillBenchmark.stopAndReclaim(parts.engine)
@@ -214,6 +230,8 @@ enum SchedulerPrefillDecisionLiveHarness {
             sourceSHA: sourceSHA,
             resolvedKVQuantization: SchedulerPrefillDecisionKVProvenance.runPrecision(
                 results: results),
+            resolvedKVCheckpointQuantization: SchedulerPrefillDecisionKVProvenance.runPrecision(
+                results: results, keyPath: \.resolvedKVCheckpointQuantization),
             signedIdentity: signedIdentity)
         let evidenceClass: SchedulerPrefillDecisionReport.EvidenceClass =
             signedIdentity == nil ? .unsignedLocalHarness : .signedCandidateModelFamily
@@ -256,7 +274,8 @@ enum SchedulerPrefillDecisionLiveHarness {
         schedulerEvidence: SchedulerPrefillDecisionReport.Result,
         measurement: SchedulerPrefillDecisionLiveMeasurement,
         resolvedBackend: String,
-        resolvedQuantization: EngineV2KVQuantizationSelection
+        resolvedQuantization: EngineV2KVQuantizationSelection,
+        resolvedCheckpointQuantization: EngineV2KVQuantizationSelection
     ) -> SchedulerPrefillDecisionReport.Result {
         SchedulerPrefillDecisionReport.Result(
             workload: workload,
@@ -283,6 +302,7 @@ enum SchedulerPrefillDecisionLiveHarness {
                 executedRows:
                     measurement.packedActivity.rowsExecuted),
             resolvedKVBackend: resolvedBackend,
-            resolvedKVQuantization: resolvedQuantization.rawValue)
+            resolvedKVQuantization: resolvedQuantization.rawValue,
+            resolvedKVCheckpointQuantization: resolvedCheckpointQuantization.rawValue)
     }
 }

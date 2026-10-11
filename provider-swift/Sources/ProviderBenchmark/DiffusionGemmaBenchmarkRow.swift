@@ -9,6 +9,8 @@ public struct DiffusionGemmaBenchmarkRow: Encodable, Sendable {
   public let backend: String
   public let weightHash: String
   public let kvQuantization: String
+  public let kvCheckpointQuantization: String
+  public let checkpointBackendLayout: String?
   public let runtimeIdentity: [String: String]
   public let tokenIDs: [Int]
   public let text: String
@@ -51,6 +53,8 @@ public struct DiffusionGemmaBenchmarkRow: Encodable, Sendable {
     backend = report.backend
     weightHash = report.weightHash
     kvQuantization = report.kvQuantization
+    kvCheckpointQuantization = report.kvCheckpointQuantization
+    checkpointBackendLayout = report.checkpointBackendLayout
     self.runtimeIdentity = runtimeIdentity
     tokenIDs = sample.tokenIDs
     text = sample.text

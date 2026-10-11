@@ -164,7 +164,7 @@ public enum PackagedRuntimeSmoke {
             ? PagedAttentionKernel.gptOSSRuntimeSmokeShapes
             : arguments.map(PagedAttentionKernelSmokeShape.init(argumentValue:))
         var packed = try packedArguments.map(PagedQuantizedKernelSmokeShape.init(argumentValue:))
-        // Bare packaged-artifact smoke covers the default balanced GPT-OSS
+        // Bare packaged-artifact smoke covers the balanced packed GPT-OSS
         // geometry. A model-specific request supplies its selected groups,
         // including an intentionally empty packed set for all-native owners.
         if arguments.isEmpty, packedArguments.isEmpty, let config = selected.configuration {

@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased — live KV compression
+## Unreleased - native inference and checkpoint compression
 
-- Default supported provider attention caches to rotated K4/V4 storage with FP32 group metadata, a native recent 128-token tail and native pending/speculative state. Keep MiMo native. Provide `balanced`, `k8v4`, `k8v8` and `native` precision controls; active Gemma assistants retain their two shared source owners at native precision.
-- Add production runtime generation and precision controls to benchmark commands, recording output tokens, text, runtime/artifact identities, timing and memory for paired model evaluations.
+- Default live attention to native precision and independently request balanced encrypted-checkpoint storage for eligible native paged and contiguous engines. Preserve explicit live `balanced`, `k8v4` and `k8v8` settings and the existing packed path; checkpoint compression does not force paging or reduce native serving-memory reservations.
+- Add separate checkpoint configuration, environment and benchmark controls, plus effective live/checkpoint precision and actual layout in local diagnostics. Unsupported storage layouts, persistent assistant state, MiMo, native-block diffusion and Qwen4 selected-index state retain native encoding.
+- Encode older eligible checkpoint rows with bounded CPU conversion, preserving exact recent rows and native recurrent/auxiliary state, and restore into separately admitted native destinations. Distinct layout/profile identities reject incompatible data; native-format restore does not recover the original older-row bits or guarantee the original output, TTFT, TPS or process memory.
+- Add production runtime generation and precision controls to benchmark commands and a separate encrypted-checkpoint comparison harness. Keep exact-native replay tests distinct from lossy quality observations; real-model checkpoint qualification remains pending.
 - Keep adaptive target-prefix MTP eligible with packed KV by comparing against measured unchained ordinary decode; native targets retain their chained baseline. Quote accepted whole DiffusionGemma image blocks before packed allocation.
 - Price packed SDK admission from actual owners and preserve the original-band allowance once. Publish packed historical attention checkpoints only at whole prefill frontiers so replay retains the donor's precision boundary; native interior cuts remain available. Refuse legacy tensor and Diffusion native-prefix codecs for actual packed storage while retaining typed AR complete checkpoints.
 

@@ -82,6 +82,7 @@ public actor EngineV2Bridge {
     /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
     public nonisolated let kvQuantization: EngineV2KVQuantizationSelection
+    public nonisolated let kvCheckpointQuantization: EngineV2KVQuantizationSelection
     /// Observed pool geometry from backend preparation, never a default guess.
     public let pagedPageSize: Int?
     /// Construction-time fallback reason, retained for heartbeat reporting.
@@ -372,6 +373,7 @@ public actor EngineV2Bridge {
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         kvQuantization: EngineV2KVQuantizationSelection = .native,
+        kvCheckpointQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
@@ -435,6 +437,7 @@ public actor EngineV2Bridge {
             completeStore = nil
         }
         self.ssdHybridCheckpointStore = completeStore
+        self.kvCheckpointQuantization = completeStore == nil ? .native : kvCheckpointQuantization
         let durableSource: (any DurablePrefixCacheEvidenceSource)? =
             completeStore.map { $0 as any DurablePrefixCacheEvidenceSource } ?? ssdPrefixCache
         let cacheRejected = ssdHybridCheckpointStore != nil && completeStore == nil

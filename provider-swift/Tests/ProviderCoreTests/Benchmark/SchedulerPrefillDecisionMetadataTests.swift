@@ -321,10 +321,12 @@ struct SchedulerPrefillDecisionMetadataTests {
         #expect(start.uptimeNanoseconds > 0)
 
         let metadata = try SchedulerPrefillDecisionMetadata.finish(
-            start, sourceSHA: "abc123", resolvedKVQuantization: "balanced")
+            start, sourceSHA: "abc123", resolvedKVQuantization: "native",
+            resolvedKVCheckpointQuantization: "balanced")
         #expect(metadata.sourceSHA == "abc123")
         #expect(metadata.providerVersion == ProviderCore.version)
-        #expect(metadata.resolvedKVQuantization == "balanced")
+        #expect(metadata.resolvedKVQuantization == "native")
+        #expect(metadata.resolvedKVCheckpointQuantization == "balanced")
         #expect(["debug", "release"].contains(metadata.buildConfiguration))
         #expect(metadata.executableSHA256.count == 64)
         #expect(metadata.postureAtStart == start.posture)
@@ -379,16 +381,19 @@ struct SchedulerPrefillDecisionMetadataTests {
             rows: [row], makespanMs: 250, aggregatePromptTokensPerSecond: 64,
             packedActivity: CBv2PackedPrefillActivity(
                 isSupported: true, rowsExecuted: 4, groupsExecuted: 2))
+        let checkpointPrecision: EngineV2KVQuantizationSelection = precision == .native ? .balanced : precision
         let build = EngineV2Factory.ProductionBuild(
             engine: ScriptedBenchmarkEngine { _ in .open([]) },
             fixedRequestBytes: 0, kvBackendKind: .paged, kvBackendFallbackReason: nil,
-            kvQuantization: precision)
+            kvQuantization: precision, kvCheckpointQuantization: checkpointPrecision)
         let parts = SchedulerPrefillDecisionEngineParts(build: build)
         #expect(parts.kvQuantization == build.kvQuantization)
+        #expect(parts.kvCheckpointQuantization == build.kvCheckpointQuantization)
         let result = SchedulerPrefillDecisionLiveHarness.makeResult(
             workload: evidence.workload, iteration: 3, cap: 0, schedulerEvidence: evidence,
             measurement: measurement, resolvedBackend: parts.resolvedBackend,
-            resolvedQuantization: parts.kvQuantization)
+            resolvedQuantization: parts.kvQuantization,
+            resolvedCheckpointQuantization: parts.kvCheckpointQuantization)
 
         #expect(result.workload == evidence.workload)
         #expect(result.iteration == 3)
@@ -407,5 +412,17 @@ struct SchedulerPrefillDecisionMetadataTests {
         #expect(result.packedPrefill.executedRows == 4)
         #expect(result.resolvedKVBackend == "paged")
         #expect(result.resolvedKVQuantization == precision.rawValue)
+        #expect(result.resolvedKVCheckpointQuantization == checkpointPrecision.rawValue)
+    }
+
+    @Test("an engine without a checkpoint codec does not report live packed precision as storage compression")
+    func missingCheckpointCodecStaysNative() {
+        let build = EngineV2Factory.ProductionBuild(
+            engine: ScriptedBenchmarkEngine { _ in .open([]) },
+            fixedRequestBytes: 0, kvBackendKind: .paged, kvBackendFallbackReason: nil,
+            kvQuantization: .balanced)
+        let parts = SchedulerPrefillDecisionEngineParts(build: build)
+        #expect(parts.kvQuantization == .balanced)
+        #expect(parts.kvCheckpointQuantization == .native)
     }
 }

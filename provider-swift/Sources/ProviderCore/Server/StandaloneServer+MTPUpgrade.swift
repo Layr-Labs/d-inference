@@ -175,6 +175,8 @@ extension StandaloneServer {
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 kvQuantizationConfig: config.engineV2KVQuantization,
                 kvQuantizationConfigByModel: config.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: config.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: config.engineV2KVCheckpointQuantizationByModel,
                 mtpAcceptanceConfig: config.mtpAcceptance,
                 mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,

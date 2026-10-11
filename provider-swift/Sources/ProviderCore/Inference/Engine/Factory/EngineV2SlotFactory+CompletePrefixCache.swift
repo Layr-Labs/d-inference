@@ -6,14 +6,16 @@ extension EngineV2SlotFactory {
     struct CompletePrefixCachePreparation {
         let cache: SSDHybridCheckpointStore?
         let status: PrefixCacheConstructionStatus
+        var checkpointQuantization: PagedKVQuantizationConfig? = nil
     }
 
-    /// Loaded native capability selects either recurrent full state or exact
+    /// Loaded native capability selects either recurrent full state or complete
     /// historical attention state. Both use the complete encrypted SSD format;
     /// ordinary attention block/replay eligibility remains separate.
     static func prepareCompletePrefixCache(
         modelId: String, model: any LanguageModel,
         preparedBackend: EngineV2Factory.ProductionBackendPreparation?,
+        checkpointQuantization: PagedKVQuantizationConfig? = nil,
         weightHash: String?, promptContractID: String?,
         mtpDrafter: (any CBv2MTPDrafter)?, mtpConfig: CBv2MTPConfig,
         kvBudget: GlobalKVCacheBudget?, environment: [String: String],
@@ -33,8 +35,9 @@ extension EngineV2SlotFactory {
             supportsRecurrent: preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse,
             supportsHistoricalAttention: historicalTarget,
             modelDTypes: (model as? any CBv2CompleteCheckpointKVTypeProviding)?.cbv2CompleteCheckpointKVDTypes,
-            nativeDTypes: preparedBackend.pagedLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
-            assistant: CompleteCheckpointAssistant(drafter: mtpDrafter))
+            nativeDTypes: preparedBackend.nativeLayerDTypes, pagedConfig: preparedBackend.pagedPoolConfig,
+            assistant: CompleteCheckpointAssistant(drafter: mtpDrafter),
+            checkpointQuantization: checkpointQuantization)
         else {
             return .init(cache: nil, status: .init(state: .disabled, reason: .unsupportedLayout))
         }
@@ -61,7 +64,8 @@ extension EngineV2SlotFactory {
             kvBudget: kvBudget, environment: environment,
             persistentTestNamespace: persistentTestNamespace)
         return .init(cache: cache, status: cache == nil
-            ? .init(state: .error, reason: .cacheInitFailed) : .scanPending)
+            ? .init(state: .error, reason: .cacheInitFailed) : .scanPending,
+            checkpointQuantization: cache == nil ? nil : storage.checkpointQuantization)
     }
 
     enum CompleteCheckpointAssistant: Equatable {
@@ -82,8 +86,11 @@ extension EngineV2SlotFactory {
         kind: EngineV2KVBackendKind, layerKinds: [CBv2LayerKind],
         supportsRecurrent: Bool, supportsHistoricalAttention: Bool,
         modelDTypes: [DType]?, nativeDTypes: [DType]?, pagedConfig: PagedKVPoolConfig?,
-        assistant: CompleteCheckpointAssistant
+        assistant: CompleteCheckpointAssistant,
+        checkpointQuantization: PagedKVQuantizationConfig? = nil
     ) -> CompleteCheckpointStorageIdentity? {
+        let layerDTypes: [DType]
+        let target: CompleteCheckpointStorageIdentity.Target
         if supportsRecurrent {
             guard !layerKinds.isEmpty, layerKinds.allSatisfy({ layer in
                 if case .full = layer.attention { return layer.sharesKVWithLayer == nil }
@@ -92,22 +99,25 @@ extension EngineV2SlotFactory {
                 nativeDTypes == nil || nativeDTypes == modelDTypes,
                 assistant == .none || assistant == .persistentCodec
             else { return nil }
-            return .init(kind: kind, layerDTypes: nativeDTypes ?? modelDTypes, pagedConfig: pagedConfig)
+            layerDTypes = nativeDTypes ?? modelDTypes
+            target = .recurrentFull
+        } else {
+            guard supportsHistoricalAttention, let nativeDTypes,
+                  assistant == .none || assistant == .stateless else { return nil }
+            if kind == .contiguous {
+                guard modelDTypes == nil || modelDTypes == nativeDTypes,
+                      nativeDTypes.count == layerKinds.count else { return nil }
+            }
+            // A stateless drafter rebuilds from target rows; its live policy is
+            // independent of whether those rows were compressed on disk.
+            layerDTypes = nativeDTypes
+            target = .historicalAttention(layerKinds)
         }
-        if supportsHistoricalAttention, kind == .contiguous {
-            guard assistant == .none, let nativeDTypes,
-                  modelDTypes == nil || modelDTypes == nativeDTypes,
-                  nativeDTypes.count == layerKinds.count else { return nil }
-            return .init(kind: kind, layerDTypes: nativeDTypes, pagedConfig: pagedConfig,
-                         target: .historicalAttention(layerKinds))
-        }
-        guard supportsHistoricalAttention, kind == .paged, let nativeDTypes,
-              assistant == .none || assistant == .stateless else { return nil }
-        // Gemma's stateless per-round drafter remains configured normally. It
-        // rebuilds from restored target rows; no persistent assistant payload
-        // or model-declared attention dtype is fabricated here.
-        return .init(kind: kind, layerDTypes: nativeDTypes, pagedConfig: pagedConfig,
-                     target: .historicalAttention(layerKinds))
+        let effectiveQuantization = CBv2CompleteCheckpointStorageQuantization.resolve(
+            checkpointQuantization, layerKinds: layerKinds, layerDTypes: layerDTypes,
+            pagedConfig: pagedConfig, hasAssistantState: assistant == .persistentCodec)
+        return .init(kind: kind, layerDTypes: layerDTypes, pagedConfig: pagedConfig,
+                     target: target, checkpointQuantization: effectiveQuantization)
     }
 
 }

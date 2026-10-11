@@ -146,6 +146,9 @@ extension Benchmark {
                 kvQuantizationConfig: snapshot.config.backend.engineV2KVQuantization,
                 kvQuantizationConfigByModel:
                     snapshot.config.backend.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: snapshot.config.backend.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel:
+                    snapshot.config.backend.engineV2KVCheckpointQuantizationByModel,
                 signedIdentity: signedIdentity)
         } catch {
             printError("signed scheduler-prefill evidence is invalid: \(error)")

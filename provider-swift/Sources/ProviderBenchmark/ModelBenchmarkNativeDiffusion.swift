@@ -6,12 +6,13 @@ extension ModelBenchmark {
 
     static func runNativeDiffusion(
         modelID: String, directory: URL, prompt: String, iterations: Int,
-        maxTokens: Int, backend: String
+        maxTokens: Int, backend: String, checkpointQuantizationConfig: String = "balanced"
     ) async throws -> [BenchmarkIterationResult] {
         let report = try await EngineV2Factory.runDiffusionGemmaBenchmark(
             modelID: modelID, directory: directory, prompt: prompt,
-            iterations: iterations, maxTokens: maxTokens, backend: backend)
-        print("Native diffusion: prefix cache off, precision \(report.kvQuantization), reasoning off, seed 341, unchanged checkpoint denoising recipe.")
+            iterations: iterations, maxTokens: maxTokens, backend: backend,
+            checkpointQuantizationConfig: checkpointQuantizationConfig)
+        print("Native diffusion: prefix cache off, live KV precision \(report.kvQuantization), checkpoint precision \(report.kvCheckpointQuantization), reasoning off, seed 341, unchanged checkpoint denoising recipe.")
         print("Generation TPS includes first-block work and excludes terminal EOS; native framing tokens may remain.")
         print("This is not a finalized-visible-token performance-target certification.")
         var results = [BenchmarkIterationResult]()

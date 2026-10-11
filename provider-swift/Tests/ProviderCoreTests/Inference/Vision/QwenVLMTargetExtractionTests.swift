@@ -37,6 +37,8 @@ private func qwenTargetFixtureJSON(
             "full_attention_interval": \(fullAttentionInterval),
             "num_experts": \(numExperts),
             "num_experts_per_tok": \(numExperts > 0 ? 2 : 0),
+            "moe_intermediate_size": 64,
+            "shared_expert_intermediate_size": 64,
             "mtp_num_hidden_layers": \(mtpLayers)
           },
           "vision_config": {
@@ -449,7 +451,8 @@ struct QwenVLMTargetExtractionTests {
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: .auto,
-            environment: [KVBackendGuardStore.pathEnvKey: "/dev/null"],
+            environment: [KVBackendGuardStore.pathEnvKey: "/dev/null",
+                          EngineV2KVQuantizationPolicy.environmentKey: "balanced"],
             pagedPreflightOverride: { _ in preflightCalled = true })
         #expect(paged.kind == .paged && paged.kvQuantization == .balanced)
         #expect(paged.fallbackReason == nil)
@@ -517,6 +520,36 @@ struct QwenVLMTargetExtractionTests {
         #expect(paged.pool.config.layerDTypes == [.float32])
         #expect(EngineV2.backendCapabilityViolation(
             capabilities: prepared.modelCapabilities, backend: backend) == nil)
+    }
+
+    @Test("Native probes retain actual dtypes across fresh dense and MoE targets")
+    func nativeProbesAcrossFreshTargets() throws {
+        for dtype in [DType.float32, .bfloat16, .float32] {
+            for numExperts in [0, 4] {
+                let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+                    configData: qwenTargetFixtureJSON(
+                        mtpLayers: 0, fullAttentionInterval: 2, numExperts: numExperts))
+                let target: any LanguageModel =
+                    numExperts > 0 ? Qwen35MoEModel(config) : Qwen35Model(config)
+                let parameters = target.parameters().flattened()
+                for (name, parameter) in parameters {
+                    // Missing MoE widths default to zero and send empty tensors
+                    // through compiled activations during the real probe.
+                    try #require(parameter.size > 0, "empty fixture parameter: \(name)")
+                }
+                target.update(parameters: ModuleParameters.unflattened(
+                    parameters.map { ($0.0, $0.1.asType(dtype)) }))
+
+                let observed = try EngineV2Factory.inspectNativeKVTypes(model: target)
+                #expect(observed.layerDTypes == [dtype])
+                #expect(observed.observations.map(\.phase) == [.prefill, .decode])
+                #expect(observed.observations.map(\.keysShape) == [
+                    [1, 1, 2, 64], [1, 1, 1, 64],
+                ])
+                let repeated = try EngineV2Factory.inspectNativeKVTypes(model: target)
+                #expect(repeated == observed)
+            }
+        }
     }
 
     @Test("Qwen rejects attention-only SSD and requires verified identity for complete checkpoints")

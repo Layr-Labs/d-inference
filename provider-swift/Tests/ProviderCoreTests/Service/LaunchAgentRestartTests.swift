@@ -74,10 +74,26 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_R2_CDN_URL": "https://cdn.example.test"])
     }
 
+    @Test(arguments: ["balanced", "k8v4", "k8v8", "native", "malformed"])
+    func forwardsIndependentKVPrecisionControls(checkpoint: String) {
+        let precision = [
+            "DARKBLOOM_CBV2_KV_QUANTIZATION": "k8v8",
+            "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION": checkpoint,
+        ]
+        let environment = precision.merging(["UNRELATED_SECRET": "excluded"]) { value, _ in value }
+        #expect(LaunchAgent.passthroughEnvironment(from: environment) == precision)
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log", environment: environment)
+        #expect(plist["EnvironmentVariables"] as? [String: String] == precision)
+    }
+
     @Test func dropsEmptyAndMissingVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
         let out = LaunchAgent.passthroughEnvironment(from: [
             "DARKBLOOM_PREFIX_CACHE": "",
+            "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION": "",
             EngineV2Factory.maxPartialPrefillsKey: "",
             PrefillDeadlineMode.environmentKey: "",
             "UNRELATED_SECRET": "excluded",

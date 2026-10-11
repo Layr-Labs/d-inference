@@ -100,6 +100,8 @@ extension Start {
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
                 engineV2KVQuantization: config.backend.engineV2KVQuantization,
                 engineV2KVQuantizationByModel: config.backend.engineV2KVQuantizationByModel,
+                engineV2KVCheckpointQuantization: config.backend.engineV2KVCheckpointQuantization,
+                engineV2KVCheckpointQuantizationByModel: config.backend.engineV2KVCheckpointQuantizationByModel,
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
                 mtpMode: config.backend.mtpMode,
                 mtpDrafterPath: config.backend.mtpDrafterPath,

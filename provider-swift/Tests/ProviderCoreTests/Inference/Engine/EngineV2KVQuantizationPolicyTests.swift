@@ -16,8 +16,12 @@ struct EngineV2KVQuantizationPolicyTests {
     func defaultIsGeometryIndependent(modelID: String) throws {
         let selection = try EngineV2KVQuantizationPolicy.resolve(
             modelType: "supported", modelID: modelID, environment: [:])
-        #expect(selection == .balanced)
-        let configuration = try #require(selection.configuration)
+        #expect(selection == .native)
+        #expect(selection.configuration == nil)
+        let checkpoint = try EngineV2KVQuantizationPolicy.resolve(
+            modelType: "supported", modelID: modelID, environment: [:], purpose: .checkpoint)
+        #expect(checkpoint == .balanced)
+        let configuration = try #require(checkpoint.configuration)
         #expect(configuration.keyBits == 4 && configuration.valueBits == 4)
         #expect(configuration.groupSize == 64)
         #expect(configuration.recentTokenCount == 128)
@@ -30,6 +34,35 @@ struct EngineV2KVQuantizationPolicyTests {
             modelType: "mimo_v2", global: raw, byModel: ["arbitrary-alias": raw],
             modelID: "arbitrary-alias",
             environment: [EngineV2KVQuantizationPolicy.environmentKey: raw]) == .native)
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: "mimo_v2", global: raw, byModel: ["arbitrary-alias": raw],
+            modelID: "arbitrary-alias",
+            environment: [EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: raw],
+            purpose: .checkpoint) == .native)
+    }
+
+    @Test func storageOverridesAreIndependentAndErrorsNameTheirPurpose() throws {
+        let environment = [
+            EngineV2KVQuantizationPolicy.environmentKey: "native",
+            EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: "k8v8",
+        ]
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: nil, global: "balanced", modelID: "m", environment: environment) == .native)
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: nil, global: "native", byModel: ["m": "k8v4"], modelID: "m",
+            environment: [:], purpose: .checkpoint) == .k8v4)
+        #expect(try EngineV2KVQuantizationPolicy.resolve(
+            modelType: nil, global: "native", byModel: ["m": "k8v4"], modelID: "m",
+            environment: environment, purpose: .checkpoint) == .k8v8)
+        #expect(try EngineV2KVQuantizationPolicy.parseSelection(" ") == .native)
+        #expect(try EngineV2KVQuantizationPolicy.parseSelection(" ", purpose: .checkpoint) == .balanced)
+        #expect(throws: EngineV2KVQuantizationPolicy.Failure.invalidCheckpointSelection("invalid")) {
+            try EngineV2KVQuantizationPolicy.parseSelection("invalid", purpose: .checkpoint)
+        }
+        #expect(EngineV2KVQuantizationPolicy.Failure.invalidSelection("invalid").description
+            .contains("live KV"))
+        #expect(EngineV2KVQuantizationPolicy.Failure.invalidCheckpointSelection("invalid").description
+            .contains("checkpoint KV"))
     }
 
     @Test func precedenceAndNativeOverride() throws {
@@ -60,7 +93,9 @@ struct EngineV2KVQuantizationPolicyTests {
     @Test func oldConfigurationDefaultsAndExplicitPrecisionRoundtrip() throws {
         let decoder = JSONDecoder()
         #expect(try decoder.decode(BackendSettings.self, from: Data("{}".utf8))
-            .engineV2KVQuantization == "balanced")
+            .engineV2KVQuantization == "native")
+        #expect(try decoder.decode(BackendSettings.self, from: Data("{}".utf8))
+            .engineV2KVCheckpointQuantization == "balanced")
         let settings = BackendSettings(
             engineV2KVQuantization: "k8v4", engineV2KVQuantizationByModel: ["gpt-oss-20b": "native"])
         #expect(try decoder.decode(BackendSettings.self, from: JSONEncoder().encode(settings)) == settings)

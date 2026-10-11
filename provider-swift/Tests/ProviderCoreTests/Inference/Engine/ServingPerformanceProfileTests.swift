@@ -75,8 +75,17 @@ private func measuredProfileFixture() -> ServingPerformanceProfile {
             artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
             hardware: hardware, environment: [EngineV2KVQuantizationPolicy.environmentKey: raw],
             providerVersion: "test", profiles: [profile])
-        #expect(resolved == (["native", " OFF ", "0"].contains(raw) ? profile : nil))
+        #expect(resolved == (["native", " OFF ", "0", ""].contains(raw) ? profile : nil))
     }
+    for raw in ["native", "balanced", "k8v4", "k8v8", ""] {
+        #expect(ServingPerformanceProfiles.resolve(modelID: profile.modelId,
+            artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
+            hardware: hardware,
+            environment: [EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: raw],
+            providerVersion: "test", profiles: [profile]) == profile)
+    }
+    #expect(!ServingPerformanceProfiles.runtimeOverridesAreAbsent(
+        [EngineV2KVQuantizationPolicy.checkpointEnvironmentKey: "invalid"]))
     #expect(ServingPerformanceProfiles.resolve(modelID: profile.modelId,
         artifactSHA256: profile.artifactSha256, kvBackend: "paged", contextTokens: 32768,
         hardware: hardware,

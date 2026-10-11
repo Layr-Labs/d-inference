@@ -333,7 +333,8 @@ struct PrefixCacheCheckpointIdentityTests {
                 pagedConfig: config, target: .historicalAttention(modified)) == nil)
         }
         #expect(CompleteCheckpointStorageIdentity(kind: .contiguous, layerDTypes: [.float16, .float16],
-            pagedConfig: nil, target: .historicalAttention(kinds)) == nil)
+            pagedConfig: nil, target: .historicalAttention(kinds))?.backendLayout
+                == CBv2CompleteCheckpointManifest.nativeContiguousHistoricalLayout)
         #expect(CompleteCheckpointStorageIdentity(kind: .paged, layerDTypes: [.float16, .float32],
             pagedConfig: config, target: .historicalAttention(kinds)) == nil)
     }

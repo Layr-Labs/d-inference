@@ -259,6 +259,7 @@ enum SchedulerPrefillDecisionSimulator {
                 executedGroups: nil,
                 executedRows: nil),
             resolvedKVBackend: nil,
-            resolvedKVQuantization: nil)
+            resolvedKVQuantization: nil,
+            resolvedKVCheckpointQuantization: nil)
     }
 }

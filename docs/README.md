@@ -39,8 +39,8 @@
 - [`architecture/scheduling.md`](architecture/scheduling.md): per-model queues, slot states, token-budget admission, model swaps, warm pool, heartbeat and eviction.
 - [`architecture/cache-aware-routing.md`](architecture/cache-aware-routing.md): provider-confirmed exact prefix-cache routing and its kill switch.
 - [`architecture/inference.md`](architecture/inference.md): the CBv2 engine — request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families.
-- [`architecture/kv-cache-quantization.md`](architecture/kv-cache-quantization.md): default live KV precision, original recent tokens, bounded attention and exact packed checkpoint ownership.
-- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, encrypted SSD checkpoint streaming, exact prefix reuse by model family, and explicit resident-cache modes.
+- [`architecture/kv-cache-quantization.md`](architecture/kv-cache-quantization.md): native live inference, independent lossy checkpoint storage and optional live-packed execution.
+- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, compatible prefix reuse by model family, encrypted SSD checkpoint streaming and explicit resident-cache modes.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
 - [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres tables, memory store, retention.

@@ -84,7 +84,7 @@ struct StatusCommandRunTests {
         #expect(trusted.contains("\nKV-backend guard: ACTIVE — packed autoregressive `.auto` (`balanced`/`k8v4`/`k8v8`) "))
         #expect(trusted.contains("requires paged and is refused while guarded"))
         #expect(trusted.contains("--clear-backend-guard` to permit a paged retry"))
-        #expect(trusted.contains("explicit legacy `native` recovery permits contiguous `.auto`"))
+        #expect(trusted.contains("default live `native` precision permits contiguous `.auto`"))
         #expect(!trusted.contains("serves contiguous on this box"))
 
         let authorized = try #require(outputSection(output, from: "== AUTHORIZED", to: "== END"))

@@ -92,8 +92,8 @@ struct Qwen4PagingPrefixIntegrationTests {
             kind: prepared.kind, layerKinds: prepared.layerKinds,
             supportsRecurrent: prepared.modelCapabilities.supportsRecurrentCheckpointReuse,
             supportsHistoricalAttention: false,
-            modelDTypes: prepared.pagedLayerDTypes,
-            nativeDTypes: prepared.pagedLayerDTypes, pagedConfig: prepared.pagedPoolConfig,
+            modelDTypes: prepared.nativeLayerDTypes,
+            nativeDTypes: prepared.nativeLayerDTypes, pagedConfig: prepared.pagedPoolConfig,
             assistant: .persistentCodec)
     }
 

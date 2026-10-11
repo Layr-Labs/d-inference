@@ -1,7 +1,8 @@
 import Foundation
 import MLXLMCommon
 
-/// Physical attention-cache precision. Weight quantization never selects this policy.
+/// Attention precision for live execution or checkpoint storage. Weight precision
+/// never selects either policy.
 public enum EngineV2KVQuantizationSelection: String, Sendable, Equatable, CaseIterable {
     case balanced
     case k8v4
@@ -18,38 +19,63 @@ public enum EngineV2KVQuantizationSelection: String, Sendable, Equatable, CaseIt
 
 public enum EngineV2KVQuantizationPolicy {
     public static let environmentKey = "DARKBLOOM_CBV2_KV_QUANTIZATION"
+    public static let checkpointEnvironmentKey = "DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION"
 
-    public enum Failure: Error, CustomStringConvertible {
+    public enum Purpose: Sendable, Equatable {
+        case live
+        case checkpoint
+
+        var defaultSelection: EngineV2KVQuantizationSelection {
+            self == .live ? .native : .balanced
+        }
+
+        var environmentKey: String {
+            self == .live ? EngineV2KVQuantizationPolicy.environmentKey
+                : EngineV2KVQuantizationPolicy.checkpointEnvironmentKey
+        }
+    }
+
+    public enum Failure: Error, CustomStringConvertible, Equatable {
         case invalidSelection(String)
+        case invalidCheckpointSelection(String)
         case requiresPagedBackend(String)
 
         public var description: String {
             switch self {
             case .invalidSelection(let raw):
-                "Invalid KV quantization \"\(raw)\"; expected balanced, k8v4, k8v8 or native"
+                "Invalid live KV quantization \"\(raw)\"; expected balanced, k8v4, k8v8 or native"
+            case .invalidCheckpointSelection(let raw):
+                "Invalid checkpoint KV quantization \"\(raw)\"; expected balanced, k8v4, k8v8 or native"
             case .requiresPagedBackend(let reason):
-                "Quantized KV requires paged storage; select native precision for \(reason)"
+                "Live quantized KV requires paged execution; select native live precision for \(reason)"
             }
         }
     }
 
-    public static func parseSelection(_ raw: String) throws -> EngineV2KVQuantizationSelection {
+    public static func parseSelection(
+        _ raw: String, purpose: Purpose = .live
+    ) throws -> EngineV2KVQuantizationSelection {
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "", "balanced", "k4v4", "int4", "on": .balanced
+        case "": purpose.defaultSelection
+        case "balanced", "k4v4", "int4", "on": .balanced
         case "k8v4": .k8v4
         case "k8v8", "int8": .k8v8
         case "native", "off", "0": .native
-        default: throw Failure.invalidSelection(raw)
+        default:
+            throw purpose == .live ? Failure.invalidSelection(raw)
+                : Failure.invalidCheckpointSelection(raw)
         }
     }
 
     /// MiMo's SDK-owned execution path is excluded before parsing any override.
     public static func resolve(
-        modelType: String?, global: String = "balanced", byModel: [String: String] = [:],
-        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+        modelType: String?, global: String? = nil, byModel: [String: String] = [:],
+        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment,
+        purpose: Purpose = .live
     ) throws -> EngineV2KVQuantizationSelection {
         guard modelType != "mimo_v2" else { return .native }
-        return try parseSelection(environment[environmentKey] ?? byModel[modelID] ?? global)
+        return try parseSelection(
+            environment[purpose.environmentKey] ?? byModel[modelID] ?? global ?? "", purpose: purpose)
     }
 
     static func requireResolvedBackend(

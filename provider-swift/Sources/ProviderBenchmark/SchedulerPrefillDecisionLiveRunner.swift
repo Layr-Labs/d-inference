@@ -6,11 +6,13 @@ struct SchedulerPrefillDecisionEngineParts: Sendable {
     let engine: any CBv2Engine
     let resolvedBackend: String
     let kvQuantization: EngineV2KVQuantizationSelection
+    let kvCheckpointQuantization: EngineV2KVQuantizationSelection
 
     init(build: EngineV2Factory.ProductionBuild) {
         engine = build.engine
         resolvedBackend = build.resolvedKVBackendDescriptor
         kvQuantization = build.kvQuantization
+        kvCheckpointQuantization = build.kvCheckpointQuantization
     }
 }
 
@@ -70,6 +72,7 @@ enum SchedulerPrefillDecisionLiveRunner {
         configuration: SchedulerPrefillDecisionReport.Configuration,
         cap: Int,
         kvBackend: EngineV2KVBackendSelection,
+        checkpointQuantization: EngineV2KVQuantizationSelection,
         environment: [String: String]
     ) async throws -> SchedulerPrefillDecisionEngineParts {
         let kvCapacity = Int(min(
@@ -99,6 +102,7 @@ enum SchedulerPrefillDecisionLiveRunner {
                 constructionPurpose: .benchmark,
                 kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend,
+                checkpointQuantization: checkpointQuantization,
                 environment: environment)
             return SchedulerPrefillDecisionEngineParts(build: build)
         }

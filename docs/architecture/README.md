@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-09
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -56,7 +56,8 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 |---|---|
 | [inference.md](inference.md) | CBv2 request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families and quantization |
 | [native-block-inference.md](native-block-inference.md) | Native diffusion block execution, commit boundaries, memory-estimator reuse and honest first-block timing; separate from model advertisement |
-| [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
+| [kv-cache-quantization.md](kv-cache-quantization.md) | Native live inference, independent checkpoint precision, lossy native restore and optional live-packed execution |
+| [prefix-cache.md](prefix-cache.md) | Native contiguous/paged selection, block hashing, per-family prefix reuse, RAM staging and default-eligible encrypted SSD caching |
 | [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
 | [model-revisions.md](model-revisions.md) | Immutable weight revisions, automatic provider convergence, draining and rollback |
 | [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |

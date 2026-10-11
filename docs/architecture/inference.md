@@ -652,8 +652,8 @@ records tiny-model correctness and remaining release gates.
 
 | `model_type` | Family | Notes |
 |---|---|---|
-| `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); contiguous fallback serves cold; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
-| `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires the loaded paged capability |
+| `gpt_oss` | GPT-OSS | Harmony tool format; historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); native contiguous and paged paths require observed dtype/capability gates; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
+| `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires loaded capability and observed native types |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
@@ -666,20 +666,22 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
-`detectQuantization`). Weight precision is independent of live KV precision.
-`EngineV2KVQuantizationPolicy` selects balanced affine K4/V4 by default, with
-FP32 group64 metadata and geometry-derived post-RoPE key Hadamard blocks.
-The newest 128 confirmed tokens and pending/speculative state stay native;
-recurrent and assistant storage remain native. Active Gemma assistants retain
-their last owning full and windowed source rows natively. MiMo remains excluded
-even with an operator override. Precision fallback is selected at load time;
-quantized construction requires a supported paged route and refuses silent
-native fallback. Physical row costs, native tails and transient ownership feed
-admission instead of a blanket compression ratio. Memory sizing
+`detectQuantization`). Weight precision is independent of live KV and checkpoint
+precision. `EngineV2KVQuantizationPolicy` defaults to native live execution and
+separately requests balanced checkpoint storage. Native `auto` backend selection
+is unchanged; storage compression never forces paging. Eligible native paged
+and contiguous checkpoints encode older attention rows and restore into native
+state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
+rows remain lossy. Effective native fallback and the unchanged opt-in live
+packed path are described in the
+[precision architecture](kv-cache-quantization.md); controls are in the
+[CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+Admission prices actual live/native destination owners rather than a disk
+compression ratio. Memory sizing
 (native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
 
-Quantized slots reuse durable prefixes only through the complete packed
+Explicit live-packed slots reuse durable prefixes only through the complete packed
 checkpoint contract, which preserves the coded rows and original-precision
 tail. Their legacy resident blocks and attention-only native tensor snapshots
 are disabled. DiffusionGemma's packed prefix codec remains unqualified, so its

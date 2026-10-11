@@ -701,6 +701,8 @@ extension ProviderLoop {
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 kvQuantizationConfig: loopConfig.config.backend.engineV2KVQuantization,
                 kvQuantizationConfigByModel: loopConfig.config.backend.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: loopConfig.config.backend.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: loopConfig.config.backend.engineV2KVCheckpointQuantizationByModel,
                 mtpAcceptanceConfig: loopConfig.config.backend.mtpAcceptance,
                 mtpAcceptanceConfigByModel: loopConfig.config.backend.mtpAcceptanceByModel,
                 prefillDeadlineMode:

@@ -116,11 +116,12 @@ and MTP codec. No public header field exposes those token boundaries
 | Tensor segment | `maximumSegmentBytes = 4 << 20`; logical segments stream through authenticated DBK3 chunks | `CompleteCheckpointContract.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore+Streaming.swift` |
 | Initial read admission | Metadata-only candidate match precedes any file read. Shared mode reserves `ioScratchBytes = 20 << 20` once in the provider ledger; its native IO lease does not duplicate that charge. Contiguous compatibility keeps its existing two-ledger path | `SSDHybridCheckpointStore+Read.swift` (`stage`), `EngineV2+CompleteCheckpoint.swift` (`reserveCompleteCheckpointReadScratch`) |
 | Import admission | Authenticate manifest → allocation-free import plan → native per-buffer destination, scratch and metadata admission → bounded whole-file read. Shared native ownership is separate from provider host IO | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `CompleteCheckpointImportPlan.swift` (`allocate`) |
+| Lossy-to-native conversion | CPU row encoding/decoding; `64 << 10` bytes of conversion scratch, reserved per export read and in the import plan. Import reuses row buffers, retains at most one fragmented input row, and batches validated native writes up to `16 << 10` bytes within that allowance. Native destination sizes, not encoded bytes, price restored state | `NativeCheckpointRowCodec.swift`, `NativeQuantizedCheckpointTensorSource.swift`, `CompleteCheckpointImportPlan.swift`, `NativeQuantizedCheckpointRestore.swift` |
 | Idle state | Metadata index only; no resident tensor bank or persistent slot carve | `SSDHybridCheckpointStore.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`isMemoryEnabled`) |
 | Imported lifetime | Single-use staged state retains native owners through aliases. Paged adoption replaces temporary staging with the full request promise and actual backing; recurrent/MTP auxiliary state has its own charge | `CompleteCheckpointTransfer.swift` |
 | Host IO lifetime | Read/decrypt aliases retire before the read charge returns; writers claim host buffers before encoding and release them after the complete write stack drains | `SSDHybridCheckpointStore+ReadAttempt.swift` (`readCheckpoint`), `SSDHybridCheckpointStore+Write.swift` (`write`) |
 | Durable ready | Only supplied actual input checkpoint after committed write and engine donor/export retirement; requires request mode echo | `SSDHybridCheckpointStore+Write.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEvidenceSequencer.swift` |
-| Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
+| Disk compatibility | Verified model/template, binary, loaded metallib, OS and numerical/MTP settings, plus actual native dtype, effective checkpoint profile and storage geometry | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift`, `CompleteCheckpointStorageIdentity.swift` |
 | Numerical environment identity | Process and slot values whose keys start with `MLX_`, `DARKBLOOM_CBV2_`, `DARKBLOOM_QWEN_`, `DARKBLOOM_MTP_`, `DARKBLOOM_GPTOSS_` or `DARKBLOOM_GEMMA4_`; native `mimo_v2` additionally binds its `DARKBLOOM_MIMO_` controls. Changing an included optimization or rollback setting selects a different disk namespace | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` (`completeCheckpointIdentity`) |
 
 | Complete layout | Payload | Loaded gate |
@@ -130,6 +131,11 @@ and MTP codec. No public header field exposes those token boundaries
 | `affine-paged-full-recurrent-v1` | Packed mirror of all attention rows plus exact native recent band, native recurrence and optional MTP history | Resolved quantized segmented pool and exact complete codec |
 | `affine-paged-historical-attention-v1` | Packed/native owning rows and exact historical windows, with borrower map | Resolved mixed storage and exact historical codec |
 | `native-paged-historical-attention-v2` | Owning full rows and exact historical window contents, with absolute positions and borrower map | Loaded historical capability, resolved segmented paging, exact ordered attention map; assistant absent or stateless |
+| `native-contiguous-historical-attention-v1` | Exact native owning full/window rows, imported into contiguous native capacity | Loaded historical capability and explicitly observed native types; assistant absent or stateless |
+| `native-paged-affine-checkpoint-full-recurrent-v1` | Older attention rows encoded, exact native recent rows and recurrent state; native paged restore | Eligible native segmented pool and recurrent complete codec; no persistent assistant |
+| `native-paged-affine-checkpoint-historical-attention-v1` | Encoded older owning full/window rows and native recent rows; native paged restore | Eligible loaded historical capability and native segmented pool |
+| `native-contiguous-affine-checkpoint-full-recurrent-v1` | Same lossy/native recurrent payload; native contiguous restore | Eligible native contiguous recurrent complete codec; no persistent assistant |
+| `native-contiguous-affine-checkpoint-historical-attention-v1` | Same lossy/native historical payload; native contiguous restore | Eligible loaded historical capability and observed native types |
 
 Layout constants and validation live in `CompleteCheckpointContract.swift` and
 `HistoricalAttentionLayout.swift`; provider selection is
@@ -138,12 +144,27 @@ Historical windows capture the last `min(M, W)` tokens at boundary M and restore
 with base `max(0, M - W)`. Window copies finish before successor writes. Ordinary
 attention snapshots and their optional unused window sidecar remain separate.
 
-Packed K/V descriptors use `uint8` byte streams; each head retains all coded
-rows followed by its original native recent band. The copied band is private
-input scratch until the active row's own copy completes, and its existing
-mirror is preserved when those tokens age. Resolved quantization and native
-owner exemptions separate compatibility identities. See
-[runtime KV quantization](../architecture/kv-cache-quantization.md).
+The four `native-*-affine-checkpoint-*` layouts set `checkpointQuantization`
+and `checkpointNativeDTypes` in the encrypted manifest.
+`CBv2CompleteCheckpointManifest.usesLossyNativeCheckpoint` identifies those
+layouts; it is a derived property, not another serialized field. Other layouts
+reject the new fields rather than reinterpret their payloads. The codec checks
+exact profile, native types, layout, identity, tenant salt, prefix and tensor
+descriptors before creating an import stage.
+
+For these lossy layouts, an encoded K/V head is a `uint8` stream of older coded
+rows followed by the exact last `min(recentTokenCount, retainedTokens)` native
+rows, with no packed recent mirror. Native owners and permitted auxiliary
+tensors keep typed native payloads. Restore reconstructs private native state;
+its older rows are approximate and do not recover their original bits.
+
+The existing live-packed `affine-paged-*` layouts instead retain **all** coded
+rows followed by the original native recent band. That band is private input
+scratch until the active row's own copy completes; its pre-existing packed
+mirror survives aging without another encoder. The separate checkpoint request
+does not replace this live-packed format. Resolved profiles and native-owner
+exemptions separate compatibility identities. See the
+[execution and checkpoint contract](../architecture/kv-cache-quantization.md).
 
 Validation artifacts, source scopes and model-measurement limits are linked from
 [the cache architecture](../architecture/prefix-cache.md#streamed-complete-checkpoints).
@@ -293,8 +314,8 @@ exact-artifact release validation claim.
 
 | Family (`model_type`) | Complete payload | Supported backend | Cache built when |
 |---|---|---|---|
-| GPT-OSS (`gpt_oss`) | Historical full/window attention | Segmented paged | Loaded historical capability, exact native attention map and verified identity |
-| Gemma 4 (`gemma4`, `gemma4_text`) | Historical full/window attention | Segmented paged | Effective text target has historical capability; normal stateless assistant is compatible; vision requests still stage cold |
+| GPT-OSS (`gpt_oss`) | Historical full/window attention | Native contiguous or segmented paged | Loaded historical capability, observed native attention map and verified identity |
+| Gemma 4 (`gemma4`, `gemma4_text`) | Historical full/window attention | Native contiguous or segmented paged | Effective text target has historical capability and observed native types; normal stateless assistant is compatible; vision requests still stage cold |
 | Qwen 3.5/3.8 dense (`qwen3_5`) | Full KV, recurrent state and optional typed MTP | Native contiguous or segmented paged | Supported floating/affine embedding typing, full owners and verified complete codec/storage identity |
 | Qwen 3.5/3.6 MoE (`qwen3_5_moe`) | Same recurrent complete codec | Native contiguous or segmented paged | Same gate as dense Qwen |
 | Selected Nemotron 3.5 Lightning (`nemotron_h`) | Native attention KV, Mamba convolution/FP32 SSM state, and optional shifted trusted MTP history | Native contiguous or segmented paged target | Exact Lightning model ID, loaded native types, complete checkpoint identity and typed Nemotron assistant codec when MTP is active |
@@ -314,8 +335,13 @@ SSD activation and backend selection have separate exact-model defaults; see
 the [backend and cache cohorts](../architecture/prefix-cache.md#kv-layouts).
 Resident-memory retention defaults off. Runtime identity, disk/key and loaded
 capability checks apply independently of family names. A paging fallback may
-still use eligible complete recurrent checkpoints on native contiguous storage;
-GPT-OSS/Gemma historical complete checkpoints require segmented paging.
+still use eligible complete recurrent or historical checkpoints on native
+contiguous storage. Generic contiguous historical construction requires the
+observed `completeCheckpointKVDTypes` input, not an inferred weight dtype.
+Requested checkpoint compression can resolve to native without disabling the
+eligible complete cache; the
+[effective-profile rules](../architecture/kv-cache-quantization.md#native-execution-with-quantized-checkpoints)
+cover persistent assistants and unsupported layouts.
 
 All families also require a valid artifact prompt contract. The directory-based
 check requires `chat_template.jinja` and a passing render self-check. The versioned

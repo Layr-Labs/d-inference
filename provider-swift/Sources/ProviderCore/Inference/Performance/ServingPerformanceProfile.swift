@@ -151,6 +151,10 @@ public enum ServingPerformanceProfiles {
             if key == EngineV2KVQuantizationPolicy.environmentKey {
                 return (try? EngineV2KVQuantizationPolicy.parseSelection(environment[key] ?? "")) != .native
             }
+            if key == EngineV2KVQuantizationPolicy.checkpointEnvironmentKey {
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(
+                    environment[key] ?? "", purpose: .checkpoint)) == nil
+            }
             return key.hasPrefix("DARKBLOOM_CBV2_") || key.hasPrefix("DARKBLOOM_QWEN4_")
         }
     }

@@ -80,6 +80,8 @@ public struct StandaloneServerConfig: Sendable {
     public let engineV2KVBackendByModel: [String: String]
     public let engineV2KVQuantization: String
     public let engineV2KVQuantizationByModel: [String: String]
+    public let engineV2KVCheckpointQuantization: String
+    public let engineV2KVCheckpointQuantizationByModel: [String: String]
     public let prefillDeadlineMode: PrefillDeadlineMode?
     /// MTP policy inherited from provider config, including exact Gemma QAT.
     /// External assistants download asynchronously through the configured catalog.
@@ -101,8 +103,10 @@ public struct StandaloneServerConfig: Sendable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
-        engineV2KVQuantization: String = "balanced",
+        engineV2KVQuantization: String = "native",
         engineV2KVQuantizationByModel: [String: String] = [:],
+        engineV2KVCheckpointQuantization: String = "balanced",
+        engineV2KVCheckpointQuantizationByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
@@ -122,6 +126,8 @@ public struct StandaloneServerConfig: Sendable {
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.engineV2KVQuantization = engineV2KVQuantization
         self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
+        self.engineV2KVCheckpointQuantization = engineV2KVCheckpointQuantization
+        self.engineV2KVCheckpointQuantizationByModel = engineV2KVCheckpointQuantizationByModel
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpMode = mtpMode
         self.mtpDrafterPath = mtpDrafterPath
@@ -1225,6 +1231,8 @@ public actor StandaloneServer {
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 kvQuantizationConfig: config.engineV2KVQuantization,
                 kvQuantizationConfigByModel: config.engineV2KVQuantizationByModel,
+                checkpointQuantizationConfig: config.engineV2KVCheckpointQuantization,
+                checkpointQuantizationConfigByModel: config.engineV2KVCheckpointQuantizationByModel,
                 mtpAcceptanceConfig: config.mtpAcceptance,
                 mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,

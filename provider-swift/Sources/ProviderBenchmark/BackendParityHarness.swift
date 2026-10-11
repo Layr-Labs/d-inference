@@ -410,6 +410,7 @@ public enum BackendParityHarness {
                 mtpDrafter: drafter?.drafter,
                 mtpConfig: mtpConfig,
                 kvBackend: selection,
+                checkpointQuantization: .native,
                 environment: environment)
             return EngineBox(
                 engine: build.engine,

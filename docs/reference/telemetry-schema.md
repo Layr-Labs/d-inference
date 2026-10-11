@@ -152,8 +152,8 @@ coordinator has no client event ingestion route.
 | Key in `fields` | Values | Presence and meaning | Code |
 |---|---|---|---|
 | `backend` | `engine_v2` | Present on this operation; identifies the inference engine. | `provider-swift/Sources/ProviderCore/Telemetry/EngineHealthEvent.swift`, `EngineHealthEvent.make` |
-| `kv_backend` | `paged`, `contiguous` | Present on this operation; the resolved storage backend, independent of precision. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`, `emitKVBackendTelemetry` |
-| `kv_quantization` | `balanced`, `k8v4`, `k8v8`, `native` | Present on every event constructed by the current `emitKVBackendTelemetry`; the resolved profile from `ProductionBuild.kvQuantization`, not the raw requested setting or weight quantization. The default `balanced` selects K4/V4 history, `k8v4` K8/V4 and `k8v8` K8/V8, all requiring paged storage. `native` keeps the owners' original dtypes, including paged native controls; explicit legacy contiguous recovery remains a separate storage choice. Native recent/pending bands and exempt owners remain native under packed profiles. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`, `emitKVBackendTelemetry`; `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `EngineV2KVQuantizationSelection` |
+| `kv_backend` | `paged`, `contiguous` | Present on this operation; the resolved live storage backend, not the checkpoint layout. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`, `emitKVBackendTelemetry` |
+| `kv_quantization` | `balanced`, `k8v4`, `k8v8`, `native` | Present on every event constructed by the current `emitKVBackendTelemetry`; the resolved live profile from `ProductionBuild.kvQuantization`, not the raw request, checkpoint profile or weight quantization. Default `native` keeps the owners' original dtypes on the resolved backend. Explicit `balanced` selects K4/V4 history, `k8v4` K8/V4 and `k8v8` K8/V8, all requiring paged execution. Native recent/pending bands and exempt owners remain native under packed profiles. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`, `emitKVBackendTelemetry`; `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `EngineV2KVQuantizationSelection` |
 
 `EngineV2KVQuantizationPolicy.resolve` applies the environment, exact model
 override and global selection in that order, and normalizes aliases to these
@@ -166,6 +166,9 @@ does not call this emitter, so the operation is not a complete slot inventory
 `DiffusionGemmaProviderBridge.make`). No new top-level wire enum or heartbeat
 field is implied: Go, Swift and TypeScript retain their generic optional
 `fields` maps, and doctor reads storage posture rather than this precision key.
+The new local `DaemonState.SlotPosture` precision/layout observations are
+separate from this event; they do not imply checkpoint fields in telemetry or
+the coordinator protocol.
 
 ### Provider slot posture acceptance
 

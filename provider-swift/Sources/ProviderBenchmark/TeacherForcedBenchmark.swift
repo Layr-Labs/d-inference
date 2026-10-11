@@ -36,6 +36,8 @@ public enum TeacherForcedBenchmark {
         let modelDirectory: String
         let resolvedBackend: String
         let kvQuantization: String
+        let kvCheckpointQuantization: String
+        let checkpointBackendLayout: String?
         let peakMLXMemoryBytes: Int
         let finalMemory: ProcessMemoryTelemetry?
         let cacheMode = "off"
@@ -87,7 +89,8 @@ public enum TeacherForcedBenchmark {
     }
 
     public static func run(modelID: String, modelDirectory: URL, inputURL: URL,
-        backend: String, gemmaOptimizations: GemmaOptimizationSettings) async throws
+        backend: String, gemmaOptimizations: GemmaOptimizationSettings,
+        checkpointQuantizationConfig: String = "balanced") async throws
         -> (json: String, controlsPassed: Bool)
     {
         try validateBackend(backend)
@@ -126,7 +129,8 @@ public enum TeacherForcedBenchmark {
             modelId: modelID, modelDirectory: modelDirectory, isVLM: isVLM,
             container: container, tokenizer: tokenizer, verifiedWeightHash: verified,
             kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: false,
-            useProductionKVGrant: true, kvBackendConfig: backend, requirePersistentKey: false,
+            useProductionKVGrant: true, kvBackendConfig: backend,
+            checkpointQuantizationConfig: checkpointQuantizationConfig, requirePersistentKey: false,
             environment: environment)
         do {
             let cache = await session.cacheSnapshot()
@@ -156,6 +160,8 @@ public enum TeacherForcedBenchmark {
                 verifiedModelAggregateSHA256: verified, executableSHA256: executable,
                 metallibSHA256: metallib, modelDirectory: modelDirectory.path,
                 resolvedBackend: session.backend, kvQuantization: session.kvQuantization.rawValue,
+                kvCheckpointQuantization: session.kvCheckpointQuantization.rawValue,
+                checkpointBackendLayout: session.checkpointBackendLayout,
                 peakMLXMemoryBytes: Memory.peakMemory, finalMemory: await session.memorySnapshot(),
                 kvCapacityBytes: cache.engineKVCapacityBytes,
                 productionGrant: grant, plainTop1: plain, activity: activity,

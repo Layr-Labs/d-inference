@@ -39,6 +39,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [native-inference-quantized-checkpoints.md](native-inference-quantized-checkpoints.md) | In progress | 2026-10-09 | Native live inference with independently quantized encrypted checkpoints and native-format restore |
 | [runtime-kv-compression.md](runtime-kv-compression.md) | Proposed | 2026-10-09 | Common rotated four-bit live attention KV, native recent/speculative state, and artifact-qualified precision fallbacks |
 | [qwen4-canonical-media-prefix.md](qwen4-canonical-media-prefix.md) | In progress | 2026-09-14 | Exact canonical text-tail binding for appended native Qwen4 media history; private qualification required |
 | [release-090-acceptance.md](release-090-acceptance.md) | In progress | 2026-09-06 | Numerical, quality, cache and serving acceptance; backend wording differences and functional routing scope |

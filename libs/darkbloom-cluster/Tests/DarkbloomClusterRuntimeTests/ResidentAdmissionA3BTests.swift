@@ -90,7 +90,7 @@ struct ResidentAdmissionA3BTests {
         let row = try QwenResidentModelDefinition(model: .qwen35ThirtyFiveBA3B)
         #expect(row.profileID == Self.profileID && row.specification.layers == 40 && row.supportedCuts == Self.cuts)
         #expect(row.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP])
         #expect(row.adapter == .qwen35RoutedExperts && row.arithmetic == .routedExperts)
         #expect(row.specification.kvHeads == 2 && row.specification.rootModelType == "qwen3_5_moe")
         #expect(row.specification.routedExperts == .init(experts: 256, expertsPerToken: 8,
@@ -411,7 +411,8 @@ struct ResidentAdmissionA3BTests {
         #expect(value.manifestSHA256 == spec.manifestSHA256)
         #expect(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1")
         #expect(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP])
+        #expect(value.speculation == ClusterRuntimeCapability.decodingRankSpeculation)
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == Self.cuts)
         for partition in value.partitions {
             #expect(partition.stages.flatMap { Array($0.sourceLayerStart..<$0.sourceLayerEnd) } == Array(0..<40))

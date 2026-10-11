@@ -86,9 +86,16 @@ struct QwenResidentModelDefinition {
             // (`mtplx_mtp.included`, one dense decoder layer under `mtp.`),
             // which the decoding rank of a phase split runs as the product does.
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
-        case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B, .ternaryBonsai2TwentySevenB:
+        case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B:
+            // Both artifacts ship the product's inline head too (one routed-
+            // expert decoder layer under `mtp.`, split gate and up as the SDK's
+            // `Qwen35MTPDecoderLayer` keys them); the decoding rank runs it the
+            // same way.
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
+        case .ternaryBonsai2TwentySevenB:
             // The Prism pack's state has the 27B's shapes in F32; the hand-off
-            // carries each component in the profile's activation dtype.
+            // carries each component in the profile's activation dtype. Its
+            // artifact ships no head (`mtp_num_hidden_layers` 0).
             supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit]
         case .nemotron35Lightning:
             // Its state shapes are the ones a hand-off already carries (KV of

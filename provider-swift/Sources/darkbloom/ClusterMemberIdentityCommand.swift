@@ -9,8 +9,8 @@ extension Cluster {
     /// and device profile v2; then countersign the roster both members agreed
     /// on. Nothing secret is printed and nothing is saved.
     struct MemberIdentity: ParsableCommand {
-        static let configuration = CommandConfiguration(commandName: "member-identity", shouldDisplay: false,
-            abstract: "Print this member's roster pin, key and device profile, or countersign a roster.")
+        static let configuration = CommandConfiguration(commandName: "member-identity",
+            abstract: "Print this member's roster pin, key and device profile, or countersign a roster.", shouldDisplay: false)
         @Option(name: .customLong("metallib-sha256"), help: "The approval's metallib digest (numerics class).")
         var metallibSHA256: String?
         @Option(name: .customLong("sign-roster"), help: "Cluster label of the roster to countersign.")

@@ -1,4 +1,5 @@
 import Darwin
+import DarkbloomClusterSecurity
 import Foundation
 
 enum AdmissionTestFailure: Error { case failed(String) }
@@ -71,6 +72,26 @@ enum AdmissionTestFailure: Error { case failed(String) }
         for value in ["relative", "/" + String(repeating: "a", count: 103), "/bad\0path"] {
             try refuse(replacing(base + extra, "--bootstrap-socket-path", value))
         }
+        // The committed native start (S07) is admitted only with the complete
+        // attachment and only as one canonical encoded start. Fixture digests.
+        func digest(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
+        let common = try ClusterNativeAuthorizationCommon(epoch: UUID(uuidString: base[7])!, membershipGeneration: 1,
+            nativePolicyGeneration: 1, membershipTranscriptSHA256: digest(0x11), approvedNativeBindingSHA256: digest(0x12),
+            planSHA256: digest(0x21), artifactSHA256: digest(0xaa), nativeRuntimeSHA256: digest(0x13),
+            capabilitySHA256: digest(0x14), resourcePolicySHA256: digest(0x15), profileSHA256: digest(0x16), schedule: .serial,
+            maximumTransportFrameBytes: (1 << 20) + 40, limits: try ClusterRecordLimits(maximumPlaintextBytes: 1 << 20))
+        let start = try ClusterNativeAuthorizationStart(common: common, rank: 0, ownerIncarnation: UUID(), leaseID: UUID(), launchID: UUID())
+        let flag = "--native-authorization-start-base64", text = start.canonicalBytes.base64EncodedString()
+        let started = try WorkerConfiguration(arguments: base + extra + [flag, text], now: now)
+        try check(started.bootstrap?.nativeStart == start.canonicalBytes && started.bootstrap?.ownerProcessID == 123,
+            "Native start changed")
+        accepted += 1
+        try refuse(base + [flag, text]) // no attachment to carry it
+        try refuse(base + Array(extra.prefix(4)) + [flag, text]) // incomplete attachment
+        for malformed in ["AAAA", "!!!!", String(text.dropLast(8)), text + "AAAA", " " + text] {
+            try refuse(base + extra + [flag, malformed])
+        }
+        try refuse(base + extra + [flag, text, flag, text])
         print("PASS worker attachment admission: \(accepted) accepted, \(rejected) rejected; no filesystem/model access")
     }
 }

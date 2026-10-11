@@ -81,8 +81,15 @@ public enum ClusterPairCommandLine {
             }
             return carrier
         }
+        // The cable's active RDMA port, as `darkbloom cluster link` reads it, then its interface or bridge.
+        let link = ClusterLinkReadinessProbe.inspectLocalLink(isolation: false)
+        let active = link.devices.filter(\.portActive)
+        if let device = (active.first { $0.verdict == .ready } ?? active.first)?.device,
+           let carrier = ClusterLinkControlHost.listenInterface(forDevice: device, reaching: peer) {
+            return carrier
+        }
         guard let automatic = ClusterLinkPairing.automaticInterface(reaching: peer) else {
-            throw Failure(description: "Name the link interface with --interface (or --device rdma_enN): this Mac has none, or several, Thunderbolt interfaces with IPv4.")
+            throw Failure(description: "Name the link interface with --interface (or --device rdma_enN): no active RDMA port carries IPv4, and this Mac has none, or several, Thunderbolt interfaces with IPv4.")
         }
         return automatic
     }

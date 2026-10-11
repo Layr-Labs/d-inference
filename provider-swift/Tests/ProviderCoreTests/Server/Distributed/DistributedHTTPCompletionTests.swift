@@ -243,10 +243,11 @@ struct DistributedHTTPCompletionTests {
             let (fullData, fullReply) = try await client.data(for: try fixture.request(stream: true, maxTokens: 50))
             #expect((fullReply as? HTTPURLResponse)?.statusCode == 429)
             #expect(String(decoding: fullData, as: UTF8.self).contains("\"error\""))
-            // The queue outlives the first request's first-token budget (800 ms):
-            // waiting time is not the pair's budget.
-            try await Task.sleep(for: .milliseconds(1_000))
+            // The running request meets its own first-token budget; the queued
+            // ones then wait longer than that budget (800 ms): time spent in the
+            // queue is not the pair's first-token budget.
             #expect(firstLease.send(.token(4)))
+            try await Task.sleep(for: .milliseconds(1_000))
             #expect(!firstLease.send(.token(5)))
             firstLease.acknowledge()
             #expect((try await first.value.1 as? HTTPURLResponse)?.statusCode == 200)
@@ -264,16 +265,24 @@ struct DistributedHTTPCompletionTests {
         }
     }
 
-    /// A client that goes away while queued leaves the queue.
+    /// A client whose connection closes while it is queued leaves the queue.
+    /// (A write half-close is valid HTTP and is not a departure: such a client
+    /// is noticed by the writer's probe once its turn comes.)
     @Test func aQueuedClientThatLeavesFreesItsPlace() async throws {
         try await withCompletionFixture { fixture in
             let first = Task { try await URLSession.shared.data(for: try fixture.request(stream: true)) }
             let lease = try await fixture.startedLease(1)
-            let request = try fixture.request(stream: false)
-            let leaving = Task { try await URLSession.shared.data(for: request) }
-            #expect(try await localHostEventually { await fixture.host.waiting.count == 1 })
-            leaving.cancel()
-            #expect(try await localHostEventually { await fixture.host.waiting.isEmpty })
+            for stream in [false, true] {
+                let body = try #require(try fixture.request(stream: stream).httpBody)
+                var bytes = Data(("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    + "Authorization: Bearer fixture-token\r\nContent-Type: application/json\r\n"
+                    + "Content-Length: \(body.count)\r\nConnection: close\r\n\r\n").utf8)
+                bytes.append(body)
+                let leaving = try await HTTPRawSocket.open(port: fixture.port, request: bytes)
+                #expect(try await localHostEventually { await fixture.host.waiting.count == 1 })
+                leaving.reset() // the client aborts: the connection is gone
+                #expect(try await localHostEventually { await fixture.host.waiting.isEmpty }, "stream \(stream)")
+            }
             fixture.completeTwoTokens(lease)
             _ = try await first.value
             #expect(fixture.session.base.reserveCount == 1)

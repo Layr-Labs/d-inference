@@ -79,6 +79,8 @@ import Foundation
                 speculativeDepth = depth
             }
             let request = try QualificationRequest.read(URL(fileURLWithPath: requestPath))
+            // The reference selects argmax tokens; it is no oracle for a sampled request.
+            guard request.sampling == nil else { throw Failure("The staged reference runs greedy requests only; this request is sampled") }
             let reportURL = URL(fileURLWithPath: reportPath)
             guard !FileManager.default.fileExists(atPath: reportURL.path) else {
                 throw Failure("Report \(reportURL.lastPathComponent) already exists; a report is never overwritten")

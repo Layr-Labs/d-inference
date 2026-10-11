@@ -312,7 +312,8 @@ public struct PairDriver: Sendable {
                 lease = try pair.reserve(requestID: requestID, reservation: .init(profileID: current.profileID,
                     promptTokenIDs: current.promptTokenIDs, stopTokenIDs: current.stopTokenIDs,
                     outputCount: current.outputCount, chunkSize: current.chunkSize,
-                    deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity))
+                    deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity,
+                    sampling: current.sampling?.wire))
             } catch {
                 if let rank = (0...1).first(where: { endpoints[$0].refusal != nil }) {
                     return finish("refused", "\(ranks[rank].role) refused the reservation (\(endpoints[rank].refusal!))")

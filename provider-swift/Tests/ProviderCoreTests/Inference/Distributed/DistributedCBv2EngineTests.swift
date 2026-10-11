@@ -214,7 +214,10 @@ struct DistributedCBv2EngineTests {
             #expect(parsed == refusal && text == refusal.message(profile))
             #expect(ProviderLoop.mapInferenceErrorToStatus(typed) == 400)
             let failure = ProviderLoop.sanitizedInferenceFailure(from: typed, phase: .generation)
-            #expect(failure.code == .invalidRequest)
+            // Over this pair's context: the coordinator may route it to a node
+            // with more room (the product's own `request_exceeds_context`
+            // classification); every other refusal is the client's.
+            #expect(failure.code == (refusal.exceedsContext ? .capacity : .invalidRequest))
             #expect(failure.errorReason == (refusal.exceedsContext ? .requestExceedsContext : .clientError))
         }
         #expect(DistributedRequestRefusal.outputTooLong.message(profile).contains("128"))

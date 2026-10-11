@@ -24,7 +24,9 @@ private struct Failure: Error {}
     static func main() async throws {
         let executable = URL(fileURLWithPath: CommandLine.arguments[1]), deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
         let workers = try (0..<2).map { rank in
-            try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"], environment: [:]),
+            try ClusterWorkerProcess(launch: .init(executable: executable, arguments: [String(rank), "normal"],
+                    // The third reservation is the sampled one: it must reach both ranks with its sampling.
+                    environment: ["TEST_SAMPLED_FROM_RESERVATION": "3"]),
                 expectedIdentity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan,
                 startupDeadline: deadline, initialLeaseDeadline: deadline + 15_000_000_000)
         }

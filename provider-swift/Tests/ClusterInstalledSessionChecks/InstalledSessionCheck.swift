@@ -88,7 +88,7 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, open 27B pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -289,8 +289,8 @@ final class EndpointBox: @unchecked Sendable {
         let split=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-split"),probe:f.probe,owner:f.owner,worker:f.worker,
             generationMode:"phase_split_v1",advertisedModes:allModes).prepare()
         try require(split.plan.budgets==nine,"the generation mode changed a time budget")
-        // The 27B's row is withheld; its groundwork figures follow from its own measurements.
-        guard case .withheld(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not withheld") }
+        // The 27B's row is open (S08); its figures follow from its own measurements.
+        guard case .open(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not open") }
         let slowestStageLoad=13.7,phaseSplitFactor=12.3/7.3,slowPrefillTokensPerSecond=300.0
         try require(Double(big.startupAllowanceNanoseconds)/1e9 >= 5*slowestStageLoad*phaseSplitFactor
             && big.startupAllowanceNanoseconds <= 150_000_000_000,"27B startup allowance is not five whole-model loads inside half a session")
@@ -324,29 +324,21 @@ final class EndpointBox: @unchecked Sendable {
             try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
         }
     }
-    /// The 27B is not open to pair serving. Nothing in the installed path can
-    /// start it: not a setup, not a mode, not its budgets.
+    /// The 27B is open to pair serving on the installed path (S08): its setups
+    /// prepare in every mode, under its own budgets, whatever the public name.
+    /// A registered model without a row is still refused.
     static func pairServingStaysWithheld(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
-        func isPolicy(_ message:String)->Bool {
-            message.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && message.contains("registered_qwen38_27b") && message.contains("not open to serving on a two-Mac pair")
-                && message.contains("policy decision") && message.contains("generation mode or time budget")
-        }
         for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
-            // Saving a setup is not serving it, and stays possible.
             let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
                 generationMode:mode,advertisedModes:allModes,registered:model)
-            let prepare=try refusal{_ = try big.prepare()}
-            try require(isPolicy(prepare),"27B refusal does not say why: \(prepare)")
-            try require(isPolicy(try refusal{_ = try DistributedInstalledValidation.validate(reference:big.reference,paths:big.paths,deadline:DispatchTime.now().uptimeNanoseconds+5_000_000_000)}),
-                "the shared validation did not refuse the 27B as policy")
-            try require(isPolicy(try refusal{_ = try DistributedInstalledPlan(saved:.init(configuration:big.configuration,capability:big.capability),paths:big.paths)}),
-                "a plan exists for a model that is not served on a pair")
+            let prepared=try big.prepare()
+            guard case .open(let budgets)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not open") }
+            try require(prepared.plan.budgets==budgets,"the 27B was prepared under another row's budgets")
         }
-        // The refusal is keyed on the runtime's model, whatever the public name; a model without a row is refused too.
-        let withheld=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")}
-        try require(withheld.contains("renamed/public-id") && withheld.contains("registered_qwen38_27b") && withheld.contains("policy decision"),"renamed 27B: \(withheld)")
+        let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
+        guard case .open(let budgets)=Table.qwen38.pairServing, renamed==budgets else { throw CheckFailure(message:"renamed 27B budgets differ") }
         let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
     }

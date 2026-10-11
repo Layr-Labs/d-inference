@@ -221,10 +221,9 @@ private func reject(_ body: () throws -> Void) throws {
         try require(validation(speculative).first?.outcome == .passed, "the speculative phase split failed the doctor")
         let big = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-27b"), probe: f.probe, owner: f.owner, worker: f.worker,
             advertisedModes: all, registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
-        let refused = validation(big)
-        try require(refused.map(\.name) == ["pairServingPolicy", "localInstalledMetadata"] && refused[0].outcome == .failed && refused[1].outcome == .notRun,
-            "a withheld model was reported as a metadata fault: \(refused.map(\.name))")
-        try require(refused[0].detail.contains("policy decision") && refused[0].detail.contains("EigenLabs/Qwen3.8-27B-4bit-mtp"), "policy refusal text: \(refused[0].detail)")
+        // The 27B is open to pair serving on the installed path (S08): the doctor passes it.
+        let opened = validation(big)
+        try require(opened.first?.outcome == .passed, "the open 27B failed the doctor: \(opened.map { "\($0.name) \($0.outcome) \($0.detail)" })")
     }
 
     static func journal(_ f: InstalledFixture) throws {

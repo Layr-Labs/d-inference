@@ -99,8 +99,12 @@ enum DistributedInstalledPairServingTable {
         shutdownAcknowledgementNanoseconds: 2_000_000_000, stopMarginNanoseconds: 15_000_000_000,
         cleanStopWaitNanoseconds: 10_000_000_000)))
 
-    /// Registered Qwen3.8 27B. Derived from single-Mac measurements; no pair
-    /// has run this model.
+    /// Registered Qwen3.8 27B. Open to pair serving on the installed path
+    /// (S08: the owner's 2026-10-09 direction that every served model runs on
+    /// the pair; S12 replaces this table with derived budgets). The pair has
+    /// run this model across the cable since 2026-10-09 (pipeline, phase split,
+    /// MTP, prefix reuse) with tokens equal to its staged reference. The
+    /// coordinator-facing member path keeps the model eligibility gate.
     ///
     /// - Startup, 120 s. Rank 1's stage loaded in 7.4 to 13.7 s (cut 16). Under
     ///   phase split rank 1 loads the whole model; for the 9B that took 1.7
@@ -115,7 +119,7 @@ enum DistributedInstalledPairServingTable {
     ///   weights to release (15.1 GB against 5.0 GB).
     /// - Clean-stop wait, 20 s: the first token of the longest prompt is
     ///   expected about 15 s after the request arrives, without lookahead.
-    static let qwen38 = Row(runtimeModelID: "registered_qwen38_27b", pairServing: .withheld(groundwork: .init(
+    static let qwen38 = Row(runtimeModelID: "registered_qwen38_27b", pairServing: .open(.init(
         startupAllowanceNanoseconds: 120_000_000_000,
         firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 4,
         admissionWaitNanoseconds: 5_000_000_000,

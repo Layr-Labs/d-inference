@@ -82,18 +82,25 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
     public let nativeBootstrapOwnerAuthenticated: Bool
     /// The collective progress limit each native rank was started with.
     public let collectiveProgressLimitMilliseconds: Int
+    /// S16, observed once both ranks are ready (absent before): every transfer
+    /// between the ranks is an authenticated, encrypted record, and each rank
+    /// verified its peer against the identity it pins. A public route may
+    /// require both (decision D1, S20).
+    public let encryptedDataPlane: Bool?
+    public let peerVerified: Bool?
 
     init(binding: ClusterStatusBinding, phase: String, observedMembershipEpoch: String?,
          observedPrefillSchedule: ClusterPrefillSchedule?, observedGenerationMode: ClusterGenerationMode?,
          ready: Bool, admission: Admission?, members: [Member],
          mtpEnabled: Bool, mtpOffReason: String, nativeBootstrap: DistributedInstalledBootstrap,
-         collectiveProgressLimitMilliseconds: Int) {
+         collectiveProgressLimitMilliseconds: Int, encryptedDataPlane: Bool? = nil, peerVerified: Bool? = nil) {
         self.binding = binding; self.phase = phase; self.observedMembershipEpoch = observedMembershipEpoch
         self.observedPrefillSchedule = observedPrefillSchedule; self.observedGenerationMode = observedGenerationMode
         self.ready = ready; self.admission = admission
         self.members = members; self.mtpEnabled = mtpEnabled; self.mtpOffReason = mtpOffReason
         self.nativeBootstrap = nativeBootstrap; nativeBootstrapOwnerAuthenticated = nativeBootstrap.ownerAuthenticated
         self.collectiveProgressLimitMilliseconds = collectiveProgressLimitMilliseconds
+        self.encryptedDataPlane = encryptedDataPlane; self.peerVerified = peerVerified
     }
 
     /// A session has no lifetime and no request count; these are counters.

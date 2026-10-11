@@ -137,7 +137,7 @@ import Foundation
         // signed hellos on the data plane). A wrong pin ends this rank before
         // readiness, and its peer, never confirmed, ends too.
         var dataPlane: ClusterWorkerDataPlane?
-        let runRoot = run.deletingLastPathComponent()
+        var peerTampers = false
         if fields["--data-plane"] != nil {
             var line = Data(), byte: UInt8 = 0
             while byte != 10 {
@@ -152,31 +152,36 @@ import Foundation
             message.append(withUnsafeBytes(of: epoch.uuid) { Data($0) }); message.append(UInt8(rank))
             message.append(worker.publicKey.x963Representation)
             guard member.isValidSignature(signature, for: message) else { exit(76) }
-            func file(_ name: String) -> URL { runRoot.appendingPathComponent(name) }
+            // Both fakes run on one Mac in the tests: they meet in this user's
+            // temporary directory, named by the epoch, and the last one out removes it.
+            let meeting = FileManager.default.temporaryDirectory
+                .appendingPathComponent("darkbloom-fake-data-plane-" + epoch.uuidString.lowercased())
+            try? FileManager.default.createDirectory(at: meeting, withIntermediateDirectories: true)
+            func file(_ name: String) -> URL { meeting.appendingPathComponent(name) }
+            func exists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: file(name).path) }
             try? trust.memberIdentity.write(to: file("identity-rank\(rank)"))
             var other: Data?
             for _ in 0..<500 where other == nil {
-                other = try? Data(contentsOf: file("identity-rank\(1 - rank)")); if other == nil { usleep(10_000) }
+                other = try? Data(contentsOf: file("identity-rank\(1 - rank)")); if other == nil || other!.count != 65 { other = nil; usleep(10_000) }
             }
-            guard let other, other.count == 65 else { exit(77) }
+            guard let other else { exit(77) }
             guard other == trust.peerPin else { exit(1) } // peer not pinned: refused before any key
+            // A tampering rank's first protected record will reach its peer.
+            if tampers { try? Data([1]).write(to: file("tamper-rank\(rank)")) }
             try? Data([1]).write(to: file("confirmed-rank\(rank)"))
             var confirmed = false
-            for _ in 0..<500 where !confirmed {
-                confirmed = FileManager.default.fileExists(atPath: file("confirmed-rank\(1 - rank)").path)
-                if !confirmed { usleep(10_000) }
-            }
+            for _ in 0..<500 where !confirmed { confirmed = exists("confirmed-rank\(1 - rank)"); if !confirmed { usleep(10_000) } }
             guard confirmed else { exit(1) }
+            peerTampers = exists("tamper-rank\(1 - rank)")
+            try? Data([1]).write(to: file("done-rank\(rank)"))
+            if exists("done-rank\(1 - rank)") { try? FileManager.default.removeItem(at: meeting) }
             let sorted = [trust.memberIdentity, other].sorted { $0.lexicographicallyPrecedes($1) }
             let transcript = SHA256.hash(data: withUnsafeBytes(of: epoch.uuid) { Data($0) } + sorted[0] + sorted[1])
             let edge = SHA256.hash(data: Data("edge".utf8) + sorted[0] + sorted[1])
             dataPlane = .init(protection: ClusterWorkerDataPlane.encrypted, peerVerified: true,
                 transcriptSHA256: transcript.map { String(format: "%02x", $0) }.joined(),
                 edgeID: edge.prefix(16).map { String(format: "%02x", $0) }.joined())
-            // A tampering rank's first record reaches its peer at the start.
-            if tampers { try? Data([1]).write(to: file("tampered")) }
         }
-        let tampered = { FileManager.default.fileExists(atPath: runRoot.appendingPathComponent("tampered").path) }
 
         let identity = ClusterWorkerIdentity(membershipEpoch: epoch, modelID: "registered_qwen35_9b",
             artifactSHA256: artifact, configurationSHA256: configuration,
@@ -246,7 +251,7 @@ import Foundation
                         // The tampering rank waits on its peer, which refuses the
                         // record it cannot open: it fails the request and exits.
                         if tampers { continue }
-                        if tampered() { try emit(.failed(.runtimeError)); exit(1) }
+                        if peerTampers { try emit(.failed(.runtimeError)); exit(1) }
                         let request = reservation!
                         if rank == 1 {
                             try record(request)

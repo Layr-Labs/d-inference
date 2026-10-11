@@ -53,6 +53,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     private var selectedBootstrapProfile: ClusterOwnerBootstrapProfile? { nativeKeyRelay == nil ? bootstrapRelay?.profile : .nativeKeyPrelude }
     private var selectedBootstrapDeadline: UInt64? { nativeKeyRelay?.deadlineUptimeNanoseconds ?? bootstrapRelay?.deadlineUptimeNanoseconds }
     private let bootstrapRelay: ClusterOwnerBootstrapRelay?
+    /// S16: the worker's data-plane credential line, sent once in the open frame.
+    private let dataPlaneTrust: Data?
     private var bootstrapReplies: [(UInt64, Data)] = []
     private var bootstrapBusy = false
     private var nextBootstrapSequence: UInt64 = 0
@@ -115,10 +117,11 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public convenience init(localOwner: ClusterLocalOwnerConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
                             executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64,
-                            bootstrapRelay: ClusterOwnerBootstrapRelay?) throws {
+                            bootstrapRelay: ClusterOwnerBootstrapRelay?, dataPlaneTrust: Data? = nil) throws {
         try self.init(transport: localOwner.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
-            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
+            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay,
+            dataPlaneTrust: dataPlaneTrust)
     }
 
     /// Only a local owned process may receive a local monotonic key-prelude deadline.
@@ -135,18 +138,27 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
 
     public convenience init(configuration: ClusterSSHConfiguration, clusterID: String,
                             expectedIdentity: ClusterWorkerIdentity, profile: ClusterWorkerProfile, rank: Int,
-                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil) throws {
+                            executionPlanSHA256: String, lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
+                            dataPlaneTrust: Data? = nil) throws {
         try self.init(transport: configuration.launch(), clusterID: clusterID, expectedIdentity: expectedIdentity,
             profile: profile, rank: rank, executionPlanSHA256: executionPlanSHA256,
-            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay)
+            lifetimeDeadlineUptimeNanoseconds: lifetimeDeadlineUptimeNanoseconds, bootstrapRelay: bootstrapRelay,
+            dataPlaneTrust: dataPlaneTrust)
     }
     // Internal local-child seam exists solely for CPU service tests. Production
     // callers cannot substitute an arbitrary shell/transport through this API.
     init(transport: ClusterWorkerLaunch, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
          profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
          lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: ClusterOwnerBootstrapRelay? = nil,
-         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil,
+         nativeKeyRelay: ClusterOwnerNativeKeyRelay? = nil, dataPlaneTrust: Data? = nil,
          ownerRetirementAllowanceNanoseconds: UInt64 = ClusterRemoteWorkerEndpoint.standardOwnerRetirementAllowanceNanoseconds) throws {
+        if let dataPlaneTrust {
+            guard let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(dataPlaneTrust),
+                  trust.membershipEpoch == expectedIdentity.membershipEpoch, trust.rank == rank else {
+                throw OwnerWire.invalid("Data-plane credential differs from this endpoint's epoch or rank")
+            }
+        }
+        self.dataPlaneTrust = dataPlaneTrust
         let ceiling = lifetimeDeadlineUptimeNanoseconds.addingReportingOverflow(ownerRetirementAllowanceNanoseconds)
         guard !ceiling.overflow, ownerRetirementAllowanceNanoseconds <= 300_000_000_000 else { throw OwnerWire.invalid("Invalid owner retirement allowance") }
         ownerRetirementAllowance = ownerRetirementAllowanceNanoseconds
@@ -231,7 +243,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             let open = OwnerWire(kind: "open", epoch: expectedIdentity.membershipEpoch, lease: leaseID,
                 incarnation: nil, sequence: 0, clusterID: clusterID, remaining: offered, bootstrapProfile: selectedBootstrapProfile,
                 nativeStart: nativeKeyRelay?.start.canonicalBytes,
-                nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(firstGrant, nativeKeyRelay!.deadlineUptimeNanoseconds))
+                nativeLocalDeadline: nativeKeyRelay == nil ? nil : min(firstGrant, nativeKeyRelay!.deadlineUptimeNanoseconds),
+                dataPlaneTrust: dataPlaneTrust)
             try pipe.write(open.encoded(commandStream: true), until: min(firstGrant, now + 5_000_000_000)); sequence += 1
             var sentFence = false, sentRelease = false
             while process.isRunning {

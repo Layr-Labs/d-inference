@@ -139,6 +139,10 @@ final class EndpointBox: @unchecked Sendable {
         try require(Array(direct.suffix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)],"startup deadline was not passed to the worker")
         let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
         try require(legacy==Array(direct.dropLast(2)) && legacy.count==24,"a worker without the startup argument must be started without it")
+        // S16: a worker whose owner received its data-plane credential is told so;
+        // the credential itself is its first input line, never an argument.
+        let keyed=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil,dataPlane:true)
+        try require(keyed==legacy+["--data-plane","encrypted_v1"],"a keyed launch must add exactly the data-plane argument")
         // A startup may outlast the first lease grant (the lease is renewed
         // during the load), but not the protocol's hour; a first grant is at
         // most one lease grant away.
@@ -155,6 +159,7 @@ final class EndpointBox: @unchecked Sendable {
         let observed=session.diagnosticObservation
         try require(observed.nativeBootstrap == .directNative && !observed.nativeBootstrapOwnerAuthenticated,"status claimed an authenticated bootstrap")
         try require(observed.collectiveProgressLimitMilliseconds==60_000,"status omitted the collective progress limit")
+        try require(observed.encryptedDataPlane==nil && observed.peerVerified==nil,"status observed a data plane before both ranks were ready")
         try require(session.cooperativeStopAllowanceNanoseconds==85_000_000_000,"stop allowance does not cover the clean-stop wait and the progress limit")
     }
     /// A pin names whatever binary was installed. The installed path also

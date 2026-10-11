@@ -44,12 +44,12 @@ public enum DistributedInstalledOwner {
         let plan = prepared.plan, features = prepared.validation.workerFeatures
         try prepared.requireUnchanged()
         try features.requireProgressGuard()
-        try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
+        try ClusterWorkerOwnerService.serveKeyed(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
             bootstrapProfile: plan.bootstrap.ownerProfile,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
-            }, native: { binding, deadline, attachment in
+            }, native: { binding, deadline, attachment, dataPlaneTrust in
                 // The bootstrap is this build's one selection, never a fallback:
                 // an attachment is required exactly when that selection is the
                 // owner-authenticated exchange. No native path accepts an
@@ -60,6 +60,10 @@ public enum DistributedInstalledOwner {
                 }
                 try prepared.requireUnchanged()
                 try DistributedInstalledFiles.check(deadline)
+                // S16: a credential is honoured only by a worker that keys its data plane.
+                guard dataPlaneTrust == nil || features.acceptsDataPlane else {
+                    throw ClusterConfigurationError.invalid("The installed worker does not key its data plane; install a worker built with it")
+                }
                 try beforeNativeLaunch()
                 // The worker has no fixed lifetime: `deadline` is its first
                 // rank-lease grant, which its supervisor renews while this
@@ -69,8 +73,9 @@ public enum DistributedInstalledOwner {
                 return try ClusterWorkerProcess(launch: .init(
                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                     arguments: plan.nativeArguments(binding: binding, deadline: deadline,
-                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment),
-                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
+                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment,
+                        dataPlane: dataPlaneTrust != nil),
+                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL), initialInput: dataPlaneTrust),
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
                     startupDeadline: startup, initialLeaseDeadline: deadline,

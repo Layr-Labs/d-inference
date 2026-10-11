@@ -21,6 +21,10 @@ struct OwnerWire: Sendable {
     var bootstrapBytes: Data?
     var nativeStart: Data?
     var nativeLocalDeadline: UInt64?
+    /// S16: the worker's data-plane credential line, carried on the leader's
+    /// authenticated owner route (SSH with a pinned host key, or the local
+    /// pipe) and written as the worker's first input line. Never logged.
+    var dataPlaneTrust: Data?
 
     func encoded(commandStream: Bool) throws -> Data {
         var object: [String: Any] = ["version": 1, "kind": kind, "epoch": epoch.uuidString.lowercased(),
@@ -36,6 +40,7 @@ struct OwnerWire: Sendable {
         if let bootstrapBytes { object["bootstrapBytes"] = bootstrapBytes.base64EncodedString() }
         if let nativeStart { object["nativeStart"] = nativeStart.base64EncodedString() }
         if let nativeLocalDeadline { object["nativeLocalDeadline"] = NSNumber(value: nativeLocalDeadline) }
+        if let dataPlaneTrust { object["dataPlaneTrust"] = dataPlaneTrust.base64EncodedString() }
         if let termination {
             switch termination {
             case .launchFailed: object["termination"] = "launchFailed"
@@ -92,6 +97,15 @@ struct OwnerWire: Sendable {
             value.clusterID = try string("clusterID")
             guard let label = value.clusterID, (1...128).contains(label.utf8.count), label.utf8.allSatisfy({ (33...126).contains($0) }) else { throw invalid("Cluster label differs") }
             value.remaining = try uint("remainingNanoseconds")
+            if object["dataPlaneTrust"] != nil {
+                keys.insert("dataPlaneTrust")
+                let encoded = try string("dataPlaneTrust")
+                guard encoded.utf8.count <= 5464, let line = Data(base64Encoded: encoded), line.base64EncodedString() == encoded,
+                      let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(line), trust.membershipEpoch == value.epoch else {
+                    throw invalid("Data-plane credential differs from its bound or epoch")
+                }
+                value.dataPlaneTrust = line
+            }
             if value.bootstrapProfile == .nativeKeyPrelude {
                 keys.formUnion(["nativeStart", "nativeLocalDeadline"])
                 value.nativeLocalDeadline = try uint("nativeLocalDeadline")

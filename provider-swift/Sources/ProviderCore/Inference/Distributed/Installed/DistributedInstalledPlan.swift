@@ -12,11 +12,17 @@ struct DistributedInstalledPlan: Sendable {
     let paths: ClusterUserPaths
     /// The selected registered model's owner-side time budgets.
     let budgets: DistributedInstalledTimeBudgets
+    /// The selected registered model's pair-serving grant: the chip classes
+    /// each role may run on.
+    let grant: ClusterPairServingGrant
 
     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
         configuration = saved.configuration; capability = saved.capability; self.paths = paths
         // No plan exists for a model a pair may not serve, so nothing below
         // this point (owner, session, member registration) can start one.
+        // Both are keyed by the runtime's model, whatever the public name.
+        grant = try ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID,
+            publicModelID: configuration.publicModelID)
         budgets = try DistributedInstalledPairServingTable.servingBudgets(runtimeModelID: capability.runtimeModelID,
             publicModelID: configuration.publicModelID)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
@@ -28,6 +34,16 @@ struct DistributedInstalledPlan: Sendable {
               configuration.peers.allSatisfy({ $0.jacclDevice.utf8.count <= 63 }) else {
             throw ClusterConfigurationError.invalid("Installed worker policy or device geometry differs")
         }
+    }
+
+    /// This Mac's rank under the grant, with this Mac's own numerics class
+    /// (`ClusterNumericsClass.local()` on a real Mac). Each Mac checks the rank
+    /// it runs, right before it serves or launches it, so a placement starts
+    /// only when every rank's class is listed for its role. A capability
+    /// record, a saved setup or a peer never supplies the class.
+    func requireLocalRankGranted(numericsClass: ClusterNumericsClass?) throws {
+        try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
+            numericsClass: numericsClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID)
     }
 
     /// How this build's native ranks find each other; see the type.

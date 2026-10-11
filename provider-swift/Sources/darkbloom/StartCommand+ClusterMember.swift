@@ -36,16 +36,18 @@ extension Start {
             try prepared.requireUnchanged()
             return installation
         }
-        // The unchanged model eligibility gate, with a refusal that says why a
-        // pair cannot meet it.
-        try DistributedServingEligibility.require(modelID: prepared.model.id, memberCapabilities: capabilities)
+        // The model's pair-serving grant for the rank this Mac runs, with this
+        // Mac's own chip class (owner decision D4). The single-Mac requirements
+        // of the model are for solo serving and are not applied here.
+        try prepared.requirePairServingGrant(localNumericsClass: ClusterNumericsClass.local())
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL ?? config.coordinator.url,
             hardware: hardware, models: [prepared.model], config: config,
             authToken: AuthTokenStore.load(), runtimeHashes: hashes,
             runtimeCapabilities: capabilities,
             modelHashes: prepared.model.weightHash.map { [prepared.model.id: $0] } ?? [:],
-            executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect)
+            executionRole: .clusterMember, clusterMemberStopsOnDisconnect: stopOnDisconnect,
+            pairServingGrantedModelIDs: [prepared.model.id])
         let loop = try ProviderLoop(config: loopConfig)
         if let installation {
             do { try await loop.installNativePairMember(installation) } catch {

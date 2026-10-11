@@ -39,6 +39,13 @@ public struct ClusterMemberPreparation: Sendable {
 
     public func requireUnchanged() throws { try validation.requireUnchanged() }
 
+    /// Refuses unless the model's pair-serving grant lists this Mac's chip
+    /// class for the rank this Mac runs. The single-Mac requirements of the
+    /// model are not applied to a member: see DistributedServingEligibility.
+    public func requirePairServingGrant(localNumericsClass: ClusterNumericsClass?) throws {
+        try validation.plan.requireLocalRankGranted(numericsClass: localNumericsClass)
+    }
+
     /// Nil unless the saved setup carries a pair approval. Built only from
     /// this Mac's verified installation: the approval must be unexpired and
     /// cover this chip, and the owner, native executable, metallib and

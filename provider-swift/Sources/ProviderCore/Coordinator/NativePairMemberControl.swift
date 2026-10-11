@@ -107,7 +107,11 @@ final class NativePairMemberControl: @unchecked Sendable {
         guard let current = lock.withLock({ session }) else { return true }
         current.cancel(notify: false)
         let deadline = Date().addingTimeInterval(timeout)
-        return await Task.detached { current.waitUntilFinished(deadline: deadline) }.value
+        // The wait blocks a thread for up to the timeout: a dispatch thread,
+        // never one of the cooperative pool's.
+        return await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async { done.resume(returning: current.waitUntilFinished(deadline: deadline)) }
+        }
     }
     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
         lock.withLock {

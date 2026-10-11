@@ -157,6 +157,6 @@ final class ClusterMemberHeartbeat: @unchecked Sendable {
         }
         ClusterSupervisionFiles.write(ClusterMemberHealth(pid: getpid(), version: ProviderCore.version, phase: phase,
             writtenAt: now, registeredAt: registered, servingSince: serving,
-            engineWedgedSeconds: sample.engineWedgedSeconds, warmup: sample.warmup), to: path)
+            engineWedgedSeconds: sample.engineWedgedSeconds, warmup: sample.warmup, busy: sample.busy), to: path)
     }
 }

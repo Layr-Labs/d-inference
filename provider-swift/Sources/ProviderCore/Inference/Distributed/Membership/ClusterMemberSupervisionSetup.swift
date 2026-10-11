@@ -37,6 +37,8 @@ public struct ClusterMemberHeartbeatSample: Sendable, Equatable {
     /// "crashed" verdict: a stall with no engine steps), nil when it is not.
     public let engineWedgedSeconds: Double?
     public let warmup: String?
+    /// A request is in flight on the pair this member leads.
+    public var busy: Bool = false
 }
 
 extension ProviderLoop {
@@ -61,6 +63,8 @@ extension ProviderLoop {
             let duration = ContinuousClock.now - since
             return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
         }
-        return .init(phase: .serving, engineWedgedSeconds: wedged, warmup: warmup)
+        var sample = ClusterMemberHeartbeatSample(phase: .serving, engineWedgedSeconds: wedged, warmup: warmup)
+        sample.busy = state.inferenceActive
+        return sample
     }
 }

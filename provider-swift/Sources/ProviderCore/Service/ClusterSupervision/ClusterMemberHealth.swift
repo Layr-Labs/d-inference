@@ -52,10 +52,12 @@ public struct ClusterMemberHealth: Codable, Equatable, Sendable {
     public var engineWedgedSeconds: Double?
     /// The warmup canary's result for the current pair, when one ran.
     public var warmup: String?
+    /// The pair has a request in flight (the coordinated update waits for idle).
+    public var busy: Bool?
 
     public init(pid: Int32, version: String, phase: Phase, writtenAt: Double, registeredAt: Double? = nil,
                 servingSince: Double? = nil, activeRequest: ActiveRequest? = nil, engineWedgedSeconds: Double? = nil,
-                warmup: String? = nil) {
+                warmup: String? = nil, busy: Bool? = nil) {
         self.pid = pid
         self.version = version
         self.phase = phase
@@ -65,6 +67,7 @@ public struct ClusterMemberHealth: Codable, Equatable, Sendable {
         self.activeRequest = activeRequest
         self.engineWedgedSeconds = engineWedgedSeconds
         self.warmup = warmup
+        self.busy = busy
     }
 }
 

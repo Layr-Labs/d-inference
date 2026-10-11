@@ -232,7 +232,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 break
             }
             if recycleReason == nil, let slot = updateSlot, configuration.autoUpdate {
-                let busy = health?.activeRequest != nil
+                let busy = health.map { $0.pid == pid && ($0.busy == true || $0.activeRequest != nil) } ?? false
                 switch ClusterMemberUpdateSlot.decide(now: now, slot: slot, busy: busy) {
                 case .wait, .deferBusy:
                     break

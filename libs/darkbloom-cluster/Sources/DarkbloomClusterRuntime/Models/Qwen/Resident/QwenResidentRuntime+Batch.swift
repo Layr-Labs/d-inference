@@ -178,7 +178,8 @@ extension QwenResidentRuntime {
                            host: QwenBatchServingHost, check: () throws -> Void) throws {
         var step = 0, order = 0
         var leaving: [Int: (id: UUID, reason: QwenLayerStageGenerationFinishReason, selected: Int)] = [:]
-        while true {
+        // One autorelease scope per step, as the one-request loop has per frame.
+        while try !autoreleasepool(invoking: { () throws -> Bool in
             try host.serviceControl()
             try check()
             var joining = Set<Int>()
@@ -210,7 +211,7 @@ extension QwenResidentRuntime {
             }
             try sendBatchWords(QwenBatchWire.Header(step: step, stop: stop, slots: slots).words, check: check)
             leaving.removeAll()
-            if stop { return }
+            if stop { return true }
 
             if !decodeSlots.isEmpty {
                 let residual = try QwenLayerStageSession.decodeBatch(decodeSlots.map { lanes[$0]!.session },
@@ -264,7 +265,8 @@ extension QwenResidentRuntime {
                 }
             }
             step += 1
-        }
+            return false
+        }) {}
     }
 
     // MARK: Rank 1
@@ -272,7 +274,7 @@ extension QwenResidentRuntime {
     private func followBatch(stage: any LayerStageResidentStage, split: Bool, lanes: QwenBatchLaneTable,
                              host: QwenBatchServingHost, check: () throws -> Void) throws {
         var step = 0, order = 0
-        while true {
+        while try !autoreleasepool(invoking: { () throws -> Bool in
             let header = try QwenBatchWire.Header(words: receiveBatchWords(QwenBatchWire.headerWords, check: check),
                 expectedStep: step, lanes: batch.lanes)
             for (slot, value) in header.slots.enumerated() where value.state == .leaving {
@@ -321,7 +323,7 @@ extension QwenResidentRuntime {
             }
             if header.stop {
                 guard lanes.isEmpty else { throw ProbeError("Batch stop names lanes still running") }
-                return
+                return true
             }
             try host.serviceControl()
             try check()
@@ -374,7 +376,8 @@ extension QwenResidentRuntime {
             }
             try sendBatchWords(QwenBatchWire.Reply(step: step, tokens: tokens).words, check: check)
             step += 1
-        }
+            return false
+        }) {}
     }
 
     /// Greedy selection of every row at once: the same finite argmax as one

@@ -140,8 +140,17 @@ extension CoordinatorClient {
         // the connection is ready — done inside the `.ready` branch (serial on
         // connectionQueue) so no post-ready state change slips through the gap
         // between resuming the continuation and installing the persistent handler.
+        // Network.framework may deliver more than one state before the handler
+        // is replaced (a connection that goes `.waiting`, `.preparing`, then
+        // `.waiting` again): only the first terminal state resumes the wait.
+        let handshake = HandshakeResumption()
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready, .failed, .waiting, .cancelled:
+                    guard handshake.claim() else { return }
+                default: break
+                }
                 switch state {
                 case .ready:
                     connection.stateUpdateHandler = { laterState in
@@ -483,4 +492,11 @@ extension CoordinatorClient {
         )
         logger.warning("Reconnect telemetry: count=\(count) network_reachable=\(reachable) error=\(error.localizedDescription)")
     }
+}
+
+/// The first terminal state of a connection's handshake, once.
+private final class HandshakeResumption: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+    func claim() -> Bool { lock.withLock { if claimed { return false }; claimed = true; return true } }
 }

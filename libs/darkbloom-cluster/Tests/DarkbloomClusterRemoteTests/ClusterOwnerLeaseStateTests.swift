@@ -140,8 +140,20 @@ final class ClusterOwnerLeaseStateTests: XCTestCase {
         XCTAssertThrowsError(try send(.start(requestID: requestID), to: &state))
         XCTAssertThrowsError(try state.observeRetired(requestID: requestID, retirement: .clean))
         XCTAssertEqual(state.status.chargedRequestBytes, 60)
-        // Cancelled before it started (the pair's other rank refused the
-        // request): the native worker gave the reservation back and serves on.
+        try state.observeRetired(requestID: requestID, retirement: .cancelled)
+        _ = try send(.release(requestID: requestID), to: &state)
+        try state.observeRequestResourcesReleased(requestID: requestID)
+        // The refused start and clean retirement above were protocol
+        // violations: they quarantined the lease.
+        XCTAssertFalse(state.status.ready)
+        XCTAssertTrue(state.requiresNativeFence)
+    }
+
+    /// Cancelled before it started because the pair's other rank refused the
+    /// request: the native worker gave the reservation back and serves on.
+    func testReservationGivenBackBeforeStartKeepsTheLeaseServing() throws {
+        var state = try reserved()
+        _ = try send(.cancel(requestID: requestID, reason: .callerCancelled), to: &state)
         try state.observeRetired(requestID: requestID, retirement: .cancelled)
         _ = try send(.release(requestID: requestID), to: &state)
         try state.observeRequestResourcesReleased(requestID: requestID)

@@ -3,6 +3,10 @@ import Foundation
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
+import Logging
+
+/// Link edge refusals and connections on the member path (no payload).
+let clusterLinkMemberLog = Logger(label: "darkbloom.cluster-link")
 
 /// The follower rank over the link control channel (PROD-PLAN S08), for a
 /// saved setup with a `linkControl` attachment and no SSH trust.
@@ -70,7 +74,15 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
         let address = try DistributedInstalledLinkEdge.leaderAddress(configuration)
         let listener = try host.start(.init(interface: try DistributedInstalledLinkEdge.interface(device: local.jacclDevice,
             reaching: address), localAddress: address, port: UInt16(link.port),
-            policy: .thunderboltOnly, edges: [edge])) { event, _ in router.handle(event) }
+            policy: .thunderboltOnly, edges: [edge])) { event, _ in
+            switch event {
+            case .connected: clusterLinkMemberLog.info("link edge: follower connected")
+            case .disconnected(_, let reason): clusterLinkMemberLog.info("link edge: follower disconnected (\(reason))")
+            case .refused(_, let reason): clusterLinkMemberLog.warning("link edge: refused a connection (\(reason))")
+            default: break
+            }
+            router.handle(event)
+        }
         guard let peer = listener.peer(for: edge.edgeID) else {
             host.stop(); throw ClusterConfigurationError.invalid("The link control listener has no peer for its edge")
         }

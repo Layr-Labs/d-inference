@@ -207,6 +207,8 @@ public struct ClusterLinkSystemInterfaceInspector: ClusterLinkInterfaceInspectin
     /// (link setup v2, or a port with its own service), else the configured
     /// bridge that contains it and holds an address (today's Thunderbolt
     /// Bridge with Internet Sharing). Nil when neither carries IPv4.
+    /// A dial or a listener that knows the leader's link address uses
+    /// `carrierInterface(forPort:reaching:)` instead.
     public static func carrierInterface(forPort port: String) -> String? {
         guard ClusterLinkInterfaceAdmission.isInterfaceName(port), if_nametoindex(port) != 0 else { return nil }
         if !addresses(of: port).0.isEmpty { return port }

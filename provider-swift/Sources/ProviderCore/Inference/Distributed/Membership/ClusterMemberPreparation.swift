@@ -9,7 +9,7 @@ import ProviderCoreFoundation
 /// refuse member startup. No recovery or journal clearing occurs here.
 public struct ClusterMemberPreparation: Sendable {
     public let model: ModelInfo
-    private let validation: DistributedInstalledValidation
+    let validation: DistributedInstalledValidation
 
     public static func prepare(reference: ClusterConfigurationReference) throws -> Self {
         let paths = try ClusterUserPaths()
@@ -59,7 +59,8 @@ public struct ClusterMemberPreparation: Sendable {
                 installedOwner: URL(fileURLWithPath: plan.localPeer.ownerExecutable), ownerSHA256: attachment.ownerSHA256,
                 nativeExecutable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                 metallib: URL(fileURLWithPath: attachment.metallibPath),
-                resourceLibrary: URL(fileURLWithPath: attachment.resourceLibraryPath), chip: chip) else {
+                resourceLibrary: URL(fileURLWithPath: attachment.resourceLibraryPath), chip: chip,
+                meshOverLink: plan.configuration.linkControl != nil) else {
             throw ClusterConfigurationError.invalid("Saved pair approval does not cover this Mac's chip, artifact or native build")
         }
         _ = try installation.verifyInstalledFiles(deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)

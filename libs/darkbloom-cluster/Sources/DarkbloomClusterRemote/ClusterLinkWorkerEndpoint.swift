@@ -745,6 +745,10 @@ private final class ServerSession: @unchecked Sendable {
             endpoint.setInvalidationHandler { [weak self] in self?.localInvalidated() }
             lock.withLock { self.endpoint = endpoint }
             send({ _ in }, kind: .accepted)
+            // An owner handed over already waiting at its mesh rounds (a
+            // member's committed start) publishes a round at once: none may
+            // reach the leader before the acceptance.
+            relay?.markAccepted()
             let pump = Thread { [weak self] in self?.pumpLoop() }
             pump.name = "darkbloom.link-worker.pump"
             pump.start()
@@ -847,6 +851,7 @@ final class ClusterLinkBootstrapProxy: ClusterOwnerBootstrapExchange, @unchecked
     private var replies: [UInt64: Data] = [:]
     private var failed = false
     private var next: UInt64 = 0
+    private var accepted = false
 
     init(profile: ClusterOwnerBootstrapProfile, identity: ClusterWorkerIdentity, executionPlanSHA256: String,
          deadlineUptimeNanoseconds: UInt64, start: ClusterNativeAuthorizationStart?,
@@ -859,6 +864,8 @@ final class ClusterLinkBootstrapProxy: ClusterOwnerBootstrapExchange, @unchecked
     }
     func nativeStart(rank: Int) -> ClusterNativeAuthorizationStart? { start?.rank == rank ? start : nil }
     func cancel() { condition.lock(); failed = true; condition.broadcast(); condition.unlock() }
+    /// The session's acceptance went out: rounds may now be published.
+    func markAccepted() { condition.lock(); accepted = true; condition.broadcast(); condition.unlock() }
     func deliverReply(sequence: UInt64, bytes: Data) {
         condition.lock(); defer { condition.unlock() }
         guard replies[sequence] == nil, sequence + 1 == next else { failed = true; condition.broadcast(); return }
@@ -871,6 +878,10 @@ final class ClusterLinkBootstrapProxy: ClusterOwnerBootstrapExchange, @unchecked
             failed = true; condition.unlock(); throw ClusterWorkerOwnerErrorProxy.closed
         }
         next += 1
+        while !failed && !accepted && DispatchTime.now().uptimeNanoseconds < deadlineUptimeNanoseconds {
+            _ = condition.wait(until: Date(timeIntervalSinceNow: 0.02))
+        }
+        guard !failed, accepted else { failed = true; condition.unlock(); throw ClusterWorkerOwnerErrorProxy.deadline }
         condition.unlock()
         try profile.validate(sequence: sequence, contribution: contribution)
         publish(binding, sequence, contribution)

@@ -53,7 +53,8 @@ struct ClusterConsoleCommandTests {
         // The guided setup keeps its own flags, and the console's do not leak onto it.
         let planned = try #require(try Darkbloom.parseAsRoot(["cluster", "--dry-run", "--temporary"]) as? Cluster.Setup)
         #expect(planned.dryRun && planned.temporary && !planned.json && !planned.yes)
-        #expect(throws: (any Error).self) { _ = try Darkbloom.parseAsRoot(["cluster", "--plain"]) }
+        // `--plain` is the setup wizard's printed form now; the console's setup input is not taken.
+        #expect(try (Darkbloom.parseAsRoot(["cluster", "--plain"]) as? Cluster.Setup)?.plain == true)
         #expect(throws: (any Error).self) { _ = try Darkbloom.parseAsRoot(["cluster", "--input", "/Users/fixture/setup.json"]) }
         #expect(Cluster.configuration.defaultSubcommand == Cluster.Setup.self)
     }
@@ -71,28 +72,56 @@ struct ClusterConsoleCommandTests {
         }
     }
 
-    @Test("bare `darkbloom cluster` opens the console only in a terminal with none of the setup's flags; `cluster setup` never does")
-    func replacesGuidedSetup() {
-        func replaces(_ arguments: [String], json: Bool = false, yes: Bool = false, temporary: Bool = false, dryRun: Bool = false,
-                      input: Bool = true, output: Bool = true, type: String? = "xterm-256color") -> Bool {
-            Cluster.Console.replacesGuidedSetup(arguments: arguments, json: json, yes: yes, temporary: temporary, dryRun: dryRun,
+    @Test("bare `darkbloom cluster` opens the setup wizard only in a terminal without the unattended or printed flags; `cluster setup` never does")
+    func opensWizard() {
+        func opens(_ arguments: [String], json: Bool = false, yes: Bool = false, temporary: Bool = false, plain: Bool = false,
+                   input: Bool = true, output: Bool = true, type: String? = "xterm-256color") -> Bool {
+            Cluster.Setup.opensWizard(arguments: arguments, json: json, yes: yes, temporary: temporary, plain: plain,
                 inputIsTerminal: input, outputIsTerminal: output, terminalType: type)
         }
-        #expect(replaces(["darkbloom", "cluster"]))
-        #expect(replaces(["/usr/local/bin/darkbloom", "cluster"]))
+        #expect(opens(["darkbloom", "cluster"]))
+        #expect(opens(["/usr/local/bin/darkbloom", "cluster"]))
         // The program's own path is not an argument, whatever it is called.
-        #expect(replaces(["setup", "cluster"]))
-        #expect(!replaces(["darkbloom", "cluster", "setup"]))
-        #expect(!replaces(["darkbloom", "cluster"], json: true))
-        #expect(!replaces(["darkbloom", "cluster"], yes: true))
-        // A dry run and a temporary address are the line-by-line flow's, exactly as before:
-        // the console that would open in their place would not carry them.
-        #expect(!replaces(["darkbloom", "cluster", "--dry-run"], dryRun: true))
-        #expect(!replaces(["darkbloom", "cluster", "--temporary"], temporary: true))
-        #expect(!replaces(["darkbloom", "cluster"], input: false))
-        #expect(!replaces(["darkbloom", "cluster"], output: false))
+        #expect(opens(["setup", "cluster"]))
+        // A dry run opens the wizard with the link fix limited to its preview.
+        #expect(opens(["darkbloom", "cluster", "--dry-run"]))
+        #expect(!opens(["darkbloom", "cluster", "setup"]))
+        #expect(!opens(["darkbloom", "cluster"], json: true))
+        #expect(!opens(["darkbloom", "cluster"], yes: true))
+        #expect(!opens(["darkbloom", "cluster", "--temporary"], temporary: true))
+        #expect(!opens(["darkbloom", "cluster", "--plain"], plain: true))
+        #expect(!opens(["darkbloom", "cluster"], input: false))
+        #expect(!opens(["darkbloom", "cluster"], output: false))
         // A terminal that only prints lines gets the line-by-line flow.
-        #expect(!replaces(["darkbloom", "cluster"], type: "dumb"))
-        #expect(!replaces(["darkbloom", "cluster"], type: nil))
+        #expect(!opens(["darkbloom", "cluster"], type: "dumb"))
+        #expect(!opens(["darkbloom", "cluster"], type: nil))
+    }
+
+    @Test("the wizard takes a pair as all four options or none, absolute, with a lowercase pin and a member label")
+    func wizardPair() throws {
+        let pair = ["--pair", "/Users/fixture/pair.json", "--capability", "/Users/fixture/capability.json",
+                    "--capability-sha256", pin, "--member", "mac-a"]
+        let given = try #require(try Darkbloom.parseAsRoot(["cluster"] + pair) as? Cluster.Setup)
+        #expect(try given.wizardPair() == .init(description: "/Users/fixture/pair.json", capability: "/Users/fixture/capability.json",
+            capabilitySHA256: pin, memberID: "mac-a"))
+        #expect(try (Darkbloom.parseAsRoot(["cluster"]) as? Cluster.Setup)?.wizardPair() == nil)
+        for values in [Array(pair.dropLast(2)), ["--pair", "relative.json"] + Array(pair.dropFirst(2)),
+                       Array(pair.prefix(4)) + ["--capability-sha256", "ABC", "--member", "mac-a"],
+                       Array(pair.prefix(6)) + ["--member", "-flag"], Array(pair.prefix(6)) + ["--member", "mac a"],
+                       ["--plain", "--json"]] {
+            #expect(throws: (any Error).self) { _ = try Darkbloom.parseAsRoot(["cluster"] + values) }
+        }
+    }
+
+    @Test("the other Mac's two questions are hidden subcommands with fixed, absolute arguments")
+    func peerCommands() throws {
+        let report = try #require(try Darkbloom.parseAsRoot(["cluster", "report", "--json", "--worker", "/Users/fixture/worker",
+            "--model-dir", "/Users/fixture/models/m"]) as? Cluster.Report)
+        #expect(report.json && report.worker == "/Users/fixture/worker" && report.modelDir == "/Users/fixture/models/m")
+        #expect(try Darkbloom.parseAsRoot(["cluster", "inbox", "--receive"]) is Cluster.Inbox)
+        for values in [["report"], ["report", "--json", "--worker", "relative"], ["inbox"], ["inbox", "--receive", "--approve"]] {
+            #expect(throws: (any Error).self) { _ = try Darkbloom.parseAsRoot(["cluster"] + values) }
+        }
+        #expect(!Cluster.Report.configuration.shouldDisplay && !Cluster.Inbox.configuration.shouldDisplay)
     }
 }

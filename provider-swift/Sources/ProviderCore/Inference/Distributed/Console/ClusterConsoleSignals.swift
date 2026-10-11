@@ -17,7 +17,13 @@ final class ClusterConsoleSignals: @unchecked Sendable {
     private var previous: [(number: Int32, action: Darwin.sigaction)] = []
     private var endRequested = false
 
-    init(mailbox: ClusterConsoleMailbox, stuck: @escaping @Sendable (Int32) -> Void) {
+    convenience init(mailbox: ClusterConsoleMailbox, stuck: @escaping @Sendable (Int32) -> Void) {
+        self.init(mailbox: mailbox, termination: { ClusterConsoleEvent.terminationSignal($0) }, stuck: stuck)
+    }
+
+    /// `termination` turns a first request to end into the screen's own event.
+    init<Event: Sendable>(mailbox: ClusterScreenMailbox<Event>, termination: @escaping @Sendable (Int32) -> Event,
+                          stuck: @escaping @Sendable (Int32) -> Void) {
         for number in Self.ending + [SIGWINCH] {
             // A dispatch source only sees a signal whose default action is off.
             var ignore = Darwin.sigaction(), earlier = Darwin.sigaction()
@@ -35,7 +41,7 @@ final class ClusterConsoleSignals: @unchecked Sendable {
                     defer { self.endRequested = true }
                     return self.endRequested
                 }
-                if again { stuck(number) } else { mailbox.post(.event(.terminationSignal(number))) }
+                if again { stuck(number) } else { mailbox.post(.event(termination(number))) }
             }
             source.resume()
             _ = registered.wait(timeout: .now() + Self.registrationAllowanceSeconds)

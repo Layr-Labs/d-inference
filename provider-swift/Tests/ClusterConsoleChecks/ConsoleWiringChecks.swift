@@ -21,17 +21,24 @@ extension ClusterConsoleCheck {
         let exists = Set(states.filter { $0.value.hasPrefix("exists, not wired") }.keys)
         let none = Set(states.filter { $0.value.hasPrefix("none") }.keys)
         expectEqual(wired.count + exists.count + none.count, states.count, "every row has one of the three states")
-        expectEqual(wired.symmetricDifference(Set(ClusterConsoleWiring.wired + ClusterConsoleWiring.reconciledAtLaunch.map(\.id))).sorted(), [],
-            "wired rows differ from the code")
+        // A row is wired when either screen runs or reads it: the console or the setup wizard.
+        let wizardWired = Set(ClusterSetupWizardWiring.wired + ClusterSetupWizardWiring.reconciledAtLaunch.map(\.id))
+        expectEqual(wired.symmetricDifference(Set(ClusterConsoleWiring.wired + ClusterConsoleWiring.reconciledAtLaunch.map(\.id))
+            .union(wizardWired)).sorted(), [], "wired rows differ from the code")
         // What is reconciled at launch is shown by an element that is itself wired.
         expect(ClusterConsoleWiring.reconciledAtLaunch.allSatisfy { ClusterConsoleWiring.wired.contains($0.shownBy) }, "an intent is shown by an element that is not wired")
         // Every action is a wired row of its own.
         expect(ClusterConsoleAction.allCases.allSatisfy { ClusterConsoleWiring.wired.contains($0.wiring) }, "an action is not a wired row")
         expectEqual(Set(ClusterConsoleAction.allCases.map(\.wiring)).count, ClusterConsoleAction.allCases.count, "two actions share a row")
-        expectEqual(exists.symmetricDifference(Set(ClusterConsoleWiring.unavailable.filter(\.exists).map(\.id))).sorted(), [],
+        // What neither screen does; an element only the wizard does is wired, and the console lists it with the wizard as its reason.
+        let unavailable = ClusterConsoleWiring.unavailable + ClusterSetupWizardWiring.unavailable
+        expectEqual(exists.symmetricDifference(Set(unavailable.filter(\.exists).map(\.id)).subtracting(wizardWired)).sorted(), [],
             "rows for an operation that exists but is not wired differ from the code")
-        expectEqual(none.symmetricDifference(Set(ClusterConsoleWiring.unavailable.filter { !$0.exists }.map(\.id))).sorted(), [],
+        expectEqual(none.symmetricDifference(Set(unavailable.filter { !$0.exists }.map(\.id)).subtracting(wizardWired)).sorted(), [],
             "rows with no operation differ from the code")
+        for item in ClusterConsoleWiring.unavailable where wizardWired.contains(item.id) {
+            expect(item.exists && item.reason.contains("setup wizard"), "the console names the wizard for \(item.id), which it does")
+        }
         expectEqual(Set(ClusterConsoleWiring.wired).count, ClusterConsoleWiring.wired.count, "a wired element is listed twice")
         expect(ClusterConsoleWiring.unavailable.allSatisfy { !$0.reason.isEmpty && !$0.title.isEmpty }, "an unavailable element has no reason")
 

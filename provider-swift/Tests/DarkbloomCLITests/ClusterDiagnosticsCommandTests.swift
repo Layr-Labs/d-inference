@@ -76,8 +76,13 @@ import ArgumentParser
     let doctor = try Darkbloom.parseAsRoot(["cluster", "doctor"])
     #expect(doctor is Cluster.Doctor)
 
-    // The flow chooses the port and the address itself: nothing can be passed in.
-    for refused in [["--fix"], ["--device", "rdma_en6"], ["--address", "192.0.2.10"], ["--sudo"], ["--config", "/tmp/provider.toml"]] {
+    // The flow chooses the port and the address itself: nothing can be passed in. Only the wizard,
+    // which serves, takes the provider configuration, and only as an absolute path.
+    let configured = try Cluster.Setup.parse(["--config", "/tmp/provider.toml"])
+    #expect(configured.configOptions.config == "/tmp/provider.toml")
+    for refused in [["--fix"], ["--device", "rdma_en6"], ["--address", "192.0.2.10"], ["--sudo"], ["--config", "provider.toml"],
+                    ["--json", "--config", "/tmp/provider.toml"], ["--yes", "--config", "/tmp/provider.toml"],
+                    ["--temporary", "--config", "/tmp/provider.toml"]] {
         #expect(throws: (any Error).self) { _ = try Cluster.Setup.parse(refused) }
     }
 }

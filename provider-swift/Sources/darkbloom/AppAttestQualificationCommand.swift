@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+import os
 import ProviderAppAttest
 import ProviderCore
 
@@ -60,7 +61,7 @@ enum AppAttestQualificationCommand {
             guard ProcessInfo.processInfo.environment[AppAttestQualificationCommand.environmentKey] == "1",
                   AppAttestWorkerSelection.qualificationCandidateEnabled else { throw Failure.optInRequired }
             guard arguments.count == 4, arguments[0] == AppAttestQualificationCommand.argument,
-                  ["worker-recovery", "transport-resumption"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["worker-recovery", "callback-recovery", "transport-resumption"].contains(arguments[3]) else { throw Failure.invalidArguments }
             url = try AppAttestQualificationCommand.coordinatorURL(arguments[1])
             let directory = try PrivateInputs(path: arguments[2])
             token = try directory.hexadecimalFile("auth-token")
@@ -175,6 +176,7 @@ enum AppAttestQualificationCommand {
         var successfulAssertions = 0
         var recoveries = 0
         var complete = false
+        let assertionEvents = OSAllocatedUnfairLock(initialState: [AppAttestWorkerClient.QualificationAssertionEvent]())
         do {
             eventLoop: for await event in events {
                 switch event {
@@ -186,6 +188,15 @@ enum AppAttestQualificationCommand {
                 case .appAttestShadow(let request, let delivery):
                     if request.action == "assert" { assertions += 1 }
                     let suspend = scenario == "worker-recovery" && request.action == "assert" && assertions == 2
+                    let discardCallback = scenario == "callback-recovery" && request.action == "assert" && assertions == 2
+                    if discardCallback {
+                        try await worker.armNextAssertionCallbackDiscardForQualification { event in
+                            record("assertion_" + event.phase.rawValue, fields: ["parent_pid": parent.pid,
+                                "worker_pid": event.processID, "worker_generation": event.workerGeneration.uuidString,
+                                "sequence": event.sequence])
+                            assertionEvents.withLock { $0.append(event) }
+                        }
+                    }
                     let stopped = suspend ? try await worker.suspendOwnedWorkerForQualification() : nil
                     if let stopped {
                         record("worker_stopped", fields: ["worker_pid": stopped.processID, "parent_pid": parent.pid,
@@ -199,6 +210,29 @@ enum AppAttestQualificationCommand {
                             record("worker_runtime_diagnostics", fields: ["snapshot": try JSONSerialization.jsonObject(with: encoded)])
                         }
                         guard !suspend else { throw Failure.unexpectedReply }
+                        if discardCallback {
+                            guard reply.payload.action == "assertion", reply.payload.result == "operation_timeout",
+                                  reply.payload.proof == nil, reply.payload.appleError == nil else { throw Failure.unexpectedReply }
+                            try await worker.cancelExchange()
+                            let elapsed = started.duration(to: .now)
+                            guard elapsed >= .seconds(25), elapsed < .seconds(35), parent.isCurrent() else { throw Failure.workerNotReaped }
+                            let observationDeadline = ContinuousClock.now + .seconds(5)
+                            var observations = assertionEvents.withLock { $0 }
+                            while observations.count < 2, ContinuousClock.now < observationDeadline {
+                                try await taskSleep(.milliseconds(10))
+                                observations = assertionEvents.withLock { $0 }
+                            }
+                            guard observations.count == 2, observations[0].phase == .submitted,
+                                  observations[1].phase == .callbackDiscarded,
+                                  observations[0].processID == observations[1].processID,
+                                  observations[0].workerGeneration == observations[1].workerGeneration,
+                                  observations[0].sequence == observations[1].sequence else { throw Failure.incompleteQualification }
+                            recoveries += 1
+                            record("worker_reaped", fields: ["worker_pid": observations[0].processID, "parent_pid": parent.pid,
+                                "worker_generation": observations[0].workerGeneration.uuidString,
+                                "sequence": observations[0].sequence, "fault": "callback_discard",
+                                "elapsed_seconds": Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18])
+                        }
                         if reply.payload.action == "assertion", reply.payload.result == "ok" { successfulAssertions += 1 }
                         record("worker_reply", fields: ["action": reply.payload.action, "result": reply.payload.result ?? "missing"])
                         await delivery.send(reply.payload)
@@ -219,7 +253,8 @@ enum AppAttestQualificationCommand {
                 case .trustStatus(_, let value, let reason, _):
                     if value == "native_qualification_complete" {
                         guard parent.isCurrent(), successfulAssertions > 0,
-                              scenario != "worker-recovery" || (recoveries == 1 && successfulAssertions == 2 && reason == "worker_recovery_verified") else {
+                              scenario != "worker-recovery" || (recoveries == 1 && successfulAssertions == 2 && reason == "worker_recovery_verified"),
+                              scenario != "callback-recovery" || (recoveries == 1 && successfulAssertions == 2 && reason == "callback_recovery_verified") else {
                             throw Failure.incompleteQualification
                         }
                         complete = true

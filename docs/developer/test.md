@@ -21,6 +21,14 @@ revocation. It seeds prior enrollment, receipt and qualified runtime facts;
 software callbacks produce signatures for the real verifier. It does not
 qualify a signed release on Apple hardware or test initial Apple enrollment.
 
+## Changelog fragments
+
+Run `python3 scripts/test-changelog.py` and `make changelog-check` from the root.
+The tests use temporary files to verify independent fragments, deterministic
+and selected release rendering, Markdown preservation, invalid inputs,
+duplicate versions and read-only behavior. CI's Release Integrity job runs both;
+ordinary PRs never regenerate the shared release history.
+
 ## Autopilot rewards
 
 Run from the repository root with the pinned Go toolchain and an isolated local

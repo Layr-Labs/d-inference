@@ -283,13 +283,13 @@ extension ProviderLoop {
         // Lifecycle shutdown closes admission and drains accepted work plus
         // terminal accounting before ending this stream.
         coordinatorEventLoopStarted = true
-        let eventTask = Task {
-            for await event in events {
+        let (workEvents, workContinuation) = AsyncStream<CoordinatorEvent>.makeStream()
+        let workTask = Task {
+            for await event in workEvents {
                 switch event {
                 case .drainAck(let id):
                     await coordinator.completeDrainAcknowledgement(id)
                 case .connected:
-                    clearConnectionAuthorization()
                     clearAutopilotControl()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
@@ -299,10 +299,8 @@ extension ProviderLoop {
                     finishPlannedReconnect()
 
                 case .disconnected:
-                    clearConnectionAuthorization()
                     modelSwitchTask?.cancel()
                     clearAutopilotControl()
-                    cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -344,8 +342,9 @@ extension ProviderLoop {
                         send: send
                     )
 
-                case .appAttestShadow(let payload):
-                    handleAppAttestShadow(payload, send: send)
+                case .appAttestShadow, .trustStatus:
+                    // Consumed by the connection-control reader below.
+                    break
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
@@ -375,11 +374,38 @@ extension ProviderLoop {
                 case .desiredModels(let entries):
                     await handleDesiredModels(entries, send: send)
 
-                case .trustStatus(let trustLevel, let status, let reason, let authorization):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
-                                      authorization: authorization)
                 }
             }
+        }
+        let eventTask = Task {
+            // Model admission, hashing and cancellation may suspend for longer
+            // than an attestation exchange. Read connection controls separately
+            // so a healthy socket can renew trust while that work is parked.
+            // All fast handlers are synchronous on this actor; connection
+            // invalidation therefore precedes the next session's challenge.
+            for await event in events {
+                switch event {
+                case .appAttestShadow(let payload):
+                    handleAppAttestShadow(payload, send: send)
+                    continue
+                case .trustStatus(let level, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: level, status: status, reason: reason,
+                                      authorization: authorization)
+                    continue
+                case .connected, .disconnected:
+                    clearConnectionAuthorization()
+                    cancelAppAttestShadow()
+                default:
+                    break
+                }
+                // Slow work keeps its original FIFO ordering, including
+                // disconnect cleanup before the next connection's work.
+                workContinuation.yield(event)
+            }
+            clearConnectionAuthorization()
+            cancelAppAttestShadow()
+            workContinuation.finish()
+            await workTask.value
         }
         await withTaskCancellationHandler {
             await eventTask.value

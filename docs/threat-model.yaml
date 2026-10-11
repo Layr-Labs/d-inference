@@ -1,5 +1,10 @@
 version: "1.1"
 created: "2026-05-14"
+# Provider App Attest dispatch review 2026-10-10: suspended model/inference work
+# no longer delays challenge handling, grant application or connection invalidation.
+# Existing proof verification, native-call admission, expiry and revocation remain
+# authoritative; this availability change does not revalidate older threat entries.
+# See docs/architecture/security/attestation.md#provider-connection-control.
 # Autopilot cohort payout and repair boundaries reviewed 2026-10-08 in T-055
 # and T-060. This does not re-verify unrelated historical entries.
 # Initial legacy MDM cohort soft-delete filtering verified 2026-10-06.

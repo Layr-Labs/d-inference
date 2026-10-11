@@ -64,7 +64,7 @@ extension ProviderLoop {
             clusterPairWedgedSince = nil
             return .init(phase: memberConnectionID != nil ? .registered : .starting, engineWedgedSeconds: nil, warmup: warmup)
         }
-        let crashed = state.backendCapacity.slots.contains { $0.model == slot.modelID && $0.state == "crashed" }
+        let crashed = state.backendCapacity?.slots.contains { $0.model == slot.modelID && $0.state == "crashed" } ?? false
         if crashed { clusterPairWedgedSince = clusterPairWedgedSince ?? .now } else { clusterPairWedgedSince = nil }
         let wedged = clusterPairWedgedSince.map { since -> Double in
             let duration = ContinuousClock.now - since

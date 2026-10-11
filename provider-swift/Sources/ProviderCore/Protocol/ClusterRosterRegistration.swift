@@ -247,17 +247,60 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
     /// Layer boundaries between consecutive members: rank i holds
     /// [cuts[i-1], cuts[i]). One fewer than `members`, ascending, positive.
     public let cuts: [UInt32]
+    /// The generation mode the plan runs (`ClusterGenerationMode` raw value);
+    /// omitted means the pipeline. Part of the placement: plans that differ in
+    /// it are different plans (coordinator `ClusterPlan.Equal`).
+    public let mode: String?
+    /// The planner's speed estimate for one request alone on the cluster;
+    /// omitted when it has none. Also part of the placement.
+    public let prediction: Prediction?
+
+    /// `protocol.ClusterPlanPrediction`.
+    public struct Prediction: Codable, Sendable, Equatable {
+        public let prefillTokensPerSecond: Double
+        public let decodeTokensPerSecond: Double
+        public let firstTokenOverheadMilliseconds: UInt32
+        enum CodingKeys: String, CodingKey {
+            case prefillTokensPerSecond = "prefill_tps"
+            case decodeTokensPerSecond = "decode_tps"
+            case firstTokenOverheadMilliseconds = "first_token_overhead_ms"
+        }
+        public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double, firstTokenOverheadMilliseconds: UInt32) {
+            self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
+            self.firstTokenOverheadMilliseconds = firstTokenOverheadMilliseconds
+        }
+        /// Rates no Mac exceeds, an overhead of at most a minute.
+        func validate() throws {
+            guard prefillTokensPerSecond > 0, prefillTokensPerSecond <= 1_000_000,
+                  decodeTokensPerSecond > 0, decodeTokensPerSecond <= 10_000,
+                  firstTokenOverheadMilliseconds <= 60_000 else { throw ClusterRosterError.invalidPlan }
+        }
+    }
+
+    /// The generation modes a plan may name (`protocol.ClusterPlanModes`).
+    public static let modes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"]
 
     enum CodingKeys: String, CodingKey {
         case policySHA256 = "policy_sha256"
         case model
         case planSHA256 = "plan_sha256"
-        case members, cuts
+        case members, cuts, mode, prediction
     }
 
-    public init(policySHA256: String, model: String, planSHA256: String, members: [String], cuts: [UInt32]) {
+    public init(policySHA256: String, model: String, planSHA256: String, members: [String], cuts: [UInt32],
+                mode: String? = nil, prediction: Prediction? = nil) {
         self.policySHA256 = policySHA256; self.model = model; self.planSHA256 = planSHA256
-        self.members = members; self.cuts = cuts
+        self.members = members; self.cuts = cuts; self.mode = mode; self.prediction = prediction
+    }
+
+    /// The plan's generation mode, the pipeline when omitted.
+    public var effectiveMode: String { mode ?? "pipeline_v1" }
+
+    /// Byte for byte the same placement, as the coordinator compares plans.
+    public func samePlacement(as other: ClusterPlan) -> Bool {
+        policySHA256 == other.policySHA256 && model == other.model && planSHA256 == other.planSHA256
+            && members == other.members && cuts == other.cuts && effectiveMode == other.effectiveMode
+            && prediction == other.prediction
     }
 
     func validate(roster: ClusterRoster) throws {
@@ -266,9 +309,11 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
               (ClusterRoster.minimumMembers...ClusterRoster.maximumMembers).contains(members.count),
               cuts.count == members.count - 1, Set(members).count == members.count,
               members.allSatisfy(roster.hasMember),
-              cuts.allSatisfy({ $0 > 0 }), zip(cuts, cuts.dropFirst()).allSatisfy({ $0 < $1 }) else {
+              cuts.allSatisfy({ $0 > 0 }), zip(cuts, cuts.dropFirst()).allSatisfy({ $0 < $1 }),
+              mode.map({ Self.modes.contains($0) }) ?? true else {
             throw ClusterRosterError.invalidPlan
         }
+        try prediction?.validate()
     }
 }
 

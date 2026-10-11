@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
@@ -356,9 +357,29 @@ private final class ServiceContext: @unchecked Sendable {
         attachment?.cancel()
         do {
             guard let termination = child.termination else { throw OwnerWire.invalid("Missing actual native terminal") }
+            Self.echoWorkerTail(child, termination: termination)
             try recordTerminal(termination)
             try publishTerminal()
         } catch { lock.withLock { state.disconnect() } }
+    }
+
+    /// S24: a worker that ended abnormally usually names the cause in its own
+    /// diagnostics, which only this owner holds. Their last lines are repeated
+    /// on the owner's standard error, where its launcher keeps a bounded tail
+    /// for the incident it records (classified, then redacted). Sizes, codes
+    /// and the worker's own messages only; best effort, never fatal.
+    static func echoWorkerTail(_ child: ClusterWorkerProcess, termination: ClusterWorkerProcessTermination) {
+        if case .exited(0) = termination { return }
+        let tail = String(decoding: child.diagnosticTail.suffix(2_048), as: UTF8.self)
+        var text = "darkbloom-worker-exit-v1 rank=\(child.rank) termination=\(termination)\n"
+        for line in tail.split(whereSeparator: \.isNewline).suffix(12) { text += "darkbloom-worker-tail-v1 \(line.prefix(300))\n" }
+        _ = fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
+        let bytes = Array(text.utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let count = bytes[offset...].withUnsafeBytes { Darwin.write(STDERR_FILENO, $0.baseAddress, $0.count) }
+            if count > 0 { offset += count } else if count < 0 && errno == EINTR { continue } else { return }
+        }
     }
     func recordTerminal(_ value: ClusterWorkerProcessTermination) throws {
         try lock.withLock {

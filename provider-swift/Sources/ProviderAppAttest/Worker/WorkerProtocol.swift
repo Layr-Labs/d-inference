@@ -51,6 +51,7 @@ struct WorkerBootstrap: Codable, Sendable {
     let socketPath: String
     let scope: String
     let endpointPublicKey: String
+    let qualificationFaultsAllowed: Bool
 }
 
 struct WorkerFrame: Codable, Sendable {
@@ -65,6 +66,27 @@ struct WorkerFrame: Codable, Sendable {
         case authenticated
         case exchange(AppAttestShadowPayload, AppAttestStatus)
         case reply(AppAttestWorkerReply)
+        case armAssertionCallbackDiscard
+        case assertionCallbackDiscardArmed
+        case assertionQualificationEvent(AppAttestWorkerClient.QualificationAssertionEvent.Phase)
+    }
+}
+
+/// At most two ordered operational observations for one armed assertion. This
+/// does not grant trust, complete a proof, or change the exchange deadline.
+struct WorkerAssertionEventOrder {
+    private var submitted = false
+    private var discarded = false
+
+    mutating func accept(_ phase: AppAttestWorkerClient.QualificationAssertionEvent.Phase) throws {
+        switch phase {
+        case .submitted:
+            guard !submitted else { throw AppAttestWorkerError.invalidMessage }
+            submitted = true
+        case .callbackDiscarded:
+            guard submitted, !discarded else { throw AppAttestWorkerError.invalidMessage }
+            discarded = true
+        }
     }
 }
 

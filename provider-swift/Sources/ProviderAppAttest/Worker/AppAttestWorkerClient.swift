@@ -13,6 +13,18 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
         public let auditToken: Data
     }
 
+    public struct QualificationAssertionEvent: Sendable {
+        public enum Phase: String, Codable, Sendable {
+            case submitted
+            case callbackDiscarded = "callback_discarded"
+        }
+        /// Historical observation only, never an input to a signal operation.
+        public let processID: Int32
+        public let workerGeneration: UUID
+        public let sequence: UInt64
+        public let phase: Phase
+    }
+
     private let scope: String
     private let endpointPublicKey: String
     private let custody: CustodyOperation
@@ -23,6 +35,9 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
     private var stopped = false
     private var account: String?
     private var environment: String?
+    private var assertionFault: AssertionFault?
+    private var qualificationArmedGeneration: UUID?
+    private let assertionEventQueue = DispatchQueue(label: "io.darkbloom.app-attest.qualification-events")
 
     public init(scope: String, endpointPublicKey: String, custody: @escaping CustodyOperation) throws {
         guard AppAttestWorkerSelection.qualificationCandidateEnabled else { throw AppAttestWorkerError.qualificationRequired }
@@ -81,29 +96,52 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
                 }
                 try requireCurrent(exchange, epoch: epoch)
                 let sequence = try current.order.next()
+                let fault = assertionFault
+                if let fault {
+                    guard message.action == "assert", fault.generation == current.order.generation,
+                          fault.sequence == sequence else { throw AppAttestWorkerError.invalidMessage }
+                    assertionFault = nil
+                }
                 connection = current
                 let frame = WorkerFrame(generation: current.order.generation, sequence: sequence, body: .exchange(message, status))
                 let transport = current
                 let session = message.session
+                let eventQueue = assertionEventQueue
                 let reply = try await Task.detached(priority: .utility) {
                     try transport.authenticate()
                     try WorkerFraming.send(frame, to: transport.socket, deadline: deadline)
-                    let response = try WorkerFraming.read(WorkerFrame.self, from: transport.socket, deadline: deadline)
-                    try transport.authenticate()
-                    try transport.order.require(response)
-                    guard case .reply(let reply) = response.body,
-                          reply.payload.session == session,
-                          reply.payload.protocolVersion == 3 else { throw AppAttestWorkerError.invalidMessage }
-                    return reply
+                    var eventOrder = WorkerAssertionEventOrder()
+                    while true {
+                        let response = try WorkerFraming.read(WorkerFrame.self, from: transport.socket, deadline: deadline)
+                        try transport.authenticate()
+                        try transport.order.require(response)
+                        switch response.body {
+                        case .assertionQualificationEvent(let phase):
+                            guard let fault else { throw AppAttestWorkerError.invalidMessage }
+                            try eventOrder.accept(phase)
+                            let event = QualificationAssertionEvent(processID: transport.process.pid, workerGeneration: fault.generation,
+                                                                    sequence: fault.sequence, phase: phase)
+                            // Observers cannot hold up IPC or renew the 80s budget.
+                            // A serial queue preserves the two bounded event phases.
+                            eventQueue.async { fault.onEvent(event) }
+                        case .reply(let reply):
+                            guard reply.payload.session == session, reply.payload.protocolVersion == 3 else {
+                                throw AppAttestWorkerError.invalidMessage
+                            }
+                            return reply
+                        default:
+                            throw AppAttestWorkerError.invalidMessage
+                        }
+                    }
                 }.value
                 try requireCurrent(exchange, epoch: epoch)
                 if reply.operationOutstanding || reply.payload.result == "operation_timeout" {
-                    connection = nil
+                    clearConnection()
                     try await Task.detached { try processes.cancel(expectedEpoch: epoch) }.value
                 }
                 return reply
             } catch {
-                if activeExchange == exchange { connection = nil }
+                if activeExchange == exchange { clearConnection() }
                 try await Task.detached { try processes.cancel(expectedEpoch: epoch) }.value
                 throw error
             }
@@ -121,6 +159,50 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
     public func stop() async throws {
         stopped = true
         try await retireWorker(permanently: true)
+    }
+
+    /// The next RPC must be the normal typed assertion exchange. This arms one
+    /// real invocation's callback discard, not a caller-selected key or hash.
+    public func armNextAssertionCallbackDiscardForQualification(
+        onEvent: @escaping @Sendable (QualificationAssertionEvent) -> Void
+    ) async throws {
+        guard AppAttestWorkerSelection.qualificationCandidateEnabled else { throw AppAttestWorkerError.qualificationRequired }
+        guard !stopped else { throw AppAttestWorkerError.stopped }
+        guard activeExchange == nil, retirements == 0, var current = connection,
+              qualificationArmedGeneration != current.order.generation else { throw AppAttestWorkerError.busy }
+        let sequence = try current.order.next()
+        guard sequence < UInt64.max else { throw AppAttestWorkerError.staleExchange }
+        let exchange = UUID()
+        activeExchange = exchange
+        defer { if activeExchange == exchange { activeExchange = nil } }
+        connection = current
+        let epoch = try processes.currentEpoch()
+        let processes = self.processes
+        let transport = current
+        let deadline = WorkerDeadline(seconds: 5)
+        try await withTaskCancellationHandler {
+            do {
+                try Task.checkCancellation()
+                try await Task.detached(priority: .utility) {
+                    try transport.authenticate()
+                    try WorkerFraming.send(WorkerFrame(generation: transport.order.generation, sequence: sequence,
+                        body: .armAssertionCallbackDiscard), to: transport.socket, deadline: deadline)
+                    let response = try WorkerFraming.read(WorkerFrame.self, from: transport.socket, deadline: deadline)
+                    try transport.authenticate()
+                    try transport.order.require(response)
+                    guard case .assertionCallbackDiscardArmed = response.body else { throw AppAttestWorkerError.invalidMessage }
+                }.value
+                try requireCurrent(exchange, epoch: epoch)
+                qualificationArmedGeneration = current.order.generation
+                assertionFault = AssertionFault(generation: current.order.generation, sequence: sequence + 1, onEvent: onEvent)
+            } catch {
+                if activeExchange == exchange { clearConnection() }
+                try await Task.detached { try processes.cancel(expectedEpoch: epoch) }.value
+                throw error
+            }
+        } onCancel: {
+            Task.detached { try? processes.cancel(expectedEpoch: epoch) }
+        }
     }
 
     /// Fault injection for the signed, local qualification runner only. The
@@ -146,10 +228,16 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
     private func retireWorker(permanently: Bool) async throws {
         retirements += 1
         activeExchange = nil
-        connection = nil
+        clearConnection()
         let processes = self.processes
         defer { retirements -= 1 }
         try await Task.detached { try processes.cancel(permanently: permanently) }.value
+    }
+
+    private func clearConnection() {
+        connection = nil
+        assertionFault = nil
+        qualificationArmedGeneration = nil
     }
 
     private func requireCurrent(_ exchange: UUID, epoch: UInt64) throws {
@@ -161,6 +249,7 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
 
     private func launch(epoch: UInt64, deadline: WorkerDeadline) async throws -> Connection {
         let scope = self.scope, endpoint = endpointPublicKey, processes = self.processes
+        let qualificationFaultsAllowed = AppAttestWorkerSelection.qualificationCandidateEnabled
         let generation = UUID()
         let (connection, challenge) = try await Task.detached(priority: .utility) {
             guard Bundle.main.bundleURL.pathExtension == "app" else { throw AppAttestWorkerError.unauthenticatedPeer }
@@ -168,7 +257,8 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
             let listener = try WorkerListener()
             let bootstrap = WorkerBootstrap(version: WorkerBootstrap.version, generation: generation,
                                             secret: AppAttestWorkerHost.randomBytes(), parentAuditToken: try WorkerAuditIdentity.current().bytes,
-                                            socketPath: listener.path, scope: scope, endpointPublicKey: endpoint)
+                                            socketPath: listener.path, scope: scope, endpointPublicKey: endpoint,
+                                            qualificationFaultsAllowed: qualificationFaultsAllowed)
             let child = try processes.launch(executable: identity.executable, arguments: [AppAttestWorkerHost.argument],
                                             bootstrap: WorkerFraming.encode(bootstrap, limit: 4092), epoch: epoch)
             let authenticationDeadline = WorkerDeadline(seconds: min(10, deadline.remaining))
@@ -219,6 +309,12 @@ public actor AppAttestWorkerClient: AppAttestWorkerExchangeClient {
                 catch { complete(.failure(error)) }
             }
         }
+    }
+
+    private struct AssertionFault: Sendable {
+        let generation: UUID
+        let sequence: UInt64
+        let onEvent: @Sendable (QualificationAssertionEvent) -> Void
     }
 
     private struct Connection: Sendable {

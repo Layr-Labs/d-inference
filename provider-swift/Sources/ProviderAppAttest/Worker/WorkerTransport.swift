@@ -17,6 +17,7 @@ struct WorkerDeadline: Sendable {
 /// Cancellation uses shutdown, not close, so an fd cannot be reused under poll.
 final class WorkerDescriptor: @unchecked Sendable {
     let fd: Int32
+    private let writeLock = NSLock()
     init(_ fd: Int32) { self.fd = fd }
     deinit { Darwin.close(fd) }
     func shutdown() { _ = Darwin.shutdown(fd, SHUT_RDWR) }
@@ -62,17 +63,21 @@ final class WorkerDescriptor: @unchecked Sendable {
     }
 
     func write(_ data: Data, deadline: WorkerDeadline) throws {
-        var offset = 0
-        while offset < data.count {
-            try wait(Int16(POLLOUT), deadline: deadline)
-            let written = data.withUnsafeBytes { buffer in
-                Darwin.write(fd, buffer.baseAddress!.advanced(by: offset), data.count - offset)
+        // Native qualification observations and ordinary replies may originate
+        // on different threads. Serialize whole frames, not individual writes.
+        try writeLock.withLock {
+            var offset = 0
+            while offset < data.count {
+                try wait(Int16(POLLOUT), deadline: deadline)
+                let written = data.withUnsafeBytes { buffer in
+                    Darwin.write(fd, buffer.baseAddress!.advanced(by: offset), data.count - offset)
+                }
+                if written <= 0 {
+                    if written < 0, errno == EINTR || errno == EAGAIN { continue }
+                    throw AppAttestWorkerError.connectionClosed
+                }
+                offset += written
             }
-            if written <= 0 {
-                if written < 0, errno == EINTR || errno == EAGAIN { continue }
-                throw AppAttestWorkerError.connectionClosed
-            }
-            offset += written
         }
     }
 }

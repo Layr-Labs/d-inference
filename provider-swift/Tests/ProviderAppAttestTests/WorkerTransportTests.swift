@@ -72,12 +72,55 @@ final class WorkerTransportTests: XCTestCase {
         XCTAssertNoThrow(try order.require(WorkerFrame(generation: generation, sequence: 1, body: .authenticated)))
     }
 
+    func testQualificationObservationsAreOrderedBoundedAndGenerationFenced() throws {
+        var phases = WorkerAssertionEventOrder()
+        XCTAssertThrowsError(try phases.accept(.callbackDiscarded))
+        try phases.accept(.submitted)
+        XCTAssertThrowsError(try phases.accept(.submitted))
+        try phases.accept(.callbackDiscarded)
+        XCTAssertThrowsError(try phases.accept(.callbackDiscarded))
+        let generation = UUID()
+        var exchange = WorkerExchangeOrder(generation: generation)
+        _ = try exchange.next()
+        XCTAssertNoThrow(try exchange.require(WorkerFrame(generation: generation, sequence: 1, body: .assertionQualificationEvent(.submitted))))
+        XCTAssertThrowsError(try exchange.require(WorkerFrame(generation: UUID(), sequence: 1, body: .assertionQualificationEvent(.submitted))))
+        XCTAssertThrowsError(try exchange.require(WorkerFrame(generation: generation, sequence: 0, body: .assertionQualificationEvent(.callbackDiscarded))))
+    }
+
+    func testConcurrentObservationAndReplyWritesCannotInterleaveFrames() throws {
+        struct Payload: Codable { let id: Int; let text: String }
+        let (input, output) = try pipePair()
+        let finished = DispatchGroup()
+        let text = String(repeating: "x", count: 24 * 1024)
+        for writer in 0..<2 {
+            finished.enter()
+            DispatchQueue.global().async {
+                defer { finished.leave() }
+                do {
+                    for index in 0..<8 {
+                        try WorkerFraming.send(Payload(id: writer * 8 + index, text: text), to: output,
+                                               deadline: WorkerDeadline(seconds: 5))
+                    }
+                } catch { XCTFail("frame write failed: \(error)") }
+            }
+        }
+        var identifiers = Set<Int>()
+        for _ in 0..<16 {
+            let frame = try WorkerFraming.read(Payload.self, from: input, deadline: WorkerDeadline(seconds: 5))
+            XCTAssertEqual(frame.text, text)
+            identifiers.insert(frame.id)
+        }
+        XCTAssertEqual(finished.wait(timeout: .now() + 6), .success)
+        XCTAssertEqual(identifiers, Set(0..<16))
+    }
+
     func testBootstrapSchemaContainsNoProcessPrivateKey() throws {
         let bootstrap = WorkerBootstrap(version: 1, generation: UUID(), secret: Data(repeating: 4, count: 32),
                                         parentAuditToken: Data(repeating: 1, count: 32), socketPath: "/tmp/isolated/peer",
-                                        scope: "https://coordinator.invalid", endpointPublicKey: Data(repeating: 3, count: 32).base64EncodedString())
+                                        scope: "https://coordinator.invalid", endpointPublicKey: Data(repeating: 3, count: 32).base64EncodedString(),
+                                        qualificationFaultsAllowed: true)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(bootstrap)) as? [String: Any])
-        XCTAssertEqual(Set(object.keys), ["version", "generation", "secret", "parentAuditToken", "socketPath", "scope", "endpointPublicKey"])
+        XCTAssertEqual(Set(object.keys), ["version", "generation", "secret", "parentAuditToken", "socketPath", "scope", "endpointPublicKey", "qualificationFaultsAllowed"])
         XCTAssertEqual(object["endpointPublicKey"] as? String, bootstrap.endpointPublicKey)
         // `secret` is the independent launch nonce, not endpoint key material.
         XCTAssertEqual(object["secret"] as? String, bootstrap.secret.base64EncodedString())

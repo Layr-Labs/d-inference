@@ -47,7 +47,9 @@ public enum AppAttestWorkerHost {
         try identity.authenticate(parent, expectedPID: getppid(), expectedAudit: bootstrap.parentAuditToken, fullMeasurement: false)
         let credentialLease = try WorkerCredentialLease(scope: bootstrap.scope)
         defer { withExtendedLifetime(credentialLease) {} }
-        let client = AppAttestShadowClient(scope: bootstrap.scope)
+        let callbacks = QualificationAssertionCallbacks(qualificationAllowed: bootstrap.qualificationFaultsAllowed)
+        let client = AppAttestShadowClient(scope: bootstrap.scope,
+            service: AppleAppAttestService(callbacks: callbacks, operationTimeout: 25))
         try send(.authenticated, deadline: deadline)
         var account: String?
         var environment: String?
@@ -57,7 +59,27 @@ public enum AppAttestWorkerHost {
             let frame = try WorkerFraming.read(WorkerFrame.self, from: socket, deadline: WorkerDeadline(seconds: 20 * 60))
             _ = try order.next()
             try order.require(frame)
+            try identity.authenticate(parent, expectedPID: getppid(), expectedAudit: bootstrap.parentAuditToken, fullMeasurement: false)
+            if case .armAssertionCallbackDiscard = frame.body {
+                guard bootstrap.qualificationFaultsAllowed, account != nil, frame.sequence < UInt64.max,
+                      await client.appleOperationHeldSince() == nil else { throw AppAttestWorkerError.invalidMessage }
+                let generation = bootstrap.generation
+                let assertionSequence = frame.sequence + 1
+                try callbacks.armNextAssertion { phase in
+                    do {
+                        try WorkerFraming.send(WorkerFrame(generation: generation, sequence: assertionSequence,
+                            body: .assertionQualificationEvent(phase)), to: socket, deadline: WorkerDeadline(seconds: 1))
+                    } catch {
+                        // Evidence delivery failure aborts IPC, never manufactures
+                        // a proof or releases the deliberately held Apple gate.
+                        socket.shutdown()
+                    }
+                }
+                try send(.assertionCallbackDiscardArmed, sequence: frame.sequence, deadline: WorkerDeadline(seconds: 5))
+                continue
+            }
             guard case .exchange(let request, let status) = frame.body else { throw AppAttestWorkerError.invalidMessage }
+            guard !callbacks.requiresNextAssertion || request.action == "assert" else { throw AppAttestWorkerError.invalidMessage }
             try WorkerRequestValidation.validate(request, status: status)
             guard request.encryptedChallenge == nil,
                   status.binaryHash == identity.binaryHash,
@@ -67,7 +89,6 @@ public enum AppAttestWorkerHost {
                 guard request.action == "prepare" else { throw AppAttestWorkerError.staleExchange }
                 account = request.accountScope; environment = request.environment
             }
-            try identity.authenticate(parent, expectedPID: getppid(), expectedAudit: bootstrap.parentAuditToken, fullMeasurement: false)
             let payload = await client.respond(to: request, publicKey: bootstrap.endpointPublicKey, status: status)
             let outstanding = await client.appleOperationHeldSince() != nil
             let reply = AppAttestWorkerReply(payload: payload, localStatus: await client.currentLocalStatus(),

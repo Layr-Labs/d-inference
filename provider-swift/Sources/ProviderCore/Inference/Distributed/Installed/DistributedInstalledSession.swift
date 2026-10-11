@@ -190,8 +190,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         // bootstrap rounds and the status reports the exchange as unauthenticated.
         // The owner-authenticated one carries the committed native starts this
         // leader mints for both ranks (each owner admits only its own setup's).
-        let profile = prepared.plan.bootstrap.ownerProfile
-        let relay = try profile.map { profile in
+        let bootstrapProfile = prepared.plan.bootstrap.ownerProfile
+        let relay = try bootstrapProfile.map { profile in
             try ClusterOwnerBootstrapRelay(identity: wireIdentity, executionPlanSHA256: prepared.plan.partition.planSHA256,
                 profile: profile, deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000),
                 nativeStarts: profile.carriesNativeStart
@@ -232,7 +232,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let peer = plan.configuration.peers[rank]
         let endpoint: any ClusterOwnedWorkerEndpoint
         if rank == plan.configuration.localRank {
-            endpoint = try .init(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
+            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
                 clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
                 lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
@@ -246,7 +246,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             let ssh = try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
                 knownHostsFile: URL(fileURLWithPath: trust.knownHostsFile),
                 identityFile: URL(fileURLWithPath: trust.identityFile), installedDarkbloom: peer.ownerExecutable)
-            endpoint = try .init(configuration: ssh, clusterID: plan.configuration.clusterID,
+            endpoint = try ClusterRemoteWorkerEndpoint(configuration: ssh, clusterID: plan.configuration.clusterID,
                 expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
                 lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)

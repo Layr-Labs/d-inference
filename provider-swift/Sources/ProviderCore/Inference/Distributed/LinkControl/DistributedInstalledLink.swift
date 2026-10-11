@@ -99,7 +99,7 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
 
 /// The follower member: `darkbloom cluster link-follower`.
 public enum DistributedInstalledLinkFollower {
-    public enum Event: Sendable { case connected, disconnected, opened, refused(String), fenced(String), cleanup, released(Bool) }
+    public enum Event: Sendable { case ready, connected, disconnected, opened, refused(String), fenced(String), cleanup, released(Bool) }
 
     /// Serves sessions until `stop` is signalled, then fences what runs and
     /// waits (bounded) for its owner to release. Returns whether it ended idle.
@@ -153,6 +153,7 @@ public enum DistributedInstalledLinkFollower {
             })
         box.lock.withLock { box.server = server }
         client.start()
+        events(.ready)
         stop.wait()
         server.stop()
         let idle = server.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds

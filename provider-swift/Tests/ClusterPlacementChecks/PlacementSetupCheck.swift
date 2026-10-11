@@ -127,7 +127,7 @@ import Foundation
         require("both setups pin the Plan the worker's record lists for the chosen cut",
             one.selectedPlanSHA256 == two.selectedPlanSHA256 && one.selectedPlanSHA256 == first.planSHA256
                 && capability.partitions.first { $0.planSHA256 == first.planSHA256 }?.stages[0].sourceLayerEnd == chosen.cut)
-        require("each setup carries its own member's trust files", one.trust.identityFile.hasSuffix("mac-one") && two.trust.identityFile.hasSuffix("mac-two"))
+        require("each setup carries its own member's trust files", one.trust?.identityFile.hasSuffix("mac-one") == true && two.trust?.identityFile.hasSuffix("mac-two") == true)
         require("the chosen schedule is saved explicitly and the pipeline keeps its omitted spelling",
             one.prefillSchedule == chosen.prefillSchedule && one.generationMode == nil)
         // The same setup, typed by hand, is the same bytes.

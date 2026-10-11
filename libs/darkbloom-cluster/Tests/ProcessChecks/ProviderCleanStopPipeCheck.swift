@@ -15,7 +15,7 @@ private final class Received: @unchecked Sendable {
     private var tokens: [Int] = []
     private var finished: CBv2FinishReason?
     func accept(_ event: DistributedResidentEvent) {
-        lock.withLock { switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value } }
+        lock.withLock { switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value; case .promptCache: break } }
     }
     var values: ([Int], CBv2FinishReason?) { lock.withLock { (tokens, finished) } }
 }

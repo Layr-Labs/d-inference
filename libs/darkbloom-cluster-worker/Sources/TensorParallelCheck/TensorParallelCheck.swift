@@ -60,6 +60,7 @@ struct RunReport: Codable {
     var stepP90Milliseconds: Double
     var stepMaxMilliseconds: Double
     var peakActiveBytes: Int
+    var buildP50Milliseconds: Double?
     var prefillSeconds: Double?
     var handoffSeconds: Double?
     var handoffBytes: Int?
@@ -285,6 +286,7 @@ enum RunCommand {
                 stepP50Milliseconds: Statistics.percentile(steps, 0.5) * 1e3,
                 stepP90Milliseconds: Statistics.percentile(steps, 0.9) * 1e3,
                 stepMaxMilliseconds: (steps.max() ?? 0) * 1e3, peakActiveBytes: generation.peakActiveBytes,
+                buildP50Milliseconds: generation.buildSeconds.isEmpty ? nil : Statistics.percentile(generation.buildSeconds, 0.5) * 1e3,
                 prefillSeconds: generation.prefillSeconds, handoffSeconds: generation.handoffSeconds,
                 handoffBytes: generation.handoffBytes)
             report.runs.append(run)
@@ -292,9 +294,10 @@ enum RunCommand {
                 report.topTokenIDs = generation.topTokenIDs
                 report.topLogits = generation.topLogits
             }
-            note(String(format: "run %d: first token %.3f s (%.0f tok/s prefill), decode %.2f tok/s (p50 %.2f ms, p90 %.2f ms), tokens %@",
+            note(String(format: "run %d: first token %.3f s (%.0f tok/s prefill), decode %.2f tok/s (p50 %.2f ms, p90 %.2f ms, graph build+submit p50 %.2f ms), tokens %@",
                         index, run.firstTokenSeconds, run.prefillTokensPerSecond, run.decodeTokensPerSecond,
-                        run.stepP50Milliseconds, run.stepP90Milliseconds, String(run.tokenIDsSHA256.prefix(16))))
+                        run.stepP50Milliseconds, run.stepP90Milliseconds, run.buildP50Milliseconds ?? -1,
+                        String(run.tokenIDsSHA256.prefix(16))))
             if let handoff = run.handoffSeconds {
                 note(String(format: "run %d: hybrid prefill %@ s, state hand-off %.3f s, %d bytes", index,
                             run.prefillSeconds.map { String(format: "%.3f", $0) } ?? "-", handoff, run.handoffBytes ?? 0))

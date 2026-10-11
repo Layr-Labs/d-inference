@@ -188,6 +188,9 @@ public final class QwenTensorParallelModel {
         public var decodeSeconds = 0.0
         /// Wall time between successive tokens.
         public var stepSeconds: [Double] = []
+        /// Host time per step spent building the next step's graph and submitting it
+        /// (`asyncEval` returns once the graph is encoded for the GPU).
+        public var buildSeconds: [Double] = []
         public var peakActiveBytes = 0
         /// Hybrid only: prefill on one rank, its state cut by heads and moved.
         public var prefillSeconds: Double?
@@ -275,10 +278,12 @@ public final class QwenTensorParallelModel {
             var next: MLXArray?
             var nextTop: (MLXArray, MLXArray)?
             if step + 1 < outputCount {
+                let buildStarted = Self.now()
                 let stepLogits = model(current.reshaped(1, 1), cache: cache)[0..., -1, 0...]
                 next = select(stepLogits)
                 nextTop = recordTop > 0 ? top(stepLogits, recordTop) : nil
                 if let nextTop { asyncEval(next!, nextTop.0, nextTop.1) } else { asyncEval(next!) }
+                result.buildSeconds.append(Self.now() - buildStarted)
             }
             let token = Int(current.item(Int32.self))
             let time = Self.now()

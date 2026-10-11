@@ -420,7 +420,10 @@ extension ProviderLoop {
         await withTaskCancellationHandler {
             await eventTask.value
         } onCancel: {
-            Task { _ = await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) }
+            Task {
+                if await self.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds) { return }
+                await self.shutdownStoppedClusterMember()
+            }
         }
 
         clearConnectionAuthorization()

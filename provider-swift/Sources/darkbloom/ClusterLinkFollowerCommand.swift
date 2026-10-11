@@ -49,7 +49,15 @@ extension Cluster {
             case .fenced(let reason): line("session fenced: \(reason)")
             case .cleanup: line("session cleanup observed")
             case .released(let cleanly): line("session released " + (cleanly ? "cleanly" : "without its owner's proof"))
-            case .linkRefused(let reason): line("link refused: \(reason)")
+            case .linkRefused(let reason):
+                line("link refused: \(reason)")
+                // macOS answers a dial with "host unreachable" before trying the
+                // cable when this process may not use the local network.
+                if reason.hasSuffix("(unreachable)") {
+                    line("this process may not reach the local network: macOS refused the dial before the cable was tried. "
+                        + "Allow darkbloom under System Settings > Privacy & Security > Local Network (once), "
+                        + "or start the follower from a session that has that access.")
+                }
             }
         }
 

@@ -48,10 +48,14 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
                         deadlineContext: DistributedRequestDeadlineContext) throws -> any DistributedResidentRequestLease {
         guard expected == identity, profileID == profile.id, readiness() != nil else { throw DistributedEngineError.unavailable }
         let p = request.sampling
+        // A prefix-cache receipt (prefix reuse is on by default) only names
+        // this submission for the bridge's evidence: the ranks decide reuse
+        // themselves, as the engine's admission says. It is not a reason to
+        // refuse the request.
         guard p.temperature == 0, p.topP == 1, p.topK == 0, p.minP == 0, p.repetitionPenalty == 1,
               p.frequencyPenalty == 0, p.presencePenalty == 0, p.seed == nil, p.logitBias.isEmpty, p.topLogprobs == 0,
               request.multimodal == nil, request.positionState == nil, request.tokenConstraint == nil,
-              request.priority == 0, request.prefixCacheReceiptID == nil,
+              request.priority == 0,
               request.stopStrings.count <= 16, request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 }) else {
             throw DistributedEngineError.unsupportedRequest("worker supports only greedy text; stop strings stay in the provider")
         }

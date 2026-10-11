@@ -42,9 +42,13 @@ private struct Failure: Error {}
         var refused = false
         do { _ = try owner.reserve(bad, identity: ready.identity, profileID: profile.id, capacityLimit: 1800) } catch { refused = true }
         guard refused, owner.readiness() != nil else { throw Failure() }
-        // Reusing a public CBv2 ID must still produce a fresh native UUID.
-        for _ in 0..<2 {
-            let lease = try owner.reserve(request, identity: ready.identity, profileID: profile.id, capacityLimit: 1800), events = Received()
+        // Reusing a public CBv2 ID must still produce a fresh native UUID. The
+        // second request carries a prefix-cache receipt (prefix reuse is on by
+        // default): the receipt names the submission and is served, not refused.
+        for index in 0..<2 {
+            var sent = request
+            if index == 1 { sent.prefixCacheReceiptID = .init(7) }
+            let lease = try owner.reserve(sent, identity: ready.identity, profileID: profile.id, capacityLimit: 1800), events = Received()
             guard lease.requestID == request.id, lease.identity == ready.identity, lease.reservedBytes == 1600 else { throw Failure() }
             try lease.start { events.accept($0) }
             Task { await lease.waitUntilRetired(); events.retire() }
@@ -55,6 +59,6 @@ private struct Failure: Error {}
         }
         await owner.shutdown()
         guard workers.allSatisfy(\.observedExit) else { throw Failure() }
-        print("{\"passed\":true,\"actualProviderContractSource\":true,\"MLXValueStandins\":true,\"freshUUIDForReusedCBv2ID\":true,\"modelExecution\":false}")
+        print("{\"passed\":true,\"actualProviderContractSource\":true,\"MLXValueStandins\":true,\"freshUUIDForReusedCBv2ID\":true,\"prefixReceiptServed\":true,\"modelExecution\":false}")
     }
 }

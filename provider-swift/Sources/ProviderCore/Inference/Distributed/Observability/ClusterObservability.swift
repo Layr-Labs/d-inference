@@ -1,0 +1,146 @@
+import DarkbloomClusterRemote
+import Foundation
+import Logging
+
+/// This Mac's cluster observability files (PROD-PLAN S24), under
+/// `~/.darkbloom/cluster/`: the durable incident log, the leader's pair
+/// telemetry and the follower status the leader mirrors. Recording never
+/// throws into the caller and never blocks a request: an incident that cannot
+/// be written is logged and dropped.
+public final class ClusterObservability: Sendable {
+    public let homeDirectory: URL
+    public let incidents: ClusterIncidentLog
+    public let telemetryFile: URL
+    public let followerStatusFile: URL
+    private let localIdentifiers: ClusterDiagnosticRedaction.Identifiers
+    private static let logger = Logger(label: "darkbloom.cluster.incidents")
+
+    public init(homeDirectory: URL, hostNames: [String] = ClusterObservability.localHostNames(),
+                userNames: [String] = [NSUserName()]) {
+        self.homeDirectory = homeDirectory
+        let identifiers = ClusterDiagnosticRedaction.Identifiers(homeDirectories: [homeDirectory.path],
+            userNames: userNames, hostNames: hostNames)
+        localIdentifiers = identifiers
+        let redaction = ClusterDiagnosticRedaction(identifiers: identifiers)
+        incidents = ClusterIncidentLog(file: ClusterIncidentLog.defaultFile(homeDirectory: homeDirectory),
+                                       redact: { redaction.redact($0) })
+        telemetryFile = ClusterPairTelemetryLog.defaultFile(homeDirectory: homeDirectory)
+        followerStatusFile = ClusterLinkStatusBoardFile.defaultFile(homeDirectory: homeDirectory)
+    }
+
+    /// For the user running this process.
+    public static func current() -> ClusterObservability {
+        .init(homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    /// This Mac's names, each only to be redacted from incident text.
+    public static func localHostNames() -> [String] {
+        let full = ProcessInfo.processInfo.hostName
+        var names = [full]
+        if let short = full.split(separator: ".").first { names.append(String(short)) }
+        return Array(Set(names.filter { $0.count >= 3 && $0 != "localhost" }))
+    }
+
+    /// A redaction that also removes the peers' names a session's text may carry.
+    public func redaction(peerHosts: [String] = [], peerUsers: [String] = []) -> ClusterDiagnosticRedaction {
+        var identifiers = localIdentifiers
+        identifiers.hostNames += peerHosts.filter { !$0.isEmpty }
+        identifiers.userNames += peerUsers.filter { !$0.isEmpty }
+        return .init(identifiers: identifiers)
+    }
+
+    /// A telemetry log for one serving session.
+    public func telemetryLog(sessionID: String) -> ClusterPairTelemetryLog {
+        .init(file: telemetryFile, sessionID: sessionID)
+    }
+
+    // MARK: Recording
+
+    /// Records one classified failure. The error and the session's owner
+    /// diagnostics are classified; the message is the error with the matching
+    /// diagnostic line, redacted (this Mac's and the peers' names, addresses,
+    /// home paths, key material) and bounded.
+    @discardableResult
+    public func recordFailure(_ stateCode: ClusterIncidentStateCode, source: String, error: String,
+                              facts: DistributedSessionFacts?, severity: ClusterIncidentSeverity = .error,
+                              rank: Int? = nil, extraDiagnostics: [String] = []) -> ClusterIncident? {
+        let explanation = ClusterFailureClassifier.classify(.init(error: error,
+            diagnostics: (facts?.terminations ?? []) + (facts?.diagnostics ?? []) + extraDiagnostics))
+        let redaction = redaction(peerHosts: facts?.peerHosts ?? [], peerUsers: facts?.peerUsers ?? [])
+        var draft = ClusterIncidentDraft(severity: severity, source: source, stateCode: stateCode,
+            explanation: explanation, jobID: facts?.membershipEpoch, deploymentID: facts.map { Self.field($0.clusterID) },
+            modelID: facts?.modelID, rank: rank)
+        draft.message = redaction.redact(explanation.message)
+        return record(draft)
+    }
+
+    /// Records a draft as given (already classified); never throws.
+    @discardableResult
+    public func record(_ draft: ClusterIncidentDraft) -> ClusterIncident? {
+        do {
+            let incident = try incidents.record(draft)
+            Self.logger.warning("cluster incident", metadata: [
+                "seq": .stringConvertible(incident.seq), "state_code": .string(incident.stateCode),
+                "reason_code": .string(incident.reasonCode ?? "none"), "guidance_code": .string(incident.guidanceCode ?? "none"),
+                "source": .string(incident.source)])
+            return incident
+        } catch {
+            Self.logger.error("cluster incident could not be recorded", metadata: ["error": .string("\(error)")])
+            return nil
+        }
+    }
+
+    /// The newest incidents, as a member mirrors them to the other.
+    public func linkSummaries() -> (epoch: String?, incidents: [ClusterLinkIncidentSummary]) {
+        let feed = incidents.feed()
+        return (feed.epoch.isEmpty ? nil : feed.epoch, feed.linkSummaries())
+    }
+
+    /// A field the incident log accepts: printable ASCII, at most 128 bytes.
+    static func field(_ value: String) -> String {
+        let cleaned = String(value.unicodeScalars.filter { (33...126).contains($0.value) }.map(Character.init))
+        return cleaned.isEmpty ? "unnamed" : String(cleaned.prefix(128))
+    }
+}
+
+// MARK: - `darkbloom cluster incidents`
+
+extension ClusterObservability {
+    @discardableResult
+    public func dismissIncident(id: String) throws -> Bool { try incidents.dismiss(id: id) }
+
+    /// The feed after `since` as sorted JSON (the oMLX schema plus reason codes).
+    public func incidentFeedJSON(since: UInt64) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return String(decoding: try encoder.encode(incidents.feed(since: since)), as: UTF8.self)
+    }
+
+    /// Plain lines: each incident newest first, with its guidance.
+    public func incidentLines(since: UInt64, includeClosed: Bool) -> [String] {
+        let feed = incidents.feed(since: since)
+        var lines: [String] = []
+        if let error = feed.loadError { lines.append("The incident log could not be read: \(error)") }
+        let shown = includeClosed ? Array(feed.incidents.reversed()) : feed.open
+        lines.append("Incident log: \(shown.count) shown, \(feed.incidents.count) recorded after #\(since); "
+            + "epoch \(feed.epoch.isEmpty ? "none" : feed.epoch); latest #\(feed.latestSeq)")
+        let formatter = ISO8601DateFormatter()
+        for incident in shown {
+            var flags: [String] = []
+            if incident.dismissedAt != nil { flags.append("dismissed") }
+            if let by = incident.supersededBy { flags.append("superseded by \(by.prefix(8))") }
+            lines.append("#\(incident.seq) \(formatter.string(from: Date(timeIntervalSince1970: incident.ts))) "
+                + "\(incident.severity.rawValue) \(incident.stateCode)" + (incident.reasonCode.map { " reason=\($0)" } ?? "")
+                + " [\(incident.source)]" + (incident.rank.map { " rank \($0)" } ?? "")
+                + (flags.isEmpty ? "" : " (" + flags.joined(separator: ", ") + ")"))
+            lines.append("  id \(incident.id)" + (incident.modelID.map { " · model \($0)" } ?? "")
+                + (incident.jobID.map { " · session \($0)" } ?? ""))
+            lines.append("  \(incident.message)")
+            if let code = incident.guidanceCode, let guidance = ClusterGuidance.guidance(code: code) {
+                lines.append("  What to do (\(guidance.code)): \(guidance.title)")
+                for step in guidance.steps { lines.append("    - \(step)") }
+            }
+        }
+        return lines
+    }
+}

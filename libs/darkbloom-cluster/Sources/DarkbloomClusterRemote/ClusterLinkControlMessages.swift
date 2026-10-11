@@ -90,6 +90,17 @@ public enum ClusterLinkControlMessage: Sendable, Equatable {
         case .status(let value):
             try short(value.detail, 256)
             if let model = value.modelID { try short(model, 256) }
+            if let thermal = value.thermalState { try short(thermal, 16) }
+            if let epoch = value.incidentEpoch { try short(epoch, 64) }
+            if let incidents = value.incidents {
+                guard incidents.count <= ClusterLinkStatusMirror.maximumIncidents else { throw ClusterLinkControlError.invalidMessage }
+                for incident in incidents {
+                    try short(incident.severity, 16); try short(incident.stateCode, 64)
+                    if let code = incident.reasonCode { try short(code, 64) }
+                    if let code = incident.guidanceCode { try short(code, 64) }
+                    try short(incident.message, ClusterLinkIncidentSummary.maximumMessageBytes)
+                }
+            }
         case .probe(let value):
             guard value.padding.count <= 65_536 else { throw ClusterLinkControlError.invalidMessage }
         }
@@ -209,6 +220,7 @@ public struct ClusterLinkAgreement: Codable, Sendable, Equatable {
 
 public struct ClusterLinkStatusMirror: Codable, Sendable, Equatable {
     public enum State: String, Codable, Sendable { case idle, loading, ready, serving, draining, failed }
+    public static let maximumIncidents = 4
     public var epoch: UUID
     public var rank: UInt16
     public var state: State
@@ -218,11 +230,51 @@ public struct ClusterLinkStatusMirror: Codable, Sendable, Equatable {
     public var wiredMemoryBytes: UInt64?
     public var linkReady: Bool
     public var detail: String
+    // S24 additions, all optional: an older peer neither sends nor needs them.
+    /// Strictly increasing per sender process; a receiver keeps the newest.
+    public var sequence: UInt64?
+    /// The sender's wall clock when it built the status, seconds since 1970.
+    public var sentAt: Double?
+    /// Seconds since the sending process started.
+    public var uptimeSeconds: UInt64?
+    /// `nominal`, `fair`, `serious` or `critical` (ProcessInfo.thermalState).
+    public var thermalState: String?
+    public var physicalMemoryBytes: UInt64?
+    /// Requests this member's rank finished since it last became ready.
+    public var requestsServed: UInt64?
+    /// The sender's incident log epoch and its newest records (at most four).
+    public var incidentEpoch: String?
+    public var incidents: [ClusterLinkIncidentSummary]?
+
     public init(epoch: UUID, rank: UInt16, state: State, modelID: String? = nil, activeRequestID: UUID? = nil,
-                freeMemoryBytes: UInt64? = nil, wiredMemoryBytes: UInt64? = nil, linkReady: Bool, detail: String = "") {
+                freeMemoryBytes: UInt64? = nil, wiredMemoryBytes: UInt64? = nil, linkReady: Bool, detail: String = "",
+                sequence: UInt64? = nil, sentAt: Double? = nil, uptimeSeconds: UInt64? = nil, thermalState: String? = nil,
+                physicalMemoryBytes: UInt64? = nil, requestsServed: UInt64? = nil, incidentEpoch: String? = nil,
+                incidents: [ClusterLinkIncidentSummary]? = nil) {
         self.epoch = epoch; self.rank = rank; self.state = state; self.modelID = modelID
         self.activeRequestID = activeRequestID; self.freeMemoryBytes = freeMemoryBytes
         self.wiredMemoryBytes = wiredMemoryBytes; self.linkReady = linkReady; self.detail = detail
+        self.sequence = sequence; self.sentAt = sentAt; self.uptimeSeconds = uptimeSeconds
+        self.thermalState = thermalState; self.physicalMemoryBytes = physicalMemoryBytes
+        self.requestsServed = requestsServed; self.incidentEpoch = incidentEpoch; self.incidents = incidents
+    }
+}
+
+/// One incident as a member mirrors it to the other: codes and a short,
+/// already redacted message.
+public struct ClusterLinkIncidentSummary: Codable, Sendable, Equatable {
+    public static let maximumMessageBytes = 200
+    public var seq: UInt64
+    public var ts: Double
+    public var severity: String
+    public var stateCode: String
+    public var reasonCode: String?
+    public var guidanceCode: String?
+    public var message: String
+    public init(seq: UInt64, ts: Double, severity: String, stateCode: String, reasonCode: String?,
+                guidanceCode: String?, message: String) {
+        self.seq = seq; self.ts = ts; self.severity = severity; self.stateCode = stateCode
+        self.reasonCode = reasonCode; self.guidanceCode = guidanceCode; self.message = message
     }
 }
 

@@ -53,6 +53,7 @@ extension DistributedLocalServer {
             target.entry = nil; phase = .stopped
         } else {
             phase = .quarantined
+            recordCleanupUnresolved(target)
         }
         teardownTask = nil
         publishStopOutcome()

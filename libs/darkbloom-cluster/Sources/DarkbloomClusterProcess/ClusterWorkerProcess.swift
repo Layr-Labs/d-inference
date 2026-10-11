@@ -171,6 +171,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     public var observedExit: Bool { exited.isComplete }
     public var readiness: ClusterWorkerReady? { lock.withLock { fault == nil && fenceAt == nil ? readyValue : nil } }
     public var diagnosticTail: Data { lock.withLock { stderrTail } }
+    /// Every byte the worker wrote to standard error, including what the tail no longer holds.
+    public var diagnosticBytesTotal: Int { lock.withLock { stderrBytes } }
 
     public init(launch: ClusterWorkerLaunch, expectedIdentity: ClusterWorkerIdentity, rank: Int,
                 profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64,
@@ -374,9 +376,12 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
                         let data = Data(bytes.prefix(count))
                         if index == 0 { for line in try decoder.append(data) { try publish(ClusterWorkerCodec.decodeEvent(line)) } }
                         else {
-                            try lock.withLock {
-                                guard stderrBytes <= 1024 * 1024 - count else { throw ClusterWorkerOwnerError.invalid("Worker stderr exceeded bound") }
-                                stderrBytes += count; stderrTail.append(data)
+                            // Diagnostics are kept as a bounded rolling tail and counted.
+                            // A worker has no fixed lifetime and writes a few lines per
+                            // request, so a cap on the cumulative total would end a
+                            // healthy long-running session (S24).
+                            lock.withLock {
+                                stderrBytes = stderrBytes &+ count; stderrTail.append(data)
                                 if stderrTail.count > 65_536 { stderrTail.removeFirst(stderrTail.count - 65_536) }
                             }
                         }

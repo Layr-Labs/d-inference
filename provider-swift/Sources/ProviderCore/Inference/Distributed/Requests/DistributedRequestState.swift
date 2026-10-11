@@ -73,6 +73,11 @@ final class DistributedRequestState: @unchecked Sendable {
     /// What both peers reported of their prefix caches for this request.
     var reusedPromptTokens = 0
     var storedPromptFrontiers: [Int] = []
+    /// When the first and the latest committed token arrived (S24 telemetry).
+    var firstTokenAt: ContinuousClock.Instant?
+    var lastTokenAt: ContinuousClock.Instant?
+    /// What the ranks reported they measured of this request.
+    var rankTelemetry: DistributedRankTelemetry?
     var terminal: CBv2FinishReason?
     var cancelSent = false
     /// The request is ending with the clean client-stop handshake because its

@@ -18,6 +18,15 @@ extension DistributedRequestObservation {
             fields["remaining_first_token_ms"] = .stringConvertible(remaining)
         }
         if let outcome = observation.outcome { fields["outcome"] = .string(outcome) }
+        if let value = observation.firstTokenMilliseconds { fields["first_token_ms"] = .stringConvertible(value) }
+        if let value = observation.decodeTokensPerSecond { fields["decode_tokens_per_second"] = .stringConvertible(value) }
+        if observation.reusedPromptTokens > 0 { fields["cached_tokens"] = .stringConvertible(observation.reusedPromptTokens) }
+        if let rank = observation.rankTelemetry {
+            if let value = rank.handoffMilliseconds { fields["handoff_ms"] = .stringConvertible(value) }
+            if let drafted = rank.mtpDrafted, let accepted = rank.mtpAccepted {
+                fields["mtp_drafted"] = .stringConvertible(drafted); fields["mtp_accepted"] = .stringConvertible(accepted)
+            }
+        }
         logger.info("Distributed request lifecycle", metadata: fields)
     }
 }

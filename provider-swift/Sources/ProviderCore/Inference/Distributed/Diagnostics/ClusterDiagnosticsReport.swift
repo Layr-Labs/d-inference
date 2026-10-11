@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Foundation
 
 public struct ClusterDiagnosticsReport: Encodable, Sendable {
@@ -28,12 +29,19 @@ public struct ClusterDiagnosticsReport: Encodable, Sendable {
     /// Whether this Mac's own RDMA and interface state was read. That is not a
     /// physical probe: no peer is contacted and no collective runs.
     public let localLinkInspectionPerformed: Bool
+    /// This Mac's incident log, the leader's pair telemetry and the mirrored
+    /// follower status, read from `~/.darkbloom/cluster/` (S24). Absent when
+    /// none of those files exists.
+    public let observability: ClusterObservabilitySnapshot?
+    /// The observability section as terminal lines (empty when absent).
+    public var observabilityLines: [String] { observability?.lines ?? [] }
 
     /// `localLink` is nil when no link inspection ran. `configuredLinkDevice`
     /// is the RDMA device the saved setup assigns to this Mac, when known.
     init(operation: String, configurationState: ConfigurationState, saved: ClusterStatusBinding?,
          live: ClusterLiveStatus?, deviceJournal: ClusterDeviceJournalObservation, checks: [Check],
-         localLink: ClusterLinkReadinessReport?, configuredLinkDevice: String?) {
+         localLink: ClusterLinkReadinessReport?, configuredLinkDevice: String?,
+         observability: ClusterObservabilitySnapshot? = nil) {
         self.operation = operation
         self.configurationState = configurationState
         self.saved = saved
@@ -41,5 +49,6 @@ public struct ClusterDiagnosticsReport: Encodable, Sendable {
         self.deviceJournal = deviceJournal
         self.checks = checks + (localLink?.diagnosticChecks(configuredDevice: configuredLinkDevice) ?? [])
         localLinkInspectionPerformed = localLink != nil
+        self.observability = observability.flatMap { $0.isEmpty ? nil : $0 }
     }
 }

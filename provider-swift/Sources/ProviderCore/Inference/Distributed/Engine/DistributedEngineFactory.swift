@@ -12,7 +12,8 @@ public enum DistributedEngineFactory {
         eosTokenIDs: Set<Int>,
         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
         publicModelID: String? = nil,
-        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
+        pairTelemetry: DistributedPairTelemetryContext? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
         guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
@@ -22,7 +23,7 @@ public enum DistributedEngineFactory {
         let engine = try DistributedCBv2Engine(
             owner: owner, expectedIdentity: expectedIdentity,
             profile: profile, detokenizers: CBv2TextDetokenizerFactory(tokenizer: tokenizer.inner),
-            requestObserver: DistributedRequestObservation.log)
+            requestObserver: pairTelemetry?.observer() ?? DistributedRequestObservation.log)
         // The owner performs atomic per-peer admission. Parent MLX counters do
         // not measure remote allocations, so no invented parent byte charges are
         // attached here. The engine reports its owner's conservative capacity.
@@ -49,13 +50,14 @@ public enum DistributedEngineFactory {
         eosTokenIDs: Set<Int>,
         modelType: String? = nil,
         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil,
+        pairTelemetry: DistributedPairTelemetryContext? = nil
     ) throws -> MultiModelBatchSchedulerEngine.ModelRegistryEntry {
         let bridge = try makeBridge(
             owner: owner, expectedIdentity: expectedIdentity, profile: profile,
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs,
             firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID,
-            residentPrefixEvidence: residentPrefixEvidence)
+            residentPrefixEvidence: residentPrefixEvidence, pairTelemetry: pairTelemetry)
         return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
                      isVLM: false, engineV2Bridge: bridge, visionGate: nil)
     }

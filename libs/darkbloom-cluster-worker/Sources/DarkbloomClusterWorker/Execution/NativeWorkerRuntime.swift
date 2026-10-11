@@ -13,6 +13,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     private let owner: Owner
     /// Written and read only by the native executor.
     private(set) var lastPromptCache: (reused: Int, stored: [Int]) = (0, [])
+    private(set) var lastRequestTelemetry: ClusterWorkerRequestTelemetry?
     init(_ configuration: QwenResidentLoadConfiguration, family: ClusterResidentModelCatalog.Family = .qwenDense,
          bootstrap: WorkerBootstrapConfiguration? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
@@ -50,13 +51,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     }
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason {
         let result: QwenResidentGenerationCompletion
-        lastPromptCache = (0, [])
+        lastPromptCache = (0, []); lastRequestTelemetry = nil
         switch owner {
         case .qwenDense(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         case .mimoV26(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         }
         guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
         lastPromptCache = (result.reusedPromptTokens, result.storedPromptFrontiers)
+        lastRequestTelemetry = result.telemetry.flatMap { $0.isEmpty ? nil : $0 }
         return result.finishReason
     }
     func cancel(_ id: UUID) {

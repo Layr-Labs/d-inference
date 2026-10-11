@@ -260,6 +260,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                 if tokenEvents == 0 { eventLog.append("committedToken") }
                 tokenEvents += 1
             case .promptCache(let reused, let stored): eventLog.append("promptCache:\(reused):\(stored.count)")
+            case .requestTelemetry: eventLog.append("requestTelemetry")
             case .finished(let reason): eventLog.append("finished:\(reason.rawValue)")
             case .retired(let outcome): eventLog.append("retired:\(outcome.rawValue)")
             case .failed(let reason): eventLog.append("failed:\(reason.rawValue)")

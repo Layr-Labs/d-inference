@@ -18,8 +18,12 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// The last started request's prefix cache: prompt tokens restored, and
     /// frontiers kept. Read after `start` returns, on the same executor.
     var lastPromptCache: (reused: Int, stored: [Int]) { get }
+    /// The last started request's own measurements (hand-off, MTP), when any.
+    /// Read after `start` returns, on the same executor.
+    var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { get }
 }
 
 extension WorkerRuntime {
     var lastPromptCache: (reused: Int, stored: [Int]) { (0, []) }
+    var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { nil }
 }

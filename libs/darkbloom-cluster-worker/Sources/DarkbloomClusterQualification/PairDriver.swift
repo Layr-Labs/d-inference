@@ -51,6 +51,7 @@ public struct PairDriver: Sendable {
                 finish = reason.rawValue; concluded = DispatchTime.now().uptimeNanoseconds; done.signal(); return false
             case .failed(let message): failure = message; done.signal(); return false
             case .promptCache(let tokens, let frontiers): reused = tokens; stored = frontiers; return true
+            case .telemetry: return true
             }
         }
         func wait(until deadline: UInt64) -> Bool { done.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success }

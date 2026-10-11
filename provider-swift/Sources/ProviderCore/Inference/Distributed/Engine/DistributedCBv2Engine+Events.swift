@@ -12,6 +12,11 @@ extension DistributedCBv2Engine {
             state.storedPromptFrontiers = stored.filter { $0 > 0 && $0 < prompt }
             return state.terminal == nil
         }
+        // Like the prefix report: after the last token, telemetry only.
+        if case .telemetry(let value) = event {
+            state.rankTelemetry = value
+            return state.terminal == nil
+        }
         guard state.terminal == nil else {
             // The first token after a clean stop was asked for is the one the
             // stop answers. Nothing is delivered; from here the stop only has
@@ -34,6 +39,9 @@ extension DistributedCBv2Engine {
                 return false
             }
             state.completionTokens += 1
+            let arrived = clock.now()
+            if state.firstTokenAt == nil { state.firstTokenAt = arrived }
+            state.lastTokenAt = arrived
             let isStop = state.request.stopTokens.contains(token)
             let text = isStop ? "" : state.detokenizer.push([token])
             if clock.now() >= state.absoluteDeadline {
@@ -57,7 +65,7 @@ extension DistributedCBv2Engine {
             } else if state.completionTokens == 1 {
                 armDeadline(state)
             }
-        case .promptCache:
+        case .promptCache, .telemetry:
             break
         case .finished(let reason):
             if reason == .cancelled {

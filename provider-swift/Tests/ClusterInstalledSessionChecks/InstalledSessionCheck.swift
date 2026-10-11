@@ -21,7 +21,7 @@ final class TokenBox: @unchecked Sendable {
             switch event {
             case .token(let token): tokens.append((token,time))
             case .finished(let reason): finish=time; if case .error = reason { failure=true }
-            case .promptCache: break
+            case .promptCache, .telemetry: break
             }
         }
     }

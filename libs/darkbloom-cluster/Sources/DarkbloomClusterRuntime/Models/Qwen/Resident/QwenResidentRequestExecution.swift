@@ -112,11 +112,15 @@ enum QwenResidentRequestExecution {
                 + " prompt=\(reserved.request.promptCount) reused=\(prefix.reusedPromptTokens)"
                 + " stored=\(prefix.storedFrontiers.map(String.init).joined(separator: ",")) entries=\(prefix.cacheEntries)")
         }
-        let completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
+        var completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
             committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
             bothRequestStatesRetired: true, reusedPromptTokens: result.prefixCache?.reusedPromptTokens ?? 0,
             storedPromptFrontiers: result.prefixCache?.storedFrontiers ?? [])
+        if let summary = result.phaseSplit, summary.handoffPerformed {
+            completion.telemetry = .init(handoffNanoseconds: summary.handoffNanoseconds,
+                handoffBytes: summary.handoffLogicalBytes, mtpDrafted: summary.mtp?.drafted, mtpAccepted: summary.mtp?.accepted)
+        }
         return (completion, evidence)
     }
 }

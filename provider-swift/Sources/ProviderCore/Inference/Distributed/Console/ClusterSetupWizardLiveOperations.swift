@@ -163,9 +163,12 @@ private final class LiveContext: @unchecked Sendable {
     func route() throws -> (ssh: ClusterSSHConfiguration, peer: (worker: String, models: String)) {
         let saved = savedConfiguration().configuration
         if let saved, saved.role == .leader {
+            guard let trust = saved.trust else {
+                throw ClusterSetupFailure("this setup reaches the other Mac over the link control channel; it has no SSH route")
+            }
             let peer = saved.peers[1 - saved.localRank]
             return (try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
-                knownHostsFile: URL(fileURLWithPath: saved.trust.knownHostsFile), identityFile: URL(fileURLWithPath: saved.trust.identityFile),
+                knownHostsFile: URL(fileURLWithPath: trust.knownHostsFile), identityFile: URL(fileURLWithPath: trust.identityFile),
                 installedDarkbloom: peer.ownerExecutable), (peer.workerExecutable, peer.modelDirectory))
         }
         let input = pairInput()

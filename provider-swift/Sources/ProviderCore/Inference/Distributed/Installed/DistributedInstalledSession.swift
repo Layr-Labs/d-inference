@@ -19,15 +19,19 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private let diagnosticBinding: ClusterStatusBinding
     private var observedMembershipEpoch: UUID?
     private let wireIdentity: ClusterWorkerIdentity
-    /// The relay is present exactly when the installed bootstrap is the owner-authenticated one.
-    typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64, ClusterOwnerBootstrapRelay?) throws -> ClusterRemoteWorkerEndpoint
+    /// The relay is present exactly when the installed bootstrap is the
+    /// owner-authenticated one; the link leader exactly when the setup reaches
+    /// its follower over the link control channel.
+    typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64,
+        (any ClusterOwnerBootstrapExchange)?, DistributedInstalledLinkLeader?) throws -> any ClusterOwnedWorkerEndpoint
     private let endpointFactory: EndpointFactory
     private let lock = NSLock()
     private let startup = InstalledCompletion(), stopped = InstalledCompletion()
     private let notifications = DispatchQueue(label: "darkbloom.installed-session.invalidation")
     private var phase: DistributedInstalledSessionStatus = .prepared
-    private var endpoints: [ClusterRemoteWorkerEndpoint] = []
+    private var endpoints: [any ClusterOwnedWorkerEndpoint] = []
     private var relay: ClusterOwnerBootstrapRelay?
+    private var link: DistributedInstalledLinkLeader?
     private var pair: ClusterWorkerPair?
     private var owner: DistributedPipeExecutionOwner?
     private var stoppingTask: Task<Void, Never>?
@@ -59,7 +63,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             case nil: termination = nil
             }
             return .init(peerID: peer.id, rank: peer.rank,
-                transport: peer.rank == configuration.localRank ? .localPipes : .authenticatedSSH,
+                transport: peer.rank == configuration.localRank ? .localPipes : (configuration.linkControl == nil ? .authenticatedSSH : .linkControl),
                 nativeReady: ready != nil, requestCapacityBytes: ready?.requestCapacityBytes,
                 nativeCleanupObserved: endpoint?.nativeCleanupObserved ?? false,
                 ownerReleaseAcknowledged: endpoint?.ownerDeviceLeaseReleasedObserved ?? false,
@@ -184,13 +188,28 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let startupDeadline = now + prepared.plan.budgets.startupAllowanceNanoseconds
         // No relay exists for the direct native bootstrap: the owners carry no
         // bootstrap rounds and the status reports the exchange as unauthenticated.
-        let relay = try prepared.plan.bootstrap.ownerAuthenticated ? ClusterOwnerBootstrapRelay(identity: wireIdentity,
-            executionPlanSHA256: prepared.plan.partition.planSHA256,
-            deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000)) : nil
+        // The owner-authenticated one carries the committed native starts this
+        // leader mints for both ranks (each owner admits only its own setup's).
+        let bootstrapProfile = prepared.plan.bootstrap.ownerProfile
+        let relay = try bootstrapProfile.map { profile in
+            try ClusterOwnerBootstrapRelay(identity: wireIdentity, executionPlanSHA256: prepared.plan.partition.planSHA256,
+                profile: profile, deadlineUptimeNanoseconds: min(startupDeadline, now + 30_000_000_000),
+                nativeStarts: profile.carriesNativeStart
+                    ? try DistributedInstalledNativeStart.starts(plan: prepared.plan, epoch: wireIdentity.membershipEpoch) : [])
+        }
         lock.withLock { self.relay = relay }
+        // The follower reached over the link control channel must be connected
+        // before its rank is opened.
+        var link: DistributedInstalledLinkLeader?
+        if configuration.linkControl != nil {
+            let leader = try DistributedInstalledLinkLeader(configuration: configuration)
+            lock.withLock { self.link = leader }
+            link = leader
+            try leader.waitForFollower(until: min(startupDeadline, DispatchTime.now().uptimeNanoseconds + 30_000_000_000))
+        }
         for rank in 0..<2 {
             try requireStarting()
-            let endpoint = try endpointFactory(prepared.plan, wireIdentity, rank, lifetime, relay)
+            let endpoint = try endpointFactory(prepared.plan, wireIdentity, rank, lifetime, relay, link)
             let stopped = lock.withLock { endpoints.append(endpoint); return phase != .starting }
             if stopped { endpoint.requestNativeCleanup(); throw DistributedEngineError.shuttingDown }
         }
@@ -208,19 +227,26 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     }
 
     private static func installedEndpoint(plan: DistributedInstalledPlan, wireIdentity: ClusterWorkerIdentity,
-        rank: Int, lifetime: UInt64, relay: ClusterOwnerBootstrapRelay?) throws -> ClusterRemoteWorkerEndpoint {
+        rank: Int, lifetime: UInt64, relay: (any ClusterOwnerBootstrapExchange)?,
+        link: DistributedInstalledLinkLeader?) throws -> any ClusterOwnedWorkerEndpoint {
         let peer = plan.configuration.peers[rank]
-        let endpoint: ClusterRemoteWorkerEndpoint
+        let endpoint: any ClusterOwnedWorkerEndpoint
         if rank == plan.configuration.localRank {
-            endpoint = try .init(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
+            endpoint = try ClusterRemoteWorkerEndpoint(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
                 clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
                 lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
+        } else if let link {
+            // No SSH: the follower member serves this rank over the link.
+            endpoint = try link.endpoint(plan: plan, identity: wireIdentity, rank: rank, lifetime: lifetime, relay: relay)
         } else {
+            guard let trust = plan.configuration.trust else {
+                throw ClusterConfigurationError.invalid("This setup has neither SSH trust nor a link control attachment for its follower")
+            }
             let ssh = try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
-                knownHostsFile: URL(fileURLWithPath: plan.configuration.trust.knownHostsFile),
-                identityFile: URL(fileURLWithPath: plan.configuration.trust.identityFile), installedDarkbloom: peer.ownerExecutable)
-            endpoint = try .init(configuration: ssh, clusterID: plan.configuration.clusterID,
+                knownHostsFile: URL(fileURLWithPath: trust.knownHostsFile),
+                identityFile: URL(fileURLWithPath: trust.identityFile), installedDarkbloom: peer.ownerExecutable)
+            endpoint = try ClusterRemoteWorkerEndpoint(configuration: ssh, clusterID: plan.configuration.clusterID,
                 expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
                 lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
@@ -254,7 +280,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     func beginStop(abnormal: Bool) {
         var notice: (@Sendable (DistributedInstalledStopNotice) -> Void)?
-        let result = lock.withLock { () -> ([ClusterRemoteWorkerEndpoint], ClusterOwnerBootstrapRelay?, (@Sendable () -> Void)?) in
+        let result = lock.withLock { () -> ([any ClusterOwnedWorkerEndpoint], ClusterOwnerBootstrapRelay?, (@Sendable () -> Void)?) in
             if phase == .released { return ([], nil, nil) }
             let wasPrepared = phase == .prepared
             // Serving ended without a request to end it: say so now, before
@@ -301,6 +327,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
             if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) { released = false }
         }
+        // The follower's proofs have arrived (or will not): the edge closes.
+        lock.withLock { link }?.stop()
         lock.withLock { phase = released ? .released : .quarantined }
         stopped.complete()
     }

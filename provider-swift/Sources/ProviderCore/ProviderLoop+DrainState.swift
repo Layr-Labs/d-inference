@@ -7,6 +7,8 @@ extension ProviderLoop {
         // connection lifts this barrier but must not reopen its mirror, or the
         // member would report idle where it refuses every request.
         state.refusingNewWork = isClusterMember || active || isDraining || isShuttingDown || autopilotCommand != nil
+        // A leader serving its pair slot reopens admission with the barrier.
+        refreshClusterMemberAdmission()
         if let client = coordinatorClient {
             Task { await client.sendEventHeartbeat() }
         }

@@ -32,18 +32,27 @@ import DarkbloomClusterProcess
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
             output: filtered ? pipe.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
             clusterID: "installed-fixture", leaseDirectory: directory,
-            bootstrapProfile: nil, binding: { epoch, lease, incarnation in
+            // The installed selection: the native key prelude, then the mesh
+            // rounds, relayed by the session; this stand-in admits the
+            // committed start of its own epoch and rank only.
+            bootstrapProfile: .nativeKeyPreludeMesh2, authorizeNativeStart: { start in
+                guard start.common.epoch == fixtureIdentity.membershipEpoch, start.rank == rank else {
+                    throw ClusterOwnerStateError.invalid("Fixture native start differs")
+                }
+            }, binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fixture epoch differs") }
                 return try .init(clusterID: "installed-fixture", ownerIncarnation: incarnation, leaseID: lease,
                     identity: fixtureIdentity, profile: fixtureProfile, rank: rank, executionPlanSHA256: fixturePlan)
             }, native: { binding, deadline, attachment in
-                // The installed selection is the direct native bootstrap: no
-                // attachment exists and none of its arguments reach the worker.
-                guard attachment == nil else { throw ClusterOwnerStateError.invalid("Fixture received an unselected bootstrap attachment") }
+                // The combined profile's attachment reaches the stand-in worker
+                // exactly as it reaches an installed worker.
+                guard let attachment, attachment.profile == .nativeKeyPreludeMesh2, attachment.nativeStart?.rank == rank else {
+                    throw ClusterOwnerStateError.invalid("Fixture received no or another bootstrap attachment")
+                }
                 return try .init(launch: .init(executable: worker,
                     // "workers:a,b" selects the stand-in worker behaviour per rank.
                     arguments: [String(rank), behavior.hasPrefix("workers:")
-                        ? String(behavior.dropFirst(8).split(separator: ",")[rank]) : "normal"],
+                        ? String(behavior.dropFirst(8).split(separator: ",")[rank]) : "normal"] + attachment.workerArguments,
                     environment: ["FIXTURE_READY_PATH": ProcessInfo.processInfo.environment["FIXTURE_READY_PATH"]!]),
                     expectedIdentity: binding.identity, rank: rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256, startupDeadline: deadline, initialLeaseDeadline: deadline)

@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 @_spi(OwnerService) import DarkbloomClusterProcess
 @testable import DarkbloomClusterRemote
 
@@ -30,13 +31,15 @@ func directory() throws -> URL {
         try bootstrap(owner, worker)
         try invalidBootstrap(owner, worker)
         try bootstrapContracts()
+        try combinedBootstrap(owner, worker)
+        try combinedBootstrapContracts()
         try cancelledInflightRound(owner, worker)
         try journalFollowsTheLaunch(owner, worker)
         try ownerKeepsItsCeilingAfterAReaderError(owner, worker)
         try lifetimeExpiryStillReleases(owner, worker)
         try ownerCeilingFollowsTheOwnersClock(owner, worker)
         try recovery(worker)
-        print("remote-owner: 19 CPU groups passed")
+        print("remote-owner: 21 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
@@ -489,8 +492,80 @@ func directory() throws -> URL {
         var wrong = OwnerWire(kind: "bootstrapReply", epoch: fixtureIdentity.membershipEpoch, lease: UUID(), incarnation: UUID(), sequence: 1,
             bootstrapSequence: 0, bootstrapBytes: Data(repeating: 0, count: 131_073))
         try rejects { _ = try wrong.encoded(commandStream: true) }
-        wrong.bootstrapBytes = Data([2, 0, 0, 0, 2, 0, 0, 0]); wrong.bootstrapSequence = 4
+        // Past the most rounds any profile carries (the combined profile's seven).
+        wrong.bootstrapBytes = Data([2, 0, 0, 0, 2, 0, 0, 0]); wrong.bootstrapSequence = 7
         try rejects { _ = try wrong.encoded(commandStream: true) }
+    }
+
+    /// The combined profile (S07): the native key prelude through both owners
+    /// and the leader's relay, then the mesh rounds on the same connections.
+    static func combinedBootstrap(_ owner: URL, _ worker: String) throws {
+        let a = try directory(), b = try directory()
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000,
+            nativeStarts: try fixtureNativeStarts())
+        let first = try endpoint(owner, worker, a, behavior: "bootstrap-prelude", rank: 0, bootstrapRelay: relay)
+        let second = try endpoint(owner, worker, b, behavior: "bootstrap-prelude", rank: 1, bootstrapRelay: relay)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: DispatchTime.now().uptimeNanoseconds + 8_000_000_000)
+        let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
+            promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
+            deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 8_000_000_000, capacityLimitBytes: 1800))
+        try request.start { _ in true }
+        let end = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        while !request.isRetired && DispatchTime.now().uptimeNanoseconds < end { Thread.sleep(forTimeInterval: 0.01) }
+        try require(request.isRetired, "Combined-profile paired request did not retire")
+        request.releaseResources()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached { await pair.shutdown(); done.signal() }
+        try require(done.wait(timeout: .now() + 6) == .success, "Combined-profile owners did not shut down")
+        try require(first.nativeCleanupObserved && second.nativeCleanupObserved, "Missing combined-profile native cleanup proof")
+        for e in [first, second] {
+            try require(e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000), "Combined-profile owner release missing")
+        }
+    }
+
+    static func combinedBootstrapContracts() throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        let starts = try fixtureNativeStarts()
+        // A relay for the combined profile needs both ranks' starts of its membership.
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: [starts[0], starts[0]]) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: try fixtureNativeStarts(epoch: UUID())) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: String(repeating: "f", count: 64),
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: starts) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPrelude, deadlineUptimeNanoseconds: deadline, nativeStarts: starts) }
+        try rejects { _ = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            deadlineUptimeNanoseconds: deadline, nativeStarts: starts) }
+        // An owner whose route is not the one its start names is refused.
+        let relay = try ClusterOwnerBootstrapRelay(identity: fixtureIdentity, executionPlanSHA256: fixturePlan,
+            profile: .nativeKeyPreludeMesh2, deadlineUptimeNanoseconds: deadline, nativeStarts: starts)
+        let stranger = try ClusterOwnerBinding(clusterID: "cpu-test", ownerIncarnation: UUID(), leaseID: starts[0].leaseID,
+            identity: fixtureIdentity, profile: fixtureProfile, rank: 0, executionPlanSHA256: fixturePlan)
+        try rejects { _ = try relay.exchange(binding: stranger, sequence: 0, contribution: Data(repeating: 1, count: 32)) }
+        // Profile rounds: prelude 0-2, mesh 3-6, nothing past.
+        let profile = ClusterOwnerBootstrapProfile.nativeKeyPreludeMesh2
+        try require(profile.rounds == 7 && profile.preludeRounds == 3 && profile.meshRounds == 4, "Combined profile rounds differ")
+        try profile.validate(sequence: 3, contribution: Data([2, 0, 0, 0]))
+        try profile.validate(sequence: 4, contribution: Data(repeating: 9, count: 64))
+        try profile.validate(sequence: 6, contribution: Data([0, 0, 0, 0]))
+        try profile.validate(sequence: 1, contribution: Data(repeating: 9, count: 32))
+        try rejects { try profile.validate(sequence: 7, contribution: Data([0, 0, 0, 0])) }
+        try rejects { try profile.validate(sequence: 3, contribution: Data(repeating: 9, count: 32)) }
+        try rejects { try profile.validate(sequence: 0, contribution: Data([2, 0, 0, 0])) }
+        // The combined open carries the start and never a host uptime.
+        var open = OwnerWire(kind: "open", epoch: fixtureIdentity.membershipEpoch, lease: starts[1].leaseID, incarnation: nil,
+            sequence: 0, clusterID: "cpu-test", remaining: 6_000_000_000, bootstrapProfile: profile)
+        try rejects { _ = try open.encoded(commandStream: true) }
+        open.nativeStart = starts[1].canonicalBytes
+        let decoded = try OwnerWire.decode(try open.encoded(commandStream: true), commandStream: true)
+        try require(decoded.nativeStart == starts[1].canonicalBytes && decoded.nativeLocalDeadline == nil, "Combined open lost its start")
+        open.nativeLocalDeadline = 5
+        try rejects { _ = try open.encoded(commandStream: true) }
     }
 
     static func cancelledInflightRound(_ owner: URL, _ worker: String) throws {

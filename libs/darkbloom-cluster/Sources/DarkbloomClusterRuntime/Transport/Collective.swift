@@ -41,15 +41,11 @@ public final class Collective {
 
     public static var jacclAvailable: Bool { mlx_distributed_is_available("jaccl") }
 
+    /// JACCL is created through the owner's exchange when this worker
+    /// installed one (`JACCLOwnerBootstrap`); otherwise JACCL opens its own
+    /// coordinator socket (the direct native bootstrap). The two are never
+    /// substituted for each other: an installed exchange is always used.
     public init(transport: ClusterTransport = .jaccl) throws {
-        // STAGING DIVERGENCE (recorded in the handoff source ledger): the
-        // research source also accepted an optional owner `JACCLBootstrap`
-        // for PID-authenticated group creation. The pinned Darkbloom mlx-c
-        // does not expose the JACCL bootstrap C API
-        // (`mlx_distributed_init_jaccl_with_bootstrap`), so that path is not
-        // staged; only direct backend initialization remains. Adding the
-        // bootstrap back requires the mlx-c pin decision recorded in the
-        // handoff — never a local reimplementation.
         guard transport != .localSocketTest else {
             throw ProbeError("local-socket-test is created with its rank and loopback endpoint, not from a native backend")
         }
@@ -62,8 +58,11 @@ public final class Collective {
             log("Using loopback-test transport for correctness only; timings are not cluster-performance evidence")
         }
         var initialized = mlx_distributed_group_new()
+        let owner = transport == .jaccl ? JACCLOwnerBootstrap.take() : nil
+        if let owner { log("JACCL bootstrap through the authenticated owner (rank \(owner.rank)); no coordinator socket is opened") }
         try MLX.withError { error in
-            let status = mlx_distributed_init(&initialized, true, transport.backend)
+            let status = owner.map { JACCLOwnerBootstrap.initialize(&initialized, rank: $0.rank, exchange: $0.exchange) }
+                ?? mlx_distributed_init(&initialized, true, transport.backend)
             try error.check()
             guard status == 0 else { throw ProbeError("\(transport.rawValue) initialization failed: \(status)") }
         }
@@ -75,6 +74,9 @@ public final class Collective {
         }
         if let expectedRank, rank != expectedRank {
             throw ProbeError("Loopback backend initialized an unexpected rank")
+        }
+        if let owner, rank != owner.rank {
+            throw ProbeError("The owner bootstrap initialized another rank")
         }
     }
 

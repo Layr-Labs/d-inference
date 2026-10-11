@@ -52,7 +52,7 @@ enum ClusterStatusCodec {
         }
         for (rank, member) in value.session.members.enumerated() {
             guard member.rank == rank, member.peerID == binding.peers[rank].id,
-                  member.transport == (rank == 0 ? .localPipes : .authenticatedSSH),
+                  rank == 0 ? member.transport == .localPipes : member.transport != .localPipes,
                   member.nativeReady == (member.requestCapacityBytes != nil),
                   member.requestCapacityBytes.map({ $0 > 0 }) ?? true,
                   !member.ownerReleaseAcknowledged || member.nativeCleanupObserved else {

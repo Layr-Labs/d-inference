@@ -30,7 +30,15 @@ public enum ClusterConfigurationCodec {
             throw ClusterConfigurationError.invalid("Cluster configuration must be an object")
         }
         var expected: Set<String> = ["schema", "clusterID", "memberID", "role", "publicModelID", "capabilitySHA256", "selectedPlanSHA256",
-                                     "chunkTokens", "requestTimeoutSeconds", "peers", "coordinator", "trust", "tokenizerFiles"]
+                                     "chunkTokens", "requestTimeoutSeconds", "peers", "coordinator", "tokenizerFiles"]
+        // A setup reached over the link control channel has no SSH trust; every other has it.
+        if let attachment = object["linkControl"] {
+            guard let fields = attachment as? [String: Any] else {
+                throw ClusterConfigurationError.invalid("Link control attachment must be a non-null object")
+            }
+            try ClusterLinkControlAttachment.validateObject(fields)
+            expected.insert("linkControl")
+        } else { expected.insert("trust") }
         if let schedule = object["prefillSchedule"] {
             guard let name = schedule as? String, ClusterPrefillSchedule(rawValue: name) != nil else {
                 throw ClusterConfigurationError.invalid("Unknown or malformed prefill schedule")
@@ -54,7 +62,6 @@ public enum ClusterConfigurationCodec {
         try keys(object, expected)
         guard let peers = object["peers"] as? [[String: Any]], peers.count == 2,
               let coordinator = object["coordinator"] as? [String: Any],
-              let trust = object["trust"] as? [String: Any],
               let files = object["tokenizerFiles"] as? [[String: Any]], (1...16).contains(files.count) else {
             throw ClusterConfigurationError.invalid("Malformed cluster configuration objects")
         }
@@ -62,7 +69,10 @@ public enum ClusterConfigurationCodec {
             try keys(peer, ["id", "rank", "host", "port", "user", "ownerExecutable", "workerExecutable", "modelDirectory", "runtimeBinarySHA256", "jacclDevice"])
         }
         try keys(coordinator, ["address", "port"])
-        try keys(trust, ["identityFile", "knownHostsFile", "knownHostsSHA256"])
+        if let trust = object["trust"] {
+            guard let trust = trust as? [String: Any] else { throw ClusterConfigurationError.invalid("Malformed cluster configuration objects") }
+            try keys(trust, ["identityFile", "knownHostsFile", "knownHostsSHA256"])
+        }
         for file in files { try keys(file, ["path", "sha256", "purpose"]) }
         let value = try JSONDecoder().decode(ClusterConfiguration.self, from: data)
         try value.validate(capability: capability, rawCapabilitySHA256: capabilitySHA256)

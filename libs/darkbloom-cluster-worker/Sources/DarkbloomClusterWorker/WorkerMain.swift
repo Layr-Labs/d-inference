@@ -68,9 +68,13 @@ import Foundation
             // The registered model's own adapter executes it: GPT-OSS has its
             // own runtime (with its own recording entry); the dense and MiMo
             // families share the native wrapper, and only the dense one records.
+            // The owner's attachment (S07): the native key prelude, then the
+            // exchange that creates the JACCL group through both owners.
+            let attachment = try configuration.bootstrap?.attach(epoch: configuration.load.identity.membershipEpoch,
+                rank: configuration.load.rank)
             let runtime: any WorkerRuntime
             if configuration.family == .gptoss {
-                runtime = try GPTOSSWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
+                runtime = try GPTOSSWorkerRuntime(configuration.load, attachment: attachment,
                     evidenceDirectory: configuration.evidenceDirectory,
                     generationMode: configuration.generationMode, qualification: qualification)
             } else {
@@ -78,10 +82,10 @@ import Foundation
                     throw WorkerFailure.invalid("Only the dense adapter has a recording runtime; run this model without --evidence-directory")
                 }
                 runtime = try configuration.evidenceDirectory.map {
-                    try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
+                    try RecordingWorkerRuntime(configuration.load, attachment: attachment, evidenceDirectory: $0,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
                         qualification: qualification)
-                } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, bootstrap: configuration.bootstrap,
+                } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
                         qualification: qualification)
             }

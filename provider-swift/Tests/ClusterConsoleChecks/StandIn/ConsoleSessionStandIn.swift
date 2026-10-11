@@ -49,7 +49,7 @@ import DarkbloomClusterProcess
         let prepared = try fixture.prepare()
         let base = root.appendingPathComponent("session")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let session = try DistributedInstalledSession(prepared: prepared, endpointFactory: { plan, identity, rank, lifetime, relay in
+        let session = try DistributedInstalledSession(prepared: prepared, endpointFactory: { plan, identity, rank, lifetime, relay, _ in
             let directory = base.appendingPathComponent("rank-\(rank)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             let ready = base.appendingPathComponent("ready-\(rank).json")

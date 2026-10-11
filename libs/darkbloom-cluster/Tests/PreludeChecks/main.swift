@@ -35,7 +35,8 @@ func unhex(_ string: String) -> Data {
             try codecVectors()
             try fullTwoRankExchange()
             try refusalGroups()
-            print(#"{"passed":true,"groups":3,"actualChildren":8,"modelExecution":false,"networkUsed":false,"rdma":false}"#)
+            try preludeThenMesh()
+            print(#"{"passed":true,"groups":4,"actualChildren":10,"modelExecution":false,"networkUsed":false,"rdma":false}"#)
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
     }
 
@@ -92,6 +93,21 @@ func unhex(_ string: String) -> Data {
             let authority = try ClusterNativeRecordAuthority(ownedPrelude: context)
             let receipt = try authority.establish()
             try require(receipt.rank == rank && receipt.transcriptSHA256.count == 32, "receipt malformed")
+            return
+        case "native-then-mesh":
+            // The combined profile (S07): the key prelude, then the four JACCL
+            // mesh rounds on the same connection, numbered from 0.
+            let context = try connection.beginNativeKeyPrelude(expecting: startBytes)
+            let authority = try ClusterNativeRecordAuthority(ownedPrelude: context)
+            _ = try authority.establish()
+            let parts = [Data([2, 0, 0, 0]), Data(repeating: UInt8(rank + 1), count: 64), Data([0, 0, 0, 0]), Data([0, 0, 0, 0])]
+            for (sequence, bytes) in parts.enumerated() {
+                let gathered = try connection.exchange(sequence: UInt64(sequence), contribution: bytes)
+                try require(gathered.count == bytes.count * 2 && Data(gathered.dropFirst(rank * bytes.count).prefix(bytes.count)) == bytes,
+                    "mesh reply lost the local contribution")
+                if sequence == 1 { try require(gathered == Data(repeating: 1, count: 64) + Data(repeating: 2, count: 64), "mesh destinations differ") }
+            }
+            withExtendedLifetime(authority) {}
             return
         case "wrong-start":
             var wrong = startBytes; wrong[wrong.count - 1] ^= 1
@@ -182,6 +198,31 @@ func unhex(_ string: String) -> Data {
         try prelude0.requireComplete(transcriptSHA256: binding.transcriptSHA256)
         try prelude1.requireComplete(transcriptSHA256: binding.transcriptSHA256)
         try reap(child0); try reap(child1)
+    }
+
+    // MARK: - Group 4: prelude, then mesh rounds on the same connections
+
+    static func preludeThenMesh() throws {
+        let (_, _, startBytes) = try makeStarts()
+        let until = deadline(8000)
+        let listeners = [try ClusterBootstrapListener(deadlineUptimeNanoseconds: until), try ClusterBootstrapListener(deadlineUptimeNanoseconds: until)]
+        let children = try (0...1).map { try spawn(listeners[$0], mode: "native-then-mesh", rank: $0, until: until, startHex: hex(startBytes[$0])) }
+        let owners = try (0...1).map { try listeners[$0].accept(processID: children[$0].processIdentifier, identity: identity($0),
+            deadlineUptimeNanoseconds: until, mode: .nativeKeyPreludeV1) }
+        let preludes = try (0...1).map { try owners[$0].beginOwnerKeyPrelude(start: startBytes[$0]) }
+        let hellos = try preludes.map { try $0.receiveHello() }
+        let binding = try ClusterNativeKeyBinding(hellos: try hellos.map { try ClusterNativeKeyHello(encoded: $0) })
+        for prelude in preludes { try prelude.sendBinding(binding.canonicalBytes) }
+        let tags = try preludes.map { try $0.receiveConfirmation() }
+        try preludes[0].sendPeerConfirmation(tags[1]); try preludes[1].sendPeerConfirmation(tags[0])
+        for prelude in preludes { try prelude.requireComplete(transcriptSHA256: binding.transcriptSHA256) }
+        for _ in 0..<4 {
+            let rounds = try owners.map { try $0.receiveRound() }
+            try require(rounds[0].sequence == rounds[1].sequence, "mesh rounds out of step")
+            let gathered = rounds[0].contribution + rounds[1].contribution
+            for (owner, round) in zip(owners, rounds) { try owner.reply(to: round, gathered: gathered) }
+        }
+        for child in children { try reap(child) }
     }
 
     // MARK: - Group 3: refusal groups

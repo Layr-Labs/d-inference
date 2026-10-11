@@ -15,8 +15,9 @@ extension QwenResidentRuntime {
     /// switch that is present and not permitted stops the load here, by name.
     ///
     /// `speculativeTerms` applies only to `phase_split_mtp_v1` (default: the
-    /// product drafter's maximum depth); both ranks bind them into the load
-    /// agreement together with the digest of the head's verified files.
+    /// row's own depth, `QwenMTPTerms.standard(for:)`); both ranks bind them
+    /// into the load agreement together with the digest of the head's
+    /// verified files.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
                             speculativeTerms requestedTerms: QwenMTPTerms? = nil,
@@ -57,7 +58,13 @@ extension QwenResidentRuntime {
         }
         // The head's files by their verified manifest digests, on both ranks,
         // before either stage is read; only rank 1 loads the head itself.
-        let speculativeTerms: QwenMTPTerms? = mode.usesSpeculativeHead ? (requestedTerms ?? .standard) : nil
+        let speculativeTerms: QwenMTPTerms?
+        if mode.usesSpeculativeHead {
+            guard let model = QwenRegisteredDenseModel(rawValue: admission.runtimeModelID) else {
+                throw ProbeError("Speculative decoding needs a registered resident row; \(admission.runtimeModelID) is not one")
+            }
+            speculativeTerms = requestedTerms ?? .standard(for: model)
+        } else { speculativeTerms = nil }
         let headFiles: QwenMTPHeadFiles? = mode.usesSpeculativeHead
             ? try QwenMTPHeadFiles(modelDirectory: directory, manifest: admission.manifestBytes) : nil
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)

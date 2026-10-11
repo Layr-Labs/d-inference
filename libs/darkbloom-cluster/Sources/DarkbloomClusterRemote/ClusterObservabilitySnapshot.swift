@@ -38,6 +38,10 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
     public let telemetry: Telemetry?
     public let followers: Followers?
 
+    public init(incidents: Incidents?, telemetry: Telemetry?, followers: Followers?) {
+        self.incidents = incidents; self.telemetry = telemetry; self.followers = followers
+    }
+
     /// Reads the three files under `homeDirectory/.darkbloom/cluster/`.
     public static func read(homeDirectory: URL, now: Double = Date().timeIntervalSince1970,
                             staleAfterSeconds: Double = ClusterLinkStatusBoard.defaultStaleAfterSeconds) -> ClusterObservabilitySnapshot {

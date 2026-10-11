@@ -9,4 +9,11 @@ protocol WorkerRuntime: AnyObject, Sendable {
     func start(_ id: UUID, token: (Int, Int, Int) throws -> Bool) throws -> ClusterWorkerFinishReason
     func cancel(_ id: UUID)
     func shutdown() throws
+    /// The last started request's prefix cache: prompt tokens restored, and
+    /// frontiers kept. Read after `start` returns, on the same executor.
+    var lastPromptCache: (reused: Int, stored: [Int]) { get }
+}
+
+extension WorkerRuntime {
+    var lastPromptCache: (reused: Int, stored: [Int]) { (0, []) }
 }

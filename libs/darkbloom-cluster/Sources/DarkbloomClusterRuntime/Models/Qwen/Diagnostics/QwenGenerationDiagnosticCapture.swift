@@ -4,7 +4,8 @@ import MLX
 /// Request-local CPU captures. No model, session, MLXArray or file is retained.
 /// Both captures are private until the driver returns after bilateral retirement.
 final class QwenGenerationDiagnosticCapture {
-    let request: QwenLayerStageGenerationRequest
+    /// Replaced once by the planned request after the prefix agreement.
+    var request: QwenLayerStageGenerationRequest
     let rank: Int
     let resources: QwenGenerationDiagnosticResources
     private var finalFrame: QwenLayerStageFrame?

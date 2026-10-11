@@ -24,7 +24,7 @@ struct QwenLayerStageGenerationAgreement {
         /// Nil is omitted. Both ranks must frame decode steps the same way.
         let decodeFraming: String?
     }
-    let request: QwenLayerStageGenerationRequest
+    private(set) var request: QwenLayerStageGenerationRequest
     let descriptor: Descriptor
     let fingerprint: String
     let initialTokenChainSHA256: String
@@ -68,6 +68,21 @@ struct QwenLayerStageGenerationAgreement {
         fingerprint = try qwenGenerationFingerprint("agreement", descriptor)
         initialTokenChainSHA256 = sha256(Data(("qwen-generation-history-v1|" + fingerprint + "|"
             + qwenGenerationTokenHash(request.promptTokenIDs)).utf8))
+    }
+}
+
+extension QwenLayerStageGenerationAgreement {
+    /// The same agreement after both ranks agreed a prefix plan for its
+    /// request. The descriptor and fingerprint are unchanged: the plan only
+    /// moves where prefill frames start and end, and every frame packet
+    /// carries its offsets, which both ranks check against this request.
+    func planned(_ planned: QwenLayerStageGenerationRequest) throws -> QwenLayerStageGenerationAgreement {
+        guard planned.fingerprint == request.fingerprint, planned.promptTokenIDs == request.promptTokenIDs else {
+            throw ProbeError("A prefix plan belongs to a different request")
+        }
+        var copy = self
+        copy.request = planned
+        return copy
     }
 }
 

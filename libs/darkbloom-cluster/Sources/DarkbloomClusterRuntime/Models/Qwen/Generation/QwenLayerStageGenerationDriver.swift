@@ -15,11 +15,12 @@ import MLX
 func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
-    collective: Collective, onCommittedToken: (Int) throws -> Bool,
+    collective: Collective, prefixCache: QwenStagePrefixCache? = nil, onCommittedToken: (Int) throws -> Bool,
     check: () throws -> Void
 ) throws -> QwenLayerStageGenerationResult {
     try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, plan: plan, agreement: agreement,
-        collective: collective, diagnostics: nil, onCommittedToken: onCommittedToken, check: check).result
+        collective: collective, diagnostics: nil, prefixCache: prefixCache, onCommittedToken: onCommittedToken,
+        check: check).result
 }
 
 /// Explicit diagnostic entry for an already owned reservation. The owner must
@@ -30,7 +31,7 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, resources makeResources: () throws -> QwenGenerationDiagnosticResources,
-    phaseSplitFault: QwenPhaseSplitFault? = nil,
+    phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> QwenGenerationDiagnosticEvidence {
     let resources = try MLX.withError { nativeError in
@@ -51,7 +52,7 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     defer { capture.discard() }
     let (result, handedOver) = try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage,
         plan: plan, agreement: agreement,
-        collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault,
+        collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault, prefixCache: prefixCache,
         onCommittedToken: onCommittedToken, check: check)
     // The core has validated both retirement acknowledgements and its final
     // native error check. Only CPU values are assembled outside that scope.
@@ -80,9 +81,9 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 
 private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage?,
-    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+    plan: QwenLayerStagePlan, agreement unplannedAgreement: QwenLayerStageGenerationAgreement,
     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
-    phaseSplitFault: QwenPhaseSplitFault? = nil,
+    phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, handedOver: QwenPhaseSplitRecordedState?) {
     try MLX.withError { nativeError in
@@ -92,15 +93,15 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             try nativeError.check()
         }
         do {
-            try requireGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+            try requireGenerationSource(loaded: loaded, plan: plan, agreement: unplannedAgreement, collective: collective)
             // A phase-split rank 1 must already hold the producer stage of this
             // exact source; a pipeline rank must not be handed one.
-            if agreement.phaseSplit != nil, collective.rank == 1 {
+            if unplannedAgreement.phaseSplit != nil, collective.rank == 1 {
                 guard let producerStage, producerStage.stageIndex == 0,
                       producerStage.plan.fingerprint == plan.fingerprint,
-                      producerStage.receipt.stagePlanSHA256 == agreement.descriptor.stageFingerprints[0],
-                      producerStage.receipt.storageCommitmentSHA256 == agreement.descriptor.storageCommitmentSHA256,
-                      producerStage.receipt.verifiedAggregateSHA256 == agreement.descriptor.artifactAggregateSHA256 else {
+                      producerStage.receipt.stagePlanSHA256 == unplannedAgreement.descriptor.stageFingerprints[0],
+                      producerStage.receipt.storageCommitmentSHA256 == unplannedAgreement.descriptor.storageCommitmentSHA256,
+                      producerStage.receipt.verifiedAggregateSHA256 == unplannedAgreement.descriptor.artifactAggregateSHA256 else {
                     throw ProbeError("Phase-split rank1 does not hold the agreed producer stage")
                 }
             } else if producerStage != nil {
@@ -108,15 +109,25 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             }
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
-                material: { .generation(agreementFingerprint: agreement.fingerprint) },
+                material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
                 disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
+            // Prefix plan, before the first forward: both ranks agree what to
+            // reuse, restore it, and confirm; anything else prefills from zero
+            // on both ranks.
+            var session: QwenLayerStageSession?
+            let prefix: QwenStagePrefixSummary
+            let agreement: QwenLayerStageGenerationAgreement
+            do {
+                let planned = try agreeQwenStagePrefixPlan(cache: prefixCache, loaded: loaded, plan: plan,
+                    agreement: unplannedAgreement, collective: collective, check: checked)
+                agreement = planned.agreement; session = planned.session; prefix = planned.summary
+            }
+            diagnostics?.request = agreement.request
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
-            var session: QwenLayerStageSession?
             var producer: QwenGenerationLookaheadProducer?
             do {
-                let owned = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request)
-                session = owned
+                let owned = session!
                 if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
                     producer = try .init(request: agreement.request)
                 }
@@ -232,6 +243,19 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
+                // Both ranks retired cleanly: only now do this rank's captured
+                // frontiers become reusable. A failed request stores nothing.
+                var stored: [Int] = []
+                if let prefixCache, prefixCache.enabled {
+                    let states = owned.capturedPrefixStates()
+                    prefixCache.insert(scope: qwenStagePrefixScope(agreement), tokens: agreement.request.promptTokenIDs,
+                        states: states)
+                    stored = states.map(\.committedTokens)
+                }
+                owned.discardCapturedPrefix()
+                let prefixSummary = QwenStagePrefixSummary(reusedPromptTokens: prefix.reusedPromptTokens,
+                    agreedPromptTokens: prefix.agreedPromptTokens, splitFinalToken: prefix.splitFinalToken,
+                    storedFrontiers: stored, cacheEntries: prefixCache?.count ?? 0)
                 return (QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
@@ -240,13 +264,15 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                         : .init(policy: agreement.prefillPolicy.rawValue, rank: collective.rank,
                             preparedAheadFrames: producer?.preparedAheadFrames ?? 0,
                             maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0),
-                    phaseSplit: handedOver?.summary), handedOver?.recorded)
+                    phaseSplit: handedOver?.summary, prefixCache: prefixCache == nil ? nil : prefixSummary),
+                    handedOver?.recorded)
             } catch {
                 // Prefer a recorded native fault before invoking any cleanup. The
                 // normal withError epilogue is skipped when its body throws Swift.
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
                 producer?.cancel()
+                session?.discardCapturedPrefix()
                 diagnostics?.discard()
                 control.cancel(); transport.retire()
                 do { try session?.cancel() }
@@ -414,4 +440,68 @@ private func agreeGenerationToken(row: MLXArray?, boundary: QwenLayerStageGenera
         try transport.acknowledgeToken(packet, check: check)
     }
     return packet
+}
+
+/// The agreed prefix plan and this rank's session for it.
+private struct QwenStagePrefixPlanOutcome {
+    let agreement: QwenLayerStageGenerationAgreement
+    let session: QwenLayerStageSession
+    let summary: QwenStagePrefixSummary
+}
+
+/// Exchange 1: each rank offers the frontiers it holds for this prompt; both
+/// derive the same choice. Each rank restores that frontier into a new
+/// session. Exchange 2: both confirm the choice, the key and the restore;
+/// unless all agree, both ranks discard what they restored and prefill from
+/// zero. Both exchanges run whether or not a cache exists, so the two ranks
+/// always take the same steps.
+private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: LoadedQwenLayerStage,
+    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement, collective: Collective,
+    check: () throws -> Void
+) throws -> QwenStagePrefixPlanOutcome {
+    let request = agreement.request, scope = qwenStagePrefixScope(agreement)
+    let enabled = cache?.enabled ?? false
+    let local = QwenStagePrefixOffer(enabled: enabled, frontiers: enabled
+        ? cache!.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1) : [])
+    let peer = QwenStagePrefixOffer(words: try exchangeQwenStagePrefixWords(collective: collective,
+        words: local.words, check: check), promptCount: request.promptCount)
+    let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount)
+    var restoredSession: QwenLayerStageSession?
+    var key: String?
+    if choice.reusedPrefix > 0, let cache,
+       let state = cache.state(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) {
+        key = QwenStagePrefixCache.key(scope: scope, tokens: request.promptTokenIDs[0..<choice.reusedPrefix])
+        do {
+            let planned = try request.planned(reusedPrefix: choice.reusedPrefix, splitFinalToken: choice.splitFinalToken)
+            restoredSession = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: planned,
+                adopting: state.adopted)
+        } catch {
+            // This rank could not restore; the confirmation says so and both
+            // ranks prefill from zero. A native fault still surfaces below.
+            log("darkbloom-prefix-v1 rank=\(collective.rank) restore-failed frontier=\(choice.reusedPrefix): \(error)")
+            restoredSession = nil
+        }
+        try check()
+    }
+    let confirmation = QwenStagePrefixConfirmation(choice: choice,
+        restored: choice.reusedPrefix == 0 || restoredSession != nil, key: key)
+    let peerConfirmation = QwenStagePrefixConfirmation(words: try exchangeQwenStagePrefixWords(collective: collective,
+        words: confirmation.words, check: check))
+    let settled = QwenStagePrefixConfirmation.settle(local: confirmation, peer: peerConfirmation)
+    if settled.reusedPrefix != choice.reusedPrefix || restoredSession == nil {
+        try restoredSession?.cancel(); restoredSession = nil
+    }
+    let plannedRequest = try request.planned(reusedPrefix: settled.reusedPrefix, splitFinalToken: settled.splitFinalToken)
+    let plannedAgreement = try agreement.planned(plannedRequest)
+    let session = try restoredSession
+        ?? QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: plannedRequest)
+    if enabled, let cache, settled.splitFinalToken {
+        session.prefixCaptureFrontiers = plannedRequest.prefixCaptureFrontiers(stride: cache.stride(chunkSize: request.chunkSize))
+    }
+    if settled.reusedPrefix > 0 || choice.reusedPrefix > 0 {
+        log("darkbloom-prefix-v1 rank=\(collective.rank) agreed=\(choice.reusedPrefix) reused=\(settled.reusedPrefix) prompt=\(request.promptCount)")
+    }
+    return .init(agreement: plannedAgreement, session: session, summary: .init(
+        reusedPromptTokens: settled.reusedPrefix, agreedPromptTokens: choice.reusedPrefix,
+        splitFinalToken: settled.splitFinalToken, storedFrontiers: [], cacheEntries: cache?.count ?? 0))
 }

@@ -70,6 +70,9 @@ final class DistributedRequestState: @unchecked Sendable {
     let reservedAt: ContinuousClock.Instant
     var deadlineTask: Task<Void, Never>?
     var completionTokens = 0
+    /// What both peers reported of their prefix caches for this request.
+    var reusedPromptTokens = 0
+    var storedPromptFrontiers: [Int] = []
     var terminal: CBv2FinishReason?
     var cancelSent = false
     /// The request is ending with the clean client-stop handshake because its

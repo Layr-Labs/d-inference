@@ -10,7 +10,10 @@ private final class Received: @unchecked Sendable {
     private var finished: CBv2FinishReason?
     private var retired = false
     func accept(_ event: DistributedResidentEvent) -> Bool {
-        lock.withLock { switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value }; return true }
+        lock.withLock {
+            switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value; case .promptCache: break }
+            return true
+        }
     }
     func retire() { lock.withLock { retired = true } }
     var isRetired: Bool { lock.withLock { retired } }

@@ -48,6 +48,47 @@ struct DistributedCBv2EngineTests {
         await engine.shutdown()
     }
 
+    /// The peers' prefix report: a receipt is accepted, the reuse is the
+    /// usage's hit, and the frontiers both peers hold reach the publication
+    /// handler with the receipt. A report never changes the token stream.
+    @Test func peerPrefixReuseIsReportedInUsageAndPublished() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        let published = DistributedPublishedFrontiers()
+        engine.setResidentPrefixPublicationHandler { receipt, frontiers in published.record(receipt, frontiers) }
+        var request = distributedTestRequest(); request.promptTokens = [1, 2, 3, 1, 2]
+        request.prefixCacheReceiptID = .init(77)
+        let stream = try engine.submit(request)
+        let lease = owner.last
+        #expect(lease.send(.token(4)))
+        #expect(!lease.send(.token(5)))
+        // After the last token, before the finish: the report still counts.
+        lease.send(.promptCache(reused: 4, stored: [2, 4]))
+        lease.acknowledge()
+        let events = await distributedCollect(stream)
+        #expect(distributedText(events) == "t4t5")
+        let usage = distributedTerminal(events)?.1
+        #expect(usage?.prefixCacheHitTokens == 4 && usage?.prefixCachePrefillTokensSaved == 4)
+        #expect(usage?.prefixCacheOutcome == .hit && usage?.prefixCacheTier == .resident)
+        #expect(published.values == [(77, [2, 4])].map { "\($0.0):\($0.1)" })
+        await engine.shutdown()
+    }
+
+    @Test func aColdRequestReportsNoHitAndPublishesNothingWithoutFrontiers() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        let published = DistributedPublishedFrontiers()
+        engine.setResidentPrefixPublicationHandler { receipt, frontiers in published.record(receipt, frontiers) }
+        var request = distributedTestRequest(); request.prefixCacheReceiptID = .init(78)
+        let stream = try engine.submit(request)
+        owner.last.send(.token(4)); owner.last.send(.token(5))
+        owner.last.acknowledge()
+        let usage = distributedTerminal(await distributedCollect(stream))?.1
+        #expect(usage?.prefixCacheHitTokens == 0 && usage?.prefixCacheOutcome != .hit)
+        #expect(published.values.isEmpty)
+        await engine.shutdown()
+    }
+
     @Test func stopTokenAndSplitStopStringDoNotLeakText() async throws {
         for stopToken in [true, false] {
             let owner = DistributedTestOwner()
@@ -122,7 +163,6 @@ struct DistributedCBv2EngineTests {
         request = distributedTestRequest(); request.maxTokens = 129; requests.append(request)
         request = distributedTestRequest(); request.maxTokens = Int.max; requests.append(request)
         request = distributedTestRequest(); request.stopStrings = [""]; requests.append(request)
-        request = distributedTestRequest(); request.prefixCacheReceiptID = .init(2); requests.append(request)
         for invalid in requests {
             #expect(throws: DistributedEngineError.self) { try engine.submit(invalid) }
         }
@@ -252,4 +292,14 @@ struct DistributedCBv2EngineTests {
         await bridge.shutdown()
         #expect(owner.shutdownCount == 1)
     }
+}
+
+
+final class DistributedPublishedFrontiers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    func record(_ receipt: CBv2RequestID, _ frontiers: [Int]) {
+        lock.withLock { recorded.append("\(receipt.raw):\(frontiers)") }
+    }
+    var values: [String] { lock.withLock { recorded } }
 }

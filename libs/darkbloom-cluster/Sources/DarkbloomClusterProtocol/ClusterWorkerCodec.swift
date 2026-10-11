@@ -29,6 +29,8 @@ public enum ClusterWorkerCodec {
         case .committedToken(let ordinal, let token, let committed):
             value["kind"] = "committedToken"; value["ordinal"] = ordinal
             value["tokenID"] = token; value["committedTokens"] = committed
+        case .promptCache(let reused, let stored):
+            value["kind"] = "promptCache"; value["reusedTokens"] = reused; value["storedFrontiers"] = stored
         case .finished(let reason): value["kind"] = "finished"; value["reason"] = reason.rawValue
         case .failed(let reason): value["kind"] = "failed"; value["reason"] = reason.rawValue
         case .retired(let outcome): value["kind"] = "retired"; value["outcome"] = outcome.rawValue
@@ -64,6 +66,7 @@ public enum ClusterWorkerCodec {
         case "admitted": event = .admitted(reservedBytes: try r.int("reservedBytes"))
         case "refused": event = .refused(try r.enumeration("reason"))
         case "committedToken": event = .committedToken(ordinal: try r.int("ordinal"), tokenID: try r.int("tokenID"), committedTokens: try r.int("committedTokens"))
+        case "promptCache": event = .promptCache(reusedTokens: try r.int("reusedTokens"), storedFrontiers: try r.ints("storedFrontiers"))
         case "finished": event = .finished(try r.enumeration("reason"))
         case "failed": event = .failed(try r.enumeration("reason"))
         case "retired": event = .retired(try r.enumeration("outcome"))

@@ -102,6 +102,7 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
                 if reason == .clientStop, !consumerStop.requested { return emit(.finished(.cancelled)) }
                 return emit(.finished(reason == .length ? .length : .stop))
             case .failed(let message): return emit(.finished(.error(message)))
+            case .promptCache(let reused, let stored): return emit(.promptCache(reused: reused, stored: stored))
             }
         }
     }

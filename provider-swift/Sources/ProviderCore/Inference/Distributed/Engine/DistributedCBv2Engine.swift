@@ -18,6 +18,14 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     var invalidated = false
     var stopping = false
     var shutdownTask: Task<Void, Never>?
+    /// Receives a cleanly finished request's receipt and the prompt
+    /// frontiers both peers now hold; the bridge turns them into resident
+    /// prefix evidence for routing. Set once, before serving.
+    var residentPrefixPublication: ((CBv2RequestID, [Int]) -> Void)?
+
+    public func setResidentPrefixPublicationHandler(_ handler: @escaping (CBv2RequestID, [Int]) -> Void) {
+        onQueue { residentPrefixPublication = handler }
+    }
 
     /// On failure, the caller still owns (and must close) owner. On success this
     /// engine owns it exclusively until shutdown() acknowledges model retirement.

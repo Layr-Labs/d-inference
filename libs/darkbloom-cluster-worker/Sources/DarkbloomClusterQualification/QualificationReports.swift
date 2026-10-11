@@ -375,6 +375,14 @@ public struct PairRepetitionTiming: Codable, Equatable, Sendable {
     public var tokens: Int
     public var selectedTokenIDsSHA256: String
     public var finishReason: String
+    /// Prompt tokens both ranks restored from their prefix caches (nil: none).
+    public var reusedPromptTokens: Int?
+    /// Prompt frontiers both ranks kept after this request.
+    public var storedPromptFrontiers: [Int]?
+    /// The request's prompt length and its prompt digest, for a session that
+    /// runs more than one request file.
+    public var promptTokens: Int?
+    public var promptTokenIDsSHA256: String?
 
     public init(requestID: String, admissionSeconds: Double, firstTokenSeconds: Double, prefillTokensPerSecond: Double,
                 decodeSeconds: Double, decodeTokensPerSecond: Double?, totalSeconds: Double,

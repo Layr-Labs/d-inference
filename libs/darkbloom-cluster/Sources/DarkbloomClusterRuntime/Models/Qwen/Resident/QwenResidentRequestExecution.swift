@@ -22,7 +22,7 @@ enum QwenResidentRequestExecution {
                     qualificationFault: QwenPhaseSplitFault? = nil,
                     admission: any LayerStageResidentAdmission,
                     collective: Collective, control: QwenResidentControl,
-                    reserved: QwenResidentReservation,
+                    reserved: QwenResidentReservation, prefixCache: QwenStagePrefixCache? = nil,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
     ) throws -> (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) {
         guard (generationMode == .phaseSplit) == (phaseSplitAllowance != nil),
@@ -55,7 +55,9 @@ enum QwenResidentRequestExecution {
             try control.check(deadline: reserved.deadline)
             let now = DispatchTime.now().uptimeNanoseconds
             if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                try requireLive(reserved, phaseSplit: phaseSplitAllowance)
+                // Kept prefixes give way to the request's own admission.
+                if let prefixCache { try prefixCache.yieldingMemory { try requireLive(reserved, phaseSplit: phaseSplitAllowance) } }
+                else { try requireLive(reserved, phaseSplit: phaseSplitAllowance) }
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
             }
             try control.check(deadline: reserved.deadline)
@@ -84,14 +86,14 @@ enum QwenResidentRequestExecution {
                 resources: {
                     try stage.diagnosticResources(plan: admission.plan, request: reserved.request,
                         rank: collective.rank, requestAllowance: reserved.allowance)
-                }, phaseSplitFault: fault,
+                }, phaseSplitFault: fault, prefixCache: prefixCache,
                 onCommittedToken: committedToken, check: check)
             try charge.requireCapture(recorded.captureBudget)
             evidence = recorded; result = recorded.execution
         } else {
             result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
                 producerStage: producerStage?.loaded,
-                plan: admission.plan, agreement: agreement, collective: collective,
+                plan: admission.plan, agreement: agreement, collective: collective, prefixCache: prefixCache,
                 onCommittedToken: committedToken, check: check)
             evidence = nil
         }
@@ -101,10 +103,16 @@ enum QwenResidentRequestExecution {
         }
         // Sizes and durations of the hand-off, for whoever launched this worker.
         if let summary = result.phaseSplit { log(summary.diagnosticLine(requestID: reserved.request.requestID)) }
+        if let prefix = result.prefixCache {
+            log("darkbloom-prefix-v1 rank=\(collective.rank) request=\(reserved.request.requestID.uuidString.lowercased())"
+                + " prompt=\(reserved.request.promptCount) reused=\(prefix.reusedPromptTokens)"
+                + " stored=\(prefix.storedFrontiers.map(String.init).joined(separator: ",")) entries=\(prefix.cacheEntries)")
+        }
         let completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
             committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
-            bothRequestStatesRetired: true)
+            bothRequestStatesRetired: true, reusedPromptTokens: result.prefixCache?.reusedPromptTokens ?? 0,
+            storedPromptFrontiers: result.prefixCache?.storedFrontiers ?? [])
         return (completion, evidence)
     }
 }

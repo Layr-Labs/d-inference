@@ -1,6 +1,7 @@
 import Foundation
 import Hummingbird
 import MLXLMCommon
+import ProviderCoreFoundation
 
 extension DistributedLocalServer {
     func requirePreparing(_ target: DistributedLocalServerGeneration, phase expected: DistributedLocalServerPhase) throws {
@@ -29,11 +30,19 @@ extension DistributedLocalServer {
               lifetime > DispatchTime.now().uptimeNanoseconds else {
             throw DistributedLocalServerError.lifetimeExpired
         }
+        // The bridge's prefix store: receipts plus the frontiers both peers
+        // report holding. Absent (no reuse advertised) when the prompt contract
+        // cannot be identified; the peers still reuse and report usage.
+        let contract = try? PromptContractIdentity.compute(modelDirectory: session.model.directory)
+        let evidence = contract.flatMap {
+            ResidentPrefixCacheEvidence(modelId: session.model.publicModelID,
+                modelAggregateHash: session.expectedIdentity.artifactSHA256, promptContractID: $0)
+        }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(
             owner: session, expectedIdentity: session.expectedIdentity,
             publicModelID: session.model.publicModelID, profile: session.profile,
             tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
-            firstTokenBudgetPolicy: firstTokenBudgetPolicy)
+            firstTokenBudgetPolicy: firstTokenBudgetPolicy, residentPrefixEvidence: evidence)
         return lifetime
     }
 

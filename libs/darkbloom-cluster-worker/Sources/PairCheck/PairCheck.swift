@@ -160,8 +160,8 @@ import Foundation
             "--lifetime-seconds", "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
-            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank"]
-        let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix"])
+            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache"]
+        let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
             return value
@@ -213,6 +213,14 @@ import Foundation
             repetitions: try integer(fields, "--repetitions") ?? 1,
             workerTransport: fields["--transport"]?.first ?? PairConfiguration.jacclTransport, sensitive: sensitive,
             localRank: try integer(fields, "--local-rank") ?? 0)
+        if let cache = fields["--prefix-cache"]?.first {
+            guard ["on", "off"].contains(cache) else { throw Failure("--prefix-cache takes on or off") }
+            configuration.prefixCacheOff = cache == "off"
+        }
+        if let follow = fields["--follow-request"] {
+            configuration.followRequests = try follow.map { try QualificationRequest.read(URL(fileURLWithPath: $0)) }
+            try configuration.validate()
+        }
         if let fault = fields["--fault"]?.first {
             let parts = fault.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, let rank = Int(parts[0]) else { throw Failure("--fault takes RANK:name=value") }
@@ -268,7 +276,9 @@ import Foundation
         for (index, timing) in (report.timing.repetitions ?? []).enumerated() {
             lines.append(String(format: "request %d: first token %.3f s (%.0f prompt tok/s), decode %.1f tok/s, total %.3f s",
                 index + 1, timing.firstTokenSeconds, timing.prefillTokensPerSecond,
-                timing.decodeTokensPerSecond ?? 0, timing.totalSeconds))
+                timing.decodeTokensPerSecond ?? 0, timing.totalSeconds)
+                + ", prompt \(timing.promptTokens.map(String.init) ?? "?"), reused \(timing.reusedPromptTokens ?? 0)"
+                + ", tokens \(timing.tokens) \(timing.selectedTokenIDsSHA256.prefix(16))")
         }
         if let agree = report.repetitionsAgreeOnTokens { lines.append("repeated requests select the same tokens: \(agree)") }
         for rank in report.ranks { for line in rank.runtimeLines ?? [] { lines.append("\(rank.role): \(line)") } }

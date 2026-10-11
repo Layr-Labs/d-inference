@@ -326,6 +326,40 @@ struct PrefixCacheContractTests {
         #expect(QwenStagePrefixCache(enabled: false).captureLimit(scope: scope, tokens: prompt, chunkSize: 512) == 0)
     }
 
+    /// Once a capture of the stage was measured, the reservation charges the
+    /// speculative history at the measured cost; the session must keep its
+    /// capture by that same figure. With the session's conservative estimate
+    /// (twice the bf16 rows) a one-frontier charge (a short prompt, or a hit
+    /// in its prompt's last stride) was too small for even the split frontier.
+    @Test func aCaptureChargedAtTheMeasuredCostKeepsItsSplitFrontier() {
+        // 9B rank 1 (cut 4) at 5,120 tokens as measured on hardware (f2a): 28,672 B a token of attention,
+        // 45,072,384 B a frontier, 8,199 B a token of history (bf16 rows and an Int32 token).
+        let measured = QwenStagePrefixCaptureCost(attentionBytesPerToken: 28_672, recurrentBytesPerFrontier: 45_072_384,
+            historyBytesPerToken: 8_199)
+        let estimate = 4_096 * 4 + 4
+        let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 8 << 30)
+        #expect(cache.historyBytesPerToken(estimate: estimate) == estimate)
+        cache.record(measured)
+        #expect(cache.historyBytesPerToken(estimate: estimate) == 8_199)
+        // The session measures attention and recurrent state itself (the same stage, the same figures)
+        // and takes the history figure from the cache.
+        let session = QwenStagePrefixCaptureCost(attentionBytesPerToken: 28_672, recurrentBytesPerFrontier: 45_072_384,
+            historyBytesPerToken: cache.historyBytesPerToken(estimate: estimate))
+        let stride = cache.stride(chunkSize: 512)
+        func planned(_ count: Int, after held: Int) -> [Int] {
+            Array(Swift.stride(from: (held / stride + 1) * stride, to: count - 1, by: stride)) + [count - 1]
+        }
+        // A short prompt: one frontier, its split frontier.
+        let short = cache.captureLimit(promptCount: 400, chunkSize: 512)
+        #expect(session.kept(planned(400, after: 0), limit: short, maximum: 32) == [399])
+        // A hit in the prompt's last stride: one frontier after the reused prefix.
+        let hit = cache.captureLimit(promptCount: 10_240, chunkSize: 512, heldFrontier: 9_900)
+        #expect(session.kept(planned(10_240, after: 9_900), limit: hit, maximum: 32) == [10_239])
+        // A cold prompt keeps its whole plan within its charge.
+        let cold = cache.captureLimit(promptCount: 5_120, chunkSize: 512)
+        #expect(session.kept(planned(5_120, after: 0), limit: cold, maximum: 32) == Set(planned(5_120, after: 0)))
+    }
+
     /// Models stay loaded until unloaded, so the budget follows the room in
     /// both directions: a load during a memory dip does not keep the cache
     /// small (and prefix reuse off on the pair) for as long as it stays loaded.

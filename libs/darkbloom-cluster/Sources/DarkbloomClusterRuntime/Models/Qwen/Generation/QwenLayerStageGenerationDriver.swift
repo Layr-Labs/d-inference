@@ -142,8 +142,11 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             if let prefixCache, prefixCache.enabled, let owned = session, !owned.prefixCaptureFrontiers.isEmpty {
                 owned.prefixCaptureLimitBytes = captureLimit
                 owned.prefixCaptureMaximumFrontiers = prefixCache.entryLimit
-                // Conservative until measured: F32 rows and an Int32 token.
-                owned.prefixHistoryBytesPerToken = decoder == nil ? 0 : agreement.request.profile.hiddenSize * 4 + 4
+                // The history cost the reservation charged: measured once a capture
+                // of this stage was, conservative before (F32 rows and an Int32
+                // token), so the session keeps what its charge was computed for.
+                owned.prefixHistoryBytesPerToken = decoder == nil ? 0
+                    : prefixCache.historyBytesPerToken(estimate: agreement.request.profile.hiddenSize * 4 + 4)
                 prefixCache.makeRoom(forCapture: captureLimit ?? 0)
             }
             if let decoder, let prefixCache, prefixCache.enabled {

@@ -164,7 +164,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// Most bytes a request may capture, charged in its reservation: its
     /// whole capture plan at the measured cost, within the budget; the budget
     /// itself until a capture of this stage was measured. Zero when off.
-    func captureLimit(promptCount: Int, chunkSize: Int) -> Int {
+    func captureLimit(promptCount: Int, chunkSize: Int, heldFrontier: Int = 0) -> Int { // VERIFY STUB: held prefix ignored
         guard enabled, promptCount >= 2 else { return 0 }
         return lock.withLock {
             guard let measured else { return budget }
@@ -187,6 +187,9 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
             budget = target; evictLocked(reserving: 0); return true
         }
     }
+
+    // VERIFY STUB (failing-first run only): old behaviour, the session always used the estimate.
+    func historyBytesPerToken(estimate: Int) -> Int { estimate }
 
     /// The capture limit the runtime charged in the current reservation,
     /// handed to that request's stage session once (one request at a time a

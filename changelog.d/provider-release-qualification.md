@@ -1,0 +1,4 @@
+### Independent provider release qualification
+
+- Prepare exact signed-bundle checks on macOS 27 and 26, followed by protected-tag and expected-commit dispatch into the internal platform's hardware qualification workflow and a separate Linux receipt signer before publication. Retain candidate and report producer-attempt provenance across retries; the automatic path uses no admin key and never publishes internal source. Lifecycle evidence covers idle restart, reconnect and post-restart inference, not continuing renewal or in-flight drain and cancellation.
+- Require all seven evidence gates, including real tamper/replay and security-transition receipts from an independent hardware service. Activation requires provisioning and validating the hardware, receipt issuer, scoped credentials and coordinator endpoint. Existing production approvals remain until an approved operator configures release-specific protections.

@@ -62,10 +62,9 @@ final class NativePairMemberSession: @unchecked Sendable {
     /// is ready, or when its data plane is not keyed).
     var dataPlaneObservation: (encrypted: Bool, peerVerified: Bool)? {
         condition.lock(); let live = launched && !stopped, endpoint = endpoint; condition.unlock()
-        guard live, endpoint != nil else { return nil }
-        // This build's worker readiness carries no data-plane record (S16's
-        // worker adds it): its data plane is plaintext, and it says so.
-        return (false, false)
+        guard live, let endpoint else { return nil }
+        let plane = endpoint.readiness?.dataPlane
+        return (plane?.protection == ClusterWorkerDataPlane.encrypted, plane?.encryptedAndVerified == true)
     }
     /// Whether a dropped control connection leaves this session in its grace:
     /// committed, keys exchanged, owner launched, not stopped.

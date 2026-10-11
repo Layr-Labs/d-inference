@@ -3,9 +3,10 @@ import MLX
 
 /// Shared fixed-shape completed exchange. It owns no request state or clock.
 /// The material factory runs at the former request digest-construction point.
+/// `scope` names the record on a keyed data plane (S16); ignored in the clear.
 func requireQwenLongPrefillReadinessDigest(collective: Collective,
     material: () -> QwenLongPrefillReadinessMaterial, disagreementMessage: String,
-    check: () throws -> Void
+    scope: CollectiveRecordScope, check: () throws -> Void
 ) throws -> String {
     guard collective.size == 2, (0..<2).contains(collective.rank) else {
         throw ProbeError("Long prefill readiness requires exactly two admitted ranks")
@@ -18,11 +19,12 @@ func requireQwenLongPrefillReadinessDigest(collective: Collective,
             let array = MLXArray(values)
             try checked()
             _ = try collective.sendCompleted(array, to: 1 - collective.rank,
-                maximumBytes: 256, check: checked)
+                maximumBytes: 256, scope: scope.part("rank\(collective.rank)"), check: checked)
         }
         func receive() throws -> [Int32] {
             let actual = try collective.receiveCompleted(shape: [64], dtype: .int32,
-                from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
+                from: 1 - collective.rank, maximumBytes: 256, scope: scope.part("rank\(1 - collective.rank)"),
+                check: checked).asArray(Int32.self)
             try checked()
             return actual
         }

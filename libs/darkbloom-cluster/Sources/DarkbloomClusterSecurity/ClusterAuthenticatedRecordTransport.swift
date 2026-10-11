@@ -16,7 +16,8 @@ public final class ClusterAuthenticatedRecordTransport: @unchecked Sendable {
     public let maximumPlaintextBytes: Int
 
     public init(sessionKey: SymmetricKey, binding: ClusterRecordBinding,
-                limits: ClusterRecordLimits, io: any ClusterRecordByteIO) throws {
+                limits: ClusterRecordLimits, io: any ClusterRecordByteIO,
+                rekey: ClusterRecordRekeyPolicy? = nil) throws {
         guard io.worldSize == 2, (0...1).contains(io.localRank) else {
             throw ClusterRecordTransferError.invalidConfiguration
         }
@@ -24,7 +25,7 @@ public final class ClusterAuthenticatedRecordTransport: @unchecked Sendable {
             maximumTransportFrameBytes: io.maximumFrameBytes)
         self.io = io; localRank = io.localRank; maximumFrameBytes = io.maximumFrameBytes
         maximumPlaintextBytes = limits.maximumPlaintextBytes
-        channel = try .init(sessionKey: sessionKey, binding: binding, localRank: io.localRank, limits: limits)
+        channel = try .init(sessionKey: sessionKey, binding: binding, localRank: io.localRank, limits: limits, rekey: rekey)
     }
 
     public var status: ClusterRecordTransportStatus {

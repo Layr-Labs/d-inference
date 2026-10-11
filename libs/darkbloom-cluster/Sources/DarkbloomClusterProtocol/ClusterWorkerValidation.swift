@@ -23,6 +23,11 @@ enum ClusterWorkerValidation {
             && (1...ClusterWorkerLimits.outputTokens).contains(p.maximumOutputTokens)
             && (1...p.maximumPromptTokens).contains(p.maximumChunkTokens)
             && (p.maximumPromptTokens...ClusterWorkerLimits.contextTokens).contains(p.maximumContextTokens), "Invalid worker profile")
+        if let d = value.dataPlane {
+            try workerRequire(d.protection == ClusterWorkerDataPlane.encrypted && hash(d.transcriptSHA256)
+                && d.edgeID.utf8.count == 32 && d.edgeID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                "Invalid worker data plane")
+        }
     }
     static func reservation(_ value: ClusterWorkerReservation) throws {
         try workerRequire(text(value.profileID, maximum: 128)

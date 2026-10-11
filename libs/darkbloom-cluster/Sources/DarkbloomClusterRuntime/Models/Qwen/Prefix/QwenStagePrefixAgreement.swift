@@ -110,7 +110,8 @@ public struct QwenStagePrefixSummary: Equatable, Encodable, Sendable {
 
 /// Both ranks publish their words before either reads its peer's, exactly as
 /// the readiness exchange does. Fixed size; never a variable-length message.
-func exchangeQwenStagePrefixWords(collective: Collective, words: [Int32], check: () throws -> Void) throws -> [Int32] {
+func exchangeQwenStagePrefixWords(collective: Collective, words: [Int32], scope: CollectiveRecordScope,
+                                  check: () throws -> Void) throws -> [Int32] {
     guard collective.size == 2, (0..<2).contains(collective.rank), words.count == 64 else {
         throw ProbeError("Prefix agreement requires exactly two ranks and a fixed message")
     }
@@ -119,11 +120,13 @@ func exchangeQwenStagePrefixWords(collective: Collective, words: [Int32], check:
         func send() throws {
             let array = MLXArray(words)
             try checked()
-            _ = try collective.sendCompleted(array, to: 1 - collective.rank, maximumBytes: 256, check: checked)
+            _ = try collective.sendCompleted(array, to: 1 - collective.rank, maximumBytes: 256,
+                scope: scope.part("rank\(collective.rank)"), check: checked)
         }
         func receive() throws -> [Int32] {
             let actual = try collective.receiveCompleted(shape: [64], dtype: .int32,
-                from: 1 - collective.rank, maximumBytes: 256, check: checked).asArray(Int32.self)
+                from: 1 - collective.rank, maximumBytes: 256, scope: scope.part("rank\(1 - collective.rank)"),
+                check: checked).asArray(Int32.self)
             try checked()
             return actual
         }

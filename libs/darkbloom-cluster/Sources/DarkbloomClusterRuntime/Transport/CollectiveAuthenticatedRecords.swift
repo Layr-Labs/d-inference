@@ -3,18 +3,24 @@ import DarkbloomClusterSecurity
 import Foundation
 import MLX
 
-/// Model-independent native adapter. No constructor establishes peer authority:
-/// supplied keys/transcripts need separate coordinator membership and fresh-key
-/// establishment. This source candidate is not installed or enabled by config.
+/// The keyed data plane of one Collective (S16). Every array a rank sends to
+/// its peer leaves as one or more authenticated, encrypted records of the
+/// record transport (AES-256-GCM, directional keys, rekeyed by count, bytes
+/// and age) and is reconstructed only after every record opened. The keys come
+/// from the pinned exchange (`ClusterDataPlaneKeyExchange`); this type never
+/// sees them. Any failure poisons the transport: there is no plaintext retry.
 public final class CollectiveAuthenticatedRecords {
+    /// One record's plaintext at most; larger arrays are carried in chunks.
+    public static let chunkBytes = 8 * 1024 * 1024
     private let bytes: CollectiveRecordByteIO
     private let records: ClusterAuthenticatedRecordTransport
 
-    public init(collective: Collective, sessionKey: SymmetricKey, binding: ClusterRecordBinding,
-         limits: ClusterRecordLimits, maximumFrameBytes: Int) throws {
-        let io = try CollectiveRecordByteIO(collective: collective, maximumFrameBytes: maximumFrameBytes)
-        self.bytes = io
-        self.records = try .init(sessionKey: sessionKey, binding: binding, limits: limits, io: io)
+    /// The transport a confirmed key exchange made over `io`.
+    init(transport: ClusterAuthenticatedRecordTransport, io: CollectiveRecordByteIO) throws {
+        guard transport.localRank == io.localRank, transport.maximumFrameBytes == io.maximumFrameBytes else {
+            throw ProbeError("Keyed data plane differs from its byte endpoint")
+        }
+        bytes = io; records = transport
     }
 
     public var status: ClusterRecordTransportStatus { records.status }
@@ -22,78 +28,64 @@ public final class CollectiveAuthenticatedRecords {
     public func maximumNativeFrameAllocation(for length: ClusterRecordTransferLength) throws -> Int {
         try bytes.maximumNativeFrameAllocation(for: length)
     }
-    public func send(_ data: Data, expecting expected: ClusterRecordTransferExpectation,
-              check: () throws -> Void) throws {
-        try records.send(data, expecting: expected, check: check)
-    }
-    public func receive(expecting expected: ClusterRecordTransferExpectation,
-                 check: () throws -> Void) throws -> Data {
-        try records.receive(expecting: expected, check: check)
-    }
 
-    /// Keeps native dtype bytes unchanged. No payload is placed in AAD; only
-    /// independently expected shape/dtype and the caller's metadata digest.
-    public func sendArray(_ input: MLXArray, context: ClusterRecordContext,
-                   expectedShape: [Int], expectedDType: DType,
+    /// Native dtype bytes unchanged; shape, dtype, chunk index and length are
+    /// bound in each record's authenticated data with the caller's scope.
+    func sendArray(_ input: MLXArray, scope: CollectiveRecordScope, maximumBytes: Int,
                    check: () throws -> Void) throws {
         do {
             func checked() throws {
                 try check()
                 guard records.status.active else { throw ClusterRecordTransferError.inactive }
             }
-            let (geometry, expectation) = try arrayExpectation(context: context,
-                shape: expectedShape, dtype: expectedDType)
+            let geometry = try CollectivePointToPointShape(shape: input.shape, dtype: input.dtype,
+                maximumBytes: maximumBytes)
             try geometry.validateMetadata(input)
             try checked()
             let plaintext = try CollectivePointToPoint.copyCompletedBytes(input,
                 maximumBytes: geometry.byteCount, check: checked)
-            try records.send(plaintext, expecting: expectation, check: checked)
+            let chunks = Self.chunks(geometry.byteCount, size: min(Self.chunkBytes, records.maximumPlaintextBytes))
+            for (index, range) in chunks.enumerated() {
+                let expectation = try scope.expectation(shape: geometry.shape, dtype: geometry.dtype,
+                    chunk: index, of: chunks.count, length: range.count)
+                let base = plaintext.startIndex
+                try records.send(chunks.count == 1 ? plaintext
+                        : plaintext.subdata(in: (base + range.lowerBound)..<(base + range.upperBound)),
+                    expecting: expectation, check: checked)
+            }
+            try checked()
         } catch { records.invalidate(); throw error }
     }
 
-    /// Authentication and post-open cancellation check precede the native array
-    /// constructor. Caller retains its ordinary semantic/frontier/ownership check.
-    public func receiveArray(context: ClusterRecordContext, expectedShape: [Int], expectedDType: DType,
+    /// Every record authenticates and the post-open check passes before the
+    /// native array is constructed. The caller keeps its own semantic checks.
+    func receiveArray(shape: [Int], dtype: DType, scope: CollectiveRecordScope, maximumBytes: Int,
                       check: () throws -> Void) throws -> MLXArray {
         do {
-            let (geometry, expectation) = try arrayExpectation(context: context,
-                shape: expectedShape, dtype: expectedDType)
-            let plaintext = try records.receive(expecting: expectation, check: check)
-            try check()
-            guard records.status.active else { throw ClusterRecordTransferError.inactive }
+            func checked() throws {
+                try check()
+                guard records.status.active else { throw ClusterRecordTransferError.inactive }
+            }
+            let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype, maximumBytes: maximumBytes)
+            let chunks = Self.chunks(geometry.byteCount, size: min(Self.chunkBytes, records.maximumPlaintextBytes))
+            var plaintext = Data()
+            if chunks.count > 1 { plaintext.reserveCapacity(geometry.byteCount) }
+            for (index, range) in chunks.enumerated() {
+                let expectation = try scope.expectation(shape: geometry.shape, dtype: geometry.dtype,
+                    chunk: index, of: chunks.count, length: range.count)
+                let part = try records.receive(expecting: expectation, check: checked)
+                guard part.count == range.count else { throw ClusterRecordTransferError.unexpectedByteCount }
+                if chunks.count == 1 { plaintext = part } else { plaintext.append(part) }
+            }
+            try checked()
             let array = try CollectivePointToPoint.materializeCompletedBytes(plaintext,
-                shape: geometry.shape, dtype: geometry.dtype, maximumBytes: geometry.byteCount,
-                check: {
-                    try check()
-                    guard self.records.status.active else { throw ClusterRecordTransferError.inactive }
-                })
-            try check()
+                shape: geometry.shape, dtype: geometry.dtype, maximumBytes: geometry.byteCount, check: checked)
+            try checked()
             return array
         } catch { records.invalidate(); throw error }
     }
 
-    private func arrayExpectation(context: ClusterRecordContext, shape: [Int], dtype: DType)
-        throws -> (CollectivePointToPointShape, ClusterRecordTransferExpectation) {
-        let geometry = try CollectivePointToPointShape(shape: shape, dtype: dtype,
-            maximumBytes: records.maximumPlaintextBytes)
-        let type: UInt8
-        switch dtype {
-        case .uint8: type = 1
-        case .uint32: type = 2
-        case .int32: type = 3
-        case .float16: type = 4
-        case .bfloat16: type = 5
-        case .float32: type = 6
-        default: throw ProbeError("Encrypted residual has unsupported native dtype")
-        }
-        var metadata = Data("darkbloom/rdma-record/native-array-layout/v1\0".utf8)
-        metadata.append(context.expectationSHA256); metadata.append(type); metadata.append(UInt8(shape.count))
-        for dimension in shape {
-            var value = UInt32(dimension).bigEndian
-            withUnsafeBytes(of: &value) { metadata.append(contentsOf: $0) }
-        }
-        let bound = try ClusterRecordContext(requestID: context.requestID, type: context.type,
-            expectationSHA256: Data(SHA256.hash(data: metadata)))
-        return (geometry, try .init(context: bound, length: .exact(geometry.byteCount)))
+    static func chunks(_ count: Int, size: Int) -> [Range<Int>] {
+        stride(from: 0, to: count, by: size).map { $0..<min(count, $0 + size) }
     }
 }

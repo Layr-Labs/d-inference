@@ -343,7 +343,16 @@ enum ClusterConsoleContent {
         }
         lines.append(.init("Local leader: host \(live.hostPhase), session \(live.session.phase), \(live.ready ? "ready" : "not ready"), admission \(live.admissionAvailable ? "available" : "closed"), port \(live.boundPort), \(live.authenticationConfigured ? "bearer authentication" : "no authentication").",
             live.ready ? .good : .warning, from: .wired("host.local")))
-        lines.append(.init("Epoch \(live.session.observedMembershipEpoch ?? "not observed"); native bootstrap \(live.session.nativeBootstrap.rawValue)\(live.session.nativeBootstrapOwnerAuthenticated ? "" : " (the peer that answers is not authenticated)"); collective progress limit \(live.session.collectiveProgressLimitMilliseconds) ms.", from: source))
+        let dataPlane: String
+        switch (live.session.encryptedDataPlane, live.session.peerVerified) {
+        case (true?, true?): dataPlane = "; data plane encrypted, peer verified against its pin"
+        case (true?, _): dataPlane = "; data plane encrypted, peer not verified"
+        case (false?, _): dataPlane = "; data plane not encrypted"
+        default: dataPlane = ""
+        }
+        let unauthenticated = live.session.nativeBootstrapOwnerAuthenticated || live.session.peerVerified == true
+            ? "" : " (the peer that answers is not authenticated)"
+        lines.append(.init("Epoch \(live.session.observedMembershipEpoch ?? "not observed"); native bootstrap \(live.session.nativeBootstrap.rawValue)\(unauthenticated)\(dataPlane); collective progress limit \(live.session.collectiveProgressLimitMilliseconds) ms.", from: source))
         if let admission = live.session.admission {
             lines.append(.init("Requests served \(admission.requestsServed); keep-warm exchanges \(admission.keepWarmExchanges); \(admission.activeRequest ? "a request is active" : "no active request")\(admission.draining ? "; draining" : "").", from: source))
         }

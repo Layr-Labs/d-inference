@@ -431,6 +431,9 @@ extension ProviderLoop {
             memberConnectionID = nil
             state.refusingNewWork = true
             finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            // The pair slot's engine shuts its owner down, so both ranks end
+            // their work and each member's owner can release its device.
+            await retireClusterPairSlot(reason: "member stopping")
             await coordinator.shutdown()
             if await coordinator.memberRoleFailure { throw ClusterMemberControlError.negotiationFailed }
             return

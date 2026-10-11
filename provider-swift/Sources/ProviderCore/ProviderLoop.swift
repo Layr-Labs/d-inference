@@ -601,6 +601,11 @@ public actor ProviderLoop {
     internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
     internal var memberRegistrationTimer: Task<Void, Never>?
     internal var memberRegistrationWaitID: UUID?
+    /// The pair slot this leader member serves (S09), at most one; nil on a
+    /// follower and whenever the pair is not ready.
+    internal var clusterPairSlot: ClusterPairSlotHandle?
+    /// Keeps the member's published capacity current while a pair slot exists.
+    internal var clusterPairCapacityTask: Task<Void, Never>?
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the

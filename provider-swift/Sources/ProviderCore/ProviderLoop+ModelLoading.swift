@@ -199,7 +199,13 @@ extension ProviderLoop {
         modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false,
         revisionDirectory: URL? = nil, autopilotCommandId: String? = nil
     ) async throws {
-        guard !isClusterMember else { throw ClusterMemberControlError.incompatibleConfiguration }
+        if isClusterMember {
+            // A member loads nothing: only its live pair slot is resident.
+            guard clusterPairSlotServes(modelId) else {
+                throw InferenceError.modelLoadFailed("Cluster pair slot is not serving")
+            }
+            return
+        }
         try requireNativeMiMoProcessWorkAllowed()
         try refuseClosingNativeMiMoOwner(modelId)
         if !revisionUpdate { await waitForMTPUpgrade(modelId) }

@@ -24,6 +24,10 @@ xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloom
 xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterBootstrap \
   -emit-module-path "$task_build/DarkbloomClusterBootstrap.swiftmodule" \
   "$task_package"/Sources/DarkbloomClusterBootstrap/*.swift -o "$task_build/libDarkbloomClusterBootstrap.dylib"
+# The worker's bootstrap configuration parses the committed native start (S07).
+xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name DarkbloomClusterSecurity \
+  -emit-module-path "$task_build/DarkbloomClusterSecurity.swiftmodule" "${task_links[@]}" -lDarkbloomClusterBootstrap \
+  "$task_package"/Sources/DarkbloomClusterSecurity/*.swift -o "$task_build/libDarkbloomClusterSecurity.dylib"
 # The worker configuration checks its model ID and cut against the closed
 # catalog, so the stand-in runtime carries that catalog's actual pure source
 # closure (the one the capability checks compile); no MLX/Cmlx, no model.
@@ -80,7 +84,7 @@ xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -module-name Darkbloo
   -emit-module-path "$task_build/DarkbloomClusterRuntime.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
   "$task_bootstrap_tests/LoadConfiguration.swift" "$task_runtime/Support/ClusterLeaseDeadline.swift" "${task_catalog_paths[@]}" -o "$task_build/libDarkbloomClusterRuntime.dylib"
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" \
-  -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap \
+  -lDarkbloomClusterProtocol -lDarkbloomClusterRuntime -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity \
   "$task_worker/Startup/WorkerConfiguration.swift" "$task_worker/Startup/WorkerBootstrapConfiguration.swift" \
   "$task_bootstrap_tests/WorkerBootstrapAdmissionCheck.swift" -o "$task_build/worker-check"
 "$task_build/worker-check"

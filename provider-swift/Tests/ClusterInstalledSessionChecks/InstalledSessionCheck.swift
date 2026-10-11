@@ -492,10 +492,14 @@ final class EndpointBox: @unchecked Sendable {
         do { try await s.start() }
         catch let error as CheckFailure where error.message == "fabricated second launch refusal" { refused = true }
         try require(refused, "second launch refusal accepted")
-        // The surviving rank's worker is inside the combined bootstrap waiting
-        // for a peer that was never launched; it ends no later than the
-        // bootstrap's own bound (30 s), with its cleanup and release proven.
-        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+36_000_000_000)
+        // The surviving rank's worker was started into the combined bootstrap
+        // for a peer that was never launched. The fence cancels its owner's
+        // bootstrap listener, which refuses the worker's connection, so the
+        // worker ends at once instead of at the bootstrap's own bound (30 s),
+        // with its cleanup and release proven.
+        let began=DispatchTime.now().uptimeNanoseconds
+        let result=await s.stop(until:began+10_000_000_000)
+        try require(DispatchTime.now().uptimeNanoseconds-began<5_000_000_000,"partial startup held the surviving rank inside its bootstrap")
         try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint: \(box.snapshot.map { "termination \(String(describing:$0.ownerTermination)) cleanup \($0.nativeCleanupObserved) tail \(String(decoding:$0.diagnosticTail,as:UTF8.self).suffix(600))" })")
         try require(result == .released || result == .quarantined,"partial startup returned live readiness")
         try require(!s.canRotate || box.snapshot[0].ownerDeviceLeaseReleasedObserved,"partial rotate missing release")

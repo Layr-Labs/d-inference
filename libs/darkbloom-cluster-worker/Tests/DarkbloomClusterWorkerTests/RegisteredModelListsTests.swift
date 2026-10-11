@@ -58,7 +58,7 @@ final class RegisteredModelListsTests: XCTestCase {
                     "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
                     "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
                     "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-                    "--deadline-uptime-nanoseconds", "300000000100"]
+                    "--deadline-uptime-nanoseconds", "120000000100"]
                 if entry.supportedCuts.contains(cut) {
                     XCTAssertEqual(try WorkerConfiguration(arguments: arguments, now: 100).load.stageCut, cut, name)
                     for mode in entry.supportedGenerationModes {
@@ -103,7 +103,7 @@ final class RegisteredModelListsTests: XCTestCase {
             "--artifact-sha256", String(repeating: "a", count: 64), "--configuration-sha256", String(repeating: "b", count: 64),
             "--peer0-id", "one", "--peer0-build-sha256", String(repeating: "c", count: 64),
             "--peer1-id", "two", "--peer1-build-sha256", String(repeating: "d", count: 64),
-            "--deadline-uptime-nanoseconds", "300000000100"]
+            "--deadline-uptime-nanoseconds", "120000000100"]
         let value = try WorkerConfiguration(arguments: arguments, now: 100)
         XCTAssertEqual(value.load.identity.modelID, "registered_qwen35_35b_a3b")
         XCTAssertEqual(value.load.allocatorPolicy, .disableFreedBufferCache); XCTAssertEqual(value.generationMode, .pipeline)

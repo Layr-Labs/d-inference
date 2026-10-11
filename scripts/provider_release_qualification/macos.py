@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 import plistlib
 import re
 import subprocess

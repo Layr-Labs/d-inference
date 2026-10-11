@@ -161,6 +161,7 @@ def supervise(root, command):
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The supervised group may exit between poll() and killpg().
                 pass
         process.wait(timeout=5)
         process.stdout.close()

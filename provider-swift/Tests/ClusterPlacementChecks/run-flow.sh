@@ -32,7 +32,7 @@ build_module DarkbloomClusterRemote "DarkbloomClusterProtocol DarkbloomClusterPr
   "$task_cluster"/Sources/DarkbloomClusterRemote/*.swift
 build_module MLXLMCommon "" "$task_cluster/Tests/ProcessChecks/MLXLMCommonContractValues.swift"
 build_module ProviderCoreFoundation "" "$task_provider/Sources/ProviderCoreFoundation/Manifest.swift"
-task_all="DarkbloomClusterProtocol DarkbloomClusterPlacement DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterRemote MLXLMCommon ProviderCoreFoundation"
+task_all="DarkbloomClusterProtocol DarkbloomClusterPlacement DarkbloomClusterProcess DarkbloomClusterBootstrap DarkbloomClusterSecurity DarkbloomClusterRemote MLXLMCommon ProviderCoreFoundation"
 build_module InstalledContract "$task_all" \
   "$task_sources/Config/ClusterConfiguration.swift" \
   "$task_sources/Config/ClusterConfigurationCodec.swift" \
@@ -41,7 +41,7 @@ build_module InstalledContract "$task_all" \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Config/ClusterNativeMemberAttachment.swift" \
+  "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
@@ -50,6 +50,7 @@ build_module InstalledContract "$task_all" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
   "$task_sources"/Inference/Distributed/Placement/*.swift \
+  "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
 xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lInstalledContract \

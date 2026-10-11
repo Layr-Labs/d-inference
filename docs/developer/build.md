@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -235,6 +235,12 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+
+After changing provider authorization summaries, rebuild the provider test
+product before running the [authorization guidance tests](test.md#provider-authorization-guidance).
+They exercise shared production decisions without invoking status/doctor's
+host probes or native Apple operations; signed-release qualification remains
+separate.
 
 The provider email operator command builds separately with
 `go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not

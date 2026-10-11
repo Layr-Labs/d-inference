@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 ## Autopilot rewards
 
@@ -1274,6 +1274,18 @@ source/dependency/binary/metallib/artifact tuple:
 ## App Attest validation
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
+
+### Provider authorization guidance
+
+After rebuilding the provider test product, run
+`swift test --skip-build --no-parallel --filter ProviderAuthorizationReadinessTests`
+from `provider-swift/`. The suite exercises the production freshness checks and
+summary used by status and both doctor paths: a late but unexpired serving lease
+stays visible while removal advice requires the matching fresh decision. It
+covers the receipt-window boundary, disabled rollout, missing or mismatched
+decisions and exact lease expiry. These checks use fixed snapshots and injected
+process identity; they do not run the CLI's host probes, change profiles or
+establish native App Attest acceptance.
 
 ## Cache attempt ownership during model replacement
 

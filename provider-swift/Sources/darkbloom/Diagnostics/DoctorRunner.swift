@@ -18,6 +18,7 @@ enum DoctorRunner {
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
         let authorization = state?.displayedProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let removalAuthorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
         let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----
@@ -57,7 +58,8 @@ enum DoctorRunner {
         if let authorization {
             out.append(Diagnostic(section: .trust, name: "serving authorization",
                                   level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
-                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  message: ProviderAuthorizationReadiness.summary(
+                                      authorization, removalAuthorization: removalAuthorization, now: now),
                                   fix: nil))
         } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)

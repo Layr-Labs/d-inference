@@ -63,17 +63,26 @@ public enum ProviderAuthorizationReadiness {
             && authorization.hasCurrentAppAttestAuthorization(now: now)
     }
 
+    /// Displayed serving leases can outlast removal readiness. Callers provide
+    /// the strict current decision from the same snapshot and time separately.
     public static func summary(
-        _ authorization: ProviderAuthorizationStatus?, now: Double,
+        _ authorization: ProviderAuthorizationStatus?,
+        removalAuthorization: ProviderAuthorizationStatus?, now: Double,
         macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> String {
         guard let authorization else {
             return "App Attest authorization is unconfirmed; keep any existing management profiles installed until this running provider receives fresh coordinator readiness."
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
-            return "App Attest authorizes this connection. " + (authorization.mdmRemovalReady
-                ? "Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."
-                : "Darkbloom MDM removal is not enabled for this machine yet.")
+            let serving = "App Attest authorizes this connection. "
+            guard authorization.mdmRemovalReady else {
+                return serving + "Darkbloom MDM removal is not enabled for this machine yet."
+            }
+            guard removalAuthorization == authorization,
+                  removalReady(removalAuthorization, now: now) else {
+                return serving + "Darkbloom MDM removal needs fresh coordinator readiness; keep existing management profiles installed."
+            }
+            return serving + "Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."
         }
         if authorization.path == "legacy" {
             return "Serving through legacy verification; keep the Darkbloom MDM profile."

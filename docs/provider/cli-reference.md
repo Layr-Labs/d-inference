@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-10
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -783,6 +783,7 @@ Output includes:
 - `Inference memory` is the nominal hardware budget, **not** live free RAM.
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- App Attest serving authorization can remain visible through its unexpired lease, while MDM removal advice requires a matching fresh coordinator decision. The same distinction applies to both doctor summaries; see [provider authorization](../reference/provider-authorization.md).
 - `Not serving:` when the daemon is alive but a graceful drain has closed
   admission — draining, a drain that did not finish, or a drain whose relaunch
   never happened — with the commands that finish or interrupt it

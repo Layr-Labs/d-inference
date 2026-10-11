@@ -202,6 +202,56 @@ import Foundation
             _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-nine",
                 localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout)
         }
+        // The model's pair-serving grant (owner decision D4) at plan time. The 9B is granted with the M3 Ultra
+        // leading and the M5 Max decoding: on those two chips the planner is held to that order, whichever Mac
+        // asks and whatever the speeds prefer; asked for the other order, the step refuses as a start would.
+        func chip(_ device: ClusterPlacementDevice, _ name: String) throws -> ClusterDeviceProfile {
+            let p = device.profile
+            return try .init(chip: name, performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores, gpuCores: p.gpuCores,
+                osVersion: p.osVersion, osBuild: p.osBuild, physicalMemoryBytes: p.physicalMemoryBytes,
+                gpuRecommendedWorkingSetBytes: p.gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
+                allocatorLimitBytes: p.allocatorLimitBytes, memory: p.memory, power: p.power)
+        }
+        let m3 = try chip(slowTwo[0], "Apple M3 Ultra"), m5 = try chip(slowTwo[1], "Apple M5 Max")
+        for (who, local, peer) in [("mac-one", m3, m5), ("mac-two", m5, m3)] {
+            let held = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: who,
+                localProfile: local, peerProfile: peer, layout: layout)
+            require("the 9B on an M3 Ultra and an M5 Max is planned with the M3 Ultra leading, asked from \(who)",
+                held.setup?.leaderID == "mac-one" && held.result.chosen?.ranks.first?.device == "mac-one"
+                    && held.lines.contains("Pair-serving grant") && held.lines.contains { $0.contains("so mac-one leads") })
+        }
+        let swapped = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: m5, peerProfile: m3, layout: layout)
+        require("with the chips the other way round the other Mac leads", swapped.setup?.leaderID == "mac-two")
+        require("an order the grant allows is planned as asked", try ClusterPlacementFlow.decide(description: description, capability: capability,
+            localMemberID: "mac-one", localProfile: m3, peerProfile: m5, layout: layout, leader: "mac-one").setup?.leaderID == "mac-one")
+        refuses("the 9B led by the M5 Max is refused at plan time", because: "pipeline-only rank on apple_m3_ultra") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: m3, peerProfile: m5, layout: layout, leader: "mac-two")
+        }
+        refuses("two M5 Max Macs have no order the 9B's grant allows", because: "runs on apple_m5_max") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: m5, peerProfile: m5, layout: layout)
+        }
+        refuses("a chip the grant lists for no rank is refused", because: "runs on apple_m4_max") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: m3, peerProfile: try chip(slowTwo[1], "Apple M4 Max"), layout: layout, leader: "mac-one")
+        }
+        // Pure decisions of the rule itself. The 27B is granted on both chips for both ranks: no order is ruled out.
+        let pair = [(id: "a", chip: "Apple M3 Ultra"), (id: "b", chip: "Apple M5 Max")]
+        let free = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: pair, runtimeModelID: "registered_qwen38_27b", publicModelID: "p")
+        require("the 27B leaves the planner free on an M3 Ultra and an M5 Max", free.leader == nil && free.note == nil)
+        for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"] {
+            let one = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: pair.reversed(), runtimeModelID: model, publicModelID: "p")
+            require("\(model) is planned with the M3 Ultra leading", one.leader == "a" && one.note?.contains("decoding rank (the last) on apple_m5_max") == true)
+        }
+        // A withheld model is still planned, and the plan says a start refuses it; a chip name with no class is left to the start.
+        let withheld = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: pair, runtimeModelID: "registered_gpt_oss_20b", publicModelID: "p")
+        require("a withheld model's plan carries the refusal", withheld.leader == nil && withheld.note?.contains("is not granted pair serving") == true
+            && withheld.note?.contains("refused when it is started") == true)
+        let unknown = try ClusterPlacementFlow.leaderUnderGrant(requested: "b", members: [(id: "a", chip: "Check chip"), (id: "b", chip: "Check chip")],
+            runtimeModelID: "registered_qwen35_9b", publicModelID: "p")
+        require("a chip name with no class decides nothing at plan time", unknown.leader == "b" && unknown.note == nil)
         guard failures.isEmpty else {
             for failure in failures { FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8)) }
             exit(1)

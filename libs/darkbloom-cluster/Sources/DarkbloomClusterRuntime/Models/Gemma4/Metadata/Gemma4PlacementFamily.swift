@@ -36,19 +36,20 @@ struct Gemma4PlacementFamily: ClusterPlacementFamily {
     var structuralCuts: [Int] { Array(1..<Gemma4StageGeometry.layerCount) }
     var generationModes: [ClusterGenerationMode] { Gemma4ResidentAdapterDefinition.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { Gemma4ResidentAdapterDefinition.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { profile.maximumPromptTokens }
-    var maximumOutputTokens: Int { profile.maximumOutputTokens }
-    var maximumChunkTokens: Int { profile.maximumChunkTokens }
+    var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
+    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { Gemma4StageGeometry.hiddenSize * 2 }
 
     /// Either rank is charged the whole model's state (`Gemma4StateBudget`).
-    var requestChargeEveryRankBytes: Int { charge(profile.maximumContextTokens) }
+    /// At the planned request's context (`ClusterPlacementPlanningLimits`).
+    var requestChargeEveryRankBytes: Int { charge(ClusterPlacementPlanningLimits.context(profile.maximumContextTokens)) }
     var requestChargeEveryRankBytesPerToken: Int? {
-        let high = profile.maximumContextTokens, low = max(profile.maximumChunkTokens + 1, high / 2)
+        let high = ClusterPlacementPlanningLimits.context(profile.maximumContextTokens), low = max(maximumChunkTokens + 1, high / 2)
         return high > low ? max(0, (charge(high) - charge(low)) / (high - low)) : nil
     }
     private func charge(_ tokens: Int) -> Int {
-        (try? Gemma4StateBudget.estimate(maximumTokens: tokens, chunkSize: profile.maximumChunkTokens).stateAndBoundaryBytes) ?? 0
+        (try? Gemma4StateBudget.estimate(maximumTokens: tokens, chunkSize: maximumChunkTokens).stateAndBoundaryBytes) ?? 0
     }
 
     static let textPrefix = Gemma4LayerStagePlanning.namespace

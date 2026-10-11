@@ -96,7 +96,8 @@ struct ResidentAdmissionQwen36A3BTests {
         #expect(profile.fingerprint != sibling.fingerprint && profile.maximumContextTokens == sibling.maximumContextTokens)
         let ceilings = try QwenResidentResourceCeilings(model: .qwen36ThirtyFiveBA3B)
         #expect(ceilings.maximumManifestPayloadBytes == 21_308_856_601)
-        #expect(ceilings.namedStateByteCeiling == 563_806_248 && ceilings.maximumNamedStateBytes == 563_806_248)
+        #expect(ceilings.maximumNamedStateBytes == 563_806_248)
+        #expect(ceilings.namedStateByteCeiling == (try QwenResidentResourceCeilings(model: .qwen35ThirtyFiveBA3B)).namedStateByteCeiling)
         #expect(try QwenResidentResourceCeilings(model: .qwen35ThirtyFiveBA3B).maximumManifestPayloadBytes == 20_893_747_852)
     }
 

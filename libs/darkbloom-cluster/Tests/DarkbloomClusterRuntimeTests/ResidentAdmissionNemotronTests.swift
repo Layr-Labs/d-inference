@@ -78,7 +78,8 @@ struct ResidentAdmissionNemotronTests {
         #expect(row.profileID == Self.profileID && row.specification.layers == 52)
         #expect(row.supportedCuts == NemotronRegisteredLightning.supportedCuts && row.supportedCuts.count == 32)
         #expect(row.supportedCuts == NemotronStageMetadata.structuralCuts(NemotronRegisteredLightning.kinds))
-        #expect(row.supportedCuts.allSatisfy { Self.pattern[$0 - 1] == "E" })
+        // Every cut is beside an expert block (stage 0 ends with one or stage 1 starts with one).
+        #expect(row.supportedCuts.allSatisfy { Self.pattern[$0 - 1] == "E" || Self.pattern[$0] == "E" })
         #expect(row.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
         #expect(row.adapter == .nemotronH && row.arithmetic == .nemotronHybrid)
         #expect(row.arithmetic.contract == "nemotron_h_cbv2_query128_bf16_tf32_default_v1")
@@ -105,8 +106,10 @@ struct ResidentAdmissionNemotronTests {
         let spec = try Self.specification()
         let ceilings = try QwenResidentResourceCeilings(model: .nemotron35Lightning)
         #expect(ceilings.maximumManifestPayloadBytes == 19_059_595_830)
-        #expect(ceilings.namedStateByteCeiling == 271_556_632 && ceilings.maximumNamedStateBytes == 271_556_632)
+        #expect(ceilings.maximumNamedStateBytes == 271_556_632)
         let geometry = try spec.expectedGeometry()
+        #expect(ceilings.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
+            maximumTokens: 32_768, chunkSize: 512).conservativeStateAndBoundaryBytes))
         #expect(geometry.layers == 52 && geometry.attentionLayers == 6 && geometry.recurrentLayers == 23)
         #expect(geometry.fullAttentionInterval == 0 && geometry.kvHeads == 2 && geometry.headDimension == 128)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)
@@ -153,9 +156,11 @@ struct ResidentAdmissionNemotronTests {
             #expect(throws: (any Error).self, label) { _ = try body() }
         }
         _ = try Self.admit(Self.configuration(identity: valid))
-        // 20 and 26 are structural or near it but not in the closed row; 12 is
-        // between a Mamba and an attention block; 4 leaves stage 0 no attention.
-        for cut in [0, 4, 12, 20, 26, 44, 52, -4] {
+        // 12 and 26 are between a Mamba and an attention block (no expert block
+        // beside the cut); 4 leaves stage 0 no attention, 44 leaves stage 1 none.
+        // 20 (attention, then an expert block) is a structural cut and admitted.
+        _ = try Self.admit(Self.configuration(cut: 20, identity: valid))
+        for cut in [0, 4, 12, 26, 44, 52, -4] {
             refuses("cut \(cut) is not in the resident row") { try Self.admit(Self.configuration(cut: cut, identity: valid)) }
         }
         var missing = Self.environment()
@@ -213,7 +218,9 @@ struct ResidentAdmissionNemotronTests {
             for rank in 0...1 {
                 let allowance = try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank,
                     maximumTokens: 8320, chunkSize: 512, bound: { $0 })
-                #expect(allowance.fusionBytes == 0 && allowance.reservedBytes == allowance.stateBytes)
+                // Each Nemotron stage holds an attention block: its prefill frame's transient is charged too.
+                #expect(allowance.fusionBytes == 0 && allowance.transientBytes > 0
+                    && allowance.reservedBytes == allowance.stateBytes + allowance.transientBytes)
                 // 3 generations of 23 Mamba states, 6 attention K and V at F32 width, one host copy, two boundaries.
                 let kv = 4 * 8320 * 2 * 128
                 let expected = 3 * 23 * (73_728 + 2_097_152) + 2 * 6 * kv + 6 * 4 + kv + 2 * (512 * 2688 * 4)

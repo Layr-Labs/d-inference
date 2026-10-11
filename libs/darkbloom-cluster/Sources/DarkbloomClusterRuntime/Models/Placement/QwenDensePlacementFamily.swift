@@ -55,9 +55,17 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     var admittedCuts: [Int] { definition.supportedCuts }
     var generationModes: [ClusterGenerationMode] { definition.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { definition.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { profile.maximumPromptTokens }
-    var maximumOutputTokens: Int { profile.maximumOutputTokens }
-    var maximumChunkTokens: Int { profile.maximumChunkTokens }
+    /// The request a placement is planned and fitted for: the earlier
+    /// reservation (8,192 prompt, 128 output, 8,320 context), not the profile's
+    /// derived limits (up to 32,768 context, `QwenResidentContextLimits`). A
+    /// placement that fits now holds the model and such a request; each rank
+    /// then admits the largest context its Mac holds at load and gates every
+    /// longer request live (`QwenResidentRuntime.admittedContext`). Planning
+    /// memory and time for a longer planned request is a follow-up.
+    static let planningLimits = ClusterPlacementPlanningLimits.reservation
+    var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
+    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { geometry.hiddenSize * ((try? qwenStageWireElementBytes(profile.activationDType)) ?? 4) }
 
     /// `QwenResidentRequestAllowance` charges the whole model's conservative
@@ -171,21 +179,39 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
 /// rank (`QwenResidentRequestAllowance.derive`): the same named arrays at the
 /// model's largest request, each rounded up by at most one 16 KiB page, with
 /// one prefill frame's attention transient.
+/// The request every family's placement is planned and fitted for: the earlier
+/// reservation (8,192 prompt, 128 output, 8,320 context, chunks of 512), capped
+/// by the family's own profile, not the profile's derived limits (up to 32,768
+/// context). A placement that fits now holds the model and such a request; each
+/// rank then admits the largest context its Mac holds at load and gates every
+/// longer request live. Planning memory and time for a longer planned request
+/// is a follow-up (integration 644271f53, applied to every family).
+enum ClusterPlacementPlanningLimits {
+    static let reservation = QwenResidentContextLimits.reservation
+    static func prompt(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumPromptTokens) }
+    static func output(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumOutputTokens) }
+    static func chunk(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumChunkTokens) }
+    static func context(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumContextTokens) }
+}
+
 enum QwenPlacementCharge {
+    /// At the planned request's context (`ClusterPlacementPlanningLimits`).
     static func wholeModelStateBytes(geometry: QwenLongPrefillBudgetGeometry,
                                      profile: QwenLayerStageGenerationProfile) -> Int {
-        wholeModelStateBytes(geometry: geometry, contextTokens: profile.maximumContextTokens, chunk: profile.maximumChunkTokens)
+        wholeModelStateBytes(geometry: geometry, contextTokens: ClusterPlacementPlanningLimits.context(profile.maximumContextTokens),
+            chunk: ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens))
     }
 
-    /// What each context token below the largest request saves: the slope of
-    /// the same charge between half the largest context and all of it (the
+    /// What each context token below the planned request saves: the slope of
+    /// the same charge between half the planned context and all of it (the
     /// keys and values grow with the context; the recurrent state does not).
     static func wholeModelStateBytesPerToken(geometry: QwenLongPrefillBudgetGeometry,
                                              profile: QwenLayerStageGenerationProfile) -> Int? {
-        let high = profile.maximumContextTokens, low = max(profile.maximumChunkTokens + 1, high / 2)
+        let chunk = ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens)
+        let high = ClusterPlacementPlanningLimits.context(profile.maximumContextTokens), low = max(chunk + 1, high / 2)
         guard high > low else { return nil }
-        let a = wholeModelStateBytes(geometry: geometry, contextTokens: high, chunk: profile.maximumChunkTokens)
-        let b = wholeModelStateBytes(geometry: geometry, contextTokens: low, chunk: profile.maximumChunkTokens)
+        let a = wholeModelStateBytes(geometry: geometry, contextTokens: high, chunk: chunk)
+        let b = wholeModelStateBytes(geometry: geometry, contextTokens: low, chunk: chunk)
         return max(0, (a - b) / (high - low))
     }
 

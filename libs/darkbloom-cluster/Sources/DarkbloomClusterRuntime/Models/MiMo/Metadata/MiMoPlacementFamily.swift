@@ -39,9 +39,9 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
     var structuralCuts: [Int] { Array(1..<specification.layers) }
     var generationModes: [ClusterGenerationMode] { specification.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { specification.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { profile.maximumPromptTokens }
-    var maximumOutputTokens: Int { profile.maximumOutputTokens }
-    var maximumChunkTokens: Int { profile.maximumChunkTokens }
+    var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
+    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { specification.hidden * MiMoRequestStateBudget.activationBytes }
 
     func stage(ofStoredTensor name: String, cut: Int) throws -> Int? {

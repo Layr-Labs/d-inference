@@ -48,9 +48,9 @@ struct NemotronPlacementFamily: ClusterPlacementFamily {
     var admittedCuts: [Int] { definition.supportedCuts }
     var generationModes: [ClusterGenerationMode] { definition.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { definition.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { profile.maximumPromptTokens }
-    var maximumOutputTokens: Int { profile.maximumOutputTokens }
-    var maximumChunkTokens: Int { profile.maximumChunkTokens }
+    var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
+    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { geometry.hiddenSize * ((try? qwenStageWireElementBytes(profile.activationDType)) ?? 4) }
     /// The Qwen resident allowance charges either rank the whole model's state.
     var requestChargeEveryRankBytes: Int {

@@ -34,6 +34,8 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Qwen/Resources/QwenDenseStageLoadPolicy.swift" \
   "$R/Models/Qwen/Metadata/QwenDenseProfileTypes.swift" \
   "$R/Models/Qwen/Metadata/QwenDenseRegisteredSpecification.swift" \
+  "$R/Models/Qwen/Resources/QwenResidentContextLimits.swift" \
+  "$R/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift" \
   "$R/Models/Qwen/Metadata/QwenLayerStageMetadata.swift" \
   "$R/Models/Qwen/Metadata/QwenRoutedExpertStageMetadata.swift" \
   "$R/Models/Qwen/Prism/QwenPrismStageConfiguration.swift" \
@@ -53,8 +55,6 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Qwen/Loading/QwenLayerStageCandidates.swift" \
   "$R/Models/Qwen/Resident/QwenResidentModelDefinition.swift" \
   "$R/Models/Qwen/Resident/QwenResidentAdapterDefinition.swift" \
-  "$R/Models/Qwen/Resources/QwenResidentContextLimits.swift" \
-  "$R/Models/Qwen/Resources/QwenResidentContextLimits+Registered.swift" \
   "$R/Models/Nemotron/NemotronPlacementFamily.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
   "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \

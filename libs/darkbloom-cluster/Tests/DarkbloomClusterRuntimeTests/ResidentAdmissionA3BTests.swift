@@ -105,8 +105,9 @@ struct ResidentAdmissionA3BTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: row.specification)
         #expect(profile.identifier == Self.profileID && profile.hiddenSize == 2048)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumPromptTokens == 8192 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 128 && profile.maximumContextTokens == 8320)
+        // Derived from the declared 262,144 positions and the protocol (`QwenResidentContextLimits`).
+        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
         // The dense rows keep what they had: adapter, arithmetic, geometry constants.
         for dense in [QwenRegisteredDenseModel.qwen35NineB, .qwen38TwentySevenB] {
             let definition = try QwenResidentModelDefinition(model: dense)
@@ -121,8 +122,11 @@ struct ResidentAdmissionA3BTests {
         let spec = try Self.specification()
         let ceilings = try QwenResidentResourceCeilings(model: .qwen35ThirtyFiveBA3B)
         #expect(ceilings.maximumManifestPayloadBytes == 20_893_747_852)
-        #expect(ceilings.namedStateByteCeiling == 563_806_248 && ceilings.maximumNamedStateBytes == 563_806_248)
+        // The pinned figure at the earlier reservation; the ceiling is the same estimate at the derived context.
+        #expect(ceilings.maximumNamedStateBytes == 563_806_248)
         let geometry = try spec.expectedGeometry()
+        #expect(ceilings.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
+            maximumTokens: 32_768, chunkSize: 512).conservativeStateAndBoundaryBytes))
         #expect(geometry.kvHeads == 2 && geometry.layers == 40 && geometry.hiddenSize == 2048)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
@@ -470,7 +474,8 @@ struct ResidentAdmissionA3BTests {
         #expect(small.adapterID == "qwen35-dense-layer-stage" && small.runtimeModelID == "registered_qwen35_9b")
         #expect(small.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1")
         #expect(small.partitions.map(\.planSHA256).first == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
-        #expect(small.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff")
+        // The derived long-context profile (32,767 / 4,096 / 32,768), as in the capability fixture.
+        #expect(small.profileFingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
         // The 9B's capability record, byte for byte, apart from the two fields
         // added after the golden was recorded (schedules and generation modes).
         let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

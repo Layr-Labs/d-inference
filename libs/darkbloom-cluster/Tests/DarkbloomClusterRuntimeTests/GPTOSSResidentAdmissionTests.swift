@@ -92,7 +92,9 @@ struct GPTOSSResidentAdmissionTests {
         func refuses(_ label: Comment, _ body: () throws -> GPTOSSResidentAdmission) {
             #expect(throws: (any Error).self, label) { _ = try body() }
         }
-        refuses("a cut outside the row") { try Self.admit(cut: 4, identity: identity) }
+        // Every layer boundary is a cut (1...23).
+        _ = try Self.admit(cut: 4, identity: identity)
+        refuses("a cut of zero layers") { try Self.admit(cut: 0, identity: identity) }
         refuses("a cut outside the model") { try Self.admit(cut: 24, identity: identity) }
         refuses("a third rank") { try Self.admit(rank: 2, identity: identity) }
         refuses("a dense model ID") { try Self.admit(identity: try Self.identity(model: "registered_qwen35_9b")) }
@@ -126,14 +128,17 @@ struct GPTOSSResidentAdmissionTests {
         let request = try admission.request(reservation(prompt: Array(repeating: 1, count: 1200)), id: UUID(), now: Self.now)
         #expect(request.prefillFrameCount == 3 && request.forwardCount == 3 + 8 - 1 && request.maximumTokens == 1208)
         #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [201_088]), id: UUID(), now: Self.now) }
-        #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [1], output: 129), id: UUID(), now: Self.now) }
+        #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [1], output: 4097), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { _ = try admission.request(reservation(prompt: [1], chunk: 513), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) {
             _ = try admission.request(reservation(prompt: [1], profile: "registered_qwen35_9b_greedy_generation_v1"), id: UUID(), now: Self.now)
         }
         #expect(throws: (any Error).self) {
-            _ = try admission.request(reservation(prompt: Array(repeating: 1, count: 8193)), id: UUID(), now: Self.now)
+            _ = try admission.request(reservation(prompt: Array(repeating: 1, count: 32_768)), id: UUID(), now: Self.now)
         }
+        // Long context: past the earlier 8,192-token reservation.
+        #expect(try admission.request(reservation(prompt: Array(repeating: 1, count: 8193)), id: UUID(), now: Self.now)
+            .maximumTokens == 8201)
     }
 
     @Test func theRequestAllowanceIsEachRanksOwnLedger() throws {

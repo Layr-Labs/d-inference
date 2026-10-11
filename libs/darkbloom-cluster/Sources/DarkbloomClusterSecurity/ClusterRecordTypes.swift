@@ -42,10 +42,14 @@ public enum ClusterRecordType: UInt8, Sendable {
     case keyConfirmation = 1, loadAgreement, loadedReady
     case requestAgreement, residualHeader, residualPayload, targetToken
     case generationDecision, acknowledgement, requestRetired
+    /// Link control channel frames (TCP over the Thunderbolt link). Their keys
+    /// are separate from the data plane's, so a record of one never opens as
+    /// the other; the frame's own message and request identities are inside.
+    case linkControl
 
     var requiresRequest: Bool {
         switch self {
-        case .keyConfirmation, .loadAgreement, .loadedReady: false
+        case .keyConfirmation, .loadAgreement, .loadedReady, .linkControl: false
         default: true
         }
     }

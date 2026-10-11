@@ -14,7 +14,7 @@ rank worker that links `DarkbloomClusterRuntime` is built separately, in
 | `DarkbloomClusterBootstrap` | Bounded private Unix socket between an owner and its actual direct child, with kernel peer identity, epoch/rank/sequence checks and deadlines. Adds the opt-in `nativeKeyPreludeV1` authorization round (closed packet header, phase state machine at both ends) that hands a confirmed X25519 transcript to the record transport. |
 
 | `DarkbloomClusterProcess` | Ownership of one local worker child: explicit environment, pipes, fence, reap, device lease and journal. |
-| `DarkbloomClusterRemote` | The owner service and the leader's endpoint to a remote owner over a pinned SSH channel, with the native key relay. |
+| `DarkbloomClusterRemote` | The owner service and the leader's endpoint to a remote owner over a pinned SSH channel, with the native key relay; the link control channel (authenticated, encrypted TCP per link edge over the Thunderbolt link, see `handoff/DESIGN-link-control-channel.md`). |
 | `DarkbloomClusterRuntime` | The two-stage Qwen layer pipeline: verified checkpoint and tensor loading, resident admission and lifecycle, generation driver, collective transport. Links MLX. |
 
 The control modules support macOS 14 and have no MLX dependency. The runtime
@@ -42,6 +42,7 @@ python3 libs/darkbloom-cluster/Tests/StageMetadataChecks/run.py --output <new-di
 bash libs/darkbloom-cluster/Tests/StageTransferChecks/run.sh
 bash libs/darkbloom-cluster/Tests/ProcessChecks/run.sh
 bash libs/darkbloom-cluster/Tests/RemoteChecks/run.sh
+bash libs/darkbloom-cluster/Tests/LinkControlChecks/run.sh
 bash libs/darkbloom-cluster/Tests/SSHChecks/run.sh
 bash libs/darkbloom-cluster/Tests/CapabilityChecks/run.sh
 bash libs/darkbloom-cluster/Tests/DeadlineChecks/run.sh

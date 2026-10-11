@@ -84,8 +84,12 @@ The phase split itself runs (the decoding rank holds both `NemotronH35Model` sta
 
 ### MiMo V2.6: why not, and what a pipeline head would need
 
-The whole model is about 173 GB; the 128 GB Mac cannot hold every layer, so no rank can be the decoding rank of a
-phase split, with or without the head (the planner never offers `phase_split_v1` for MiMo on this pair). A head in
+The artifact is 172.9 GB (155.8 GiB loaded by the stages; one Mac alone needs 161.8 GiB admissible). The decoding
+rank of a phase split holds every layer, so only the M3 Ultra could be it, and only while its applications leave
+161.8 GiB admissible (157.1 GiB at 18:59Z and 134.7 GiB at 13:39Z on 2026-10-11): that is the single-Mac case the pair
+exists to avoid, so the MiMo row lists only `pipeline_v1` and `pipeline_compact_decode_v1`
+(`MiMoRegisteredSpecification.supportedGenerationModes`) and the planner never offers a phase split for it. The
+hand-off would also have to carry the 39 sliding-window rings, which it cannot (as for GPT-OSS and Gemma 4). A head in
 the pipeline modes needs a per-round protocol that does not exist: the head (1.84 GiB) and a copy of the
 embedding on the last rank; each round the last rank drafts `k` tokens, sends them back across the cable, both ranks
 run the verify window `[last, d1..dk]` through their stages (one cable crossing each way per round instead of per

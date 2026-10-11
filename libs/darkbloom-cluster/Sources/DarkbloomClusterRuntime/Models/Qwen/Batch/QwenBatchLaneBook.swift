@@ -34,9 +34,11 @@ final class QwenBatchLaneBook: @unchecked Sendable {
     var hasStarted: Bool { lock.withLock { !started.isEmpty } }
     var isEmpty: Bool { lock.withLock { reserved.isEmpty } }
 
-    /// Bytes of every charged lane except `excluding`.
-    func reservedBytes(excluding: UUID? = nil) throws -> Int {
-        let values = lock.withLock { reserved.filter { $0.key != excluding }.map { $0.value.allowance.reservedBytes } }
+    /// Named request state of every charged lane except `excluding`. Lanes
+    /// share the stage's one-time fusion and run one prefill frame at a time,
+    /// so beside the newest lane's whole allowance the others add their state.
+    func stateBytes(excluding: UUID? = nil) throws -> Int {
+        let values = lock.withLock { reserved.filter { $0.key != excluding }.map { $0.value.allowance.stateBytes } }
         return try QwenLongPrefillCheckedBytes.sum(values)
     }
 

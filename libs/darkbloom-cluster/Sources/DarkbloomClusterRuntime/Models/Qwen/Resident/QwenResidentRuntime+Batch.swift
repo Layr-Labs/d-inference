@@ -77,7 +77,7 @@ extension QwenResidentRuntime {
                   laneBook.count < batch.lanes else {
                 throw ProbeError("Batch lane reservation exceeds its owner ceiling or every lane is taken")
             }
-            let others = try laneBook.reservedBytes()
+            let others = try laneBook.stateBytes()
             try prefixCache.yieldingMemory { try allowance.requireLive(additionalNativeBytes: others) }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             try laneBook.reserve(requestID, .init(request: request, allowance: allowance,
@@ -122,7 +122,7 @@ extension QwenResidentRuntime {
                                     // Kept prefixes give way to the lanes' own admission.
                                     let allowances = laneBook.allowances()
                                     if let first = allowances.first {
-                                        let others = try QwenLongPrefillCheckedBytes.sum(allowances.dropFirst().map(\.reservedBytes))
+                                        let others = try QwenLongPrefillCheckedBytes.sum(allowances.dropFirst().map(\.stateBytes))
                                         try prefixCache.yieldingMemory { try first.requireLive(additionalNativeBytes: others) }
                                     }
                                     lastResourceCheck = DispatchTime.now().uptimeNanoseconds

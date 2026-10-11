@@ -53,8 +53,8 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        try promptCache()
-        print("{\"passed\":true,\"groups\":8,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache(); try lanes()
+        print("{\"passed\":true,\"groups\":9,\"modelExecution\":false,\"localPipeIO\":true}")
     }
     static func roundTrips() throws {
         let commands: [ClusterWorkerCommand] = [.reserve(reservation()), .start,
@@ -249,5 +249,86 @@ struct ClusterWorkerProtocolTests {
         try early.event(.admitted(reservedBytes: 800)); try refuses { try early.event(.finished(.length)) }
         var cancelled = try Conversation(rank: 1); try cancelled.start()
         try cancelled.command(.cancel(.callerCancelled)); try refuses { try cancelled.event(.finished(.clientStop)) }
+    }
+
+    /// Batch lanes: requests interleave, each keeps the one-request order;
+    /// a full set of lanes, shutdown or keep-warm while busy are refused.
+    static func lanes() throws {
+        let a = UUID(uuidString: "cccccccc-1111-2222-3333-dddddddddddd")!
+        let b = UUID(uuidString: "dddddddd-1111-2222-3333-eeeeeeeeeeee")!
+        let c = UUID(uuidString: "eeeeeeee-1111-2222-3333-ffffffffffff")!
+        var session = try ClusterWorkerLaneSession(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 2)
+        var commands: UInt64 = 0, events: UInt64 = 0
+        func command(_ value: ClusterWorkerCommand, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: id, command: value), now: 10)
+            commands += 1
+        }
+        func event(_ value: ClusterWorkerEvent, _ id: UUID?) throws {
+            try session.accept(.init(membershipEpoch: epoch, sequence: events, requestID: id, event: value), now: 10)
+            events += 1
+        }
+        try refuses { _ = try ClusterWorkerLaneSession(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 1) }
+        try event(.ready(ready), nil)
+        try command(.reserve(reservation(output: 3)), a); try event(.admitted(reservedBytes: 800), a)
+        try command(.reserve(reservation(output: 2)), b); try event(.admitted(reservedBytes: 800), b)
+        // Both lanes taken: a third reservation is a protocol error.
+        var full = session
+        try refuses { try full.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: c,
+            command: .reserve(reservation())), now: 10) }
+        try command(.start, b); try command(.start, a)
+        try check(Set(session.activeRequestIDs) == [a, b], "Both lanes are active")
+        try event(.committedToken(ordinal: 0, tokenID: 7, committedTokens: 3), a)
+        try event(.committedToken(ordinal: 0, tokenID: 8, committedTokens: 3), b)
+        try check(session.awaitsDecision(a) && session.awaitsDecision(b), "Each lane awaits its own decision")
+        // A second token before its decision, and a decision for the wrong ordinal, are refused.
+        var early = session
+        try refuses { try early.accept(.init(membershipEpoch: epoch, sequence: events, requestID: a,
+            event: .committedToken(ordinal: 1, tokenID: 9, committedTokens: 4)), now: 10) }
+        var wrong = session
+        try refuses { try wrong.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: a,
+            command: .tokenDecision(ordinal: 1, decision: .proceed)), now: 10) }
+        try command(.tokenDecision(ordinal: 0, decision: .proceed), b)
+        try command(.tokenDecision(ordinal: 0, decision: .proceed), a)
+        try event(.committedToken(ordinal: 1, tokenID: 9, committedTokens: 4), b)
+        try command(.tokenDecision(ordinal: 1, decision: .proceed), b)
+        // Lane b reached its output count: length, then clean retirement.
+        try event(.finished(.length), b); try event(.retired(.clean), b)
+        try check(session.activeRequestIDs == [a], "One lane left")
+        var busy = session
+        try refuses { try busy.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: nil,
+            command: .shutdown), now: 10) }
+        var warm = session
+        try refuses { try warm.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: nil,
+            command: .keepWarm(ordinal: 1)), now: 10) }
+        // The freed lane takes a new request while lane a still runs (refused below for capacity).
+        try command(.reserve(reservation()), c)
+        try event(.committedToken(ordinal: 1, tokenID: 10, committedTokens: 4), a)
+        try command(.tokenDecision(ordinal: 1, decision: .cleanStop), a)
+        var wrongReason = session
+        try refuses { try wrongReason.accept(.init(membershipEpoch: epoch, sequence: events, requestID: a,
+            event: .finished(.length)), now: 10) }
+        try event(.finished(.clientStop), a); try event(.retired(.clean), a)
+        try event(.refused(.capacity), c)
+        try check(session.activeRequestIDs.isEmpty, "Every lane retired")
+        // A replayed request ID is refused even after it retired.
+        var replay = session
+        try refuses { try replay.accept(.init(membershipEpoch: epoch, sequence: commands, requestID: a,
+            command: .reserve(reservation())), now: 10) }
+        try command(.keepWarm(ordinal: 1), nil); try event(.keptWarm(ordinal: 1, microseconds: 5), nil)
+        try command(.shutdown, nil); try event(.shutdownComplete, nil)
+        try check(session.isShutdown, "Lane session shut down")
+        // Rank 1 reports finish without tokens and without decisions.
+        var peer = try ClusterWorkerLaneSession(identity: identity, rank: 1, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, lanes: 4)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 0, requestID: nil, event: .ready(.init(identity: identity,
+            rank: 1, profile: profile, executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024))), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 0, requestID: a, command: .reserve(reservation())), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 1, requestID: a, event: .admitted(reservedBytes: 800)), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 1, requestID: a, command: .start), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 2, requestID: a, event: .finished(.eos)), now: 10)
+        try peer.accept(.init(membershipEpoch: epoch, sequence: 3, requestID: a, event: .retired(.clean)), now: 10)
+        try check(peer.activeRequestIDs.isEmpty, "Rank 1 lane retired")
     }
 }

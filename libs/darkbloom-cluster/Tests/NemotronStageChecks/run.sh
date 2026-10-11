@@ -31,6 +31,8 @@ task_sources=(
   Models/Nemotron/NemotronRegisteredProfile
   Models/Qwen/Resources/QwenLongPrefillTensorBudget
   Models/Qwen/Resources/QwenDenseStateBudget
+  Models/Qwen/Resources/QwenResidentContextLimits
+  Models/Qwen/Resources/QwenResidentContextLimits+Registered
   Models/Qwen/Metadata/QwenDenseProfileTypes
   Models/Qwen/Metadata/QwenDenseRegisteredSpecification
   Models/Qwen/Metadata/QwenRegisteredDenseModelProfile

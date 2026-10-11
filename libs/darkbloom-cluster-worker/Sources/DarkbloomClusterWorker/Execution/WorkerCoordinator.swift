@@ -257,20 +257,23 @@ final class WorkerCoordinator: @unchecked Sendable {
                 // borrow the token credit created while parsing that batch.
                 for line in lines {
                     if let failure { throw failure }
-                    guard !stopped else { throw WorkerFailure.invalid("Control after worker stop") }
-                    let frame: ClusterWorkerCommandFrame
-                    switch line {
-                    case .extendDeadline(let value):
+                    if case .extendDeadline(let value) = line {
                         // The rank lease, outside the request sequence; read
                         // during the load as much as after it.
                         guard membershipEpoch == nil || value.membershipEpoch == membershipEpoch else {
                             throw WorkerFailure.invalid("Lease renewal for another epoch")
                         }
-                        pipes.lease.renew(now: DispatchTime.now().uptimeNanoseconds, ttl: value.ttlNanoseconds)
-                        renewal(value.ttlNanoseconds)
+                        // The owner renews until it has read shutdownComplete and
+                        // closed the input: a renewal that crosses the stop is
+                        // moot, not a failed input (it ended clean runs with 1).
+                        if !stopped {
+                            pipes.lease.renew(now: DispatchTime.now().uptimeNanoseconds, ttl: value.ttlNanoseconds)
+                            renewal(value.ttlNanoseconds)
+                        }
                         continue
-                    case .command(let value): frame = value
                     }
+                    guard !stopped else { throw WorkerFailure.invalid("Control after worker stop") }
+                    guard case .command(let frame) = line else { continue }
                     guard session != nil else { throw WorkerFailure.invalid("Input or EOF arrived before worker readiness") }
                     try session!.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
                     switch frame.command {

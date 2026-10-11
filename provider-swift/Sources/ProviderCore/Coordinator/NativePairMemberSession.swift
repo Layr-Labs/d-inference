@@ -3,6 +3,10 @@ import CryptoKit
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
+import Logging
+
+/// Why a committed session ended early. Errors only; no request payload.
+private let nativeMemberLog = Logger(label: "darkbloom.native-member")
 
 /// One actual committed owner obligation. Cancellation interrupts waits and
 /// requests native cleanup immediately; only observed owner proof permits release.
@@ -107,6 +111,7 @@ final class NativePairMemberSession: @unchecked Sendable {
             timer?.schedule(deadline: .init(uptimeNanoseconds: leaseDeadline)); condition.unlock(); return
         }
         condition.unlock()
+        nativeMemberLog.warning("committed session \(start.common.epoch): grant lease expired")
         cancel(notify: true)
     }
 
@@ -272,6 +277,7 @@ final class NativePairMemberSession: @unchecked Sendable {
             try send("native_pair_owner_released", receipt, cleanup: true)
             condition.lock(); outcome = "released"; condition.unlock()
         } catch {
+            nativeMemberLog.warning("committed session \(start.common.epoch) rank \(installation.rank) ended (launched \(condition.withLock { launched })): \(error)")
             cancel(notify: true)
             stopServing()
             condition.lock(); if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
@@ -291,7 +297,10 @@ final class NativePairMemberSession: @unchecked Sendable {
             profile: installation.profile, executionPlanSHA256: installation.executionPlanSHA256,
             endpoint: endpoint, leaseDeadlineUptimeNanoseconds: lifetimeDeadline, mesh: mesh)
         Task.detached { [weak self] in
-            do { try await host.serveCommittedStart(value) } catch { self?.cancel(notify: true) }
+            do { try await host.serveCommittedStart(value) } catch {
+                nativeMemberLog.warning("committed session \(value.start.common.epoch): serving host failed: \(error)")
+                self?.cancel(notify: true)
+            }
         }
     }
 
@@ -308,7 +317,10 @@ final class NativePairMemberSession: @unchecked Sendable {
 
     private func ownerInvalidated() {
         condition.lock(); let completedPrelude = nextRound == 3; condition.unlock()
-        if !completedPrelude { cancel(notify: true) }
+        if !completedPrelude {
+            nativeMemberLog.warning("committed session \(start.common.epoch): owner invalidated before the prelude completed")
+            cancel(notify: true)
+        }
     }
     private func exchange(_ round: UInt64, _ bytes: Data) throws -> Data {
         condition.lock()

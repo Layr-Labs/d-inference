@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — picker serving-set reserve
+
+- Use the complete ordinary model selection's activation reserve in the catalog picker, so measured-only choices are not rejected using the unknown-model floor. Recheck existing choices when adding a model raises that reserve. Preserve the conservative Autopilot enrollment check and runtime memory safeguards.
+
 ## Unreleased — provider build environment
 
 - A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.

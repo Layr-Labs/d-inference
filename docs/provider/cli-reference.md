@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-11
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -120,6 +120,18 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+
+The ordinary catalog picker uses the selected models' shared activation reserve
+when checking each model's load estimate. Adding an unmeasured model can raise
+that reserve: the TUI refuses a toggle that would invalidate an existing choice,
+and numbered input validates the complete requested set. `all` first excludes
+models that cannot fit alone, then filters the remaining rows under their shared
+reserve. Total selected weights may exceed the budget because models can take
+turns. These are nominal estimates; [live admission](../architecture/scheduling.md#shared-host-memory-admission)
+still applies the configured reserve and current available memory. A resolved
+Autopilot opt-in retains the conservative flat picker reserve used by its separate
+inventory check (`Start.PickerReserveMode`, `Start.resolveFallbackSelection` in
+`provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`).
 
 Autopilot inventory verification names each cached model before checking its bytes.
 If another process holds that model’s update/verification lock, the check reports

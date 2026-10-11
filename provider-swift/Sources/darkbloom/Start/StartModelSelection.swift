@@ -27,7 +27,8 @@ extension Start {
 
     func selectStartupModels(snapshot: RuntimeSnapshot, config: ProviderConfig,
                              coordinatorURL: String,
-                             runtimeCapabilities: Set<ProviderRuntimeCapability>) async throws -> [String] {
+                             runtimeCapabilities: Set<ProviderRuntimeCapability>,
+                             autopilot: Bool) async throws -> [String] {
         if !model.isEmpty {
             let known = Set(snapshot.models.map(\.id))
             return model.filter {
@@ -40,6 +41,7 @@ extension Start {
             }
         }
         return try await interactiveCatalogPicker(snapshot: snapshot, config: config,
-            coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
+            coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities,
+            reserveMode: autopilot ? .autopilotInventory : .selectedModels)
     }
 }

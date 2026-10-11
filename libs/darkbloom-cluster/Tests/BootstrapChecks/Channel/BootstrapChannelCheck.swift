@@ -33,7 +33,7 @@ final class Completion: @unchecked Sendable {
         do {
             if CommandLine.arguments.count > 1 { try child(); return }
             try codec(); try matching(); try peerChecks(); try invalidStreams(); try lifecycle()
-            print("PASS 5 bootstrap check groups; 12 actual local children; no model, RDMA or remote network")
+            print("PASS 5 bootstrap check groups; 14 actual local children; no model, RDMA or remote network")
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
     }
 
@@ -60,6 +60,18 @@ final class Completion: @unchecked Sendable {
         signal(SIGALRM) { _ in _exit(99) }; alarm(3)
         let args = CommandLine.arguments, mode = args[1], path = args[2]
         let owner = Int32(args[3])!, rank = Int(args[4])!, until = UInt64(args[5])!
+        if mode == "cancelled" {
+            // The owner cancelled its listener: the connection or its first
+            // round is refused at once, long before this child's deadline.
+            let began = DispatchTime.now().uptimeNanoseconds
+            try reject("a cancelled listener served a round") {
+                let connection = try ClusterBootstrapConnection.connect(path: path, ownerProcessID: owner,
+                    identity: identity(rank), deadlineUptimeNanoseconds: until)
+                _ = try connection.exchange(sequence: 0, contribution: Data([1, 2, 3, 4]))
+            }
+            try require(DispatchTime.now().uptimeNanoseconds - began < 1_000_000_000, "a cancelled listener held its child to the deadline")
+            return
+        }
         if mode == "wrong-owner" {
             try reject("wrong owner was accepted") { _ = try ClusterBootstrapConnection.connect(path: path,
                 ownerProcessID: owner, identity: identity(rank), deadlineUptimeNanoseconds: until) }
@@ -195,6 +207,22 @@ final class Completion: @unchecked Sendable {
             try reject("shorter accept deadline ignored") { _ = try listener.accept(processID: getpid(),
                 identity: identity(0), deadlineUptimeNanoseconds: deadline(50)) }
             try require(DispatchTime.now().uptimeNanoseconds - began < 300_000_000, "accept did not charge shorter deadline")
+        }
+        // A start that is cancelled before the owner accepted its child (the
+        // other rank was refused at launch): the child ends at once, whether it
+        // connects after the cancellation or its connection was already queued.
+        // Its own deadline is 2.4 s away; `reap` allows 2.5 s.
+        for queuedFirst in [false, true] {
+            let until = deadline(2400), listener = try ClusterBootstrapListener(deadlineUptimeNanoseconds: until)
+            if !queuedFirst { listener.cancel() }
+            let process = try spawn(listener, mode: "cancelled", until: until)
+            if queuedFirst { usleep(400_000); listener.cancel() }
+            let began = DispatchTime.now().uptimeNanoseconds
+            try reap(process)
+            try require(DispatchTime.now().uptimeNanoseconds - began < 1_000_000_000,
+                "a cancelled listener's child outlived the cancellation (queued first: \(queuedFirst))")
+            try reject("cancelled listener accepted") { _ = try listener.accept(processID: process.processIdentifier,
+                identity: identity(0), deadlineUptimeNanoseconds: until) }
         }
         var path = ""
         do { let listener = try ClusterBootstrapListener(deadlineUptimeNanoseconds: deadline()); path = listener.socketPath }

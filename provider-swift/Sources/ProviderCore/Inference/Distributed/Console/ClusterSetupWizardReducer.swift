@@ -46,6 +46,7 @@ extension ClusterSetupState {
         case .sessionObserved(let observation): return sessionObserved(observation, at: time)
         case .session(let event): return handle(event, at: time)
         case .prompt(let event): return handle(event, at: time)
+        case .linkPairing(let event): return linkPairingObserved(event, at: time)
         case .terminationSignal(let number): return close(code: 128 + number, at: time)
         case .inputClosed: return close(code: 1, at: time)
         }
@@ -184,6 +185,7 @@ extension ClusterSetupState {
         resumed = true
         if let question = asking { return answer(question, with: key, at: time) }
         if case .editing(let text) = prompt { return edit(text, key, at: time) }
+        if case .enteringAddress(let text) = linkPairing { return editAddress(text, key, at: time) }
         clearNotice()
         switch key {
         case .character("q"), .character("Q"), .interrupt, .endOfInput: return requestQuit(at: time)
@@ -277,6 +279,12 @@ extension ClusterSetupState {
             }
             return reachPeer()
         case (.pair, "y"): return askConfirmCode()
+        case (.pair, "l"): return startLinkPairing(connect: nil)
+        case (.pair, "c"):
+            if linkPairing.running { say("The pairing over the link is already running."); return [] }
+            if let refusal = changeBlocker("pairing") { say(refusal); return [] }
+            linkPairing = .enteringAddress("")
+            return []
         case (.model, "a"):
             guard let inbox = local?.inbox else {
                 say("No setup is waiting in this Mac's inbox. The leader sends it from its own step 4.")
@@ -421,6 +429,7 @@ extension ClusterSetupState {
     /// `y` acts, once the question has been on screen long enough to read;
     /// any other key withdraws it and changes nothing.
     private mutating func answer(_ question: Question, with key: ClusterConsoleKey, at time: String) -> [ClusterSetupEffect] {
+        if case .confirmLinkCode = question { return answerLinkCode(key, at: time) }
         let yes = key == .character("y") || key == .character("Y")
         if yes {
             let dwell = UInt64(max(options.questionDwellMilliseconds, 0)) * 1_000_000
@@ -446,6 +455,8 @@ extension ClusterSetupState {
         case .confirmCode(let code):
             inFlight = .recordConfirmation
             return [.recordConfirmation(code: code, clusterID: pair?.clusterID)]
+        case .confirmLinkCode:
+            return []
         case .adoptPlan(let folder, let key):
             if let refusal = changeBlocker("saving a new setup") { notice = refusal; return [] }
             inFlight = .adoptPlan
@@ -461,6 +472,93 @@ extension ClusterSetupState {
             if session.isActive { return [] }
             return launch(at: time)
         }
+    }
+
+    // MARK: - Pairing over the link (S17)
+
+    /// Starts the ceremony: this Mac listens, or dials the address the other Mac shows.
+    private mutating func startLinkPairing(connect: String?) -> [ClusterSetupEffect] {
+        if linkPairing.running { say("The pairing over the link is already running."); return [] }
+        if let refusal = changeBlocker("pairing") { say(refusal); return [] }
+        linkPeerConfirmed = false
+        linkPairing = .waiting(connect == nil ? "Starting to listen on the link\u{2026}" : "Dialing the other Mac over the link\u{2026}")
+        return [.pairOverLink(connect: connect)]
+    }
+
+    /// The other Mac's link address, typed: digits and dots, enter dials, escape cancels.
+    private mutating func editAddress(_ text: String, _ key: ClusterConsoleKey, at time: String) -> [ClusterSetupEffect] {
+        switch key {
+        case .interrupt, .endOfInput:
+            linkPairing = .idle
+            return requestQuit(at: time)
+        case .escape: linkPairing = .idle
+        case .backspace: linkPairing = .enteringAddress(String(text.dropLast()))
+        case .enter:
+            guard Self.isIPv4(text) else { notice = "Type the address the other Mac shows, such as 10.219.4.7."; return [] }
+            linkPairing = .idle
+            return startLinkPairing(connect: text)
+        case .character(let c) where c.isNumber || c == ".":
+            if text.count < 15 { linkPairing = .enteringAddress(text + String(c)) }
+        case .unknown: notice = "Pasted text is not taken here: type the address."
+        default: break
+        }
+        return []
+    }
+
+    static func isIPv4(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.allSatisfy { part in
+            (1...3).contains(part.count) && part.allSatisfy(\.isNumber) && (part.count == 1 || part.first != "0") && Int(part).map { $0 <= 255 } == true
+        }
+    }
+
+    /// Only `y` (after the dwell) or `n` answers the ceremony's code; any other
+    /// key leaves the question up, since the other Mac is waiting on this one.
+    private mutating func answerLinkCode(_ key: ClusterConsoleKey, at time: String) -> [ClusterSetupEffect] {
+        let yes = key == .character("y") || key == .character("Y")
+        let no = key == .character("n") || key == .character("N") || key == .interrupt || key == .endOfInput
+        if yes {
+            let dwell = UInt64(max(options.questionDwellMilliseconds, 0)) * 1_000_000
+            guard questionShown, let since = questionShownAt, now >= since, now - since >= dwell else { return [] }
+        }
+        guard yes || no else { return [] }
+        withdrawQuestion()
+        clearNotice()
+        if yes {
+            linkPairing = .confirmedHere(peerConfirmed: linkPeerConfirmed)
+            notice = "Confirmed here. Waiting for the other Mac to confirm\u{2026}"
+            return [.answerLinkCode(accept: true)]
+        }
+        notice = "Codes differ or not confirmed: nothing was paired. The Mac that answered over the cable is not trusted."
+        var effects: [ClusterSetupEffect] = [.answerLinkCode(accept: false)]
+        if key == .interrupt || key == .endOfInput { effects += requestQuit(at: time) }
+        return effects
+    }
+
+    private mutating func linkPairingObserved(_ event: ClusterSetupLinkPairingEvent, at time: String) -> [ClusterSetupEffect] {
+        switch event {
+        case .waiting(let text):
+            if case .waiting = linkPairing { linkPairing = .waiting(text) }
+        case .code(let code, let peer):
+            linkPairing = .code(code, peer: peer)
+            return ask(.confirmLinkCode(code: code))
+        case .peerDecided(let accepted):
+            if accepted {
+                linkPeerConfirmed = true
+                if case .confirmedHere = linkPairing { linkPairing = .confirmedHere(peerConfirmed: true) }
+                notice = "The other Mac confirmed the code."
+            } else {
+                if case .confirmLinkCode = asking { withdrawQuestion() }
+                notice = "The other Mac did not confirm the code. Nothing was paired."
+            }
+        case .finished(let succeeded, let lines):
+            if case .confirmLinkCode = asking { withdrawQuestion() }
+            linkPairing = .finished(succeeded: succeeded, lines: lines)
+            record(.init(time: time, title: "Pairing over the link", failed: !succeeded, lines: lines))
+            notice = succeeded ? "Paired over the link. Next: step 4." : (lines.first ?? "The pairing over the link did not finish.")
+            return requestRefresh()
+        }
+        return []
     }
 
     // MARK: - Prompt box

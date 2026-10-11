@@ -59,6 +59,14 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Use the saved distributed cluster for local serving and register its leader as a control-only member (requires --local).")
     var distributed = false
 
+    @Flag(help: "With --cluster-member: install the member as an always-on background service (starts at login, waits for the cluster link, restarts with backoff, coordinated updates).")
+    var alwaysOn = false
+
+    /// launchd's entry point for `--always-on` (and usable in a terminal):
+    /// run the member under the cluster-member supervisor in this process.
+    @Flag(help: .hidden)
+    var supervise = false
+
     /// Both cluster modes are control-only: they take the saved cluster's
     /// model and lifecycle, so every solo serving option is refused at parse.
     mutating func validate() throws {
@@ -67,6 +75,11 @@ struct Start: AsyncParsableCommand {
             guard !distributed, !local, !localEndpoint, !soloOverrides else {
                 throw ValidationError("--cluster-member cannot be combined with solo serving or local distributed mode.")
             }
+            guard !(alwaysOn && supervise) else {
+                throw ValidationError("--always-on installs the service that runs --supervise; use one of them.")
+            }
+        } else if alwaysOn || supervise {
+            throw ValidationError("--always-on and --supervise apply to --cluster-member only.")
         }
         guard distributed else { return }
         guard local, !foreground, !localEndpoint else {
@@ -115,7 +128,13 @@ struct Start: AsyncParsableCommand {
         // prepared: no model scan, Metal probe or serving-mode selection.
         // The native owner child, not this process, holds the device.
         if clusterMember {
-            try await runClusterMember()
+            if alwaysOn {
+                try await installClusterMemberService()
+            } else if supervise {
+                try await runClusterMemberSupervisor()
+            } else {
+                try await runClusterMember()
+            }
             return
         }
         if distributed {

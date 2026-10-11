@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-11
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -80,7 +80,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
-| `logout` | Delete the device token | | `LogoutCommand.swift` (`Logout`) |
+| `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
@@ -423,7 +423,40 @@ SDK validation does not change coordinator normalization or model numerics
 `login` takes `--config` only and runs `performDeviceCodeLogin`
 (`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`): `POST
 /v1/device/code`, print URL and code, poll `POST /v1/device/token`, write
-`~/.darkbloom/auth_token`. `logout` takes no flags and deletes that file.
+`~/.darkbloom/auth_token`. The provider token is not a consumer API key.
+
+`logout` uses `Logout.run` in `provider-swift/Sources/darkbloom/LogoutCommand.swift`
+and `ProviderLogout.perform` in `provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`:
+
+| Flag | Type | Default | Effect / source |
+|---|---|---|---|
+| `--config <path>` | path | Global config default | Select the coordinator for revocation (`Logout.configOptions`) |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator drain acknowledgement (`ServiceDrain.swift`, `DrainOptions`) |
+| `--force` | flag | `false` | Explicitly permit interruption of unfinished work; process exit must still be confirmed (`DrainOptions`, `Logout.requireExited`) |
+
+The command disables watchdog/login recovery, drains and stops the provider,
+confirms the captured process identities have exited, and acquires the
+single-instance lock. It holds that lock and the lifecycle/update lease through
+revocation and local token deletion, preventing start/recovery from reusing the
+credential in between. A missing token file does not skip process shutdown.
+Unconfirmed exit, lock failure or a normal drain timeout refuses logout without
+removing the credential; a published drain remains closed with recovery disabled.
+
+After shutdown, it sends the current saved token **itself**, not its hash, as
+`Authorization: Bearer <token>` to `POST /v1/device/revoke` at the configured
+coordinator. `ProviderLogout.revokeToken` uses a ten-second request/resource
+timeout, follows no redirects, and confirms remote revocation only for HTTP
+`204`. Offline errors, cancellation, unsupported endpoints and every other status
+leave remote invalidation unconfirmed but still permit local deletion. Output
+distinguishes confirmed revocation, local-only logout with a warning, and no
+saved credential. Tokens and response bodies are not logged.
+
+This revokes only the current token, not every machine/account credential. It
+does not remove App Attest/SE keys, model downloads or management profiles.
+Automatic restart stays disabled until `darkbloom start`; link again with
+`darkbloom login` when needed. The backend contract belongs in the sibling
+[platform API reference](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/api-contracts.md),
+not the retained coordinator source in this repository.
 
 ### `darkbloom benchmark`
 
@@ -1209,7 +1242,9 @@ darkbloom login
 
 ## `darkbloom logout`
 
-Unlink this machine from its Darkbloom account.
+Stop the provider and remove its saved account credential. See the
+[logout flags and confirmation rules](#darkbloom-login--darkbloom-logout);
+local completion is not confirmation of remote invalidation.
 
 ```bash
 darkbloom logout

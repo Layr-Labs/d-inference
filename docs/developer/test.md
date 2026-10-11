@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-11
 
 ## Autopilot rewards
 
@@ -1274,6 +1274,29 @@ source/dependency/binary/metallib/artifact tuple:
 ## App Attest validation
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
+
+### Provider session reliability candidate
+
+Rebuild and run `make provider-test` with the normal isolated provider test
+runner after changes; the earlier reported focused population does not validate
+new diagnostics/build-source edits. These focused owners cover distinct boundaries:
+
+| Boundary | Provider test owner |
+|---|---|
+| Strict resume wire/transcript, endpoint/nonce/expiry binding and both registration encoders | `provider-swift/Tests/ProviderCoreTests/Crypto/AppAttestResumeTests.swift` |
+| Real local WebSocket reconnect and stale reply capabilities | `provider-swift/Tests/ProviderCoreTests/Coordinator/AppAttestResumeTransportTests.swift`, `AppAttestShadowReplyTests.swift` in the same directory |
+| Worker framing, deadlines, process ownership and reap-before-replacement | `provider-swift/Tests/ProviderAppAttestTests/WorkerTransportTests.swift`, `WorkerProcessTests.swift` in the same directory |
+| Stop-before-revoke, raw bearer, `204` confirmation, offline/redirect refusal and CLI flags | `provider-swift/Tests/ProviderCoreTests/Auth/ProviderLogoutTests.swift`; `provider-swift/Tests/DarkbloomCLITests/LogoutCommandTests.swift` |
+| Shutdown/update retirement barrier | `provider-swift/Tests/ProviderCoreTests/Service/ProviderLifecycleTests.swift` |
+
+Use the [signed native qualification procedure](../../scripts/nativequalification/README.md#actual-apple-test)
+only with explicit authorization and isolated credentials; run its backend
+counterpart from sibling `darkbloom-platform`. Its
+[status and pending evidence](../../scripts/nativequalification/README.md#qualification-status)
+distinguish the failed Apple support gate, IPC/suspended-worker tests, a native
+operation that never calls back, and real two-minute engine/resumption coverage.
+Do not turn opt-in native failures into skips, count signing as Apple acceptance,
+or treat transport fixtures as serving qualification.
 
 ## Cache attempt ownership during model replacement
 

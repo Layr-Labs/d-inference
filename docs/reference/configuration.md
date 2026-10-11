@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-11
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -556,6 +556,23 @@ Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unpa
 ## Provider CLI (`darkbloom`)
 
 Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the LaunchAgent allow-list above reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### App Attest worker qualification
+
+These are internal qualification opt-ins, **not production-ready configuration**.
+They use exact `1`, not the general boolean parsing convention above. Neither is
+forwarded by the installed LaunchAgent; no `provider.toml` setting enables them.
+
+| Variable | Values / default | Read in | Effect |
+|---|---|---|---|
+| `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/ProviderAppAttest/Worker/WorkerProtocol.swift` (`AppAttestWorkerSelection`); `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`usesAppAttestWorker`) | Select the supervised worker candidate. Default remains in-process App Attest; candidate failures do not fall back to in-process Apple calls or restart inference for a worker stall |
+| `DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/darkbloom/AppAttestQualificationCommand.swift` (`runIfRequested`); `scripts/nativequalification/stage-signed-app.sh` | Opt in to local signed-app staging/the private diagnostic entry; the diagnostic also requires the worker flag, signed resources and isolated loopback inputs. Does not enable serving or approve a build |
+
+The [worker security boundary](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
+and [native qualification status](../../scripts/nativequalification/README.md#qualification-status)
+remain separate from configuration selection. Endpoint-resumption capability is
+[advertised independently](protocol-messages.md#app-attest-endpoint-resumption-candidate);
+setting either flag creates no local trust and changes no proof lifetime.
 
 ### Startup model preload
 

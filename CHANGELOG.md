@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - provider session reliability candidate
+
+- Add socket-bound App Attest endpoint resumption and a default-off supervised worker candidate that keeps the inference key in the parent process. Native qualification remains blocked; this is not production-ready.
+- Make `darkbloom logout` stop the provider before revoking its current saved token and removing it locally; warn when remote invalidation is unconfirmed.
+
 ## Unreleased — provider build environment
 
 - A dev provider release now defaults to the dev coordinator `wss://api.dev.darkbloom.dev/ws/provider`. It does not fall back to the production coordinator. Dev and prod builds read models from `https://models.darkbloom.ai`. Local builds, tests and production releases keep the production defaults. `provider.toml`, CLI flags and `DARKBLOOM_R2_CDN_URL` still override the defaults.

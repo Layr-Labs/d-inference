@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-11
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -200,6 +200,20 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 
 ## Bounds and credential lifecycle
 
+The Apple-callback restart policy below describes the **default in-process
+provider path**. The internal, default-off
+[supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
+instead terminates and reaps its owned child before replacement, preserving the
+parent's memory-only endpoint key and existing credential budgets. It does not
+fall back to parent Apple calls or restart inference for a worker stall. The
+[reported native gate](../../scripts/nativequalification/README.md#qualification-status)
+is failed; implementation and transport tests are not Apple qualification.
+The separate [endpoint-resumption protocol](protocol-messages.md#app-attest-endpoint-resumption-candidate)
+can avoid a new Apple call on same-process reconnect only with its platform
+counterpart. It does not extend the original assertion or proof deadlines.
+Backend policy changes and their canonical docs remain in sibling
+[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/app-attest-shadow.md).
+
 | Boundary | Behavior |
 |---|---|
 | Initial spread | Random 0–29 seconds after inventory is ready. |
@@ -216,7 +230,7 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Key generation | In the normal single-provider process, a persisted shared five-generations-per-coordinator/environment-per-hour budget across account scopes is checked and saved before the empty-key pre-call marker and every Apple call. A budget storage failure therefore creates no new one-hour marker or Apple key. Only a completed native Apple callback reporting an error with no usable key ID permits a new attempt after a persisted one-minute cooldown; Apple may still have created an inaccessible key internally, so the shared budget bounds normal-process attempts. Busy admission, operation timeout, cancellation, issued/retired keys and a crash before an error response retain the one-hour cooldown. Separate processes that bypass the provider instance lock do not have an atomic cross-process Keychain budget. Code: `provider-swift/Sources/ProviderAppAttest/EnrollmentKeyLifecycle.swift` (`mayGenerateKey`, `mayRetryKeyGeneration`) and `AppAttestShadowClient.swift` (`respond`). |
 | Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Only a stored protocol-3 transaction resumes; one recorded without a version or under protocol 2 is refused as `enrollment_protocol`, which is not retried, and the client starts a fresh protocol-3 enrollment (`coordinator/internal/appattest/transcript/binding.go`, `Prepare`). The server measures the 24-hour limit from its original challenge, before the client caches the completed proof. A matching but expired transaction returns `enrollment_expired` and uses bounded exchange retries so a later prepare can expire the local cache and replace the key; binding mismatches remain terminal. Expired pending proof is replaced under the generation budget. |
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
-| Cancellation | Connection generation prevents late delivery into a different session. |
+| Cancellation | `ProviderLoop` generation invalidation cancels the exchange; `AppAttestShadowReply` additionally checks the originating `NWConnection`, registration, session, protocol and matching reply action immediately before writing. An old reply capability cannot send through the stable router to a new socket (`provider-swift/Sources/ProviderCore/Coordinator/AppAttestShadowReply.swift`, `sendAppAttestShadow`). |
 
 Code: `AppAttestShadowClient.swift`, `CallbackDeadline.swift`, `AppleAppAttestService.swift`, and `coordinator/internal/appattest/transcript/binding.go` (`Prepare`). Keychain items remain nonsynchronizing and device-local; private App Attest keys remain with Apple's service.
 

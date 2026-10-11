@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-09-30
+> Last updated: 2026-10-11
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
@@ -80,13 +80,44 @@ flowchart LR
   same contract identity locally and never talks to it
   ([`../prompt-contract-sidecar.md`](../prompt-contract-sidecar.md)).
 
+### Reconnect and attestation lifecycle
+
+`CoordinatorClient.connectAndRun` keeps the parent process and its endpoint key
+across transport replacement, but gives every socket a fresh registration nonce
+and clears its resume state on teardown. The normal `ProviderLoop.run` installs
+the [protocol-1 resumption responder](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+without requiring the worker flag. It proves custody only; the platform decides
+whether the new connection may serve. Unexpected disconnect still cancels that
+connection's inference requests; this does not resume interrupted completions
+or prove two-minute engine continuity.
+
+Apple exchanges use `AppAttestShadowReply`, a capability bound to their original
+`NWConnection`, rather than the reconnectable outbound router. Late results are
+discarded after transport replacement, even before `ProviderLoop` consumes the
+disconnect event. Sources: `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`
+(`connectAndRun`), `Coordinator/AppAttestShadowReply.swift` (`sendAppAttestShadow`)
+and `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`).
+
+The default App Attest implementation stays in-process. The internal,
+default-off [worker candidate](../security/identity-binding.md#supervised-app-attest-worker-candidate)
+uses another invocation of the same signed executable, with no inference or
+endpoint private key in the child. `cancelAppAttestShadow` invalidates the old
+exchange generation and chains worker retirement before the next transport can
+start verification. `stopAppAttestWorkerAndWait` is also a shutdown and re-exec
+barrier: a failed reap withholds drain completion or postpones update installation.
+No worker-stall recovery restarts inference or falls back to in-process Apple
+work (`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`,
+`ProviderLoop+Lifecycle.swift`, `ProviderLoop+AutoUpdate.swift`).
+
 ## Invariants
 
 1. Prompts are decrypted only inside this process and never logged; logs carry
    request ids, model ids and token counts — `ProviderLoop+InboundDecode.swift`,
    `ProviderLoop+InferenceHandler.swift`.
-2. The X25519 private key is generated in-process and never leaves the Mac —
-   `Crypto/NodeKeyPair.swift`.
+2. The X25519 private key is generated in the parent and remains only in that
+   process's memory, including with the worker candidate selected; it is never
+   exported to the worker or persisted — `Crypto/NodeKeyPair.swift`,
+   `ProviderLoop+AppAttestWorker.swift`.
 3. The SE P-256 identity binds the node key, binary hash, SIP and boot state
    into every attestation — `Security/AttestationBuilder.swift`,
    `Security/PersistentEnclaveKey.swift`.

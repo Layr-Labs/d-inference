@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-11
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -82,7 +82,7 @@ hash of a length-prefixed transcript to DeviceCheck. Code:
 | Credential ↔ reported app/hardware/SE identity | Protocol 3 binds local OS/build, app version, chip, binary hash, machine model, memory, CPU/GPU counts and the legacy attestation public key. These are app-origin values, not independent Apple hardware measurements | `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`clientHash`); `provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift` (`handleAppAttestShadow`) |
 | Authorization ↔ live request destination | The coordinator rechecks connection, endpoint, account and canonical machine at the final inference write, together with current authorization and model gates | `coordinator/registry/inference_authorization.go` (`providerRequestAuthorizationBindingLocked`, `authorizeInferenceHandoff`) |
 
-Only protocol 3 is negotiated. The coordinator refuses stored pre-v3 enrollment transcripts instead of adapting them to a current connection — `coordinator/appattest/service/session.go` (`startAppAttestShadow`) and `coordinator/internal/appattest/transcript/binding.go` (`Prepare`).
+Only protocol 3 is negotiated for Apple proof exchanges. The coordinator refuses stored pre-v3 enrollment transcripts instead of adapting them to a current connection — `coordinator/appattest/service/session.go` (`startAppAttestShadow`) and `coordinator/internal/appattest/transcript/binding.go` (`Prepare`).
 
 Local process/security diagnostics are outside `clientHash`. An App Attest
 assertion binds the challenge to its credential and transcript; the serving
@@ -90,6 +90,80 @@ lease additionally needs the coordinator's [qualification and receipt policy](..
 The request's verification snapshot records that coordinator decision at dispatch;
 it is not a new Apple signature over the inference input, output or computation.
 See `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`).
+
+### Supervised App Attest worker candidate
+
+The Stage D provider candidate moves DeviceCheck calls into a child of the
+**same exact Developer ID-signed executable**, not an independently trusted
+helper or a signing service. It defaults off and is not ready for production;
+see [selection](../../reference/configuration.md#app-attest-worker-qualification)
+and the [reported native qualification gate](../../../scripts/nativequalification/README.md#qualification-status).
+The in-process path above remains the default.
+The child entry is `--app-attest-worker-v1` (`AppAttestWorkerHost.argument`),
+not a public CLI signing command.
+
+```mermaid
+flowchart LR
+    C["Originating coordinator socket"] --> P["ProviderLoop: parent-only endpoint key"]
+    P -->|"Typed exchange; decrypted assertion challenge"| W["Same signed executable: App Attest worker"]
+    P <-->|"Kernel audit peer and exact-code checks"| W
+    W --> A["Apple DeviceCheck and scoped credential state"]
+    W -->|"Proof reply; no endpoint private key"| P
+    P -->|"AppAttestShadowReply: same socket only"| C
+    T["Timeout or cancellation"] --> R["Terminate and reap owned worker"]
+    R -->|"Only after retirement"| N["Replacement worker; same parent key"]
+```
+
+The security boundary is enforced by these provider-owned components:
+
+1. **Exact code and kernel peer.** `WorkerCodeIdentity` requires Developer ID
+   team `SLDQ2GJ6TL`, identifier `io.darkbloom.provider`, hardened runtime and no
+   ad-hoc/debug/library-validation/loader/JIT relaxations. Both sides compare
+   CodeDirectory identity and full executable SHA-256 at authentication. The
+   kernel `LOCAL_PEERTOKEN` audit token, including PID version, selects the
+   running code; a peer-supplied PID/path or same team alone is insufficient.
+   Subsequent exchanges recheck the captured audit/code identity
+   (`provider-swift/Sources/ProviderAppAttest/Worker/WorkerPeerIdentity.swift`).
+2. **Parent-only endpoint custody.** The bootstrap pipe carries a one-use
+   secret, generation, parent audit token, scope and public endpoint, never the
+   endpoint private key or account bearer token. The worker seals a fresh
+   generation-bound custody challenge to that endpoint before any credential or
+   Apple operation. Only the parent closure capturing `ProviderLoop.keyPair`
+   decrypts it and later assertion challenges. Inference and the memory-only
+   private key remain in the parent, not worker memory, disk or Keychain
+   (`AppAttestWorkerHost.run` in `provider-swift/Sources/ProviderAppAttest/Worker/AppAttestWorkerHost.swift`;
+   `handleAppAttestWorker` in `provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestWorker.swift`).
+3. **Typed RPC, not arbitrary signing.** `WorkerFrame.Body` permits the bootstrap
+   handshake and typed protocol-3 `prepare`/`attest`/`assert` exchanges, never
+   `sign(hash)`. Generation and increasing sequence bind replies; account and
+   environment stay fixed, the endpoint is captured at bootstrap, and the
+   binary hash must match the running signed code. The authenticated parent
+   supplies locally derived status, not server-selected claims. The private Unix socket uses bounded framing and
+   monotonic deadlines (`WorkerProtocol.swift`, `WorkerTransport.swift` in
+   `provider-swift/Sources/ProviderAppAttest/Worker/`).
+4. **Retire before replace.** `AppAttestWorkerClient.respond` has one fixed
+   80-second exchange deadline. An outstanding Apple operation, timeout or
+   cancellation retires the owned process; `WorkerProcess.terminateAndReap`
+   gives SIGTERM two seconds, then SIGKILL two seconds and waits for exit.
+   Signalling and `waitpid` share an ownership lock. Failure quarantines the
+   slot, not a concurrent replacement. Epoch fences stop an old cancellation
+   from killing its successor. The worker's scope-specific
+   `WorkerCredentialLease` serializes its existing credential/budget writes and
+   releases on death (`AppAttestWorkerClient.swift`, `WorkerProcess.swift`,
+   `WorkerCredentialLease.swift` in the same directory).
+
+Worker failure never enables a fallback Apple call in the parent, restarts the
+inference process to recover verification, or manufactures serving permission.
+`ProviderLoop` reports infrastructure failures as `busy`, not an Apple
+invalid-key result that spends rotation budgets. Shutdown/re-exec waits for
+retirement (`ProviderLoop.stopAppAttestWorkerAndWait` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`).
+The [separate socket-resumption protocol](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+proves continued endpoint custody only; neither mechanism creates new local
+trust or extends the original proof lifetime. Canonical backend authorization
+and its Stage C counterpart belong in sibling
+[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/architecture/security/identity-binding.md),
+not the retained coordinator tree here.
 
 ### Stable identity for coordinator state
 
@@ -115,6 +189,17 @@ RFC 8628-style flow implemented in `coordinator/api/access/device/handlers.go` a
 | 4 | Token = the provider token whose shape is under [api-contracts](../../reference/api-contracts.md#device-code-flow-3); the store keeps `ProviderToken{TokenHash, AccountID, Label: "device-" + user_code, Active}`; the CLI writes the token to `~/.darkbloom/auth_token` with mode `0600` | `HandleDeviceToken`; `AuthTokenStore` |
 | 5 | The daemon sends it as `register.auth_token` (binding B6) | `coordinator/api/provider/` |
 | Logging | `device code created {user_code, expires_in}`, `provider token issued {account_id, user_code}`, `device approved {user_code, account_id}` at `Info` — never the `device_code` or the token | `coordinator/api/access/device/handlers.go` |
+
+Provider logout closes the process side of B6 before deleting the saved token.
+`Logout.run` holds the lifecycle/update lease and, after confirmed exit, the
+single-instance lock through revocation and deletion. This still stops a running
+provider when the token file is already missing. `ProviderLogout.perform` then
+revokes only the current saved token; local deletion alone cannot invalidate a
+copy held elsewhere. The [CLI contract](../../provider/cli-reference.md#darkbloom-login--darkbloom-logout)
+defines the raw-bearer `POST /v1/device/revoke`, `204`-only confirmation and
+offline warning. Sources: `provider-swift/Sources/darkbloom/LogoutCommand.swift`
+and `provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`. Backend token
+revocation policy and persistence remain platform-owned.
 
 ### Consumer identity: Privy JWT verification
 

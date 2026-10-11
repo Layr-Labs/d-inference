@@ -43,6 +43,10 @@ final class NativePairMemberSession: @unchecked Sendable {
     private var endpoint: ClusterRemoteWorkerEndpoint?
     private var timer: DispatchSourceTimer?
     private var outcome: String = "preparing"
+    /// What serves this start once its owner launched (S10); nil keeps the
+    /// session to the key prelude and release, as before.
+    private let servingHost: (any NativePairMemberServingHost)?
+    private var serving = false
     private let onFinished: @Sendable (NativePairMemberSession, Bool) -> Void
     var status: String { condition.lock(); defer { condition.unlock() }; return outcome }
     /// Whether a dropped control connection leaves this session in its grace:
@@ -53,6 +57,7 @@ final class NativePairMemberSession: @unchecked Sendable {
     }
     init(installation: NativePairMemberInstallation, connection: NativePairMemberConnection,
          message: NativePairMessage, receivedAt: UInt64, wallUnixNanoseconds: Int64,
+         servingHost: (any NativePairMemberServingHost)? = nil,
          onFinished: @escaping @Sendable (NativePairMemberSession, Bool) -> Void) throws {
         let (policy, start) = try NativePairMemberPolicy.preparation(Data(base64Encoded: message.payload)!)
         guard policy.bytes == installation.policy.bytes, start.rank == installation.rank,
@@ -69,6 +74,7 @@ final class NativePairMemberSession: @unchecked Sendable {
         epoch = message.epoch; generation = message.generation
         prepareDeadline = receivedAt + prepDelta; leaseDeadline = receivedAt + lifetimeDelta
         prepareUnixNanoseconds = prepare; leaseExpiresUnix = expires
+        self.servingHost = servingHost
         self.onFinished = onFinished
     }
     func run() {
@@ -160,7 +166,11 @@ final class NativePairMemberSession: @unchecked Sendable {
         if stopped || outcome == "released" || outcome == "releasing" { condition.unlock(); return }
         stopped = true; if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }
         if notify { cancellationPublication.enter() }
-        let endpoint = endpoint; condition.broadcast(); condition.unlock()
+        let endpoint = endpoint, host = serving ? servingHost : nil; condition.broadcast(); condition.unlock()
+        // Close the served slot's admission now; the owner's cleanup below
+        // ends a request still running, and `runOwned` waits for the slot's
+        // retirement before any receipt.
+        if let host { let epoch = start.common.epoch; Task.detached { await host.stopServingCommittedStart(epoch: epoch) } }
         endpoint?.requestNativeCleanup() // Independent of SE signing and WebSocket writes.
         if notify { DispatchQueue.global().async {
             defer { self.cancellationPublication.leave() }
@@ -210,8 +220,11 @@ final class NativePairMemberSession: @unchecked Sendable {
             condition.lock(); let allowed = !stopped && committed; condition.unlock()
             guard allowed else { throw NativePairMemberError.inactive }
             let created = try installation.launch(start: start, until: firstGrant, relay: relay)
-            condition.lock(); endpoint = created; launched = true; let cancelled = stopped; condition.unlock()
+            condition.lock(); endpoint = created; launched = true; let cancelled = stopped
+            if !cancelled, servingHost != nil { serving = true }
+            condition.unlock()
             if cancelled { created.requestNativeCleanup() }
+            else if let host = servingHost { beginServing(host, endpoint: created) }
             // No fixed lifetime: wait in slices, each up to the current
             // grant's cleanup bound, which every renewal moves on.
             while true {
@@ -221,6 +234,8 @@ final class NativePairMemberSession: @unchecked Sendable {
             }
             guard clean, created.nativeCleanupObserved, created.ownerDeviceLeaseReleasedObserved,
                   created.ownerTermination == .exited(0) else { throw NativePairMemberError.inactive }
+            // Nothing this start served outlives its receipt.
+            stopServing()
             condition.lock(); outcome = "releasing"; condition.unlock()
             guard cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success else { throw NativePairMemberError.deadline }
             var receipt = Data([68, 66, 78, 82, 1]); receipt.append(contentsOf: SHA256.hash(data: start.canonicalBytes)); receipt.append(contentsOf: [1, 1, 1])
@@ -228,6 +243,7 @@ final class NativePairMemberSession: @unchecked Sendable {
             condition.lock(); outcome = "released"; condition.unlock()
         } catch {
             cancel(notify: true)
+            stopServing()
             condition.lock(); if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
         }
         let cancelJoined = cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success
@@ -237,6 +253,28 @@ final class NativePairMemberSession: @unchecked Sendable {
         condition.unlock()
         onFinished(self, reusable)
     }
+    /// Hands the launched owner to the serving host. A host that cannot serve
+    /// ends the session: cancellation, native cleanup, release.
+    private func beginServing(_ host: any NativePairMemberServingHost, endpoint: ClusterRemoteWorkerEndpoint) {
+        let value = NativePairMemberServingStart(start: start, identity: installation.sessionIdentity(start),
+            profile: installation.profile, executionPlanSHA256: installation.executionPlanSHA256,
+            endpoint: endpoint, leaseDeadlineUptimeNanoseconds: lifetimeDeadline)
+        Task.detached { [weak self] in
+            do { try await host.serveCommittedStart(value) } catch { self?.cancel(notify: true) }
+        }
+    }
+
+    /// Waits, bounded by the cleanup deadline, until the host retired what it
+    /// served for this start. Called before every receipt and every finish.
+    private func stopServing() {
+        let host = condition.withLock { serving ? servingHost : nil }
+        guard let host else { return }
+        let done = DispatchSemaphore(value: 0), epoch = start.common.epoch
+        Task.detached { await host.stopServingCommittedStart(epoch: epoch); done.signal() }
+        _ = done.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline))
+        condition.withLock { serving = false }
+    }
+
     private func ownerInvalidated() {
         condition.lock(); let completedPrelude = nextRound == 3; condition.unlock()
         if !completedPrelude { cancel(notify: true) }

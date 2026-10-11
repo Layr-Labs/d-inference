@@ -59,13 +59,17 @@ public enum ClusterPairSlotError: Error, Sendable, Equatable {
 final class ClusterPairSlotHandle: @unchecked Sendable {
     let id = UUID()
     let modelID: String
+    /// The pair session's membership epoch (a committed start's epoch).
+    let membershipEpoch: UUID
     let tokenizer: TokenizerHandle
     let sizing: SlotSizingSnapshot
     let owner: ClusterPairSlotOwner
     let publishedAt = ContinuousClock.now
 
-    init(modelID: String, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot, owner: ClusterPairSlotOwner) {
-        self.modelID = modelID; self.tokenizer = tokenizer; self.sizing = sizing; self.owner = owner
+    init(modelID: String, membershipEpoch: UUID, tokenizer: TokenizerHandle, sizing: SlotSizingSnapshot,
+         owner: ClusterPairSlotOwner) {
+        self.modelID = modelID; self.membershipEpoch = membershipEpoch; self.tokenizer = tokenizer
+        self.sizing = sizing; self.owner = owner
     }
 }
 
@@ -180,6 +184,7 @@ extension ProviderLoop {
             maxContextLength: profile.maxContextTokens,
             defaultMaxTokens: min(profile.maxOutputTokens, Self.schedulerDefaultMaxTokens))
         let handle = ClusterPairSlotHandle(modelID: specification.publicModelID,
+            membershipEpoch: specification.expectedIdentity.membershipEpoch,
             tokenizer: specification.tokenizer, sizing: sizing, owner: owner)
         // No suspension since the checks above: publication is atomic on
         // this actor with them.

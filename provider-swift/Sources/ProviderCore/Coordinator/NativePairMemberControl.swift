@@ -11,8 +11,15 @@ final class NativePairMemberControl: @unchecked Sendable {
     private var session: NativePairMemberSession?
     private var inboundSequence: UInt64 = 0
     private var epochs = Set<String>()
+    /// What serves a committed start once its owner launched (S10). Weak: the
+    /// provider loop that serves holds this control.
+    private weak var servingHostReference: (any NativePairMemberServingHost)?
     init(installation: NativePairMemberInstallation, signer: any AttestationSigner) {
         self.installation = installation; self.signer = signer
+    }
+    var servingHost: (any NativePairMemberServingHost)? {
+        get { lock.withLock { servingHostReference } }
+        set { lock.withLock { servingHostReference = newValue } }
     }
     var status: String { lock.withLock { session?.status ?? "idle" } }
     /// A new connection. A session away in its disconnect grace (its
@@ -54,7 +61,8 @@ final class NativePairMemberControl: @unchecked Sendable {
                 if message.type == "native_pair_prepare" {
                     guard session == nil, epochs.count < 1024, epochs.insert(message.epoch).inserted else { throw NativePairMemberError.inactive }
                     let value = try NativePairMemberSession(installation: installation, connection: expected,
-                        message: message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds) { [weak self] old, reusable in
+                        message: message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds,
+                        servingHost: servingHostReference) { [weak self] old, reusable in
                             self?.finished(old, reusable: reusable)
                         }
                     session = value; start = value

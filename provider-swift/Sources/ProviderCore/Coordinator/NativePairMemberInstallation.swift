@@ -81,11 +81,15 @@ public struct NativePairMemberInstallation: Sendable {
         return files
     }
     func launch(start: ClusterNativeAuthorizationStart, until: UInt64, relay: ClusterOwnerNativeKeyRelay) throws -> ClusterRemoteWorkerEndpoint {
-        let fresh = ClusterWorkerIdentity(membershipEpoch: start.common.epoch, modelID: identity.modelID,
-            artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256, peers: identity.peers)
-        return try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
-            expectedIdentity: fresh, profile: profile, rank: rank,
-            executionPlanSHA256: Self.hex(policy.hashes[0]), lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay)
+        try ClusterRemoteWorkerEndpoint(localOwner: localOwner, clusterID: clusterID,
+            expectedIdentity: sessionIdentity(start), profile: profile, rank: rank,
+            executionPlanSHA256: executionPlanSHA256, lifetimeDeadlineUptimeNanoseconds: until, nativeKeyRelay: relay)
     }
+    /// The installed worker identity under the start's membership epoch.
+    func sessionIdentity(_ start: ClusterNativeAuthorizationStart) -> ClusterWorkerIdentity {
+        ClusterWorkerIdentity(membershipEpoch: start.common.epoch, modelID: identity.modelID,
+            artifactSHA256: identity.artifactSHA256, configurationSHA256: identity.configurationSHA256, peers: identity.peers)
+    }
+    var executionPlanSHA256: String { Self.hex(policy.hashes[0]) }
     static func hex(_ bytes: Data) -> String { bytes.map { String(format: "%02x", $0) }.joined() }
 }

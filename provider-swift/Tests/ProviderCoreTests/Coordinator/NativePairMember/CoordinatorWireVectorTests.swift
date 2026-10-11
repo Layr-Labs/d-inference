@@ -83,7 +83,8 @@ struct CoordinatorWireVectorTests {
             // The attestation signer's 64-byte coordinates name the same pin.
             let signer = SoftwareMemberSigner(key: privateKey)
             #expect(ClusterMemberPin.of(sePublicKey: signer.publicKeyBase64) == key["pin"])
-            #expect(roster.memberKey(try #require(key["pin"])) == key["se_public_key"])
+            let pin = try #require(key["pin"])
+            #expect(roster.memberKey(pin) == key["se_public_key"])
             // A fresh signature by this member's key over the canonical bytes
             // verifies in its place (ECDSA signatures are randomized).
             let signature = try ClusterRoster.signature(over: canonical, signer: signer)
@@ -92,7 +93,8 @@ struct CoordinatorWireVectorTests {
             try resigned.verify(clusterID: fixture.clusterID)
         }
         #expect(ClusterMemberPin.of(sePublicKey: Data(repeating: 7, count: 65).base64EncodedString()) == nil)
-        #expect(membership.plan(for: try #require(membership.plans?.first?.policySHA256))?.members.first == membership.memberPin)
+        let policy = try #require(membership.plans?.first?.policySHA256)
+        #expect(membership.plan(for: policy)?.members.first == membership.memberPin)
         #expect(membership.artifact(for: "fixture/cluster-model") == membership.inventory?.first?.artifactSHA256)
         #expect(membership.edges?.allSatisfy { membership.reaches($0.peerPin) } == true)
     }
@@ -122,11 +124,36 @@ struct CoordinatorWireVectorTests {
             let object = try #require(try JSONSerialization.jsonObject(with: frame) as? [String: Any])
             var expected = fixture.registration
             if let claim { expected["resume"] = ["epoch": claim.epoch, "generation": claim.generation] as [String: Any] }
-            #expect(try WireVector.normalized(try #require(object["cluster_membership"])) == WireVector.normalized(expected))
+            let claimObject = try #require(object["cluster_membership"])
+            #expect(try WireVector.normalized(claimObject) == WireVector.normalized(expected))
             guard case .register(let decoded) = try ProviderProtocolCodec.decodeProviderMessage(from: frame) else {
                 Issue.record("not a register frame"); return
             }
             #expect(decoded.clusterMembership == membership.resuming(claim))
+        }
+    }
+
+    /// With `DARKBLOOM_WIRE_VECTOR_OUT` naming a directory, writes the member
+    /// register frames this build emits (the vector's roster registration,
+    /// with and without a resume claim, and a rank registration) for the
+    /// coordinator's own decoder to check. Does nothing otherwise.
+    @Test func exportsRegisterFramesForTheCoordinatorDecoderWhenAsked() throws {
+        guard let directory = ProcessInfo.processInfo.environment["DARKBLOOM_WIRE_VECTOR_OUT"] else { return }
+        let fixture = try Registration()
+        let roster = try fixture.decode(fixture.registration)
+        let rank = try ClusterMembership(clusterID: "studio-pair", rank: 1, policySHA256: String(repeating: "b", count: 64))
+        let hardware = HardwareInfo(machineModel: "fixture", chipName: "Apple M3 Ultra", chipFamily: .m3, chipTier: .ultra,
+            memoryGb: 256, memoryAvailableGb: 240, cpuCores: .init(total: 32, performance: 24, efficiency: 8),
+            gpuCores: 80, memoryBandwidthGbs: 819)
+        let resume = ClusterMembership.Resume(epoch: String(repeating: "ab", count: 16), generation: 9)
+        for (name, membership, claim) in [("roster-register", roster, nil), ("roster-register-resume", roster, resume),
+                                          ("rank-register", rank, nil)] as [(String, ClusterMembership, ClusterMembership.Resume?)] {
+            let config = CoordinatorClientConfig(url: "wss://coordinator.invalid/ws", hardware: hardware,
+                models: [.init(id: "fixture/cluster-model", modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)],
+                backendName: "mlx-swift", executionRole: .clusterMember, clusterMembership: membership)
+            let frame = try CoordinatorClientCodec.encodeRegistration(from: config,
+                memberRegistrationNonce: String(repeating: "a", count: 64), clusterResume: claim)
+            try frame.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).json"))
         }
     }
 
@@ -239,7 +266,8 @@ struct CoordinatorWireVectorTests {
         let frame = try NativePairMessage.decodePublicFrame(WireVector.data(try #require(vector["frame"])))
         #expect(frame.type == "native_pair_lease" && NativePairMessage.outboundTypes.contains(frame.type)
             && !NativePairMessage.inboundTypes.contains(frame.type))
-        let lease = try #require(NativePairLeaseRenewal(payload: try #require(Data(base64Encoded: frame.payload))))
+        let framePayload = try #require(Data(base64Encoded: frame.payload))
+        let lease = try #require(NativePairLeaseRenewal(payload: framePayload))
         #expect(lease.expiresAtUnixNano == frame.expiresAtUnixNano && lease.renewal == 1)
     }
 }

@@ -606,6 +606,13 @@ public actor ProviderLoop {
     internal var clusterPairSlot: ClusterPairSlotHandle?
     /// Keeps the member's published capacity current while a pair slot exists.
     internal var clusterPairCapacityTask: Task<Void, Never>?
+    /// The leader's serving context for committed starts (S10), and the one
+    /// start it serves: its epoch, whether the session asked it to stop, and
+    /// whether the pair is still forming.
+    internal var clusterPairServing: ClusterPairServingContext?
+    internal var clusterPairServingEpoch: UUID?
+    internal var clusterPairServingStopped = false
+    internal var clusterPairServingForming = false
 
     /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
     /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the

@@ -68,6 +68,7 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
             peers: [.init(id: "rank-0", buildSHA256: String(repeating: "c", count: 64)),
                     .init(id: "rank-1", buildSHA256: String(repeating: "d", count: 64))])
     }
+    init(identity: DistributedResidentIdentity) { self.identity = identity }
     var reserveCount: Int { lock.withLock { leases.count } }
     var shutdownCount: Int { lock.withLock { shutdowns } }
     var lastLease: ScriptedPairLease? { lock.withLock { leases.last } }

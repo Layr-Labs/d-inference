@@ -44,9 +44,17 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     var admittedCuts: [Int] { definition.supportedCuts }
     var generationModes: [ClusterGenerationMode] { definition.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { definition.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { profile.maximumPromptTokens }
-    var maximumOutputTokens: Int { profile.maximumOutputTokens }
-    var maximumChunkTokens: Int { profile.maximumChunkTokens }
+    /// The request a placement is planned and fitted for: the earlier
+    /// reservation (8,192 prompt, 128 output, 8,320 context), not the profile's
+    /// derived limits (up to 32,768 context, `QwenResidentContextLimits`). A
+    /// placement that fits now holds the model and such a request; each rank
+    /// then admits the largest context its Mac holds at load and gates every
+    /// longer request live (`QwenResidentRuntime.admittedContext`). Planning
+    /// memory and time for a longer planned request is a follow-up.
+    static let planningLimits = QwenResidentContextLimits.reservation
+    var maximumPromptTokens: Int { min(profile.maximumPromptTokens, Self.planningLimits.maximumPromptTokens) }
+    var maximumOutputTokens: Int { min(profile.maximumOutputTokens, Self.planningLimits.maximumOutputTokens) }
+    var maximumChunkTokens: Int { min(profile.maximumChunkTokens, Self.planningLimits.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { geometry.hiddenSize * ((try? qwenStageWireElementBytes(profile.activationDType)) ?? 4) }
 
     /// `QwenResidentRequestAllowance` charges the whole model's conservative
@@ -55,7 +63,8 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// per array.
     var requestChargeEveryRankBytes: Int {
         guard let b = try? QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-            maximumTokens: profile.maximumContextTokens, chunkSize: profile.maximumChunkTokens) else { return 0 }
+            maximumTokens: min(profile.maximumContextTokens, Self.planningLimits.maximumContextTokens),
+            chunkSize: maximumChunkTokens) else { return 0 }
         let arrays = 6 * b.recurrentLayers + 3 * b.attentionLayers + 3
         return 3 * b.recurrentLayers * (b.convolutionBytesPerLayer + b.ssmBytesPerLayer)
             + b.attentionLayers * (b.kvCapacityBytesPerAttentionLayer + 4)

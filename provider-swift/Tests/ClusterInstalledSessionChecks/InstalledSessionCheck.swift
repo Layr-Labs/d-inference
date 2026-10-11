@@ -48,8 +48,18 @@ final class EndpointBox: @unchecked Sendable {
 }
 
 @main enum InstalledSessionCheck {
+    /// The installed launch arguments with the combined profile's attachment,
+    /// which always comes last, checked and removed.
+    static func withoutBootstrap(_ plan:DistributedInstalledPlan,binding:ClusterOwnerBinding,deadline:UInt64) throws->[String] {
+        let start=try DistributedInstalledNativeStart.starts(plan:plan,epoch:binding.identity.membershipEpoch)[binding.rank]
+        let attachment=try ClusterOwnerBootstrapAttachment(profile:.nativeKeyPreludeMesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000,nativeStart:start)
+        defer{attachment.cancel()}
+        let arguments=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)
+        try require(Array(arguments.suffix(attachment.workerArguments.count))==attachment.workerArguments,"bootstrap arguments are not last")
+        return Array(arguments.dropLast(attachment.workerArguments.count))
+    }
     static func main() async throws {
-        signal(SIGALRM){_ in Darwin._exit(124)};alarm(50);defer{alarm(0)}
+        signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}
         let root=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("installed-check-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:root)}
         let fixture=try InstalledFixture.make(root:root,probe:URL(fileURLWithPath:CommandLine.arguments[1]),
@@ -78,7 +88,7 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, open 27B pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -126,34 +136,45 @@ final class EndpointBox: @unchecked Sendable {
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")
         try rejected{_ = try ClusterLocalOwnerConfiguration(installedDarkbloom:URL(fileURLWithPath:"/unsafe/../owner"))}
     }
-    /// The installed build starts its ranks with the runtime's own bootstrap and
-    /// says so. The owner-authenticated arguments stay a contract, not a default:
-    /// they are appended only for a build that selects that exchange.
+    /// The installed build starts its ranks with the owner-authenticated
+    /// bootstrap (S07): the native key prelude, then the mesh rounds, through
+    /// both owners and the leader's relay. A launch without its attachment, or
+    /// with another profile's, is a mismatch, never a silent downgrade.
     static func bootstrapSelection(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
         let plan=prepared.plan
-        try require(plan.bootstrap == .directNative && plan.bootstrap.ownerProfile==nil && !plan.bootstrap.ownerAuthenticated,"installed bootstrap selection differs")
+        try require(plan.bootstrap == .ownerAuthenticated && plan.bootstrap.ownerProfile == .nativeKeyPreludeMesh2 && plan.bootstrap.ownerAuthenticated,"installed bootstrap selection differs")
         let binding=try plan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
         let deadline=DispatchTime.now().uptimeNanoseconds+100_000_000_000
-        let direct=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline-1,attachment:nil)
-        try require(!direct.contains{$0.hasPrefix("--bootstrap-")},"direct native launch carried bootstrap arguments the worker refuses")
-        try require(Array(direct.suffix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)],"startup deadline was not passed to the worker")
-        let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
-        try require(legacy==Array(direct.dropLast(2)) && legacy.count==24,"a worker without the startup argument must be started without it")
+        let starts=try DistributedInstalledNativeStart.starts(plan:plan,epoch:binding.identity.membershipEpoch)
+        try require(starts.count==2 && starts.map(\.rank)==[0,1] && starts[0].common.canonicalBytes==starts[1].common.canonicalBytes,"native starts differ")
+        // Each owner admits only the start its own setup derives, for its own rank.
+        let authorize=DistributedInstalledNativeStart.authorizer(plan:plan)
+        try authorize(starts[plan.configuration.localRank])
+        try rejected{try authorize(starts[1-plan.configuration.localRank])}
+        let attachment=try ClusterOwnerBootstrapAttachment(profile:.nativeKeyPreludeMesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000,
+            nativeStart:starts[plan.configuration.localRank])
+        defer{attachment.cancel()}
+        try require(attachment.workerArguments.count==8 && attachment.workerArguments[0]=="--bootstrap-socket-path"
+            && attachment.workerArguments[6]=="--native-authorization-start-base64","authenticated argument contract changed")
+        let launched=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline-1,attachment:attachment)
+        try require(Array(launched.suffix(10).prefix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)]
+            && Array(launched.suffix(8))==attachment.workerArguments,"startup deadline or bootstrap arguments were not passed to the worker")
+        let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)
+        try require(legacy.count==24+8,"a worker without the startup argument must be started without it")
         // A startup may outlast the first lease grant (the lease is renewed
         // during the load), but not the protocol's hour; a first grant is at
         // most one lease grant away.
-        _ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:nil)
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:DispatchTime.now().uptimeNanoseconds+3_601_000_000_000,attachment:nil)}
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:DispatchTime.now().uptimeNanoseconds+121_000_000_000,startupDeadline:nil,attachment:nil)}
-        let attachment=try ClusterOwnerBootstrapAttachment(profile:.mesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000)
-        defer{attachment.cancel()}
-        try require(attachment.workerArguments.count==6 && attachment.workerArguments[0]=="--bootstrap-socket-path","authenticated argument contract changed")
-        // Supplying the attachment to a build that selected the direct exchange
-        // is a mismatch, never a silent upgrade or downgrade.
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)}
+        _ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:attachment)
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:DispatchTime.now().uptimeNanoseconds+3_601_000_000_000,attachment:attachment)}
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:DispatchTime.now().uptimeNanoseconds+121_000_000_000,startupDeadline:nil,attachment:attachment)}
+        // No attachment, or the mesh-only profile's: a mismatch.
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)}
+        let meshOnly=try ClusterOwnerBootstrapAttachment(profile:.mesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000)
+        defer{meshOnly.cancel()}
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:meshOnly)}
         let (session,_)=try session(f,prepared)
         let observed=session.diagnosticObservation
-        try require(observed.nativeBootstrap == .directNative && !observed.nativeBootstrapOwnerAuthenticated,"status claimed an authenticated bootstrap")
+        try require(observed.nativeBootstrap == .ownerAuthenticated && observed.nativeBootstrapOwnerAuthenticated,"status did not report the authenticated bootstrap")
         try require(observed.collectiveProgressLimitMilliseconds==60_000,"status omitted the collective progress limit")
         try require(session.cooperativeStopAllowanceNanoseconds==85_000_000_000,"stop allowance does not cover the clean-stop wait and the progress limit")
     }
@@ -230,12 +251,12 @@ final class EndpointBox: @unchecked Sendable {
             let configuration=try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:member),capability:split.capability,capabilitySHA256:split.configuration.capabilitySHA256)
             let rankPlan=try DistributedInstalledPlan(saved:.init(configuration:configuration,capability:split.capability),paths:split.paths)
             let binding=try rankPlan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
-            let arguments=try rankPlan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+            let arguments=try withoutBootstrap(rankPlan,binding:binding,deadline:deadline)
             // The same setup without the field: the pipeline's command line, to which the mode adds exactly one pair.
             member.removeValue(forKey:"generationMode")
             let pipeline=try DistributedInstalledPlan(saved:.init(configuration:ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:member),
                 capability:split.capability,capabilitySHA256:split.configuration.capabilitySHA256),capability:split.capability),paths:split.paths)
-            let plain=try pipeline.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+            let plain=try withoutBootstrap(pipeline,binding:binding,deadline:deadline)
             try require(arguments==plain+["--generation-mode","phase_split_v1"] && !plain.contains("--generation-mode"),
                 "rank \(rank) was not started with the pipeline's arguments plus the selected mode: \(arguments)")
             try require(!arguments.contains("--qualification-switches"),"the owner passed a qualification switch")
@@ -268,8 +289,8 @@ final class EndpointBox: @unchecked Sendable {
         let split=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-split"),probe:f.probe,owner:f.owner,worker:f.worker,
             generationMode:"phase_split_v1",advertisedModes:allModes).prepare()
         try require(split.plan.budgets==nine,"the generation mode changed a time budget")
-        // The 27B's row is withheld; its groundwork figures follow from its own measurements.
-        guard case .withheld(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not withheld") }
+        // The 27B's row is open (S08); its figures follow from its own measurements.
+        guard case .open(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not open") }
         let slowestStageLoad=13.7,phaseSplitFactor=12.3/7.3,slowPrefillTokensPerSecond=300.0
         try require(Double(big.startupAllowanceNanoseconds)/1e9 >= 5*slowestStageLoad*phaseSplitFactor
             && big.startupAllowanceNanoseconds <= 150_000_000_000,"27B startup allowance is not five whole-model loads inside half a session")
@@ -289,7 +310,7 @@ final class EndpointBox: @unchecked Sendable {
     /// normal order) is inside each row's first-token budget.
     static func longPromptsFitTheInstalledSession(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
-        let prompt=30_720,outputs=128
+        let prompt=30_720
         // At 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b and
         // hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
         // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up.
@@ -303,29 +324,21 @@ final class EndpointBox: @unchecked Sendable {
             try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
         }
     }
-    /// The 27B is not open to pair serving. Nothing in the installed path can
-    /// start it: not a setup, not a mode, not its budgets.
+    /// The 27B is open to pair serving on the installed path (S08): its setups
+    /// prepare in every mode, under its own budgets, whatever the public name.
+    /// A registered model without a row is still refused.
     static func pairServingStaysWithheld(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
-        func isPolicy(_ message:String)->Bool {
-            message.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && message.contains("registered_qwen38_27b") && message.contains("not open to serving on a two-Mac pair")
-                && message.contains("policy decision") && message.contains("generation mode or time budget")
-        }
         for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
-            // Saving a setup is not serving it, and stays possible.
             let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
                 generationMode:mode,advertisedModes:allModes,registered:model)
-            let prepare=try refusal{_ = try big.prepare()}
-            try require(isPolicy(prepare),"27B refusal does not say why: \(prepare)")
-            try require(isPolicy(try refusal{_ = try DistributedInstalledValidation.validate(reference:big.reference,paths:big.paths,deadline:DispatchTime.now().uptimeNanoseconds+5_000_000_000)}),
-                "the shared validation did not refuse the 27B as policy")
-            try require(isPolicy(try refusal{_ = try DistributedInstalledPlan(saved:.init(configuration:big.configuration,capability:big.capability),paths:big.paths)}),
-                "a plan exists for a model that is not served on a pair")
+            let prepared=try big.prepare()
+            guard case .open(let budgets)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not open") }
+            try require(prepared.plan.budgets==budgets,"the 27B was prepared under another row's budgets")
         }
-        // The refusal is keyed on the runtime's model, whatever the public name; a model without a row is refused too.
-        let withheld=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")}
-        try require(withheld.contains("renamed/public-id") && withheld.contains("registered_qwen38_27b") && withheld.contains("policy decision"),"renamed 27B: \(withheld)")
+        let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
+        guard case .open(let budgets)=Table.qwen38.pairServing, renamed==budgets else { throw CheckFailure(message:"renamed 27B budgets differ") }
         let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
     }
@@ -407,7 +420,7 @@ final class EndpointBox: @unchecked Sendable {
     static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false) throws->(DistributedInstalledSession,EndpointBox) {
         let base=f.root.appendingPathComponent("session-"+UUID().uuidString);try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let box=EndpointBox()
-        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay in
+        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay,_ in
             if failSecond && rank==1 { throw CheckFailure(message:"fabricated second launch refusal") }
             let directory=base.appendingPathComponent("rank-\(rank)");try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
             let ready=base.appendingPathComponent("ready-\(rank).json")
@@ -459,8 +472,11 @@ final class EndpointBox: @unchecked Sendable {
         do { try await s.start() }
         catch let error as CheckFailure where error.message == "fabricated second launch refusal" { refused = true }
         try require(refused, "second launch refusal accepted")
-        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+6_000_000_000)
-        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint")
+        // The surviving rank's worker is inside the combined bootstrap waiting
+        // for a peer that was never launched; it ends no later than the
+        // bootstrap's own bound (30 s), with its cleanup and release proven.
+        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+36_000_000_000)
+        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint: \(box.snapshot.map { "termination \(String(describing:$0.ownerTermination)) cleanup \($0.nativeCleanupObserved) tail \(String(decoding:$0.diagnosticTail,as:UTF8.self).suffix(600))" })")
         try require(result == .released || result == .quarantined,"partial startup returned live readiness")
         try require(!s.canRotate || box.snapshot[0].ownerDeviceLeaseReleasedObserved,"partial rotate missing release")
     }

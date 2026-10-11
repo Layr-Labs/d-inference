@@ -50,11 +50,11 @@ public enum ClusterWorkerOwnerService {
         }
         // Opt-in is configured locally. Wire start bytes alone never enable it.
         let nativeStart: ClusterNativeAuthorizationStart?
-        if bootstrapProfile == .nativeKeyPrelude {
+        if bootstrapProfile?.carriesNativeStart == true {
             guard let authorizeNativeStart, let bytes = open.nativeStart else { throw OwnerWire.invalid("Native authorization is not configured") }
             let value = try ClusterNativeAuthorizationStart(encoded: bytes)
             guard value.common.epoch == open.epoch, value.leaseID == open.lease,
-                  let deadline = open.nativeLocalDeadline, deadline > DispatchTime.now().uptimeNanoseconds else {
+                  bootstrapProfile != .nativeKeyPrelude || (open.nativeLocalDeadline ?? 0) > DispatchTime.now().uptimeNanoseconds else {
                 throw OwnerWire.invalid("Native committed start identity/deadline differs")
             }
             try authorizeNativeStart(value)
@@ -323,7 +323,7 @@ private final class ServiceContext: @unchecked Sendable {
                 }
                 catch ClusterWorkerOwnerError.closed { break }
                 if case .ready = frame.event {
-                    guard attachment?.profile != .nativeKeyPrelude else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
+                    guard attachment?.profile.publishesReadiness != false else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
                     try attachment?.requireCompleted()
                 }
                 try lock.withLock {

@@ -26,6 +26,8 @@ let package = Package(
     targets: [
         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+            // The native key prelude of the owner's bootstrap (S07).
+            .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             // The orphan-wired guard at worker start (no MLX).

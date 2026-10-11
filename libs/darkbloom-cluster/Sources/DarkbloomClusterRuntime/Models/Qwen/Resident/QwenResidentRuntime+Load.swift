@@ -35,12 +35,8 @@ extension QwenResidentRuntime {
                 try QwenDenseStageLoadMeasurement.shared.enable(gate, permittedBy: qualification)
             }
         }
-        // STAGING DIVERGENCE (recorded in the handoff source ledger, same as
-        // Transport/Collective.swift): the research source accepted an optional
-        // owner QwenResidentBootstrap producing a JACCLBootstrap group creator.
-        // The pinned Darkbloom mlx-c does not expose
-        // mlx_distributed_init_jaccl_with_bootstrap, so that path is not staged;
-        // only direct backend initialization remains.
+        // The owner-authenticated bootstrap, when the worker installed one
+        // (`JACCLOwnerBootstrap`), creates the JACCL group in `Collective`.
         let directory = configuration.modelDirectory
         // The identity's model ID selects the registered family that admits it.
         let admission = try LayerStageResidentFamily.admission(configuration: configuration,

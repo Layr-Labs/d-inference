@@ -213,7 +213,9 @@ struct ResidentAdmissionNemotronTests {
             for rank in 0...1 {
                 let allowance = try QwenResidentRequestAllowance.derive(profile: profile, plan: plan, rank: rank,
                     maximumTokens: 8320, chunkSize: 512, bound: { $0 })
-                #expect(allowance.fusionBytes == 0 && allowance.reservedBytes == allowance.stateBytes)
+                // Each Nemotron stage holds an attention block: its prefill frame's transient is charged too.
+                #expect(allowance.fusionBytes == 0 && allowance.transientBytes > 0
+                    && allowance.reservedBytes == allowance.stateBytes + allowance.transientBytes)
                 // 3 generations of 23 Mamba states, 6 attention K and V at F32 width, one host copy, two boundaries.
                 let kv = 4 * 8320 * 2 * 128
                 let expected = 3 * 23 * (73_728 + 2_097_152) + 2 * 6 * kv + 6 * 4 + kv + 2 * (512 * 2688 * 4)

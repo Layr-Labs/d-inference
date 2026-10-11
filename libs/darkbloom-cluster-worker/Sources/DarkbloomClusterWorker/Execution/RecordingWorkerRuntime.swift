@@ -15,14 +15,14 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     private let sink: WorkerEvidenceSink
     private let policy: QwenResidentPrefillPolicy
     private var active: (id: UUID, deadline: UInt64)?
+    /// The owner's bootstrap connection and native key, held for the worker's lifetime.
+    private let attachment: WorkerOwnerAttachment?
 
-    init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
+    init(_ configuration: QwenResidentLoadConfiguration, attachment: WorkerOwnerAttachment? = nil,
          evidenceDirectory: String, generationMode: ClusterGenerationMode = .pipeline,
          speculativeTerms: QwenMTPTerms? = nil,
          qualification: QwenResidentQualificationSwitches = .refused) throws {
-        guard bootstrap == nil else {
-            throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
-        }
+        self.attachment = attachment
         // Opened before any model work: an unusable directory fails the launch.
         sink = try WorkerEvidenceSink(path: evidenceDirectory)
         switch configuration.prefillSchedule {
@@ -31,6 +31,7 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         }
         owner = try .load(configuration, generationMode: generationMode, speculativeTerms: speculativeTerms,
             qualification: qualification)
+        try JACCLOwnerBootstrap.requireConsumedIfInstalled()
     }
 
     /// The recording ceiling: the serving allowance plus the capture terms.

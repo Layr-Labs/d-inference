@@ -107,7 +107,9 @@ public struct ClusterSessionObservation: Codable, Sendable, Equatable {
         public let valid: Bool
     }
     public struct Member: Codable, Sendable, Equatable {
-        public enum Transport: String, Codable, Sendable { case localPipes, authenticatedSSH }
+        /// `linkControl`: the follower member serves its rank over the link
+        /// control channel (no SSH configuration exists for it).
+        public enum Transport: String, Codable, Sendable { case localPipes, authenticatedSSH, linkControl }
         public let peerID: String
         public let rank: Int
         public let transport: Transport

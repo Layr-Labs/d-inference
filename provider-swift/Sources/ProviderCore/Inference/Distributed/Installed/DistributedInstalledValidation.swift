@@ -40,10 +40,16 @@ struct DistributedInstalledValidation: Sendable {
             inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.modelDirectory).appendingPathComponent(file.path),
                 expectedSHA256: file.sha256, maximumBytes: 64 * 1024 * 1024, deadline: deadline))
         }
-        let trust = plan.configuration.trust
-        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
-        inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: trust.knownHostsFile),
-            expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
+        // SSH trust exists only on a setup that reaches its follower over SSH;
+        // a link control setup has its edge secret instead.
+        if let trust = plan.configuration.trust {
+            try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
+            inputs.append(try DistributedInstalledFiles.verify(URL(fileURLWithPath: trust.knownHostsFile),
+                expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
+        }
+        if let link = plan.configuration.linkControl {
+            try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: link.secretFile), privateMode: true)
+        }
         // Recompute native profile/Plan/arithmetic metadata using the verified
         // installed worker. The command does not construct a model or request.
         try DistributedCapabilityProbe.verify(plan: plan, executable: executable, deadline: deadline)
@@ -57,7 +63,12 @@ struct DistributedInstalledValidation: Sendable {
 
     func requireUnchanged() throws {
         for input in verifiedInputs { try input.requireUnchanged() }
-        try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: plan.configuration.trust.identityFile), privateMode: true)
+        if let trust = plan.configuration.trust {
+            try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
+        }
+        if let link = plan.configuration.linkControl {
+            try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: link.secretFile), privateMode: true)
+        }
         // These are the exact file candidates opened by the existing local
         // tokenizer loader. An unpinned fallback must not become active.
         let allowed = Set(plan.configuration.tokenizerFiles.map(\.path))

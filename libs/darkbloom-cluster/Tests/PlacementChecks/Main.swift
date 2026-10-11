@@ -23,8 +23,8 @@ import Foundation
                 print(String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self))
                 return
             }
-            guard CommandLine.arguments.count == 2 else {
-                throw ProbeError("usage: check /ABS/qwen-retained-inputs.json")
+            guard CommandLine.arguments.count == 3 else {
+                throw ProbeError("usage: check /ABS/qwen-retained-inputs.json /ABS/Golden")
             }
             let inputs = try JSONDecoder().decode(RetainedQwenInputs.self,
                 from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
@@ -36,6 +36,7 @@ import Foundation
             try checkSpeed(layouts.twentySeven, checks)
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
+            try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }
                 fputs("\(checks.failures.count) failed, \(checks.passed.count) passed\n", stderr)

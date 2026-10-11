@@ -38,7 +38,14 @@ public struct ClusterMemberHeartbeatSample: Sendable, Equatable {
     public let engineWedgedSeconds: Double?
     public let warmup: String?
     /// A request is in flight on the pair this member leads.
-    public var busy: Bool = false
+    public var busy: Bool
+
+    public init(phase: ClusterMemberHealth.Phase, engineWedgedSeconds: Double?, warmup: String?, busy: Bool = false) {
+        self.phase = phase
+        self.engineWedgedSeconds = engineWedgedSeconds
+        self.warmup = warmup
+        self.busy = busy
+    }
 }
 
 extension ProviderLoop {

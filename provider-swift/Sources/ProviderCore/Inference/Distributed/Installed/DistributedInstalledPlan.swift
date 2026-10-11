@@ -15,6 +15,23 @@ struct DistributedInstalledPlan: Sendable {
     /// The selected registered model's pair-serving grant: the chip classes
     /// each role may run on.
     let grant: ClusterPairServingGrant
+    /// What the selected model's adapter adds to a rank's environment; see
+    /// `adapterArithmeticEnvironment`.
+    let adapterEnvironment: [String: String]
+
+    /// The adapters this path starts workers for, each with what its
+    /// arithmetic policy requires of a rank's environment beyond the three
+    /// values every rank is given (the pair driver's own values for the same
+    /// models, `QualificationRequest.registeredModels`). An adapter with no
+    /// entry has not served on this path and is refused. A rank checks its
+    /// environment against its own policy before it loads, so an entry here
+    /// can stop a rank; it cannot change what the rank computes.
+    static let adapterArithmeticEnvironment: [ClusterRuntimeAdapter: [String: String]] = [
+        .qwen35Dense: [:],
+        .qwen35RoutedExperts: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust"],
+        .qwen35PrismHadamard: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1", "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"],
+        .nemotronH: [:],
+    ]
 
     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
         configuration = saved.configuration; capability = saved.capability; self.paths = paths
@@ -28,12 +45,19 @@ struct DistributedInstalledPlan: Sendable {
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
         try capability.requireSupport(for: configuration.selectedPrefillSchedule)
         try ClusterGenerationSelection.requireSupport(for: configuration.selectedGenerationMode, peers: configuration.peers, capability: capability)
-        guard capability.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1",
+        // The record's adapter must register this model, name its one
+        // arithmetic policy, and be one this path gives a rank environment.
+        let registered = saved.capability.runtimeModelID
+        guard let adapter = ClusterRuntimeAdapter(rawValue: capability.adapterID),
+              adapter.registeredProfiles.contains(where: { $0.runtimeModelID == registered }),
+              capability.arithmeticPolicyID == adapter.arithmeticPolicyID,
+              let environment = Self.adapterArithmeticEnvironment[adapter],
               capability.stateSemantics == "requestOwnedKVAndRecurrent",
               capability.schedulingPolicy == "serial", capability.selectionPolicy == "greedy",
               configuration.peers.allSatisfy({ $0.jacclDevice.utf8.count <= 63 }) else {
             throw ClusterConfigurationError.invalid("Installed worker policy or device geometry differs")
         }
+        adapterEnvironment = environment
     }
 
     /// This Mac's rank under the grant, with this Mac's own numerics class
@@ -96,6 +120,8 @@ struct DistributedInstalledPlan: Sendable {
          "JACCL_RANK": String(configuration.localRank), "JACCL_IBV_DEVICES": matrix.path,
          "JACCL_COORDINATOR": "\(configuration.coordinator.address):\(configuration.coordinator.port)",
          DistributedInstalledWorkerFeatures.progressGuardMarker: String(Self.collectiveProgressLimitMilliseconds)]
+            // The adapter's own values; none of them may replace one above.
+            .merging(adapterEnvironment) { fixed, _ in fixed }
     }
 
     /// `attachment` is present exactly when the selected bootstrap is the

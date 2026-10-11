@@ -69,6 +69,7 @@ final class EndpointBox: @unchecked Sendable {
         try perModelBudgets(fixture,prepared)
         try longPromptsFitTheInstalledSession(fixture)
         try pairServingGrant(fixture)
+        try adaptersOnTheInstalledPath(fixture)
         try unreadableCapabilityRecord(fixture)
         try await phaseSplitSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
@@ -358,6 +359,47 @@ final class EndpointBox: @unchecked Sendable {
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
         let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
         try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
+    }
+    /// The installed path starts workers for the adapter of every granted
+    /// model, each with the rank environment its arithmetic policy requires
+    /// beside the values every rank is given, under that model's own budgets
+    /// and grant; and for no other adapter.
+    static func adaptersOnTheInstalledPath(_ f:InstalledFixture) throws {
+        typealias Table=DistributedInstalledPairServingTable
+        let cases:[(String,ClusterRuntimeAdapter,String,[String:String],DistributedInstalledTimeBudgets)]=[
+            ("a35",.qwen35RoutedExperts,"registered_qwen35_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],Table.qwen35A3B.budgets),
+            ("a36",.qwen35RoutedExperts,"registered_qwen36_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],Table.qwen36A3B.budgets),
+            ("bonsai",.qwen35PrismHadamard,"registered_ternary_bonsai_2_27b",
+                ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC":"1","DARKBLOOM_BONSAI_F16_CONSTANT_CACHE":"1"],Table.bonsai2.budgets),
+            ("nemotron",.nemotronH,"registered_nemotron35_lightning",[:],Table.nemotron35.budgets)]
+        for (name,adapter,model,extra,budgets) in cases {
+            let fixture=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-"+name),probe:f.probe,owner:f.owner,worker:f.worker,
+                generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
+            let prepared=try fixture.prepare()
+            let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
+            try require(environment.count==10+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+                && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
+                && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
+            try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")
+            // The fixture is the leader: rank 0, which these grants list on the M3 Ultra only.
+            try prepared.plan.requireLocalRankGranted(numericsClass:.appleM3Ultra)
+            let led=try refusal{try prepared.plan.requireLocalRankGranted(numericsClass:.appleM5Max)}
+            try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains(model),"\(name) led by the M5 Max: \(led)")
+        }
+        // The dense adapter's environment is the ten values it always had.
+        try require(try f.prepare().plan.adapterEnvironment.isEmpty,"the dense adapter gained an environment value")
+        // An adapter value can never replace one of the fixed ten.
+        try require(DistributedInstalledPlan.adapterArithmeticEnvironment.values.allSatisfy{$0.keys.allSatisfy{key in
+            !["PATH","LANG","LC_ALL","DARKBLOOM_CBV2_ATTN_QUERY_BLOCK","DARKBLOOM_BF16_WEIGHTS","MLX_ENABLE_TF32","JACCL_RANK","JACCL_IBV_DEVICES",
+              "JACCL_COORDINATOR","JACCL_PROGRESS_TIMEOUT_MS"].contains(key)}},"an adapter names a fixed environment value")
+        // The adapters this path starts are exactly the adapters of the granted models.
+        let granted=Set(ClusterPairServingGrants.granted.compactMap{ClusterRuntimeAdapter.registering(runtimeModelID:$0.runtimeModelID)})
+        try require(Set(DistributedInstalledPlan.adapterArithmeticEnvironment.keys)==granted,"the installed path's adapters and the granted models' adapters differ")
+        // A model whose grant is withheld is refused before its adapter is looked at.
+        let withheld=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-gptoss"),probe:f.probe,owner:f.owner,worker:f.worker,
+            registered:("registered_gpt_oss_20b","registered_gpt_oss_20b_greedy_generation_v1","fixture/gptoss"),adapter:.gptossLayerStage)
+        let refused=try refusal{_ = try withheld.prepare()}
+        try require(refused.contains("is not granted pair serving") && refused.contains("registered_gpt_oss_20b"),"a withheld model on its own adapter: \(refused)")
     }
     /// A worker whose description this build cannot read is a mixed install,
     /// and the refusal says so instead of reporting a difference.

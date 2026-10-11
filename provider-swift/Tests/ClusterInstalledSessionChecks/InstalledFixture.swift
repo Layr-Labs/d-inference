@@ -20,7 +20,8 @@ struct InstalledFixture: Sendable {
     static func make(root: URL, probe: URL, owner: URL, worker: URL, lifetimeSeconds: Int = 10, pairing: Bool = false,
                      generationMode: String? = nil, advertisedModes: [ClusterGenerationMode] = [.pipeline],
                      registered: (model: String, profile: String, publicID: String) = ("registered_qwen35_9b",
-                        "registered_qwen35_9b_greedy_generation_v1", "fixture/public-model")) throws -> Self {
+                        "registered_qwen35_9b_greedy_generation_v1", "fixture/public-model"),
+                     adapter: ClusterRuntimeAdapter = .qwen35Dense) throws -> Self {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let model = root.appendingPathComponent("model", isDirectory: true)
         try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -43,12 +44,12 @@ struct InstalledFixture: Sendable {
         let binary = hash(try Data(contentsOf: probe))
         let profile = ClusterWorkerProfile(id:registered.profile,vocabularySize:248320,
             maximumPromptTokens:8192,maximumOutputTokens:128,maximumChunkTokens:512,maximumContextTokens:8320)
-        let cap = try ClusterRuntimeCapability(runtimeBinarySHA256:binary,adapterID:"qwen35-dense-layer-stage",adapterVersion:1,
+        let cap = try ClusterRuntimeCapability(runtimeBinarySHA256:binary,adapterID:adapter.rawValue,adapterVersion:1,
             runtimeModelID:registered.model,artifactSHA256:artifact,configurationSHA256:hash(config),manifestSHA256:hash(manifest),
             profile:profile,profileFingerprint:pin("e"),partitions:[.init(planSHA256:pin("f"),stages:[
                 .init(rank:0,sourceLayerStart:0,sourceLayerEnd:4,stagePlanSHA256:pin("1"),constructionConfigurationSHA256:pin("2")),
                 .init(rank:1,sourceLayerStart:4,sourceLayerEnd:32,stagePlanSHA256:pin("3"),constructionConfigurationSHA256:pin("4"))])],
-            arithmeticPolicyID:"qwen_cbv2_query128_bf16_tf32_default_v1",arithmeticPolicySHA256:pin("5"),
+            arithmeticPolicyID:adapter.arithmeticPolicyID,arithmeticPolicySHA256:pin("5"),
             supportedGenerationModes:advertisedModes)
         let capBytes = try ClusterRuntimeCapabilityCodec.encode(cap), capHash = hash(capBytes)
         try capBytes.write(to: model.appendingPathComponent("fixture-capability.json"))

@@ -68,13 +68,14 @@ build_module InstalledContract \
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
 for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker ClusterDiagnosticsCheck; do
+  task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
-    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
+    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE) ;;
     ClusterDiagnosticsCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_diagnostics/ClusterDiagnosticsCheck.swift" "$task_diagnostics/ClusterLinkFindingsCheck.swift") ;;
   esac
-  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
+  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
 done
 

@@ -18,7 +18,9 @@ import DarkbloomClusterSecurity
         // The combined profile: the native key prelude (an actual X25519
         // agreement with the other stand-in, through both owners), then the
         // four mesh rounds on the same connection.
-        if behavior.hasPrefix("bootstrap-prelude") {
+        // Any stand-in started with a committed native start (the installed
+        // provider's selection) runs the prelude before its own behaviour.
+        if behavior.hasPrefix("bootstrap-prelude") || CommandLine.arguments.count == 11 {
             guard CommandLine.arguments.count == 11, CommandLine.arguments[3] == "--bootstrap-socket-path",
                   CommandLine.arguments[5] == "--bootstrap-owner-pid", CommandLine.arguments[7] == "--bootstrap-deadline-uptime-nanoseconds",
                   CommandLine.arguments[9] == "--native-authorization-start-base64",

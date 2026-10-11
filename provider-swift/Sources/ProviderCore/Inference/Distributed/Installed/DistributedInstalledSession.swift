@@ -7,6 +7,22 @@ public enum DistributedInstalledSessionStatus: String, Sendable {
     case prepared, starting, ready, draining, stopping, quarantined, released
 }
 
+/// The follower member refused the session the leader opened (for example a
+/// setup for another plan); nothing was launched on its Mac. The reason is the
+/// follower's own (bounded by the link), printed as plain ASCII.
+public struct DistributedInstalledStartRefusal: Error, CustomStringConvertible, Equatable, Sendable {
+    public let rank: Int
+    public let reason: String
+    init(rank: Int, reason: String) {
+        self.rank = rank
+        self.reason = String(String.UnicodeScalarView(reason.unicodeScalars.prefix(256).map {
+            (32...126).contains($0.value) ? $0 : "?" }))
+    }
+    public var description: String {
+        "The follower member (rank \(rank)) refused the session: \(reason.isEmpty ? "no reason given" : reason)"
+    }
+}
+
 /// One start attempt and its retained cleanup obligation. Missing peer proof is
 /// quarantine, never an empty slot or authority to start another cohort.
 public final class DistributedInstalledSession: @unchecked Sendable {
@@ -214,8 +230,11 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if stopped { endpoint.requestNativeCleanup(); throw DistributedEngineError.shuttingDown }
         }
         let values = lock.withLock { endpoints }
-        let pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline,
-            timing: prepared.plan.budgets.pairTiming, keepWarm: .standard)
+        let pair: ClusterWorkerPair
+        do {
+            pair = try ClusterWorkerPair(workers: values, startupDeadline: startupDeadline,
+                timing: prepared.plan.budgets.pairTiming, keepWarm: .standard)
+        } catch { throw Self.startFailure(error, endpoints: values) }
         lock.withLock { self.pair = pair }
         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
@@ -224,6 +243,16 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             self.observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
             self.owner = owner; phase = .ready
         }
+    }
+
+    /// A follower member that refuses the open reaches the pair only as a
+    /// closed stream; the start then fails with the follower's own reason.
+    /// Any other failure is returned unchanged.
+    static func startFailure(_ error: Error, endpoints: [any ClusterOwnedWorkerEndpoint]) -> Error {
+        for case let link as ClusterLinkWorkerEndpoint in endpoints {
+            if let reason = link.refusalReason { return DistributedInstalledStartRefusal(rank: link.rank, reason: reason) }
+        }
+        return error
     }
 
     private static func installedEndpoint(plan: DistributedInstalledPlan, wireIdentity: ClusterWorkerIdentity,

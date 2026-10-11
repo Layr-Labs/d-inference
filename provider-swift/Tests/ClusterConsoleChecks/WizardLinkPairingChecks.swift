@@ -10,7 +10,7 @@ extension ClusterConsoleCheck {
         let paired = ClusterSetupLinkPairings(localPin: "1111222233334444", pairings: [
             .init(peerPin: "aaaabbbbccccdddd", peerName: "Apple M5 Max, 128 GB", clusterID: "pair-0123456789ab", generation: 1,
                   pairedAt: "2026-10-11T20:00:00Z")])
-        func lone(_ pairings: ClusterSetupLinkPairings? = nil) -> ClusterSetupSnapshot {
+        @Sendable func lone(_ pairings: ClusterSetupLinkPairings? = nil) -> ClusterSetupSnapshot {
             var report = F.reportB(); report.linkPairings = pairings
             return F.snapshot(report, pair: nil, record: .init())
         }
@@ -28,7 +28,7 @@ extension ClusterConsoleCheck {
 
         // l: listen; the code; y after the dwell; the other Mac; the stored result.
         var d = WizardDrive(size: .init(columns: 100, rows: 40))
-        d.state.begin(); d.send(.snapshot(lone()))
+        _ = d.state.begin(); d.send(.snapshot(lone()))
         expectEqual(d.state.step, .pair, "a lone Mac opens at step 3")
         expect(d.text.contains("Pair over the link (no SSH)") && d.text.contains("Listen: this Mac waits"), "step 3 offers the link: \(d.text)")
         expectEqual(d.key(.character("l")), [.pairOverLink(connect: nil)], "l starts the ceremony as listener")
@@ -56,12 +56,13 @@ extension ClusterConsoleCheck {
         expect(d.state.activity.contains { $0.title == "Pairing over the link" && !$0.failed }, "the activity log records it")
         d.send(.snapshot(lone(paired)))
         expectEqual(d.state.status(of: .pair), .done, "step 3 is done")
-        expect(d.text.contains("Paired with Apple M5 Max, 128 GB") && d.text.contains("roster pair-0123456789ab, generation 1"),
+        expect(d.text.contains("Paired with Apple M5 Max, 128 GB") && d.text.contains("pair-0123456789ab, generation 1"),
                "the pinned key and the roster show: \(d.text)")
+        expect(!d.text.contains("the leader's screen showed this code"), "a link pairing does not claim the SSH code was confirmed")
 
         // n declines; the other Mac declining withdraws the question.
         var n = WizardDrive(size: .init(columns: 100, rows: 40))
-        n.state.begin(); n.send(.snapshot(lone()))
+        _ = n.state.begin(); n.send(.snapshot(lone()))
         n.key(.character("l")); n.send(.linkPairing(.code("111111", peer: [])))
         n.draw()
         expectEqual(n.key(.character("n")), [.answerLinkCode(accept: false)], "n declines")
@@ -76,7 +77,7 @@ extension ClusterConsoleCheck {
 
         // c: the other Mac's address, typed.
         var c = WizardDrive(size: .init(columns: 100, rows: 40))
-        c.state.begin(); c.send(.snapshot(lone()))
+        _ = c.state.begin(); c.send(.snapshot(lone()))
         expectEqual(c.key(.character("c")), [], "c opens the address entry")
         c.type("10.219.4.77")
         expectEqual(c.state.step, .pair, "digits go to the address, not the step rail")
@@ -92,7 +93,7 @@ extension ClusterConsoleCheck {
         expect(short.state.notice?.contains("Type the address") == true, "and says what to type")
         expectEqual(c.key(.enter), [.pairOverLink(connect: "10.219.4.7")], "enter dials the address")
         var cancelled = WizardDrive(size: .init(columns: 100, rows: 40))
-        cancelled.state.begin(); cancelled.send(.snapshot(lone()))
+        _ = cancelled.state.begin(); cancelled.send(.snapshot(lone()))
         cancelled.key(.character("c")); cancelled.type("10"); cancelled.key(.escape)
         expectEqual(cancelled.state.linkPairing, .idle, "escape cancels the entry")
         expect(!WizardDrive.isAddress("010.1.1.1") && !WizardDrive.isAddress("10.1.1") && !WizardDrive.isAddress("256.1.1.1")
@@ -100,12 +101,12 @@ extension ClusterConsoleCheck {
 
         // Nothing starts beside a session; ctrl-C on the question declines and quits.
         var busy = WizardDrive(size: .init(columns: 100, rows: 40))
-        busy.state.begin(); busy.send(.snapshot(lone()))
+        _ = busy.state.begin(); busy.send(.snapshot(lone()))
         busy.state.session = .running(processIdentifier: 7, since: 0)
         expectEqual(busy.key(.character("l")), [], "no pairing beside a running session")
         expect(busy.state.notice?.contains("Serving is running") == true, "and says why: \(busy.state.notice ?? "")")
         var quit = WizardDrive(size: .init(columns: 100, rows: 40))
-        quit.state.begin(); quit.send(.snapshot(lone()))
+        _ = quit.state.begin(); quit.send(.snapshot(lone()))
         quit.key(.character("l")); quit.send(.linkPairing(.code("333333", peer: [])))
         quit.draw()
         let interrupted = quit.key(.interrupt)

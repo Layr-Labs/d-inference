@@ -44,16 +44,6 @@ public struct ClusterPairSlotSpecification: Sendable {
     }
 }
 
-public enum ClusterPairSlotError: Error, Sendable, Equatable {
-    /// Only a cluster member serves a pair slot, one at a time, while it is
-    /// connected and not stopping.
-    case notServing(String)
-    /// The model is not this member's registered cluster model.
-    case unknownModel
-    /// The owner was not ready, or its identity or profile differs.
-    case ownerUnavailable
-}
-
 /// Identity of one published pair slot. `ProviderModelContainer.clusterPair`
 /// carries it, so the slot has a container identity without a container.
 final class ClusterPairSlotHandle: @unchecked Sendable {

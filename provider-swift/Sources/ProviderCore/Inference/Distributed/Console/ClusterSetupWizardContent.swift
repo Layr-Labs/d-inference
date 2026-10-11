@@ -321,9 +321,9 @@ enum ClusterSetupContent {
                 b.heading("This Mac's pairing code")
                 b.row([.init("      "), .init(" \(code.spaced) ", .selected)], from: .wired("pair.code"))
                 b.text("From this Mac's own SSH host key. When the leader reaches this Mac, its screen shows the code of the Mac it reached: it must be this one.", from: .wired("pair.code"))
-                if state.pairingConfirmed {
-                    b.verdict(g.done, "Confirmed \(state.record.confirmed(code: code.code)?.at ?? ""): the leader's screen showed this code.", .good, from: .wired("pair.confirm"))
-                } else {
+                if let confirmed = state.record.confirmed(code: code.code) {
+                    b.verdict(g.done, "Confirmed \(confirmed.at): the leader's screen showed this code.", .good, from: .wired("pair.confirm"))
+                } else if !state.linkPaired {
                     b.action("enter", "The leader's screen shows \(code.spaced)", from: .wired("pair.confirm"))
                 }
                 b.blank()
@@ -375,10 +375,12 @@ enum ClusterSetupContent {
                     b.verdict(g.blocked, "This Mac's own host key is not the one its setup pins. Do not approve anything until that is explained.", .bad, from: .wired("pair.code"))
                 }
             }
-            if state.pairingConfirmed {
-                let at = state.record.confirmed(code: code.code)?.at ?? ""
+            if let confirmed = state.record.confirmed(code: code.code) {
+                let at = confirmed.at
                 b.verdict(g.done, "Confirmed\(at.isEmpty ? "" : " \(at)"): both screens showed this code.", .good, from: .wired("pair.confirm"))
                 b.action("enter", "Next: model and plan", from: .frame)
+            } else if state.linkPaired {
+                b.action("enter", "Next: model and plan (paired over the link)", from: .frame)
             } else if !reachedFirst {
                 b.action("enter", "Both screens show \(code.spaced)", from: .wired("pair.confirm"))
             }

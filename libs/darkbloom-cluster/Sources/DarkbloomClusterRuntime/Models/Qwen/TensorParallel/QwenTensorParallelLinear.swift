@@ -29,6 +29,7 @@ public enum QwenTensorParallelReductionTiming: String, Sendable, CaseIterable {
 final class QwenTensorParallelRowLinear: QuantizedLinear {
     private let reduction: Box
     private let timing: QwenTensorParallelReductionTiming
+    private let partialDType: DType
 
     /// Not a module: keeps the reduction out of the parameter tree.
     final class Box {
@@ -36,22 +37,36 @@ final class QwenTensorParallelRowLinear: QuantizedLinear {
         init(_ value: QwenTensorParallelReduction) { self.value = value }
     }
 
-    init(_ source: QuantizedLinear, reduction: QwenTensorParallelReduction, timing: QwenTensorParallelReductionTiming) {
+    init(_ source: QuantizedLinear, reduction: QwenTensorParallelReduction, timing: QwenTensorParallelReductionTiming,
+         partialDType: DType = .float32) {
         self.reduction = Box(reduction)
         self.timing = timing
+        self.partialDType = partialDType
         super.init(weight: source.weight, bias: source.bias, scales: source.scales, biases: source.biases,
                    groupSize: source.groupSize, bits: source.bits, mode: source.mode)
         freeze()
     }
 
     override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let partial = super.callAsFunction(x.asType(.float32))
+        // float32 (default): the partial is not rounded before the sum. bfloat16
+        // (diagnostic): half the bytes on the link, one more rounding.
+        let partial = super.callAsFunction(partialDType == .float32 ? x.asType(.float32) : x)
         if timing == .explicit {
             eval(partial)
             Stream.gpu.synchronize()
         }
         return reduction.value.allSum(partial).asType(x.dtype)
     }
+}
+
+/// Diagnostic only: a rank's shard with no peer. `allSum` returns this rank's
+/// partial unchanged, so outputs are wrong by construction; it measures one
+/// chip's share of the compute without any collective. Never a TP result.
+public final class QwenTensorParallelLocalReduction: QwenTensorParallelReduction {
+    public let rank: Int
+    public let size: Int
+    public init(rank: Int, size: Int) { self.rank = rank; self.size = size }
+    public func allSum(_ value: MLXArray) -> MLXArray { value }
 }
 
 /// The single-process oracle of a row-parallel projection: the full module's

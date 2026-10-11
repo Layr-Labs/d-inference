@@ -106,6 +106,8 @@ struct Options {
     var backend = QwenTensorParallelGroup.Backend.jaccl
     var timing = QwenTensorParallelReductionTiming.lazy
     var prefillRank = 1
+    var shardRank = 0
+    var partials = "float32"
     var recordTop = 0
     var repeats = 1
     var warmup = true
@@ -144,6 +146,8 @@ struct Options {
                 guard let t = QwenTensorParallelReductionTiming(rawValue: try value()) else { throw Failure("unknown timing") }
                 timing = t
             case "--prefill-rank": prefillRank = Int(try value()) ?? -1
+            case "--shard-rank": shardRank = Int(try value()) ?? -1
+            case "--partials": partials = try value()
             case "--record-top": recordTop = Int(try value()) ?? -1
             case "--repeats": repeats = Int(try value()) ?? 0
             case "--warmup": warmup = try yesNo(try value())
@@ -158,13 +162,13 @@ struct Options {
             index += 1
         }
         if command == "run" {
-            guard ["full", "simulated", "tp", "hybrid"].contains(mode), !modelDirectory.isEmpty, !request.isEmpty, !report.isEmpty,
-                  (0...64).contains(recordTop), (1...8).contains(repeats), (30...7200).contains(deadlineSeconds),
-                  (0...1).contains(prefillRank) else {
+            guard ["full", "simulated", "tp", "hybrid", "shard-local"].contains(mode), !modelDirectory.isEmpty, !request.isEmpty,
+                  !report.isEmpty, (0...64).contains(recordTop), (1...8).contains(repeats), (30...7200).contains(deadlineSeconds),
+                  (0...1).contains(prefillRank), (0...1).contains(shardRank), ["float32", "bfloat16"].contains(partials) else {
                 throw Failure("run needs --mode full|simulated|tp|hybrid, --model-dir, --request, --report and bounded options")
             }
             guard !FileManager.default.fileExists(atPath: report) else { throw Failure("the report file already exists") }
-            if ["tp", "hybrid"].contains(mode) && recordTop > 0 { throw Failure("a tp rank does not record logits") }
+            if ["tp", "hybrid", "shard-local"].contains(mode) && recordTop > 0 { throw Failure("a tp rank does not record logits") }
         } else {
             guard !reference.isEmpty, !candidate.isEmpty, nearTieULPs >= 0 else {
                 throw Failure("compare needs --reference and --candidate")
@@ -211,6 +215,10 @@ enum RunCommand {
         switch options.mode {
         case "full": role = .full
         case "simulated": role = .simulated(size: 2)
+        case "shard-local":
+            // Diagnostic: one rank's shard with no peer (outputs wrong by construction; timing of one chip's share).
+            role = .shard(rank: options.shardRank, size: 2)
+            note("DIAGNOSTIC shard-local: rank \(options.shardRank)'s shard, no collective; tokens are not meaningful")
         default: // tp, hybrid
             let g = try QwenTensorParallelGroup(backend: options.backend)
             group = g
@@ -226,8 +234,10 @@ enum RunCommand {
         }
 
         note("loading \(role.label)")
-        let model = try QwenTensorParallelModel.load(modelDirectory: directory, role: role, reduction: group,
-                                                     timing: options.timing)
+        let reduction: QwenTensorParallelReduction? = options.mode == "shard-local"
+            ? QwenTensorParallelLocalReduction(rank: options.shardRank, size: 2) : group
+        let model = try QwenTensorParallelModel.load(modelDirectory: directory, role: role, reduction: reduction,
+            timing: options.timing, partialDType: options.partials == "bfloat16" ? .bfloat16 : .float32)
         note("loaded in \(String(format: "%.1f", model.loadSeconds)) s, active \(model.loadedActiveBytes) bytes")
         var unsharded: QwenTensorParallelModel?
         if options.mode == "hybrid", let group, group.rank == options.prefillRank {
@@ -247,7 +257,7 @@ enum RunCommand {
         }
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
 
-        var report = Report(mode: options.mode, role: (options.mode == "hybrid" ? "hybrid-" : "") + role.label, rank: group?.rank ?? 0, size: group?.size ?? 1,
+        var report = Report(mode: options.mode + (options.partials == "bfloat16" ? "-bf16-partials" : ""), role: (options.mode == "hybrid" ? "hybrid-" : "") + role.label, rank: group?.rank ?? 0, size: group?.size ?? 1,
             backend: group.map { _ in options.backend.rawValue }, timing: group.map { _ in options.timing.rawValue },
             correctnessOnly: options.backend == .ring && group != nil, chip: chipName(),
             modelConfigurationSHA256: configurationSHA, modelID: request.modelID, requestID: request.requestID,

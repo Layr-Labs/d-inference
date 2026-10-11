@@ -48,7 +48,11 @@ public final class QwenTensorParallelModel {
 
     /// `reduction` is required for `shard` and refused otherwise.
     public static func load(modelDirectory: URL, role: Role, reduction: QwenTensorParallelReduction?,
-                            timing: QwenTensorParallelReductionTiming = .lazy) throws -> QwenTensorParallelModel {
+                            timing: QwenTensorParallelReductionTiming = .lazy,
+                            partialDType: DType = .float32) throws -> QwenTensorParallelModel {
+        guard [.float32, .bfloat16].contains(partialDType) else {
+            throw ProbeError("Tensor parallel load: partial sums are float32 or bfloat16")
+        }
         let started = DispatchTime.now().uptimeNanoseconds
         let configurationData = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
         guard let root = try JSONSerialization.jsonObject(with: configurationData) as? [String: Any],
@@ -141,7 +145,8 @@ public final class QwenTensorParallelModel {
                 extra += oracle.partArrays
                 replacements.append((path, oracle))
             case .shard:
-                replacements.append((path, QwenTensorParallelRowLinear(source, reduction: reduction!, timing: timing)))
+                replacements.append((path, QwenTensorParallelRowLinear(source, reduction: reduction!, timing: timing,
+                                                                       partialDType: partialDType)))
             }
         }
         if !replacements.isEmpty {

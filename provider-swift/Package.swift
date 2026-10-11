@@ -69,8 +69,9 @@ let package = Package(
     targets: [
         .target(
             name: "ProviderAppAttest",
+            dependencies: [.product(name: "Sodium", package: "swift-sodium")],
             path: "Sources/ProviderAppAttest",
-            linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security")]
+            linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security"), .linkedLibrary("bsm")]
         ),
         .testTarget(
             name: "ProviderAppAttestTests",

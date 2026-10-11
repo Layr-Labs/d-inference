@@ -20,7 +20,7 @@ extension ProviderLoop {
 
     public func run() async throws {
         startLifecycleMonitor()
-        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(); cancelAppAttestStallMonitor() }
+        defer { lifecycleMonitorTask?.cancel(); lifecycleMonitorTask = nil; cancelAppAttestShadow(stopWorker: true); cancelAppAttestStallMonitor() }
         if servingDrain.refusing { return }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
@@ -199,7 +199,10 @@ extension ProviderLoop {
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
-            state: state
+            state: state,
+            appAttestResumeResponder: { [keyPair] challenge, nonce in
+                try keyPair.appAttestResumeResponse(to: challenge, clientNonce: nonce)
+            }
         )
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the
@@ -344,8 +347,8 @@ extension ProviderLoop {
                         send: send
                     )
 
-                case .appAttestShadow(let payload):
-                    handleAppAttestShadow(payload, send: send)
+                case .appAttestShadow(let payload, let reply):
+                    handleAppAttestShadow(payload, reply: reply)
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)

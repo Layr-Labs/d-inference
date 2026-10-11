@@ -120,7 +120,12 @@ extension ProviderLoop {
             },
             beginDraining: { await me.beginUpdateDraining() },
             waitForDrain: { timeout in await me.waitForSafeDisconnect(timeout: timeout, reason: "auto-update") },
-            commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
+            commitInstall: {
+                guard await me.stopAppAttestWorkerAndWait() else {
+                    return .failed("App Attest worker has not exited; update postponed")
+                }
+                return await me.commitStagedUpdateBundle(updater: updater)
+            },
             prepareInstalledRestart: {
                 await me.prepareInstalledCandidateRestart(
                     updater: updater, baseline: launchSnapshot)
@@ -196,6 +201,7 @@ extension ProviderLoop {
         updatePhase = .idle
         // Quote path mirror (routing v2): quotes may admit again.
         resumeAfterUpdateDrain()
+        await resumeAppAttestWorkerAfterUpdate()
         localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
         state.refusingNewWork = servingDrain.refusing || isReconnectingAfterRetirement || isShuttingDown || autopilotCommand != nil
         // Announce the un-drain NOW: the coordinator ages its drain mark on a

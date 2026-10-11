@@ -24,6 +24,9 @@ public enum ProviderProtocolCodec {
 
     public static func decodeProviderMessage(from data: Data) throws -> ProviderMessage {
         var message = try JSONDecoder().decode(ProviderMessage.self, from: data)
+        if case .appAttestResume = message {
+            try AppAttestResumeWire.validateMessage(data, action: "response")
+        }
 
         if case .register(var register) = message,
            register.attestation != nil,
@@ -55,7 +58,11 @@ public enum ProviderProtocolCodec {
     }
 
     public static func decodeCoordinatorMessage(from data: Data) throws -> CoordinatorMessage {
-        try JSONDecoder().decode(CoordinatorMessage.self, from: data)
+        let message = try JSONDecoder().decode(CoordinatorMessage.self, from: data)
+        if case .appAttestResume = message {
+            try AppAttestResumeWire.validateMessage(data, action: "challenge")
+        }
+        return message
     }
 
     public static func decodeCoordinatorMessage(from string: String) throws -> CoordinatorMessage {
@@ -126,6 +133,8 @@ public enum ProviderProtocolCodec {
         try appendIfPresent(register.apnsDeviceToken, key: "apns_device_token", to: &fields)
         try appendIfPresent(register.apnsEnvironment, key: "apns_environment", to: &fields)
         try appendIfPresent(register.appAttestProtocol, key: "app_attest_protocol", to: &fields)
+        try appendIfPresent(register.appAttestResumeProtocol, key: "app_attest_resume_protocol", to: &fields)
+        try appendIfPresent(register.appAttestResumeNonce, key: "app_attest_resume_nonce", to: &fields)
         if let version = register.prefixCacheProtocol, version != 0 {
             try fields.append(("prefix_cache_protocol", encodeValue(version)))
         }

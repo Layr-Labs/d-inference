@@ -12,6 +12,10 @@ import ProviderCore
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
 
+// A worker never enters AppKit, CLI lifecycle, inference or update startup.
+await AppAttestWorkerCommand.runIfRequested(rawArgs)
+await AppAttestQualificationCommand.runIfRequested(rawArgs)
+
 // Before parsing (including help/version/errors) and before the AppKit serve
 // branch, so no subcommand has to remember to print this notice. Keep stdout
 // available for JSON, completion scripts and runtime-smoke markers.

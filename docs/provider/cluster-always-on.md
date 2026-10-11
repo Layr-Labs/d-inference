@@ -56,7 +56,9 @@ together with the other member, and asks for macOS permissions once.
 | Three runs in a row each shorter than 120 s | Stops restarting and parks, holding no memory, until `darkbloom restart` |
 | JACCL guard teardown (exit 75) | Restarts without counting a startup failure; six inside 120 s mean the link is flapping and it parks |
 | Member alive but its heartbeat is 75 s old (after a 180 s start grace) | Asks it to stop (SIGTERM), then restarts it; SIGKILL only if it ignored SIGTERM for 300 s |
-| An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s | Same recycle |
+| The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
+| An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |
+| A pair forms | The leader runs one greedy 8-token warmup request before the pair accepts work; if it fails or takes over 300 s the pair is retired and formed again (`DARKBLOOM_CLUSTER_WARMUP=0` turns this off) |
 | Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together |
 | `darkbloom stop` | Drains, stops the member and keeps it stopped across reboots |
 

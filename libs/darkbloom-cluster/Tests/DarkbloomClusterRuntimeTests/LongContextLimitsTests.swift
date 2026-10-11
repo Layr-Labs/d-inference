@@ -22,8 +22,15 @@ struct LongContextLimitsTests {
     /// The owner's long-context sizes, plus the edges of the protocol.
     private static let sizes = [5120, 10_240, 20_480, 30_720]
 
+    /// The models that declare their context (the dense 9B and 27B); every
+    /// other registered row keeps the earlier reservation.
+    private static let declaring = QwenRegisteredDenseModel.allCases.filter {
+        QwenDenseRegisteredSpecification.declaredContextTokensByModel[$0] != nil
+    }
+
     @Test func limitsFollowTheProtocolAndTheDeclaredContext() throws {
-        for model in QwenRegisteredDenseModel.allCases {
+        #expect(Self.declaring == [.qwen35NineB, .qwen38TwentySevenB])
+        for model in Self.declaring {
             let spec = try Self.specification(model)
             #expect(spec.declaredContextTokens == 262_144)
             let limits = try QwenResidentContextLimits(specification: spec)
@@ -55,7 +62,7 @@ struct LongContextLimitsTests {
     }
 
     @Test func eachDeclaredContextRowIsWhatThePinnedConfigurationDeclares() throws {
-        for model in QwenRegisteredDenseModel.allCases {
+        for model in Self.declaring {
             let spec = try Self.specification(model)
             let declared = try #require(spec.declaredContextTokens, "\(model) has no declared-context row")
             let data = try LongContextFixture.configuration(model)
@@ -80,7 +87,8 @@ struct LongContextLimitsTests {
     }
 
     @Test func namedStateCeilingsAreComputedFromEachModelsGeometry() throws {
-        for model in QwenRegisteredDenseModel.allCases {
+        // Models that declare their context; every other row keeps the reservation's ceiling.
+        for model in QwenRegisteredDenseModel.allCases where QwenDenseRegisteredSpecification.declaredContextTokensByModel[model] != nil {
             let spec = try Self.specification(model)
             let ceilings = try QwenResidentResourceCeilings(model: model)
             let geometry = try spec.expectedGeometry()

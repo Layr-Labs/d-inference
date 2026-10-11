@@ -301,7 +301,8 @@ struct ResidentAdmissionGemma4Tests {
         refuses("rank 2") { try Self.admit(model, rank: 2) }
         refuses("the other artifact's manifest") { try Self.admit(model, manifest: Self.files(.twentySixB).manifest) }
         refuses("the other artifact's configuration") { try Self.admit(model, config: Self.files(.twentySixB).configuration) }
-        refuses("a lifetime over 300 s") { try Self.admit(model, deadline: Self.now + 300_000_000_001) }
+        // No per-model lifetime: a bounded run's deadline is held to the protocol's hour.
+        refuses("a deadline beyond the hour") { try Self.admit(model, deadline: Self.now + 3_600_000_000_001) }
         refuses("a deadline in the past") { try Self.admit(model, deadline: Self.now) }
         // One artifact, two manifests: each ID is admitted only with its own.
         refuses("the 8-bit entry with the plain entry's manifest") {

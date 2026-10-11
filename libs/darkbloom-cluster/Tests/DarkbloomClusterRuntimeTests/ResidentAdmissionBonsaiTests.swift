@@ -372,7 +372,7 @@ struct ResidentAdmissionBonsaiTests {
                 }
                 #expect(allowance.fusionBytes == 2 * constants.reduce(0) { $0 + $1.byteCount })
                 #expect(allowance.fusionBytes == (cut == 24 ? [570_163_200, 1_029_734_400] : [665_190_400, 934_707_200])[rank])
-                #expect(allowance.reservedBytes == allowance.stateBytes + allowance.fusionBytes)
+                #expect(allowance.reservedBytes == allowance.stateBytes + allowance.fusionBytes + allowance.transientBytes)
                 #expect(try QwenPrismHadamardConstants.widenedBytes(profile: profile, plan: plan, rank: rank).count == constants.count)
             }
         }

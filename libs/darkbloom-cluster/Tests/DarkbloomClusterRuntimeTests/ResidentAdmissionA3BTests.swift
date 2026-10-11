@@ -469,7 +469,8 @@ struct ResidentAdmissionA3BTests {
         #expect(small.adapterID == "qwen35-dense-layer-stage" && small.runtimeModelID == "registered_qwen35_9b")
         #expect(small.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_default_v1")
         #expect(small.partitions.map(\.planSHA256).first == "67bf0b1bf94f229682df58ae1ae10c758e2a386d66d3e1b68146f5c090f6309f")
-        #expect(small.profileFingerprint == "73532005bbf8385dc43db4bdb529bcd5d612af7d1055becbefe721b4be2324ff")
+        // The derived long-context profile (32,767 / 4,096 / 32,768), as in the capability fixture.
+        #expect(small.profileFingerprint == "579e24013b6eb404f92f7981e1510452aeb5f21ff2bbdf65dbd2592707f5dffb")
         // The 9B's capability record, byte for byte, apart from the two fields
         // added after the golden was recorded (schedules and generation modes).
         let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()

@@ -14,16 +14,17 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
 
     static func handles(modelID: String) -> Bool { GPTOSSResidentCapabilityMetadata.handles(runtimeModelID: modelID) }
 
-    init(_ configuration: QwenResidentLoadConfiguration, bootstrap: WorkerBootstrapConfiguration? = nil,
+    init(_ configuration: QwenResidentLoadConfiguration, attachment: WorkerOwnerAttachment? = nil,
          evidenceDirectory: String?, generationMode: ClusterGenerationMode = .pipeline,
          qualification: QwenResidentQualificationSwitches = .refused) throws {
-        guard bootstrap == nil else {
-            throw WorkerFailure.invalid("The authenticated bootstrap attachment is not available in this build")
-        }
+        self.attachment = attachment
         // Opened before any model work: an unusable directory fails the launch.
         sink = try evidenceDirectory.map { try WorkerEvidenceSink(path: $0) }
         owner = try .load(configuration, generationMode: generationMode, qualification: qualification)
+        try JACCLOwnerBootstrap.requireConsumedIfInstalled()
     }
+    /// The owner's bootstrap connection and native key, held for the worker's lifetime.
+    private let attachment: WorkerOwnerAttachment?
 
     var readiness: ClusterWorkerReady? {
         sink == nil ? owner.readiness : (try? owner.recordingReadiness()) ?? nil

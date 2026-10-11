@@ -2,15 +2,52 @@ import Foundation
 import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterBootstrap
+#if FAKE_WORKER_PRELUDE
+import DarkbloomClusterSecurity
+#endif
 
 /// Model-free child used only by the pipe-owner CPU tests.
 @main struct FakeClusterWorker {
     static func main() throws {
-        guard [3, 9].contains(CommandLine.arguments.count), let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
+        guard [3, 9, 11].contains(CommandLine.arguments.count), let rank = Int(CommandLine.arguments[1]), (0...1).contains(rank) else { exit(64) }
         let behavior = CommandLine.arguments[2]
         // A stand-in's own hard deadline: no check, passing or failing, leaves one behind.
         // Like a real worker's lease, each renewal from its owner pushes it out again.
         alarm(60)
+        #if FAKE_WORKER_PRELUDE
+        // The combined profile: the native key prelude (an actual X25519
+        // agreement with the other stand-in, through both owners), then the
+        // four mesh rounds on the same connection.
+        if behavior.hasPrefix("bootstrap-prelude") {
+            guard CommandLine.arguments.count == 11, CommandLine.arguments[3] == "--bootstrap-socket-path",
+                  CommandLine.arguments[5] == "--bootstrap-owner-pid", CommandLine.arguments[7] == "--bootstrap-deadline-uptime-nanoseconds",
+                  CommandLine.arguments[9] == "--native-authorization-start-base64",
+                  let owner = Int32(CommandLine.arguments[6]), let deadline = UInt64(CommandLine.arguments[8]),
+                  let start = Data(base64Encoded: CommandLine.arguments[10]) else { exit(64) }
+            let connection = try ClusterBootstrapConnection.connect(path: CommandLine.arguments[4], ownerProcessID: owner,
+                identity: .init(membershipEpoch: fixtureIdentity.membershipEpoch, rank: rank), deadlineUptimeNanoseconds: deadline,
+                mode: .nativeKeyPreludeV1)
+            let authority = try ClusterNativeRecordAuthority(ownedPrelude: connection.beginNativeKeyPrelude(expecting: start))
+            let receipt = try authority.establish()
+            guard receipt.rank == rank, receipt.localPublicKey != receipt.peerPublicKey else { exit(67) }
+            let parts = [Data([2, 0, 0, 0]), Data(repeating: UInt8(rank + 1), count: 64), Data([0, 0, 0, 0]), Data([0, 0, 0, 0])]
+            for (sequence, bytes) in parts.enumerated() {
+                let gathered = try connection.exchange(sequence: UInt64(sequence), contribution: bytes)
+                // Both ranks' bytes, in rank order: the other stand-in's are its own pattern.
+                if sequence == 1, gathered != Data(repeating: 1, count: 64) + Data(repeating: 2, count: 64) { exit(68) }
+            }
+            withExtendedLifetime(authority) {}
+        } else if behavior.hasPrefix("bootstrap") {
+            guard CommandLine.arguments.count == 9, CommandLine.arguments[3] == "--bootstrap-socket-path",
+                  CommandLine.arguments[5] == "--bootstrap-owner-pid", CommandLine.arguments[7] == "--bootstrap-deadline-uptime-nanoseconds",
+                  let owner = Int32(CommandLine.arguments[6]), let deadline = UInt64(CommandLine.arguments[8]) else { exit(64) }
+            let connection = try ClusterBootstrapConnection.connect(path: CommandLine.arguments[4], ownerProcessID: owner,
+                identity: .init(membershipEpoch: fixtureIdentity.membershipEpoch, rank: rank), deadlineUptimeNanoseconds: deadline)
+            let parts = [Data(behavior == "bootstrap-bad-length" ? [1, 0, 0, 0] : [2, 0, 0, 0]),
+                Data(repeating: UInt8(rank + 1), count: 64), Data([0, 0, 0, 0]), Data([0, 0, 0, 0])]
+            for (sequence, bytes) in parts.enumerated() { _ = try connection.exchange(sequence: UInt64(sequence), contribution: bytes) }
+        }
+        #else
         if behavior.hasPrefix("bootstrap") {
             guard CommandLine.arguments.count == 9, CommandLine.arguments[3] == "--bootstrap-socket-path",
                   CommandLine.arguments[5] == "--bootstrap-owner-pid", CommandLine.arguments[7] == "--bootstrap-deadline-uptime-nanoseconds",
@@ -21,6 +58,7 @@ import DarkbloomClusterBootstrap
                 Data(repeating: UInt8(rank + 1), count: 64), Data([0, 0, 0, 0]), Data([0, 0, 0, 0])]
             for (sequence, bytes) in parts.enumerated() { _ = try connection.exchange(sequence: UInt64(sequence), contribution: bytes) }
         }
+        #endif
         if behavior == "hang" { signal(SIGTERM, SIG_IGN) }
         // Retirement-policy stand-ins. A signalled exit is made visible as 99.
         if behavior == "exit-early" { exit(9) }

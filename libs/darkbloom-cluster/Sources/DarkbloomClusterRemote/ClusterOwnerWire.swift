@@ -85,17 +85,24 @@ struct OwnerWire: Sendable {
             let cap = kind == "bootstrapRound" ? 65_536 : 131_072
             guard encoded.utf8.count <= ((cap + 2) / 3) * 4, let bytes = Data(base64Encoded: encoded),
                   bytes.count > 0, bytes.count <= cap, bytes.base64EncodedString() == encoded,
-                  value.bootstrapSequence! < 4 else { throw invalid("Bootstrap payload exceeds closed bounds") }
+                  value.bootstrapSequence! < UInt64(ClusterOwnerBootstrapProfile.maximumRounds) else { throw invalid("Bootstrap payload exceeds closed bounds") }
             value.bootstrapBytes = bytes
         case "open":
             keys.formUnion(["clusterID", "remainingNanoseconds"])
             value.clusterID = try string("clusterID")
             guard let label = value.clusterID, (1...128).contains(label.utf8.count), label.utf8.allSatisfy({ (33...126).contains($0) }) else { throw invalid("Cluster label differs") }
             value.remaining = try uint("remainingNanoseconds")
-            if value.bootstrapProfile == .nativeKeyPrelude {
-                keys.formUnion(["nativeStart", "nativeLocalDeadline"])
-                value.nativeLocalDeadline = try uint("nativeLocalDeadline")
-                guard value.nativeLocalDeadline! > 0 else { throw invalid("Local native deadline is empty") }
+            if value.bootstrapProfile?.carriesNativeStart == true {
+                keys.insert("nativeStart")
+                // Only the key-only development profile, opened by a local owner
+                // on the same Mac, carries a local uptime deadline. The combined
+                // profile may cross to another Mac, so it never does: its owner
+                // bounds the bootstrap on its own clock.
+                if value.bootstrapProfile == .nativeKeyPrelude {
+                    keys.insert("nativeLocalDeadline")
+                    value.nativeLocalDeadline = try uint("nativeLocalDeadline")
+                    guard value.nativeLocalDeadline! > 0 else { throw invalid("Local native deadline is empty") }
+                }
                 let encoded = try string("nativeStart")
                 guard encoded.utf8.count <= 4096, let start = Data(base64Encoded: encoded),
                       !start.isEmpty, start.count <= 3072, start.base64EncodedString() == encoded else {

@@ -149,6 +149,33 @@ import DarkbloomClusterProtocol
         #expect(ClusterPairServingGrants.acceptedCrossClassVerdicts == ["exact", "tokensEqualLogitsDiffer", "divergedAtNearTie"])
     }
 
+    /// The product serves a model on a pair only with both halves: the grant
+    /// (permission, chip classes per role) and a row of time budgets. Every
+    /// granted model has its row; a withheld model has none; and the runtime's
+    /// model, not the public name, selects both.
+    @Test func everyGrantedModelHasItsTimeBudgetsAndNoWithheldModelDoes() throws {
+        typealias Table = DistributedInstalledPairServingTable
+        #expect(Table.rows.map(\.runtimeModelID) == ClusterPairServingGrants.granted.map(\.runtimeModelID))
+        for grant in ClusterPairServingGrants.granted {
+            let budgets = try Table.servingBudgets(runtimeModelID: grant.runtimeModelID, publicModelID: "renamed/public-id")
+            #expect(budgets.startupAllowanceNanoseconds >= 90_000_000_000 && budgets.firstTokenMillisecondsPerPromptToken >= 1)
+        }
+        for model in ClusterPairServingGrants.withheld.keys {
+            #expect(throws: DistributedInstalledServingRefusal.self) {
+                _ = try Table.servingBudgets(runtimeModelID: model, publicModelID: q27Public)
+            }
+        }
+        // The orders the other families' checks ran: the M3 Ultra leads, the M5 Max decodes. The
+        // mirrored order of each is refused, for the rank whose class its role does not list.
+        for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"] {
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p")
+            let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: model, publicModelID: "p") }
+            #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, numericsClass: .appleM5Max, allowed: [.appleM3Ultra]), "\(model)")
+            let decoding = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: .appleM3Ultra, runtimeModelID: model, publicModelID: "p") }
+            #expect(decoding?.reason == .classNotAllowed(rank: 1, role: .decodingRank, numericsClass: .appleM3Ultra, allowed: [.appleM5Max]), "\(model)")
+        }
+    }
+
     @Test func rolesAndPlacementShape() {
         #expect(ClusterPairServingRole.of(rank: 0, rankCount: 2) == .pipelineRank)
         #expect(ClusterPairServingRole.of(rank: 1, rankCount: 2) == .decodingRank)

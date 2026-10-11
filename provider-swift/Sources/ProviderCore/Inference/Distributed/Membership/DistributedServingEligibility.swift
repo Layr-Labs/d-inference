@@ -8,8 +8,8 @@ import Foundation
 /// for solo serving. A member is decided by the model's pair-serving grant
 /// (`ClusterPairServingGrants`, owner decision D4): the chip classes each role
 /// may run on, keyed by the runtime's own model identity and checked with the
-/// class of the Mac that runs the rank (`ClusterMemberPreparation
-/// .requirePairServingGrant`, and the owner of every rank before it serves).
+/// class of the Mac that runs the rank (`ClusterMemberPreparation.prepare`,
+/// and the owner of every rank before it serves).
 /// A runtime capability, such as a claimed `mlx_nax`, is not an input to that
 /// decision.
 public enum DistributedServingEligibility {

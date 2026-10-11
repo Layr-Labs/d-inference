@@ -279,26 +279,44 @@ final class EndpointBox: @unchecked Sendable {
         try require(nine.firstTokenBaseMilliseconds+8192*nine.firstTokenMillisecondsPerPromptToken==18_192,"9B first-token budget at 8,192 tokens")
         try require(big.shutdownAcknowledgementNanoseconds==3*nine.shutdownAcknowledgementNanoseconds
             && big.stopMarginNanoseconds>nine.stopMarginNanoseconds && big.admissionWaitNanoseconds==nine.admissionWaitNanoseconds,"27B release and admission waits")
-        // Every model the runtime registers has exactly one row.
-        let registered=ClusterRuntimeAdapter.qwen35Dense.registeredProfiles.map(\.runtimeModelID)
-        try require(Table.rows.map(\.runtimeModelID)==registered,"the table and the runtime's registered models differ")
+        // Every model with a pair-serving grant has exactly one row, in the grants' order; a model
+        // whose grant is withheld has none, so neither half alone can open it.
+        try require(Table.rows.map(\.runtimeModelID)==ClusterPairServingGrants.granted.map(\.runtimeModelID),"the table's rows and the granted models differ")
+        for model in ClusterPairServingGrants.withheld.keys {
+            let none=try refusal{_ = try Table.servingBudgets(runtimeModelID:model,publicModelID:"p")}
+            try require(none.contains("no row for the registered model \(model)"),"a withheld model has a row: \(model)")
+        }
+        // The rows opened with the other granted families: each allowance covers what the pair measured
+        // across the cable (seconds: slowest start in any mode, the slower Mac's prefill rate alone).
+        let family:[(DistributedInstalledPairServingTable.Row,slowestStart:Double,slowPrefillTokensPerSecond:Double)]=[
+            (Table.qwen35A3B,29.0,1460),(Table.qwen36A3B,30.6,1730),(Table.bonsai2,11.8,278),(Table.nemotron35,19.7,1749)]
+        for (row,slowestStart,slowPrefill) in family {
+            let b=row.budgets
+            try require(Double(b.startupAllowanceNanoseconds)/1e9 >= 4.9*slowestStart && b.startupAllowanceNanoseconds<=150_000_000_000,"\(row.runtimeModelID): startup allowance")
+            try require(Double(b.firstTokenMillisecondsPerPromptToken) >= 1000/slowPrefill,"\(row.runtimeModelID): first-token rate is faster than its slower Mac alone")
+            try require(b.firstTokenBaseMilliseconds==nine.firstTokenBaseMilliseconds && b.admissionWaitNanoseconds==nine.admissionWaitNanoseconds
+                && b.shutdownAcknowledgementNanoseconds>=nine.shutdownAcknowledgementNanoseconds && b.stopMarginNanoseconds>=nine.stopMarginNanoseconds,"\(row.runtimeModelID): release and admission waits")
+        }
     }
-    /// No session lifetime (handoff/DESIGN-no-fixed-lifetime.md): a 30,720-token
+    /// No session lifetime (handoff/DESIGN-no-fixed-lifetime.md): a long
     /// prompt with 128 outputs is bounded only by each row's own request
-    /// budgets. The pair's measured first token at 30,720 tokens (both Macs,
-    /// normal order) is inside each row's first-token budget.
+    /// budgets. The pair's measured first token at the longest prompt each
+    /// model has run across the cable (both Macs, normal order) is inside its
+    /// row's first-token budget.
     static func longPromptsFitTheInstalledSession(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
-        let prompt=30_720
-        // At 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b and
-        // hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
-        // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up.
-        let measured:[String:(decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(67,15.61),
-            "registered_qwen38_27b":(23,39.91)]
+        // 9B and 27B at 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b
+        // and hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
+        // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up. The
+        // other families at 16,384 tokens, one run each (evidence/universal-20261010/hw/<family>/p16k-*).
+        let measured:[String:(prompt:Int,decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(30_720,67,15.61),
+            "registered_qwen38_27b":(30_720,23,39.91),"registered_qwen35_35b_a3b":(16_384,65,8.68),
+            "registered_qwen36_35b_a3b":(16_384,65,8.33),"registered_ternary_bonsai_2_27b":(16_384,29,45.52),
+            "registered_nemotron35_lightning":(16_384,77,8.28)]
         for row in Table.rows {
             let budgets=row.budgets
             guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }
-            let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
+            let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(rates.prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
             try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
         }
     }

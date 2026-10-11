@@ -35,7 +35,7 @@ public struct ProviderLoopConfig: Sendable {
     /// (true) or permits a reconnect (false). Read only in member mode.
     public let clusterMemberStopsOnDisconnect: Bool
     /// Cluster member only: the models whose pair-serving grant this Mac's
-    /// rank has passed (`ClusterMemberPreparation.requirePairServingGrant`).
+    /// rank has passed (`ClusterMemberPreparation.prepare`).
     /// A member serves no solo inference, so for these models the single-Mac
     /// requirements, which a pair is not judged by, do not keep them out of
     /// the member's registration and pair approval. Ignored in every other role.

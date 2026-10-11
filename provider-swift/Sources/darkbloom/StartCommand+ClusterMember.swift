@@ -6,8 +6,12 @@ extension Start {
     /// Shared by the follower-only command and the local leader. Pins the
     /// attested metallib without requireMetal, a container, or the solo device gate.
     func makeClusterMemberLoop(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false) async throws -> ProviderLoop {
+        // The model's pair-serving grant for the rank this Mac runs, with this
+        // Mac's own chip class (owner decision D4), is decided inside the
+        // preparation, before the weights are read. The single-Mac
+        // requirements of the model are for solo serving and are not applied.
         let prepared = try await Task.detached(priority: .userInitiated) {
-            try ClusterMemberPreparation.prepare(reference: reference)
+            try ClusterMemberPreparation.prepare(reference: reference, localNumericsClass: ClusterNumericsClass.local())
         }.value
         try Task.checkCancellation()
         let path = try configOptions.config.map {
@@ -36,10 +40,6 @@ extension Start {
             try prepared.requireUnchanged()
             return installation
         }
-        // The model's pair-serving grant for the rank this Mac runs, with this
-        // Mac's own chip class (owner decision D4). The single-Mac requirements
-        // of the model are for solo serving and are not applied here.
-        try prepared.requirePairServingGrant(localNumericsClass: ClusterNumericsClass.local())
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL ?? config.coordinator.url,
             hardware: hardware, models: [prepared.model], config: config,

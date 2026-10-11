@@ -195,6 +195,7 @@ struct PrefixCacheContractTests {
         #expect(QwenStagePrefixCache.budget(roomBytes: 26 * gib) == QwenStagePrefixCache.maximumBudgetBytes)
         #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib) == 3 * gib)
         #expect(QwenStagePrefixCache.budget(roomBytes: -1) == 0)
+        #expect(QwenStagePrefixCache.budget(roomBytes: 6 * gib + 300 << 20) == 3 * gib)
         let cache = QwenStagePrefixCache(entryLimit: 32, budgetBytes: 8 * gib)
         // Unmeasured: the budget is charged.
         #expect(cache.captureLimit(promptCount: 20_480, chunkSize: 512) == 8 * gib)

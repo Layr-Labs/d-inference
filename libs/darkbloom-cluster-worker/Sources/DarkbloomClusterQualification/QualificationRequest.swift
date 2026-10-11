@@ -100,7 +100,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     /// The three catalog entries of Gemma 4 26B share one geometry, cut list
     /// and arithmetic contract (the provider's two serving values).
     private static func gemma4(_ modelID: String) -> RegisteredModel {
-        .init(modelID: modelID, profileID: modelID + "_greedy_generation_v1", supportedCuts: [6, 8, 10, 12, 15, 18, 24],
+        .init(modelID: modelID, profileID: modelID + "_greedy_generation_v1", supportedCuts: Array(1...29),
               additionalArithmeticEnvironment: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
               vocabularySize: 262_144)
     }
@@ -120,15 +120,17 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
                                                 "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"]),
         .init(modelID: "registered_nemotron35_lightning",
               profileID: "registered_nemotron35_lightning_greedy_generation_v1",
-              supportedCuts: [7, 9, 11, 14, 16, 18, 21, 23, 25, 28, 30, 32, 35, 37, 39, 41], vocabularySize: 131_072),
+              // Every structural cut of its block list (the runtime derives the same 32).
+              supportedCuts: [6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32,
+                              34, 35, 36, 37, 38, 39, 40, 41], vocabularySize: 131_072),
         // GPT-OSS 20B on its own adapter; any cut is structurally legal there.
         .init(modelID: "registered_gpt_oss_20b", profileID: "registered_gpt_oss_20b_greedy_generation_v1",
-              supportedCuts: [6, 8, 10, 12]),
+              supportedCuts: Array(1...23)),
         // MiMo V2.6 Flash: each rank hashes 173 GB and reads up to 110 GB
         // before it is ready; its launcher gives it a longer startup timeout.
         .init(modelID: "registered_mimo_v26_flash_mopd",
               profileID: "registered_mimo_v26_flash_mopd_greedy_generation_v1",
-              supportedCuts: [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44],
+              supportedCuts: Array(1...47),
               hasRecordingRuntime: false),
         gemma4("registered_gemma4_26b_qat_4bit"), gemma4("registered_gemma4_26b"), gemma4("registered_gemma4_26b_8bit"),
     ]

@@ -155,12 +155,12 @@ struct GPTOSSResidentAdmissionTests {
             manifest: try Self.fixture("manifest"), runtimeBinarySHA256: String(repeating: "c", count: 64))
         #expect(capability.adapterID == ClusterRuntimeAdapter.gptossLayerStage.rawValue)
         #expect(capability.runtimeModelID == spec.model.rawValue && capability.profile.id == spec.profileID)
-        #expect(capability.partitions.map { $0.stages[0].sourceLayerEnd } == [6, 8, 10, 12])
+        #expect(capability.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...23))
         #expect(capability.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
         // The dense catalog does not know this model, and this adapter does not know a dense one.
         #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: spec.model.rawValue) == nil)
         #expect(GPTOSSResidentCapabilityMetadata.registeredModel(runtimeModelID: "registered_qwen35_9b") == nil)
-        #expect(GPTOSSResidentCapabilityMetadata.registeredModel(runtimeModelID: spec.model.rawValue)?.supportedCuts == [6, 8, 10, 12])
+        #expect(GPTOSSResidentCapabilityMetadata.registeredModel(runtimeModelID: spec.model.rawValue)?.supportedCuts == Array(1...23))
         #expect(throws: (any Error).self) {
             _ = try QwenResidentCapabilityMetadata.describe(configuration: try Self.fixture("configuration"),
                 manifest: try Self.fixture("manifest"), runtimeBinarySHA256: String(repeating: "c", count: 64))

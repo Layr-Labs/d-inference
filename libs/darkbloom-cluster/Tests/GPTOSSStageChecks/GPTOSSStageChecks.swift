@@ -34,7 +34,7 @@ import Foundation
                "fixtures are not the registered configuration and manifest")
         expect((try? spec.requireManifest(manifest, configuration: configuration)) != nil, "manifest totals")
         expect(GPTOSSRegisteredSpecification.all.count == 1 && spec.model.rawValue == "registered_gpt_oss_20b"
-               && spec.supportedCuts == [6, 8, 10, 12], "registered row")
+               && spec.supportedCuts == Array(1...23), "registered row")
         expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode], "phase split is not in the row")
         refuses("an unregistered model ID") { _ = try GPTOSSRegisteredSpecification.specification(runtimeModelID: "registered_qwen35_9b") }
         refuses("a configuration with one changed byte") {

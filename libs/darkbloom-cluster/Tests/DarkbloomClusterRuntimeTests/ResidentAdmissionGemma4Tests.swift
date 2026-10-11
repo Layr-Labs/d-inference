@@ -424,7 +424,7 @@ struct ResidentAdmissionGemma4Tests {
             == ["registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit"])
         #expect(Set(all.map(\.runtimeModelID)).count == all.count && Set(all.map(\.manifestSHA256)).count == all.count)
         for model in all.suffix(3) {
-            #expect(model.layerCount == 30 && model.supportedCuts == [6, 8, 10, 12, 15, 18, 24])
+            #expect(model.layerCount == 30 && model.supportedCuts == Array(1...29))
             #expect(model.supportedGenerationModes == [.pipeline])
             #expect(model.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
             #expect(model.profileID == model.runtimeModelID + "_greedy_generation_v1")

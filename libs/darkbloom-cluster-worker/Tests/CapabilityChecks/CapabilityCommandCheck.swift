@@ -101,7 +101,7 @@ import Foundation
                     && nemotron.supportedGenerationModes == row.supportedGenerationModes, "The Nemotron profile or modes differ from its row")
                 let cuts = nemotron.partitions.map { $0.stages[0].sourceLayerEnd }
                 let ends = Set(nemotron.partitions.map { $0.stages[1].sourceLayerEnd })
-                try capabilityCheck(cuts == row.supportedCuts && ends == [52] && (1...16).contains(cuts.count),
+                try capabilityCheck(cuts == row.supportedCuts && ends == [52] && cuts.count == 32,
                     "The Nemotron partitions differ from its resident cuts")
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(nemotron)) == nemotron,
                     "The Nemotron capability does not round-trip within the byte bound")
@@ -116,7 +116,7 @@ import Foundation
                 try capabilityCheck(mimo.adapterID == "mimo-v26-layer-stage" && mimo.runtimeModelID == "registered_mimo_v26_flash_mopd"
                     && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode]
                     && mimo.supportedPrefillSchedules == [.serial]
-                    && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44]
+                    && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...47)
                     && mimo.partitions.allSatisfy { $0.stages.count == 2 && $0.stages[1].sourceLayerEnd == 48 },
                     "The MiMo capability differs from its resident row")
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(mimo)) == mimo,
@@ -145,11 +145,11 @@ import Foundation
                     let value = try gemma(configuration, manifest)
                     try capabilityCheck(value.adapterID == ClusterRuntimeAdapter.gemma4LayerStage.rawValue
                         && value.runtimeModelID == model && value.profile.id == model + "_greedy_generation_v1"
-                        && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 8192
+                        && value.profile.vocabularySize == 262_144 && value.profile.maximumPromptTokens == 32_767
                         && value.arithmeticPolicyID == "gemma4_cbv2_query128_bf16_tf32_weighted_r1_v1"
                         && value.supportedGenerationModes == [.pipeline]
                         && value.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
-                        && value.partitions.map { $0.stages[0].sourceLayerEnd } == [6, 8, 10, 12, 15, 18, 24]
+                        && value.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...29)
                         && value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 30 },
                         "The Gemma capability differs from its resident row: \(model)")
                     try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(value)) == value,

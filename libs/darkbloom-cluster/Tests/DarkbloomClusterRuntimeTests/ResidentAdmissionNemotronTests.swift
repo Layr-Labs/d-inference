@@ -76,8 +76,8 @@ struct ResidentAdmissionNemotronTests {
     @Test func definitionIsItsOwnClosedRow() throws {
         let row = try QwenResidentModelDefinition(model: .nemotron35Lightning)
         #expect(row.profileID == Self.profileID && row.specification.layers == 52)
-        #expect(row.supportedCuts == NemotronRegisteredLightning.supportedCuts && row.supportedCuts.count <= 16)
-        #expect(row.supportedCuts == [7, 9, 11, 14, 16, 18, 21, 23, 25, 28, 30, 32, 35, 37, 39, 41])
+        #expect(row.supportedCuts == NemotronRegisteredLightning.supportedCuts && row.supportedCuts.count == 32)
+        #expect(row.supportedCuts == NemotronStageMetadata.structuralCuts(NemotronRegisteredLightning.kinds))
         #expect(row.supportedCuts.allSatisfy { Self.pattern[$0 - 1] == "E" })
         #expect(row.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
         #expect(row.adapter == .nemotronH && row.arithmetic == .nemotronHybrid)

@@ -53,7 +53,7 @@ public enum GPTOSSExpertLayoutCheck {
         let spec = try GPTOSSRegisteredSpecification.specification(configuration: configuration)
         // Admitted before any model construction, as every other entry does.
         _ = try GPTOSSArithmeticEnvironment.admit(ProcessInfo.processInfo.environment)
-        let plan = try GPTOSSLayerStagePlan(configuration: configuration, cut: spec.supportedCuts[0])
+        let plan = try GPTOSSLayerStagePlan(configuration: configuration, cut: GPTOSSRegisteredSpecification.planningCut)
         guard !layers.isEmpty, layers.count <= spec.layers, Set(layers).count == layers.count,
               layers.allSatisfy({ (0..<spec.layers).contains($0) }),
               (64...GPTOSSRegisteredSpecification.maximumChunkTokens).contains(chunkTokens) else {

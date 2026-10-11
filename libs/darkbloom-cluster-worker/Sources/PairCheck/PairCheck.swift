@@ -53,6 +53,7 @@ import Foundation
               [--lifetime-seconds 10...3600] [--startup-seconds N] [--request-seconds N]
           darkbloom-cluster-pair-check compare --reference REPORT.json --candidate REPORT.json
               [--near-tie-ulps N] [--allow-cut-difference yes] [--allow-schedule-difference yes]
+              [--allow-profile-difference yes (profiles that differ only in their limits)]
               [--json yes] [--require VERDICT[,VERDICT]] [--model-dir /ABS/MODEL]
         """
 
@@ -388,7 +389,7 @@ import Foundation
 
     static func compare(_ arguments: [String]) async throws {
         let fields = try parse(arguments, allowed: ["--reference", "--candidate", "--near-tie-ulps",
-            "--allow-cut-difference", "--allow-schedule-difference", "--json", "--require", "--model-dir"])
+            "--allow-cut-difference", "--allow-schedule-difference", "--allow-profile-difference", "--json", "--require", "--model-dir"])
         guard let referencePath = fields["--reference"]?.first, let candidatePath = fields["--candidate"]?.first else {
             throw Failure(usage)
         }
@@ -406,7 +407,8 @@ import Foundation
         let candidate = try QualificationReportFiles.subject(URL(fileURLWithPath: candidatePath))
         let comparison = try QualificationComparator(nearTieULPs: threshold,
             allowCutDifference: fields["--allow-cut-difference"]?.first == "yes",
-            allowScheduleDifference: fields["--allow-schedule-difference"]?.first == "yes").compare(reference: reference, candidate: candidate)
+            allowScheduleDifference: fields["--allow-schedule-difference"]?.first == "yes",
+            allowProfileDifference: fields["--allow-profile-difference"]?.first == "yes").compare(reference: reference, candidate: candidate)
         if fields["--json"]?.first == "yes" {
             print(String(decoding: try QualificationReportFiles.encode(comparison), as: UTF8.self), terminator: "")
         } else {

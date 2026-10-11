@@ -43,12 +43,14 @@ struct MiMoRegisteredSpecification {
     /// `max_position_embeddings` of the pinned configuration; the request
     /// limits follow from it (`contextLimits`).
     let declaredContextTokens: Int
-    /// Stage 0 layer counts a pair may be loaded at, ascending. Every layer
-    /// boundary is a structural cut for this architecture (each layer owns its
-    /// own attention state and only the residual crosses); this row lists the
-    /// ones a pair of 256 GiB and 128 GiB Macs can place. A listed cut is not
-    /// a memory or speed claim: the live resource gates decide each load.
-    let supportedCuts: [Int]
+    /// Stage 0 layer counts a pair may be loaded at, ascending: every layer
+    /// boundary, each a structural cut for this architecture (each layer owns
+    /// its own attention state and only the residual crosses). Not a memory
+    /// or speed claim: the planner chooses from what each Mac detects and the
+    /// live resource gates decide each load. Rank 1 holds 13.7 GiB at cut 44
+    /// and 105.6 GiB at cut 16; rank 0 50.2 GiB at cut 16 and 142.0 GiB at 44.
+    /// The row once listed twelve the pair it was written on could place.
+    var supportedCuts: [Int] { Array(1..<layers) }
     let supportedPrefillSchedules: [ClusterPrefillSchedule]
     /// The pipeline and its compact decode framing. No phase split: the rank
     /// that would decode alone would have to hold all `sourceBytes`, which is
@@ -90,16 +92,6 @@ struct MiMoRegisteredSpecification {
             experts: 256, expertsPerToken: 8, slidingWindow: 128,
             fullKeyValueHeads: 4, slidingKeyValueHeads: 8, keyWidth: 192, valueWidth: 128,
             declaredContextTokens: 1_048_576,
-            // Rank 1 holds 13.7 GiB at cut 44 and 105.6 GiB at cut 16; rank 0
-            // holds 50.2 GiB at cut 16 and 142.0 GiB at cut 44. Which one a
-            // pair can load is decided by each Mac's admissible memory when
-            // the session starts, not by its size: a 128 GiB Mac in ordinary
-            // desktop use had 38 to 41 GiB open (the kernel keeps about a
-            // third of memory as file cache before it takes anonymous pages),
-            // which is rank 1 at cut 40 (26.9 GiB) and not at cut 32 (53.1).
-            // Cuts 16 and 20 are for the pair in the other order (rank 0 on
-            // the smaller Mac). Twelve partitions, under the protocol's 16.
-            supportedCuts: [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44],
             supportedPrefillSchedules: [.serial],
             supportedGenerationModes: [.pipeline, .pipelineCompactDecode]),
     ]

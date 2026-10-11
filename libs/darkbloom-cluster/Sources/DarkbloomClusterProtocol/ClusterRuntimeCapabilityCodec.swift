@@ -3,7 +3,9 @@ import Foundation
 /// Exactly one canonical, sorted-key JSON object and LF, bounded to 16 KiB.
 /// Reuses the protocol scanner and strict typed object reader; never hashes Plans.
 public enum ClusterRuntimeCapabilityCodec {
-    public static let maximumBytes = 16 * 1024
+    /// Room for `maximumPartitions` partitions (about 600 bytes each) beside the rest.
+    public static let maximumBytes = 96 * 1024
+    public static let maximumPartitions = 128
 
     public static func encode(_ value: ClusterRuntimeCapability) throws -> Data {
         try ClusterRuntimeCapabilityValidation.check(value)

@@ -39,7 +39,8 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
 
     /// Field names that differ, and optional fields only one side carries.
     public func differences(from other: Self, allowCutDifference: Bool = false,
-                            allowScheduleDifference: Bool = false) -> (differing: [String], notCompared: [String]) {
+                            allowScheduleDifference: Bool = false,
+                            allowProfileDifference: Bool = false) -> (differing: [String], notCompared: [String]) {
         var differing: [String] = [], skipped: [String] = []
         func required<T: Equatable>(_ name: String, _ a: T, _ b: T) { if a != b { differing.append(name) } }
         func optional<T: Equatable>(_ name: String, _ a: T?, _ b: T?) {
@@ -56,8 +57,17 @@ public struct QualificationIdentity: Codable, Equatable, Sendable {
         if !allowScheduleDifference { required("prefillSchedule", prefillSchedule, other.prefillSchedule) }
         required("artifactSHA256", artifactSHA256, other.artifactSHA256)
         required("configurationSHA256", configurationSHA256, other.configurationSHA256)
-        optional("requestFingerprint", requestFingerprint, other.requestFingerprint)
-        optional("profileFingerprint", profileFingerprint, other.profileFingerprint)
+        // A profile's limits (largest prompt, output and context) decide which
+        // requests are admitted, not what one computes; the same tokens, chunk,
+        // outputs and stops under two limits are one computation. The request
+        // fingerprint binds the profile, so it follows.
+        if allowProfileDifference {
+            if requestFingerprint != other.requestFingerprint { skipped.append("requestFingerprint") }
+            if profileFingerprint != other.profileFingerprint { skipped.append("profileFingerprint") }
+        } else {
+            optional("requestFingerprint", requestFingerprint, other.requestFingerprint)
+            optional("profileFingerprint", profileFingerprint, other.profileFingerprint)
+        }
         optional("arithmeticSHA256", arithmeticSHA256, other.arithmeticSHA256)
         // The cut selects the Plan, the stages and how storage is divided.
         if !(allowCutDifference && stageCut != other.stageCut) {

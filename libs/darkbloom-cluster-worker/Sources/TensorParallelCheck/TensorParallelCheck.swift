@@ -6,8 +6,8 @@ import MLX
 
 // Tensor-parallel qualification for the dense Qwen 3.5-family models.
 //
-//   darkbloom-cluster-tp-check run --mode full|simulated|tp --model-dir DIR --request FILE --report FILE
-//       [--backend jaccl|ring] [--timing lazy|explicit] [--record-top K] [--repeats N] [--warmup yes|no]
+//   darkbloom-cluster-tp-check run --mode full|simulated|tp|hybrid --model-dir DIR --request FILE --report FILE
+//       [--backend jaccl|ring] [--timing lazy|explicit] [--prefill-rank R] [--record-top K] [--repeats N] [--warmup yes|no]
 //       [--wired-residency yes|no] [--deadline-seconds S] [--output-count N]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
 //
@@ -15,7 +15,9 @@ import MLX
 // reference); `simulated` is the single-process tensor-parallel oracle (the
 // ranks' float32 partial sums added in one process); `tp` is one rank of a
 // two-rank run, over JACCL (two Macs) or the local ring (two ranks on one Mac,
-// correctness only). Greedy, no multi-token prediction, no prefix cache. A
+// correctness only). `hybrid` is a tp rank whose prompt is prefilled by the
+// prefill rank with the unsharded model, then decoded tensor parallel after
+// the state is cut by heads. Greedy, no multi-token prediction, no prefix cache. A
 // report names roles and chips only, never a host, an address or a path.
 
 struct Failure: Error, CustomStringConvertible {
@@ -58,6 +60,9 @@ struct RunReport: Codable {
     var stepP90Milliseconds: Double
     var stepMaxMilliseconds: Double
     var peakActiveBytes: Int
+    var prefillSeconds: Double?
+    var handoffSeconds: Double?
+    var handoffBytes: Int?
 }
 
 struct Report: Codable {
@@ -100,6 +105,7 @@ struct Options {
     var report = ""
     var backend = QwenTensorParallelGroup.Backend.jaccl
     var timing = QwenTensorParallelReductionTiming.lazy
+    var prefillRank = 1
     var recordTop = 0
     var repeats = 1
     var warmup = true
@@ -137,6 +143,7 @@ struct Options {
             case "--timing":
                 guard let t = QwenTensorParallelReductionTiming(rawValue: try value()) else { throw Failure("unknown timing") }
                 timing = t
+            case "--prefill-rank": prefillRank = Int(try value()) ?? -1
             case "--record-top": recordTop = Int(try value()) ?? -1
             case "--repeats": repeats = Int(try value()) ?? 0
             case "--warmup": warmup = try yesNo(try value())
@@ -151,12 +158,13 @@ struct Options {
             index += 1
         }
         if command == "run" {
-            guard ["full", "simulated", "tp"].contains(mode), !modelDirectory.isEmpty, !request.isEmpty, !report.isEmpty,
-                  (0...64).contains(recordTop), (1...8).contains(repeats), (30...7200).contains(deadlineSeconds) else {
-                throw Failure("run needs --mode full|simulated|tp, --model-dir, --request, --report and bounded options")
+            guard ["full", "simulated", "tp", "hybrid"].contains(mode), !modelDirectory.isEmpty, !request.isEmpty, !report.isEmpty,
+                  (0...64).contains(recordTop), (1...8).contains(repeats), (30...7200).contains(deadlineSeconds),
+                  (0...1).contains(prefillRank) else {
+                throw Failure("run needs --mode full|simulated|tp|hybrid, --model-dir, --request, --report and bounded options")
             }
             guard !FileManager.default.fileExists(atPath: report) else { throw Failure("the report file already exists") }
-            if mode == "tp" && recordTop > 0 { throw Failure("a tp rank does not record logits") }
+            if ["tp", "hybrid"].contains(mode) && recordTop > 0 { throw Failure("a tp rank does not record logits") }
         } else {
             guard !reference.isEmpty, !candidate.isEmpty, nearTieULPs >= 0 else {
                 throw Failure("compare needs --reference and --candidate")
@@ -203,13 +211,14 @@ enum RunCommand {
         switch options.mode {
         case "full": role = .full
         case "simulated": role = .simulated(size: 2)
-        default:
+        default: // tp, hybrid
             let g = try QwenTensorParallelGroup(backend: options.backend)
             group = g
             role = .shard(rank: g.rank, size: g.size)
             note("rank \(g.rank) of \(g.size) over \(options.backend.rawValue)\(options.backend == .ring ? " (correctness only, not a pair timing)" : "")")
             let workload = [Int32(outputCount), Int32(request.chunkSize), Int32(request.promptTokenIDs.count),
-                            Int32(options.repeats), options.warmup ? 1 : 0, options.timing == .lazy ? 1 : 2]
+                            Int32(options.repeats), options.warmup ? 1 : 0, options.timing == .lazy ? 1 : 2,
+                            options.mode == "hybrid" ? Int32(10 + options.prefillRank) : 0]
             guard try g.agree(workload),
                   try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";"))) else {
                 throw Failure("the ranks disagree on the workload, the model configuration, the prompt or the arithmetic environment")
@@ -220,13 +229,25 @@ enum RunCommand {
         let model = try QwenTensorParallelModel.load(modelDirectory: directory, role: role, reduction: group,
                                                      timing: options.timing)
         note("loaded in \(String(format: "%.1f", model.loadSeconds)) s, active \(model.loadedActiveBytes) bytes")
+        var unsharded: QwenTensorParallelModel?
+        if options.mode == "hybrid", let group, group.rank == options.prefillRank {
+            unsharded = try QwenTensorParallelModel.load(modelDirectory: directory, role: .full, reduction: nil)
+            note("prefill rank: unsharded model loaded too in \(String(format: "%.1f", unsharded!.loadSeconds)) s")
+        }
+        func generate(_ prompt: [Int], _ count: Int, recordTop: Int) throws -> QwenTensorParallelModel.Generation {
+            if options.mode == "hybrid", let group {
+                return try QwenTensorParallelHybrid.generate(full: unsharded, shard: model, group: group,
+                    prefillRank: options.prefillRank, prompt: prompt, outputCount: count, chunk: request.chunkSize)
+            }
+            return try model.generate(prompt: prompt, outputCount: count, chunk: request.chunkSize, recordTop: recordTop)
+        }
         var residency: ProcessStageResidency?
         if options.wiredResidency {
-            residency = try ProcessStageResidency(bytes: model.loadedActiveBytes + (4 << 30))
+            residency = try ProcessStageResidency(bytes: Memory.activeMemory + (4 << 30))
         }
         if let group { guard try group.agree([7]) else { throw Failure("load barrier failed") } }
 
-        var report = Report(mode: options.mode, role: role.label, rank: group?.rank ?? 0, size: group?.size ?? 1,
+        var report = Report(mode: options.mode, role: (options.mode == "hybrid" ? "hybrid-" : "") + role.label, rank: group?.rank ?? 0, size: group?.size ?? 1,
             backend: group.map { _ in options.backend.rawValue }, timing: group.map { _ in options.timing.rawValue },
             correctnessOnly: options.backend == .ring && group != nil, chip: chipName(),
             modelConfigurationSHA256: configurationSHA, modelID: request.modelID, requestID: request.requestID,
@@ -238,14 +259,13 @@ enum RunCommand {
 
         if options.warmup {
             let warm = Array(request.promptTokenIDs.prefix(min(64, request.promptTokenIDs.count)))
-            _ = try model.generate(prompt: warm, outputCount: 4, chunk: request.chunkSize)
+            _ = try generate(warm, 4, recordTop: 0)
             Memory.clearCache()
             note("warmup done")
         }
         for index in 0..<options.repeats {
             Memory.peakMemory = 0
-            let generation = try model.generate(prompt: request.promptTokenIDs, outputCount: outputCount,
-                chunk: request.chunkSize, recordTop: index == 0 ? options.recordTop : 0)
+            let generation = try generate(request.promptTokenIDs, outputCount, recordTop: index == 0 ? options.recordTop : 0)
             let steps = generation.stepSeconds
             let run = RunReport(tokenIDs: generation.tokenIDs, tokenIDsSHA256: tokenDigest(generation.tokenIDs),
                 firstTokenSeconds: generation.firstTokenSeconds,
@@ -254,7 +274,9 @@ enum RunCommand {
                 decodeTokensPerSecond: steps.isEmpty ? 0 : Double(steps.count) / generation.decodeSeconds,
                 stepP50Milliseconds: Statistics.percentile(steps, 0.5) * 1e3,
                 stepP90Milliseconds: Statistics.percentile(steps, 0.9) * 1e3,
-                stepMaxMilliseconds: (steps.max() ?? 0) * 1e3, peakActiveBytes: generation.peakActiveBytes)
+                stepMaxMilliseconds: (steps.max() ?? 0) * 1e3, peakActiveBytes: generation.peakActiveBytes,
+                prefillSeconds: generation.prefillSeconds, handoffSeconds: generation.handoffSeconds,
+                handoffBytes: generation.handoffBytes)
             report.runs.append(run)
             if index == 0 && options.recordTop > 0 {
                 report.topTokenIDs = generation.topTokenIDs
@@ -263,6 +285,10 @@ enum RunCommand {
             note(String(format: "run %d: first token %.3f s (%.0f tok/s prefill), decode %.2f tok/s (p50 %.2f ms, p90 %.2f ms), tokens %@",
                         index, run.firstTokenSeconds, run.prefillTokensPerSecond, run.decodeTokensPerSecond,
                         run.stepP50Milliseconds, run.stepP90Milliseconds, String(run.tokenIDsSHA256.prefix(16))))
+            if let handoff = run.handoffSeconds {
+                note(String(format: "run %d: hybrid prefill %@ s, state hand-off %.3f s, %d bytes", index,
+                            run.prefillSeconds.map { String(format: "%.3f", $0) } ?? "-", handoff, run.handoffBytes ?? 0))
+            }
             Memory.clearCache()
         }
         report.repeatsIdentical = Set(report.runs.map { $0.tokenIDsSHA256 }).count == 1

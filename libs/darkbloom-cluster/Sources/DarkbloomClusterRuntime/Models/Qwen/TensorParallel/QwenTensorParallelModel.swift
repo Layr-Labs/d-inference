@@ -184,9 +184,13 @@ public final class QwenTensorParallelModel {
         /// Wall time between successive tokens.
         public var stepSeconds: [Double] = []
         public var peakActiveBytes = 0
+        /// Hybrid only: prefill on one rank, its state cut by heads and moved.
+        public var prefillSeconds: Double?
+        public var handoffSeconds: Double?
+        public var handoffBytes: Int?
     }
 
-    private static func now() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+    static func now() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
 
     /// The next token from this rank's logits `[1, V or V/size]`: an `[1]` int32
     /// array, not evaluated. A shard's choice is the argmax over every rank's
@@ -226,8 +230,14 @@ public final class QwenTensorParallelModel {
         if recordTop > 0, case .shard = role { throw ProbeError("Tensor parallel generation: a shard does not record logits") }
         guard recordTop <= 64 else { throw ProbeError("Tensor parallel generation: at most 64 logits per step") }
         let cache = model.newCache(parameters: nil)
-        var result = Generation()
         let started = Self.now()
+        let logits = prefill(prompt, chunk: chunk, cache: cache)
+        return decode(first: select(logits), firstLogits: logits, cache: cache, outputCount: outputCount,
+                      recordTop: recordTop, started: started)
+    }
+
+    /// The prompt through the model in chunks; the last position's logits, not evaluated.
+    func prefill(_ prompt: [Int], chunk: Int, cache: [KVCache]) -> MLXArray {
         var logits: MLXArray?
         var offset = 0
         while offset < prompt.count {
@@ -241,8 +251,19 @@ public final class QwenTensorParallelModel {
             }
             offset = end
         }
-        var current = select(logits!)
-        var currentTop = recordTop > 0 ? top(logits!, recordTop) : nil
+        return logits!
+    }
+
+    func newCache() -> [KVCache] { model.newCache(parameters: nil) }
+
+    /// Greedy decode from `first` (an `[1]` int32 token, possibly not evaluated
+    /// yet) with `cache` holding the prompt. `firstLogits` are the logits `first`
+    /// was chosen from (recorded when `recordTop` > 0).
+    func decode(first: MLXArray, firstLogits: MLXArray?, cache: [KVCache], outputCount: Int, recordTop: Int,
+                started: Double) -> Generation {
+        var result = Generation()
+        var current = first
+        var currentTop = recordTop > 0 ? firstLogits.map { top($0, recordTop) } : nil
         if let currentTop { asyncEval(current, currentTop.0, currentTop.1) } else { asyncEval(current) }
         var last = started
         for step in 0 ..< outputCount {

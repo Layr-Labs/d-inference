@@ -77,6 +77,68 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
         return (1..<size).allSatisfy { other in Array(all[(other * 4)..<(other * 4 + 4)]) == Array(all[0..<4]) }
     }
 
+    /// Largest single point-to-point message; longer buffers go in pieces.
+    public static let maximumMessageBytes = 16 << 20
+
+    /// A one-dimensional buffer to `peer`, byte for byte, in pieces; returns when sent.
+    public func send(_ value: MLXArray, to peer: Int) throws {
+        guard value.ndim == 1, peer != rank, (0..<size).contains(peer) else {
+            throw ProbeError("Tensor parallel send: a one-dimensional buffer to another rank")
+        }
+        eval(value)
+        let per = max(1, Self.maximumMessageBytes / value.itemSize)
+        var start = 0
+        while start < value.size {
+            let piece = value[start ..< min(value.size, start + per)]
+            var result = mlx_array_new()
+            try MLX.withError { error in
+                let status = mlx_distributed_send(&result, piece.ctx, Int32(peer), handle, StreamOrDevice.cpu.ctx)
+                try error.check()
+                guard status == 0 else { throw ProbeError("send graph construction failed: \(status)") }
+                let sent = MLXArray(result)
+                eval(sent)
+                try error.check()
+            }
+            start += per
+        }
+    }
+
+    /// The matching receive of `count` elements of `dtype` from `peer`.
+    public func receive(count: Int, dtype: DType, from peer: Int) throws -> MLXArray {
+        guard count > 0, peer != rank, (0..<size).contains(peer) else {
+            throw ProbeError("Tensor parallel receive: a positive count from another rank")
+        }
+        let native: mlx_dtype
+        switch dtype {
+        case .bfloat16: native = MLX_BFLOAT16
+        case .float16: native = MLX_FLOAT16
+        case .float32: native = MLX_FLOAT32
+        case .int32: native = MLX_INT32
+        default: throw ProbeError("Tensor parallel receive: unsupported dtype \(dtype)")
+        }
+        let per = max(1, Self.maximumMessageBytes / dtype.size)
+        var pieces: [MLXArray] = []
+        var start = 0
+        while start < count {
+            let length = min(count - start, per)
+            var result = mlx_array_new()
+            let shape = [Int32(length)]
+            try MLX.withError { error in
+                let status = shape.withUnsafeBufferPointer {
+                    mlx_distributed_recv(&result, $0.baseAddress, $0.count, native, Int32(peer), handle, StreamOrDevice.cpu.ctx)
+                }
+                try error.check()
+                guard status == 0 else { throw ProbeError("recv graph construction failed: \(status)") }
+                let received = MLXArray(result)
+                eval(received)
+                try error.check()
+                pieces.append(received)
+            }
+            start += length
+        }
+        return pieces.count == 1 ? pieces[0] : concatenated(pieces, axis: 0)
+    }
+
     /// The local ring may only open two IPv4 loopback endpoints.
     private static func validateLocalRing() throws {
         let environment = ProcessInfo.processInfo.environment

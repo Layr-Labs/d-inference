@@ -258,6 +258,13 @@ public struct PairConfiguration: Sendable {
         try require(followRequests.count <= Self.maximumRepetitions, "at most 8 follow-up requests")
         try require(followRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
             "follow-up requests must name the same model and profile")
+        try require((1...8).contains(batchLanes), "batch lanes are 1...8")
+        try require(batchRequests.isEmpty || (!recording && generationMode == Self.pipelineMode),
+            "batch requests run with --evidence none in the pipeline mode")
+        try require(batchRequests.count <= 8 && batchWaves.allSatisfy { (1...batchLanes).contains($0) && $0 <= batchRequests.count },
+            "at most 8 batch requests; each wave is 1...lanes and at most the request count")
+        try require(batchRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
+            "batch requests must name the same model and profile")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")

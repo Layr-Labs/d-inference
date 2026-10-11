@@ -248,7 +248,8 @@ public struct ClusterPairingMessage: Codable, Sendable, Equatable {
         case .decision: expected = ["accept", "tag"]
         case .countersign: expected = ["signature", "tag"]
         case .committed: expected = ["tag"]
-        case .abort: expected = ["reason"]
+        // An abort after the keys are agreed carries a tag; one without is ignored then (see the session).
+        case .abort: expected = present.contains("tag") ? ["reason", "tag"] : ["reason"]
         case .refused: expected = present.contains("retryAfterEpochSeconds") ? ["reason", "retryAfterEpochSeconds"] : ["reason"]
         }
         guard present == expected else { throw ClusterPairingError.malformedMessage }

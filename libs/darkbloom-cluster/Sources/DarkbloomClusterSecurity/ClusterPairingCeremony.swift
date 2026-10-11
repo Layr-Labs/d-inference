@@ -204,7 +204,15 @@ public struct ClusterPairingSession: Sendable {
         guard !isFinished else { return [] }
         do {
             switch (message.kind, role, phase) {
-            case (.abort, _, _): return peerAborted(message.reason ?? "protocol")
+            case (.abort, _, _):
+                // Once the code is on screen, only an abort made with the agreed key counts: anyone on
+                // the link can send an untagged one, and it must not undo a confirmed or stored pairing.
+                // Before that, an untagged abort costs no more than a lost link.
+                if codeShown, let key = confirmKey {
+                    guard let tag = message.tag, ClusterPairingDerivation.isValidTag(tag, kind: .abort, role: role.peer,
+                        transcript: transcript, payload: Data((message.reason ?? "").utf8), key: key) else { return [] }
+                }
+                return peerAborted(message.reason ?? "protocol")
             case (.refused, .connector, .offered): return refused(message)
             case (.offer, .listener, .start): return try offered(message)
             case (.answer, .connector, .offered): return try answered(message)
@@ -244,10 +252,8 @@ public struct ClusterPairingSession: Sendable {
     public mutating func localPersisted(_ success: Bool) -> [ClusterPairingStep] {
         guard phase == .persisting, let key = confirmKey, let outcome else { return [] }
         guard success else {
-            var abort = ClusterPairingMessage(kind: .abort)
-            abort.reason = ClusterPairingError.persistenceFailed.wireReason
             phase = .failed
-            return [.send(abort), .failed(.persistenceFailed)]
+            return [.send(abortMessage(ClusterPairingError.persistenceFailed.wireReason)), .failed(.persistenceFailed)]
         }
         persisted = true
         phase = .committing
@@ -265,11 +271,7 @@ public struct ClusterPairingSession: Sendable {
     public mutating func fail(_ error: ClusterPairingError) -> [ClusterPairingStep] {
         guard !isFinished else { return [] }
         var steps = [ClusterPairingStep]()
-        if phase != .start {
-            var abort = ClusterPairingMessage(kind: .abort)
-            abort.reason = error.wireReason
-            steps.append(.send(abort))
-        }
+        if phase != .start { steps.append(.send(abortMessage(error.wireReason))) }
         if persisted, let outcome { steps.append(.rollback(outcome)) }
         phase = .failed
         steps.append(.failed(error))
@@ -458,6 +460,16 @@ public struct ClusterPairingSession: Sendable {
         let keys = try ClusterPairingDerivation.keys(privateKey: ephemeral, peerEphemeral: peerEphemeral, transcript: transcript)
         confirmKey = keys.confirm; edgeSecret = keys.edgeSecret
         code = ClusterPairingDerivation.code(transcript: transcript)
+    }
+
+    /// An abort, tagged once the keys are agreed.
+    private func abortMessage(_ reason: String) -> ClusterPairingMessage {
+        var abort = ClusterPairingMessage(kind: .abort)
+        abort.reason = reason
+        if let key = confirmKey {
+            abort.tag = ClusterPairingDerivation.tag(kind: .abort, role: role, transcript: transcript, payload: Data(reason.utf8), key: key)
+        }
+        return abort
     }
 
     private func proof() throws -> ClusterPairingMessage {

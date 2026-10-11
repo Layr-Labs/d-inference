@@ -12,6 +12,7 @@ extension PairingCheck {
         var persisted: Set<ClusterPairingRole> = []
         var rolledBack: Set<ClusterPairingRole> = []
         var peerDecisions: [ClusterPairingRole: Bool] = [:]
+        var sessions: [ClusterPairingRole: ClusterPairingSession] = [:]
     }
 
     struct Plan {
@@ -61,6 +62,7 @@ extension PairingCheck {
             guard let message = try? ClusterPairingMessage.decode(bytes) else { run.failures[to] = .malformedMessage; continue }
             perform(sessions[to]!.receive(message), at: to)
         }
+        run.sessions = sessions
         return run
     }
 
@@ -273,5 +275,17 @@ extension PairingCheck {
         var silent = Plan(); silent.decide = false
         let waiting = runInMemory(TestPairing.participant(a), TestPairing.participant(b), plan: silent)
         expect(waiting.codes.count == 2 && waiting.failures.isEmpty, "both wait for a person")
+        // With the code on screen, an abort anyone on the link could send is ignored; the other Mac's own counts.
+        var listener = waiting.sessions[.listener]!, connector = waiting.sessions[.connector]!
+        var forged = ClusterPairingMessage(kind: .abort); forged.reason = "declined"
+        expect(listener.receive(try! ClusterPairingMessage.decode(try! forged.encoded())).isEmpty, "an untagged abort is ignored once the code shows")
+        forged.tag = Data(repeating: 9, count: 32)
+        expect(listener.receive(try! ClusterPairingMessage.decode(try! forged.encoded())).isEmpty, "a wrongly tagged abort too")
+        expect(!listener.isFinished, "the listener still waits for its person")
+        let ending = connector.fail(.expired)
+        guard case .send(let abort)? = ending.first else { expect(false, "the connector sends an abort"); return }
+        expect(abort.tag != nil, "the connector's abort is tagged")
+        let steps = listener.receive(try! ClusterPairingMessage.decode(try! abort.encoded()))
+        expect(steps.contains { if case .failed(.expired) = $0 { return true }; return false }, "the other Mac's tagged abort ends it: \(steps)")
     }
 }

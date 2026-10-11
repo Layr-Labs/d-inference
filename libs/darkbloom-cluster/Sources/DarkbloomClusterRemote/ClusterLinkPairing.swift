@@ -185,11 +185,13 @@ public enum ClusterLinkPairing {
                     callbacks.progress(.connected)
                     if options.role == .connector, session == nil { startConnector() }
                 case .peerRestarted:
-                    // A new process at the other end: what it had sent is gone.
-                    guard let current = session, !current.isFinished else { return }
+                    // A new process at the other end: what it had sent is gone. Once this Mac stored the
+                    // pairing it waits for the tagged `committed` (or the commit wait) instead: a connection
+                    // anyone on the link can open must not undo it.
+                    guard let current = session, !current.isFinished, !current.hasPersisted else { return }
                     if options.role == .listener, !current.codeShown { session = nil } else { drive { $0.fail(.peerAborted) } }
                 case .disconnected(_, let reason):
-                    if reason == .peerClosed, let current = session, !current.isFinished { drive { $0.fail(.transport) } }
+                    if reason == .peerClosed, let current = session, !current.isFinished, !current.hasPersisted { drive { $0.fail(.transport) } }
                 case .refused(_, let reason):
                     callbacks.progress(.refused("\(reason)"))
                 case .opaque(_, _, let tag, let bytes):

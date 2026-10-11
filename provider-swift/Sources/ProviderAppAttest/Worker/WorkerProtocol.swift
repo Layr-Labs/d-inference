@@ -31,6 +31,8 @@ public struct AppAttestWorkerReply: Codable, Sendable {
     /// Worker credential observations only. Parent process diagnostics stay in
     /// ProviderLoop and must be attached there, not inferred from the child PID.
     public let localStatus: AppAttestLocalStatus?
+    /// Local IPC only. Never forward these observations as coordinator claims.
+    public let runtimeDiagnostics: AppAttestWorkerRuntimeDiagnostics?
     let operationOutstanding: Bool
 }
 

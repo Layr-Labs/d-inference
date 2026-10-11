@@ -69,8 +69,11 @@ public enum AppAttestWorkerHost {
             }
             try identity.authenticate(parent, expectedPID: getppid(), expectedAudit: bootstrap.parentAuditToken, fullMeasurement: false)
             let payload = await client.respond(to: request, publicKey: bootstrap.endpointPublicKey, status: status)
+            let outstanding = await client.appleOperationHeldSince() != nil
             let reply = AppAttestWorkerReply(payload: payload, localStatus: await client.currentLocalStatus(),
-                                            operationOutstanding: await client.appleOperationHeldSince() != nil)
+                                            runtimeDiagnostics: request.action == "prepare" && !outstanding
+                                                ? AppAttestWorkerRuntimeDiagnostics.capture() : nil,
+                                            operationOutstanding: outstanding)
             try identity.authenticate(parent, expectedPID: getppid(), expectedAudit: bootstrap.parentAuditToken, fullMeasurement: false)
             try send(.reply(reply), sequence: frame.sequence, deadline: WorkerDeadline(seconds: 5))
             // The supervisor reaps an outstanding operation before replacement.

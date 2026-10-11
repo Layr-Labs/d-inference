@@ -50,6 +50,8 @@ enum AppAttestQualificationCommand {
     }
 
     private static func run(url: String, scope: String, token: String, binaryHash: String, scenario: String) async throws {
+        let parentDiagnostics = try JSONEncoder().encode(AppAttestWorkerRuntimeDiagnostics.capture())
+        record("parent_runtime_diagnostics", fields: ["snapshot": try JSONSerialization.jsonObject(with: parentDiagnostics)])
         let endpoint = NodeKeyPair.generate()
         let hardware = try HardwareDetector.detect()
         let os = ProcessInfo.processInfo.operatingSystemVersion
@@ -122,6 +124,10 @@ enum AppAttestQualificationCommand {
                     let started = ContinuousClock.now
                     do {
                         let reply = try await worker.respond(to: request, status: status)
+                        if let diagnostics = reply.runtimeDiagnostics {
+                            let encoded = try JSONEncoder().encode(diagnostics)
+                            record("worker_runtime_diagnostics", fields: ["snapshot": try JSONSerialization.jsonObject(with: encoded)])
+                        }
                         guard !suspend else { throw Failure.unexpectedReply }
                         if reply.payload.action == "assertion", reply.payload.result == "ok" { successfulAssertions += 1 }
                         record("worker_reply", fields: ["action": reply.payload.action, "result": reply.payload.result ?? "missing"])

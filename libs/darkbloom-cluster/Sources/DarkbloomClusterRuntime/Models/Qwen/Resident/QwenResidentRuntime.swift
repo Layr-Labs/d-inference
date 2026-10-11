@@ -37,12 +37,16 @@ public final class QwenResidentRuntime {
     /// Qualification only: admitted at load from a permitted switch, nil otherwise.
     private let qualificationFault: QwenPhaseSplitFault?
     private var processLeaseOwned = true
+    /// This rank's resident prompt-prefix cache; lives as long as the model.
+    public let prefixCache: QwenStagePrefixCache
 
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
          generationMode: QwenResidentGenerationMode = .pipeline, producerStage: (any LayerStageResidentStage)? = nil,
          speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
-         qualificationFault: QwenPhaseSplitFault? = nil) {
+         qualificationFault: QwenPhaseSplitFault? = nil,
+         prefixCache: QwenStagePrefixCache = .fromEnvironment()) {
+        self.prefixCache = prefixCache
         self.admission = admission; self.control = control; self.collective = collective
         self.speculativeHead = speculativeHead; self.speculativeTerms = speculativeTerms
         self.stage = stage; model = stage.loaded.model; self.lifecycle = lifecycle
@@ -289,7 +293,8 @@ public final class QwenResidentRuntime {
                     throw ProbeError("Phase-split reservation exceeds its owner or readiness capacity ceiling")
                 }
             }
-            try QwenResidentRequestExecution.requireLive(reserved, phaseSplit: split)
+            // Kept prefixes give way before a reservation is refused for memory.
+            try prefixCache.yieldingMemory { try QwenResidentRequestExecution.requireLive(reserved, phaseSplit: split) }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
             reservation = reserved; phaseSplitAllowance = split
             return total
@@ -346,7 +351,7 @@ public final class QwenResidentRuntime {
                         speculativeHead: speculativeHead, speculativeTerms: speculativeTerms,
                         generationMode: generationMode, phaseSplitAllowance: split,
                         qualificationFault: qualificationFault, admission: admission,
-                        collective: collective, control: control, reserved: reserved,
+                        collective: collective, control: control, reserved: reserved, prefixCache: prefixCache,
                         onCommittedToken: onCommittedToken)
                 }
             }, prepare: { try prepare($0.0, $0.1) })
@@ -359,7 +364,12 @@ public final class QwenResidentRuntime {
             // is cleared. A thrown encode keeps the failed owner unavailable.
             reservation = nil; phaseSplitAllowance = nil
             return value
-        } catch { control.fail(); throw error }
+        } catch {
+            // The peer may have stored or dropped differently; a failed owner
+            // keeps nothing it cannot prove both ranks hold.
+            prefixCache.sweep()
+            control.fail(); throw error
+        }
     }
 
     public func cancel(requestID: UUID) { control.cancel(requestID) }
@@ -374,6 +384,8 @@ public final class QwenResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
+                    // Every rank sweeps its cache before its model goes.
+                    prefixCache.sweep()
                     reservation = nil; phaseSplitAllowance = nil; speculativeHead = nil; stage = nil; producerStage = nil
                     guard model == nil, producerModel == nil else { throw ProbeError("Resident model remains retained") }
                     Memory.clearCache(); try error.check()

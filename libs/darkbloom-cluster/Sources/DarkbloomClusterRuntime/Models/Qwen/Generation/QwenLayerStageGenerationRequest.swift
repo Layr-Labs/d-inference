@@ -62,8 +62,18 @@ struct QwenLayerStageGenerationRequest: Equatable {
     let chunkSize: Int
     let outputCount: Int
     let maximumTokens: Int
-    let prefillFrameCount: Int
+    private(set) var prefillFrameCount: Int
     let fingerprint: String
+    /// Prompt tokens whose committed state both ranks restored from their own
+    /// prefix caches before the first forward. Zero for a cold request.
+    private(set) var reusedPrefixTokens = 0
+    /// The prompt's last token runs in a frame of its own, so that the state
+    /// after `promptCount - 1` tokens is an exact frame boundary both ranks
+    /// can keep. Both ranks agree on this before the first forward.
+    private(set) var splitsFinalPromptToken = false
+    /// End offsets of the prefill frames, in order. Nil keeps the original
+    /// fixed-chunk plan from offset zero.
+    private var prefillFrameEnds: [Int]?
     var promptCount: Int { promptTokenIDs.count }
     var forwardCount: Int { prefillFrameCount + outputCount - 1 }
     var finalCommittedTokens: Int { promptCount + outputCount - 1 }
@@ -90,8 +100,53 @@ struct QwenLayerStageGenerationRequest: Equatable {
         ].joined(separator: "\n").utf8))
     }
 
+    /// The same request with an agreed prefix plan. Prefill frames start at
+    /// `reusedPrefix` and end on the global chunk grid (multiples of the chunk
+    /// size), so a suffix after a grid-aligned hit runs exactly the frames a
+    /// cold request runs there; with `splitFinalToken` the last prompt token
+    /// runs alone. The fingerprint is the request's own and does not change.
+    func planned(reusedPrefix: Int, splitFinalToken: Bool) throws -> QwenLayerStageGenerationRequest {
+        guard reusedPrefix >= 0, reusedPrefix < promptCount,
+              !splitFinalToken || promptCount >= 2 || reusedPrefix == 0 else {
+            throw ProbeError("A prefix plan must leave at least one prompt token to compute")
+        }
+        var copy = self
+        copy.reusedPrefixTokens = reusedPrefix
+        copy.splitsFinalPromptToken = splitFinalToken && promptCount >= 2
+        copy.prefillFrameEnds = Self.frameEnds(promptCount: promptCount, chunkSize: chunkSize,
+            start: reusedPrefix, splitFinalToken: copy.splitsFinalPromptToken)
+        copy.prefillFrameCount = copy.prefillFrameEnds!.count
+        return copy
+    }
+
+    /// Frame ends from `start`: the next multiples of the chunk size, then
+    /// `promptCount - 1` when the last token is split off, then `promptCount`.
+    static func frameEnds(promptCount: Int, chunkSize: Int, start: Int, splitFinalToken: Bool) -> [Int] {
+        let last = splitFinalToken ? promptCount - 1 : promptCount
+        var ends: [Int] = [], offset = start
+        while offset < last {
+            let next = min(last, (offset / chunkSize + 1) * chunkSize)
+            ends.append(next); offset = next
+        }
+        if splitFinalToken { ends.append(promptCount) }
+        return ends
+    }
+
+    /// Prompt frontiers at which a stage can keep its committed state: grid
+    /// multiples of `stride` and the split frontier `promptCount - 1`, all
+    /// after the reused prefix. Empty unless the last token is split off.
+    func prefixCaptureFrontiers(stride: Int) -> Set<Int> {
+        guard splitsFinalPromptToken, stride > 0, let ends = prefillFrameEnds else { return [] }
+        return Set(ends.filter { $0 == promptCount - 1 || ($0 < promptCount - 1 && $0 % stride == 0) })
+    }
+
     func frame(sequence: Int) throws -> QwenLayerStageFrame {
         guard (0..<forwardCount).contains(sequence) else { throw ProbeError("Generation frame exceeds request") }
+        if sequence < prefillFrameCount, let ends = prefillFrameEnds {
+            let offset = sequence == 0 ? reusedPrefixTokens : ends[sequence - 1]
+            return .init(sequence: sequence, phase: .prefill, tokenOffset: offset,
+                         tokenCount: ends[sequence] - offset, finalPromptChunk: ends[sequence] == promptCount)
+        }
         if sequence < prefillFrameCount {
             let offset = sequence * chunkSize
             let count = min(chunkSize, promptCount - offset)

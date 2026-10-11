@@ -144,6 +144,11 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                     // The native facade returns only after bilateral retirement
                     // and after its request/autorelease scope has ended.
+                    let cache = runtime.lastPromptCache
+                    if cache.reused > 0 || !cache.stored.isEmpty {
+                        try publish(.promptCache(reusedTokens: cache.reused,
+                            storedFrontiers: Array(cache.stored.sorted().suffix(32))), requestID: id)
+                    }
                     try publish(.finished(reason), requestID: id)
                     try publish(.retired(.clean), requestID: id)
                     condition.lock(); keepWarmArmed = true; condition.unlock()

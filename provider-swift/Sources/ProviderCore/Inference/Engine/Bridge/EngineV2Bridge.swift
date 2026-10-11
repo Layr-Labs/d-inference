@@ -457,7 +457,10 @@ public actor EngineV2Bridge {
         // Complete-checkpoint lookup always precedes the resident bank.
         // Do not advertise a tier this engine cannot adopt, including while
         // its durable capability is temporarily absent during a scan/epoch change.
-        let residentEvidence = (engine as? EngineV2)?.hybridPrefixCache == nil
+        // A distributed engine's prefix caches live on its peers; it reports
+        // the frontiers both hold, so it may advertise the memory tier too.
+        let residentEvidence = engine is DistributedCBv2Engine ? residentPrefixCacheEvidence
+            : (engine as? EngineV2)?.hybridPrefixCache == nil
             || (engine as? EngineV2)?.completePrefixCache != nil
             ? nil : residentPrefixCacheEvidence
         self.residentPrefixCacheEvidence = residentEvidence
@@ -468,6 +471,11 @@ public actor EngineV2Bridge {
         }
         if let residentEvidence, let liveEngine = engine as? EngineV2 {
             liveEngine.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
+                residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
+            }
+        }
+        if let residentEvidence, let distributed = engine as? DistributedCBv2Engine {
+            distributed.setResidentPrefixPublicationHandler { [weak residentEvidence] receiptID, positions in
                 residentEvidence?.publish(receiptID: receiptID, checkpointTokens: positions)
             }
         }

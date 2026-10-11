@@ -53,7 +53,8 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        print("{\"passed\":true,\"groups\":7,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache()
+        print("{\"passed\":true,\"groups\":8,\"modelExecution\":false,\"localPipeIO\":true}")
     }
     static func roundTrips() throws {
         let commands: [ClusterWorkerCommand] = [.reserve(reservation()), .start,
@@ -128,6 +129,38 @@ struct ClusterWorkerProtocolTests {
         let bytes = try pipe.fileHandleForReading.readToEnd() ?? Data()
         try check(try piped.append(bytes) == [raw], "Actual local pipe bytes")
         try piped.finish(); try pipe.fileHandleForReading.close()
+    }
+    /// The prefix report: round trip, bounds, once and only before finish,
+    /// never the whole prompt, on either rank.
+    static func promptCache() throws {
+        let report = ClusterWorkerEvent.promptCache(reusedTokens: 2, storedFrontiers: [1, 2])
+        let frame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, event: report)
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Prompt cache round trip")
+        for bad in [ClusterWorkerEvent.promptCache(reusedTokens: 0, storedFrontiers: []),
+                    .promptCache(reusedTokens: -1, storedFrontiers: [1]), .promptCache(reusedTokens: 1, storedFrontiers: [2, 1]),
+                    .promptCache(reusedTokens: 1, storedFrontiers: Array(1...33))] {
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: requestID, event: bad)) }
+        }
+        var c = try Conversation(); try c.start()
+        try c.event(.committedToken(ordinal: 0, tokenID: 12, committedTokens: 3))
+        try c.command(.tokenDecision(ordinal: 0, decision: .proceed))
+        try c.event(.committedToken(ordinal: 1, tokenID: 13, committedTokens: 4))
+        try c.command(.tokenDecision(ordinal: 1, decision: .proceed))
+        try c.event(.promptCache(reusedTokens: 2, storedFrontiers: [2]))
+        try refuses { var again = c; try again.event(.promptCache(reusedTokens: 2, storedFrontiers: [2])) }
+        try c.event(.finished(.length)); try c.event(.retired(.clean))
+        // The whole prompt (3 tokens) is never reused: one token is always computed.
+        var whole = try Conversation(); try whole.start()
+        try whole.event(.committedToken(ordinal: 0, tokenID: 12, committedTokens: 3))
+        try whole.command(.tokenDecision(ordinal: 0, decision: .proceed))
+        try refuses { try whole.event(.promptCache(reusedTokens: 3, storedFrontiers: [])) }
+        // Rank 0 reports only after a token decision; rank 1 while running.
+        var early = try Conversation(); try early.start()
+        try refuses { try early.event(.promptCache(reusedTokens: 1, storedFrontiers: [])) }
+        var peer = try Conversation(rank: 1); try peer.start()
+        try peer.event(.promptCache(reusedTokens: 2, storedFrontiers: [2])); try peer.event(.finished(.length))
+        try peer.event(.retired(.clean))
     }
     static func lifecycle() throws {
         var c = try Conversation(); try c.start()

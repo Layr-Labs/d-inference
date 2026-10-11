@@ -4,6 +4,14 @@ import MLXLMCommon
 extension DistributedCBv2Engine {
     func receive(_ event: DistributedResidentEvent, state: DistributedRequestState) -> Bool {
         guard active === state else { return false }
+        // The prefix report arrives after the last token, when the request
+        // may already have its terminal; it only feeds usage and receipts.
+        if case .promptCache(let reused, let stored) = event {
+            let prompt = state.request.promptTokens.count
+            if reused >= 0, reused < prompt { state.reusedPromptTokens = reused }
+            state.storedPromptFrontiers = stored.filter { $0 > 0 && $0 < prompt }
+            return state.terminal == nil
+        }
         guard state.terminal == nil else {
             // The first token after a clean stop was asked for is the one the
             // stop answers. Nothing is delivered; from here the stop only has
@@ -49,6 +57,8 @@ extension DistributedCBv2Engine {
             } else if state.completionTokens == 1 {
                 armDeadline(state)
             }
+        case .promptCache:
+            break
         case .finished(let reason):
             if reason == .cancelled {
                 // The owner ended the request with a clean stop of its own
@@ -124,6 +134,18 @@ extension DistributedCBv2Engine {
         state.continuation.finish()
     }
 
+    /// Usage with the prefix reuse both peers reported. A hit is billed and
+    /// reported as resident memory: the KV never left the ranks.
+    static func usage(_ state: DistributedRequestState) -> CBv2Usage {
+        let reused = state.reusedPromptTokens
+        guard reused > 0 else {
+            return CBv2Usage(promptTokens: state.request.promptTokens.count, completionTokens: state.completionTokens)
+        }
+        return CBv2Usage(promptTokens: state.request.promptTokens.count, completionTokens: state.completionTokens,
+            prefixCacheHitTokens: reused, prefixCacheOutcome: .hit, prefixCacheTier: .resident,
+            prefixCacheMatchedTokens: reused, prefixCachePrefillTokensSaved: reused)
+    }
+
     func checkDeadline(_ state: DistributedRequestState) {
         guard active === state else { return }
         let now = clock.now()
@@ -184,8 +206,11 @@ extension DistributedCBv2Engine {
             }
             if state.detokenizer.matchedStopString { reason = .stop }
         }
-        let usage = CBv2Usage(
-            promptTokens: state.request.promptTokens.count, completionTokens: state.completionTokens)
+        let usage = Self.usage(state)
+        if reason == .stop || reason == .length, let receipt = state.request.prefixCacheReceiptID,
+           !state.storedPromptFrontiers.isEmpty {
+            residentPrefixPublication?(receipt, state.storedPromptFrontiers)
+        }
         active = nil
         state.continuation.onTermination = nil
         if !state.terminalPublished {

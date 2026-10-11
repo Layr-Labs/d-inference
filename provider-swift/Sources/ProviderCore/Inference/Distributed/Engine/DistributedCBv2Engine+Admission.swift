@@ -115,11 +115,11 @@ extension DistributedCBv2Engine {
             p.seed == nil, p.logitBias.isEmpty, p.topLogprobs == 0,
             request.multimodal == nil, request.positionState == nil,
             request.tokenConstraint == nil, request.priority == 0,
-            request.prefixCacheReceiptID == nil,
             request.stopStrings.count <= 16,
             request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 })
         else { throw DistributedEngineError.unsupportedRequest("only greedy text without MTP, constraints or logprobs") }
-        // prefixCacheEnabled permits reuse; this engine always reports disabled.
-        // No cache state is reused or donated, including across cacheSalt values.
+        // A receipt only names this submission for the bridge's evidence; the
+        // peers decide reuse themselves (rank-local caches, agreed before the
+        // first forward) and the terminal usage reports what they reused.
     }
 }

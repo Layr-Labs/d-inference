@@ -15,4 +15,11 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// Keep-warm tier 2: one 1x16 data-plane exchange with the peer while
     /// idle; returns its duration in nanoseconds.
     func dataPlanePing() throws -> UInt64
+    /// The last started request's prefix cache: prompt tokens restored, and
+    /// frontiers kept. Read after `start` returns, on the same executor.
+    var lastPromptCache: (reused: Int, stored: [Int]) { get }
+}
+
+extension WorkerRuntime {
+    var lastPromptCache: (reused: Int, stored: [Int]) { (0, []) }
 }

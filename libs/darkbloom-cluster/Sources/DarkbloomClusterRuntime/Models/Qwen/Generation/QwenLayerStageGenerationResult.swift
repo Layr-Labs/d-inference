@@ -23,4 +23,6 @@ struct QwenLayerStageGenerationResult: Encodable {
     var prefillSchedule: QwenGenerationPrefillSummary? = nil
     /// Present only when a declared phase-split request performed its hand-off.
     var phaseSplit: QwenPhaseSplitSummary? = nil
+    /// Nil is omitted. The prefix plan both ranks agreed and what this rank kept.
+    var prefixCache: QwenStagePrefixSummary? = nil
 }

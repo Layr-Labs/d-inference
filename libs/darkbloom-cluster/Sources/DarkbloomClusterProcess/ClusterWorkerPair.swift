@@ -3,6 +3,10 @@ import DarkbloomClusterProtocol
 
 public enum ClusterWorkerRequestEvent: Sendable {
     case token(Int), finished(ClusterWorkerFinishReason), failed(String)
+    /// Both ranks restored `reused` prompt tokens from their prefix caches and
+    /// both now hold `stored` frontiers of this prompt. Delivered once, just
+    /// before `finished`, only when either is not empty.
+    case promptCache(reused: Int, stored: [Int])
 }
 
 public struct ClusterWorkerPairReadiness: Sendable {

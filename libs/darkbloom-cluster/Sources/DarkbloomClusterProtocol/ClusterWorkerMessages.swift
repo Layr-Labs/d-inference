@@ -153,6 +153,12 @@ public enum ClusterWorkerEvent: Equatable, Sendable {
     case admitted(reservedBytes: Int)
     case refused(ClusterWorkerRefusal)
     case committedToken(ordinal: Int, tokenID: Int, committedTokens: Int)
+    /// This rank's prefix cache for the running request: prompt tokens it
+    /// restored instead of computing (after both ranks agreed to), and the
+    /// prompt frontiers it kept after both ranks retired cleanly (ascending,
+    /// at most 32). Sent once, just before `finished`, only when either is
+    /// not empty.
+    case promptCache(reusedTokens: Int, storedFrontiers: [Int])
     case finished(ClusterWorkerFinishReason)
     case failed(ClusterWorkerCancellationReason)
     /// Local state retirement only. No claim of peer retirement or process fencing.

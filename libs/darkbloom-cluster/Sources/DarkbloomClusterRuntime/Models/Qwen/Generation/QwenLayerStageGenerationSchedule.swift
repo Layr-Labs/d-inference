@@ -13,7 +13,12 @@ struct QwenLayerStageGenerationSchedule {
     private(set) var finishReason: QwenLayerStageGenerationFinishReason?
     var complete: Bool { finishReason != nil }
 
-    init(request: QwenLayerStageGenerationRequest) { self.request = request }
+    /// A planned request whose prefix both ranks restored starts at that
+    /// frontier: the reused prompt tokens count as committed prompt tokens.
+    init(request: QwenLayerStageGenerationRequest) {
+        self.request = request
+        committedTokens = request.reusedPrefixTokens; committedPromptTokens = request.reusedPrefixTokens
+    }
 
     /// A stage that adopts another owner's committed prompt state starts at the
     /// frontier after the last prompt frame: no prompt frame is left to run.

@@ -62,7 +62,19 @@ struct DistributedInstalledPlan: Sendable {
         return result
     }
 
-    func nativeEnvironment(matrix: URL) -> [String: String] {
+    func nativeEnvironment(matrix: URL,
+                           ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var environment = baseNativeEnvironment(matrix: matrix)
+        // Diagnosis only: this owner's worker keeps no prompt prefixes and asks
+        // its peer for none, so the pair prefills every request from zero.
+        if let value = ownerEnvironment[Self.prefixCacheSwitch], value.lowercased() == "off" {
+            environment[Self.prefixCacheSwitch] = "off"
+        }
+        return environment
+    }
+    static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
+
+    private func baseNativeEnvironment(matrix: URL) -> [String: String] {
         ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C",
          "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK": "128", "DARKBLOOM_BF16_WEIGHTS": "1", "MLX_ENABLE_TF32": "1",
          "JACCL_RANK": String(configuration.localRank), "JACCL_IBV_DEVICES": matrix.path,

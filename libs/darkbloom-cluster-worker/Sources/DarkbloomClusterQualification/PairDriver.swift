@@ -34,6 +34,8 @@ public struct PairDriver: Sendable {
         private var tokens: [Int] = [], stamps: [UInt64] = []
         private var finish: String?, failure: String?
         private var concluded: UInt64?
+        private(set) var reused: Int?
+        private(set) var stored: [Int] = []
         private let first: @Sendable () -> Void
         private let stopAfter: Int?
         init(stopAfter: Int? = nil, first: @escaping @Sendable () -> Void) { self.stopAfter = stopAfter; self.first = first }
@@ -48,6 +50,7 @@ public struct PairDriver: Sendable {
             case .finished(let reason):
                 finish = reason.rawValue; concluded = DispatchTime.now().uptimeNanoseconds; done.signal(); return false
             case .failed(let message): failure = message; done.signal(); return false
+            case .promptCache(let tokens, let frontiers): reused = tokens; stored = frontiers; return true
             }
         }
         func wait(until deadline: UInt64) -> Bool { done.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success }
@@ -285,7 +288,9 @@ public struct PairDriver: Sendable {
         var reason = ""
         var repetitions: [PairRepetitionTiming] = []
         var firstTokens: [Int] = []
-        for repetition in 0..<c.repetitions {
+        for repetition in 0..<c.totalRequests {
+            // The request file's own request first, repeated; then each follow-up once.
+            let current = repetition < c.repetitions ? c.request : c.followRequests[repetition - c.repetitions]
             // An idle gap leaves the session loaded and leased, as a server
             // between requests; the next request's first token shows whether
             // anything went cold meanwhile.
@@ -304,9 +309,9 @@ public struct PairDriver: Sendable {
             // recorded evidence. A repeated request needs an ID of its own.
             let requestID = repetition == 0 ? c.request.requestUUID : UUID()
             do {
-                lease = try pair.reserve(requestID: requestID, reservation: .init(profileID: c.request.profileID,
-                    promptTokenIDs: c.request.promptTokenIDs, stopTokenIDs: c.request.stopTokenIDs,
-                    outputCount: c.request.outputCount, chunkSize: c.request.chunkSize,
+                lease = try pair.reserve(requestID: requestID, reservation: .init(profileID: current.profileID,
+                    promptTokenIDs: current.promptTokenIDs, stopTokenIDs: current.stopTokenIDs,
+                    outputCount: current.outputCount, chunkSize: current.chunkSize,
                     deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity))
             } catch {
                 if let rank = (0...1).first(where: { endpoints[$0].refusal != nil }) {
@@ -329,7 +334,7 @@ public struct PairDriver: Sendable {
                 let firstToken = Double(first - started) / 1e9, decode = Double(last - first) / 1e9
                 measured = .init(requestID: requestID.uuidString.lowercased(), admissionSeconds: admission,
                     firstTokenSeconds: firstToken,
-                    prefillTokensPerSecond: Double(c.request.promptTokenIDs.count) / firstToken, decodeSeconds: decode,
+                    prefillTokensPerSecond: Double(current.promptTokenIDs.count) / firstToken, decodeSeconds: decode,
                     decodeTokensPerSecond: result.tokens.count > 1 && last > first ? Double(result.tokens.count - 1) / decode : nil,
                     totalSeconds: Double((result.concluded ?? last) - started) / 1e9,
                     secondTokenGapSeconds: result.stamps.count > 1 ? Double(result.stamps[1] - first) / 1e9 : nil,
@@ -356,12 +361,19 @@ public struct PairDriver: Sendable {
                     + " after \(result.tokens.count) committed token(s)" + (gone.isEmpty ? "" : "; " + gone.joined(separator: "; ")))
             }
             reason = finished
-            if let measured { repetitions.append(measured) }
+            if var measured {
+                measured.reusedPromptTokens = collector.reused
+                measured.storedPromptFrontiers = collector.stored.isEmpty ? nil : collector.stored
+                measured.promptTokens = current.promptTokenIDs.count
+                measured.promptTokenIDsSHA256 = current.promptTokenIDsSHA256
+                repetitions.append(measured)
+            }
             timing.repetitions = repetitions
             if repetition == 0 { firstTokens = result.tokens }
-            repetitionsAgree = (repetitionsAgree ?? true) && result.tokens == firstTokens
-            log("pair-check: request \(repetition + 1) of \(c.repetitions) finished (\(reason)) with \(result.tokens.count) tokens")
-            if repetition + 1 < c.repetitions {
+            if repetition < c.repetitions { repetitionsAgree = (repetitionsAgree ?? true) && result.tokens == firstTokens }
+            log("pair-check: request \(repetition + 1) of \(c.totalRequests) finished (\(reason)) with \(result.tokens.count) tokens"
+                + ", \(collector.reused ?? 0) prompt tokens reused")
+            if repetition + 1 < c.totalRequests {
                 // The next reservation needs this one retired and released.
                 let limit = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
                 while !lease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }

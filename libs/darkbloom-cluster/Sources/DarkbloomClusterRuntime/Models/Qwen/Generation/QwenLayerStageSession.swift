@@ -44,6 +44,14 @@ final class QwenLayerStageSession {
     private var windowOffset: Int?
     private var windowCount: Int?
     private var windowKept: Int?
+    /// Prompt frontiers at which this stage keeps a copy of its committed
+    /// state for the rank-local prefix cache. Empty when the cache is off.
+    var prefixCaptureFrontiers: Set<Int> = []
+    /// Recurrent state captured at each frontier, keyed by global layer.
+    private var capturedRecurrent: [Int: [Int: (conv: MLXArray, ssm: MLXArray)]] = [:]
+    /// Attention state captured once, at the deepest frontier; shallower
+    /// frontiers use a prefix of it.
+    private var capturedAttention: (committed: Int, layers: [Int: (keys: MLXArray, values: MLXArray)])?
 
     var committedTokens: Int { schedule.committedTokens }
     var isClosed: Bool { state.isClosed }
@@ -99,7 +107,13 @@ final class QwenLayerStageSession {
                 layerCount: stage.layerCount, vocabularySize: stage.vocabularySize,
                 configurationData: stage.configurationData, maximumTokens: request.maximumTokens)
         if let adopting {
-            guard stage.stageIndex == 0 else { throw ProbeError("Only the producer stage's state can be adopted") }
+            // A hand-off adopts the producer's whole prompt; a prefix restore
+            // adopts this stage's own cached state at the agreed reused prefix.
+            let handoff = adopting.committedTokens == request.promptCount
+            guard handoff ? stage.stageIndex == 0
+                : adopting.committedTokens == request.reusedPrefixTokens && request.reusedPrefixTokens > 0 else {
+                throw ProbeError("Only the producer stage's prompt or the agreed reused prefix can be adopted")
+            }
             // Global to the compact stage's own indices, through its layer map.
             let local = Dictionary(uniqueKeysWithValues: descriptor.layers.map { ($0.globalIndex, $0.localIndex) })
             func localized<Value>(_ values: [Int: Value]) throws -> [Int: Value] {
@@ -111,8 +125,8 @@ final class QwenLayerStageSession {
                 }
                 return result
             }
-            self.schedule = try QwenLayerStageGenerationSchedule(request: request,
-                adoptedCommittedTokens: adopting.committedTokens)
+            self.schedule = handoff ? try QwenLayerStageGenerationSchedule(request: request,
+                adoptedCommittedTokens: adopting.committedTokens) : QwenLayerStageGenerationSchedule(request: request)
             self.state = try MLX.withError { error in
                 let value = try CBv2OwnedRequestState(geometry: geometry, promptCount: request.promptCount,
                     outputCount: request.outputCount, adoptingCommittedTokens: adopting.committedTokens,
@@ -121,6 +135,7 @@ final class QwenLayerStageSession {
                 return value
             }
         } else {
+            guard request.reusedPrefixTokens == 0 else { throw ProbeError("A reused prefix needs its restored state") }
             self.state = try CBv2OwnedRequestState(geometry: geometry,
                 promptCount: request.promptCount, outputCount: request.outputCount)
             self.schedule = QwenLayerStageGenerationSchedule(request: request)
@@ -221,6 +236,10 @@ final class QwenLayerStageSession {
                 // Committed prompt rows, in order, once each.
                 eval(tapped); try checked()
                 try hiddenTap.observe(input, tapped)
+            }
+            if frame.phase == .prefill, prefixCaptureFrontiers.contains(frame.tokenOffset + frame.tokenCount) {
+                try capturePrefix(at: frame.tokenOffset + frame.tokenCount)
+                try checked()
             }
             if stage.stageIndex == 0 {
                 // eval returns at the output event, which can precede the Metal
@@ -358,6 +377,58 @@ final class QwenLayerStageSession {
             }
         } catch { try fail(error) }
     }
+
+    /// Keeps this stage's committed state at a prompt frontier. Recurrent
+    /// state is the confirmed generation (immutable arrays, referenced as the
+    /// product's own hybrid checkpoints are). Attention rows are copied once,
+    /// at the deepest frontier, into arrays this session owns alone, so no
+    /// later write to the request's rows can reach them.
+    private func capturePrefix(at frontier: Int) throws {
+        guard frontier == state.committedTokens, frontier < request.promptCount else {
+            throw ProbeError("Prefix capture differs from the committed prompt frontier")
+        }
+        let global = Dictionary(uniqueKeysWithValues: descriptor.layers.map { ($0.localIndex, $0.globalIndex) })
+        let confirmed = state.geometry.recurrent.layers.isEmpty ? [:] : (state.recurrent.confirmedStateSnapshot() ?? [:])
+        var recurrent: [Int: (conv: MLXArray, ssm: MLXArray)] = [:]
+        for layer in state.geometry.recurrent.layers {
+            guard let value = confirmed[layer.modelLayerIndex], let conv = value.conv, let ssm = value.ssm,
+                  let index = global[layer.modelLayerIndex] else {
+                throw ProbeError("Prefix capture lacks a confirmed recurrent layer")
+            }
+            recurrent[index] = (conv: conv, ssm: ssm)
+        }
+        capturedRecurrent[frontier] = recurrent
+        guard frontier == prefixCaptureFrontiers.max() else { return }
+        var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        for (position, optionalRow) in state.rows.enumerated() {
+            guard let row = optionalRow, let local = state.geometry.kinds[position].modelLayerIndex,
+                  let index = global[local] else { throw ProbeError("Prefix capture lacks an attention row") }
+            let snapshot = row.snapshot()
+            guard snapshot.offset == frontier, snapshot.keys.dim(2) == frontier else {
+                throw ProbeError("Prefix capture attention frontier differs")
+            }
+            let one = MLXArray(1).asType(snapshot.keys.dtype)
+            attention[index] = (keys: snapshot.keys * one, values: snapshot.values * one)
+        }
+        eval(attention.values.flatMap { [$0.keys, $0.values] })
+        capturedAttention = (frontier, attention)
+    }
+
+    /// The captured states, deepest attention copy shared by prefix views.
+    /// Empty unless the deepest frontier was reached.
+    func capturedPrefixStates() -> [QwenStagePrefixState] {
+        guard let attention = capturedAttention else { return [] }
+        return capturedRecurrent.keys.sorted().compactMap { frontier in
+            guard frontier <= attention.committed, let recurrent = capturedRecurrent[frontier] else { return nil }
+            let layers = attention.layers.mapValues { pair -> (keys: MLXArray, values: MLXArray) in
+                frontier == attention.committed ? pair
+                    : (keys: pair.keys[0..., 0..., 0..<frontier, 0...], values: pair.values[0..., 0..., 0..<frontier, 0...])
+            }
+            return QwenStagePrefixState(committedTokens: frontier, attention: layers, recurrent: recurrent)
+        }
+    }
+
+    func discardCapturedPrefix() { capturedRecurrent.removeAll(); capturedAttention = nil }
 
     func snapshot(includeBytes: Bool = false, check: () throws -> Void) throws -> CBv2OwnedStateSnapshot {
         do {

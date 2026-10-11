@@ -72,6 +72,11 @@ enum ClusterWorkerValidation {
             try workerRequire((0..<ClusterWorkerLimits.outputTokens).contains(ordinal)
                 && (0..<ClusterWorkerLimits.vocabularySize).contains(token)
                 && (1...ClusterWorkerLimits.contextTokens).contains(committed), "Invalid committed token")
+        case .promptCache(let reused, let stored):
+            try workerRequire((0..<ClusterWorkerLimits.promptTokens).contains(reused) && stored.count <= 32
+                && (reused > 0 || !stored.isEmpty)
+                && stored.allSatisfy({ (1..<ClusterWorkerLimits.promptTokens).contains($0) })
+                && zip(stored, stored.dropFirst()).allSatisfy({ $0 < $1 }), "Invalid prompt cache report")
         default: break
         }
     }

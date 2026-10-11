@@ -110,6 +110,12 @@ public struct PairConfiguration: Sendable {
     /// long after launch, with the inputs still open. The workers must then end
     /// by themselves within the time to live, through the forced exit.
     public var stopRenewalsAfterSeconds: Double?
+    /// Requests run once each after the repetitions, in the same loaded
+    /// session (prefix reuse across different prompts). Serving path only.
+    public var followRequests: [QualificationRequest] = []
+    /// Diagnosis: both workers keep no prompt prefixes (cold prefill always).
+    public var prefixCacheOff = false
+    public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
     /// RDMA result, and its timings are not pair timings.
@@ -237,6 +243,10 @@ public struct PairConfiguration: Sendable {
             "a speculative depth is 1...4 and only with phase_split_mtp_v1")
         try require((1...Self.maximumRepetitions).contains(repetitions), "repetitions must be 1...\(Self.maximumRepetitions)")
         try require(repetitions == 1 || !recording, "a recording run takes one request; repeat with --evidence none")
+        try require(followRequests.isEmpty || !recording, "follow-up requests run with --evidence none")
+        try require(followRequests.count <= Self.maximumRepetitions, "at most 8 follow-up requests")
+        try require(followRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
+            "follow-up requests must name the same model and profile")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
@@ -370,6 +380,7 @@ public struct PairConfiguration: Sendable {
             environment.append((Self.faultEnvironment, faultValue))
         }
         if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
+        if prefixCacheOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_CACHE", "off")) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
         if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         if stageResidency {

@@ -89,6 +89,10 @@ public enum DistributedResidentEvent: Sendable {
     /// One target-authoritative committed token. Draft/MTP tokens are not accepted.
     case token(Int)
     case finished(CBv2FinishReason)
+    /// Both peers restored `reused` prompt tokens from their rank-local prefix
+    /// caches and both now hold `stored` prompt frontiers. Once, before the
+    /// finish, only when either is not empty.
+    case promptCache(reused: Int, stored: [Int])
 }
 
 /// A single request's resource ownership, including both peers' request state.

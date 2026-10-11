@@ -11,7 +11,8 @@ public enum DistributedEngineFactory {
         tokenizer: TokenizerHandle,
         eosTokenIDs: Set<Int>,
         firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-        publicModelID: String? = nil
+        publicModelID: String? = nil,
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
         guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
@@ -25,11 +26,14 @@ public enum DistributedEngineFactory {
         // The owner performs atomic per-peer admission. Parent MLX counters do
         // not measure remote allocations, so no invented parent byte charges are
         // attached here. The engine reports its owner's conservative capacity.
+        // Prefix reuse happens on the peers (rank-local caches, agreed before
+        // the first forward). With evidence the bridge mints a receipt per
+        // request and advertises the frontiers both peers hold.
         return EngineV2Bridge(
             engine: engine, modelId: publicModelID ?? expectedIdentity.modelID, tokenizer: tokenizer,
             eosTokenIds: eosTokenIDs, defaultMaxTokens: profile.maxOutputTokens,
-            maxConcurrentRequests: 1, kvBackendKind: .contiguous,
-            distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
+            maxConcurrentRequests: 1, residentPrefixCacheEvidence: residentPrefixEvidence,
+            kvBackendKind: .contiguous, distributedFirstTokenBudgetPolicy: firstTokenBudgetPolicy)
     }
 
     /// Text-only registry construction for a successfully started installed
@@ -44,12 +48,14 @@ public enum DistributedEngineFactory {
         tokenizer: TokenizerHandle,
         eosTokenIDs: Set<Int>,
         modelType: String? = nil,
-        firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil
+        firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
+        residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil
     ) throws -> MultiModelBatchSchedulerEngine.ModelRegistryEntry {
         let bridge = try makeBridge(
             owner: owner, expectedIdentity: expectedIdentity, profile: profile,
             tokenizer: tokenizer, eosTokenIDs: eosTokenIDs,
-            firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID)
+            firstTokenBudgetPolicy: firstTokenBudgetPolicy, publicModelID: publicModelID,
+            residentPrefixEvidence: residentPrefixEvidence)
         return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
                      isVLM: false, engineV2Bridge: bridge, visionGate: nil)
     }

@@ -64,6 +64,7 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
             switch event {
             case .connected: events(.connected)
             case .disconnected: events(.disconnected)
+            case .refused(_, let reason): events(.refused("link edge: \(reason)"))
             default: break
             }
             box.handle(event)

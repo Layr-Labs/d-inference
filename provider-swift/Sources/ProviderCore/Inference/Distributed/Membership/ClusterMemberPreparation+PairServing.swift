@@ -15,6 +15,8 @@ public final class ClusterMemberPairLink: @unchecked Sendable {
     /// After the loop stopped: fences what the follower serves and waits
     /// (bounded) for its release, then closes the edge.
     public func stop() { follower?.stop(); leader?.stop() }
+    /// For the member's start line.
+    public var role: String { leader != nil ? "leader (link listener)" : "follower (dials the leader)" }
 }
 
 extension ClusterMemberPreparation {

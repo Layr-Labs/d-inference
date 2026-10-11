@@ -77,6 +77,8 @@ extension Start {
             FileHandle.standardOutput.write(Data("\(stamp) cluster-member follower: \(line)\n".utf8))
         }
         defer { pairLink?.stop() }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        print("\(stamp) cluster-member pair serving: \(pairLink?.role ?? "none")")
         let signals = try DistributedStartSignals()
         defer { signals.close() }
         let task = Task { try await loop.run() }

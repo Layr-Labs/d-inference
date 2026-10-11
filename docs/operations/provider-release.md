@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-11
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -9,6 +9,31 @@ build, sign, notarize, retain, stage and register the bundle. The coordinator
 re-downloads artifacts and requires independent App Attest qualification before
 activating a production release. Staging/publication failures retry the retained
 artifact; GitHub and R2 publication are separate recoverable steps.
+
+The linked automation inserts signed-bundle static lanes on
+macOS 27 and macOS 26, protected-tag/expected-commit platform dispatch to a
+dedicated isolated hardware runner, and a separate Linux qualification signer
+before publication. The [qualification runbook](app-attest-build-qualification.md#linked-automation-status)
+defines all seven mandatory evidence gates and retained candidate/report-attempt
+retry rules. No admin key enters this automatic path. The independent hardware
+service must perform real security-transition and tamper/replay tests and issue
+fresh nonce/candidate/run-bound signed receipts. Missing service or issuer setup
+fails qualification, not an allowed skip.
+
+Because this provider repository is public and the platform repository is
+internal, the handoff uses protected-tag/expected-commit workflow dispatch and
+polling, not a direct reusable workflow call. Platform preflight independently
+binds the provider signed tag/source/producing run. The narrow dispatch token
+cannot sign a receipt; platform signing credentials and source stay internal.
+Current lifecycle evidence is idle restart/reconnect and post-restart inference
+only, not continuing renewal or in-flight drain/cancellation.
+
+These linked PRs are not production-ready without provisioning and qualifying
+the real hardware service and receipt issuer. No deployed endpoint, successful
+hardware run or GitHub environment change is claimed. Existing global `prod`
+approvals remain unless an approved operator explicitly configures
+release-specific environments and protections; release automation does not
+remove global environment reviewers by itself.
 
 The macOS signing and older-OS smoke jobs install the checksum-pinned GitHub CLI
 with `scripts/install-macos-github-cli.sh` before downloading retained artifacts.

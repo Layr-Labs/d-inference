@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
 
 ## App Attest provider dispatch
 
@@ -4485,6 +4485,55 @@ already installed. It uses a fake `brew` in a temporary directory, makes no
 download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
+
+The linked automated release path requires signed-candidate static checks on
+both macOS 27 and macOS 26, followed by the platform's dedicated hardware runner
+and independent Linux finalizer through protected internal workflow dispatch.
+Tests must reject platform tag/expected-commit mismatches and altered provider
+signed-tag/source/producing-run bindings; internal source stays in the platform
+repository. `python3 scripts/test-provider-qualification-dispatch.py` covers
+protected short-tag/expected-SHA validation and correlated run observation.
+`python3 scripts/test-provider-release-qualification.py`
+tests the provider-side artifact/report contract offline; run it with
+`python3 scripts/test-provider-release-publication.py` and
+`python3 scripts/test-provider-release-pipeline.py` for publication and workflow
+wiring. These tests are not a completed signed-candidate, Apple or physical-Mac
+qualification run, and do not provision its required infrastructure.
+
+Require all seven evidence names: `signed_bundle`, `app_attest`,
+`encrypted_inference`, `lifecycle`, `tamper_replay`, `security_transitions`,
+`older_macos`. The independent hardware service must execute actual tamper and
+security-transition tests and return trusted signed receipts bound to a fresh
+nonce, exact candidate and qualification run/attempt. No service, no issuer or
+unavailable hardware means failure, not skipped success. Retried jobs retain
+the original signing and report-producing attempts; evidence cannot be copied
+to a new candidate or kept alive by editing timestamps. The
+[qualification runbook](../operations/app-attest-build-qualification.md#linked-automation-status)
+lists one-time setup and outstanding production-readiness gates.
+
+The current `lifecycle` report proves only idle restart/reconnect and
+post-restart inference. Do not claim continuing authorization renewal or
+in-flight drain/cancel coverage from it. Hardware-report policy and freshness
+must survive finalization independently of the final envelope's timestamps.
+
+The static workflow separates credentialed downloads from the checker, whose
+candidate runs as `nobody` beneath a root-controlled default-deny supervisor.
+Offline coverage does not execute this macOS sandbox/Metal path or establish
+real hardware success. Platform preflight separately verifies its own signed
+annotated `qualification/vN` tag and approved source ancestry before accepting
+provider provenance.
+
+For direct static-lane reproduction, first use the helper's `download` command
+with the original signing run, immutable artifact ID and digest, then `check`
+with `--macos-major 26` or `--macos-major 27`. Set
+`GITHUB_REPOSITORY=Layr-Labs/d-inference` and provide authenticated `gh` access
+for the artifact download. Supply
+`RELEASE_PAYLOAD_SHA256`, `RELEASE_PROVENANCE_SHA256`, `RELEASE_SOURCE_SHA`,
+`RELEASE_SIGNING_RUN_ID`, `RELEASE_QUALIFICATION_POLICY`, `GITHUB_RUN_ID` and
+`GITHUB_RUN_ATTEMPT` from the reviewed workflow inputs; do not invent or replace
+the producing attempt. The output retains `report.json` and its digest-addressed
+evidence. Static checks require no qualification signing key and do not validate
+the external hardware service.
 
 `python3 scripts/test-provider-release-resume.py` covers signed-tag/source/run
 identity, failed or missing prerequisite jobs, expired/ambiguous artifacts,

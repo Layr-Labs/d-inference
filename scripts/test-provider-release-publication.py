@@ -30,6 +30,8 @@ class PublicationFixture(unittest.TestCase):
                     'COORDINATOR_URL': 'https://coordinator.example', 'RELEASE_KEY': 'never-log',
                     'R2_BUCKET': 'example', 'R2_ENDPOINT': 'https://r2.example'}
         self.payload = PUB.prepare(self.root, bundle, self.env)
+        self.env['RELEASE_PAYLOAD_SHA256'] = PUB.sha256(self.root / 'release-payload.json')
+        self.env['RELEASE_PROVENANCE_SHA256'] = PUB.sha256(self.root / 'release-provenance.json')
 
 
 class PublicationTests(PublicationFixture):
@@ -60,11 +62,8 @@ class PublicationTests(PublicationFixture):
             api.assert_not_called()
             upload.assert_not_called()
 
-    def test_stage_is_not_publication_and_requires_operator_evidence(self):
-        q = json.loads((self.root / 'qualification-request.json').read_text())
-        self.assertEqual(q['evidence'], '')
-        self.assertNotIn('approved_by', q)
-        self.assertEqual(q['release']['binary_hash'], self.payload['binary_hash'])
+    def test_stage_is_not_publication_or_qualification(self):
+        self.assertFalse((self.root / 'qualification-request.json').exists())
         with patch.object(PUB, 'upload') as upload, patch.object(PUB, 'coordinator') as api:
             PUB.stage(self.root, self.env)
             api.assert_not_called()
@@ -160,7 +159,7 @@ class PublicationTests(PublicationFixture):
             payload = PUB.prepare(root, self.base / PUB.BUNDLE, env)
         self.assertEqual(payload['changelog'], message.strip())
         self.assertEqual(json.loads((root / 'release-payload.json').read_text())['changelog'], message.strip())
-        self.assertEqual(json.loads((root / 'qualification-request.json').read_text())['release']['changelog'], message.strip())
+        self.assertFalse((root / 'qualification-request.json').exists())
         self.assertFalse(marker.exists())
         self.assertEqual(PUB.release_changelog(dict(env, GITHUB_REF_TYPE='branch')), 'Release v0.9.8')
 

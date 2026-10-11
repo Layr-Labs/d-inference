@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - Independent provider release qualification
+
+- Prepare exact signed-bundle static checks on macOS 27 and 26, followed by protected-tag/expected-commit dispatch into the internal platform's hardware qualification workflow and separate Linux receipt signer before publication. Retain candidate and report producer-attempt provenance across downstream retries; the automated path uses no admin key and never publishes internal source. Lifecycle evidence is idle restart/reconnect and post-restart inference only, not continuing renewal or in-flight drain/cancellation.
+- Require all seven passed-evidence gates, including actual tamper/replay and security-transition receipts from an independently provisioned hardware service. These linked PRs are not production-ready until real hardware and the receipt issuer are provisioned and qualified; no successful hardware run, deployed endpoint or credentials are claimed. Existing global production approvals remain unless an approved operator configures release-specific environments.
+
 ## Unreleased — responsive provider App Attest handling
 
 - Process App Attest challenges, received authorization updates and connection invalidation while inference or model work is suspended. Keep model-work ordering and existing proof, expiry, key-reuse and revocation checks.

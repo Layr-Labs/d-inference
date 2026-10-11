@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 
 from provider_release_github import publish_github_release
+from provider_release_qualification.contract import candidate
 
 BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
 
@@ -45,7 +46,7 @@ def validate(payload, env):
     if env["ENV_PREFIX"] not in {"dev", "prod"}:
         raise ValueError("Unknown publication environment")
     expected = {'version': env['VERSION'], 'source_commit': release_source(env),
-                'ci_run_id': env['GITHUB_RUN_ID'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
+                'ci_run_id': env.get('RELEASE_SIGNING_RUN_ID') or env['GITHUB_RUN_ID'], 'platform': 'macos-arm64', 'backend': 'mlx-swift',
                 'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod'}
     for key, value in expected.items():
         if payload.get(key) != value:
@@ -86,17 +87,14 @@ def prepare(root, bundle, env):
         raise ValueError('Signed bundle changed after final verification')
     shutil.copyfile(bundle, root / BUNDLE)
     provenance = {'source_commit': release_source(env), 'signing_workflow_commit': env['GITHUB_SHA'],
-                  'signing_run_id': env['GITHUB_RUN_ID'],
+                   'signing_run_id': env['GITHUB_RUN_ID'],
+                   'signing_run_attempt': env.get('GITHUB_RUN_ATTEMPT', '1'),
                   'build_run_id': env.get('RELEASE_BUILD_RUN_ID') or env['GITHUB_RUN_ID'],
                   'build_run_attempt': env.get('RELEASE_BUILD_RUN_ATTEMPT') or env.get('GITHUB_RUN_ATTEMPT', '1'),
                   'unsigned_artifact_id': env.get('RELEASE_UNSIGNED_ARTIFACT_ID', ''),
                   'unsigned_artifact_digest': env.get('RELEASE_UNSIGNED_ARTIFACT_DIGEST', '')}
     (root / 'release-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
     (root / 'release-payload.json').write_text(json.dumps(payload, indent=2) + '\n')
-    qualification = {k: payload[k] for k in ['code_directory_hash', 'source_commit', 'ci_run_id']}
-    qualification['release'] = {k: v for k, v in payload.items() if k not in qualification and k != 'require_app_attest_qualification'}
-    qualification['evidence'] = ''  # Operator supplies actual test evidence, never CI-invented approval.
-    (root / 'qualification-request.json').write_text(json.dumps(qualification, indent=2) + '\n')
     notes = f"""## Provider v{payload['version']} (Swift CLI)
 
 **Source:** https://github.com/{env['GITHUB_REPOSITORY']}/commit/{payload['source_commit']}
@@ -107,7 +105,7 @@ def prepare(root, bundle, env):
 **Bundle SHA-256:** `{payload['bundle_hash']}`
 **Metallib SHA-256:** `{payload['metallib_hash']}`
 **Signed and notarized:** yes
-**Minimum macOS:** 14.0
+**macOS deployment target:** 14.0 (runtime qualification: macOS 26 and 27)
 
 ### Install
 
@@ -138,8 +136,8 @@ def coordinator(env, path, payload=None):
         if exc.code == 503 and payload is None:
             raise ReadinessPending('Coordinator download policy is still converging') from exc
         if exc.code == 409:
-            raise RuntimeError('Publication blocked: approve qualification-request.json with test evidence '
-                               'via POST /v1/admin/app-attest/builds, then rerun ONLY the failed publication job. '
+            raise RuntimeError('Publication blocked: the independent qualification workflow must succeed '
+                               'via POST /v1/releases/qualify, then rerun ONLY the failed publication job. '
                                'Do not rerun signing; it creates different signed bytes.') from exc
         raise RuntimeError(f'Coordinator refused publication/readiness (HTTP {exc.code}); no latest aliases advanced') from exc
 
@@ -150,10 +148,9 @@ def upload(root, key, env):
 
 
 def checked_payload(root, env):
-    payload = json.loads((root / 'release-payload.json').read_text())
+    payload, _ = candidate(root, env['RELEASE_PAYLOAD_SHA256'], env['RELEASE_PROVENANCE_SHA256'],
+                           release_source(env), env.get('RELEASE_SIGNING_RUN_ID') or env['GITHUB_RUN_ID'])
     validate(payload, env)
-    if sha256(root / BUNDLE) != payload['bundle_hash']:
-        raise ValueError('Staged signed bundle digest mismatch')
     return payload
 
 

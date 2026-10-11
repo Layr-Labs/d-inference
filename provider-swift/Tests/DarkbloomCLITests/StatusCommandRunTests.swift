@@ -113,4 +113,28 @@ struct StatusCommandRunTests {
         #expect(lines.dropFirst(daemon + 1).first == Status.lifecycleDrainLine(
             ProviderDrainStatus(outcome: .timedOut, remaining: 0)))
     }
+
+    /// Renewals of the ~30 s App Attest lease arrive every few seconds with
+    /// jitter; one that is 15 s late must not turn status into legacy trust.
+    @Test("status keeps reporting App Attest while the lease is unexpired and a renewal is late")
+    func lateLeaseRenewalStillAuthorizes() async throws {
+        let result = try await #require(
+            processExitsWith: .success, observing: [\.standardOutputContent]
+        ) {
+            let sandbox = try CLICommandSandbox.enter(autoRestart: false)
+            defer { sandbox.remove() }
+            let now = Date().timeIntervalSince1970
+            var authorization = CLICommandSandbox.appAttestAuthorization(now: now)
+            authorization.expiresAt = now + 15
+            sandbox.writeState(try CLICommandSandbox.runningState(
+                now: now,
+                trust: .init(trustLevel: "self_signed", status: "online", reason: "Provider authorization updated",
+                             receivedAt: now - 15, authorization: authorization)))
+            try await runCLICommand(Status.self, ["status", "--config", sandbox.config.path])
+        }
+        let output = decodedText(result.standardOutputContent)
+
+        #expect(output.contains("\nAuthorization: App Attest authorizes this connection. "))
+        #expect(!output.contains("\nTrust: self_signed / online\n"))
+    }
 }

@@ -34,11 +34,11 @@ enum DistributedInstalledFiles {
         guard descriptor >= 0 else { throw ClusterConfigurationError.invalid("Cannot open installed input") }
         defer { Darwin.close(descriptor) }
         var before = stat(), after = stat(), named = stat()
-        guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              before.st_uid == geteuid(), before.st_nlink == 1, before.st_mode & 0o022 == 0,
-              before.st_size > 0, before.st_size <= maximumBytes,
-              !executable || before.st_mode & 0o111 != 0 else {
-            throw ClusterConfigurationError.invalid("Installed input is unsafe, empty, oversized or not executable")
+        guard fstat(descriptor, &before) == 0 else {
+            throw ClusterConfigurationError.invalid("Cannot inspect installed input \(url.lastPathComponent)")
+        }
+        if let reason = unsafeReason(before, maximumBytes: maximumBytes, executable: executable) {
+            throw ClusterConfigurationError.invalid("Installed input \(url.lastPathComponent) is unsafe: \(reason)")
         }
         var digest = SHA256(), total = 0
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -61,6 +61,22 @@ enum DistributedInstalledFiles {
         }
         try parent.check()
         return .init(url: url, information: after)
+    }
+
+    /// The first condition an installed input fails, worded for the operator (nil when it is safe). A file with
+    /// more than one link is refused because another name could change it after verification; a hard-linked
+    /// model folder (for example a cache that links the same files) must be copied or cloned instead.
+    static func unsafeReason(_ information: stat, maximumBytes: Int, executable: Bool) -> String? {
+        if information.st_mode & S_IFMT != S_IFREG { return "not a regular file" }
+        if information.st_uid != geteuid() { return "owned by another user" }
+        if information.st_nlink != 1 {
+            return "has \(information.st_nlink) hard links (copy or clone it instead of linking it)"
+        }
+        if information.st_mode & 0o022 != 0 { return "writable by group or others" }
+        if information.st_size <= 0 { return "empty" }
+        if information.st_size > maximumBytes { return "larger than its bound of \(maximumBytes) bytes" }
+        if executable && information.st_mode & 0o111 == 0 { return "not executable" }
+        return nil
     }
 
     static func check(_ deadline: UInt64) throws {

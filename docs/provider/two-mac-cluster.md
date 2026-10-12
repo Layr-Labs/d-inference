@@ -37,6 +37,10 @@ After a restart of either Mac nothing is set up again: run `darkbloom cluster`
 on both Macs and press `s`, then `y`, in step 6 (follower first). The pairing,
 the link and both setups are kept.
 
+To serve another model later: step 4 on the leading Mac, press `r` (both Macs
+are read again and the plans made afresh), choose the model, `enter`, `y`; the
+other Mac accepts with `a`, `y`. Nothing is paired or approved by macOS again.
+
 ## When something is in the way
 
 - **No macOS prompt can be shown** (for example over SSH without a desktop):

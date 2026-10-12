@@ -38,6 +38,45 @@ func checkGoldenPlans(_ directory: URL, dense: (nine: ClusterModelLayout, twenty
             layouts: directory.appendingPathComponent("layouts"), label: "golden[\(name)]", checks)
     }
     try checkRetainedDenseLayouts(directory, dense: dense, checks)
+    try checkIndexedPlans(directory, checks)
+}
+
+/// A fresh install has no speed measured for any model, so the planner splits
+/// the M3 Ultra + M5 Ultra pair by memory alone (the golden plans above). With
+/// each Mac's model-free speed index in its profile (`device --index`), the
+/// planner relates the two Macs' speeds and gives the faster Mac more layers.
+/// The indices here are the ratio measured on that pair on 2026-10-12 (the
+/// Qwen3.5 35B A3B alone on each Mac: prefill 4,812 against 1,836 tok/s,
+/// decode 90.6 against 52.1), so the check is about the planner using them,
+/// not about the benchmark.
+private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) throws {
+    let pair = directory.appendingPathComponent("pairs/m3ultra-m5ultra", isDirectory: true)
+    guard FileManager.default.fileExists(atPath: pair.path) else { return }
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("indexed-\(getpid())", isDirectory: true)
+    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    var files: [String: URL] = [:]
+    for (label, prefill, decode) in [("mac-a", 1_836.0, 52.1), ("mac-b", 4_812.0, 90.6)] {
+        var profile = try ClusterDeviceProfile.decode(Data(contentsOf: pair.appendingPathComponent("profile-\(label).json")))
+        profile.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: prefill, decodeIndex: decode)
+        let file = scratch.appendingPathComponent("\(label).json")
+        try profile.encoded().write(to: file)
+        files[label] = file
+    }
+    let peers = ["mac-a", "mac-b"].flatMap { ["--peer", "\($0)=" + files[$0]!.path] }
+    for (name, memoryCut) in [("qwen3.5-35b-a3b-2026-08-25-r1", 20), ("Qwen3.5-9B-2026-09-03-r1", 16), ("Qwen3.8-27B-4bit-mtp-2026-09-03-r1", 32)] {
+        let printed = try ClusterPlacementTool.run(["plan", "--layout", directory.appendingPathComponent("layouts/\(name).json").path]
+            + peers + ["--leader", "mac-a", "--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
+        let object = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
+        let chosen = (object?["result"] as? [String: Any])?["chosen"] as? [String: Any]
+        let cut = (chosen?["cuts"] as? [Int])?.first ?? -1
+        let mode = chosen?["mode"] as? String ?? "-"
+        let devices = (object?["devices"] as? [[String: Any]]) ?? []
+        let sources = devices.compactMap { ($0["speed"] as? [String: Any])?["source"] as? String }
+        checks.require("indexed[m3ultra-m5ultra] \(name): with both Macs' speed indices the M5 Ultra gets more layers than the memory-only cut \(memoryCut) (cut \(cut), \(mode)), the speeds labelled as index estimates",
+            cut > 0 && cut < memoryCut && mode == "phase_split_mtp_v1" && sources.contains("transferredByDeviceIndex"))
+    }
 }
 
 private func checkGoldenPlanSet(profiles directory: URL, layouts: URL, label: String, _ checks: PlacementChecks) throws {

@@ -213,7 +213,7 @@ private final class LiveContext: @unchecked Sendable {
         let deadline = { DispatchTime.now().uptimeNanoseconds + 15_000_000_000 }
         let localProfile: ClusterDeviceProfile
         do {
-            localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json"],
+            localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json", "--index"],
                 deadline: deadline(), maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
         } catch {
             return .failed("this Mac's plan tool did not answer: \(clean(ClusterConsoleText.bounded(error)))")

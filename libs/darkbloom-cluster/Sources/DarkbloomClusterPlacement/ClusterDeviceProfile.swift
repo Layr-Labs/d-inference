@@ -35,6 +35,12 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
     /// this field. The owner's planner takes a Mac's capacity from it (Mac B
     /// of the pair this was written on: 107.5 GB by default).
     public let wiredLimitBytes: Int?
+    /// The model-free device index (`darkbloom-cluster-plan device --index`),
+    /// when the profile was taken with it. With no speed measured for a model,
+    /// the ratio of two Macs' indices is what relates their speeds; without it
+    /// the planner can only assume equal Macs and split by memory. Nil when not
+    /// asked for; omitted from the encoding then.
+    public var speedIndex: ClusterDeviceIndex? = nil
 
     public init(chip: String, performanceCores: Int, efficiencyCores: Int, gpuCores: Int?,
                 osVersion: String, osBuild: String, physicalMemoryBytes: Int,
@@ -73,6 +79,12 @@ public struct ClusterDeviceProfile: Codable, Equatable, Sendable {
         }
         try memory.validate()
         try power.validate()
+        if let speedIndex {
+            try speedIndex.validate()
+            guard speedIndex.chip == chip, speedIndex.osBuild == osBuild else {
+                throw ClusterPlacementError("Device profile carries another Mac's speed index")
+            }
+        }
     }
 
     public func encoded() throws -> Data {

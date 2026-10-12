@@ -8,8 +8,10 @@ import Foundation
 public enum ClusterPlacementTool {
     public static let usage = """
         usage:
-          darkbloom-cluster-plan device [--json]
-              What this Mac detects about itself, and what its load gate would admit now.
+          darkbloom-cluster-plan device [--json] [--index]
+              What this Mac detects about itself, and what its load gate would admit now. `--index`
+              adds the model-free speed index (about a second of GPU work), which relates two Macs'
+              speeds when no speed was measured for a model.
           darkbloom-cluster-plan index
               A model-free speed index of this Mac as JSON: about a second of GPU work, no model.
               An experiment; see the design. Needs the Metal library beside the binary.
@@ -70,8 +72,15 @@ public enum ClusterPlacementTool {
         let rest = Array(arguments.dropFirst())
         switch command {
         case "device":
-            let parsed = try Arguments(rest, flags: ["--json"], options: [])
-            let profile = try sampleDevice()
+            let parsed = try Arguments(rest, flags: ["--json", "--index"], options: [])
+            var profile = try sampleDevice()
+            // The index is an addition: a Mac whose benchmark cannot run still
+            // answers with its profile, and is planned as before (by memory).
+            if parsed.flags.contains("--index"), let index = try? measureIndex() {
+                var indexed = profile
+                indexed.speedIndex = index
+                if (try? indexed.validate()) != nil { profile = indexed }
+            }
             if parsed.flags.contains("--json") { return String(decoding: try profile.encoded(), as: UTF8.self) }
             return ClusterPlacementExplanation.device("This Mac", profile).joined(separator: "\n")
         case "index":
@@ -142,13 +151,15 @@ public enum ClusterPlacementTool {
             return value
         }
         let indices = try (parsed.values["--index"] ?? []).map {
-            try decoder.decode(ClusterDeviceIndex.self, from: read($0, maximumBytes: 65_536))
+            let value = try decoder.decode(ClusterDeviceIndex.self, from: read($0, maximumBytes: 65_536))
+            try value.validate()
+            return value
         }
         let link = try parsed.one("--link").map { try decoder.decode(ClusterLinkCosts.self, from: read($0, maximumBytes: 65_536)) } ?? .unmeasured
         let speeds = ClusterSpeedEstimator.estimate(
             devices: profiles.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
             artifactSHA256: layout.artifactSHA256, promptTokens: policy.promptTokens ?? layout.maximumPromptTokens,
-            measurements: measurements, indices: indices)
+            measurements: measurements, indices: indices + profiles.compactMap { $0.profile.speedIndex })
         let devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         let explanation = ClusterPlacementExplanation.describe(result, devices: devices, layout: layout, link: link)

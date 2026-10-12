@@ -115,6 +115,18 @@ public struct ClusterDeviceIndex: Codable, Equatable, Sendable {
         self.chip = chip; self.osBuild = osBuild; self.benchmark = benchmark
         self.prefillIndex = prefillIndex; self.decodeIndex = decodeIndex
     }
+
+    /// An index from another Mac is untrusted input: plain bounded labels and
+    /// finite positive rates.
+    public func validate() throws {
+        func label(_ value: String, _ limit: Int) -> Bool {
+            !value.isEmpty && value.utf8.count <= limit && value.unicodeScalars.allSatisfy { $0.value >= 32 && $0.value < 127 }
+        }
+        guard label(chip, 96), label(osBuild, 32), label(benchmark, 64),
+              [prefillIndex, decodeIndex].allSatisfy({ $0.isFinite && $0 > 0 && $0 < 1e15 }) else {
+            throw ClusterPlacementError("Device index is malformed")
+        }
+    }
 }
 
 /// What the planner is told about one device's speed on one model, and how

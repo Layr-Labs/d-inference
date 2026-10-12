@@ -567,4 +567,24 @@ func checkProfiles(_ checks: PlacementChecks) throws {
     checks.refuses("a profile whose chip is not plain text is refused", because: "malformed") {
         _ = try SyntheticMac.idle(64).profile(chip: "bad\nchip")
     }
+    // The model-free speed index rides in the profile when asked for, and only this Mac's.
+    var indexed = profile
+    indexed.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+        prefillIndex: 2.0e6, decodeIndex: 4.0e4)
+    let indexedBytes = try indexed.encoded()
+    checks.require("a profile with its speed index survives its own encoding; without one the field is absent",
+        try ClusterDeviceProfile.decode(indexedBytes) == indexed && !text.contains("speedIndex")
+            && String(decoding: indexedBytes, as: UTF8.self).contains("speedIndex"))
+    checks.refuses("a profile carrying another Mac's speed index is refused", because: "another Mac's speed index") {
+        var other = profile
+        other.speedIndex = .init(chip: "Apple M3 Ultra", osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: 2.0e6, decodeIndex: 4.0e4)
+        _ = try ClusterDeviceProfile.decode(other.encoded())
+    }
+    checks.refuses("a speed index that is not a finite positive rate is refused", because: "Device index is malformed") {
+        var bad = profile
+        bad.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: 0, decodeIndex: 4.0e4)
+        _ = try ClusterDeviceProfile.decode(bad.encoded())
+    }
 }

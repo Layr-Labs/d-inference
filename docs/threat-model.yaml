@@ -1,5 +1,6 @@
 version: "1.1"
 created: "2026-05-14"
+# Official-build registration reviewed 2026-10-12.
 # Provider App Attest dispatch review 2026-10-10: suspended model/inference work
 # no longer delays challenge handling, grant application or connection invalidation.
 # Existing proof verification, native-call admission, expiry and revocation remain
@@ -80,23 +81,24 @@ created: "2026-05-14"
 # machine settlement prevents duplicate base floors while preserving old ledger
 # records. App Attest still does not certify physical uniqueness or RAM, prove
 # computation correctness, or move inference into the Secure Enclave. Final
-# signed-artifact and physical SIP/boot-security transition qualification remain
-# required before enabling serving or scoped Darkbloom profile removal.
+# signed-artifact and physical SIP/boot-security transition validation concerns
+# activation of serving/removal policy, not a per-release publication gate.
 # Interactive profile inventory during MDM removal retains the foreground
 # terminal group for native sudo prompting and reads only the fixed profiles
 # command; background jobs and denial withhold guidance and cannot grant
 # serving authorization.
-# Durable build qualification added 2026-09-20: an independently authenticated
-# operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
-# source and CI provenance. CI release keys cannot grant approval. Publication
-# Apple's signed 20-byte CandidateCDHash must uniquely bind to that same
-# approved full 32-byte hash across all durable rows, including revocations;
-# it cannot use a reported hash or environment-only bootstrap as approval.
-# atomically checks the approval under the revocation row lock; stale cached
-# authorization cannot extend beyond a 30s qualification snapshot or survive a
-# local qualification-generation change. Revocation tombstones override legacy
-# env mappings and persist across restarts. Signed physical-Mac qualification
-# remains an operator evidence requirement, never inferred from a CI green check.
+# Durable official-build registry: the existing scoped release key authorizes
+# CI registration of the exact signed binary, full CodeDirectory, bundle/runtime,
+# source and run provenance after downloaded artifact verification. Existing
+# identity/audit records remain intact. Apple's signed 20-byte CandidateCDHash
+# must uniquely bind to the official full 32-byte hash across all durable rows,
+# including revocations; client-reported hashes cannot supply Apple evidence.
+# Publication retains the revocation row-lock fence; stale cached authorization
+# cannot outlive a 30s snapshot or local qualification-generation change.
+# Revocation tombstones override legacy env mappings and survive restarts.
+# Runtime Apple proof and receipt verification remain mandatory. CI tests and
+# notarization do not prove runtime Apple functionality; hardware smoke is
+# optional, not a per-release gate. Manual approval is compatibility/recovery.
 # Verification presentation added 2026-09-20 (base 76a8f03d): public method
 # verdicts expose only states/times; no raw certificate/receipt or credential
 # identifiers. Inference captures the winning verdict at final dispatch; live
@@ -3378,8 +3380,8 @@ threats:
     stride: Tampering
     title: Unqualified or revoked signed build is accepted through stale code evidence
     description: >
-      App-reported hashes, a truncated Apple code measurement, a CI publication key or
-      stale approval could be mistaken for independently qualified full artifact identity.
+      App-reported hashes, a truncated Apple code measurement or stale official-build
+      identity could be mistaken for current runtime Apple authorization.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-005, A-011, A-017]
     affected_files:
@@ -3389,7 +3391,7 @@ threats:
       - coordinator/registry/app_attest_authorization.go
     mitigations:
       - description: >
-          Separate operator approval, durable revocation tombstones and current
+          Separate official build identity, durable revocation tombstones and current
           qualification generation; Apple's 20-byte measurement must uniquely match
           the approved full hash across durable rows, including revoked rows. Existing
           deployments may use exact configured build/code mappings for a full Apple
@@ -3398,14 +3400,18 @@ threats:
           new release publication require durable qualification.
         status: implemented
       - description: >
-          Physical-Mac security-transition qualification must be supplied by the operator;
-          source review and CI success cannot establish that qualification.
-        status: open
+          Trusted CI registers the exact official build through the existing scoped
+          platform release API after artifact verification. CI and repository writers
+          are trusted for identity; tests and notarization are not runtime Apple proof.
+          Optional hardware smoke is not a per-release prerequisite. Real Apple proof,
+          receipt verification and permanent revocation remain enforced at runtime.
+        status: accepted
     open_findings: []
     severity: critical
     detection_hint: >
       Reject ambiguous or unresolved truncated measurements, report-only identity, stale approval,
-      qualification withdrawal and attempts by release publication credentials to approve.
+      build withdrawal, partial/conflicting registration identity and revoked-build
+      publication races. Registration alone must never grant runtime authorization.
 
   - id: T-055
     trust_boundary: TB-011

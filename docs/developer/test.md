@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 ## App Attest provider dispatch
 
@@ -881,7 +881,7 @@ exercises enrollment over real local HTTP with a linked test token and P-256
 signer. The fixture verifies the canonical token-bound signature rather than
 accepting anonymous profile downloads; no production credentials are used.
 
-Build qualification regressions run in `coordinator/tests/store/postgres/app_attest_builds_test.go`, `coordinator/tests/appattest/service/authorization/build_qualifications_test.go`, `coordinator/tests/api/releases/contracts/app_attest_builds_test.go`, and `coordinator/tests/api/releases/contracts/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+Build-registry regressions belong in the platform repository; the retained coordinator tests here describe its earlier snapshot. Use the [platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/developer/test.md) for current scoped registration, identity/audit persistence and publish/revoke races. `python3 scripts/test-provider-release-publication.py` tests immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not prove runtime Apple functionality. Hardware smoke is optional, not a per-release gate; actual serving still requires live Apple proof and receipt verification.
 
 ### MiMo encoded audio release regression
 
@@ -4494,54 +4494,14 @@ download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
 
-The linked automated release path requires signed-candidate static checks on
-both macOS 27 and macOS 26, followed by the platform's dedicated hardware runner
-and independent Linux finalizer through protected internal workflow dispatch.
-Tests must reject platform tag/expected-commit mismatches and altered provider
-signed-tag/source/producing-run bindings; internal source stays in the platform
-repository. `python3 scripts/test-provider-qualification-dispatch.py` covers
-protected short-tag/expected-SHA validation and correlated run observation.
-`python3 scripts/test-provider-release-qualification.py`
-tests the provider-side artifact/report contract offline; run it with
 `python3 scripts/test-provider-release-publication.py` and
-`python3 scripts/test-provider-release-pipeline.py` for publication and workflow
-wiring. These tests are not a completed signed-candidate, Apple or physical-Mac
-qualification run, and do not provision its required infrastructure.
-
-Require all seven evidence names: `signed_bundle`, `app_attest`,
-`encrypted_inference`, `lifecycle`, `tamper_replay`, `security_transitions`,
-`older_macos`. The independent hardware service must execute actual tamper and
-security-transition tests and return trusted signed receipts bound to a fresh
-nonce, exact candidate and qualification run/attempt. No service, no issuer or
-unavailable hardware means failure, not skipped success. Retried jobs retain
-the original signing and report-producing attempts; evidence cannot be copied
-to a new candidate or kept alive by editing timestamps. The
-[qualification runbook](../operations/app-attest-build-qualification.md#linked-automation-status)
-lists one-time setup and outstanding production-readiness gates.
-
-The current `lifecycle` report proves only idle restart/reconnect and
-post-restart inference. Do not claim continuing authorization renewal or
-in-flight drain/cancel coverage from it. Hardware-report policy and freshness
-must survive finalization independently of the final envelope's timestamps.
-
-The static workflow separates credentialed downloads from the checker, whose
-candidate runs as `nobody` beneath a root-controlled default-deny supervisor.
-Offline coverage does not execute this macOS sandbox/Metal path or establish
-real hardware success. Platform preflight separately verifies its own signed
-annotated `qualification/vN` tag and approved source ancestry before accepting
-provider provenance.
-
-For direct static-lane reproduction, first use the helper's `download` command
-with the original signing run, immutable artifact ID and digest, then `check`
-with `--macos-major 26` or `--macos-major 27`. Set
-`GITHUB_REPOSITORY=Layr-Labs/d-inference` and provide authenticated `gh` access
-for the artifact download. Supply
-`RELEASE_PAYLOAD_SHA256`, `RELEASE_PROVENANCE_SHA256`, `RELEASE_SOURCE_SHA`,
-`RELEASE_SIGNING_RUN_ID`, `RELEASE_QUALIFICATION_POLICY`, `GITHUB_RUN_ID` and
-`GITHUB_RUN_ATTEMPT` from the reviewed workflow inputs; do not invent or replace
-the producing attempt. The output retains `report.json` and its digest-addressed
-evidence. Static checks require no qualification signing key and do not validate
-the external hardware service.
+`python3 scripts/test-provider-release-pipeline.py` cover exact artifact
+registration, retry-safe publication and workflow wiring. Source checks must
+reject unverified/lightweight production tags and off-master sources before
+secret-bearing jobs; dev/manual/recovery runs require trusted `master`.
+Publication retries preserve the original signed bytes and producing attempt.
+These tests do not prove runtime Apple functionality. Optional hardware smoke
+is not a per-release prerequisite; live serving still verifies Apple evidence.
 
 `python3 scripts/test-provider-release-resume.py` covers signed-tag/source/run
 identity, failed or missing prerequisite jobs, expired/ambiguous artifacts,

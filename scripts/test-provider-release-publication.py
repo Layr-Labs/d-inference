@@ -9,6 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 SPEC = importlib.util.spec_from_file_location('publication', Path(__file__).with_name('provider-release-publication.py'))
 PUB = importlib.util.module_from_spec(SPEC)
@@ -85,11 +86,35 @@ class PublicationTests(PublicationFixture):
         self.assertEqual({p.name: p.read_bytes() for p in self.root.iterdir()}, before)
 
     def test_registration_failure_cannot_advance_aliases_or_github(self):
-        with patch.object(PUB, 'coordinator', side_effect=RuntimeError('unqualified')), patch.object(PUB, 'upload') as upload, patch.object(PUB, 'publish_github_release') as github:
-            with self.assertRaisesRegex(RuntimeError, 'unqualified'):
+        with patch.object(PUB, 'coordinator', side_effect=RuntimeError('revoked')), patch.object(PUB, 'upload') as upload, patch.object(PUB, 'publish_github_release') as github:
+            with self.assertRaisesRegex(RuntimeError, 'revoked'):
                 PUB.publish(self.root, self.env)
             upload.assert_not_called()
             github.assert_not_called()
+
+    def test_conflict_explains_revocation_without_manual_or_hardware_approval(self):
+        error = urllib.error.HTTPError('https://coordinator.example/v1/releases', 409, 'Conflict', {}, None)
+        with patch.object(PUB.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.side_effect = error
+            with self.assertRaisesRegex(RuntimeError, 'conflicting release identity or revoked artifact') as raised:
+                PUB.coordinator(self.env, '/v1/releases', self.payload)
+            message = str(raised.exception)
+            self.assertIn('no latest aliases advanced', message)
+            self.assertIn('Do not rerun signing', message)
+            self.assertNotIn('qualif', message)
+            self.assertNotIn('approval', message)
+
+    def test_registration_uses_existing_release_key_and_complete_native_identity(self):
+        with patch.object(PUB.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{}'
+            PUB.coordinator(self.env, '/v1/releases', self.payload)
+            request = opener.return_value.open.call_args.args[0]
+            self.assertEqual(request.full_url, 'https://coordinator.example/v1/releases')
+            self.assertEqual(request.get_header('Authorization'), 'Bearer never-log')
+            sent = json.loads(request.data)
+            for name in ['code_directory_hash', 'source_commit', 'ci_run_id']:
+                self.assertEqual(sent[name], self.payload[name])
+            self.assertIs(sent['require_app_attest_qualification'], True)
 
     def test_registration_and_readiness_precede_all_publication(self):
         events = []

@@ -39,10 +39,10 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
                           '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
 
-    def test_publication_requires_both_lanes_and_production_approval(self):
+    def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+        self.assertNotRegex(content, r'(?m)^    environment:')
         self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertNotIn('continue-on-error:', RELEASE)
         self.assertNotIn('continue-on-error:', ACTION)
@@ -65,11 +65,11 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('provider-release-publication.py stage', stage)
         self.assertIn('provider-release-publication.py publish', publish)
         self.assertIn('needs: [resolve-env, build-and-release]', stage)
-        self.assertIn('needs: [resolve-env, build-and-release, stage-release, qualify-release]', publish)
+        self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
         for content in [stage, publish]:
-            self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+            self.assertNotRegex(content, r'(?m)^    environment:')
             self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
-            self.assertIn('provider-release-qualification.py download', content)
+            self.assertIn('provider-release-publication.py download', content)
             self.assertIn('PUBLICATION_ARTIFACT_ID', content)
             self.assertIn('PUBLICATION_ARTIFACT_DIGEST', content)
             self.assertIn('--run-id "$RELEASE_SIGNING_RUN_ID"', content)
@@ -83,41 +83,29 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertIn('cancel-in-progress: false', publish)
 
-    def test_publication_requires_both_signed_os_lanes_and_isolated_authority(self):
-        for major in (26, 27):
-            lane = job(RELEASE, f'validate-signed-macos{major}')
-            self.assertIn(f'runs-on: blacksmith-12vcpu-macos-{major}', lane)
-            self.assertIn(f'check --macos-major {major}', lane)
-            self.assertIn('needs: [resolve-env, build-and-release, stage-release]', lane)
-            self.assertIn("needs.stage-release.result == 'success'", lane)
-            self.assertIn("needs.resolve-env.outputs.publish == 'true'", lane)
-            self.assertIn('outputs.artifact-id', lane)
-            self.assertIn('outputs.artifact-digest', lane)
-            self.assertNotIn('secrets.', lane)
-            self.assertNotIn('environment:', lane)
-        authority = job(RELEASE, 'qualify-release')
-        self.assertIn('stage-release, validate-signed-macos27, validate-signed-macos26]', authority)
-        self.assertIn("needs.stage-release.result == 'success'", authority)
-        self.assertIn("needs.validate-signed-macos27.result == 'success'", authority)
-        self.assertIn("needs.validate-signed-macos26.result == 'success'", authority)
-        self.assertNotIn('secrets: inherit', authority)
-        self.assertIn('runs-on: ubuntu-24.04', authority)
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', authority)
-        self.assertIn('RELEASE_CANDIDATE_ARTIFACT_ID:', authority)
-        self.assertIn('RELEASE_CANDIDATE_ARTIFACT_DIGEST:', authority)
-        self.assertIn('RELEASE_STATIC26_ATTEMPT: ${{ needs.validate-signed-macos26.outputs.qualification_attempt }}', authority)
-        self.assertIn('RELEASE_STATIC27_ATTEMPT: ${{ needs.validate-signed-macos27.outputs.qualification_attempt }}', authority)
-        self.assertIn("needs.qualify-release.result == 'success'", job(RELEASE, 'publish-release'))
-        self.assertNotIn('QUALIFICATION_PRIVATE_KEY', RELEASE)
-        self.assertNotIn('/v1/admin/app-attest/builds', RELEASE)
+    def test_source_policy_runs_from_master_before_candidate_code(self):
+        resolver = job(RELEASE, 'resolve-env')
+        self.assertNotIn('secrets.', resolver)
+        self.assertIn('contents: read', resolver)
+        self.assertIn('actions: read', resolver)
+        self.assertLess(resolver.index('ref: master'), resolver.index('provider-release-resume.py verify-source'))
+        self.assertLess(resolver.index('provider-release-resume.py verify-source'),
+                        resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'))
+        self.assertLess(resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'),
+                        resolver.index('./scripts/resolve-provider-release.sh'))
+        self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
+        for name in ['build-provider', 'qualify-sdk', 'build-and-release',
+                     'stage-release', 'publish-release', 'validate-older-macos']:
+            content = job(RELEASE, name)
+            self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
+            self.assertIn('resolve-env', content.split('steps:', 1)[0])
+            self.assertNotRegex(content, r'(?m)^    environment:')
 
-    def test_independent_authority_is_pinned_to_a_real_platform_commit(self):
-        authority = job(RELEASE, 'qualify-release')
-        self.assertIn('vars.PLATFORM_QUALIFICATION_REF', authority)
-        self.assertIn('vars.PLATFORM_QUALIFICATION_SHA', authority)
-        self.assertIn('secrets.PLATFORM_QUALIFICATION_DISPATCH_TOKEN', authority)
-        self.assertIn('python3 scripts/provider_release_qualification/dispatch.py', authority)
-        self.assertNotIn('uses: Layr-Labs/darkbloom-platform/', authority)
+    def test_no_separate_hardware_or_receipt_authority(self):
+        for forbidden in ['qualify-release:', 'validate-signed-macos26:', 'validate-signed-macos27:',
+                          'PLATFORM_QUALIFICATION', 'RELEASE_QUALIFICATION',
+                          'provider-release-qualification', '/v1/releases/qualify', '/v1/admin/app-attest/builds']:
+            self.assertNotIn(forbidden, RELEASE)
 
     def test_artifact_handoff_is_same_run_and_source_bound(self):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -19,7 +19,14 @@ is suspended. A local Apple success still does not establish coordinator
 acceptance; use the current coordinator verdict when diagnosing expiry. See
 [provider connection control](../architecture/security/attestation.md#provider-connection-control).
 
-A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
+A signed version is [registered as an official build](../reference/provider-authorization.md#durable-build-qualification)
+by trusted release CI before publication. Its durable identity survives
+coordinator restarts. No per-release hardware qualification or manual approval
+is required. Runtime serving still requires actual Apple proof and receipt
+verification matching the official code/runtime hashes; registration and
+notarization cannot substitute for those checks or undo permanent revocation.
+Missing official identity keeps serving pending, not a reason to delete
+credentials or replace an employer profile.
 
 Account erasure also clears delayed account-specific proof writes and frozen
 legacy-MDM membership; [shared-device cleanup](../architecture/account-erasure.md#shared-machines-and-shared-keys)

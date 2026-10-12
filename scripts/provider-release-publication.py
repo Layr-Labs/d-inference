@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Stage immutable signed products, then publish the same bytes after approval.
+"""Stage immutable signed products, then register and publish the same bytes.
 
 Signing and publication are separate jobs. Rerunning publication never signs or
-rebuilds. The release key can request promotion, but cannot grant qualification.
+rebuilds. The coordinator validates the exact build and enforces revocation.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,18 +16,11 @@ import urllib.error
 import urllib.request
 
 from provider_release_github import publish_github_release
-from provider_release_qualification.contract import candidate
-
-BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
+from provider_release_artifact import BUNDLE, checked_payload as artifact_payload, download, sha256
 
 
 class ReadinessPending(RuntimeError):
     pass
-
-
-def sha256(path):
-    with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def object_key(payload):
@@ -78,6 +70,7 @@ def prepare(root, bundle, env):
         'binary_hash': env['BINARY_HASH'], 'bundle_hash': env['BUNDLE_HASH'],
         'metallib_hash': env['METALLIB_HASH'], 'code_directory_hash': env['CODE_DIRECTORY_HASH'],
         'source_commit': release_source(env), 'ci_run_id': env['GITHUB_RUN_ID'],
+        # Shipped wire name: require complete native identity, not a hardware test.
         'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod',
         'changelog': release_changelog(env),
     }
@@ -87,8 +80,8 @@ def prepare(root, bundle, env):
         raise ValueError('Signed bundle changed after final verification')
     shutil.copyfile(bundle, root / BUNDLE)
     provenance = {'source_commit': release_source(env), 'signing_workflow_commit': env['GITHUB_SHA'],
-                   'signing_run_id': env['GITHUB_RUN_ID'],
-                   'signing_run_attempt': env.get('GITHUB_RUN_ATTEMPT', '1'),
+                  'signing_run_id': env['GITHUB_RUN_ID'],
+                  'signing_run_attempt': env.get('GITHUB_RUN_ATTEMPT', '1'),
                   'build_run_id': env.get('RELEASE_BUILD_RUN_ID') or env['GITHUB_RUN_ID'],
                   'build_run_attempt': env.get('RELEASE_BUILD_RUN_ATTEMPT') or env.get('GITHUB_RUN_ATTEMPT', '1'),
                   'unsigned_artifact_id': env.get('RELEASE_UNSIGNED_ARTIFACT_ID', ''),
@@ -105,7 +98,7 @@ def prepare(root, bundle, env):
 **Bundle SHA-256:** `{payload['bundle_hash']}`
 **Metallib SHA-256:** `{payload['metallib_hash']}`
 **Signed and notarized:** yes
-**macOS deployment target:** 14.0 (runtime qualification: macOS 26 and 27)
+**macOS deployment target:** 14.0 (build, tests and signed runtime smoke: macOS 27)
 
 ### Install
 
@@ -136,9 +129,10 @@ def coordinator(env, path, payload=None):
         if exc.code == 503 and payload is None:
             raise ReadinessPending('Coordinator download policy is still converging') from exc
         if exc.code == 409:
-            raise RuntimeError('Publication blocked: the independent qualification workflow must succeed '
-                               'via POST /v1/releases/qualify, then rerun ONLY the failed publication job. '
-                               'Do not rerun signing; it creates different signed bytes.') from exc
+            raise RuntimeError('Publication blocked: conflicting release identity or revoked artifact; '
+                               'no latest aliases advanced. Resolve the conflict or revocation before '
+                               'retrying the same retained artifact. Do not rerun signing; '
+                               'it creates different signed bytes.') from exc
         raise RuntimeError(f'Coordinator refused publication/readiness (HTTP {exc.code}); no latest aliases advanced') from exc
 
 
@@ -148,8 +142,8 @@ def upload(root, key, env):
 
 
 def checked_payload(root, env):
-    payload, _ = candidate(root, env['RELEASE_PAYLOAD_SHA256'], env['RELEASE_PROVENANCE_SHA256'],
-                           release_source(env), env.get('RELEASE_SIGNING_RUN_ID') or env['GITHUB_RUN_ID'])
+    payload = artifact_payload(root, env['RELEASE_PAYLOAD_SHA256'], env['RELEASE_PROVENANCE_SHA256'],
+                               release_source(env), env.get('RELEASE_SIGNING_RUN_ID') or env['GITHUB_RUN_ID'])
     validate(payload, env)
     return payload
 
@@ -205,11 +199,17 @@ def publish(root, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['prepare', 'stage', 'publish'])
+    parser.add_argument('operation', choices=['prepare', 'download', 'stage', 'publish'])
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--bundle', type=Path)
+    parser.add_argument('--artifact-id')
+    parser.add_argument('--artifact-digest')
+    parser.add_argument('--run-id')
     args = parser.parse_args()
-    if args.operation == 'prepare':
+    if args.operation == 'download':
+        download(os.environ['GITHUB_REPOSITORY'], args.artifact_id, args.artifact_digest,
+                 args.run_id, args.directory)
+    elif args.operation == 'prepare':
         if args.bundle is None:
             parser.error('prepare requires --bundle')
         prepare(args.directory, args.bundle, os.environ)

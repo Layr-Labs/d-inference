@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 Changelog checks use Python's standard library, with no package installation.
 Run `make changelog-check` to validate pending fragments and
@@ -246,23 +246,13 @@ The provider email operator command builds separately with
 `go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
 part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
-Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
+Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` retains the final signed bundle and metadata, stages an immutable digest path, then registers the exact official build through the existing scoped `POST /v1/releases`. Deploy the platform persistence change first. No per-release hardware qualification or manual approval is required. A staging or publication retry reuses the original signed artifact without rebuilding or re-signing. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes and never replaces completed mismatched bytes. See [official-build registration](../operations/app-attest-build-qualification.md).
 
-The linked qualification integration adds macOS 27 and macOS 26
-static checks via `scripts/provider-release-qualification.py`, then dispatches
-the internal platform workflow at a protected tag and verified expected commit.
-The static lanes
-run bounded signed-binary smoke checks; live Apple, inference and lifecycle checks
-run on the dedicated isolated hardware runner. The separate Linux finalizer
-holds the qualification signing key and never executes the candidate. The public
-provider repository uses a scoped dispatch/poll token and never receives internal
-platform source; read-only provider artifact retrieval uses a separate token.
-Preprovisioned
-hardware-service/issuer infrastructure and the deployed platform endpoint are
-prerequisites, not build outputs. These PRs are not production-ready until that
-infrastructure has been provisioned and qualified. Follow the
-[setup and retry boundaries](../operations/app-attest-build-qualification.md#linked-automation-status);
-no global production approval settings are changed by building these sources.
+Secret-bearing release jobs accept only verified signed annotated production
+tags in reviewed `master` ancestry, or trusted `master` for dev/manual/recovery
+runs. They use existing repository-scoped secrets without environment approval
+attachments; shared GitHub settings are unchanged. These checks assume trusted
+repository writers. CI establishes official identity, not runtime Apple success.
 
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.

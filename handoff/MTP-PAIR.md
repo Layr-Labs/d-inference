@@ -51,14 +51,14 @@ three files it read afterwards and requires the manifest digests. A verified rea
 
 ## Which families run the head
 
-| Family (registered row) | Head in the artifact | `phase_split_mtp_v1` | Why / what is missing |
-|---|---|---|---|
-| Qwen3.5 9B, Qwen3.8 27B | inline `mtp.`, one dense layer | **on** | as above |
-| Qwen3.5 35B A3B, Qwen3.6 35B A3B | inline `mtp.`, one routed-expert layer (split gate/up, as the SDK's `Qwen35MTPDecoderLayer` keys it) | **on**, depth 3 by default | same head type (`Qwen35InlineMTPAssistant`), same loader and decoder; the row lists the mode; Qwen3.6 keeps the head in a 5.26 GB shard shared with the trunk, which the re-hash after load reads again (bound 8 GiB) |
-| Prism Bonsai 2 27B | none (`mtp_num_hidden_layers` 0) | off | nothing to run |
-| GPT-OSS 20B, Gemma 4 26B | none | off | pipeline-only rows (a hand-off cannot carry a sliding layer's ring) |
-| Nemotron 3.5 Lightning | inline `mtp.layers.*` (attention + MoE, 0.70 GiB), SDK `NemotronH35MTPAssistant` | off | five pieces, below |
-| MiMo V2.6 | three unquantised MTP layers (1.84 GiB), SDK `MiMoV26MTPAssistant` | off | no phase split is possible on this pair; a pipeline-mode head is not built, below |
+| Family (registered row) | Head in the artifact | `phase_split_mtp_v1` | Default depth (`QwenMTPTerms.standard(for:)`) | Why / what is missing |
+|---|---|---|---|---|
+| Qwen3.5 9B, Qwen3.8 27B | inline `mtp.`, one dense layer | **on** | 4 (the product drafter's maximum) | as above |
+| Qwen3.5 35B A3B, Qwen3.6 35B A3B | inline `mtp.`, one routed-expert layer (split gate/up, as the SDK's `Qwen35MTPDecoderLayer` keys it) | **on** | 3 (measured fastest, table below) | same head type (`Qwen35InlineMTPAssistant`), same loader and decoder; the row lists the mode; Qwen3.6 keeps the head in a 5.26 GB shard shared with the trunk, which the re-hash after load reads again (bound 8 GiB) |
+| Prism Bonsai 2 27B | none (`mtp_num_hidden_layers` 0) | off | none (no head) | nothing to run |
+| GPT-OSS 20B, Gemma 4 26B | none | off | none (no head) | pipeline-only rows (a hand-off cannot carry a sliding layer's ring) |
+| Nemotron 3.5 Lightning | inline `mtp.layers.*` (attention + MoE, 0.70 GiB), SDK `NemotronH35MTPAssistant` | off | none until built (the row lists no MTP mode, so `standard` is never read for it) | five pieces, below |
+| MiMo V2.6 | three unquantised MTP layers (1.84 GiB), SDK `MiMoV26MTPAssistant` | off | none (not a Qwen resident row) | no phase split is possible on this pair; a pipeline-mode head is not built, below |
 
 ### Nemotron 3.5 Lightning: what `phase_split_mtp_v1` needs
 

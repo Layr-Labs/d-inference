@@ -6,6 +6,18 @@ import DarkbloomClusterSecurity
 /// Installed darkbloom's configured worker-owner entry calls this service. No
 /// executable, model path, environment or bootstrap address is accepted on wire.
 public enum ClusterWorkerOwnerService {
+    /// Writes the last 4 KiB of a worker's stderr to this owner's stderr,
+    /// one prefixed line per worker line, control characters removed.
+    static func forwardWorkerDiagnostics(_ tail: Data, termination: ClusterWorkerProcessTermination, limit: Int = 4096) {
+        guard !tail.isEmpty else { return }
+        let text = String(decoding: tail.suffix(limit), as: UTF8.self)
+        var out = "darkbloom-worker-diagnostics-v1 termination=\(termination) bytes=\(tail.count)\n"
+        for line in text.split(whereSeparator: \.isNewline) {
+            let clean = String(String.UnicodeScalarView(line.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))
+            if !clean.isEmpty { out += "worker: " + clean + "\n" }
+        }
+        FileHandle.standardError.write(Data(out.utf8))
+    }
     /// This factory must return an UNLAUNCHED direct child. With a bootstrap
     /// profile it must require that profile's attachment. Without one the child
     /// uses its native bootstrap and the caller must say so wherever it reports
@@ -377,6 +389,11 @@ private final class ServiceContext: @unchecked Sendable {
             attachment?.cancel(); lock.withLock { state.disconnect() }; return
         }
         attachment?.cancel()
+        // A worker that did not end with status 0 leaves its own stderr tail on
+        // this owner's diagnostics (the member's only record of why it ended).
+        if let termination = child.termination, termination != .exited(0) {
+            ClusterWorkerOwnerService.forwardWorkerDiagnostics(child.diagnosticTail, termination: termination)
+        }
         do {
             guard let termination = child.termination else { throw OwnerWire.invalid("Missing actual native terminal") }
             try recordTerminal(termination)

@@ -77,10 +77,14 @@ public struct ClusterPairServingContext: Sendable {
                     timing: timing, keepWarm: .standard)
             } catch {
                 // The follower's refusal names why; the pair alone only sees its link close.
-                if let link = peer as? ClusterLinkWorkerEndpoint, let reason = link.refusalReason {
+                let link = peer as? ClusterLinkWorkerEndpoint
+                if let reason = link?.refusalReason {
                     throw ClusterPairSlotError.notServing("the follower refused its rank: \(reason) (\(error))")
                 }
-                throw error
+                let own = start.endpoint as? ClusterRemoteWorkerEndpoint
+                throw ClusterPairSlotError.notServing("the pair did not become ready: \(String(reflecting: error)); "
+                    + "rank 0 ready \(start.endpoint.readiness != nil) owner \(own?.ownerTermination.map { "\($0)" } ?? "running"); "
+                    + "rank 1 ready \(peer.readiness != nil) owner \(link?.ownerTermination.map { "\($0)" } ?? "running")")
             }
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens) }
             catch { Task { await pair.shutdown() }; throw error }

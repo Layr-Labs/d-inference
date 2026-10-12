@@ -331,7 +331,7 @@ final class NativePairMemberSession: @unchecked Sendable {
             endpoint: endpoint, leaseDeadlineUptimeNanoseconds: lifetimeDeadline, mesh: mesh)
         Task.detached { [weak self] in
             do { try await host.serveCommittedStart(value) } catch {
-                nativeMemberLog.warning("committed session \(value.start.common.epoch): serving host failed: \(error)")
+                nativeMemberLog.warning("committed session \(value.start.common.epoch): serving host failed: \(String(reflecting: error))")
                 self?.cancel(notify: true)
             }
         }

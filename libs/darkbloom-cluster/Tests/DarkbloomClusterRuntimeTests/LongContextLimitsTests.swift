@@ -22,14 +22,14 @@ struct LongContextLimitsTests {
     /// The owner's long-context sizes, plus the edges of the protocol.
     private static let sizes = [5120, 10_240, 20_480, 30_720]
 
-    /// The models that declare their context (the dense 9B and 27B); every
-    /// other registered row keeps the earlier reservation.
+    /// The models that declare their context: every registered resident row
+    /// (dense 9B and 27B, the 35B A3B models, the Prism pack, Nemotron).
     private static let declaring = QwenRegisteredDenseModel.allCases.filter {
         QwenDenseRegisteredSpecification.declaredContextTokensByModel[$0] != nil
     }
 
     @Test func limitsFollowTheProtocolAndTheDeclaredContext() throws {
-        #expect(Self.declaring == [.qwen35NineB, .qwen38TwentySevenB])
+        #expect(Self.declaring == QwenRegisteredDenseModel.allCases)
         for model in Self.declaring {
             let spec = try Self.specification(model)
             #expect(spec.declaredContextTokens == 262_144)
@@ -68,7 +68,8 @@ struct LongContextLimitsTests {
             let data = try LongContextFixture.configuration(model)
             #expect(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == spec.configurationSHA256)
             let root = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-            let text = try #require(root["text_config"] as? [String: Any])
+            // Nemotron's configuration is flat; the Qwen wrappers nest a text configuration.
+            let text = root["text_config"] as? [String: Any] ?? root
             #expect(text["max_position_embeddings"] as? Int == declared)
         }
     }
@@ -182,7 +183,14 @@ struct LongContextLimitsTests {
 /// The registered configuration bytes, read from the worker's capability fixtures.
 enum LongContextFixture {
     static func configuration(_ model: QwenRegisteredDenseModel) throws -> Data {
-        let name = model == .qwen35NineB ? "qwen35-9b" : "qwen38-27b"
+        let name = switch model {
+        case .qwen35NineB: "qwen35-9b"
+        case .qwen38TwentySevenB: "qwen38-27b"
+        case .qwen35ThirtyFiveBA3B: "qwen35-35b-a3b"
+        case .qwen36ThirtyFiveBA3B: "qwen36-35b-a3b"
+        case .ternaryBonsai2TwentySevenB: "ternary-bonsai-2-27b"
+        case .nemotron35Lightning: "nemotron35-lightning"
+        }
         let libraries = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return try Data(contentsOf: libraries.appendingPathComponent(

@@ -134,6 +134,12 @@ extension QwenDenseRegisteredSpecification {
     static let declaredContextTokensByModel: [QwenRegisteredDenseModel: Int] = [
         .qwen35NineB: 262_144,
         .qwen38TwentySevenB: 262_144,
+        // The routed-expert models, the Prism pack and Nemotron declare the
+        // same 262,144 positions in their pinned configurations.
+        .qwen35ThirtyFiveBA3B: 262_144,
+        .qwen36ThirtyFiveBA3B: 262_144,
+        .ternaryBonsai2TwentySevenB: 262_144,
+        .nemotron35Lightning: 262_144,
     ]
     var declaredContextTokens: Int? { Self.declaredContextTokensByModel[model] }
 }

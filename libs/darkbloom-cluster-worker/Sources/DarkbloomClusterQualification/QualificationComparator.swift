@@ -79,10 +79,14 @@ public struct QualificationComparator: Sendable {
     public var nearTieULPs: Float
     public var allowCutDifference: Bool
     public var allowScheduleDifference: Bool
+    /// Profiles that differ only in their limits (the long-context profiles
+    /// against a reference recorded under the earlier 8,192-token reservation).
+    public var allowProfileDifference: Bool
 
-    public init(nearTieULPs: Float = 4, allowCutDifference: Bool = false, allowScheduleDifference: Bool = false) {
+    public init(nearTieULPs: Float = 4, allowCutDifference: Bool = false, allowScheduleDifference: Bool = false,
+                allowProfileDifference: Bool = false) {
         self.nearTieULPs = nearTieULPs; self.allowCutDifference = allowCutDifference
-        self.allowScheduleDifference = allowScheduleDifference
+        self.allowScheduleDifference = allowScheduleDifference; self.allowProfileDifference = allowProfileDifference
     }
 
     /// Spacing of adjacent representable values at `value` for a row dtype.
@@ -100,7 +104,8 @@ public struct QualificationComparator: Sendable {
 
     public func compare(reference: QualificationSubject, candidate: QualificationSubject) throws -> QualificationComparison {
         let identity = reference.identity.differences(from: candidate.identity, allowCutDifference: allowCutDifference,
-                                                      allowScheduleDifference: allowScheduleDifference)
+                                                      allowScheduleDifference: allowScheduleDifference,
+                                                      allowProfileDifference: allowProfileDifference)
         let a = reference.evidence, b = candidate.evidence
         let prefix = zip(a.selectedTokenIDs, b.selectedTokenIDs).prefix { $0 == $1 }.count
         let countsEqual = a.selectedTokenIDs.count == b.selectedTokenIDs.count
@@ -115,6 +120,9 @@ public struct QualificationComparator: Sendable {
             committedTokensEqual: zipOptional(a.committedTokens, b.committedTokens).map { $0 == $1 })
         if allowCutDifference && reference.identity.stageCut != candidate.identity.stageCut {
             result.reasons.append("stage cuts differ (\(reference.identity.stageCut) and \(candidate.identity.stageCut)) and were allowed to")
+        }
+        if allowProfileDifference && reference.identity.profileFingerprint != candidate.identity.profileFingerprint {
+            result.reasons.append("profile fingerprints differ (limits only: same model, profile, tokens, chunk, outputs and stops) and were allowed to")
         }
         if allowScheduleDifference && reference.identity.prefillSchedule != candidate.identity.prefillSchedule {
             result.reasons.append("prefill schedules differ (\(reference.identity.prefillSchedule) and \(candidate.identity.prefillSchedule)) and were allowed to")

@@ -53,7 +53,7 @@ extension ClusterConsoleCheck {
             ("3 asking", make(F.snapshot(F.reportA()), step: .pair) { $0.peer = reached; $0.asking = .confirmCode(code: "482913") }),
             ("4 planning", make(F.snapshot(F.reportA(), record: F.confirmed()), step: .model) { $0.peer = reached; $0.plans = .planning }),
             ("4 plans", make(F.snapshot(F.reportA(), record: F.confirmed()), step: .model) { $0.peer = reached; $0.plans = .ready(F.options) }),
-            ("4 blocked model", make(F.snapshot(F.reportA(), record: F.confirmed()), step: .model) { $0.peer = reached; $0.plans = .ready(F.options); $0.selectedModel = 3 }),
+            ("4 blocked model", make(F.snapshot(F.reportA(), record: F.confirmed()), step: .model) { $0.peer = reached; $0.plans = .ready(F.options); $0.selectedModel = F.models.count }),
             ("4 plan failed", make(F.snapshot(F.reportA(), record: F.confirmed()), step: .model) { $0.peer = reached; $0.plans = .failed("the other Mac's plan tool did not answer") }),
             ("4 inbox", make(F.snapshot(F.reportB(inbox: F.setup(leader: false, digest: String(repeating: "e", count: 64))), pair: F.inboxFollowerPair, record: F.confirmed()), step: .model)),
             ("4 waiting for peer", make(F.snapshot(F.reportA(saved: savedA), pair: F.savedLeaderPair, record: F.confirmed()), step: .model) { $0.peer = .reached(F.reportB(), seconds: 0.4, at: 1) }),
@@ -221,7 +221,7 @@ extension ClusterConsoleCheck {
 
         // The planner's answers from the captured readings: honest, restricted to this Mac leading.
         let options = F.options
-        expectEqual(options.count, 8, "one option per model folder")
+        expectEqual(options.count, F.models.count + 1, "one option per model folder, the constructed unread one last")
         let nine = options.first { $0.model.modelID == "Qwen3.5-9B" }
         expect(nine?.blocker == nil && nine?.plan?.leaderID == "mac-a", "the 9B is planned with this Mac leading: \(String(describing: nine))")
         expect(nine?.plan?.fitsNow == true, "the 9B fits now on the captured memory")
@@ -229,9 +229,31 @@ extension ClusterConsoleCheck {
         expect(nine?.plan?.absolute == false, "without measurements the figures are relative and say so")
         let big = options.first { $0.model.modelID == "EigenLabs/Qwen3.8-27B-4bit-mtp" }
         expect(big?.blocker == nil && big?.plan?.leaderID == "mac-a", "the 27B is planned with this Mac leading")
-        for family in ["gpt-oss-20b", "qwen3.5-35b-a3b", "nvidia-nemotron-3.5-lightning", "ternary-bonsai-2-27b", "mimo-v2.6-flash-mopd"] {
-            expect(options.first { $0.model.modelID == family }?.blocker?.contains("planner cannot read") == true, "\(family) is blocked with the planner's reason")
+        // Every family the runtime serves is offered: each captured folder is planned with this Mac leading,
+        // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
+        for reading in F.readings {
+            let option = options.first { $0.model.folder == reading.model.folder }
+            let layout = try? reading.layout.get()
+            let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
+            expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",
+                "\(reading.model.modelID) is offered with this Mac leading: \(option?.blocker ?? "no plan")")
+            expect(option?.plan?.fitsNow == true, "\(reading.model.modelID) fits now on the captured memory")
+            expect(layout?.admittedCuts.contains(option?.plan?.cut ?? -1) == true,
+                "\(reading.model.modelID)'s cut \(option?.plan?.cut ?? -1) is one its layout admits")
+            expect(described.contains(option?.plan?.mode ?? "-"), "\(reading.model.modelID)'s mode is one its worker described")
+            // MTP on by default: a family whose worker runs the speculative head is planned with it, the
+            // M5 (the Mac that prefers the head) decoding.
+            if described.contains("phase_split_mtp_v1") {
+                expect(option?.plan?.mode == "phase_split_mtp_v1" && option?.plan?.ranks.last?.memberID == "mac-b",
+                    "\(reading.model.modelID) is planned with the speculative head on the decoding M5: \(option?.plan?.mode ?? "-")")
+            }
         }
+        let mimo = options.first { $0.model.modelID == "mimo-v2.6-flash-mopd" }?.plan?.ranks ?? []
+        let layers = { (member: String) in mimo.first { $0.memberID == member }.map { $0.endLayer - $0.firstLayer } ?? 0 }
+        expect(layers("mac-a") > layers("mac-b") && layers("mac-b") > 0,
+            "MiMo, larger than the 128 GB Mac, is split with the larger range on the 256 GB Mac: \(mimo.map { ($0.memberID, $0.firstLayer, $0.endLayer) })")
+        expect(options.last?.model.folder == F.unreadModel.folder && options.last?.blocker?.contains("planner cannot read") == true,
+            "a folder no family reads is blocked with the planner's reason")
         // With the 9B's recorded solo runs on each Mac, its figures are measured and shown, as on the pair.
         let measurements = ["speed-qwen35-9b-mac-a.json", "speed-qwen35-9b-mac-b.json"].compactMap {
             try? JSONDecoder().decode(ClusterSpeedMeasurement.self, from: F.data($0))

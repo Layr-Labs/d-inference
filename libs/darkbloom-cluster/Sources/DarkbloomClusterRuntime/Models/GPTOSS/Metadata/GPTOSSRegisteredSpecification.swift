@@ -32,15 +32,20 @@ struct GPTOSSRegisteredSpecification {
     let experts: Int, expertsPerToken: Int
     let queryHeads: Int, keyValueHeads: Int, headDimension: Int, slidingWindow: Int
     let maximumPositions: Int
-    /// Stage 0 layer counts a pair may be loaded at, ascending. Any cut is
-    /// structurally legal because the configuration names every layer's type;
-    /// this row is the scope that has been proven, not a memory or speed claim.
-    let supportedCuts: [Int]
+    /// Stage 0 layer counts a pair may be loaded at, ascending: every layer
+    /// boundary, because the configuration names every layer's type, so any
+    /// cut is structurally legal. Not a memory or speed claim; the planner
+    /// chooses among them from what each Mac detects.
+    var supportedCuts: [Int] { Array(1..<layers) }
+    /// The cut metadata-only checks plan at (the first one proven on the pair).
+    static let planningCut = 6
     let supportedPrefillSchedules: [ClusterPrefillSchedule]
     /// The pipeline and its compact decode framing. The phase split is absent:
     /// its hand-off cannot carry a sliding-window layer's rows.
     let supportedGenerationModes: [ClusterGenerationMode]
 
+    /// The earlier fixed reservation every profile started with; the row's
+    /// limits now follow from the context it declares (`contextLimits`).
     static let maximumPromptTokens = 8192, maximumChunkTokens = 512
     static let maximumOutputTokens = 128, maximumContextTokens = 8320
     /// The dtype the artifact stores its floating tensors in, and the one the
@@ -66,7 +71,6 @@ struct GPTOSSRegisteredSpecification {
             layers: 24, hidden: 2880, intermediate: 2880, vocabulary: 201_088,
             experts: 32, expertsPerToken: 4, queryHeads: 64, keyValueHeads: 8, headDimension: 64,
             slidingWindow: 128, maximumPositions: 131_072,
-            supportedCuts: [6, 8, 10, 12],
             supportedPrefillSchedules: [.serial, .oneChunkLookahead],
             supportedGenerationModes: [.pipeline, .pipelineCompactDecode]),
     ]
@@ -128,10 +132,18 @@ struct GPTOSSRegisteredSpecification {
         }
     }
 
+    /// The request bounds: the protocol's, cut to the context the pinned
+    /// configuration declares (`max_position_embeddings`, 131,072), as the
+    /// dense Qwen rows derive theirs (`QwenResidentContextLimits`).
+    func contextLimits() throws -> QwenResidentContextLimits {
+        try QwenResidentContextLimits(declaredContextTokens: maximumPositions)
+    }
+
     func profile() throws -> QwenLayerStageGenerationProfile {
-        try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
-            activationDType: Self.residualDType, maximumPromptTokens: Self.maximumPromptTokens,
-            maximumChunkTokens: Self.maximumChunkTokens, maximumOutputTokens: Self.maximumOutputTokens,
-            maximumContextTokens: Self.maximumContextTokens)
+        let limits = try contextLimits()
+        return try .init(identifier: profileID, vocabularySize: vocabulary, hiddenSize: hidden,
+            activationDType: Self.residualDType, maximumPromptTokens: limits.maximumPromptTokens,
+            maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,
+            maximumContextTokens: limits.maximumContextTokens)
     }
 }

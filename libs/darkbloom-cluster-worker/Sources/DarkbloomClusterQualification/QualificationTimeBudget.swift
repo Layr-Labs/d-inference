@@ -45,10 +45,35 @@ public struct QualificationTimeBudget: Equatable, Sendable {
     /// The doubling context is 32,768 for both until the long-prompt runs
     /// measure it; a FLOP count puts it above 100,000 for these geometries,
     /// so this is the cautious side.
+    /// The other families' rows are rounded down from their workers' figures
+    /// at 4,096 to 8,192 prompt tokens (`T/evidence/<family>-20261009`, the
+    /// slower Mac alone where it was run, else the pair): A3B Mac A reference
+    /// clock 1,166 to 1,813 prompt tok/s, decode 49 to 61; Bonsai Mac A 280 to
+    /// 300, decode 30; Gemma 4 QAT Mac A 1,757, decode 57; MiMo the pair 380,
+    /// decode 33. Nemotron's and GPT-OSS's slower Mac alone were not measured;
+    /// their rows sit well below the pair's 2,700 and 4,400 prompt tok/s.
     public static let measured: [String: QualificationTimeBudget] = [
         "registered_qwen35_9b": .init(slowestPrefillTokensPerSecond: 1030, slowestDecodeTokensPerSecond: 72,
             attentionDoublingTokens: 32_768),
         "registered_qwen38_27b": .init(slowestPrefillTokensPerSecond: 307, slowestDecodeTokensPerSecond: 24,
+            attentionDoublingTokens: 32_768),
+        "registered_qwen35_35b_a3b": .init(slowestPrefillTokensPerSecond: 1100, slowestDecodeTokensPerSecond: 45,
+            attentionDoublingTokens: 32_768),
+        "registered_qwen36_35b_a3b": .init(slowestPrefillTokensPerSecond: 1100, slowestDecodeTokensPerSecond: 45,
+            attentionDoublingTokens: 32_768),
+        "registered_ternary_bonsai_2_27b": .init(slowestPrefillTokensPerSecond: 270, slowestDecodeTokensPerSecond: 28,
+            attentionDoublingTokens: 32_768),
+        "registered_nemotron35_lightning": .init(slowestPrefillTokensPerSecond: 1000, slowestDecodeTokensPerSecond: 45,
+            attentionDoublingTokens: 32_768),
+        "registered_gemma4_26b_qat_4bit": .init(slowestPrefillTokensPerSecond: 1500, slowestDecodeTokensPerSecond: 50,
+            attentionDoublingTokens: 32_768),
+        "registered_gemma4_26b": .init(slowestPrefillTokensPerSecond: 1200, slowestDecodeTokensPerSecond: 40,
+            attentionDoublingTokens: 32_768),
+        "registered_gemma4_26b_8bit": .init(slowestPrefillTokensPerSecond: 1200, slowestDecodeTokensPerSecond: 40,
+            attentionDoublingTokens: 32_768),
+        "registered_gpt_oss_20b": .init(slowestPrefillTokensPerSecond: 1000, slowestDecodeTokensPerSecond: 50,
+            attentionDoublingTokens: 32_768),
+        "registered_mimo_v26_flash_mopd": .init(slowestPrefillTokensPerSecond: 250, slowestDecodeTokensPerSecond: 20,
             attentionDoublingTokens: 32_768),
     ]
 

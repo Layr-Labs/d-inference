@@ -277,6 +277,7 @@ final class QwenMTPHead {
 /// both ranks derive the digest before either stage is read.
 struct QwenMTPHeadFiles {
     static let indexName = "model.safetensors.index.json"
+    static let maximumShardBytes = 8_589_934_592
     let shards: [String]
     let shardBytes: Int
     let tensorCount: Int
@@ -301,7 +302,10 @@ struct QwenMTPHeadFiles {
             throw ProbeError("Artifact declares no speculative head inside its verified manifest")
         }
         let shardBytes = shards.reduce(0) { $0 + (pinned[$1]?.size_bytes ?? 0) }
-        guard shardBytes > 0, shardBytes <= 4_294_967_296 else {
+        // The bound is on what the re-hash after load reads again: a head in a
+        // shard of its own (9B, 27B, 3.5 35B A3B), or in the last shard it
+        // shares with the trunk (Qwen3.6 35B A3B: 5,256,335,788 bytes).
+        guard shardBytes > 0, shardBytes <= Self.maximumShardBytes else {
             throw ProbeError("Speculative head files exceed the bound for a head")
         }
         self.shards = shards; self.shardBytes = shardBytes; self.tensorCount = tensors.count; self.pinned = pinned

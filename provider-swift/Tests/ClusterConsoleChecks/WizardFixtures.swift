@@ -142,41 +142,47 @@ enum WizardFixtures {
             tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: data("manifest-qwen35-9b.json")))
     }
 
-    /// One reading per model folder: the 9B and 27B with their captured
-    /// layouts and records; every other family as the plan tool and the
-    /// worker answered for it on Mac A.
+    /// Each model folder's fixture files: `layout-KEY.json` (the plan tool's
+    /// `layout --json`), `capability-KEY.json` (the worker's
+    /// `--describe-runtime`, both of one build) and `manifest-KEY.json`.
+    static let fixtureKeys: [String: String] = [
+        "Qwen3.5-9B": "qwen35-9b", "EigenLabs/Qwen3.8-27B-4bit-mtp": "qwen38-27b", "gpt-oss-20b": "gpt-oss-20b",
+        "mimo-v2.6-flash-mopd": "mimo-v26", "nvidia-nemotron-3.5-lightning": "nemotron35", "qwen3.5-35b-a3b": "qwen35-a3b",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": "qwen36-a3b", "ternary-bonsai-2-27b": "bonsai2-27b",
+    ]
+
+    /// One reading per model folder, every family as the plan tool and the
+    /// worker of one build answered for it on Mac A (2026-10-11): each
+    /// layout from the artifact's own headers, each capability record as
+    /// the worker described it.
     static var readings: [ClusterSetupPlanning.ModelReading] {
         func record(_ name: String) -> Result<(record: ClusterRuntimeCapability, data: Data, sha256: String), ClusterSetupFailure> {
             let bytes = data(name)
             return .success((try! ClusterCapabilityRecord.decode(bytes, writtenBy: "fixture"), bytes, ClusterConfigurationCodec.sha256(bytes)))
         }
         return models.map { model in
-            switch model.modelID {
-            case "Qwen3.5-9B":
-                return .init(model: model, layout: .success(try! ClusterModelLayout.decode(data("layout-qwen35-9b.json"))),
-                    capability: record("capability-qwen35-9b.json"), tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: data("manifest-qwen35-9b.json")))
-            case "EigenLabs/Qwen3.8-27B-4bit-mtp":
-                return .init(model: model, layout: .success(try! ClusterModelLayout.decode(data("layout-qwen38-27b.json"))),
-                    capability: record("capability-qwen38-27b.json"), tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: data("manifest-qwen38-27b.json")))
-            case "gpt-oss-20b", "mimo-v2.6-flash-mopd":
-                return .init(model: model, layout: .failure(.init("Configuration is not a registered resident model's")),
-                    capability: .failure(.init("not described")), tokenizerFiles: [])
-            case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8":
-                return .init(model: model, layout: .failure(.init("Unknown canonical dense Qwen parameter: language_model.model.layers.0.mlp.switch_mlp.gate_proj.biases")),
-                    capability: .failure(.init("not described")), tokenizerFiles: [])
-            case "nvidia-nemotron-3.5-lightning":
-                return .init(model: model, layout: .failure(.init("Layer-stage metadata requires a bounded positive integer: full_attention_interval")),
-                    capability: .failure(.init("not described")), tokenizerFiles: [])
-            default:
-                return .init(model: model, layout: .failure(.init("Tensor language_model.model.layers.10.input_layernorm.weight changes stage with the cut but names no layer")),
-                    capability: .failure(.init("not described")), tokenizerFiles: [])
-            }
+            let key = fixtureKeys[model.modelID] ?? model.folder
+            return .init(model: model, layout: .success(try! ClusterModelLayout.decode(data("layout-\(key).json"))),
+                capability: record("capability-\(key).json"),
+                tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: data("manifest-\(key).json")))
         }
     }
 
+    /// Constructed, not captured: a folder of an architecture no family of
+    /// this runtime reads, both Macs holding it, with the plan tool's refusal
+    /// for an unregistered configuration. It keeps the blocked row honest
+    /// now that every captured folder plans.
+    static let unreadModel = ClusterSetupLocalModel(folder: "llama-3.1-8b-instruct-r1", modelID: "llama-3.1-8b-instruct", version: "r1",
+        artifactSHA256: String(repeating: "e", count: 64), totalBytes: 16_060_000_000)
+    static var unreadReading: ClusterSetupPlanning.ModelReading {
+        .init(model: unreadModel, layout: .failure(.init("Configuration is not a registered resident model's")),
+            capability: .failure(.init("not described")), tokenizerFiles: [])
+    }
+
+    /// The captured folders and then the constructed one, as step 4 decides them.
     static var decisions: [ClusterSetupPlanning.Decision] {
-        ClusterSetupPlanning.decide(readings: readings, description: pairDescription, localMemberID: "mac-a", localProfile: profileA,
-            peerProfile: profileB, peerModels: models, measurements: [])
+        ClusterSetupPlanning.decide(readings: readings + [unreadReading], description: pairDescription, localMemberID: "mac-a",
+            localProfile: profileA, peerProfile: profileB, peerModels: models + [unreadModel], measurements: [])
     }
 
     static var options: [ClusterSetupModelOption] { decisions.map(\.option) }

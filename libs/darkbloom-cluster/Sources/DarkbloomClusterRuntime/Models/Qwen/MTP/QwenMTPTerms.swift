@@ -23,6 +23,21 @@ public struct QwenMTPTerms: Equatable, Sendable, Encodable {
 
     private init(uncheckedDepth: Int) { depth = uncheckedDepth }
 
+    /// The depth a session runs when it declares none: the row's own, as
+    /// measured across the cable (4,096-token prompt, 64 outputs). On the
+    /// routed-expert rows a verify window of five rows costs two to three
+    /// times a window of four (Qwen3.5 35B A3B 34 ms against 16.5 ms a round,
+    /// Qwen3.6 35B A3B 62 ms against 21 ms), so depth 4 decodes slower than no
+    /// head at all there (68 and 48 tok/s against 69 and 73 for the plain
+    /// phase split) and depth 3 fastest (114 and 106 tok/s). The dense rows
+    /// keep the product drafter's ceiling.
+    static func standard(for model: QwenRegisteredDenseModel) -> QwenMTPTerms {
+        switch model {
+        case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B: return QwenMTPTerms(uncheckedDepth: 3)
+        case .qwen35NineB, .qwen38TwentySevenB, .ternaryBonsai2TwentySevenB, .nemotron35Lightning: return standard
+        }
+    }
+
     /// Bound into the resident load agreement, after the mode's own fields.
     /// `headSHA256` names the head's tensor files by their manifest digests.
     func loadAgreementFields(headSHA256: String) -> [String] {

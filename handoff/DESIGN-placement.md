@@ -187,8 +187,9 @@ A family whose plan is not a contiguous layer pipeline fails there, with the
 tensor named. It then requires the bytes to conserve: every stored tensor is
 in exactly one layer, the ingress, the egress or the excluded set.
 
-Implemented for the two registered models through `QwenLayerStagePlan`. What
-each of the six families in progress must add is at the end.
+Implemented for the two registered models through `QwenLayerStagePlan`; since
+2026-10-11 for every registered family (eleven rows, see the last status
+section). What each family supplies is at the end.
 
 ## 3. Speed estimate
 
@@ -570,7 +571,7 @@ have to change, for the private repository to take up:
 - MiMo (173 GB): placed on this pair from detected memory alone; refused on a
   pair that cannot hold it.
 
-## What each family must add
+## What each family supplies (all eight families conform since 2026-10-11)
 
 One type in the family's own directory that conforms to
 `ClusterPlacementFamily`, and one line in
@@ -685,3 +686,144 @@ What was run on the two Macs is in the task's evidence folder
 Mirrored 27B measured (2026-10-09, 18:46Z to 19:11Z, modes step only, cut 48, Mac B rank 0): the second Mac accepts the incoming connection to its rank 0 worker. Phase split: first token 4.20 s at 4,096 and 10.37 s at 8,192 (predicted 4.18 and 8.50), decode 23 to 24 tok/s (predicted 29 to 30). Pipeline in this order: first token 4.08 and 8.64 s, but decode 11.4 tok/s at every length, against 25 to 28 in the normal order; not explained. The first launch (1,024 tokens, phase split) did not become ready within 150 s; the later five did in 16 to 29 s. Token agreement (`record`) and cut 40 not run. The time model needs a per-step term for the relay and for the mirrored pipeline before it can rank orders against each other.
 
 Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33Z). Tokens: at cut 48, all six recorded runs (pipeline, compact pipeline and phase split at 1,024 and 8,192) pass against both Macs' single-Mac references (tokens equal, or a first difference at a 1-ulp near tie); ranks agree. The 11.4 tok/s was the measuring harness, not the placement: the pair driver ran on the first Mac, rank 0 on the second, and every committed token waits for the driver's decision (rank 0 blocks until it arrives; in the pipeline no next step runs meanwhile, in the phase split rank 0 answers each relayed token the same way). The harness reached the second Mac over a tunnel (median 8 ms, mean 24 ms and p90 128 ms per round trip with decode-like gaps) instead of the cable (0.6 ms). Over the cable, same binaries: pipeline 26.3 tok/s at 1,024 and 25.2 at 8,192, phase split 28.2 and 25.8 (Mac A alone 29.5 and 27.9). Cut 40 over the cable: phase split 28.8 / 27.9 / 27.1 tok/s at 1,024 / 4,096 / 8,192, first token 1.61 / 5.34 / 10.46 s. For the product: the request owner must sit on rank 0's Mac or reach it over the cable; a per-token decision across any slower control route caps decode at one round trip per token. The first-launch timeout did not recur; the second Mac's firewall lists the ad-hoc-signed worker at `bin/phase` as allowed, so a new worker path or new bytes on the Mac that listens is a new firewall decision there (the owner's "approve once" requirement). The time model still needs the relay's per-token cost (about 1.6 to 2.9 ms over the cable at cut 48).
+
+### Status, 2026-10-11: every family (supersedes the lines above where they differ)
+
+- **Every registered family conforms** to `ClusterPlacementFamily` (Qwen dense 9B and 27B, Qwen 35B A3B 3.5 and
+  3.6, Prism Bonsai 2 27B, Nemotron 3.5 Lightning, GPT-OSS 20B, MiMo V2.6, Gemma 4 26B in three packs: eleven
+  rows). `ClusterPlacementLayouts.layout` picks the family from the configuration. The cuts a capability record
+  describes are derived from each family's own stage plan, not listed per model; a record holds up to 128
+  partitions (96 KiB). The request a layout is planned for is the row's reservation; the context a rank admits at
+  load follows its memory up to 32,768 tokens.
+- **Golden plans** (`libs/darkbloom-cluster/Tests/PlacementChecks/Golden`): each artifact's layout as the plan
+  tool read it from the real tensor headers on Mac A and on Mac B (byte-equal), both Macs' recorded profiles, and
+  the digest of the plan both Macs' plan tools printed (byte-equal). The check plans each layout with the plan
+  command's own code and must print exactly that plan; the dense rows' layouts built from retained header metadata
+  equal the header reads in every field but the excluded group.
+- **The setup wizard and `darkbloom cluster plan` offer every family.** The wizard's fixtures carry every
+  family's real layout and capability record; step 4 plans all eight model folders this pair holds, each with this
+  Mac leading, fitting, at a cut its layout admits. `darkbloom cluster plan` was run on Mac A for nine models
+  (eight families and Gemma 4 QAT) with Mac B's profile fetched over the pinned SSH route: a plan and a setup per
+  Mac for each.
+- **On the pair, at the planner's cut** (rank 0 on the M3 Ultra, rank 1 on the M5 Max, over the cable; each run
+  against a staged single-Mac reference by the qualification comparator): Qwen3.5 and Qwen3.6 35B A3B (cut 20),
+  Bonsai 2 27B (32), Nemotron 3.5 (27), GPT-OSS 20B (12) and Gemma 4 26B QAT (15) all pass, and each completes a
+  16,384-token prompt with both ranks agreeing. MiMo is placed from detected memory alone (cut 38 to 42, by what
+  each Mac has free at that moment); when applications on Mac A held enough that its rank was 3.52 GiB short, the
+  planner said exactly that instead of choosing a placement the gate would refuse. From fresh profiles at 19:12Z
+  (cut 41, all four lanes) MiMo ran the short, 4,096- and 16,384-token requests across the cable (both ranks' token
+  chains equal; 16,384: first token 45.6 s, decode 24.8 tok/s). Against the Mac A staged reference of 2026-10-09
+  (cut 34): short `tokensEqualLogitsDiffer`; 4,096 first differs at token 50, where the pair's own row is an exact tie
+  (`divergedAtNearTie` read from the pair's row; that reference recorded no rows). A Mac A reference at cut 41 was
+  refused by the gate at its second stage with the applications open: one Mac holding MiMo in one process is the case
+  the planner reports as not fitting (161.8 GiB).
+- **With measured speeds** (the timed solo runs of the A3B rows on each Mac, as `ClusterSpeedMeasurement` files),
+  the planner moves the A3B rows from an even pipeline split to cut 12 and `phase_split_mtp_v1`: the faster M5 Max
+  holds every layer and decodes alone with the head.
+- **Measured speeds for every MoE row** (M5 Max pair, 2026-10-11, 4,096-token prompt, 64 outputs, prefix cache off,
+  prefill `one_chunk_lookahead_v1`, all four lanes). Given each Mac's timed solo run, the planner moved every row
+  towards the M5 Max: Nemotron cut 20 phase split, GPT-OSS cut 10 pipeline, Gemma 4 QAT cut 9 pipeline, the A3B rows
+  cut 12 phase split with MTP. At those plans the pair's first token beat both Macs alone on every row (GPT-OSS
+  1.10-1.14 s against 1.17 s on the M5 Max and 2.38 s on the M3 Ultra; Gemma QAT 0.83-0.86 s against 1.04 and 2.30 s;
+  Qwen3.5 / Qwen3.6 35B A3B 0.93-1.04 s against 1.20-1.29 and 2.20-2.29 s); decode beat both on the A3B rows (MTP on
+  the decoding M5 Max: 132-142 and 143-158 tok/s against 86-87 alone without a head) and lay between the two Macs for
+  GPT-OSS and Gemma (pipeline decode crosses the cable once per token). Nemotron at cut 20 passed against a Mac A
+  staged reference at that cut (first difference at token 16, an exact tie), first token 1.13 s, decode 96.7 tok/s.
+  The recorded runs of GPT-OSS, Gemma and the A3B rows at these cuts and Nemotron's timed repeat were stopped by a
+  three-minute loss of the M5 Max's Thunderbolt RDMA address and then by the replacement of that Mac.
+- **The second Mac changed on 2026-10-11 17:15 PDT**: the M5 Max (128 GB) was replaced by an M5 Ultra. Nothing in the
+  placement code names a chip (every figure comes from the detected profile and the measured or assumed speeds), so
+  the pair re-plans from the new Mac's profile; the hardware results above are the M3 Ultra + M5 Max pair's.
+- **The M3 Ultra + M5 Ultra pair, model-free (2026-10-12 02:05Z)**: both Macs' plan tools, given both Macs' idle
+  profiles (M5 Ultra: 256 GiB, 80 GPU cores, 240 GiB GPU working set, 5.3 GiB wired), printed byte-equal plans for every
+  layout; they are a second golden set (`Tests/PlacementChecks/Golden/pairs/m3ultra-m5ultra/`). With memory alone (no
+  speed records) the planner splits evenly: 9B cut 16, 27B 32, Gemma 4 15, GPT-OSS 12, Nemotron 27, the A3B rows 20,
+  Bonsai 32, all pipeline, and MiMo cut 14 with the M5 Ultra holding 34 of 48 layers (the opposite of the M5 Max pair,
+  cut 41). The M5 Ultra holds every family alone, MiMo included; the M3 Ultra cannot hold MiMo alone. No hardware run
+  of the new pair is recorded here yet.
+- **Memory a running program holds wired**: while another account's model server held 222.9 GiB of the M5 Ultra wired,
+  the plan said "cannot fit on this Mac whatever is freed". The fit tiers count wired memory as not freeable, which is
+  right for the system's own share; when more than a quarter of a Mac's memory is wired the plan now names that share
+  on the device line and says stopping the program gives it back, in each answer within the Mac's memory and in a
+  refusal.
+- MTP per family: `handoff/MTP-PAIR.md`.
+- **MTP credit (merged 2026-10-12 from work/planner-mtp-credit)**: a row with a speculative head is credited its
+  measured speed-up on a decoding Mac that prefers the head (Apple M5 generation or later, or a measured rate with
+  the head), the head's bytes are charged to that rank, and ties go to the head before headroom. On the M3 Ultra +
+  M5 Ultra pair, with no speed records (what a fresh install has: no code writes the wizard's `speed/` folder),
+  `darkbloom cluster plan` saves for every family (Mac A live profile, the M5 Ultra's idle profile):
+
+  | Row | Cut | Mode | Mac A (M3 Ultra) holds | M5 Ultra holds |
+  |---|---|---|---|---|
+  | Qwen3.5 9B | 16 | phase_split_mtp_v1 | 2.35 GiB | 4.83 GiB (every layer + head) |
+  | Qwen3.8 27B | 32 | phase_split_mtp_v1 | 7.06 GiB | 14.34 GiB |
+  | Qwen3.5 / 3.6 35B A3B | 20 | phase_split_mtp_v1 | 9.09 GiB | 18.62 / 19.01 GiB |
+  | Bonsai 2 27B | 32 | pipeline_v1 | 3.58 GiB | 3.58 GiB |
+  | Nemotron 3.5 | 27 | pipeline_v1 | 8.22 GiB | 8.82 GiB |
+  | GPT-OSS 20B | 12 | pipeline_v1 | 5.62 GiB | 5.62 GiB |
+  | Gemma 4 26B (bf16 / 8-bit / QAT 4-bit) | 15 | pipeline_v1 | 12.85 / 12.85 / 6.93 GiB | 12.86 / 12.86 / 6.94 GiB |
+  | MiMo V2.6 | memory-dependent (18 with 131 GiB admissible on Mac A; 14 with 94 GiB) | pipeline_v1 | 56.7 GiB at 18 | 99.1 GiB at 18 |
+
+  These are the cuts a cross-cable qualification of this pair must run (a parity qualification is cut-specific);
+  the speed-informed cuts (9B 4, 27B 4-8, A3B 8, Nemotron 11-13) appear only when speed records are supplied.
+  If the setup wizard is run on the M5 Ultra it leads (rank 0 = the local member), the M3 Ultra decodes and gets no
+  head; that order is slower than the M5 Ultra alone (planning finding F2, owner decision pending).
+- **Speed index in the profile (2026-10-12).** `darkbloom-cluster-plan device --index` adds the model-free index
+  (`qmm_h4096_b4_g64_x16_v1`, about a second of GPU work) as the profile's `speedIndex`; the setup wizard samples
+  both Macs' profiles with it, and the planner relates two Macs by the index ratio when no speed was measured for
+  the model (the estimator's existing `transferredByDeviceIndex` source). Measured on the pair (three runs each,
+  within 1 %): M3 Ultra prefill 4.7e5 / decode 2.6e4, M5 Ultra 2.34e6 / 4.55e4, a ratio of 4.98 and 1.76. The real
+  per-model ratios measured the same night: prefill 4.5 (9B), 5.1 (27B), 2.6 (A3B), 2.0 (Nemotron), 3.0 (GPT-OSS);
+  decode 1.54-1.74. The index orders the pair right on both shapes (the condition the benchmark was kept on),
+  matches decode and dense prefill, and overstates MoE prefill. With it a fresh install picks: 9B cut 4, 27B 8 (both
+  the measured-speed cuts), A3B 4 (measured-speed: 12), Nemotron 8 phase split, GPT-OSS 4, Gemma 4 5, Bonsai 8
+  phase split, MiMo 1.
+- **The M3 Ultra + M5 Ultra pair on hardware (2026-10-12, bin at 0e93b5d4f, TB5 RDMA over link setup v2).** Every
+  row below passed the near-tie rule against BOTH a Mac A staged reference and a fresh M5 Ultra staged reference:
+  9B (cut 16 and 4, phase_split_mtp_v1), 27B (32 and 8, phase_split_mtp_v1), Qwen3.5 / 3.6 35B A3B (20 and 4,
+  phase_split_mtp_v1, plus the 16,384 prompt), Nemotron (27 pipeline + 16,384, 8 phase split), GPT-OSS (12 pipeline +
+  16,384). Timed against each Mac alone in the same hold (request totals, 4,096 prompt + 64 outputs; 9B/27B 5,120 +
+  128):
+
+  | Row | Pair, memory-only cut | Pair, index cut | M5 Ultra alone (no head / with head*) | M3 Ultra alone |
+  |---|---|---|---|---|
+  | 9B | 3.88-3.98 s (16) | 2.39-2.47 s (4) | 2.21-2.27 s / ~1.82 s | 6.71-6.93 s |
+  | 27B | 12.25-12.44 s (32) | 7.04-7.17 s (8) | 6.29-6.41 s / ~5.2 s | 21.6-21.7 s |
+  | Qwen3.5 A3B | 2.02-2.18 s (20) | 1.43-1.57 s (4) | 1.56-1.68 s / ~1.31 s | 3.35-3.61 s |
+  | Qwen3.6 A3B | 2.00-2.16 s (20) | 1.41-1.57 s (4) | 1.55-1.67 s / ~1.31 s | 3.37-3.47 s |
+  | Nemotron | 2.65-2.76 s (27) | 1.90-2.00 s (8, phase split) | 1.63-1.73 s | 3.14-3.27 s |
+  | GPT-OSS | 2.46-2.58 s (12) | | 1.30-1.37 s | 3.20-3.25 s |
+
+  (*) the M5 Ultra's own speculative head, from its single-process reference (in-process clock). The pair ran the
+  serial prefill schedule here; the saved setups say `one_chunk_lookahead_v1`. Reading: on this pair the memory-only
+  split is 1.3-2x slower than the M5 Ultra alone; the index cut recovers most of it and beats the M5 Ultra without
+  its head on the A3B rows, but a pipeline/phase split does not beat the M5 Ultra with its head for any model that
+  fits the M5 Ultra. Against the M3 Ultra alone every pair plan is 1.6-3x faster.
+- **Memory gate on the M5 Ultra.** With 187 GiB of speculative (read-ahead, untouched) file cache from another
+  account's program, the gate counted no cache and refused every load; it now counts speculative pages as inactive
+  file pages in its second bound (`DESIGN-resource-gate-v3.md`, "Speculative pages"). The 32 GiB cap still applies,
+  so a load larger than free + 32 GiB (MiMo's M5 Ultra rank) waits until those pages are reclaimed.
+- **The same pair with the product's own prefill schedule (`one_chunk_lookahead_v1`, what every saved setup but
+  MiMo's names) at the index cuts, 2026-10-12** (request totals; the M5 Ultra's speculative head counted where it
+  has one, from its single-process reference):
+
+  | Row (index cut) | Pair | M5 Ultra alone | M3 Ultra alone | Near-tie rule vs both Macs' references |
+  |---|---|---|---|---|
+  | 9B (4, MTP), 5,120 + 128 | 1.74-1.82 s | ~1.82 s with head (2.22 s without) | 6.71-6.80 s | pass |
+  | 27B (8, MTP), 5,120 + 128 | 5.07-5.18 s | ~5.23 s with head (6.30 s without) | 21.5-21.8 s | pass |
+  | Qwen3.5 A3B (4, MTP), 4,096 + 64 | 1.19-1.35 s | ~1.31 s with head (1.55 s without) | 3.36-3.44 s | pass |
+  | Qwen3.6 A3B (4, MTP), 4,096 + 64 | 1.21-1.36 s | ~1.31 s with head (1.58 s without) | 3.34-3.45 s | pass |
+  | Nemotron (8, phase split), 4,096 + 64 | 1.56-1.67 s | 1.66-1.76 s (no head) | 3.15-3.23 s | pass |
+  | Bonsai (8, phase split), 4,096 + 64 | 4.54-4.58 s | 4.71-4.73 s (no head) | 17.6 s | pass |
+  | Gemma 4 QAT4 (5, pipeline) | 1.53-1.60 s | 1.37-1.43 s | 3.37 s | pass |
+  | GPT-OSS (4, pipeline) | 1.47-1.57 s | 1.30-1.37 s | 3.20-3.27 s | **fails at cut 4** (serial too); passes at 12 |
+
+  So with the index a fresh install's pair is faster than the M5 Ultra alone for the dense, A3B, Nemotron and Bonsai rows,
+  and the pipeline-only rows trail it by 10-15 %. GPT-OSS diverges at cut 4 on this pair (gap 0.59 at its second
+  token, both Macs' references agreeing); a grant for it can only name cuts that passed.
+- **MiMo on the M3 Ultra + M5 Ultra pair (2026-10-12)**: the live plan put Mac A at layers 0-33 (109.2 GiB) and the
+  M5 Ultra at 34-47 (46.6 GiB), because the M5 Ultra's gate admitted 58.6 GiB (free + the 32 GiB cache cap) while
+  160 GiB of its memory was speculative file cache. Short, 4,096 and 16,384-token prompts completed; 4,096 x3: first
+  token 8.9-9.2 s, decode 35.4-35.7 tok/s. Against the 2026-10-09 Mac A cut-34 references the short request departs at a
+  near tie and the 4,096 one at an exact tie in the pair's own row (that reference recorded no rows). No single-Mac
+  figure: Mac A cannot hold MiMo, and the M5 Ultra could only once that cache is gone.

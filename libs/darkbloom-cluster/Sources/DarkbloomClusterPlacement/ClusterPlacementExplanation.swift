@@ -38,6 +38,25 @@ public enum ClusterPlacementExplanation {
         }
     }
 
+    /// The answer for a requirement on one Mac, in the words that Mac's memory
+    /// calls for: where a running program holds wired memory and the
+    /// requirement is within the Mac's memory, "whatever is freed" would be
+    /// wrong, since stopping that program frees it.
+    public static func describe(_ fit: ClusterPlacementFit, need: Int, memory: ClusterDeviceMemory) -> String {
+        let required = max(memory.minimumAdmissibleBytes, need)
+        guard memory.wiredLooksHeldByAProgram, required <= memory.physicalMemoryBytes else { return describe(fit) }
+        let held = " \(gibText(memory.wiredBytes)) of this Mac's memory is wired by a running program (a loaded model or another "
+            + "model server) and counted as not freeable; stopping that program gives it back"
+        switch fit {
+        case .now, .gateCountsLess:
+            return describe(fit)
+        case .afterApplicationsRelease, .afterRestart:
+            return describe(fit) + ";" + held
+        case .never(let bytes):
+            return "does not fit on this Mac as it runs now: short by \(gibText(bytes, roundUp: true)) of all the memory that is not wired;" + held
+        }
+    }
+
     public static func device(_ label: String, _ profile: ClusterDeviceProfile) -> [String] {
         let m = profile.memory
         var lines = ["\(label): \(profile.chip), \(profile.performanceCores) performance and \(profile.efficiencyCores) efficiency cores"
@@ -48,6 +67,10 @@ public enum ClusterPlacementExplanation {
             + "(closing them frees it); \(gibText(m.fileBackedBytes)) of file cache, of which the kernel keeps \(gibText(min(m.fileBackedBytes, m.fileCacheReserveBytes))) "
             + "as its minimum (not reclaimable short of a restart) and would give up \(gibText(m.fileCacheAboveReserveBytes)); "
             + "\(gibText(m.wiredBytes + m.compressorBytes)) wired or compressed.")
+        if m.wiredLooksHeldByAProgram {
+            lines.append("  \(gibText(m.wiredBytes)) wired is far more than macOS keeps wired at rest: a running program holds it (a loaded model "
+                + "or another model server). The plan counts none of it as freeable; stopping that program gives it back.")
+        }
         if m.judged {
             lines.append("  The load gate would admit \(gibText(m.admissibleNowBytes)) now: the free pages plus \(gibText(m.countedFileCacheBytes)) "
                 + "of that cache (rule \(m.gatePolicy)). With every application closed: \(gibText(m.withApplicationsClosedBytes)).")
@@ -80,10 +103,13 @@ public enum ClusterPlacementExplanation {
 
     public static func speed(_ label: String, _ speed: ClusterDeviceSpeed) -> String {
         let unit = speed.absolute ? " tok/s" : " (relative)"
+        func head(_ rates: ClusterSpeedRates) -> String {
+            rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? ""
+        }
         var text = "\(label): prefill \(rate(speed.rested.prefillTokensPerSecond))\(unit) and decode "
-            + "\(rate(speed.rested.decodeTokensPerSecond))\(unit) rested"
+            + "\(rate(speed.rested.decodeTokensPerSecond))\(unit)\(head(speed.rested)) rested"
         if let sustained = speed.sustained {
-            text += "; \(rate(sustained.prefillTokensPerSecond)) and \(rate(sustained.decodeTokensPerSecond)) sustained"
+            text += "; \(rate(sustained.prefillTokensPerSecond)) and \(rate(sustained.decodeTokensPerSecond))\(head(sustained)) sustained"
         } else {
             text += "; no sustained figure"
         }
@@ -100,12 +126,13 @@ public enum ClusterPlacementExplanation {
             + "decode \(rate(p.decodeTokensPerSecond)) tok/s, the request \(seconds(p.requestSeconds))."
     }
 
-    public static func candidate(_ c: ClusterPlacementCandidate, basis: ClusterPlacementBasis, prompt: Int, outputs: Int) -> [String] {
+    public static func candidate(_ c: ClusterPlacementCandidate, basis: ClusterPlacementBasis, prompt: Int, outputs: Int,
+                                 devices: [ClusterPlacementDevice] = []) -> [String] {
         var lines: [String] = []
         for r in c.ranks {
             lines.append("Rank \(r.rank): \(r.device), layers \(r.firstLayer) to \(r.endLayer - 1) (\(r.endLayer - r.firstLayer)). "
                 + "It holds \(gibText(r.weightsBytes)) of weights and needs \(gibText(r.needBytes, roundUp: true)) admissible "
-                + "against \(gibText(r.admissibleNowBytes)): \(describe(r.fit))."
+                + "against \(gibText(r.admissibleNowBytes)): \(fitText(r.fit, need: r.needBytes, device: r.device, devices))."
                 + (r.withinGPUWorkingSet ? "" : " That is more than its GPU says an application may keep resident."))
         }
         let modeText: String
@@ -117,6 +144,11 @@ public enum ClusterPlacementExplanation {
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines
+    }
+
+    static func fitText(_ fit: ClusterPlacementFit, need: Int, device: String, _ devices: [ClusterPlacementDevice]) -> String {
+        guard let memory = devices.first(where: { $0.label == device })?.profile.memory else { return describe(fit) }
+        return describe(fit, need: need, memory: memory)
     }
 
     /// One line saying what each Mac holds while a session of this placement
@@ -142,7 +174,7 @@ public enum ClusterPlacementExplanation {
         let request = "\(result.promptTokens) prompt tokens and \(result.outputTokens) outputs"
         if let chosen = result.chosen {
             lines.append(chosen.tier == 0 ? "Chosen placement" : "Chosen placement (it does not fit now; see each rank)")
-            lines += candidate(chosen, basis: result.basis, prompt: result.promptTokens, outputs: result.outputTokens).map { "  " + $0 }
+            lines += candidate(chosen, basis: result.basis, prompt: result.promptTokens, outputs: result.outputTokens, devices: devices).map { "  " + $0 }
             lines.append("  " + holdings(chosen, devices: devices))
             lines.append("  Predicted for \(request):")
             lines.append("    " + prediction(chosen.prediction(result.regime), result.basis, prompt: result.promptTokens, outputs: result.outputTokens))
@@ -175,20 +207,23 @@ public enum ClusterPlacementExplanation {
             }
             if let closest = refusal.closest {
                 lines.append("  The closest admitted placement:")
-                lines += candidate(closest, basis: result.basis, prompt: result.promptTokens, outputs: result.outputTokens).map { "    " + $0 }
+                lines += candidate(closest, basis: result.basis, prompt: result.promptTokens, outputs: result.outputTokens, devices: devices).map { "    " + $0 }
             }
             if refusal.fitsAtAStructuralCut {
                 lines.append("  A cut this runtime does not admit would fit. The cut list refuses this model, not the Macs' memory.")
             } else if refusal.fitsAtSomeLayerBoundary {
                 lines.append("  A layer boundary the model's stage plan cannot cut at would fit. The plan's cut rule refuses this model, not the Macs' memory.")
             } else {
-                lines.append("  Freeing memory on these Macs cannot change this: at every layer boundary and in every order, some share is more than its Mac can ever admit.")
+                lines.append("  Freeing memory on these Macs cannot change this: at every layer boundary and in every order, some share is more than its Mac can ever admit"
+                    + (devices.contains { $0.profile.memory.wiredLooksHeldByAProgram }
+                        ? ", counting none of the memory a running program holds wired (see each Mac above); stopping that program changes the answer."
+                        : "."))
             }
         } else {
             // No division is possible, and a Mac holds the model alone.
             lines.append("No division between these Macs is possible; one Mac holds the model alone")
             for a in result.alone where a.fit.possible {
-                lines.append("  \(a.device) alone needs \(gibText(a.needBytes, roundUp: true)): \(describe(a.fit)). That is the ordinary single-Mac path, not a cluster session.")
+                lines.append("  \(a.device) alone needs \(gibText(a.needBytes, roundUp: true)): \(fitText(a.fit, need: a.needBytes, device: a.device, devices)). That is the ordinary single-Mac path, not a cluster session.")
             }
         }
         if !result.alternatives.isEmpty {
@@ -204,7 +239,7 @@ public enum ClusterPlacementExplanation {
         lines.append("Each Mac alone, for comparison")
         for a in result.alone {
             let p = result.regime == .sustained ? a.sustained : a.rested
-            lines.append("  \(a.device): needs \(gibText(a.needBytes, roundUp: true)): \(describe(a.fit))"
+            lines.append("  \(a.device): needs \(gibText(a.needBytes, roundUp: true)): \(fitText(a.fit, need: a.needBytes, device: a.device, devices))"
                 + (result.basis.absolute && a.fit.possible ? "; first token \(seconds(p.firstTokenSeconds)), decode \(rate(p.decodeTokensPerSecond)) tok/s, request \(seconds(p.requestSeconds))." : "."))
         }
         if let chosen = result.chosen, !result.aloneAsFast.isEmpty, result.basis.absolute {
@@ -215,6 +250,46 @@ public enum ClusterPlacementExplanation {
                     : "the second Mac gains less than the tie tolerance at this prompt length."))
         }
         return lines
+    }
+
+    /// Why the decoding Mac of a phase split runs the model's speculative head
+    /// or not (`ClusterSpeculativeCredit`); nil for a model without one.
+    static func speculation(_ chosen: ClusterPlacementCandidate, devices: [ClusterPlacementDevice],
+                            layout: ClusterModelLayout, regime: ClusterPlacementPolicy.Regime) -> String? {
+        guard layout.generationModes.contains(.phaseSplitMTP),
+              let decoder = devices.first(where: { $0.label == chosen.ranks.last?.device }) else { return nil }
+        let rates = (regime == .sustained ? decoder.speed.sustained : nil) ?? decoder.speed.rested
+        let value = ClusterSpeculativeCredit.rate(rates, device: decoder, layout: layout)
+        let prefers = ClusterSpeculativeCredit.prefersHead(rates, device: decoder, layout: layout)
+        if chosen.mode.usesSpeculativeHead, prefers, value == nil {
+            return "It decodes with the model's speculative (MTP) head, as one Mac does by default on \(decoder.label)'s GPU generation; "
+                + "the model's row names no measured speed-up, so the times above are those of plain decode."
+        }
+        if chosen.mode.usesSpeculativeHead, prefers, let value {
+            switch value.basis {
+            case .measured:
+                return "It decodes with the model's speculative (MTP) head, as one Mac does by default: \(decoder.label) measured "
+                    + "\(rate(value.tokensPerSecond)) tok/s with it against \(rate(rates.decodeTokensPerSecond)) without."
+            case .rowFactor:
+                return "It decodes with the model's speculative (MTP) head, as one Mac does by default, credited with "
+                    + "\(number(layout.speculativeDecodeFactor ?? 1, 2))x its plain decode (the smallest speed-up the pair measured with the head) "
+                    + "because \(decoder.label)'s GPU is of the first generation with matrix accelerators (Apple M\(ClusterSpeculativeCredit.firstAcceleratedGeneration)) or a later one."
+            }
+        }
+        if prefers {
+            return "The model's speculative (MTP) head is preferred on \(decoder.label), but no placement with it was allowed or fits "
+                + "as comfortably, so it decodes without it."
+        }
+        let why: String
+        if let value {
+            why = "it measured \(rate(value.tokensPerSecond)) tok/s with the head, no faster than \(rate(rates.decodeTokensPerSecond)) without it"
+        } else if layout.speculativeDecodeFactor == nil {
+            why = "the model's row credits the head with no measured speed-up"
+        } else {
+            why = "its GPU is of a generation before Apple M\(ClusterSpeculativeCredit.firstAcceleratedGeneration), where the head was measured slower than plain decode"
+        }
+        return "The model's speculative (MTP) head is not credited on \(decoder.label) (\(why)), so it decodes without it: "
+            + "plain greedy decode is the reference itself."
     }
 
     static func reasons(_ result: ClusterPlacementResult, chosen: ClusterPlacementCandidate,
@@ -237,6 +312,7 @@ public enum ClusterPlacementExplanation {
         }
         if chosen.mode.isPhaseSplit {
             lines.append("The last rank holds every layer and decodes alone after the first token, because that is faster than passing each token through both.")
+            if let line = speculation(chosen, devices: devices, layout: layout, regime: regime) { lines.append(line) }
         }
         if let other = result.chosenForOtherRegime, other.cuts != chosen.cuts || other.ranks.map(\.device) != chosen.ranks.map(\.device) || other.mode != chosen.mode {
             let name = regime == .sustained ? "rested" : "sustained"

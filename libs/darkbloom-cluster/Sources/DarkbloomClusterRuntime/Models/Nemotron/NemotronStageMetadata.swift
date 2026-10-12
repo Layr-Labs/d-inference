@@ -224,11 +224,11 @@ enum NemotronRegisteredLightning {
             mambaHeads: 64, mambaHeadDimension: 64, stateSize: 128, groups: 8, convolutionKernel: 4,
             experts: 128, expertsPerToken: 6, expertIntermediate: 1856, sharedIntermediate: 3712)
     }
-    /// The resident row's cuts: the structural cuts that directly follow a
-    /// mixture-of-experts block, so stage 1 starts at a Mamba or an attention
-    /// block. There are exactly sixteen, which is also the most partitions a
-    /// capability record carries.
-    static let supportedCuts = [7, 9, 11, 14, 16, 18, 21, 23, 25, 28, 30, 32, 35, 37, 39, 41]
+    /// The resident row's cuts: every structural cut the block list allows
+    /// (32 for this pattern), derived from it rather than listed. The row once
+    /// kept the sixteen that directly follow an expert block because a
+    /// capability record carried at most sixteen partitions.
+    static var supportedCuts: [Int] { NemotronStageMetadata.structuralCuts(kinds) }
     /// The cut metadata admission plans at when a caller names none.
     static let planningCut = 25
 

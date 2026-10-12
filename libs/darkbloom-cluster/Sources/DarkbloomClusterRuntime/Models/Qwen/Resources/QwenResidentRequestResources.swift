@@ -85,10 +85,9 @@ struct QwenResidentRequestAllowance {
         // The attention transient of one prefill frame at this context: what
         // the owner's planner and prefill guard price beside the KV (oMLX
         // U#3651), so a context the gate admits is one the frame can run in.
-        // A Plan without an interval (Nemotron) cuts so that each stage holds an
-        // attention block, so its stages always carry the transient.
-        let stageHasAttention = plan.interval == 0
-            || plan.stages[rank].sourceRange.contains { ($0 + 1) % plan.interval == 0 }
+        // From the stage's own layer kinds: a Plan without an interval (Nemotron,
+        // interval 0) names its attention blocks `attention`.
+        let stageHasAttention = plan.stages[rank].layers.contains { ["full_attention", "attention"].contains($0.kind) }
         let transientLogical = try QwenResidentPrefillTransient.bytes(geometry: g, stageHasAttention: stageHasAttention,
             chunkTokens: chunkSize, contextTokens: maximumTokens)
         let transient = transientLogical == 0 ? 0 : try allowance(transientLogical, 1)

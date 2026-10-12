@@ -60,6 +60,52 @@ import Foundation
         for (member, data) in setup.configurations { try data.write(to: output.appendingPathComponent(member + ".setup.json")) }
     }
 
+    /// MTP on by default on a planner-built setup (PERF-BACKLOG item 2): with
+    /// the row's credit and the head in the layout (as the plan tool now reads
+    /// them), the guided step saves `phase_split_mtp_v1` in both setups with
+    /// the M5 decoding, and never the head on the M3 Ultra.
+    static func speculativeHeadByDefault(layout: ClusterModelLayout, description: ClusterPairDescription,
+                                         capability: ClusterRuntimeCapability, capabilityHash: String,
+                                         slowTwo: [ClusterPlacementDevice]) throws {
+        var object = try JSONSerialization.jsonObject(with: layout.encoded()) as! [String: Any]
+        object["speculativeDecodeFactor"] = 1.44
+        object["excluded"] = ["storedBytes": 136_881_152, "loadedBytes": 136_881_152, "largestTensorBytes": 31_457_280,
+                              "tensorCount": 31, "requestWorkBytes": 0]
+        object["speculativeHead"] = object["excluded"]
+        let headed = try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object))
+        func chip(_ device: ClusterPlacementDevice, _ name: String) throws -> ClusterDeviceProfile {
+            let p = device.profile
+            return try .init(chip: name, performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores, gpuCores: p.gpuCores,
+                osVersion: p.osVersion, osBuild: p.osBuild, physicalMemoryBytes: p.physicalMemoryBytes,
+                gpuRecommendedWorkingSetBytes: p.gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
+                allocatorLimitBytes: p.allocatorLimitBytes, memory: p.memory, power: p.power)
+        }
+        // mac-one is the 128 GiB M5, mac-two the 256 GiB M3 Ultra; nothing measured, as in the product today.
+        let m5 = try chip(slowTwo[0], "Apple M5 Max"), m3 = try chip(slowTwo[1], "Apple M3 Ultra")
+        for (who, local, peer) in [("mac-one", m5, m3), ("mac-two", m3, m5)] {
+            let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: who,
+                localProfile: local, peerProfile: peer, layout: headed)
+            let configurations = try decided.setup.map { setup in
+                try setup.configurations.values.map {
+                    try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: capabilityHash)
+                }
+            } ?? []
+            require("planned from \(who): the head by default, the M3 Ultra leading and the M5 decoding, saved by name in both setups",
+                decided.result.chosen?.mode == .phaseSplitMTP && decided.setup?.leaderID == "mac-two"
+                    && configurations.count == 2 && configurations.allSatisfy { $0.generationMode == .phaseSplitMTP }
+                    && decided.lines.contains { $0.contains("It decodes with the model's speculative (MTP) head") })
+        }
+        // The other order is asked for: the M3 Ultra would decode, so plain decode is saved there.
+        let mirrored = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one")
+        require("led by the M5, the M3 Ultra decodes without the head",
+            mirrored.setup?.leaderID == "mac-one" && mirrored.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
+        // Two Macs of no known generation: nothing prefers the head, the setup is what it was.
+        let unknown = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed)
+        require("chips of no known generation keep the plain plan", unknown.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
+    }
+
     static func main() throws {
         if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "flow" {
             do { try flow(Array(CommandLine.arguments.dropFirst(2))) } catch {
@@ -163,6 +209,8 @@ import Foundation
         let splitOne = try decoded(split, "mac-one"), splitTwo = try decoded(split, "mac-two")
         require("a phase split is saved by name in both setups", splitChosen.mode == .phaseSplit
             && splitOne.generationMode == .phaseSplit && splitTwo.generationMode == .phaseSplit)
+        try speculativeHeadByDefault(layout: layout, description: description, capability: capability,
+            capabilityHash: capabilityHash, slowTwo: slowTwo)
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,

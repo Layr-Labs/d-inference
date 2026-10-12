@@ -193,6 +193,11 @@ public final class MiMoResidentRuntime {
                             check: checked, constructed: { retired = $0 })
                     }
                     guard let loaded = stage else { throw ProbeError("Resident MiMo loader returned no stage") }
+                    // The layers the constructed stage holds are the plan's (oMLX U#3638).
+                    let ownStage = admission.plan.stages[collective.rank]
+                    log(try LayerStageLoadedRange.verify(model: loaded.model, plannedLayers: ownStage.layers.count,
+                        firstGlobalLayer: ownStage.sourceRange.lowerBound, rank: collective.rank,
+                        model: admission.specification.model.rawValue))
                     let finished = DispatchTime.now().uptimeNanoseconds
                     let maximum = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                         plan: admission.plan, rank: collective.rank,
@@ -205,7 +210,28 @@ public final class MiMoResidentRuntime {
                             return .init(activeBytes: value.activeMemory, cachedBytes: value.cacheMemory,
                                          peakBytes: value.peakMemory)
                         }, clearCache: { Memory.clearCache() }, check: checked)
-                    try maximum.requireLive()
+                    // The gate at load: the largest context this Mac admits now,
+                    // with the stage resident. Refused only below the smallest
+                    // useful request; each request is gated again when reserved.
+                    func allowance(_ context: Int, _ chunk: Int) throws -> MiMoResidentRequestAllowance {
+                        try MiMoResidentRequestAllowance.derive(specification: admission.specification,
+                            plan: admission.plan, rank: collective.rank, maximumTokens: context, chunkSize: chunk)
+                    }
+                    guard let admitted = try LayerStageContextGate.admitted(profile: admission.profile, charge: { context, _, chunk in
+                        .init(reservedBytes: try allowance(context, chunk).reservedBytes, extraNativeBytes: 0, extraHostBytes: 0)
+                    }) else {
+                        let minimum = LayerStageContextGate.minimumContextTokens(admission.profile)
+                        try allowance(minimum, min(admission.profile.maximumChunkTokens,
+                                                   min(admission.profile.maximumPromptTokens, minimum - 1))).requireLive()
+                        throw ProbeError("Resident load refused: not even a request of \(minimum) context tokens fits on rank \(collective.rank)")
+                    }
+                    let atAdmitted = try allowance(admitted.context, min(admission.profile.maximumChunkTokens,
+                        min(admission.profile.maximumPromptTokens, admitted.context - 1)))
+                    try atAdmitted.requireLive()
+                    log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.specification.model.rawValue)"
+                        + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.context)"
+                        + " charge_at_admitted=\(atAdmitted.reservedBytes)"
+                        + " transient_at_admitted=\(atAdmitted.budget.workspaceBytes)")
                     try checked()
                     if keepsResidency {
                         Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()

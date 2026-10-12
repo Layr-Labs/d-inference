@@ -16,8 +16,9 @@ extension QwenResidentRuntime {
     /// switch that is present and not permitted stops the load here, by name.
     ///
     /// `speculativeTerms` applies only to `phase_split_mtp_v1` (default: the
-    /// product drafter's maximum depth); both ranks bind them into the load
-    /// agreement together with the digest of the head's verified files.
+    /// row's own depth, `QwenMTPTerms.standard(for:)`); both ranks bind them
+    /// into the load agreement together with the digest of the head's
+    /// verified files.
     ///
     /// `dataPlane` (S16): this rank's credential. When present, the two ranks
     /// key their data plane right after the group exists, each verifying the
@@ -71,7 +72,13 @@ extension QwenResidentRuntime {
         }
         // The head's files by their verified manifest digests, on both ranks,
         // before either stage is read; only rank 1 loads the head itself.
-        let speculativeTerms: QwenMTPTerms? = mode.usesSpeculativeHead ? (requestedTerms ?? .standard) : nil
+        let speculativeTerms: QwenMTPTerms?
+        if mode.usesSpeculativeHead {
+            guard let model = QwenRegisteredDenseModel(rawValue: admission.runtimeModelID) else {
+                throw ProbeError("Speculative decoding needs a registered resident row; \(admission.runtimeModelID) is not one")
+            }
+            speculativeTerms = requestedTerms ?? .standard(for: model)
+        } else { speculativeTerms = nil }
         let headFiles: QwenMTPHeadFiles? = mode.usesSpeculativeHead
             ? try QwenMTPHeadFiles(modelDirectory: directory, manifest: admission.manifestBytes) : nil
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
@@ -148,6 +155,10 @@ extension QwenResidentRuntime {
                         retired = value.loaded.model; stage = value
                     }
                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
+                    // The layers the constructed stage holds are the plan's (oMLX U#3638).
+                    let ownStage = admission.plan.stages[collective.rank]
+                    log(try LayerStageLoadedRange.verify(model: loaded.loaded.model, plannedLayers: ownStage.layers.count,
+                        firstGlobalLayer: ownStage.sourceRange.lowerBound, rank: collective.rank, model: admission.runtimeModelID))
                     if mode.isPhaseSplit, collective.rank == 1 {
                         // Rank 1 also holds the producer stage, admitted and loaded
                         // exactly as rank 0 loads it, so it owns every layer once

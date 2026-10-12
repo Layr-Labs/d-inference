@@ -90,7 +90,7 @@ struct ResidentAdmissionA3BTests {
         let row = try QwenResidentModelDefinition(model: .qwen35ThirtyFiveBA3B)
         #expect(row.profileID == Self.profileID && row.specification.layers == 40 && row.supportedCuts == Self.cuts)
         #expect(row.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+        #expect(row.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP])
         #expect(row.adapter == .qwen35RoutedExperts && row.arithmetic == .routedExperts)
         #expect(row.specification.kvHeads == 2 && row.specification.rootModelType == "qwen3_5_moe")
         #expect(row.specification.routedExperts == .init(experts: 256, expertsPerToken: 8,
@@ -105,8 +105,9 @@ struct ResidentAdmissionA3BTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: row.specification)
         #expect(profile.identifier == Self.profileID && profile.hiddenSize == 2048)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "bfloat16")
-        #expect(profile.maximumPromptTokens == 8192 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 128 && profile.maximumContextTokens == 8320)
+        // Derived from the declared 262,144 positions and the protocol (`QwenResidentContextLimits`).
+        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
         // The dense rows keep what they had: adapter, arithmetic, geometry constants.
         for dense in [QwenRegisteredDenseModel.qwen35NineB, .qwen38TwentySevenB] {
             let definition = try QwenResidentModelDefinition(model: dense)
@@ -121,8 +122,11 @@ struct ResidentAdmissionA3BTests {
         let spec = try Self.specification()
         let ceilings = try QwenResidentResourceCeilings(model: .qwen35ThirtyFiveBA3B)
         #expect(ceilings.maximumManifestPayloadBytes == 20_893_747_852)
-        #expect(ceilings.namedStateByteCeiling == 563_806_248 && ceilings.maximumNamedStateBytes == 563_806_248)
+        // The pinned figure at the earlier reservation; the ceiling is the same estimate at the derived context.
+        #expect(ceilings.maximumNamedStateBytes == 563_806_248)
         let geometry = try spec.expectedGeometry()
+        #expect(ceilings.namedStateByteCeiling == (try QwenLongPrefillTensorBudget.estimate(geometry: geometry,
+            maximumTokens: 32_768, chunkSize: 512).conservativeStateAndBoundaryBytes))
         #expect(geometry.kvHeads == 2 && geometry.layers == 40 && geometry.hiddenSize == 2048)
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: geometry, maximumTokens: 8193, chunkSize: 512)
             .conservativeStateAndBoundaryBytes == spec.namedStateBytes)
@@ -411,7 +415,8 @@ struct ResidentAdmissionA3BTests {
         #expect(value.manifestSHA256 == spec.manifestSHA256)
         #expect(value.arithmeticPolicyID == "qwen_cbv2_query128_bf16_tf32_expert_tiles_v1")
         #expect(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
-        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit])
+        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP])
+        #expect(value.speculation == ClusterRuntimeCapability.decodingRankSpeculation)
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == Self.cuts)
         for partition in value.partitions {
             #expect(partition.stages.flatMap { Array($0.sourceLayerStart..<$0.sourceLayerEnd) } == Array(0..<40))

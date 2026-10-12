@@ -5,9 +5,11 @@
 # the gate is exact, that layouts conserve an artifact's bytes and reproduce
 # figures real loads recorded, that the planner places every constructed
 # device mix it can and refuses exactly when nothing fits, and that speed
-# estimates are ranked and labelled. Constructed Macs and retained header
-# metadata only: no model, no GPU, no MLX, no network. A pass here is not a
-# hardware pass.
+# estimates are ranked and labelled, and that every family's golden plan (its
+# layout read from the real headers on both Macs, both Macs' recorded
+# profiles) is printed byte-for-byte as both Macs printed it. Constructed
+# Macs, recorded profiles and header metadata only: no model, no GPU, no MLX,
+# no network. A pass here is not a hardware pass.
 set -euo pipefail
 task_package="$(cd "$(dirname "$0")/../.." && pwd)"
 task_build="$(mktemp -d "${TMPDIR:-/tmp}/cluster-placement.XXXXXX")"
@@ -55,12 +57,28 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Qwen/Loading/QwenLayerStageCandidates.swift" \
   "$R/Models/Qwen/Resident/QwenResidentModelDefinition.swift" \
   "$R/Models/Qwen/Resident/QwenResidentAdapterDefinition.swift" \
+  "$R/Models/Nemotron/NemotronPlacementFamily.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSRegisteredSpecification.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSStageMetadata.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSLayerStagePlan.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSRequestStateBudget.swift" \
+  "$R/Models/GPTOSS/Metadata/GPTOSSPlacementFamily.swift" \
+  "$R/Models/MiMo/Metadata/MiMoRegisteredSpecification.swift" \
+  "$R/Models/MiMo/Metadata/MiMoLayerStagePlan.swift" \
+  "$R/Models/MiMo/Metadata/MiMoRequestStateBudget.swift" \
+  "$R/Models/MiMo/Metadata/MiMoPlacementFamily.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4RegisteredSpecification.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4StageGeometry.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4LayerStagePlanning.swift" \
+  "$R/Models/Gemma4/Resident/Gemma4ResidentAdapterDefinition.swift" \
+  "$R/Models/Gemma4/Resources/Gemma4StateBudget.swift" \
+  "$R/Models/Gemma4/Metadata/Gemma4PlacementFamily.swift" \
   "$R/Models/Placement/ClusterDeviceMemoryGate.swift" \
   "$R/Models/Placement/QwenDensePlacementFamily.swift" \
   "$R/Models/Placement/ClusterPlacementArtifact.swift" \
   "$R/Models/Placement/ClusterPlacementTool.swift" \
   "$task_package"/Tests/PlacementChecks/*.swift -o "$task_build/check"
-"$task_build/check" "$task_package/Tests/StageMetadataChecks/Inputs/qwen-retained-inputs.json"
+"$task_build/check" "$task_package/Tests/StageMetadataChecks/Inputs/qwen-retained-inputs.json" "$task_package/Tests/PlacementChecks/Golden"
 # PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
 # there, for `check tool ...` (see Main.swift).
 if [[ -n "${PLACEMENT_CHECK_KEEP:-}" ]]; then

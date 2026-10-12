@@ -76,9 +76,13 @@ public struct ClusterPlacementRank: Codable, Equatable, Sendable {
     public let needBytes: Int
     public let admissibleNowBytes: Int
     public let fit: ClusterPlacementFit
-    /// False when weights and request state exceed what the GPU says an
-    /// application may keep resident on that Mac.
+    /// False when weights, request state and the attention transient exceed
+    /// what that Mac keeps resident (its wired limit, else the GPU's
+    /// recommended working set).
     public let withinGPUWorkingSet: Bool
+    /// One prefill frame's attention transient at the reference request,
+    /// included in `requestNeedBytes`. Nil in a result written before it was priced.
+    public let transientBytes: Int?
 }
 
 public struct ClusterPlacementPrediction: Codable, Equatable, Sendable {
@@ -379,9 +383,20 @@ public enum ClusterPlacementPlanner {
                 loadNeed = max(loadNeed, held + ask)
                 held += rounded; largest = max(largest, part.largestTensorBytes)
             }
+            // The decoding rank of a speculative phase split also holds the
+            // model's head, loaded after its stages (each tensor in whole pages).
+            if mode.usesSpeculativeHead, last, let head = layout.speculativeHead {
+                held += head.loadedBytes + head.tensorCount * memory.pageSizeBytes
+                largest = max(largest, head.largestTensorBytes)
+            }
             let context = prompt + outputs
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
-            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes, ownState)
+            // One prefill frame's attention transient at the full context, on
+            // the rank's largest layer: layers run one after another.
+            let transient = loads.map { $0.transientBytes(chunk: min(layout.maximumChunkTokens, prompt), context: context) }.max() ?? 0
+            // A requested context beyond the layout's planned request brings its own
+            // charge (`policy.requestChargeEveryRankBytes`); otherwise the layout's at this context.
+            let state = max(policy.requestChargeEveryRankBytes ?? layout.requestChargeEveryRankBytes(context: context), ownState)
             let work = loads.reduce(0) { $0 + $1.requestWorkBytes }
             var extra = 0
             // A producer keeps the next chunk's residual beside the current one.
@@ -393,13 +408,14 @@ public enum ClusterPlacementPlanner {
                 let moving = last ? earlier.reduce(0) { $0 + $1.stateBytes(tokens: prompt) } : own.stateBytes(tokens: prompt)
                 extra += 2 * moving
             }
-            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + memory.loadingHeadroomBytes)
+            let requestNeed = max(memory.minimumAdmissibleBytes, state + work + extra + transient + memory.loadingHeadroomBytes)
             let need = max(loadNeed, held + requestNeed)
             return .init(rank: rank, device: device.label, firstLayer: own.layers.lowerBound, endLayer: own.layers.upperBound,
                 weightsBytes: held, loadNeedBytes: loadNeed, requestNeedBytes: requestNeed, needBytes: need,
                 admissibleNowBytes: memory.admissibleNowBytes,
                 fit: device.profile.fit(needBytes: need, weightsBytes: held, largestTensorBytes: largest),
-                withinGPUWorkingSet: held + state + work + extra <= device.profile.gpuRecommendedWorkingSetBytes)
+                withinGPUWorkingSet: held + state + work + extra + transient <= device.profile.residentCapacityBytes,
+                transientBytes: transient)
         }
 
         func prediction(_ regime: ClusterPlacementPolicy.Regime, order: [ClusterPlacementDevice],
@@ -424,17 +440,39 @@ public enum ClusterPlacementPlanner {
             first += Double(chunks * (ranges.count - 1)) * link.perChunkSeconds
             var step: Double, handoff = 0.0
             if mode.isPhaseSplit, let lastDevice = order.last {
-                // After the hand-off the last rank decodes alone.
-                step = 1 / rates(lastDevice, regime).0.decodeTokensPerSecond
+                // After the hand-off the last rank decodes alone, with the
+                // model's head when the mode runs it (`ClusterSpeculativeCredit`).
+                step = 1 / decodeRate(lastDevice, regime, speculative: mode.usesSpeculativeHead)
                 handoff = link.handoffSecondsPerByte
                     * Double(ranges.dropLast().reduce(0) { $0 + $1.stateBytes(tokens: prompt) })
             } else {
                 step = decode.reduce(0, +)
             }
-            step += link.perDecodeStepSeconds[mode.rawValue] ?? 0
+            // One Mac alone crosses no link.
+            if ranges.count > 1 { step += link.perDecodeStepSeconds[mode.rawValue] ?? 0 }
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
                 prefillTokensPerSecond: Double(prompt) / first, decodeTokensPerSecond: 1 / step,
                 requestSeconds: first + handoff + Double(max(0, outputs - 1)) * step)
+        }
+
+        /// A device's whole-model decode rate in this regime: plain, or with
+        /// the model's head at the rate `ClusterSpeculativeCredit` gives it
+        /// (the plain rate where nothing credits the head there).
+        func decodeRate(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime, speculative: Bool) -> Double {
+            let plain = rates(device, regime).0
+            guard speculative, let value = ClusterSpeculativeCredit.rate(plain, device: device, layout: layout) else {
+                return plain.decodeTokensPerSecond
+            }
+            return value.tokensPerSecond
+        }
+
+        /// 0 for a mode that runs the model's head on a decoding Mac that
+        /// prefers it, 1 for a mode without the head, 2 for the head on a Mac
+        /// that prefers plain decode (`ClusterSpeculativeCredit.prefersHead`).
+        func headRank(_ c: ClusterPlacementCandidate, _ regime: ClusterPlacementPolicy.Regime) -> Int {
+            guard c.mode.usesSpeculativeHead else { return 1 }
+            guard let decoder = devices.first(where: { $0.label == c.ranks.last?.device }) else { return 2 }
+            return ClusterSpeculativeCredit.prefersHead(rates(decoder, regime).0, device: decoder, layout: layout) ? 0 : 2
         }
 
         func evaluate(order: [Int], cuts: [Int], mode: ClusterGenerationMode,
@@ -480,12 +518,16 @@ public enum ClusterPlacementPlanner {
         /// Best first: tier; then inside the GPU working set; then, among
         /// placements that fit now, those with comfortable headroom; among
         /// placements that do not, the fewest Macs asked for memory and the
-        /// least asked; then predicted request time. Equal times are broken by the larger
-        /// smallest headroom, the lower cut, the devices' labels in rank order,
-        /// a phase split with the speculative head before the same without it,
-        /// and the mode's place in the layout. Nothing depends on the order
-        /// the devices were given in, so the result is the same whichever
-        /// Mac asks.
+        /// least asked; then predicted request time. Equal times are broken
+        /// first by the model's speculative head (`headRank`: on a decoding
+        /// Mac that prefers it, then no head, then the head on a Mac that
+        /// prefers plain decode), then by the larger smallest headroom, the lower cut, the
+        /// devices' labels in rank order and the mode's place in the layout.
+        /// The head comes before headroom: the phase split's last rank holds
+        /// every layer, so headroom first would always pass the head over,
+        /// against the product's default on one Mac. Nothing depends on the
+        /// order the devices were given in, so the result is the same
+        /// whichever Mac asks.
         func ordered(_ candidates: [ClusterPlacementCandidate], regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
             func group(_ c: ClusterPlacementCandidate) -> Int {
                 let tight = c.tier == 0 && c.smallestHeadroomShare < policy.comfortableHeadroomShare
@@ -504,16 +546,12 @@ public enum ClusterPlacementPlanner {
                 if waiting(a) != waiting(b) { return waiting(a) < waiting(b) }
                 if short(a) != short(b) { return short(a) < short(b) }
                 if time(a) != time(b) { return time(a) < time(b) }
+                let ha = headRank(a, regime), hb = headRank(b, regime)
+                if ha != hb { return ha < hb }
                 if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
                 if a.cuts != b.cuts { return a.cuts.lexicographicallyPrecedes(b.cuts) }
                 let la = a.ranks.map(\.device), lb = b.ranks.map(\.device)
                 if la != lb { return la.lexicographicallyPrecedes(lb) }
-                // The same phase split with and without the model's own
-                // speculative head: the head is the product's default, as on
-                // one Mac. The estimate does not credit its speed-up.
-                if a.mode.isPhaseSplit, b.mode.isPhaseSplit, a.mode.usesSpeculativeHead != b.mode.usesSpeculativeHead {
-                    return a.mode.usesSpeculativeHead
-                }
                 return (modes.firstIndex(of: a.mode) ?? 0) < (modes.firstIndex(of: b.mode) ?? 0)
             }
         }
@@ -535,13 +573,19 @@ public enum ClusterPlacementPlanner {
             return preferred + ordered.filter { candidate in !close.contains(candidate) }
         }
 
+        /// One Mac holding the whole model, with the model's head where that
+        /// Mac prefers it, as the product runs it on one Mac. A phase
+        /// split of one range is that Mac decoding alone: it holds the head
+        /// and moves no state.
         func alone(_ device: ClusterPlacementDevice) -> ClusterPlacementAlone {
             let whole = layout.range(0..<layout.layerCount)
-            let rank = requirement(rank: 0, of: 1, device: device, own: whole, earlier: [], mode: .pipeline, schedule: .serial)
+            let mode: ClusterGenerationMode = ClusterSpeculativeCredit.prefersHead(rates(device, policy.regime).0,
+                device: device, layout: layout) ? .phaseSplitMTP : .pipeline
+            let rank = requirement(rank: 0, of: 1, device: device, own: whole, earlier: [], mode: mode, schedule: .serial)
             return .init(device: device.label, needBytes: rank.needBytes, fit: rank.fit,
                 withinGPUWorkingSet: rank.withinGPUWorkingSet,
-                sustained: prediction(.sustained, order: [device], ranges: [whole], mode: .pipeline, schedule: .serial),
-                rested: prediction(.rested, order: [device], ranges: [whole], mode: .pipeline, schedule: .serial))
+                sustained: prediction(.sustained, order: [device], ranges: [whole], mode: mode, schedule: .serial),
+                rested: prediction(.rested, order: [device], ranges: [whole], mode: mode, schedule: .serial))
         }
     }
 }

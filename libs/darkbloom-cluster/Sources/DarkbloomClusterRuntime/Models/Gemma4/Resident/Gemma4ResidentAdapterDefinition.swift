@@ -13,11 +13,23 @@ enum Gemma4ResidentAdapterDefinition {
 
     static func profileID(_ model: Gemma4RegisteredModel) -> String { model.rawValue + "_greedy_generation_v1" }
 
+    /// The context the pinned configuration declares (`max_position_embeddings`,
+    /// held to this value by `Gemma4StageGeometry.decode`).
+    static let declaredContextTokens = 262_144
+
+    /// The request bounds: the protocol's, cut to the declared context, as the
+    /// dense Qwen rows derive theirs (`QwenResidentContextLimits`).
+    static func contextLimits() throws -> QwenResidentContextLimits {
+        try QwenResidentContextLimits(declaredContextTokens: declaredContextTokens)
+    }
+
     static func profile(specification: Gemma4RegisteredSpecification) throws -> QwenLayerStageGenerationProfile {
-        try .init(identifier: profileID(specification.model),
+        let limits = try contextLimits()
+        return try .init(identifier: profileID(specification.model),
             vocabularySize: Gemma4StageGeometry.vocabularySize, hiddenSize: Gemma4StageGeometry.hiddenSize,
-            activationDType: "bfloat16", maximumPromptTokens: 8192, maximumChunkTokens: 512,
-            maximumOutputTokens: 128, maximumContextTokens: 8320,
+            activationDType: "bfloat16", maximumPromptTokens: limits.maximumPromptTokens,
+            maximumChunkTokens: limits.maximumChunkTokens, maximumOutputTokens: limits.maximumOutputTokens,
+            maximumContextTokens: limits.maximumContextTokens,
             // The final-logit softcap is computed in float32, as in the product.
             logitsDType: "float32")
     }

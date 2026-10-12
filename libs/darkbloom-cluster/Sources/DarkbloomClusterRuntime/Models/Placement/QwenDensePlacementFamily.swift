@@ -2,13 +2,17 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
 
-/// The dense Qwen family's answers to the planner's questions, each read from
-/// the artifact's own configuration through `QwenLayerStagePlan` and the
-/// registered model's row. Pure metadata: no checkpoint payload and no GPU.
+/// The Qwen resident runtime's answers to the planner's questions for its
+/// interval-phased hybrid models: the dense models, the routed-expert models
+/// (Qwen3.5 and Qwen3.6 35B A3B) and the Prism Hadamard pack (Ternary Bonsai
+/// 2 27B). Each answer is read from the artifact's own configuration through
+/// `QwenLayerStagePlan` and the registered model's row. Pure metadata: no
+/// checkpoint payload and no GPU.
 struct QwenDensePlacementFamily: ClusterPlacementFamily {
     let definition: QwenResidentModelDefinition
     let geometry: QwenLongPrefillBudgetGeometry
     let profile: QwenLayerStageGenerationProfile
+    let pack: QwenRegisteredPack
     let layerPrefix: String
     /// One two-stage plan per position the plan's own rule allows.
     let plans: [Int: QwenLayerStagePlan]
@@ -16,6 +20,9 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
 
     init(configuration: Data) throws {
         definition = try QwenResidentModelDefinition(configuration: configuration)
+        guard definition.specification.model != .nemotron35Lightning else {
+            throw ProbeError("Nemotron is placed by its own family")
+        }
         guard let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any] else {
             throw ProbeError("Placement needs the artifact's configuration object")
         }
@@ -29,7 +36,11 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
             linearValueHeads: n("linear_num_value_heads"), linearKeyDimension: n("linear_key_head_dim"),
             linearValueDimension: n("linear_value_head_dim"), convolutionKernel: n("linear_conv_kernel_dim"))
         profile = try QwenResidentAdapterDefinition.profile(specification: definition.specification)
-        layerPrefix = (root["model_type"] as? String == "qwen3_5" ? "language_model." : "") + "model.layers."
+        pack = definition.specification.model.pack
+        // The wrapper types (the dense and routed-expert wrappers, a Prism
+        // pack) construct the text model under `language_model.`.
+        let wrappers = QwenRoutedExpertStageMetadata.wrapperModelTypes + [QwenPrismStageConfiguration.rootModelType]
+        layerPrefix = (wrappers.contains(root["model_type"] as? String ?? "") ? "language_model." : "") + "model.layers."
         let cuts = try QwenLayerStageCandidates.structuralCuts(layerCount: geometry.layers,
             fullAttentionInterval: geometry.fullAttentionInterval)
         var plans: [Int: QwenLayerStagePlan] = [:]
@@ -44,6 +55,10 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     var admittedCuts: [Int] { definition.supportedCuts }
     var generationModes: [ClusterGenerationMode] { definition.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { definition.supportedPrefillSchedules }
+    var speculativeDecodeFactor: Double? { definition.speculativeDecodeFactor }
+    /// The inline head every row with `phase_split_mtp_v1` ships, under `mtp.`
+    /// (`QwenMTPHeadFiles`); no stage loads it.
+    func isSpeculativeHead(storedTensor name: String) -> Bool { name.hasPrefix("mtp.") }
     /// The request a placement is planned and fitted for: the earlier
     /// reservation (8,192 prompt, 128 output, 8,320 context), not the profile's
     /// derived limits (up to 32,768 context, `QwenResidentContextLimits`). A
@@ -51,18 +66,19 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// then admits the largest context its Mac holds at load and gates every
     /// longer request live (`QwenResidentRuntime.admittedContext`). Planning
     /// memory and time for a longer planned request is a follow-up.
-    static let planningLimits = QwenResidentContextLimits.reservation
-    var maximumPromptTokens: Int { min(profile.maximumPromptTokens, Self.planningLimits.maximumPromptTokens) }
-    var maximumOutputTokens: Int { min(profile.maximumOutputTokens, Self.planningLimits.maximumOutputTokens) }
-    var maximumChunkTokens: Int { min(profile.maximumChunkTokens, Self.planningLimits.maximumChunkTokens) }
+    static let planningLimits = ClusterPlacementPlanningLimits.reservation
+    var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
+    var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
+    var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { geometry.hiddenSize * ((try? qwenStageWireElementBytes(profile.activationDType)) ?? 4) }
 
     /// `QwenResidentRequestAllowance` charges the whole model's conservative
-    /// state to either rank: the same named arrays, each rounded up by the
-    /// allocator. The allocator's rounding is bounded here by one 16 KiB page
-    /// per array.
+    /// state to either rank.
     var requestChargeEveryRankBytes: Int {
-        requestChargeEveryRankBytes(contextTokens: min(profile.maximumContextTokens, Self.planningLimits.maximumContextTokens))
+        QwenPlacementCharge.wholeModelStateBytes(geometry: geometry, profile: profile)
+    }
+    var requestChargeEveryRankBytesPerToken: Int? {
+        QwenPlacementCharge.wholeModelStateBytesPerToken(geometry: geometry, profile: profile)
     }
 
     /// The model's largest context (`QwenResidentContextLimits`), which ranks
@@ -72,23 +88,30 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// The same charge at another context: what a placement planned for that
     /// request has to fit on every rank.
     func requestChargeEveryRankBytes(contextTokens: Int) -> Int {
-        guard let b = try? QwenLongPrefillTensorBudget.estimate(geometry: geometry,
-            maximumTokens: contextTokens, chunkSize: maximumChunkTokens) else { return 0 }
-        let arrays = 6 * b.recurrentLayers + 3 * b.attentionLayers + 3
-        return 3 * b.recurrentLayers * (b.convolutionBytesPerLayer + b.ssmBytesPerLayer)
-            + b.attentionLayers * (b.kvCapacityBytesPerAttentionLayer + 4)
-            + b.largestSingleHostStateComponentBytes + 2 * b.boundaryBytes + arrays * 16_384
+        QwenPlacementCharge.wholeModelStateBytes(geometry: geometry, contextTokens: contextTokens, chunk: maximumChunkTokens)
+    }
+
+    /// The name a stored tensor loads as. A routed bank's gate and up halves
+    /// are stored apart and load as one fused tensor (`composeQwenCheckpointTensors`).
+    static func canonicalName(ofStoredTensor name: String) -> String {
+        for half in [".switch_mlp.gate_proj.", ".switch_mlp.up_proj."] where name.contains(half) {
+            return name.replacingOccurrences(of: half, with: ".switch_mlp.gate_up_proj.")
+        }
+        return name
     }
 
     func stage(ofStoredTensor name: String, cut: Int) throws -> Int? {
-        guard let plan = plans[cut] else { throw ProbeError("Not a cut of the dense Qwen stage plan: \(cut)") }
-        return try plan.parameter(canonicalSourceName: name)?.stage
+        guard let plan = plans[cut] else { throw ProbeError("Not a cut of the Qwen stage plan: \(cut)") }
+        return try plan.parameter(canonicalSourceName: Self.canonicalName(ofStoredTensor: name))?.stage
     }
 
+    /// The layer of a tensor some stage loads; nil for one no stage loads (a
+    /// Prism pack's transform signs, the MTP head, the vision tower).
     func layer(ofStoredTensor name: String) -> Int? {
         guard name.hasPrefix(layerPrefix),
               let first = name.dropFirst(layerPrefix.count).split(separator: ".").first,
-              let layer = Int(first), String(layer) == String(first) else { return nil }
+              let layer = Int(first), String(layer) == String(first),
+              let cut = structuralCuts.first, (try? stage(ofStoredTensor: name, cut: cut)) != nil else { return nil }
         return layer
     }
 
@@ -98,45 +121,178 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
 
     /// The logical request state of one layer, as `QwenDenseStateBudget.finalState`
     /// shapes it: keys and values per token for a full-attention layer, a
-    /// convolution window and a recurrent matrix for a linear one.
+    /// convolution window and a recurrent matrix for a linear one, in the
+    /// pack's activation dtype (a Prism pack's state is float32).
     func requestState(layer: Int) throws -> ClusterPlacementLayerState {
-        let g = geometry
+        let g = geometry, element = pack.activationElementBytes
         if (layer + 1) % g.fullAttentionInterval == 0 {
-            return .init(fixedBytes: 4, bytesPerToken: 2 * g.kvHeads * g.headDimension * 2)
+            return .init(fixedBytes: 4, bytesPerToken: 2 * g.kvHeads * g.headDimension * element)
         }
         let channels = 2 * g.linearKeyHeads * g.linearKeyDimension + g.linearValueHeads * g.linearValueDimension
-        return .init(fixedBytes: (g.convolutionKernel - 1) * channels * 2
+        return .init(fixedBytes: (g.convolutionKernel - 1) * channels * element
             + g.linearValueHeads * g.linearValueDimension * g.linearKeyDimension * 4, bytesPerToken: 0)
     }
 
-    /// The projections a linear-attention layer fuses at request time exist
-    /// beside their fused bank while it is built; the request gate allows for both.
+    /// A full-attention layer's frame materializes float32 scores over every
+    /// key (head dimension 256 takes MLX's unfused path); a linear one has no
+    /// score matrix.
+    func prefillTransient(layer: Int) -> ClusterPlacementLayerTransient {
+        guard (layer + 1) % geometry.fullAttentionInterval == 0 else { return .none }
+        return .attention(queryHeads: geometry.queryHeads, headDimension: geometry.headDimension)
+    }
+
+    /// What exists a second time while a request runs. An affine pack fuses
+    /// a linear-attention layer's four input projections into one bank, and
+    /// both exist while it is built. A Prism pack fuses nothing; its first
+    /// forward keeps one float32 copy of every packed projection's float16
+    /// scales and biases (not the embedding's), twice their stored bytes.
     func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int {
         let parts = name.split(separator: ".")
-        guard parts.count >= 2, parts.contains("linear_attn"),
+        guard parts.count >= 2 else { return 0 }
+        if pack == .prismHadamard {
+            guard ["scales", "biases"].contains(String(parts[parts.count - 1])),
+                  !name.contains(QwenPrismStageConfiguration.embeddingPath + ".") else { return 0 }
+            return 2 * storedBytes
+        }
+        guard pack.fusesGatedDeltaInputProjections, parts.contains("linear_attn"),
               ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"].contains(String(parts[parts.count - 2])) else { return 0 }
         return storedBytes
     }
-}
 
-/// Layouts of the families this build places. One case per family; a family
-/// adds its own beside the dense Qwen one.
-public enum ClusterPlacementLayouts {
-    /// The layout of the artifact these headers and this configuration belong
-    /// to. `tensors` are every stored tensor of the artifact, as its
-    /// safetensors headers name them. For a registered dense Qwen model the
-    /// tensors its stages load must be exactly the registered inventory.
-    public static func layout(configuration: Data, tensors: [ClusterPlacementStoredTensor]) throws -> ClusterModelLayout {
-        let family = try QwenDensePlacementFamily(configuration: configuration)
-        let specification = family.definition.specification
-        guard let anyCut = family.structuralCuts.first else { throw ProbeError("The model has no cut") }
-        let loaded = try tensors.filter { try family.stage(ofStoredTensor: $0.name, cut: anyCut) != nil }
-            .map { QwenDenseCanonicalTensor(name: $0.name, shape: $0.shape, sourceDType: $0.dtype, byteCount: $0.byteCount) }
-            .sorted { $0.name < $1.name }
+    /// The tensors a stage loads, as the loader composes them, against the
+    /// registered inventory: the same names, shapes, dtypes and bytes.
+    func requireRegisteredInventory(_ tensors: [ClusterPlacementStoredTensor]) throws {
+        guard let cut = structuralCuts.first else { throw ProbeError("The model has no cut") }
+        var canonical: [String: QwenDenseCanonicalTensor] = [:]
+        for tensor in tensors.sorted(by: { $0.name < $1.name }) where try stage(ofStoredTensor: tensor.name, cut: cut) != nil {
+            let name = Self.canonicalName(ofStoredTensor: tensor.name)
+            guard let first = canonical[name] else {
+                canonical[name] = .init(name: name, shape: tensor.shape, sourceDType: tensor.dtype, byteCount: tensor.byteCount)
+                continue
+            }
+            // The gate half sorts first; the up half follows it along axis 1.
+            guard name != tensor.name, first.sourceDType == tensor.dtype, first.shape.count == tensor.shape.count,
+                  first.shape.count >= 2, first.shape[0] == tensor.shape[0],
+                  Array(first.shape.dropFirst(2)) == Array(tensor.shape.dropFirst(2)) else {
+                throw ProbeError("The routed bank's two halves differ: \(name)")
+            }
+            var shape = first.shape; shape[1] += tensor.shape[1]
+            canonical[name] = .init(name: name, shape: shape, sourceDType: first.sourceDType,
+                                    byteCount: first.byteCount + tensor.byteCount)
+        }
+        let loaded = canonical.values.sorted { $0.name < $1.name }
+        let specification = definition.specification
         guard loaded.count == specification.tensorCount,
               QwenDenseProfileIdentity.fingerprint(loaded.map(\.identity)) == specification.inventorySHA256 else {
             throw ProbeError("The artifact's tensor headers are not the registered model's inventory")
         }
+    }
+}
+
+/// The whole-model request charge the Qwen resident allowance puts on either
+/// rank (`QwenResidentRequestAllowance.derive`): the same named arrays at the
+/// model's largest request, each rounded up by at most one 16 KiB page, with
+/// one prefill frame's attention transient.
+/// The request every family's placement is planned and fitted for: the earlier
+/// reservation (8,192 prompt, 128 output, 8,320 context, chunks of 512), capped
+/// by the family's own profile, not the profile's derived limits (up to 32,768
+/// context). A placement that fits now holds the model and such a request; each
+/// rank then admits the largest context its Mac holds at load and gates every
+/// longer request live. Planning memory and time for a longer planned request
+/// is a follow-up (integration 644271f53, applied to every family).
+enum ClusterPlacementPlanningLimits {
+    static let reservation = QwenResidentContextLimits.reservation
+    static func prompt(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumPromptTokens) }
+    static func output(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumOutputTokens) }
+    static func chunk(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumChunkTokens) }
+    static func context(_ profileMaximum: Int) -> Int { min(profileMaximum, reservation.maximumContextTokens) }
+}
+
+enum QwenPlacementCharge {
+    /// At the planned request's context (`ClusterPlacementPlanningLimits`).
+    static func wholeModelStateBytes(geometry: QwenLongPrefillBudgetGeometry,
+                                     profile: QwenLayerStageGenerationProfile) -> Int {
+        wholeModelStateBytes(geometry: geometry, contextTokens: ClusterPlacementPlanningLimits.context(profile.maximumContextTokens),
+            chunk: ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens))
+    }
+
+    /// What each context token below the planned request saves: the slope of
+    /// the same charge between half the planned context and all of it (the
+    /// keys and values grow with the context; the recurrent state does not).
+    static func wholeModelStateBytesPerToken(geometry: QwenLongPrefillBudgetGeometry,
+                                             profile: QwenLayerStageGenerationProfile) -> Int? {
+        let chunk = ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens)
+        let high = ClusterPlacementPlanningLimits.context(profile.maximumContextTokens), low = max(chunk + 1, high / 2)
+        guard high > low else { return nil }
+        let a = wholeModelStateBytes(geometry: geometry, contextTokens: high, chunk: chunk)
+        let b = wholeModelStateBytes(geometry: geometry, contextTokens: low, chunk: chunk)
+        return max(0, (a - b) / (high - low))
+    }
+
+    static func wholeModelStateBytes(geometry: QwenLongPrefillBudgetGeometry, contextTokens: Int, chunk: Int) -> Int {
+        guard let b = try? QwenLongPrefillTensorBudget.estimate(geometry: geometry,
+            maximumTokens: contextTokens, chunkSize: chunk) else { return 0 }
+        let arrays = 6 * b.recurrentLayers + 3 * b.attentionLayers + 3
+        return 3 * b.recurrentLayers * (b.convolutionBytesPerLayer + b.ssmBytesPerLayer)
+            + b.attentionLayers * (b.kvCapacityBytesPerAttentionLayer + 4)
+            + b.largestSingleHostStateComponentBytes + 2 * b.boundaryBytes + arrays * 16_384
+    }
+}
+
+/// The fingerprint every family pins its inventory with: `name|dtype|shape|bytes`
+/// lines of the tensors its stages load, in name order.
+enum ClusterPlacementInventory {
+    static func fingerprint(_ tensors: [ClusterPlacementStoredTensor]) -> String {
+        QwenDenseProfileIdentity.fingerprint(tensors.sorted { $0.name < $1.name }.map {
+            $0.name + "|" + $0.dtype + "|" + $0.shape.map(String.init).joined(separator: ",") + "|" + String($0.byteCount)
+        })
+    }
+}
+
+/// Layouts of every family this build places, chosen by the artifact's own
+/// configuration (and, for two catalog entries that share one, its manifest).
+/// Each family answers from its own stage plan; the builder, the planner, the
+/// command and the provider step know no family.
+public enum ClusterPlacementLayouts {
+    /// The layout of the artifact these headers and this configuration belong
+    /// to. `tensors` are every stored tensor of the artifact, as its
+    /// safetensors headers name them; the tensors its stages load must be
+    /// exactly the registered inventory. `manifest` picks between catalog
+    /// entries that share a configuration (Gemma 4 26B and its 8-bit entry).
+    public static func layout(configuration: Data, tensors: [ClusterPlacementStoredTensor],
+                              manifest: Data? = nil) throws -> ClusterModelLayout {
+        if MiMoPlacementFamily.handles(configuration: configuration) {
+            let family = try MiMoPlacementFamily(configuration: configuration)
+            try family.requireRegisteredInventory(tensors)
+            return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
+                artifactSHA256: family.specification.artifactSHA256,
+                configurationSHA256: family.specification.configurationSHA256)
+        }
+        if GPTOSSRegisteredSpecification.handles(configuration: configuration) {
+            let family = try GPTOSSPlacementFamily(configuration: configuration)
+            try family.requireRegisteredInventory(tensors)
+            return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
+                artifactSHA256: family.specification.artifactSHA256,
+                configurationSHA256: family.specification.configurationSHA256)
+        }
+        if Gemma4RegisteredSpecification.isRegistered(configuration: configuration) {
+            let family = try Gemma4PlacementFamily(configuration: configuration, manifest: manifest)
+            try family.requireRegisteredInventory(tensors)
+            return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
+                artifactSHA256: family.specification.artifactSHA256,
+                configurationSHA256: family.specification.configurationSHA256)
+        }
+        let definition = try QwenResidentModelDefinition(configuration: configuration)
+        if definition.specification.model == .nemotron35Lightning {
+            let family = try NemotronPlacementFamily(configuration: configuration)
+            try family.requireRegisteredInventory(tensors)
+            return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
+                artifactSHA256: definition.specification.artifactSHA256,
+                configurationSHA256: definition.specification.configurationSHA256)
+        }
+        let family = try QwenDensePlacementFamily(configuration: configuration)
+        try family.requireRegisteredInventory(tensors)
+        let specification = family.definition.specification
         return try ClusterModelLayoutBuilder.build(family: family, tensors: tensors,
             artifactSHA256: specification.artifactSHA256, configurationSHA256: specification.configurationSHA256)
     }

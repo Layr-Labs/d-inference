@@ -34,7 +34,9 @@ enum ClusterRuntimeCapabilityValidation {
             "Runtime profile exceeds protocol geometry")
         try workerRequire(value.arithmeticPolicyID == adapter.arithmeticPolicyID,
                           "Unknown runtime arithmetic policy")
-        try workerRequire((1...16).contains(value.partitions.count)
+        // Up to 128: a family whose stage plan cuts at every layer boundary
+        // lists every one (MiMo: 47), so the planner chooses among them all.
+        try workerRequire((1...ClusterRuntimeCapabilityCodec.maximumPartitions).contains(value.partitions.count)
             && Set(value.partitions.map(\.planSHA256)).count == value.partitions.count,
             "Missing or duplicate runtime partitions")
         var layerCount: Int?

@@ -168,6 +168,28 @@ struct StageLoadFileCacheAdmissionTests {
         #expect(!(try Self.decide(Self.observation(freeBytes: 8 * Self.mib, speculativeBytes: Self.gib), required: 0).admitted))
     }
 
+    @Test func speculativeFilePagesCountAsPagesTheScanCanTake() throws {
+        // The M5 Ultra on 2026-10-12, scaled to the constructed Mac: little
+        // free, the file cache mostly speculative (read ahead, never touched).
+        // 2 GiB free, 60 GiB speculative, 10 GiB active, so 36 GiB inactive,
+        // 26 GiB of it file-backed; 90 GiB file-backed in all, 10 anonymous.
+        func mac(reportsInactive: Bool = true) -> QwenDenseStageLoadOSObservation {
+            ConstructedMac.observation(freeBytes: 2 * Self.gib, fileBackedGiB: 90, anonymousGiB: 10,
+                speculativeBytes: 60 * Self.gib, inactiveFileBackedBytes: 26 * Self.gib,
+                reportsInactive: reportsInactive, activeGiB: 10)
+        }
+        // Counted as inactive file pages: 2 x (26 + 60) - 90 = 82 GiB before
+        // half the cache is active; 50 GiB above the 40 GiB reserve; three
+        // quarters of 50 is over the 32 GiB cap. Without them the bound is 0.
+        let decision = try Self.decide(mac(), required: 24 * Self.gib)
+        #expect(decision.admitted && decision.fileCacheBeforeAnonymousBytes == 82 * Self.gib)
+        #expect(decision.countableFileCacheBytes == 50 * Self.gib && decision.countedReclaimableBytes == 32 * Self.gib)
+        #expect(decision.admissibleBytes == 34 * Self.gib && decision.actualFreeBytes == 2 * Self.gib)
+        #expect(!(try Self.decide(mac(), required: 35 * Self.gib).admitted))
+        // A kernel that does not report its inactive file pages still counts nothing.
+        #expect(!(try Self.decide(mac(reportsInactive: false), required: 6 * Self.gib).admitted))
+    }
+
     @Test func freePagesAloneAreAdmittedWithoutUsingTheCache() throws {
         let free = try Self.decide(Self.observation(freeBytes: 20 * Self.gib, fileBackedGiB: 60), required: 16 * Self.gib)
         #expect(free.admitted && !free.reclaimableUsedForAdmission)

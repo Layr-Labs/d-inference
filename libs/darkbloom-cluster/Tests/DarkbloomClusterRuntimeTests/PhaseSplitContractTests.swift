@@ -182,6 +182,11 @@ struct PhaseSplitContractTests {
 
     @Test func speculativeHeadTermsAreBoundOnlyToAPhaseSplit() throws {
         #expect(QwenMTPTerms.standard.depth == QwenMTPTerms.maximumDepth && QwenMTPTerms.maximumDepth == 4)
+        // A row's default depth: 3 on the routed-expert rows (measured fastest there), the ceiling elsewhere.
+        for model in QwenRegisteredDenseModel.allCases {
+            let routed = model == .qwen35ThirtyFiveBA3B || model == .qwen36ThirtyFiveBA3B
+            #expect(QwenMTPTerms.standard(for: model).depth == (routed ? 3 : QwenMTPTerms.maximumDepth))
+        }
         #expect((try? QwenMTPTerms(depth: 0)) == nil && (try? QwenMTPTerms(depth: 5)) == nil)
         #expect(try QwenMTPTerms(depth: 2).loadAgreementFields(headSHA256: "h")
             == ["qwen_resident_speculative_head_v1", "depth=2", "verification=captured_window_exact_greedy", "head=h"])
@@ -217,9 +222,9 @@ struct PhaseSplitContractTests {
     @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {
         for model in QwenRegisteredDenseModel.allCases {
             let definition = try QwenResidentModelDefinition(model: model)
-            // The pipeline first; the row is what load, the worker and the capability consult. The 9B and
-            // 27B artifacts ship the product's speculative head, so their rows also list it.
-            let head = model == .qwen35NineB || model == .qwen38TwentySevenB
+            // The pipeline first; the row is what load, the worker and the capability consult. The 9B,
+            // 27B and both 35B A3B artifacts ship the product's speculative head, so their rows also list it.
+            let head = [.qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model)
             #expect(definition.supportedGenerationModes
                 == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP] : []))
             #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model.rawValue)?.supportedGenerationModes

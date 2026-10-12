@@ -159,13 +159,13 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
 
 /// Every placement of two devices, by plain loops, each evaluated alone.
 func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout,
-                    cuts: [Int]) throws -> [ClusterPlacementCandidate] {
+                    cuts: [Int], policy: ClusterPlacementPolicy = .init()) throws -> [ClusterPlacementCandidate] {
     var result: [ClusterPlacementCandidate] = []
     for order in [[devices[0], devices[1]], [devices[1], devices[0]]] {
         for cut in cuts {
             for mode in layout.generationModes {
                 result.append(try ClusterPlacementPlanner.evaluate(devices: order, cuts: [cut], mode: mode,
-                    prefillSchedule: .oneChunkLookahead, layout: layout))
+                    prefillSchedule: .oneChunkLookahead, layout: layout, policy: policy))
             }
         }
     }
@@ -176,9 +176,9 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
 /// is refused exactly when no order, cut and mode is possible, and the
 /// chosen placement is never in a worse tier than one that exists.
 func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout,
-               _ checks: PlacementChecks) throws -> ClusterPlacementResult {
-    let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout)
-    let all = try everyPlacement(devices, layout, cuts: layout.admittedCuts)
+               _ checks: PlacementChecks, policy: ClusterPlacementPolicy = .init()) throws -> ClusterPlacementResult {
+    let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
+    let all = try everyPlacement(devices, layout, cuts: layout.admittedCuts, policy: policy)
     let possible = all.filter(\.possible)
     let aloneHolds = result.alone.contains { $0.fit.possible }
     checks.require("\(name): a division is chosen exactly when one is possible (\(possible.count) of \(all.count) are), and the model is refused exactly when none is and no Mac holds it alone",
@@ -186,13 +186,15 @@ func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: Cl
     if let chosen = result.chosen {
         checks.require("\(name): the chosen placement is in the best tier that exists", chosen.tier == possible.map(\.tier).min())
         checks.require("\(name): the chosen placement is one of the enumerated ones", all.contains(chosen))
-        // MTP on by default: a chosen phase split carries the model's head
-        // whenever the layout lists the speculative phase split.
-        checks.require("\(name): a chosen phase split runs the speculative head when the model ships one",
-            !chosen.mode.isPhaseSplit || chosen.mode.usesSpeculativeHead == layout.generationModes.contains(.phaseSplitMTP))
+        // MTP on by default where it pays: a chosen phase split runs the
+        // model's head exactly when its decoding Mac prefers the head.
+        let decoder = devices.first { $0.label == chosen.ranks.last?.device }
+        checks.require("\(name): a chosen phase split runs the speculative head exactly when the decoding Mac prefers it",
+            !chosen.mode.isPhaseSplit || chosen.mode.usesSpeculativeHead
+                == (decoder.map { ClusterSpeculativeCredit.prefersHead($0.speed.rested, device: $0, layout: layout) } ?? false))
     }
     checks.require("\(name): the planner considered every placement", result.candidatesConsidered == all.count)
-    checks.require("\(name): planning twice gives the same answer", try ClusterPlacementPlanner.plan(devices: devices, layout: layout) == result)
+    checks.require("\(name): planning twice gives the same answer", try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy) == result)
     return result
 }
 
@@ -214,10 +216,15 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
     }
 
     // 16 + 64: the even cut does not fit the small Mac; a smaller share does.
+    // At the earlier reference request (8,192 prompt, 128 output): at the
+    // model's largest (32,767 and 4,096) the whole model's state charged to
+    // either rank alone leaves a 16 GiB Mac too little for any share now.
     do {
         let devices = [try SyntheticMac.idle(16).device("small"), try SyntheticMac.idle(64).device("large")]
-        let result = try checkRule("16 + 64, 27B", devices, big, checks)
-        let even = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [32], mode: .pipeline, prefillSchedule: .oneChunkLookahead, layout: big)
+        var reference = ClusterPlacementPolicy(); reference.promptTokens = 8192; reference.outputTokens = 128
+        let result = try checkRule("16 + 64, 27B", devices, big, checks, policy: reference)
+        let even = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [32], mode: .pipeline, prefillSchedule: .oneChunkLookahead,
+                                                        layout: big, policy: reference)
         checks.require("16 + 64: the even cut does not fit the 16 GiB Mac now", even.tier > 0)
         checks.require("16 + 64: placed now, with the small Mac holding the smaller share",
             result.chosen?.tier == 0 && share(result.chosen!, of: "small") < share(result.chosen!, of: "large")
@@ -321,6 +328,30 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let busyResult = try checkRule("256 GiB Mac whose cache is active, 27B", busy, big, checks)
         checks.require("active cache: the 256 GiB Mac counts none of it",
             busy[0].profile.memory.countedFileCacheBytes == 0 && (busyResult.chosen?.tier ?? 0) >= 1)
+    }
+
+    // Memory wired by a running program (another account's model server held 222.9 GiB of
+    // a 256 GiB Mac on 2026-10-11): the words must not say freeing cannot help.
+    do {
+        let busy = SyntheticMac(physicalGiB: 256, freeGiB: 7, inactiveCacheGiB: 10, wiredGiB: 222)
+        let devices = [try SyntheticMac(physicalGiB: 256, freeGiB: 87, inactiveCacheGiB: 60, wiredGiB: 10).device("a"), try busy.device("b")]
+        checks.require("wired memory: a quarter of physical memory or less is the system's; more is a running program's",
+            !devices[0].profile.memory.wiredLooksHeldByAProgram && devices[1].profile.memory.wiredLooksHeldByAProgram)
+        let result = try checkRule("256 GiB Mac with 222 GiB wired beside an ordinary 256 GiB Mac, surveyed 173 GB model", devices, mimo, checks)
+        let text = ClusterPlacementExplanation.describe(result, devices: devices, layout: mimo).joined(separator: "\n")
+        let lines = text.split(separator: "\n")
+        checks.require("wired by a program: the busy Mac's answer says stopping the program frees it, never 'whatever is freed'",
+            lines.contains { $0.contains("b: needs") && $0.contains("of all the memory that is not wired") && $0.contains("stopping that program gives it back") }
+                && !text.contains("whatever is freed"))
+        checks.require("wired by a program: the device line names it for the busy Mac only",
+            lines.filter { $0.contains("wired is far more than macOS keeps wired at rest") }.count == 1)
+        checks.require("wired by a program: the ordinary Mac's answer keeps its usual words",
+            lines.contains { $0.contains("a: needs") && !$0.contains("running program") })
+        let both = [try busy.device("a"), try SyntheticMac(physicalGiB: 256, freeGiB: 4, inactiveCacheGiB: 4, wiredGiB: 230).device("b")]
+        let refused = try checkRule("two Macs whose memory a program holds wired, surveyed 173 GB model", both, mimo, checks)
+        let refusedText = ClusterPlacementExplanation.describe(refused, devices: both, layout: mimo).joined(separator: "\n")
+        checks.require("wired by a program on both: refused, and the refusal says stopping the program changes the answer",
+            refused.chosen == nil && refusedText.contains("stopping that program changes the answer") && !refusedText.contains("whatever is freed"))
     }
 
     // Nothing passes the gate now: the plan asks one Mac for memory rather than two.
@@ -449,6 +480,7 @@ func checkSpeed(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
                     try SyntheticMac.idle(128).device("fast", speed: measured(prefill: 780, decode: 27))]
         func first(_ prompt: Int) throws -> (pair: Double, alone: Double, asFast: [String]) {
             var policy = ClusterPlacementPolicy(); policy.modes = [.pipeline]; policy.promptTokens = prompt; policy.regime = .rested
+            policy.outputTokens = 128
             let r = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: policy)
             return (r.chosen!.rested.firstTokenSeconds, r.alone.first { $0.device == "fast" }!.rested.firstTokenSeconds, r.aloneAsFast)
         }
@@ -534,6 +566,26 @@ func checkProfiles(_ checks: PlacementChecks) throws {
     }
     checks.refuses("a profile whose chip is not plain text is refused", because: "malformed") {
         _ = try SyntheticMac.idle(64).profile(chip: "bad\nchip")
+    }
+    // The model-free speed index rides in the profile when asked for, and only this Mac's.
+    var indexed = profile
+    indexed.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+        prefillIndex: 2.0e6, decodeIndex: 4.0e4)
+    let indexedBytes = try indexed.encoded()
+    checks.require("a profile with its speed index survives its own encoding; without one the field is absent",
+        try ClusterDeviceProfile.decode(indexedBytes) == indexed && !text.contains("speedIndex")
+            && String(decoding: indexedBytes, as: UTF8.self).contains("speedIndex"))
+    checks.refuses("a profile carrying another Mac's speed index is refused", because: "another Mac's speed index") {
+        var other = profile
+        other.speedIndex = .init(chip: "Apple M3 Ultra", osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: 2.0e6, decodeIndex: 4.0e4)
+        _ = try ClusterDeviceProfile.decode(other.encoded())
+    }
+    checks.refuses("a speed index that is not a finite positive rate is refused", because: "Device index is malformed") {
+        var bad = profile
+        bad.speedIndex = .init(chip: profile.chip, osBuild: profile.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+            prefillIndex: 0, decodeIndex: 4.0e4)
+        _ = try ClusterDeviceProfile.decode(bad.encoded())
     }
 }
 

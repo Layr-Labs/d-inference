@@ -354,12 +354,12 @@ final class QualificationRequestTests: XCTestCase {
         // GPT-OSS on its own adapter: its own profile and its own cuts.
         let gptoss = try make("registered_gpt_oss_20b")
         XCTAssertEqual(gptoss.profileID, "registered_gpt_oss_20b_greedy_generation_v1")
-        XCTAssertEqual(gptoss.supportedCuts, [6, 8, 10, 12])
+        XCTAssertEqual(gptoss.supportedCuts, Array(1...23))
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try gptoss.encoded()), gptoss)
         // MiMo's row: its own cuts and session bound, and no recording runtime.
         let mimo = try make("registered_mimo_v26_flash_mopd")
         XCTAssertEqual(mimo.profileID, "registered_mimo_v26_flash_mopd_greedy_generation_v1")
-        XCTAssertEqual(mimo.supportedCuts, [16, 20, 24, 28, 30, 32, 34, 36, 38, 40, 42, 44])
+        XCTAssertEqual(mimo.supportedCuts, Array(1...47))
         let mimoRow = try XCTUnwrap(QualificationRequest.registeredModel(mimo.modelID))
         XCTAssertFalse(mimoRow.hasRecordingRuntime)
         XCTAssertEqual(QualificationRequest.registeredModel(large.modelID)?.hasRecordingRuntime, true)
@@ -368,7 +368,7 @@ final class QualificationRequestTests: XCTestCase {
         let gemma = try QualificationRequest(requestID: UUID(), promptTokenIDs: [2, 262_143], chunkSize: 2, outputCount: 4,
             stopTokenIDs: [1, 106], promptSource: source, modelID: "registered_gemma4_26b_qat_4bit")
         XCTAssertEqual(gemma.profileID, "registered_gemma4_26b_qat_4bit_greedy_generation_v1")
-        XCTAssertEqual(gemma.supportedCuts, [6, 8, 10, 12, 15, 18, 24])
+        XCTAssertEqual(gemma.supportedCuts, Array(1...29))
         XCTAssertEqual(try JSONDecoder().decode(QualificationRequest.self, from: try gemma.encoded()), gemma)
         XCTAssertThrowsError(try QualificationRequest(requestID: UUID(), promptTokenIDs: [262_144], chunkSize: 1,
             outputCount: 1, stopTokenIDs: [], promptSource: source, modelID: "registered_gemma4_26b"))

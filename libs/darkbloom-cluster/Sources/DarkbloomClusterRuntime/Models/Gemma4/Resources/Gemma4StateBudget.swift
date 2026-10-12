@@ -45,21 +45,6 @@ struct Gemma4StateBudget: Equatable {
             logitsBytes: logits, largestSingleHostStateComponentBytes: max(fullKV, ring),
             stateAndBoundaryBytes: total)
     }
-
-    /// The same ledger with every named array at the allocator's own bound.
-    func allowance(bound: (Int) throws -> Int) throws -> QwenResidentRequestAllowance {
-        let sum = QwenLongPrefillCheckedBytes.sum, product = QwenLongPrefillCheckedBytes.product
-        func charge(_ bytes: Int, _ count: Int) throws -> Int {
-            let rounded = try bound(bytes)
-            guard bytes > 0, rounded >= bytes else { throw ProbeError("Resident allocator bound is invalid") }
-            return try product([rounded, count])
-        }
-        let layers = fullLayers + slidingLayers
-        let state = try sum([charge(fullKVBytes, 2 * fullLayers), charge(ringKVBytes, 2 * slidingLayers),
-            charge(slidingViewKVBytes, 2 * slidingLayers), charge(4, layers),
-            charge(largestSingleHostStateComponentBytes, 1), charge(boundaryBytes, 2), charge(logitsBytes, 2)])
-        return .init(stateBytes: state, fusionBytes: 0, reservedBytes: state)
-    }
 }
 
 /// Byte ceilings of the registered Gemma resident scope. A ceiling is a refusal
@@ -76,16 +61,45 @@ struct Gemma4ResidentResourceCeilings: Equatable {
     /// Largest manifest payload the verified loader will hash for this model:
     /// the registered manifest total itself.
     let maximumManifestPayloadBytes: Int
+    /// The ledger at the model's largest request (`Gemma4ResidentAdapterDefinition.contextLimits`),
+    /// from the geometry with the formula every request is charged by.
     let namedStateByteCeiling: Int
+    /// The ledger at the earlier reservation's largest request, required to
+    /// equal the independently pinned integer as a check of the formula.
     let maximumNamedStateBytes: Int
 
     init(specification: Gemma4RegisteredSpecification) throws {
         maximumManifestPayloadBytes = specification.manifestBytes
-        namedStateByteCeiling = Self.pinnedMaximumNamedStateBytes
         maximumNamedStateBytes = try Gemma4StateBudget.estimate(maximumTokens: Self.maximumContextTokens,
             chunkSize: Self.maximumChunkTokens).stateAndBoundaryBytes
         guard specification.manifestBytes > 0, maximumNamedStateBytes == Self.pinnedMaximumNamedStateBytes else {
             throw ProbeError("Registered Gemma ceilings differ from the model's own byte vector")
         }
+        let limits = try Gemma4ResidentAdapterDefinition.contextLimits()
+        namedStateByteCeiling = try Gemma4StateBudget.estimate(maximumTokens: limits.maximumContextTokens,
+            chunkSize: limits.maximumChunkTokens).stateAndBoundaryBytes
+    }
+}
+
+/// The attention transient of one prefill frame on a Gemma stage (the owner's
+/// planner prices it beside the KV, oMLX U#3651). Both head dimensions (512 on
+/// a full layer, 256 on a sliding one) take MLX's unfused path, so a frame
+/// materializes float32 scores beside a float32 output: over the whole context
+/// on a full layer, over the window and the frame on a sliding one. Layers run
+/// one after another, so the stage's transient is its largest layer's.
+enum Gemma4PrefillTransient {
+    static func bytes(layers: [QwenLayerStagePlan.Layer], chunkTokens: Int, contextTokens: Int) throws -> Int {
+        typealias G = Gemma4StageGeometry
+        let product = QwenLongPrefillCheckedBytes.product, sum = QwenLongPrefillCheckedBytes.sum
+        let queries = min(chunkTokens, contextTokens)
+        var largest = 0
+        for layer in layers {
+            let full = layer.kind == G.fullKind
+            let width = full ? G.fullHeadDimension : G.slidingHeadDimension
+            let keys = full ? contextTokens : min(contextTokens, G.slidingWindow - 1 + chunkTokens)
+            let value = try sum([product([G.queryHeads, queries, keys, 4]), product([G.queryHeads, queries, width, 4])])
+            largest = max(largest, value)
+        }
+        return largest
     }
 }

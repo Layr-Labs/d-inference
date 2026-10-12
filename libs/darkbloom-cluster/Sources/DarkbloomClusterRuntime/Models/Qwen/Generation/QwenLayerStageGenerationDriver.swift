@@ -536,12 +536,26 @@ private struct QwenStagePrefixPlanOutcome {
 /// unless all agree, both ranks discard what they restored and prefill from
 /// zero. Both exchanges run whether or not a cache exists, so the two ranks
 /// always take the same steps.
+/// A stage whose every attention row holds all committed tokens. A sliding
+/// layer (Gemma 4) keeps only a ring of its window, so its rows at a prompt
+/// frontier are not a prefix of the request's rows and cannot be captured or
+/// restored: such a stage offers nothing and asks for no split, which turns
+/// reuse off for both ranks (one rank off is enough).
+func qwenStageAdmitsPrefixCapture(_ loaded: LoadedQwenLayerStage) -> Bool {
+    guard let forwarding = loaded.model as? any LayerStageFrameForwarding else { return true }
+    guard let geometry = try? forwarding.layerStageRequestGeometry(maximumTokens: 1) else { return false }
+    return geometry.kinds.allSatisfy { kind in
+        if case .full = kind.attention { return true }
+        return false
+    }
+}
+
 private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: LoadedQwenLayerStage,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement, collective: Collective,
     hiddenTap: QwenLayerStageHiddenTap? = nil, check: () throws -> Void
 ) throws -> QwenStagePrefixPlanOutcome {
     let request = agreement.request, scope = qwenStagePrefixScope(agreement)
-    let enabled = cache?.enabled ?? false
+    let enabled = (cache?.enabled ?? false) && qwenStageAdmitsPrefixCapture(loaded)
     let local = QwenStagePrefixOffer(enabled: enabled, frontiers: enabled
         ? cache!.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1) : [])
     let record = CollectiveRecordScope.request(.prefixAgreement, requestID: request.requestID,

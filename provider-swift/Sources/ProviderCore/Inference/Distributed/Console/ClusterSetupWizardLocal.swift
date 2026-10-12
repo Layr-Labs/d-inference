@@ -92,7 +92,7 @@ enum ClusterSetupLocalReader {
         if let worker = installation.workerExecutable {
             let tool = URL(fileURLWithPath: worker).deletingLastPathComponent().appendingPathComponent(ClusterPlacementFlow.toolName)
             do {
-                profile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json"],
+                profile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool, arguments: ["device", "--json", "--index"],
                     deadline: DispatchTime.now().uptimeNanoseconds + toolNanoseconds, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
             } catch {
                 profileError = "\(ClusterPlacementFlow.toolName) beside the worker: " + ClusterConsoleText.bounded(String(describing: error), maximum: 160)

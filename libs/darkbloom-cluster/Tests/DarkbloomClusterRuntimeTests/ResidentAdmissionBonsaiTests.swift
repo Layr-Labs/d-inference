@@ -68,8 +68,9 @@ struct ResidentAdmissionBonsaiTests {
         let profile = try QwenResidentAdapterDefinition.profile(specification: packed.specification)
         #expect(profile.identifier == packed.profileID && profile.hiddenSize == 5120)
         #expect(profile.vocabularySize == 248_320 && profile.activationDType == "float32")
-        #expect(profile.maximumPromptTokens == 8192 && profile.maximumChunkTokens == 512)
-        #expect(profile.maximumOutputTokens == 128 && profile.maximumContextTokens == 8320)
+        // Derived from the declared 262,144 positions and the protocol (`QwenResidentContextLimits`).
+        #expect(profile.maximumPromptTokens == 32_767 && profile.maximumChunkTokens == 512)
+        #expect(profile.maximumOutputTokens == 4096 && profile.maximumContextTokens == 32_768)
         let large = try QwenResidentAdapterDefinition.profile(specification: F.specification(.qwen38TwentySevenB))
         #expect(profile.fingerprint != large.fingerprint)
         // No pinned content inventory: a stage of this model cannot be received from a peer.
@@ -82,7 +83,8 @@ struct ResidentAdmissionBonsaiTests {
         // Above the legacy 8 GiB bound the 9B is admitted under, by 18.7 MiB.
         #expect(packed.maximumManifestPayloadBytes > LocalCorrectnessStorage.maximumManifestPayloadBytes)
         // The 27B's geometry, and a formula that already counts four bytes per state element.
-        #expect(packed.namedStateByteCeiling == 1_616_248_896 && packed.maximumNamedStateBytes == 1_616_248_896)
+        // At the earlier reservation the pinned figure; at the derived 32,768-token context the 27B's own ceiling.
+        #expect(packed.maximumNamedStateBytes == 1_616_248_896 && packed.namedStateByteCeiling == 4_920_836_160)
         let spec = try F.specification()
         #expect(try spec.expectedGeometry() == F.specification(.qwen38TwentySevenB).expectedGeometry())
         #expect(try QwenLongPrefillTensorBudget.estimate(geometry: spec.expectedGeometry(), maximumTokens: 8193, chunkSize: 512)

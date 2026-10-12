@@ -78,10 +78,11 @@ func refuses(_ message: String, _ body: () throws -> Void) throws {
                     "structural cuts differ")
                 try require(![12, 19, 26, 33].contains(where: structural.contains), "a cut between a Mamba and an attention block was admitted")
                 let cuts = definition.supportedCuts
-                try require(!cuts.isEmpty && cuts.count <= 16 && cuts == cuts.sorted() && Set(cuts).count == cuts.count
-                    && cuts.allSatisfy(structural.contains), "resident cuts are not a closed list of structural cuts")
-                try require(cuts == structural.filter { symbols[$0 - 1] == "E" } && cuts.count == 16,
-                    "the resident cuts are not exactly the structural cuts that follow an expert block")
+                // Every structural cut, derived from the block list (a capability record carries up to 128).
+                try require(!cuts.isEmpty && cuts == structural && cuts.count <= ClusterRuntimeCapabilityCodec.maximumPartitions,
+                    "resident cuts are not the derived list of structural cuts")
+                try require(cuts.count == 32 && cuts.contains(20) && cuts.contains(27),
+                    "the resident cuts are not the 32 the block list admits (20 and 27 among them)")
                 try require(cuts == NemotronRegisteredLightning.supportedCuts && cuts.contains(NemotronRegisteredLightning.planningCut),
                     "resident row differs from the registered constants")
             }
@@ -106,7 +107,8 @@ func refuses(_ message: String, _ body: () throws -> Void) throws {
                 try refuses("a forced Metal architecture") { _ = try definition.arithmetic.admit(dense.merging(["MLX_METAL_GPU_ARCH": "x"]) { $1 }) }
                 let profile = try QwenResidentAdapterDefinition.profile(specification: spec)
                 try require(profile.vocabularySize == 131_072 && profile.hiddenSize == 2688 && profile.activationDType == "bfloat16"
-                    && profile.maximumPromptTokens == 8192 && profile.maximumContextTokens == 8320, "generation profile differs")
+                    && profile.maximumPromptTokens == 32_767 && profile.maximumContextTokens == 32_768
+                    && profile.maximumOutputTokens == 4096, "generation profile differs (derived from the declared 262,144)")
             }
 
             try check("inventory-is-the-geometrys-tensor-set") {
@@ -214,7 +216,9 @@ func refuses(_ message: String, _ body: () throws -> Void) throws {
                 widened[0] = .init(name: widened[0].name, shape: widened[0].shape, sourceDType: "F16", byteCount: widened[0].byteCount)
                 try refuses("an inventory with another dtype") { _ = try QwenRegisteredDenseModelProfile.admit(configuration: configuration,
                     manifest: manifest, expectedArtifactAggregateSHA256: spec.artifactSHA256, canonicalTensors: widened) }
-                try refuses("a cut outside the resident row") { _ = try profile.makePlanningPlan(stageCut: 20) }
+                // 20 is structural now (attention, then an expert block); 26 is between a Mamba and an attention block.
+                _ = try profile.makePlanningPlan(stageCut: 20)
+                try refuses("a cut outside the resident row") { _ = try profile.makePlanningPlan(stageCut: 26) }
 
                 // Storage and state per stage follow the kinds of the stage's own blocks.
                 let symbols = Array(pattern)

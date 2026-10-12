@@ -9,9 +9,10 @@ enum Gemma4LayerStagePlanning {
     static let namespace = "language_model."
     static let embeddingModule = namespace + "model.embed_tokens"
     static let normModule = namespace + "model.norm"
-    /// Stage 0 layer counts a pair may be loaded at, ascending: the four cuts
-    /// at a full-attention boundary and three inside a run of sliding layers.
-    static let supportedCuts = [6, 8, 10, 12, 15, 18, 24]
+    /// Stage 0 layer counts a pair may be loaded at, ascending: every layer
+    /// boundary. A stage keeps each layer's index in the whole model, so its
+    /// layer kinds never depend on where it starts (the row once listed seven).
+    static let supportedCuts = Array(1..<Gemma4StageGeometry.layerCount)
 
     static func layerRoot(_ index: Int) -> String { namespace + "model.layers.\(index)" }
 

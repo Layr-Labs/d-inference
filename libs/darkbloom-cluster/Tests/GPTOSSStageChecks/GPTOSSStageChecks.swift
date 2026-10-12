@@ -34,7 +34,7 @@ import Foundation
                "fixtures are not the registered configuration and manifest")
         expect((try? spec.requireManifest(manifest, configuration: configuration)) != nil, "manifest totals")
         expect(GPTOSSRegisteredSpecification.all.count == 1 && spec.model.rawValue == "registered_gpt_oss_20b"
-               && spec.supportedCuts == [6, 8, 10, 12], "registered row")
+               && spec.supportedCuts == Array(1...23), "registered row")
         expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode], "phase split is not in the row")
         refuses("an unregistered model ID") { _ = try GPTOSSRegisteredSpecification.specification(runtimeModelID: "registered_qwen35_9b") }
         refuses("a configuration with one changed byte") {
@@ -106,9 +106,12 @@ import Foundation
         }
         expect(Set(plans.map(\.fingerprint)).count == plans.count
                && Set(plans.flatMap { $0.stages.map(\.fingerprint) }).count == plans.count * 2, "plans and stages have distinct identities")
-        expect(try GPTOSSLayerStagePlan(configuration: configuration, cut: 8).fingerprint == plans[1].fingerprint, "a plan is deterministic")
+        // Every layer boundary is a cut (1...23); plans are looked up by their cut.
+        func planAt(_ cut: Int) -> GPTOSSLayerStagePlan { plans[spec.supportedCuts.firstIndex(of: cut)!] }
+        expect(spec.supportedCuts == Array(1...23), "every layer boundary is a cut")
+        expect(try GPTOSSLayerStagePlan(configuration: configuration, cut: 8).fingerprint == planAt(8).fingerprint, "a plan is deterministic")
         // Pinned so a change of the plan's identity is seen as one.
-        expect(plans[1].fingerprint.hasPrefix("2a9870e785d2") && plans[2].fingerprint.hasPrefix("841c884492b5"), "plan identity at cuts 8 and 10")
+        expect(planAt(8).fingerprint.hasPrefix("2a9870e785d2") && planAt(10).fingerprint.hasPrefix("841c884492b5"), "plan identity at cuts 8 and 10")
         for cut in [0, 24, -1] { refuses("cut \(cut)") { _ = try GPTOSSLayerStagePlan(configuration: configuration, cut: cut) } }
 
         // Configuration admission fails closed.
@@ -149,7 +152,7 @@ import Foundation
         refuses("a missing TF32 declaration") { _ = try GPTOSSArithmeticEnvironment.admit([:]) }
 
         // The request-state ledger: named, bounded, and larger with more tokens.
-        let plan = plans[1]
+        let plan = planAt(8)
         for rank in 0...1 {
             let small = try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[rank].layers, rank: rank,
                 maximumTokens: 158, chunkSize: 30, bound: { $0 })
@@ -162,9 +165,12 @@ import Foundation
             expect(large.reservedBytes == large.fullAttentionStateBytes + large.slidingStateBytes + large.boundaryBytes
                    + large.rowBytes + large.workspaceBytes, "rank \(rank) ledger sums its terms")
         }
+        // The ledger takes the derived context (32,768 of the declared 131,072) and nothing beyond it.
+        expect(try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[0].layers, rank: 0,
+            maximumTokens: 32_768, chunkSize: 512, bound: { $0 }).reservedBytes > 0, "the derived context is admitted")
         refuses("a request beyond the profile") {
             _ = try GPTOSSRequestStateBudget.estimate(specification: spec, layers: plan.stages[0].layers, rank: 0,
-                maximumTokens: 8321, chunkSize: 512, bound: { $0 })
+                maximumTokens: 32_769, chunkSize: 512, bound: { $0 })
         }
 
         // The capability record names this adapter, model, profile, partitions and policy.
@@ -173,7 +179,7 @@ import Foundation
                                                                       runtimeBinarySHA256: binary)
         expect(capability.adapterID == ClusterRuntimeAdapter.gptossLayerStage.rawValue
                && capability.runtimeModelID == spec.model.rawValue && capability.profile.id == spec.profileID
-               && capability.profile.vocabularySize == 201_088 && capability.profile.maximumContextTokens == 8320, "capability identity")
+               && capability.profile.vocabularySize == 201_088 && capability.profile.maximumContextTokens == 32_768, "capability identity")
         expect(capability.partitions.map { $0.stages[0].sourceLayerEnd } == spec.supportedCuts
                && capability.partitions.map(\.planSHA256) == plans.map(\.fingerprint), "capability partitions are the admitted plans")
         expect(capability.arithmeticPolicyID == GPTOSSArithmeticEnvironment.contract

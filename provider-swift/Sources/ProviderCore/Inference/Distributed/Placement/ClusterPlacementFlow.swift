@@ -78,7 +78,8 @@ public enum ClusterPlacementFlow {
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]
         let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
-            artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens, measurements: measurements)
+            artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens, measurements: measurements,
+            indices: profiles.compactMap { $0.1.speedIndex })
         let devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
         var lines = ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)

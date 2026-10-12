@@ -243,7 +243,8 @@ struct ResidentAdmissionGemma4Tests {
                 // The Qwen mapping does not answer for a Gemma plan.
                 #expect(throws: (any Error).self) { try plan.parameters(canonicalSourceNames: names.map(\.name)) }
             }
-            for cut in [0, 1, 5, 7, 29, 30] {
+            // Every layer boundary is a cut (1...29); none outside the model.
+            for cut in [0, 30, -1] {
                 #expect(throws: (any Error).self) {
                     try Gemma4LayerStagePlanning.plan(specification: spec, configuration: config, cut: cut)
                 }
@@ -274,7 +275,9 @@ struct ResidentAdmissionGemma4Tests {
             #expect(ranks[0].arithmeticContract == Gemma4ArithmeticEnvironment.contract)
             #expect(ranks[0].profile.identifier == model.rawValue + "_greedy_generation_v1")
             #expect(ranks[0].profile.vocabularySize == 262_144 && ranks[0].profile.hiddenSize == 2816)
-            #expect(ranks[0].profile.maximumPromptTokens == 8192 && ranks[0].profile.maximumContextTokens == 8320)
+            // Derived from the declared 262,144 positions and the protocol.
+            #expect(ranks[0].profile.maximumPromptTokens == 32_767 && ranks[0].profile.maximumContextTokens == 32_768)
+            #expect(ranks[0].profile.maximumOutputTokens == 4096 && ranks[0].profile.maximumChunkTokens == 512)
             // The residual crosses in the activation dtype; the logits row is float32, as in the product.
             #expect(ranks[0].profile.activationDType == "bfloat16" && ranks[0].profile.selectedRowDType == "float32")
             #expect(ranks[0].jaccl.rank == 0 && ranks[1].jaccl.rank == 1)
@@ -297,7 +300,8 @@ struct ResidentAdmissionGemma4Tests {
         refuses("the other artifact's ID") { try Self.admit(model, identity: Self.identity(model, modelID: Gemma4RegisteredModel.twentySixB.rawValue)) }
         refuses("another artifact hash") { try Self.admit(model, identity: Self.identity(model, artifactSHA: String(repeating: "0", count: 64))) }
         refuses("another configuration hash") { try Self.admit(model, identity: Self.identity(model, configSHA: String(repeating: "0", count: 64))) }
-        refuses("a cut outside the row") { try Self.admit(model, cut: 7) }
+        refuses("a cut outside the model") { try Self.admit(model, cut: 30) }
+        refuses("a cut of zero layers") { try Self.admit(model, cut: 0) }
         refuses("rank 2") { try Self.admit(model, rank: 2) }
         refuses("the other artifact's manifest") { try Self.admit(model, manifest: Self.files(.twentySixB).manifest) }
         refuses("the other artifact's configuration") { try Self.admit(model, config: Self.files(.twentySixB).configuration) }
@@ -338,8 +342,10 @@ struct ResidentAdmissionGemma4Tests {
         #expect(throws: (any Error).self) {
             try admission.request(reservation(profile: QwenResidentAdapterDefinition.profileID), id: UUID(), now: Self.now)
         }
-        #expect(throws: (any Error).self) { try admission.request(reservation(prompt: 8193), id: UUID(), now: Self.now) }
-        #expect(throws: (any Error).self) { try admission.request(reservation(output: 129), id: UUID(), now: Self.now) }
+        // Long context: past the earlier 8,192-token reservation, up to the derived limits.
+        #expect(try admission.request(reservation(prompt: 8193, chunk: 512), id: UUID(), now: Self.now).promptCount == 8193)
+        #expect(throws: (any Error).self) { try admission.request(reservation(prompt: 32_768), id: UUID(), now: Self.now) }
+        #expect(throws: (any Error).self) { try admission.request(reservation(output: 4097), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { try admission.request(reservation(chunk: 513), id: UUID(), now: Self.now) }
         #expect(throws: (any Error).self) { try admission.request(reservation(stops: [106, 1]), id: UUID(), now: Self.now) }
     }
@@ -348,7 +354,10 @@ struct ResidentAdmissionGemma4Tests {
         for spec in Gemma4RegisteredSpecification.all {
             let ceilings = try Gemma4ResidentResourceCeilings(specification: spec)
             #expect(ceilings.maximumManifestPayloadBytes == spec.manifestBytes)
-            #expect(ceilings.maximumNamedStateBytes == 719_380_600 && ceilings.namedStateByteCeiling == 719_380_600)
+            // The pinned figure at the earlier reservation; the ceiling is the same ledger at the derived 32,768.
+            #expect(ceilings.maximumNamedStateBytes == 719_380_600)
+            #expect(ceilings.namedStateByteCeiling
+                == (try Gemma4StateBudget.estimate(maximumTokens: 32_768, chunkSize: 512)).stateAndBoundaryBytes)
         }
         let largest = try Gemma4StateBudget.estimate(maximumTokens: 8320, chunkSize: 512)
         #expect(largest.fullLayers == 5 && largest.slidingLayers == 25)
@@ -425,7 +434,7 @@ struct ResidentAdmissionGemma4Tests {
             == ["registered_gemma4_26b_qat_4bit", "registered_gemma4_26b", "registered_gemma4_26b_8bit"])
         #expect(Set(all.map(\.runtimeModelID)).count == all.count && Set(all.map(\.manifestSHA256)).count == all.count)
         for model in all.suffix(3) {
-            #expect(model.layerCount == 30 && model.supportedCuts == [6, 8, 10, 12, 15, 18, 24])
+            #expect(model.layerCount == 30 && model.supportedCuts == Array(1...29))
             #expect(model.supportedGenerationModes == [.pipeline])
             #expect(model.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
             #expect(model.profileID == model.runtimeModelID + "_greedy_generation_v1")

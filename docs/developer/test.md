@@ -24,7 +24,7 @@ end-to-end platform authorization.
 ## Native serving qualification
 
 `NativeServeQualificationTests` checks literal-loopback refusal, owner-only
-descriptor inputs and bounded in-memory App Attest key-ID/budget storage without
+descriptor inputs, failed-observer lifetime ownership and bounded in-memory App Attest key-ID/budget storage without
 Apple calls or model allocation. Build the isolated provider test product and run
 `swift test --skip-build --filter NativeServeQualificationTests` after normal
 source-matched metallib staging.
@@ -51,12 +51,17 @@ memory admission and disconnect cleanup remain in use.
 The platform harness seeds only its private account/token, exact release/runtime
 approval and actual local model catalog. Initial Apple enrollment and assertion
 must pass the full coordinator router and verifier. It then checks encrypted
-inference before and after a 125-second transport break, unchanged process,
+inference before and after a 125-second transport break following a
+request-specific encrypted chunk and a fresh live-request observation, unchanged process,
 endpoint and model/engine identities, unchanged load and Apple assertion
-counters, old-request termination and fresh capacity. A `0600` one-byte `done`
+counters, the old request's disconnect terminal and reservation release, and fresh capacity. A `0600` one-byte `done`
 file requests graceful shutdown; the diagnostic also has a 900-second limit.
 Passive `observation.json` contains only process identity, endpoint/instance
-hashes and counts, never request content, keys or proofs.
+hashes, counts and sequence/time stamps, never request content, keys or proofs.
+The harness rejects stale snapshots and records transport cut, reopening and
+reconnection separately. If observation or drain fails, the CLI terminates its
+owned diagnostic process with failure rather than claiming graceful completion
+or waiting indefinitely for an uncancellable native task.
 
 This is a target-only loaded-engine/resumption gate, not MTP, SSD persistence,
 APNs, daemon installation, worker recovery or fleet-rollout qualification.

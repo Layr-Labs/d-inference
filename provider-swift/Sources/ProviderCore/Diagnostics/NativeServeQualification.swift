@@ -14,6 +14,7 @@ public enum NativeServeQualification {
         }
         let inputs = try NativeServeQualificationInputs(coordinatorURL: coordinatorURL, path: directory)
         umask(0o077)
+        setenv("TMPDIR", inputs.directory.path, 1)
         guard let binaryHash = selfBinaryHash(), let process = ProcessIdentity.current() else {
             throw NativeServeQualificationInputs.Failure.signedReleaseRequired
         }
@@ -62,11 +63,14 @@ public enum NativeServeQualification {
             attestationSigner: SecureEnclaveIdentity(), beforeModelLoad: { _ in loads.increment() })
         await loop.prepareNativeQualification(inputs: inputs, stateDirectory: stateDirectory, apple: apple)
         await ProviderTermination.shared.install { await loop.drainAndShutdown(timeoutSeconds: 20) }
-        let observations = Task {
+        try await NativeServeRunLifetime.run(serve: { try await loop.run() }, observe: {
             do {
                 let deadline = ContinuousClock.now + .seconds(900)
+                var sequence: UInt64 = 0
                 while !Task.isCancelled {
-                    try await loop.writeNativeQualificationObservation(to: inputs.directory, process: process, loads: loads.value)
+                    sequence += 1
+                    try await loop.writeNativeQualificationObservation(to: inputs.directory, process: process,
+                        loads: loads.value, sequence: sequence)
                     if inputs.finished() || ContinuousClock.now >= deadline {
                         guard await loop.drainAndShutdown(timeoutSeconds: 20) else {
                             throw NativeServeQualificationInputs.Failure.shutdownIncomplete
@@ -82,16 +86,7 @@ public enum NativeServeQualification {
                 _ = await loop.drainAndShutdown(timeoutSeconds: 20)
                 throw error
             }
-        }
-        do {
-            try await loop.run()
-            observations.cancel()
-            try await observations.value
-        } catch {
-            observations.cancel()
-            _ = await loop.drainAndShutdown(timeoutSeconds: 20)
-            throw error
-        }
+        })
     }
 }
 
@@ -131,13 +126,15 @@ private extension ProviderLoop {
             service: apple, storage: NativeServeKeyStorage())
     }
 
-    func writeNativeQualificationObservation(to directory: URL, process: ProcessIdentity, loads: Int) throws {
+    func writeNativeQualificationObservation(to directory: URL, process: ProcessIdentity, loads: Int, sequence: UInt64) throws {
         let slots = modelSlots.values.map { slot in
             ["model_instance": nativeDigest(Data("\(process.startTimeMicros):\(slot.modelContainer.identity)".utf8)),
-             "engine_instance": nativeDigest(Data("\(process.startTimeMicros):\(ObjectIdentifier(slot.engineV2))".utf8))]
+             "engine_instance": nativeDigest(Data(slot.engineBundle.instanceID.uuidString.utf8))]
         }
         let observation: [String: Any] = [
             "pid": process.pid, "process_start_micros": process.startTimeMicros,
+            "sequence": sequence, "captured_at_ns": UInt64(Date().timeIntervalSince1970 * 1_000_000_000),
+            "uptime_ns": UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000),
             "endpoint_sha256": nativeDigest(keyPair.publicKeyBytes),
             "load_count": loads, "loaded_models": modelSlots.count,
             "inflight": lifecycleRemaining, "slots": slots,

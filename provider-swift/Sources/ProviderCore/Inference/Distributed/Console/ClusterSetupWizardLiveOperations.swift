@@ -29,6 +29,12 @@ extension ClusterSetupOperations {
         public var workerExecutable: String?
         /// The folder holding this Mac's model folders, given once; nil takes the one remembered.
         public var modelsDirectory: String?
+        /// The leader-first onboarding: the planner (under the model's pair-serving grant) decides which Mac
+        /// runs rank 0 and which decodes, and a member's cluster service applies the setup it is sent.
+        public var derivedPlacement = false
+        /// The open wizard answers the other Mac's wizard over the link. Off where this Mac's cluster
+        /// service answers instead (the onboarding, the service itself): one answering process per Mac.
+        public var answersOverLink = true
 
         public init(providerConfiguration: URL, darkbloomExecutable: URL, sessionArguments: [String],
                     pair: ClusterSetupRecord.Pair?, dryRun: Bool, version: String) {
@@ -87,12 +93,7 @@ extension ClusterSetupOperations {
                     return .init(succeeded: true, lines: ["Recorded the check on setup \(pass.configurationSHA256.prefix(12))."])
                 } catch { return .failure(error) }
             },
-            observeSession: {
-                let status = blockingWizard { await ClusterDiagnostics.status(providerConfiguration: configuration) }.cleaned(clean)
-                let link = ClusterLinkReadinessProbe.inspectLocalLink()
-                return .init(status: status, localWiredBytes: ClusterOrphanWiredGuard.wiredBytes().map { Int(clamping: $0) },
-                    localPhysicalBytes: Int(clamping: ProcessInfo.processInfo.physicalMemory), linkState: link.state.rawValue)
-            },
+            observeSession: { context.observe() },
             launchSession: { events in
                 // A follower reached over the link serves its rank itself; a leader starts the session.
                 let arguments = context.followsOverLink() ? settings.followerSessionArguments : settings.sessionArguments
@@ -177,7 +178,7 @@ final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
 
 /// What the live operations share: paths, the record, and the last plans,
 /// so that adopting a plan saves exactly the one that was on screen.
-private final class LiveContext: @unchecked Sendable {
+final class LiveContext: @unchecked Sendable {
     let paths: ClusterUserPaths
     let store: ClusterSetupStore
     let settings: ClusterSetupOperations.LiveSettings
@@ -289,7 +290,7 @@ private final class LiveContext: @unchecked Sendable {
     /// Starts answering the other Mac's wizard once this Mac has paired; a
     /// failure is retried at the next refresh.
     func ensureResponder() {
-        guard let pairing = linkPairing() else { return }
+        guard settings.answersOverLink, let pairing = linkPairing() else { return }
         let begin: Bool = lock.withLock {
             guard responder == nil, !responderStarting else { return false }
             responderStarting = true
@@ -339,6 +340,14 @@ private final class LiveContext: @unchecked Sendable {
     }
 
     var configuration: URL { settings.providerConfiguration }
+
+    /// The local session leader's status, with this Mac's memory and link beside it.
+    func observe(link: Bool = true) -> ClusterSetupLive {
+        let status = blockingWizard { await ClusterDiagnostics.status(providerConfiguration: self.configuration) }.cleaned(clean)
+        let state = link ? ClusterLinkReadinessProbe.inspectLocalLink().state.rawValue : nil
+        return .init(status: status, localWiredBytes: ClusterOrphanWiredGuard.wiredBytes().map { Int(clamping: $0) },
+            localPhysicalBytes: Int(clamping: ProcessInfo.processInfo.physicalMemory), linkState: state)
+    }
 
     // MARK: - Reading
 
@@ -511,7 +520,8 @@ private final class LiveContext: @unchecked Sendable {
             return .init(model: model, layout: layout, capability: capability, tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest))
         }
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,
-            localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements())
+            localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements(),
+            leader: settings.derivedPlacement ? .some(nil) : .none)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)
@@ -565,7 +575,9 @@ private final class LiveContext: @unchecked Sendable {
             let saved = try ClusterConfigurationStore(paths: paths).configure(configurationInput: directory.appendingPathComponent("\(memberID).setup.json"),
                 capabilityInput: directory.appendingPathComponent("capability.json"), capabilitySHA256: capability.sha256,
                 providerConfiguration: configuration)
-            var lines = ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); this Mac leads."]
+            let localRank = plan.ranks.first { $0.local }?.rank ?? 0
+            let part = localRank == 0 ? "this Mac runs rank 0 and the serving API" : "this Mac runs rank \(localRank)"
+            var lines = ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
             if let pairing = linkPairing() {
                 // Over the paired link: the other Mac's open wizard puts it in its inbox.
                 let delivery = try JSONEncoder().encode(ClusterSetupStore.Delivery(configuration: peerData, capability: capability.data,
@@ -582,7 +594,9 @@ private final class LiveContext: @unchecked Sendable {
                     $0.add(.init(clusterID: setupClusterID(peerData) ?? "", memberID: peerID,
                         configurationSHA256: ClusterConfigurationSyntax.hash(digest) ? digest : "", at: ClusterConsoleText.timestamp()))
                 }
-                lines.append("Sent the other Mac its setup over the paired link: on that Mac, press a, then y, in `darkbloom cluster`.")
+                lines.append(settings.derivedPlacement
+                    ? "Synced the other Mac's setup over the cable; its cluster service applied it."
+                    : "Sent the other Mac its setup over the paired link: on that Mac, press a, then y, in `darkbloom cluster`.")
                 return .init(succeeded: true, lines: lines)
             }
             // The other Mac gets its own setup in its inbox; it approves it there.
@@ -687,7 +701,7 @@ public enum ClusterSetupReporting {
 /// Runs an asynchronous operation to completion from a thread outside the
 /// cooperative pool (the wizard's work queue). The calling thread waits.
 @discardableResult
-private func blockingWizard<Value: Sendable>(_ operation: @escaping @Sendable () async -> Value) -> Value {
+func blockingWizard<Value: Sendable>(_ operation: @escaping @Sendable () async -> Value) -> Value {
     let box = WizardBlockingResult<Value>(), finished = DispatchSemaphore(value: 0)
     Task.detached {
         box.value = await operation()

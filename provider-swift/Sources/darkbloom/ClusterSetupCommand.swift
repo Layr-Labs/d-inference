@@ -46,6 +46,8 @@ extension Cluster {
         var modelDir: String?
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
+        @Flag(help: "Open the six-step setup wizard instead of the leader-first onboarding.")
+        var wizard = false
 
         func validate() throws { try validateWizardOptions() }
 
@@ -54,7 +56,7 @@ extension Cluster {
             if Self.opensWizard(arguments: CommandLine.arguments, json: json, yes: yes, temporary: temporary, plain: plain,
                 inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
                 terminalType: ProcessInfo.processInfo.environment["TERM"]) {
-                return try await runWizard()
+                return try await (wizard ? runWizard() : runOnboarding())
             }
             Darkbloom.ensureLogging()
             let mode = temporary ? ClusterLinkRepair.Mode.temporary : .durable, dryRun = dryRun

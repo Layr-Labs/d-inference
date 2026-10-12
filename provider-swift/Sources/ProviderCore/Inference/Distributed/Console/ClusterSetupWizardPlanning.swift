@@ -57,7 +57,10 @@ enum ClusterSetupPlanning {
     /// route only this Mac holds.
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
-                       measurements: [ClusterSpeedMeasurement]) -> [Decision] {
+                       measurements: [ClusterSpeedMeasurement], leader: String?? = .none) -> [Decision] {
+        // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
+        // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
+        let sessionLeader: String? = leader ?? localMemberID
         let peerID = description.members.first { $0.id != localMemberID }?.id ?? "the other Mac"
         return readings.map { reading in
             let onOther = peerModels.contains { $0.artifactSHA256 == reading.model.artifactSHA256 }
@@ -80,7 +83,7 @@ enum ClusterSetupPlanning {
                 capabilitySHA256: capability.sha256, tokenizerFiles: reading.tokenizerFiles)
             do {
                 let decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
-                    localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: localMemberID)
+                    localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: sessionLeader)
                 guard let chosen = decided.result.chosen else {
                     return blocked(refusalWords(decided.result, localMemberID: localMemberID))
                 }

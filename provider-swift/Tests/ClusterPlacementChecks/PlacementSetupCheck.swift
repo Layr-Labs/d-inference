@@ -178,14 +178,28 @@ import Foundation
         object["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability))
         object["publicModelID"] = "fixture/gpt-oss"
         let description = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: object))
-        func profile(_ device: ClusterPlacementDevice, _ name: String) throws -> ClusterDeviceProfile {
+        // Each profile carries the model-free device index the two Macs measured (2026-10-12): the M5 Ultra 5.0x the
+        // M3 Ultra's prefill and 1.8x its decode, which alone puts the cut at 4.
+        func profile(_ device: ClusterPlacementDevice, _ name: String, index: (Double, Double)? = nil) throws -> ClusterDeviceProfile {
             let p = device.profile
-            return try .init(chip: name, performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores, gpuCores: p.gpuCores,
+            var value = try ClusterDeviceProfile(chip: name, performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores, gpuCores: p.gpuCores,
                 osVersion: p.osVersion, osBuild: p.osBuild, physicalMemoryBytes: p.physicalMemoryBytes,
                 gpuRecommendedWorkingSetBytes: p.gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
                 allocatorLimitBytes: p.allocatorLimitBytes, memory: p.memory, power: p.power)
+            value.speedIndex = index.map { ClusterDeviceIndex(chip: name, osBuild: p.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                prefillIndex: $0.0, decodeIndex: $0.1) }
+            return value
         }
-        let ultra3 = try profile(slowTwo[0], "Apple M3 Ultra"), ultra5 = try profile(slowTwo[1], "Apple M5 Ultra")
+        let ultra3 = try profile(slowTwo[0], "Apple M3 Ultra", index: (469_577, 25_949))
+        let ultra5 = try profile(slowTwo[1], "Apple M5 Ultra", index: (2_334_000, 45_290))
+        let speeds = ClusterSpeedEstimator.estimate(devices: [ultra3, ultra5].map { .init(chip: $0.chip, osBuild: $0.osBuild) },
+            artifactSHA256: layout.artifactSHA256, promptTokens: layout.maximumPromptTokens, measurements: [],
+            indices: [ultra3, ultra5].compactMap(\.speedIndex))
+        var free = ClusterPlacementPolicy(); free.leader = "mac-one"
+        let ungated = try ClusterPlacementPlanner.plan(devices: [.init(label: "mac-one", profile: ultra3, speed: speeds[0]),
+            .init(label: "mac-two", profile: ultra5, speed: speeds[1])], layout: layout, policy: free)
+        require("GPT-OSS on the two Ultras: speed alone would cut where its check diverged",
+            (ungated.chosen?.cut ?? 99) <= 10)
         let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
             localProfile: ultra3, peerProfile: ultra5, layout: layout, leader: "mac-one")
         require("GPT-OSS on an M3 Ultra leading an M5 Ultra is planned only at its passed shape, cut 12 pipeline",

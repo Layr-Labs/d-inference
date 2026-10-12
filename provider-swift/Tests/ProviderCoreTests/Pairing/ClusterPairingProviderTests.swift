@@ -18,7 +18,10 @@ struct ClusterPairingProviderTests {
     }
 
     static func temporaryStore() -> ClusterPairingStore {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pairing-tests-\(UUID().uuidString)")
+        // The real path: the installed-file checks refuse a path through a symbolic link (/var, /tmp).
+        let temporary = FileManager.default.temporaryDirectory.path
+        let resolved = realpath(temporary, nil).map { pointer in defer { free(pointer) }; return String(cString: pointer) } ?? temporary
+        let root = URL(fileURLWithPath: resolved, isDirectory: true).appendingPathComponent("pairing-tests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return ClusterPairingStore(directory: root.appendingPathComponent("cluster-pairing"))
     }

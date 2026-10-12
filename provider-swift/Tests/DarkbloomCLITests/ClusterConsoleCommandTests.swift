@@ -1,6 +1,7 @@
 import ArgumentParser
 import Testing
 @testable import darkbloom
+import ProviderCore
 
 @Suite("Cluster console CLI")
 struct ClusterConsoleCommandTests {
@@ -111,6 +112,16 @@ struct ClusterConsoleCommandTests {
                        ["--plain", "--json"]] {
             #expect(throws: (any Error).self) { _ = try Darkbloom.parseAsRoot(["cluster"] + values) }
         }
+    }
+
+    @Test("a pair description reaches the other Mac over SSH: the developer harness's only")
+    func wizardPairNeedsTheDeveloperFlag() throws {
+        let pair = ClusterSetupRecord.Pair(description: "/Users/fixture/pair.json", capability: "/Users/fixture/capability.json",
+            capabilitySHA256: pin, memberID: "mac-a")
+        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: [:]) }
+        #expect(throws: (any Error).self) { try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "yes"]) }
+        try Cluster.Setup.requireDeveloperForPair(pair, environment: ["DARKBLOOM_CLUSTER_DEVELOPER_SSH": "1"])
+        try Cluster.Setup.requireDeveloperForPair(nil, environment: [:])
     }
 
     @Test("the other Mac's two questions are hidden subcommands with fixed, absolute arguments")

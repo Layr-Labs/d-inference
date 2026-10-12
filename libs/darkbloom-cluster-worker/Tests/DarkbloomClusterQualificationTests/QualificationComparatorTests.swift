@@ -1,6 +1,11 @@
 import Foundation
 import XCTest
 @testable import DarkbloomClusterQualification
+import DarkbloomClusterProtocol
+
+private enum ClusterPairQualificationRecordShim {
+    static func decode(_ text: String) throws -> [ClusterPairQualificationRecord] { try ClusterPairQualificationRecord.decodeLines(text) }
+}
 
 /// Constructed reports: a 6-token run over an 8-entry vocabulary whose logits
 /// sit near 20, where one bfloat16 unit in the last place is 0.125.
@@ -282,6 +287,97 @@ final class QualificationComparatorTests: XCTestCase {
         XCTAssertThrowsError(try QualificationReportFiles.subject(files[2]))
         // A report is evidence of one run and is never replaced.
         XCTAssertThrowsError(try QualificationFiles.writeNew(Data("x".utf8), to: files[0]))
+    }
+}
+
+/// The qualification record a provider's pair-serving grant rests on: made by
+/// the runner from a pair report and its single-Mac references, never by hand.
+final class PairQualificationRecordTests: XCTestCase {
+    private func referenceData(chip: String = "Apple M3 Ultra", margin: Float = 1.5) throws -> Data {
+        let request = try Constructed.request()
+        return try QualificationReportFiles.encode(ReferenceReport(identity: try Constructed.identity(), evidence: Constructed.reference(margin: margin),
+            host: .init(role: "single host", chip: chip, operatingSystem: "27.2"), binarySHA256: nil, metallibSHA256: nil,
+            timing: .init(stageLoadSeconds: [1, 2], prefillSeconds: 0.1, prefillTokensPerSecond: 400, decodeSeconds: 0.2,
+                          decodeTokensPerSecond: 25, requestWallSeconds: 0.4, totalSeconds: 4, note: "constructed"),
+            memory: .init(activeBytesBefore: 0, activeBytesLoaded: 10, peakBytes: 12, activeBytesAfterRelease: 0,
+                          cacheBytesAfterRelease: 0, loadedTensorBytes: [4, 6], stageModelsReleased: [true, true]),
+            promptSource: request.promptSource, decodedOutput: "text"))
+    }
+    private func pairData(chips: [String?] = ["Apple M3 Ultra", "Apple M5 Max"], tokens: [Int] = Constructed.tokens,
+                          outcome: String = "completed", agree: Bool = true, transport: String? = "jaccl",
+                          mode: String? = "phase_split_v1") throws -> Data {
+        var ranks = (0..<chips.count).map { PairRankReport(role: "rank \($0)", rank: $0) }
+        for (index, chip) in chips.enumerated() { ranks[index].chip = chip; ranks[index].operatingSystem = "27.\(index)" }
+        let request = try Constructed.request()
+        return try QualificationReportFiles.encode(PairReport(outcome: outcome, failure: nil, identity: try Constructed.identity(cut: 12),
+            evidence: Constructed.pair(tokens: tokens), ranks: ranks.reversed(), workerHashesIdentical: true, metallibHashesIdentical: true,
+            recording: true, ranksAgreeOnTokens: agree, bothExitsObserved: true, noWorkerProcessLeft: true,
+            progressTimeoutMilliseconds: nil, timing: .init(note: "constructed"), promptSource: request.promptSource,
+            decodedOutput: nil, generationMode: mode, workerTransport: transport))
+    }
+    private let allowCut = QualificationComparator(allowCutDifference: true)
+
+    func testAPassingRunIsARecordOfChipsCutModeAndVerdicts() throws {
+        let pair = try pairData()
+        let record = try PairQualificationRecords.make(pairReport: pair,
+            references: [try referenceData(), try referenceData(chip: "Apple M5 Max")], comparator: allowCut)
+        XCTAssertTrue(record.passed); XCTAssertTrue(record.isConsistent)
+        XCTAssertEqual(record.ranks.map(\.chip), ["Apple M3 Ultra", "Apple M5 Max"])
+        XCTAssertEqual(record.ranks.map(\.rank), [0, 1])
+        XCTAssertEqual(record.cuts, [12]); XCTAssertEqual(record.generationMode, "phase_split_v1")
+        XCTAssertEqual(Set(record.comparisons.map(\.verdict)).count, 1, "\(record.comparisons)")
+        XCTAssertTrue(record.comparisons.allSatisfy { $0.passes && $0.allowed == ["cut"] })
+        XCTAssertEqual(record.comparisons.map(\.referenceChip), ["Apple M3 Ultra", "Apple M5 Max"])
+        XCTAssertEqual(record.pairReportSHA256, QualificationHash.sha256(pair))
+        XCTAssertEqual(record.runtimeModelID, try Constructed.identity().modelID)
+        // One JSON line, read back as written.
+        let line = try record.encodedLine()
+        XCTAssertFalse(line.contains("\n"))
+        XCTAssertEqual(try ClusterPairQualificationRecordShim.decode(line + "\n\n" + line), [record, record])
+        // Without the cut allowance the reference's own cut makes the comparison incomparable, which fails.
+        let strict = try PairQualificationRecords.make(pairReport: pair, references: [try referenceData()], comparator: .init())
+        XCTAssertEqual(strict.comparisons.map(\.verdict), ["incomparable"])
+        XCTAssertFalse(strict.passed); XCTAssertTrue(strict.isConsistent)
+    }
+
+    func testAFailingComparisonIsARecordThatFails() throws {
+        // The pair chose another token where the reference led by 1.5 (12 units in the last place): not a near tie.
+        let record = try PairQualificationRecords.make(pairReport: try pairData(tokens: [3, 4, 7, 1, 6, 3]),
+            references: [try referenceData()], comparator: allowCut)
+        XCTAssertEqual(record.comparisons.map(\.verdict), ["diverged"])
+        XCTAssertEqual(record.comparisons.first?.firstDivergenceIndex, 2)
+        XCTAssertFalse(record.passed); XCTAssertTrue(record.isConsistent)
+        XCTAssertEqual(record.firstFailure?.verdict, "diverged")
+        // The same choice at a near tie (margin 0.125 = 1 unit) passes.
+        let tie = try PairQualificationRecords.make(pairReport: try pairData(tokens: [3, 4, 7, 1, 6, 3]),
+            references: [try referenceData(margin: 0.125)], comparator: allowCut)
+        XCTAssertEqual(tie.comparisons.map(\.verdict), ["divergedAtNearTie"]); XCTAssertTrue(tie.passed)
+    }
+
+    func testWhatCannotQualifyAPairIsRefused() throws {
+        let reference = try referenceData()
+        for (label, pair) in [("one Mac over a loopback socket", try pairData(transport: "local-socket-test")),
+                              ("ranks disagree", try pairData(agree: false)),
+                              ("did not complete", try pairData(outcome: "failed")),
+                              ("a rank without a chip", try pairData(chips: ["Apple M3 Ultra", nil])),
+                              ("an unknown mode", try pairData(mode: "tensor_parallel_v9"))] {
+            XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: pair, references: [reference], comparator: allowCut), label)
+        }
+        XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: try pairData(), references: [], comparator: allowCut))
+        // A pair report is not a reference, and a reference is not a pair.
+        XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: try pairData(), references: [try pairData()], comparator: allowCut))
+        XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: reference, references: [reference], comparator: allowCut))
+        // Reports from before the transport and mode fields existed ran over JACCL as a pipeline.
+        let old = try PairQualificationRecords.make(pairReport: try pairData(transport: nil, mode: nil), references: [reference], comparator: allowCut)
+        XCTAssertEqual(old.transport, "jaccl"); XCTAssertEqual(old.generationMode, "pipeline_v1")
+    }
+
+    func testARecordWhoseStoredVerdictDisagreesWithItsComparisonsIsInconsistent() throws {
+        let record = try PairQualificationRecords.make(pairReport: try pairData(tokens: [3, 4, 7, 1, 6, 3]),
+            references: [try referenceData()], comparator: allowCut)
+        let edited = try record.encodedLine().replacingOccurrences(of: "\"passed\":false", with: "\"passed\":true")
+        let read = try XCTUnwrap(try ClusterPairQualificationRecordShim.decode(edited).first)
+        XCTAssertTrue(read.passed); XCTAssertFalse(read.passesNearTieRule); XCTAssertFalse(read.isConsistent)
     }
 }
 

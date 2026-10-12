@@ -15,7 +15,7 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     /// Paged unless the diagnosis switch names contiguous. Anything else stops
     /// the load by name; it never silently falls back.
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Self {
-        try named(environment) ?? .paged
+        try Self.named(environment) ?? .paged
     }
 
     /// The backend the launch named, nil when it named none. Anything but
@@ -40,7 +40,7 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     /// at 52 vs 107 tok/s, prefill chunks re-gather all earlier pages: first
     /// token 10.1 vs 7.1 s). Paged returns for MTP stages once both close.
     public static func resolved(environment: [String: String], speculative: Bool, batchLanes: Int) throws -> Self {
-        if let named = try named(environment) { return named }
+        if let value = try Self.named(environment) { return value }
         return speculative && batchLanes <= 1 ? .contiguous : .paged
     }
 

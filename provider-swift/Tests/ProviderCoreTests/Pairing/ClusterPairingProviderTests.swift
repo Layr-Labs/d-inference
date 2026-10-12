@@ -179,6 +179,8 @@ struct ClusterPairingProviderTests {
         request.port = ClusterPairCommandLine.defaultPort; request.clusterID = "bad label"; #expect(request.problem() != nil)
         request.clusterID = "studio.pair_1"; request.lifetimeSeconds = 601; #expect(request.problem() != nil)
         request.lifetimeSeconds = 60; #expect(request.problem() == nil)
+        request.listenOnly = true; #expect(request.problem() == nil)
+        request.connect = "10.219.4.7"; #expect(request.problem() != nil) // --listen and --connect exclude each other
         #expect(ClusterPairCommandLine.isPin(String(repeating: "a", count: 64)))
         #expect(!ClusterPairCommandLine.isPin(String(repeating: "A", count: 64)))
     }

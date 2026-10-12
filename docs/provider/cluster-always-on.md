@@ -71,10 +71,15 @@ together with the other member, and asks for macOS permissions once.
 | A pair forms | The leader runs one greedy 8-token warmup request before the pair accepts work; if it fails or takes over 300 s the pair is retired and formed again (`DARKBLOOM_CLUSTER_WARMUP=0` turns this off) |
 | Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together |
 | `darkbloom stop` | Drains, stops the member and keeps it stopped across reboots |
+| Before every run, and at the member's own start and end | Orphan sweep: a worker or owner whose parent is gone is given its own contract to end, then SIGTERM, SIGKILL only after the kill margin; a stranded device journal is cleared once nothing it names runs; bootstrap directories whose socket no longer answers are removed. One log line when it found something (`darkbloom cluster reap --json` runs the same sweep by hand) |
 
 The policies are ported from the owner's ThunderMLX restart loop and live in
 `provider-swift/Sources/ProviderCore/Service/ClusterSupervision/`; the process
-is `provider-swift/Sources/darkbloom/ClusterMemberSupervisor.swift`.
+is `provider-swift/Sources/darkbloom/ClusterMemberSupervisor.swift`. After a
+stop, `darkbloom cluster verify-teardown --json` says whether anything is left on
+this Mac (processes, wired memory against a baseline, the journal, bootstrap
+directories) and exits 1 when it is not clean; `darkbloom cluster cancel-all`
+force-cancels every request served on this Mac without the leader or SSH.
 
 ## Permissions asked once
 

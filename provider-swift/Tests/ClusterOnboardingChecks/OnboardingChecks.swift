@@ -218,7 +218,7 @@ import Darwin
         expect(code == 0, "leader: exit 0, got \(String(describing: code))")
         let text = run.text
         expect(text.contains("Serving Qwen3.5-9B from Apple M3 Ultra, 256 GB at 127.0.0.1:8000."), "leader: serving line")
-        expect(text.contains("Nothing is needed on the other Mac, now or after a restart."), "leader: the member needs nothing")
+        expect(text.contains("Nothing else is needed on the other Mac. After a Mac restarts, run `darkbloom cluster` on it once (it asks nothing)."), "leader: the member needs nothing, and the restart gap is said")
         expect(!text.contains("Run `darkbloom cluster` on the other Mac too."), "leader: the link flow's own ending is not repeated")
         expect(run.keys == 3, "leader: three keys (y, enter, y), got \(run.keys)")
         expect(recorder.all == ["checkLink", "pair", "answer y", "ensureService", "reachMembers", "planModels", "adopt 0", "serve",

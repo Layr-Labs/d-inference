@@ -417,7 +417,7 @@ public enum ClusterOnboardingDriver {
             console.say("Type a number from 1 to \(open.count), or press enter for 1.")
         }
         let choice = choices[chosen!]
-        console.say("Options: always on — each Mac's cluster service restarts its part and rejoins by itself (on).")
+        console.say("Options: always on — each Mac's cluster service starts its part again when it ends, and the cluster re-forms by itself (on).")
         console.say("         Public serving through Darkbloom — off (not offered by this build).")
         console.say("Serve \(choice.title) on both Macs? Press y to start, n to stop here.")
         guard ask(console) else {
@@ -459,7 +459,7 @@ public enum ClusterOnboardingDriver {
         let tested = test(operations, console)
         console.say("")
         console.say("Done. This Mac leads the cluster: run `darkbloom cluster` here to see it, change the model or stop it.")
-        console.say("Nothing is needed on the other Mac, now or after a restart.")
+        console.say("Nothing else is needed on the other Mac. After a Mac restarts, run `darkbloom cluster` on it once (it asks nothing).")
         return tested ? 0 : 1
     }
 

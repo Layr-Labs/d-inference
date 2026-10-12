@@ -225,12 +225,26 @@ extension QwenResidentRuntime {
                     throw error
                 }
             }
+            // The prompt-prefix cache and, when the owner configured one, its
+            // SSD tier for this plan and rank. Opening it sweeps the directories
+            // of other plans under the tier's root on this rank.
+            let prefixCache = QwenStagePrefixCache.fromEnvironment(launchEnvironment)
+            if prefixCache.enabled, let loadedStage = stage {
+                prefixCache.disk = QwenStagePrefixDiskTier.open(
+                    configuration: .fromEnvironment(launchEnvironment),
+                    planScope: QwenStagePrefixDiskTier.planScope(planFingerprint: admission.plan.fingerprint,
+                        artifactAggregateSHA256: loadedStage.loaded.receipt.verifiedAggregateSHA256,
+                        storageCommitmentSHA256: loadedStage.loaded.receipt.storageCommitmentSHA256,
+                        rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
+                        generationMode: mode.rawValue, prefillSchedule: configuration.prefillSchedule.rawValue),
+                    rank: collective.rank, fault: fault?.prefixDisk)
+            }
             let lifecycle = QwenLayerStageResidentLifecycle()
             try control.loaded()
             return .init(admission: admission, control: control, collective: collective,
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,
                 generationMode: mode, producerStage: producerStage, speculativeHead: speculativeHead,
-                speculativeTerms: speculativeTerms, qualificationFault: fault)
+                speculativeTerms: speculativeTerms, qualificationFault: fault, prefixCache: prefixCache)
         } catch {
             let primary = error; control.fail(); speculativeHead = nil; stage = nil; producerStage = nil
             do {

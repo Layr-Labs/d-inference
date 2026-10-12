@@ -78,6 +78,10 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
 
     public var count: Int { lock.withLock { entries.count } }
 
+    /// This rank's SSD tier, attached once at load when it is configured
+    /// (`QwenStagePrefixDiskTier`); nil when off. Never on with the cache off.
+    public internal(set) var disk: QwenStagePrefixDiskTier?
+
     /// Frontiers on the grid of this request's chunk size.
     func stride(chunkSize: Int) -> Int {
         guard chunkSize > 0 else { return strideTokens }
@@ -149,12 +153,22 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// for memory: only a refusal with the cache empty is thrown.
     func yieldingMemory(_ check: () throws -> Void) throws {
         var evicted = 0
+        var drained = false
         while true {
             do {
                 try check()
                 if evicted > 0 { log("darkbloom-prefix-v1 pressure-evicted=\(evicted) entries=\(count) admitted=true") }
                 return
             } catch {
+                // Records still queued for the SSD hold their arrays: finish
+                // them first, then return their buffers, before evicting.
+                if !drained, let disk {
+                    drained = true
+                    disk.drain(timeoutSeconds: 10)
+                    Stream.gpu.synchronize()
+                    Memory.clearCache()
+                    continue
+                }
                 guard enabled, evictLeastRecentlyUsed() else {
                     if evicted > 0 { log("darkbloom-prefix-v1 pressure-evicted=\(evicted) entries=\(count) admitted=false") }
                     throw error

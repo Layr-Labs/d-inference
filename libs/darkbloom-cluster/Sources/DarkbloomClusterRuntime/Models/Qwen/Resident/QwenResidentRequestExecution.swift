@@ -110,7 +110,8 @@ enum QwenResidentRequestExecution {
         if let prefix = result.prefixCache {
             log("darkbloom-prefix-v1 rank=\(collective.rank) request=\(reserved.request.requestID.uuidString.lowercased())"
                 + " prompt=\(reserved.request.promptCount) reused=\(prefix.reusedPromptTokens)"
-                + " stored=\(prefix.storedFrontiers.map(String.init).joined(separator: ",")) entries=\(prefix.cacheEntries)")
+                + " stored=\(prefix.storedFrontiers.map(String.init).joined(separator: "_")) entries=\(prefix.cacheEntries)"
+                + " tier=\(prefix.restoredTier ?? "none")")
         }
         let completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,

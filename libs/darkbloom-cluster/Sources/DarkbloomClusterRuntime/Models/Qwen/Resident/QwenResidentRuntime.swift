@@ -384,7 +384,10 @@ public final class QwenResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
-                    // Every rank sweeps its cache before its model goes.
+                    // Every rank sweeps its cache before its model goes. Records
+                    // already queued for the SSD are finished first (bounded):
+                    // they are what a restarted pair restores.
+                    prefixCache.disk?.close()
                     prefixCache.sweep()
                     reservation = nil; phaseSplitAllowance = nil; speculativeHead = nil; stage = nil; producerStage = nil
                     guard model == nil, producerModel == nil else { throw ProbeError("Resident model remains retained") }

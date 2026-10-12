@@ -35,7 +35,11 @@ import Foundation
               [--keep-warm on|off (S27 keep-warm, both tiers; default on)]
               [--stop-renewals-after-seconds S (qualification: stop renewing both rank leases; workers must end)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
-              [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
+              [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS
+                       | RANK:prefix_ssd_restore_fail=1 | RANK:prefix_ssd_restore_stall=MILLISECONDS]
+              [--local-prefix-ssd-dir /ABS --local-prefix-ssd-key-file /ABS] (each Mac's prompt-prefix SSD tier:
+              [--remote-prefix-ssd-dir /ABS --remote-prefix-ssd-key-file /ABS]  root and a private 32-byte key file)
+              [--prefix-ssd off (diagnosis: both workers keep nothing on disk and delete what they kept)]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--startup-seconds N] [--request-seconds N]
               [--rank1-delay-seconds N] [--progress-timeout-ms N] [--allow-unguarded-jaccl yes]
@@ -168,7 +172,9 @@ import Foundation
             "--idle-seconds", "--keep-warm", "--stop-renewals-after-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
-            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache"]
+            "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
+            "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
+            "--remote-prefix-ssd-key-file"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
@@ -248,6 +254,18 @@ import Foundation
             guard ["on", "off"].contains(cache) else { throw Failure("--prefix-cache takes on or off") }
             configuration.prefixCacheOff = cache == "off"
         }
+        for (side, keyPath) in [("local", \PairConfiguration.localPrefixSSD), ("remote", \PairConfiguration.remotePrefixSSD)] {
+            let directory = fields["--\(side)-prefix-ssd-dir"]?.first, key = fields["--\(side)-prefix-ssd-key-file"]?.first
+            guard (directory == nil) == (key == nil) else {
+                throw Failure("--\(side)-prefix-ssd-dir and --\(side)-prefix-ssd-key-file go together")
+            }
+            if let directory, let key { configuration[keyPath: keyPath] = PairPrefixSSD(directory: directory, keyFile: key) }
+        }
+        if let ssd = fields["--prefix-ssd"]?.first {
+            guard ["on", "off"].contains(ssd) else { throw Failure("--prefix-ssd takes on or off") }
+            configuration.prefixSSDOff = ssd == "off"
+        }
+        if fields["--local-prefix-ssd-dir"] != nil || fields["--remote-prefix-ssd-dir"] != nil { try configuration.validate() }
         if let follow = fields["--follow-request"] {
             configuration.followRequests = try follow.map { try QualificationRequest.read(URL(fileURLWithPath: $0)) }
             try configuration.validate()

@@ -119,8 +119,59 @@ final class EndpointBox: @unchecked Sendable {
         try altered(JSONSerialization.data(withJSONObject:original))
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
-        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-        try require(environment.count==10 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
+        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        try require(environment.count==12 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
+        // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
+        // without the product's key source, an owner-only key file made once and never replaced.
+        let keyFile=prepared.plan.paths.deviceDirectory.appendingPathComponent("prefix-ssd-v1.key")
+        try require(environment["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==prepared.plan.paths.homeDirectory
+            .appendingPathComponent("Library/Caches/darkbloom/cluster-prefix-v1",isDirectory:true).path
+            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path
+            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==nil,"prefix SSD tier not configured")
+        var keyInfo=stat()
+        let keyText=try Data(contentsOf:keyFile)
+        try require(lstat(keyFile.path,&keyInfo)==0 && keyInfo.st_mode & S_IFMT==S_IFREG && keyInfo.st_mode & 0o077==0
+            && keyInfo.st_uid==getuid() && keyText.count==65 && DistributedInstalledPrefixSSD.isKeyText(keyText),
+            "prefix SSD key file is not an owner-only 64-hex key")
+        let again=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        try require(again["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path,"one owner, one SSD key")
+        // A later owner process (nothing cached) reads the same file, never a new key.
+        let device=prepared.plan.paths.deviceDirectory
+        let laterFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:device),laterText=try Data(contentsOf:keyFile)
+        try require(laterFile==keyFile && laterText==keyText,"a later owner must keep the same SSD key")
+        // A file that is not an owner-only key is never replaced and never used.
+        let otherDevice=device.deletingLastPathComponent().appendingPathComponent("cluster-device-check",isDirectory:true)
+        try FileManager.default.createDirectory(at:otherDevice,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+        defer { try? FileManager.default.removeItem(at:otherDevice) }
+        let bad=otherDevice.appendingPathComponent("prefix-ssd-v1.key")
+        try Data("not a key\n".utf8).write(to:bad);chmod(bad.path,0o600)
+        let badFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:otherDevice),badText=try Data(contentsOf:bad)
+        try require(badFile==nil && badText==Data("not a key\n".utf8),"an unusable key file must be left alone")
+        // The product's key source, when installed and loading, wins: a hex key in the environment, no file.
+        let derived=Data((0..<32).map { UInt8($0) })
+        try require(DistributedInstalledPrefixSSD.environment(home:prepared.plan.paths.homeDirectory,deviceDirectory:otherDevice,
+            ownerEnvironment:[:],prefixCacheOff:false,key:.hex(derived.map { String(format:"%02x",$0) }.joined()))[
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==derived.map { String(format:"%02x",$0) }.joined(),"derived SSD key not passed")
+        DistributedInstalledPrefixSSD.installDurableKeySource { derived }
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
+            == .hex(derived.map { String(format:"%02x",$0) }.joined()),"product key source not preferred")
+        DistributedInstalledPrefixSSD.installDurableKeySource { nil }
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:device) == .file(keyFile),
+            "an unavailable product key must fall back to the key file")
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
+            == .hex(DistributedInstalledPrefixSSD.processKeyHex),"no usable key file: this owner's own key")
+        let ssdOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD":"off"])
+        try require(ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD"]=="off" && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==nil
+            && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==nil
+            && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"] != nil,"prefix SSD off switch not passed")
+        let cacheOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4"])
+        try require(cacheOff.count==11 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
+            "prefix cache off must not configure the SSD tier")
+        let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
+        try require(tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="4" && tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]==nil,
+            "prefix SSD budget switches not passed through or not bounded")
         try require(environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","installed plan did not set the collective progress limit")
         let local=try ClusterLocalOwnerConfiguration(installedDarkbloom:f.owner).launch()
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")

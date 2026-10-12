@@ -156,3 +156,47 @@ This one-model B=1 target-only result does not qualify MTP, SSD persistence,
 APNs, installed-service replacement, cross-process continuity, a coordinator
 restart, Stage D worker recovery, fleet deployment or a future differently
 signed binary. Those remain separate gates.
+
+## Final coordinator rerun
+
+`TestSignedProviderLoopLoadedEngineResumption` passed again against final
+coordinator source `99bec4f3ae97b2d496ad7e3dae2c01617c3d003b` in **165.30 seconds**
+(Go package elapsed **165.897 seconds**). This is a separate native run; the
+initial result and failed fixture attempts above remain unchanged. Its
+machine-readable evidence is appended under `reruns` in the
+[result record](evidence/native-serving-2026-10-11/result.json).
+
+| Input | Exact rerun value |
+|---|---|
+| Platform/harness source | `99bec4f3ae97b2d496ad7e3dae2c01617c3d003b` |
+| Platform tree | `809ce74f225573d604639bf4d3763205f4ddbfac` |
+| Provider integration source | `d3d2038d720735c5333a1ab96d4570f4146bd058` |
+| Artifact's qualified provider source | `847691126bbab642f8f5ef31865fb90e85aaf48f`; tracked `provider-swift/`, `libs/` dependency gitlinks and `scripts/` are byte-identical at the integration source |
+| Reused signed executable SHA-256 | `8d057a7aeeebed9881ba65f3159803947e0321b541d739201fdfff78012008a1` |
+| Full SHA-256 CodeDirectory hash | `813a13073a23dc76292322dbb4f8229ea234934e95627a8d4bdc71690ecfdc31` |
+| Model aggregate SHA-256 | `e37ad6bd9e24102c0821764cee7267ccdb93f6dfe8f58acd95c311d6726447cf` |
+
+The same signed artifact was reused, not replaced by a newly qualified binary
+from later provider merges. The source comparison was
+`git diff --exit-code 847691126bbab642f8f5ef31865fb90e85aaf48f d3d2038d720735c5333a1ab96d4570f4146bd058 -- provider-swift libs scripts`
+and produced no differences. The qualification checkout retains the operational
+log at `provider-swift/.build/native-serve-847691126/native-run-final-platform-99bec4f3.log`;
+raw credentials, proof blobs and inference content are not copied into this record.
+
+| Check | Final coordinator rerun result |
+|---|---|
+| Transport break / reconnect | **125.001 s** of refused transports; **4.281 s** from reopening to the replacement WebSocket, measured separately |
+| Encrypted inference | Successful consumer request/response and provider request/chunk encryption in both directions before and after the break |
+| Process / endpoint / engine | Same PID and kernel start, endpoint key `K`, model instance and engine-bundle UUID; load count and loaded-model count remain **1** |
+| Apple proof | Assertion counter remains **1**; custody-only reconnect preserves original proof identity and bounded expiry |
+| Interrupted request | HTTP **502**; positive real balance hold finalized and refunded exactly **once**, matching the full reservation; no usage record or successful charge |
+| Request cleanup | Fresh native inflight count **0**, old pending count **0**, old terminal replay count **0** |
+| Replacement readiness | Fresh capacity followed by an advancing capacity sequence |
+| Process cleanup | Owned child reaped; scoped LaunchServices registration restored |
+
+This rerun qualifies the recorded Stage C transport-break scenario against the
+final coordinator revision, not a general rollout matrix. Sleep/wake, reboot,
+security-setting transitions and full loaded-engine Stage D callback recovery
+remain unqualified by this run. It does not approve a release, deployment,
+environment change or later differently signed provider. The initial one-model,
+B=1 target-only scope and other limitations above still apply.

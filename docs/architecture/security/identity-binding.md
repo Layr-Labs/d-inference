@@ -99,9 +99,10 @@ helper or a signing service. It defaults off and is not ready for production;
 see [selection](../../reference/configuration.md#app-attest-worker-qualification)
 and the [reported native qualification gate](../../../scripts/nativequalification/README.md#qualification-status).
 The in-process path above remains the default.
-Native suspended-worker and real assertion-callback recovery passed on the
-recorded signed artifacts. Loaded-engine continuity and composed two-minute
-resumption remain pending; these passes do not qualify a rebuilt artifact.
+Native suspended-worker, real assertion-callback recovery with a loaded engine,
+and the separate composed two-minute resumption test passed on their recorded
+signed artifacts. These passes do not qualify a rebuilt artifact or the full
+sleep, reboot, update, security-transition and fleet-rollout matrix.
 The child entry is `--app-attest-worker-v1` (`AppAttestWorkerHost.argument`),
 not a public CLI signing command.
 

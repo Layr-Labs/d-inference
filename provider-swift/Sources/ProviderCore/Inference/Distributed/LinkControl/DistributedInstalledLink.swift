@@ -141,6 +141,10 @@ public enum DistributedInstalledLinkFollower {
         guard plan.configuration.role == .follower, plan.configuration.linkControl != nil else {
             throw ClusterConfigurationError.invalid("Only a follower setup with a link control attachment serves over the link")
         }
+        // The rank this Mac serves must be granted on this Mac's own class: a
+        // follower whose chip the model's grant does not list says so when it
+        // starts, instead of at each open (its owner checks again before it serves).
+        try plan.requireLocalRankGranted(numericsClass: ClusterNumericsClass.local())
         let leader = try DistributedInstalledLinkEdge.leaderAddress(plan.configuration)
         let edge = try DistributedInstalledLinkEdge.edge(configuration: plan.configuration, peerAddress: leader)
         final class Box: @unchecked Sendable {

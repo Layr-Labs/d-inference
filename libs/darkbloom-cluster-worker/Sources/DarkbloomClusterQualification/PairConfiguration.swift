@@ -17,6 +17,13 @@ public struct PairSide: Equatable, Sendable {
 /// Every input of a pair run, validated before anything is launched. Values
 /// that reach a shell are restricted to characters that need no quoting, and
 /// are single-quoted anyway.
+/// One side's prompt-prefix SSD tier for a qualification run.
+public struct PairPrefixSSD: Equatable, Sendable {
+    public var directory: String
+    public var keyFile: String
+    public init(directory: String, keyFile: String) { self.directory = directory; self.keyFile = keyFile }
+}
+
 public struct PairConfiguration: Sendable {
     public static let roles = ["rank 0 local", "rank 1 remote"]
     public static let peerIDs = ["rank0-local", "rank1-remote"]
@@ -130,6 +137,12 @@ public struct PairConfiguration: Sendable {
     public var batchRequests: [QualificationRequest] = []
     public var batchWaves: [Int] = []
     public var batchSolo = true
+    /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
+    /// directory and key file (a file only its user can read). Nil: no tier.
+    public var localPrefixSSD: PairPrefixSSD?
+    public var remotePrefixSSD: PairPrefixSSD?
+    /// Diagnosis: both workers keep nothing on disk and delete what they kept.
+    public var prefixSSDOff = false
     public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
@@ -308,11 +321,19 @@ public struct PairConfiguration: Sendable {
         try require(stopAfterTokens.map { !recording && (1..<request.outputCount).contains($0) } ?? true,
             "a client stop is a serving-path input, after 1 or more tokens and before the output limit")
         if let faultRank, let faultValue {
-            try require((0...1).contains(faultRank) && recording
-                && [Self.phaseSplitMode, Self.phaseSplitMTPMode].contains(generationMode)
+            // A prompt-prefix SSD fault applies to any mode and to serving requests.
+            let prefixSSDFault = faultValue.hasPrefix("prefix_ssd_")
+            try require((0...1).contains(faultRank)
+                && (prefixSSDFault || (recording && [Self.phaseSplitMode, Self.phaseSplitMTPMode].contains(generationMode)))
                 && (1...96).contains(faultValue.utf8.count)
                 && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
-                "a fault is a recording phase-split run's input: RANK and name=value of lowercase letters, digits, '_', ':'")
+                "a fault is a recording phase-split run's input (or a prefix_ssd_ fault in any run): "
+                    + "RANK and name=value of lowercase letters, digits, '_', ':'")
+        }
+        for (name, ssd) in [("local", localPrefixSSD), ("remote", remotePrefixSSD)] {
+            guard let ssd else { continue }
+            try require(Self.isPath(ssd.directory) && Self.isPath(ssd.keyFile),
+                "\(name) prefix SSD directory and key file must be absolute paths of letters, digits, '.', '_', '-', '/'")
         }
         try require(!recording || QualificationRequest.registeredModel(request.modelID)?.hasRecordingRuntime == true,
             "this model has no recording runtime; run it with --evidence none")
@@ -437,6 +458,11 @@ public struct PairConfiguration: Sendable {
         if prefixCacheOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_CACHE", "off")) }
         if batchLanes > 1 { environment.append(("DARKBLOOM_CLUSTER_BATCH_LANES", String(batchLanes))) }
         if let kvBackend { environment.append(("DARKBLOOM_CLUSTER_KV_BACKEND", kvBackend)) }
+        if let ssd = rank == localRank ? localPrefixSSD : remotePrefixSSD {
+            environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_DIR", ssd.directory))
+            environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE", ssd.keyFile))
+        }
+        if prefixSSDOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD", "off")) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
         if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         if stageResidency {

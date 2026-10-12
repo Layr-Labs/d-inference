@@ -70,7 +70,7 @@ public struct PairDriver: Sendable {
         "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 ",
         "darkbloom-data-plane-v1 ", "darkbloom-data-plane-exchange-v1 ", "darkbloom-data-plane-tamper-v1 ",
         "darkbloom-data-plane-status-v1 ", "darkbloom-request-refused-v1 ", "darkbloom-serving-context-v1 ",
-        "darkbloom-stage-loaded-range-v1 "]
+        "darkbloom-stage-loaded-range-v1 ", "darkbloom-prefix-v1 ", "darkbloom-prefix-ssd-v1 "]
     /// The two workers' credential lines for one run (S16).
     static func dataPlaneLines(_ c: PairConfiguration) throws -> [Data?] {
         let identities = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]

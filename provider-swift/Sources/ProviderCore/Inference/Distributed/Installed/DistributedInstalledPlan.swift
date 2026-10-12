@@ -107,9 +107,12 @@ struct DistributedInstalledPlan: Sendable {
         var environment = baseNativeEnvironment(matrix: matrix)
         // Diagnosis only: this owner's worker keeps no prompt prefixes and asks
         // its peer for none, so the pair prefills every request from zero.
-        if let value = ownerEnvironment[Self.prefixCacheSwitch], value.lowercased() == "off" {
-            environment[Self.prefixCacheSwitch] = "off"
-        }
+        let prefixCacheOff = ownerEnvironment[Self.prefixCacheSwitch]?.lowercased() == "off"
+        if prefixCacheOff { environment[Self.prefixCacheSwitch] = "off" }
+        // The prefix cache's SSD tier (on with the cache; see the type).
+        environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
+            deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
+            prefixCacheOff: prefixCacheOff)) { current, _ in current }
         // Continuous batching (pipeline mode only): both owners must give their
         // workers the same lane count (the workers' load agreement refuses a
         // mismatch). A setup in a phase-split mode keeps one request at a time.

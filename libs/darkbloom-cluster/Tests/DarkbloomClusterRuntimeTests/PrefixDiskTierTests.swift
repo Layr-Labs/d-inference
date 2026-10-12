@@ -1,0 +1,315 @@
+import Foundation
+import MLX
+import Testing
+@testable import DarkbloomClusterRuntime
+
+// The SSD tier of the rank-local prompt-prefix cache: keys, configuration,
+// record round trips across a restart, the offer's tier bits, authentication,
+// sweeps, eviction, expiry and the qualification faults. No collective, model
+// or GPU kernels beyond creating and comparing small arrays.
+
+private let heads = 2, headDim = 8, block = 8
+
+private func temporaryRoot() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("prefix-ssd-tests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func configuration(_ root: URL, key: Data = Data(repeating: 7, count: 32),
+                           _ change: (inout QwenStagePrefixDiskConfiguration) -> Void = { _ in }) -> QwenStagePrefixDiskConfiguration {
+    var value = QwenStagePrefixDiskConfiguration(mode: .on(root: root, key: key))
+    value.strideTokens = 16; value.minimumTokens = 1; value.minimumFreeBytes = 1
+    change(&value)
+    return value
+}
+
+/// One prompt's captured states on one rank: attention rows `[1, 2, D, 8]`
+/// (bf16, values derived from `seed`) and recurrent state per frontier.
+private func states(committed: Int, frontiers: [Int], seed: Int) -> [QwenStagePrefixState] {
+    let count = heads * committed * headDim
+    let base = (MLXArray(0..<count).asType(.float32) + Float(seed)).reshaped([1, heads, committed, headDim])
+    let keys = (base * 0.5).asType(.bfloat16), values = (base * -0.25).asType(.bfloat16)
+    eval(keys, values)
+    return (frontiers + [committed]).map { f in
+        let attention: [Int: (keys: MLXArray, values: MLXArray)] = f == committed
+            ? [3: (keys: keys, values: values)]
+            : [3: (keys: keys[0..., 0..., 0..<f, 0...], values: values[0..., 0..., 0..<f, 0...])]
+        let conv = MLXArray((0..<12).map { Float($0 + f + seed) }).reshaped([1, 3, 4])
+        let ssm = MLXArray((0..<16).map { Float($0 * f + seed) }).reshaped([1, 2, 2, 4])
+        return QwenStagePrefixState(committedTokens: f, attention: attention, recurrent: [0: (conv: conv, ssm: ssm)])
+    }
+}
+
+private func equal(_ a: MLXArray, _ b: MLXArray) -> Bool {
+    a.shape == b.shape && a.dtype == b.dtype && MLX.arrayEqual(a, b).item(Bool.self)
+}
+
+private func same(_ restored: QwenStagePrefixState, _ original: QwenStagePrefixState) -> Bool {
+    guard restored.committedTokens == original.committedTokens,
+          Set(restored.attention.keys) == Set(original.attention.keys),
+          Set(restored.recurrent.keys) == Set(original.recurrent.keys) else { return false }
+    for (layer, pair) in original.attention {
+        guard let other = restored.attention[layer], equal(other.keys, pair.keys), equal(other.values, pair.values) else { return false }
+    }
+    for (layer, pair) in original.recurrent {
+        guard let other = restored.recurrent[layer], equal(other.conv, pair.conv), equal(other.ssm, pair.ssm) else { return false }
+    }
+    return true
+}
+
+private func openTier(_ configuration: QwenStagePrefixDiskConfiguration, plan: String = "plan-a", rank: Int = 0,
+                  fault: QwenStagePrefixDiskFault? = nil) throws -> QwenStagePrefixDiskTier {
+    try #require(QwenStagePrefixDiskTier.open(configuration: configuration, planScope: plan, rank: rank, fault: fault))
+}
+
+@Suite("Prompt prefix SSD tier (rank-local, encrypted, swept)", .serialized)
+struct PrefixDiskTierTests {
+    @Test func incrementalKeysEqualTheSharedKeyAtEveryFrontier() {
+        let tokens = (0..<300).map { ($0 * 7919) % 1000 }
+        let keys = QwenStagePrefixKeys.keys(scope: "s|chunk=8", tokens: tokens, frontiers: [1, 8, 64, 299, 300, 301, 0])
+        #expect(Set(keys.keys) == [1, 8, 64, 299, 300])
+        for (frontier, key) in keys {
+            #expect(key == QwenStagePrefixCache.key(scope: "s|chunk=8", tokens: tokens[0..<frontier]))
+        }
+    }
+
+    @Test func configurationFailsClosedAndOnlyShortensTheTTL() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hex = String(repeating: "0f", count: 32)
+        #expect(QwenStagePrefixDiskConfiguration.fromEnvironment([:]).mode == .off(sweepRoot: nil, reason: "no directory"))
+        let noKey = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path])
+        #expect(!noKey.enabled)
+        if case .off(let sweep, _) = noKey.mode { #expect(sweep != nil) }
+        let on = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex, "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS": "7200",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_RECORDS": "3", "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB": "2"])
+        #expect(on.enabled && on.ttlSeconds == 1800 && on.recordLimit == 3 && on.byteBudget == 2 * 1_073_741_824)
+        let shorter = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex, "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS": "60"])
+        #expect(shorter.ttlSeconds == 60)
+        let off = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex, "DARKBLOOM_CLUSTER_PREFIX_SSD": "off"])
+        #expect(!off.enabled)
+        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": "relative/dir",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex]).enabled)
+        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": "abc"]).enabled)
+        // A key file must be private to this user.
+        let keyFile = root.appendingPathComponent("key")
+        try Data(hex.utf8).write(to: keyFile)
+        chmod(keyFile.path, 0o644)
+        let environment = ["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path, "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE": keyFile.path]
+        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(environment).enabled)
+        chmod(keyFile.path, 0o600)
+        #expect(QwenStagePrefixDiskConfiguration.fromEnvironment(environment).enabled)
+    }
+
+    @Test func aRecordSurvivesARestartAndRestoresExactlyAtEachKeptFrontier() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(100..<140), scope = "scope|chunk=8"
+        let captured = states(committed: 39, frontiers: [8, 16, 24, 32], seed: 1)
+        do {
+            let tier = try openTier(configuration(root))
+            tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+            #expect(tier.drain(timeoutSeconds: 20))
+            #expect(tier.stats.persisted == 1 && tier.recordCount == 1)
+            // Kept: N-1 and the disk grid (stride 16), not every resident frontier.
+            #expect(tier.frontiers(scope: scope, tokens: tokens, maximumFrontier: 39) == [39, 32, 16])
+            tier.close()
+        }
+        // A new process: same plan, same key.
+        let tier = try openTier(configuration(root))
+        #expect(tier.stats.loadedRecords == 1)
+        #expect(tier.frontiers(scope: scope, tokens: tokens, maximumFrontier: 38) == [32, 16])
+        #expect(tier.frontiers(scope: "other", tokens: tokens, maximumFrontier: 39).isEmpty)
+        var changed = tokens; changed[20] = 7
+        #expect(tier.frontiers(scope: scope, tokens: changed, maximumFrontier: 39) == [16])
+        for frontier in [39, 32, 16] {
+            let restored = try #require(try tier.restore(scope: scope, tokens: tokens, frontier: frontier, check: {}))
+            let original = captured.first { $0.committedTokens == frontier }!
+            #expect(same(restored, original))
+        }
+        #expect(tier.stats.restores == 3)
+        // A frontier the record does not keep is not restorable.
+        #expect(try tier.restore(scope: scope, tokens: tokens, frontier: 24, check: {}) == nil)
+        // The same prompt again only touches its record.
+        tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        #expect(tier.stats.persisted == 0 && tier.recordCount == 1)
+        // Files are named by keyed tags and private to this user.
+        let directory = tier.directory
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".dbpx") }
+        #expect(names.count == 1 && !names[0].contains(QwenStagePrefixCache.key(scope: scope, tokens: tokens[0..<39]).prefix(16)))
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent(names[0]).path)
+        #expect((attributes[.posixPermissions] as? Int) == 0o600)
+    }
+
+    @Test func offersCarryTierBitsAndTheChoiceIgnoresThem() {
+        let a = QwenStagePrefixOffer(enabled: true, frontiers: [99, 64, 32], onDisk: [99])
+        let decoded = QwenStagePrefixOffer(words: a.words, promptCount: 100)
+        #expect(decoded == a && decoded.onDisk == [99])
+        let b = QwenStagePrefixOffer(enabled: true, frontiers: [99, 32], onDisk: [32])
+        #expect(QwenStagePrefixChoice.choose(local: a, peer: b, promptCount: 100) == .init(reusedPrefix: 99, splitFinalToken: true))
+        #expect(QwenStagePrefixChoice.choose(local: b, peer: a, promptCount: 100) == .init(reusedPrefix: 99, splitFinalToken: true))
+        // A tier bit on an out-of-range value, duplicates, or the old magic: off.
+        var words = a.words; words[3] = Int32(100) | QwenStagePrefixOffer.diskBit
+        #expect(QwenStagePrefixOffer(words: words, promptCount: 100) == .init(enabled: false, frontiers: []))
+        words = a.words; words[4] = words[3]
+        #expect(QwenStagePrefixOffer(words: words, promptCount: 100) == .init(enabled: false, frontiers: []))
+        words = a.words; words[0] = 0x5046_5831
+        #expect(QwenStagePrefixOffer(words: words, promptCount: 100) == .init(enabled: false, frontiers: []))
+    }
+
+    @Test func aChangedByteMakesTheRecordAbsentAndItIsDeleted() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(0..<40), scope = "s"
+        let tier = try openTier(configuration(root))
+        tier.persist(scope: scope, tokens: tokens, states: states(committed: 39, frontiers: [16], seed: 2), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).first { $0.hasSuffix(".dbpx") })
+        let url = tier.directory.appendingPathComponent(name)
+        var bytes = try Data(contentsOf: url)
+        bytes[bytes.count - 40] ^= 0x01
+        try bytes.write(to: url)
+        #expect(try tier.restore(scope: scope, tokens: tokens, frontier: 39, check: {}) == nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(tier.frontiers(scope: scope, tokens: tokens, maximumFrontier: 39).isEmpty)
+        #expect(tier.stats.failedRestores == 1)
+    }
+
+    @Test func anotherKeyAnotherPlanOrTheSwitchSweepsWhatCannotBeUsed() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(0..<40)
+        let unrelated = root.appendingPathComponent("not-ours", isDirectory: true)
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        let first = try openTier(configuration(root), plan: "plan-a")
+        first.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 3), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 20))
+        first.close()
+        // Another key: every record of this rank is unreadable and deleted.
+        let rekeyed = try openTier(configuration(root, key: Data(repeating: 9, count: 32)), plan: "plan-a")
+        #expect(rekeyed.recordCount == 0 && rekeyed.stats.sweptFiles >= 1)
+        rekeyed.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 3), blockTokens: block)
+        #expect(rekeyed.drain(timeoutSeconds: 20))
+        rekeyed.close()
+        let planA = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "plan-a"))
+        #expect(FileManager.default.fileExists(atPath: planA.path))
+        // Another plan on this rank: plan-a's directory goes, unrelated files stay.
+        let other = try openTier(configuration(root, key: Data(repeating: 9, count: 32)), plan: "plan-b")
+        #expect(other.stats.sweptPlans == 1 && !FileManager.default.fileExists(atPath: planA.path))
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+        other.close()
+        // Switched off with a root: every plan directory goes.
+        #expect(QwenStagePrefixDiskTier.open(configuration: .init(mode: .off(sweepRoot: root, reason: "switched off")),
+            planScope: "plan-b", rank: 0) == nil)
+        let left = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        #expect(left == ["not-ours"])
+    }
+
+    @Test func aPlanDirectoryALiveRankUsesIsNotSweptAndLongPromptsKeepABoundedGrid() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = try openTier(configuration(root), plan: "plan-live")
+        let other = try openTier(configuration(root), plan: "plan-other")
+        let liveDirectory = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "plan-live"))
+        #expect(other.stats.sweptPlans == 0 && FileManager.default.fileExists(atPath: liveDirectory.path))
+        live.close()
+        other.close()
+        let third = try openTier(configuration(root) { $0.strideTokens = 2 }, plan: "plan-third")
+        #expect(third.stats.sweptPlans == 2 && !FileManager.default.fileExists(atPath: liveDirectory.path))
+        // Every 2 tokens captured, a 2-token disk stride: doubled until at most 8 grid frontiers remain.
+        let tokens = Array(0..<40)
+        third.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: Array(stride(from: 2, through: 38, by: 2)), seed: 5),
+            blockTokens: 2)
+        #expect(third.drain(timeoutSeconds: 20))
+        #expect(third.frontiers(scope: "s", tokens: tokens, maximumFrontier: 39) == [39, 32, 24, 16, 8])
+        third.close()
+    }
+
+    @Test func evictionIsByRecordCountInRecencyOrderAndRecordsExpire() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tier = try openTier(configuration(root) { $0.recordLimit = 2 })
+        let prompts = (0..<3).map { p in Array((p * 1000)..<(p * 1000 + 40)) }
+        tier.persist(scope: "s", tokens: prompts[0], states: states(committed: 39, frontiers: [], seed: 0), blockTokens: block)
+        tier.persist(scope: "s", tokens: prompts[1], states: states(committed: 39, frontiers: [], seed: 1), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        // Use the first, then add a third: the second (least recently used) goes.
+        #expect(try tier.restore(scope: "s", tokens: prompts[0], frontier: 39, check: {}) != nil)
+        tier.persist(scope: "s", tokens: prompts[2], states: states(committed: 39, frontiers: [], seed: 2), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        #expect(tier.recordCount == 2 && tier.stats.evictions == 1)
+        #expect(tier.frontiers(scope: "s", tokens: prompts[1], maximumFrontier: 39).isEmpty)
+        #expect(tier.frontiers(scope: "s", tokens: prompts[0], maximumFrontier: 39) == [39])
+        // Thirty-one minutes later nothing is offered, and a restart deletes them.
+        let later = Date().timeIntervalSince1970 + 31 * 60
+        tier.now = { later }
+        #expect(tier.frontiers(scope: "s", tokens: prompts[0], maximumFrontier: 39).isEmpty)
+        tier.close()
+        usleep(1_100_000)
+        let expired = try openTier(configuration(root) { $0.ttlSeconds = 1 })
+        #expect(expired.recordCount == 0 && expired.stats.expirations == 2)
+    }
+
+    @Test func writesAreBoundedAndNeverWaitedFor() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(0..<40)
+        // Below the shortest prompt worth a record: nothing.
+        let short = try openTier(configuration(root) { $0.minimumTokens = 64 })
+        short.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 0), blockTokens: block)
+        #expect(short.drain(timeoutSeconds: 20) && short.recordCount == 0 && short.stats.droppedPersists == 0)
+        short.close()
+        // No room behind the writer: dropped.
+        let full = try openTier(configuration(root) { $0.maximumQueuedJobs = 0 })
+        full.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 0), blockTokens: block)
+        #expect(full.drain(timeoutSeconds: 20) && full.recordCount == 0 && full.stats.droppedPersists == 1)
+        full.close()
+        // Below the free-space floor or past the daily cap: dropped by the writer.
+        let low = try openTier(configuration(root) { $0.minimumFreeBytes = Int.max / 4 })
+        low.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 0), blockTokens: block)
+        #expect(low.drain(timeoutSeconds: 20) && low.recordCount == 0 && low.stats.droppedPersists == 1)
+        low.close()
+        let capped = try openTier(configuration(root) { $0.maximumWriteBytesPerDay = 1 })
+        capped.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 0), blockTokens: block)
+        #expect(capped.drain(timeoutSeconds: 20) && capped.recordCount == 0 && capped.stats.droppedPersists == 1)
+        capped.close()
+    }
+
+    @Test func qualificationFaultsKeepTheRecordAndACheckFailureThrows() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(0..<40)
+        let writer = try openTier(configuration(root))
+        writer.persist(scope: "s", tokens: tokens, states: states(committed: 39, frontiers: [], seed: 4), blockTokens: block)
+        #expect(writer.drain(timeoutSeconds: 20))
+        writer.close()
+        let failing = try openTier(configuration(root), fault: .init(restoreFails: true))
+        #expect(try failing.restore(scope: "s", tokens: tokens, frontier: 39, check: {}) == nil)
+        #expect(failing.recordCount == 1)
+        failing.close()
+        let stalled = try openTier(configuration(root), fault: .init(restoreStallMilliseconds: 5_000))
+        var calls = 0
+        #expect(throws: ProbeError.self) {
+            _ = try stalled.restore(scope: "s", tokens: tokens, frontier: 39, check: {
+                calls += 1; if calls > 3 { throw ProbeError("peer ended") }
+            })
+        }
+        #expect(stalled.recordCount == 1)
+        stalled.fault = nil
+        #expect(try stalled.restore(scope: "s", tokens: tokens, frontier: 39, check: {}) != nil)
+        // The switch names are admitted by the qualification fault parser only.
+        #expect(try QwenPhaseSplitFault.admit(environment: ["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT": "prefix_ssd_restore_fail=1"])?
+            .prefixDisk == .init(restoreFails: true))
+        #expect(try QwenPhaseSplitFault.admit(environment: ["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT": "prefix_ssd_restore_stall=250"])?
+            .prefixDisk == .init(restoreStallMilliseconds: 250))
+        #expect(throws: ProbeError.self) {
+            _ = try QwenPhaseSplitFault.admit(environment: ["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT": "prefix_ssd_restore_fail=2"])
+        }
+    }
+}

@@ -18,6 +18,9 @@ extension Cluster {
             // template, lease path, config override or capacity from its caller.
             let reference = try ClusterConfigurationStore.installedReference(
                 providerConfiguration: ConfigManager.defaultConfigPath())
+            // The rank's prefix-cache SSD key, from the product's key hierarchy
+            // when this build holds it (records then survive every restart).
+            ClusterPrefixSSDKeyMaterial.installAsOwnerKeySource()
             try DistributedInstalledOwner.serve(reference: reference)
         }
     }

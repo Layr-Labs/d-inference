@@ -315,8 +315,13 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                         for index in states.indices { states[index].speculativeHistory = histories(states[index].committedTokens) }
                     }
                     let historyBytes = states.isEmpty ? 0 : decoder?.keptHistoryBytes ?? 0
-                    prefixCache.insert(scope: qwenStagePrefixScope(agreement), tokens: agreement.request.promptTokenIDs,
+                    let scope = qwenStagePrefixScope(agreement)
+                    prefixCache.insert(scope: scope, tokens: agreement.request.promptTokenIDs,
                         states: states, sharedBytes: owned.capturedSharedBytes + historyBytes)
+                    // The SSD record (stage state and the head's history) is
+                    // written behind; serving does not wait for it.
+                    prefixCache.disk?.persist(scope: scope, tokens: agreement.request.promptTokenIDs, states: states,
+                        blockTokens: prefixCache.stride(chunkSize: agreement.request.chunkSize))
                     if let cost = owned.prefixCaptureCost {
                         let tokens = max(1, agreement.request.promptCount - 1)
                         prefixCache.record(.init(attentionBytesPerToken: cost.attentionBytesPerToken,
@@ -333,6 +338,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 }
                 owned.discardCapturedPrefix()
                 let prefixSummary = QwenStagePrefixSummary(reusedPromptTokens: prefix.reusedPromptTokens,
+                    restoredTier: prefix.restoredTier,
                     agreedPromptTokens: prefix.agreedPromptTokens, splitFinalToken: prefix.splitFinalToken,
                     storedFrontiers: stored, cacheEntries: prefixCache?.count ?? 0)
                 var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
@@ -556,8 +562,15 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
 ) throws -> QwenStagePrefixPlanOutcome {
     let request = agreement.request, scope = qwenStagePrefixScope(agreement)
     let enabled = (cache?.enabled ?? false) && qwenStageAdmitsPrefixCapture(loaded)
-    let local = QwenStagePrefixOffer(enabled: enabled, frontiers: enabled
-        ? cache!.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1) : [])
+    // Both tiers: the resident entries and the SSD records this rank holds.
+    var resident: [Int] = [], onDisk: [Int] = []
+    if enabled, let cache {
+        resident = cache.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1)
+        onDisk = cache.disk?.frontiers(scope: scope, tokens: request.promptTokenIDs,
+            maximumFrontier: request.promptCount - 1) ?? []
+    }
+    let offered = Array(Set(resident).union(onDisk).sorted(by: >).prefix(QwenStagePrefixCache.maximumOffered))
+    let local = QwenStagePrefixOffer(enabled: enabled, frontiers: offered, onDisk: Set(onDisk).subtracting(resident))
     let record = CollectiveRecordScope.request(.prefixAgreement, requestID: request.requestID,
         agreementFingerprint: agreement.fingerprint, "prefix")
     let peer = QwenStagePrefixOffer(words: try exchangeQwenStagePrefixWords(collective: collective,
@@ -565,8 +578,20 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
     let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount)
     var restoredSession: QwenLayerStageSession?
     var key: String?
-    if choice.reusedPrefix > 0, let cache,
-       let state = cache.state(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) {
+    var tier: String?
+    var fromDisk: QwenStagePrefixState?
+    var restoredState: QwenStagePrefixState?
+    if choice.reusedPrefix > 0, let cache {
+        if let state = cache.state(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) {
+            restoredState = state; tier = "resident"
+            cache.disk?.touch(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix)
+        } else if let disk = cache.disk,
+                  let state = try disk.restore(scope: scope, tokens: request.promptTokenIDs,
+                      frontier: choice.reusedPrefix, check: check) {
+            restoredState = state; fromDisk = state; tier = "ssd"
+        }
+    }
+    if let state = restoredState {
         key = QwenStagePrefixCache.key(scope: scope, tokens: request.promptTokenIDs[0..<choice.reusedPrefix])
         do {
             let planned = try request.planned(reusedPrefix: choice.reusedPrefix, splitFinalToken: choice.splitFinalToken)
@@ -577,6 +602,7 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
             // ranks prefill from zero. A native fault still surfaces below.
             log("darkbloom-prefix-v1 rank=\(collective.rank) restore-failed frontier=\(choice.reusedPrefix): \(error)")
             restoredSession = nil
+            if tier == "ssd" { cache?.disk?.forget(scope: scope, tokens: request.promptTokenIDs, frontier: choice.reusedPrefix) }
         }
         try check()
     }
@@ -586,8 +612,14 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
         words: confirmation.words, scope: record.part("confirmation"), check: check))
     let settled = QwenStagePrefixConfirmation.settle(local: confirmation, peer: peerConfirmation)
     if settled.reusedPrefix != choice.reusedPrefix || restoredSession == nil {
-        try restoredSession?.cancel(); restoredSession = nil
+        try restoredSession?.cancel(); restoredSession = nil; tier = nil
+    } else if let fromDisk, let cache {
+        // Both ranks restored the same frontier from what each holds; a state
+        // read from disk becomes resident too, on both ranks alike, so the
+        // next repeat is a memory hit (it gives way under pressure as any entry).
+        cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk])
     }
+    fromDisk = nil; restoredState = nil
     let plannedRequest = try request.planned(reusedPrefix: settled.reusedPrefix, splitFinalToken: settled.splitFinalToken)
     let plannedAgreement = try agreement.planned(plannedRequest)
     let session = try restoredSession
@@ -596,9 +628,10 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
         session.prefixCaptureFrontiers = plannedRequest.prefixCaptureFrontiers(stride: cache.stride(chunkSize: request.chunkSize))
     }
     if settled.reusedPrefix > 0 || choice.reusedPrefix > 0 {
-        log("darkbloom-prefix-v1 rank=\(collective.rank) agreed=\(choice.reusedPrefix) reused=\(settled.reusedPrefix) prompt=\(request.promptCount)")
+        log("darkbloom-prefix-v1 rank=\(collective.rank) agreed=\(choice.reusedPrefix) reused=\(settled.reusedPrefix)"
+            + " prompt=\(request.promptCount) tier=\(tier ?? "none") peer_disk=\(peer.onDisk.contains(choice.reusedPrefix))")
     }
     return .init(agreement: plannedAgreement, session: session, summary: .init(
-        reusedPromptTokens: settled.reusedPrefix, agreedPromptTokens: choice.reusedPrefix,
+        reusedPromptTokens: settled.reusedPrefix, restoredTier: tier, agreedPromptTokens: choice.reusedPrefix,
         splitFinalToken: settled.splitFinalToken, storedFrontiers: [], cacheEntries: cache?.count ?? 0))
 }

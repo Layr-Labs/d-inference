@@ -40,7 +40,11 @@ import Foundation
                                               refused before either rank is asked; off sends it to the ranks' gates)]
               [--stop-renewals-after-seconds S (qualification: stop renewing both rank leases; workers must end)]
               [--transport local-socket-test (both ranks on this Mac, with --remote-command-prefix; correctness only)]
-              [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS]
+              [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS
+                       | RANK:prefix_ssd_restore_fail=1 | RANK:prefix_ssd_restore_stall=MILLISECONDS]
+              [--local-prefix-ssd-dir /ABS --local-prefix-ssd-key-file /ABS] (each Mac's prompt-prefix SSD tier:
+              [--remote-prefix-ssd-dir /ABS --remote-prefix-ssd-key-file /ABS]  root and a private 32-byte key file)
+              [--prefix-ssd off (diagnosis: both workers keep nothing on disk and delete what they kept)]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]
               [--data-plane-fault RANK:wrong-pin | RANK:KIND:ORDINAL (qualification: a wrong pin on that rank, or one
@@ -200,7 +204,9 @@ import Foundation
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
-            "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--kv-backend"]
+            "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--kv-backend",
+            "--prefix-ssd", "--local-prefix-ssd-dir", "--local-prefix-ssd-key-file", "--remote-prefix-ssd-dir",
+            "--remote-prefix-ssd-key-file"]
         let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
             "--batch-request", "--batch-wave"])
         func required(_ name: String) throws -> String {
@@ -298,6 +304,18 @@ import Foundation
             configuration.batchSolo = fields["--batch-solo"]?.first != "no"
             try configuration.validate()
         }
+        for (side, keyPath) in [("local", \PairConfiguration.localPrefixSSD), ("remote", \PairConfiguration.remotePrefixSSD)] {
+            let directory = fields["--\(side)-prefix-ssd-dir"]?.first, key = fields["--\(side)-prefix-ssd-key-file"]?.first
+            guard (directory == nil) == (key == nil) else {
+                throw Failure("--\(side)-prefix-ssd-dir and --\(side)-prefix-ssd-key-file go together")
+            }
+            if let directory, let key { configuration[keyPath: keyPath] = PairPrefixSSD(directory: directory, keyFile: key) }
+        }
+        if let ssd = fields["--prefix-ssd"]?.first {
+            guard ["on", "off"].contains(ssd) else { throw Failure("--prefix-ssd takes on or off") }
+            configuration.prefixSSDOff = ssd == "off"
+        }
+        if fields["--local-prefix-ssd-dir"] != nil || fields["--remote-prefix-ssd-dir"] != nil { try configuration.validate() }
         if let follow = fields["--follow-request"] {
             configuration.followRequests = try follow.map { try QualificationRequest.read(URL(fileURLWithPath: $0)) }
             try configuration.validate()

@@ -2,8 +2,8 @@
 
 > Last updated: 2026-10-12
 
-Runbook for shipping a new `darkbloom` provider CLI: bump the two version
-constants, compile selected changelog fragments, push a `vX.Y.Z` tag, and let
+Runbook for shipping a new `darkbloom` provider CLI: bump `ProviderCore.version`,
+compile selected changelog fragments, push a `vX.Y.Z` tag, and let
 [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml)
 build, sign, notarize, retain, stage and register the bundle. The coordinator
 re-downloads artifacts and registers their exact official build identity before
@@ -43,10 +43,11 @@ and use the retained unsigned recovery path below.
 ### 0.9.20 candidate
 
 `ProviderCore.version` is prepared as `0.9.20`; no tag or release is published
-by this version bump. The retained coordinator copy still declares `0.9.19`.
-Before merging or publishing, resolve the legacy cross-repository parity check
-in `scripts/check-release-version.sh` under the repository ownership policy.
-Centralized coordinator changes belong in `Layr-Labs/darkbloom-platform`.
+by this version bump. Provider packaging and retained-build recovery validate
+the requested tag and binary against that provider source. The retained
+coordinator copy still declares `0.9.19` and is not a provider release input.
+Centralized coordinator changes belong in `Layr-Labs/darkbloom-platform`;
+deploy its matching official-build registration support before publication.
 
 ### Published 0.9.19
 
@@ -195,8 +196,9 @@ Confirm valid external-directory links still receive downloads. See
 Keep `ProviderCore.version` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift` as the concise release
 identity. Record release history in `CHANGELOG.md`;
-`scripts/check-release-version.sh` checks parity with the coordinator display
-fallback before packaging.
+`scripts/check-release-version.sh` checks source/tag/binary parity before
+packaging. Retained-build recovery checks the original provider source against
+its signed tag, without reading the frozen coordinator display fallback.
 The release Metal cache namespace also binds the prepared downloadable compiler's
 binary SHA, so an exact outer-cache hit cannot prevent publishing a library built
 with a newly installed Metal component.
@@ -507,21 +509,25 @@ Coordinator deploys are a separate runbook:
 
 ## Steps
 
-### 1. Bump the version in both places
+### 1. Bump the provider version
 
-The provider and coordinator versions must be identical strings:
+Set the provider's release identity:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.15"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.15"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.20"`
+
+Do not edit the retained coordinator copy to prepare a provider release.
+The platform owns coordinator compatibility; the registered release row
+controls install and update discovery.
 
 ```bash
-./scripts/check-release-version.sh          # provider == coordinator, semver
+./scripts/check-release-version.sh          # one valid ProviderCore.version
 ./scripts/sync-install-embed.sh check       # coordinator/api/install.sh == scripts/install.sh
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.15`) and an optional reported string from a
-built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
+(`check-release-version.sh v0.9.20`) and an optional reported string from a
+built binary (`darkbloom 0.9.20` or `0.9.20`); both must equal the source
+version. The workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.
 

@@ -779,8 +779,9 @@ cd .. && ./scripts/fetch-metallib.sh release
 
 `darkbloom --version` must print the value of `ProviderCore.version`
 (`provider-swift/Sources/ProviderCore/ProviderCore.swift`);
-`scripts/check-release-version.sh` enforces this against the coordinator's
-`LatestProviderVersion` (see [../operations/provider-release.md](../operations/provider-release.md)).
+`scripts/check-release-version.sh` binds the requested tag and built binary to
+that source version. The retained coordinator display fallback is not a
+provider build input (see [../operations/provider-release.md](../operations/provider-release.md)).
 
 For a signed provider bundle needed by isolated tests, use the
 [validation-only signing workflow](../operations/provider-release.md#signed-validation-bundle).

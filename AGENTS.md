@@ -261,14 +261,16 @@ ships with a regression test that fails without the fix.
 
 ## Releases
 
-Never create a release unless explicitly asked. A release bumps
-`ProviderCore.version` (`provider-swift/Sources/ProviderCore/ProviderCore.swift`)
-and `LatestProviderVersion` (`coordinator/api/server.go`) together
-(`scripts/check-release-version.sh` enforces this), then tags the merged master
-commit with an annotated `vX.Y.Z` tag. `.github/workflows/release-swift.yml`
+Never create a release unless explicitly asked. A provider release bumps
+`ProviderCore.version` (`provider-swift/Sources/ProviderCore/ProviderCore.swift`),
+then tags the merged master commit with a signed annotated `vX.Y.Z` tag.
+`scripts/check-release-version.sh` binds the requested version and built binary
+to that source version. The retained coordinator copy is not a provider release
+input; coordinator changes belong in `Layr-Labs/darkbloom-platform`.
+`.github/workflows/release-swift.yml`
 runs on `vX.Y.Z` tags; dev publication uses
 `workflow_dispatch`, and every requested version must equal the checked-in
-constants.
+provider version.
 
 For ordinary PRs, follow the
 [changelog contribution guidance](CONTRIBUTING.md#changelog-entries-with-less-merge-contention):
@@ -295,7 +297,7 @@ Current release-sensitive pieces:
   `coordinator/Dockerfile`. Dev runs in the separate `darkbloom-dev` project.
 - Provider bundle creation (staging, .app wrapping, signing, notarization) lives inline in `.github/workflows/release-swift.yml` (bundle steps ~341-617); there is no standalone bundling script.
 - Installer flow lives in `scripts/install.sh`.
-- Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in `coordinator/api/server.go` is only the no-release-row fallback for the version *display* path and must stay in sync with `ProviderCore.version`.
+- Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in the retained `coordinator/api/server.go` is only the no-release-row display fallback; live coordinator ownership and any compatibility updates belong in `Layr-Labs/darkbloom-platform`.
 - CI release workflow (`release-swift.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing, embeds provisioning profile in .app bundle.
 
 Production coordinator build and human-approved deploy:
@@ -324,7 +326,7 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
   telemetry, and the privacy backstop is that no ingestion route exists plus
   the fixed operational keys each coordinator emitter call site passes. Never
   add prompt or completion fields to an emitter call or a heartbeat.
-- If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
+- If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml` and `scripts/install.sh` in sync and coordinate compatibility with `Layr-Labs/darkbloom-platform`.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
 - Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI. Do not add hardcoded provider `MODEL_CATALOG` lists.

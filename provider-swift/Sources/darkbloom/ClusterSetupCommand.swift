@@ -42,6 +42,10 @@ extension Cluster {
         var capabilitySHA256: String?
         @Option(help: "This Mac's member ID in the pair description.")
         var member: String?
+        @Option(name: .customLong("model-dir"), help: "Absolute path of the folder holding this Mac's model folders (once; the wizard remembers it).")
+        var modelDir: String?
+        @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
+        var worker: String?
 
         func validate() throws { try validateWizardOptions() }
 

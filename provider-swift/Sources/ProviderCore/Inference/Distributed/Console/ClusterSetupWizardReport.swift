@@ -275,6 +275,9 @@ public struct ClusterSetupSetupSummary: Codable, Sendable, Equatable {
     public var filesExpected: Int?
     /// What each Mac holds, as the plan tool says; nil when not read.
     public var holdings: String?
+    /// The follower is reached over the link control channel (a setup made by
+    /// the guided flow after pairing), not over SSH; nil when not known.
+    public var overLink: Bool? = nil
 
     public var isLeader: Bool { role == ClusterConfiguration.Role.leader.rawValue }
 }

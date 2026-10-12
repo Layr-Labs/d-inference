@@ -1,0 +1,273 @@
+import Foundation
+import Darwin
+import CryptoKit
+import DarkbloomClusterRemote
+import DarkbloomClusterSecurity
+
+/// Where one Mac's installation is and its own address on the link, so the
+/// leader can write both Macs' setups without SSH (PROD-PLAN S17/S07, owner
+/// gate "no SSH and no network settings in the user path"). It travels only
+/// inside a link control session keyed by the pairing's edge secret, and is
+/// never shown, logged or kept beside the wizard's record.
+public struct ClusterSetupMemberFacts: Codable, Sendable, Equatable {
+    public static let schemaName = "darkbloom_cluster_setup_member_facts_v1"
+    public var schema = ClusterSetupMemberFacts.schemaName
+    /// The member ID both setups use for this Mac, derived from its pairing pin.
+    public var memberID: String
+    /// This Mac's IPv4 address on the cable port (Darkbloom's own 10.219 service address after link setup v2).
+    public var linkAddress: String
+    /// A label the setup carries; nothing dials it on a setup reached over the link.
+    public var user: String
+    public var ownerExecutable: String
+    public var workerExecutable: String
+    /// One model folder in this Mac's model directory; the plan swaps the folder name.
+    public var modelDirectory: String
+    public var runtimeBinarySHA256: String
+    public var jacclDevice: String
+    /// This Mac's own copy of the pairing's edge secret (an owner-only file).
+    public var linkSecretFile: String
+
+    public init(memberID: String, linkAddress: String, user: String, ownerExecutable: String, workerExecutable: String,
+                modelDirectory: String, runtimeBinarySHA256: String, jacclDevice: String, linkSecretFile: String) {
+        self.memberID = memberID; self.linkAddress = linkAddress; self.user = user; self.ownerExecutable = ownerExecutable
+        self.workerExecutable = workerExecutable; self.modelDirectory = modelDirectory
+        self.runtimeBinarySHA256 = runtimeBinarySHA256; self.jacclDevice = jacclDevice; self.linkSecretFile = linkSecretFile
+    }
+
+    /// The member ID a Mac gets from its pairing pin: the same on both Macs, no host or user name.
+    public static func memberID(pin: String) -> String { "mac-" + String(pin.prefix(12)) }
+
+    func validate() throws {
+        func plain(_ value: String, _ limit: Int = 1024) -> Bool {
+            !value.isEmpty && value.utf8.count <= limit && !value.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
+        }
+        guard schema == Self.schemaName, plain(memberID, 64), ClusterLinkIPv4Address(linkAddress) != nil, plain(user, 256),
+              [ownerExecutable, workerExecutable, modelDirectory, linkSecretFile].allSatisfy({ plain($0) && $0.hasPrefix("/") }),
+              runtimeBinarySHA256.count == 64, runtimeBinarySHA256.allSatisfy(\.isHexDigit),
+              jacclDevice.hasPrefix("rdma_"), plain(jacclDevice, 64) else {
+            throw ClusterSetupFailure("the other Mac described its installation with values this build does not accept")
+        }
+    }
+}
+
+/// The other Mac's answer to "who are you": its wizard report and its facts.
+public struct ClusterSetupLinkAnswer: Codable, Sendable, Equatable {
+    public var report: ClusterSetupReport
+    public var facts: ClusterSetupMemberFacts
+    public init(report: ClusterSetupReport, facts: ClusterSetupMemberFacts) { self.report = report; self.facts = facts }
+}
+
+/// The setup exchange of the guided flow over the paired link: the leader's
+/// wizard asks the other Mac for its report and facts, and later hands it its
+/// setup for its inbox. Both run on the link control channel, authenticated by
+/// the pairing's edge secret under a key of their own (a setup-exchange epoch
+/// derived from the pairing's link epoch), so an exchange session can never
+/// authenticate a serving session and no Mac that did not pair is answered.
+/// The other Mac is found on the cable by the pairing's discovery datagrams on
+/// the exchange's own port: no address is typed and no SSH is used.
+public enum ClusterSetupLinkExchange {
+    public static let port: UInt16 = 47_422
+    static let askTag: UInt16 = 0x5E01
+    static let answerTag: UInt16 = 0x5E02
+    static let deliverTag: UInt16 = 0x5E03
+    static let receiptTag: UInt16 = 0x5E04
+    static let maximumBytes = 1 << 20
+
+    /// The one pairing this Mac uses, with its edge secret.
+    public struct Pairing: Sendable {
+        public let localPin: String
+        public let peerPin: String
+        public let clusterID: String
+        /// The pairing's link epoch and edge, as stored (lowercase UUID text).
+        public let linkEpoch: String
+        public let edgeID: String
+        /// This Mac's owner-only copy of the edge secret.
+        public let secretFile: String
+        let secret: Data
+        init(localPin: String, peerPin: String, clusterID: String, linkEpoch: String, edgeID: String, secretFile: String, secret: Data) {
+            self.localPin = localPin; self.peerPin = peerPin; self.clusterID = clusterID
+            self.linkEpoch = linkEpoch; self.edgeID = edgeID; self.secretFile = secretFile; self.secret = secret
+        }
+        public var localMemberID: String { ClusterSetupMemberFacts.memberID(pin: localPin) }
+        public var peerMemberID: String { ClusterSetupMemberFacts.memberID(pin: peerPin) }
+    }
+
+    /// Nil when this Mac never paired over the link. With several pairings, the newest.
+    public static func pairing(store: ClusterPairingStore = .default()) throws -> Pairing? {
+        guard let records = try store.load(), let record = records.pairings.max(by: { $0.pairedAt < $1.pairedAt }) else { return nil }
+        return Pairing(localPin: records.localPin, peerPin: record.peerPin, clusterID: record.clusterID, linkEpoch: record.link.linkEpoch,
+            edgeID: record.link.edgeID, secretFile: record.link.secretFile, secret: try store.edgeSecret(for: record))
+    }
+
+    /// The edge of the exchange, keyed apart from serving.
+    static func edge(_ pairing: Pairing, peerAddress: ClusterLinkIPv4Address?) throws -> ClusterLinkControlEdge {
+        guard let edgeID = UUID(uuidString: pairing.edgeID), let linkEpoch = UUID(uuidString: pairing.linkEpoch) else {
+            throw ClusterSetupFailure("the pairing record names no usable link edge; pair again with `darkbloom cluster`")
+        }
+        let epoch = exchangeEpoch(linkEpoch)
+        let key = try ClusterLinkControlKey.qualification(secret: pairing.secret, epoch: epoch, edgeID: edgeID)
+        var limits = ClusterLinkControlLimits()
+        limits.maximumBodyBytes = maximumBytes + 4096
+        return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: peerAddress, limits: limits)
+    }
+
+    /// A UUID of its own for the exchange, derived from the pairing's link epoch.
+    static func exchangeEpoch(_ linkEpoch: UUID) -> UUID {
+        var hasher = SHA256()
+        hasher.update(data: Data("darkbloom-cluster-setup-exchange-v1".utf8))
+        withUnsafeBytes(of: linkEpoch.uuid) { hasher.update(data: Data($0)) }
+        var bytes = Array(hasher.finalize().prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x40
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    // MARK: - Answering (every paired Mac while its wizard is open)
+
+    /// Answers the other Mac's wizard while this Mac's wizard is open: its
+    /// report and facts, and a setup for the inbox (which approves nothing).
+    public final class Responder: @unchecked Sendable {
+        private let listener: ClusterLinkControlListener
+        private let discovery: ClusterLinkPairingDiscovery.Responder
+        private let edgeID: UUID
+
+        public init(pairing: Pairing, selection: ClusterLinkInterfaceSelection,
+                    port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
+                    answer: @escaping @Sendable () throws -> ClusterSetupLinkAnswer,
+                    receive: @escaping @Sendable (Data) throws -> String) throws {
+            let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil)
+            edgeID = edge.edgeID
+            let work = DispatchQueue(label: "darkbloom.cluster-setup.exchange")
+            listener = try ClusterLinkControlListener(configuration: .init(interface: selection.interface,
+                localAddress: selection.local.address, port: port, policy: policy, edges: [edge])) { event, peer in
+                guard case .opaque(_, _, let tag, let data) = event, let peer else { return }
+                // Off the channel's event queue: the report reads the disk and the doctor.
+                work.async {
+                    switch tag {
+                    case ClusterSetupLinkExchange.askTag:
+                        let reply: Data
+                        do { reply = try JSONEncoder().encode(try answer()) } catch {
+                            reply = Data(("error:" + ClusterConsoleText.bounded(String(describing: error), maximum: 200)).utf8)
+                        }
+                        _ = try? peer.sendOpaque(tag: ClusterSetupLinkExchange.answerTag, reply, timeout: .seconds(10))
+                    case ClusterSetupLinkExchange.deliverTag:
+                        let reply: String
+                        do { reply = "ok:" + (try receive(data)) } catch {
+                            reply = "error:" + ClusterConsoleText.bounded(String(describing: error), maximum: 200)
+                        }
+                        _ = try? peer.sendOpaque(tag: ClusterSetupLinkExchange.receiptTag, Data(reply.utf8), timeout: .seconds(10))
+                    default:
+                        break
+                    }
+                }
+            }
+            discovery = ClusterLinkPairingDiscovery.Responder(selection: selection, udpPort: port, tcpPort: port)
+        }
+
+        public func start() throws {
+            _ = try listener.start()
+            do { try discovery.start() } catch { listener.stop(); throw error }
+        }
+
+        public func stop() {
+            discovery.stop()
+            listener.stop()
+        }
+    }
+
+    // MARK: - Asking (the Mac that plans)
+
+    /// One connected session to the other Mac's exchange, found on the cable.
+    final class Session: @unchecked Sendable {
+        let client: ClusterLinkControlClient
+        let peerAddress: ClusterLinkIPv4Address
+        private let lock = NSCondition()
+        private var replies: [UInt16: Data] = [:]
+
+        init(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address,
+             port: UInt16, policy: ClusterLinkInterfacePolicy) throws {
+            self.peerAddress = peerAddress
+            let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: peerAddress)
+            let box = WeakSessionBox()
+            client = try ClusterLinkControlClient(configuration: .init(interface: selection.interface,
+                localAddress: selection.local.address, port: port, policy: policy, edge: edge)) { event, _ in
+                guard case .opaque(_, _, let tag, let data) = event else { return }
+                box.session?.deliver(tag: tag, data)
+            }
+            box.session = self
+        }
+
+        private func deliver(tag: UInt16, _ data: Data) {
+            lock.withLock { replies[tag] = data; lock.broadcast() }
+        }
+
+        func request(tag: UInt16, _ body: Data, reply: UInt16, seconds: Double) throws -> Data {
+            client.start()
+            guard client.peer.waitUntilConnected(timeout: .milliseconds(Int64(seconds * 1000))) else {
+                let reason = client.lastRefusal.map { "refused (\($0))" } ?? client.lastConnectFailure ?? "no answer"
+                throw ClusterSetupFailure("the other Mac's wizard did not take the paired connection: \(reason)")
+            }
+            lock.withLock { replies[reply] = nil }
+            _ = try client.peer.sendOpaque(tag: tag, body, timeout: .seconds(10))
+            let deadline = Date(timeIntervalSinceNow: seconds)
+            lock.lock()
+            defer { lock.unlock() }
+            while replies[reply] == nil {
+                guard lock.wait(until: deadline) else {
+                    throw ClusterSetupFailure("the other Mac did not answer within \(Int(seconds)) s")
+                }
+            }
+            return replies[reply]!
+        }
+
+        func close() { client.stop() }
+    }
+
+    private final class WeakSessionBox: @unchecked Sendable { weak var session: Session? }
+
+    /// Finds the other Mac's open wizard on the cable (its discovery answer),
+    /// connects with the pairing's key, and returns what it reports. The
+    /// address it answered from is returned for the delivery.
+    public static func ask(pairing: Pairing, selection: ClusterLinkInterfaceSelection, seconds: Double,
+                           port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly)
+        throws -> (answer: ClusterSetupLinkAnswer, peerAddress: ClusterLinkIPv4Address) {
+        let found = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8))
+        guard let peer = found.first else {
+            throw ClusterSetupFailure("the other Mac's wizard did not answer on the cable: open `darkbloom cluster` on the other Mac too")
+        }
+        let session = try Session(pairing: pairing, selection: selection, peerAddress: peer.address, port: port, policy: policy)
+        defer { session.close() }
+        let data = try session.request(tag: askTag, Data("report".utf8), reply: answerTag, seconds: seconds)
+        if let text = String(data: data.prefix(6), encoding: .utf8), text == "error:" {
+            throw ClusterSetupFailure("the other Mac could not report: " + (String(data: data.dropFirst(6), encoding: .utf8) ?? ""))
+        }
+        guard data.count <= maximumBytes else { throw ClusterSetupFailure("the other Mac's answer is too large") }
+        let answer = try JSONDecoder().decode(ClusterSetupLinkAnswer.self, from: data)
+        guard answer.report.schema == ClusterSetupReport.schemaName else {
+            throw ClusterSetupFailure("the other Mac answered with a report this build does not read")
+        }
+        try answer.facts.validate()
+        guard answer.facts.memberID == pairing.peerMemberID else {
+            throw ClusterSetupFailure("the Mac that answered is not the one this Mac paired with")
+        }
+        return (answer, peer.address)
+    }
+
+    /// Hands the other Mac its setup for its inbox. Returns the digest it says saving would give.
+    public static func deliver(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                               delivery: Data, seconds: Double, port: UInt16 = ClusterSetupLinkExchange.port,
+                               policy: ClusterLinkInterfacePolicy = .thunderboltOnly) throws -> String {
+        var address = peerAddress
+        if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8)).first?.address }
+        guard let address else {
+            throw ClusterSetupFailure("the other Mac's wizard did not answer on the cable: open `darkbloom cluster` on the other Mac too")
+        }
+        let session = try Session(pairing: pairing, selection: selection, peerAddress: address, port: port, policy: policy)
+        defer { session.close() }
+        let data = try session.request(tag: deliverTag, delivery, reply: receiptTag, seconds: seconds)
+        let text = String(decoding: data, as: UTF8.self)
+        if text.hasPrefix("ok:") { return String(text.dropFirst(3)) }
+        throw ClusterSetupFailure("the other Mac did not take its setup: " + String(text.dropFirst(text.hasPrefix("error:") ? 6 : 0)))
+    }
+}

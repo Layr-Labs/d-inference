@@ -76,7 +76,7 @@ enum ClusterSetupLocalReader {
                 knownHostsFile: configuration.trust?.knownHostsFile, sshPort: local.port, leads: configuration.role == .leader)
         } else if let description, let member = description.members.first(where: { $0.id == localMemberID }) {
             value = .init(workerExecutable: member.workerExecutable, modelDirectory: member.modelDirectory, clusterID: description.clusterID,
-                knownHostsFile: member.trust.knownHostsFile, sshPort: member.port, leads: true)
+                knownHostsFile: member.trust?.knownHostsFile, sshPort: member.port, leads: true)
         }
         if let worker = overrides.workerExecutable { value.workerExecutable = worker }
         if let models = overrides.modelDirectory { value.modelDirectory = models }

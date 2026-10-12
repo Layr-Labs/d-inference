@@ -32,7 +32,7 @@ public struct DistributedInstalledStartRefusal: Error, CustomStringConvertible, 
 public enum DistributedInstalledDeveloperSSH {
     public static let environmentKey = "DARKBLOOM_CLUSTER_DEVELOPER_SSH"
 
-    static func enabled(_ environment: [String: String]) -> Bool { environment[environmentKey] == "1" }
+    public static func enabled(_ environment: [String: String]) -> Bool { environment[environmentKey] == "1" }
 
     /// Refuses a setup whose follower is reached over SSH unless the developer
     /// flag is set. A link control setup always passes.

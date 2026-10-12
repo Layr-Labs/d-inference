@@ -32,7 +32,15 @@ extension Cluster.Setup {
         if json || yes || temporary, configOptions.config != nil || pairGiven {
             throw ValidationError("--config and the pair options belong to the setup wizard; the link setup (--json, --yes, --temporary) takes neither.")
         }
-        for path in [pair, capability, configOptions.config].compactMap({ $0 }) {
+        // The pair description reaches the other Mac over SSH: the developer harness's route only.
+        // The user path pairs over the link (step 3) and plans over the paired link.
+        if pairGiven, !DistributedInstalledDeveloperSSH.enabled(ProcessInfo.processInfo.environment) {
+            throw ValidationError("darkbloom cluster needs no pair description: open it on both Macs, pair over the cable in step 3, and plan in step 4.")
+        }
+        if (json || yes || temporary), modelDir != nil || worker != nil {
+            throw ValidationError("--model-dir and --worker belong to the setup wizard.")
+        }
+        for path in [pair, capability, configOptions.config, modelDir, worker].compactMap({ $0 }) {
             guard path.hasPrefix("/"), !path.contains("\0") else { throw ValidationError("The setup wizard requires absolute local paths.") }
         }
         if let capabilitySHA256 {
@@ -50,10 +58,14 @@ extension Cluster.Setup {
 
     func wizardOperations(pair: ClusterSetupRecord.Pair?) throws -> (operations: ClusterSetupOperations, providerPath: URL) {
         let providerPath = URL(fileURLWithPath: try configOptions.config ?? ConfigManager.defaultConfigPath().path)
-        let operations = try ClusterSetupOperations.live(.init(providerConfiguration: providerPath,
+        var settings = ClusterSetupOperations.LiveSettings(providerConfiguration: providerPath,
             darkbloomExecutable: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]),
             sessionArguments: ["start", "--local", "--distributed"] + (configOptions.config.map { ["--config", $0] } ?? []),
-            pair: pair, dryRun: dryRun, version: ProviderCore.version))
+            pair: pair, dryRun: dryRun, version: ProviderCore.version)
+        settings.followerSessionArguments = ["cluster", "link-follower"] + (configOptions.config.map { ["--config", $0] } ?? [])
+        settings.modelsDirectory = modelDir
+        settings.workerExecutable = worker
+        let operations = try ClusterSetupOperations.live(settings)
         return (operations, providerPath)
     }
 

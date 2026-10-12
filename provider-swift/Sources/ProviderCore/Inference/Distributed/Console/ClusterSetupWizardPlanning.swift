@@ -35,9 +35,10 @@ enum ClusterSetupPlanning {
                 let directory = URL(fileURLWithPath: member.modelDirectory).deletingLastPathComponent().appendingPathComponent(folder).path
                 return .init(id: member.id, host: member.host, port: member.port, user: member.user, ownerExecutable: member.ownerExecutable,
                     workerExecutable: member.workerExecutable, modelDirectory: directory, runtimeBinarySHA256: member.runtimeBinarySHA256,
-                    jacclDevice: member.jacclDevice, linkAddress: member.linkAddress, trust: member.trust)
+                    jacclDevice: member.jacclDevice, linkAddress: member.linkAddress, trust: member.trust,
+                    linkSecretFile: member.linkSecretFile)
             },
-            tokenizerFiles: tokenizerFiles)
+            tokenizerFiles: tokenizerFiles, linkControl: base.linkControl)
     }
 
     /// The manifest's tokenizer and chat template entries, as a setup pins them.

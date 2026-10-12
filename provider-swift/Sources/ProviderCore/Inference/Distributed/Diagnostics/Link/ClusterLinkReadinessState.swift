@@ -37,11 +37,11 @@ public enum ClusterLinkReadinessState: String, Encodable, Sendable, CaseIterable
         case .noActivePort:
             return "No Thunderbolt RDMA port is active; connect this Mac directly to the other Mac with a Thunderbolt 5 cable and wait for the port to come up, because Darkbloom cannot do that for you."
         case .portWithoutIPv4Address:
-            return "The active Thunderbolt port has no IPv4 address of its own; run `darkbloom cluster link --fix` to give it one, which asks for your approval in a macOS prompt, or set an address for that port yourself in System Settings → Network."
+            return "The active Thunderbolt port has no IPv4 address of its own; press f in step 2 of `darkbloom cluster` (or run `darkbloom cluster link --fix`) to give it Darkbloom's own address after one approval in a macOS prompt, with no network setting to type."
         case .portBridgedWithoutAddress:
-            return "The active Thunderbolt port belongs to the Thunderbolt Bridge and has no IPv4 address of its own; run `darkbloom cluster link --fix` to give it one, which asks for your approval in a macOS prompt, or set an address for that port yourself in System Settings → Network."
+            return "The active Thunderbolt port belongs to the Thunderbolt Bridge and has no IPv4 address of its own; press f in step 2 of `darkbloom cluster` (or run `darkbloom cluster link --fix`) to take it out of the bridge with Darkbloom's own address after one approval in a macOS prompt."
         case .gidNotPublished:
-            return "The active Thunderbolt port has not published the IPv4-mapped GID that cluster serving needs; check that port's IPv4 configuration in System Settings → Network and reconnect the cable, because `darkbloom cluster link --fix` only adds a missing address and Darkbloom will not change anything else for you."
+            return "The active Thunderbolt port has not published the IPv4-mapped GID that cluster serving needs; reconnect the cable and look at step 2 of `darkbloom cluster` again, because Darkbloom will not change that port beyond its one approved link fix."
         case .probeFailed:
             return "Darkbloom could not read this Mac's RDMA or network interface state within its time and output limits; run `ibv_devinfo` and `ifconfig` in Terminal to see what they report, because Darkbloom will not retry with broader access or change anything for you."
         }

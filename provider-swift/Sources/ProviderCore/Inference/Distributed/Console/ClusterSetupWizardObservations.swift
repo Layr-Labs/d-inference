@@ -57,6 +57,8 @@ extension ClusterSetupSetupSummary {
             workerVerified: installed?.workerBinary.verified, progressGuard: installed?.hasProgressGuard,
             workerDetail: installed?.workerBinary.detail, filesPresent: installed?.artifactFiles?.present,
             filesExpected: installed?.artifactFiles?.expected, holdings: installed?.holdings?.line)
+        // No SSH trust is pinned exactly when the setup reaches its follower over the link.
+        overLink = pairing.trust.knownHostsPinSHA256.isEmpty
     }
 
     /// A setup read from its files, saved or waiting in the inbox.

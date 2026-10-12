@@ -192,8 +192,10 @@ extension ClusterLinkCheck {
             // Either the fix can add the missing address after approval, or
             // the sentence says plainly that Darkbloom does not do this.
             if state.fixableByAddingAddress {
+                // No network setting in the user path (C18): the one approved fix, never a manual address.
                 expect(guidance.contains("`darkbloom cluster link --fix`") && guidance.contains("approval in a macOS prompt")
-                    && guidance.contains("System Settings → Network"), "\(state) guidance offers the fix and the manual way")
+                    && guidance.contains("step 2 of `darkbloom cluster`") && !guidance.contains("System Settings"),
+                    "\(state) guidance offers the one approved fix and no manual network setting")
                 expect(!guidance.contains("will not") && !guidance.contains("cannot"), "\(state) guidance does not deny the fix")
             } else {
                 expect(guidance.contains("Darkbloom will not") || guidance.contains("Darkbloom cannot"),

@@ -20,6 +20,14 @@ extension ClusterSetupOperations {
         /// The link fix previews only.
         public let dryRun: Bool
         public let version: String
+        /// What a follower whose setup reaches it over the link runs to serve
+        /// its rank (`darkbloom cluster link-follower`).
+        public var followerSessionArguments: [String] = []
+        /// This Mac's worker for the guided flow; nil takes the one installed
+        /// beside this executable (`worker/darkbloom-cluster-worker`).
+        public var workerExecutable: String?
+        /// The folder holding this Mac's model folders, given once; nil takes the one remembered.
+        public var modelsDirectory: String?
 
         public init(providerConfiguration: URL, darkbloomExecutable: URL, sessionArguments: [String],
                     pair: ClusterSetupRecord.Pair?, dryRun: Bool, version: String) {
@@ -30,6 +38,8 @@ extension ClusterSetupOperations {
 
     /// Seconds an SSH question to the other Mac may take.
     static let peerSeconds = 30.0
+    /// The port the native ranks meet on, at the leader's link address, in setups the guided flow writes.
+    static let nativeCoordinatorPort: UInt16 = 52_420
 
     public static func live(_ settings: LiveSettings) throws -> ClusterSetupOperations {
         let paths = try ClusterUserPaths()
@@ -83,7 +93,9 @@ extension ClusterSetupOperations {
                     localPhysicalBytes: Int(clamping: ProcessInfo.processInfo.physicalMemory), linkState: link.state.rawValue)
             },
             launchSession: { events in
-                try ClusterConsoleSessionProcess.start(.init(executable: settings.darkbloomExecutable, arguments: settings.sessionArguments),
+                // A follower reached over the link serves its rank itself; a leader starts the session.
+                let arguments = context.followsOverLink() ? settings.followerSessionArguments : settings.sessionArguments
+                return try ClusterConsoleSessionProcess.start(.init(executable: settings.darkbloomExecutable, arguments: arguments),
                     events: events)
             },
             sendPrompt: { text, maxTokens, events in context.prompt(text: text, maxTokens: maxTokens, events: events) })
@@ -171,9 +183,132 @@ private final class LiveContext: @unchecked Sendable {
     let clean: ClusterConsoleFreeText
     private let lock = NSLock()
     private var decisions: [String: ClusterSetupPlanning.Decision] = [:]
+    /// The other Mac as it last answered over the paired link (S17), with the address it answered from.
+    private var linkPeer: (answer: ClusterSetupLinkAnswer, address: ClusterLinkIPv4Address)?
+    /// Answers the other Mac's wizard while this one is open (both Macs run one).
+    private var responder: ClusterSetupLinkExchange.Responder?
+    private var responderStarting = false
 
     init(paths: ClusterUserPaths, store: ClusterSetupStore, settings: ClusterSetupOperations.LiveSettings, clean: ClusterConsoleFreeText) {
         self.paths = paths; self.store = store; self.settings = settings; self.clean = clean
+    }
+
+    deinit { responder?.stop() }
+
+    // MARK: - The paired link (no SSH, no typed address)
+
+    /// The cable's interface and this Mac's address on it, as pairing picks them
+    /// (Darkbloom's own 10.219 service address once link setup v2 ran).
+    func linkSelection() throws -> ClusterLinkInterfaceSelection {
+        let interface: String
+        do { interface = try ClusterPairCommandLine.resolveInterface(ClusterPairCommandRequest(), peer: nil) } catch {
+            throw ClusterSetupFailure("the cable carries no IPv4 address on this Mac: \(error). Run the link step (f) first.")
+        }
+        do {
+            return try ClusterLinkInterfaceAdmission.select(interface: interface, localAddress: nil, peerAddress: nil,
+                policy: .thunderboltOnly, inspector: ClusterLinkSystemInterfaceInspector())
+        } catch {
+            throw ClusterSetupFailure("the cable's interface \(interface) was not admitted: \(error)")
+        }
+    }
+
+    /// The pairing the guided flow uses, unless the developer harness gave an
+    /// SSH pair description, or a saved setup reaches its peer over SSH.
+    func linkPairing() -> ClusterSetupLinkExchange.Pairing? {
+        guard settings.pair == nil else { return nil }
+        if let saved = savedConfiguration().configuration, saved.linkControl == nil { return nil }
+        return try? ClusterSetupLinkExchange.pairing()
+    }
+
+    /// This Mac's saved setup is a follower reached over the link.
+    func followsOverLink() -> Bool {
+        guard let saved = savedConfiguration().configuration else { return false }
+        return saved.role == .follower && saved.linkControl != nil
+    }
+
+    /// The folder holding this Mac's model folders: given now, else remembered, else the saved setup's.
+    func modelsDirectory() -> String? {
+        if let given = settings.modelsDirectory { return given }
+        if let remembered = (try? store.readRecord())?.modelsDirectory { return remembered }
+        guard let saved = savedConfiguration().configuration else { return nil }
+        return URL(fileURLWithPath: saved.peers[saved.localRank].modelDirectory).deletingLastPathComponent().path
+    }
+
+    /// Where this Mac's installation is and its address on the cable, for the other Mac's plan.
+    func localFacts(pairing: ClusterSetupLinkExchange.Pairing, selection: ClusterLinkInterfaceSelection) throws -> ClusterSetupMemberFacts {
+        let worker = settings.workerExecutable
+            ?? savedConfiguration().configuration.map { $0.peers[$0.localRank].workerExecutable }
+            ?? settings.darkbloomExecutable.deletingLastPathComponent().appendingPathComponent("worker/darkbloom-cluster-worker").path
+        guard FileManager.default.isExecutableFile(atPath: worker) else {
+            throw ClusterSetupFailure("this Mac's cluster worker is not installed beside darkbloom (expected worker/darkbloom-cluster-worker); reinstall Darkbloom")
+        }
+        guard let models = modelsDirectory() else {
+            throw ClusterSetupFailure("this Mac does not know where its models are: open `darkbloom cluster --model-dir <folder>` once")
+        }
+        let folders = (try? ClusterSetupModelFolders.list(parent: URL(fileURLWithPath: models))) ?? []
+        let modelDirectory = URL(fileURLWithPath: models).appendingPathComponent(folders.first?.folder ?? "models").path
+        let workerData = try ClusterConfigurationFiles.read(URL(fileURLWithPath: worker), maximum: 1 << 30)
+        let link = ClusterLinkReadinessProbe.inspectLocalLink(isolation: false)
+        let active = link.devices.filter(\.portActive)
+        guard let device = (active.first { $0.verdict == .ready } ?? active.first)?.device else {
+            throw ClusterSetupFailure("no RDMA port is active on this Mac: check the cable (step 2)")
+        }
+        return ClusterSetupMemberFacts(memberID: pairing.localMemberID, linkAddress: selection.local.address.dottedDecimal,
+            user: NSUserName(), ownerExecutable: settings.darkbloomExecutable.path, workerExecutable: worker,
+            modelDirectory: modelDirectory, runtimeBinarySHA256: ClusterConfigurationCodec.sha256(workerData),
+            jacclDevice: device, linkSecretFile: pairing.secretFile)
+    }
+
+    /// Starts answering the other Mac's wizard once this Mac has paired; a
+    /// failure is retried at the next refresh.
+    func ensureResponder() {
+        guard let pairing = linkPairing() else { return }
+        let begin: Bool = lock.withLock {
+            guard responder == nil, !responderStarting else { return false }
+            responderStarting = true
+            return true
+        }
+        guard begin else { return }
+        defer { lock.withLock { responderStarting = false } }
+        guard let selection = try? linkSelection() else { return }
+        let store = self.store
+        guard let started = try? ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection, answer: { [weak self] in
+            guard let self else { throw ClusterSetupFailure("the wizard is closing") }
+            return ClusterSetupLinkAnswer(report: self.report(input: self.pairInput(), saved: self.savedConfiguration(),
+                inbox: ClusterSetupLocalReader.inbox(self.store)), facts: try self.localFacts(pairing: pairing, selection: selection))
+        }, receive: { data in try store.receive(data) }) else { return }
+        do { try started.start() } catch { return }
+        lock.withLock { responder = started }
+    }
+
+    /// The pair description the guided flow plans from: both members from the
+    /// pairing and their own facts, reached over the link control channel.
+    func linkDescription(pairing: ClusterSetupLinkExchange.Pairing) -> (pair: ClusterSetupRecord.Pair?, description: ClusterPairDescription?, error: String?) {
+        let pair = ClusterSetupRecord.Pair(description: "", capability: "", capabilitySHA256: "", memberID: pairing.localMemberID)
+        let local: ClusterSetupMemberFacts
+        do {
+            local = try localFacts(pairing: pairing, selection: try linkSelection())
+        } catch let failure as ClusterSetupFailure {
+            return (pair, nil, failure.text)
+        } catch {
+            return (pair, nil, clean(ClusterConsoleText.bounded(error)))
+        }
+        // Before the other Mac answered, it stands in with this Mac's facts under its own ID: labels only, never planned from.
+        let peer = lock.withLock { linkPeer?.answer.facts }.flatMap { $0.memberID == pairing.peerMemberID ? $0 : nil }
+            ?? ClusterSetupMemberFacts(memberID: pairing.peerMemberID, linkAddress: local.linkAddress, user: local.user,
+                ownerExecutable: local.ownerExecutable, workerExecutable: local.workerExecutable, modelDirectory: local.modelDirectory,
+                runtimeBinarySHA256: local.runtimeBinarySHA256, jacclDevice: local.jacclDevice, linkSecretFile: local.linkSecretFile)
+        func member(_ facts: ClusterSetupMemberFacts) -> ClusterPairDescription.Member {
+            .init(id: facts.memberID, host: facts.linkAddress, port: 22, user: facts.user, ownerExecutable: facts.ownerExecutable,
+                workerExecutable: facts.workerExecutable, modelDirectory: facts.modelDirectory, runtimeBinarySHA256: facts.runtimeBinarySHA256,
+                jacclDevice: facts.jacclDevice, linkAddress: facts.linkAddress, trust: nil, linkSecretFile: facts.linkSecretFile)
+        }
+        let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: pairing.clusterID,
+            publicModelID: "-", capabilitySHA256: String(repeating: "0", count: 64), chunkTokens: 512, requestTimeoutSeconds: 120,
+            coordinatorPort: Int(ClusterSetupOperations.nativeCoordinatorPort), members: [member(local), member(peer)], tokenizerFiles: [],
+            linkControl: .init(port: Int(ClusterLinkControlListener.defaultPort), linkEpoch: pairing.linkEpoch,
+                               edgeID: pairing.edgeID))
+        return (pair, description, nil)
     }
 
     var configuration: URL { settings.providerConfiguration }
@@ -182,6 +317,8 @@ private final class LiveContext: @unchecked Sendable {
 
     /// The pair this wizard plans from: the one given now, else the one remembered.
     func pairInput() -> (pair: ClusterSetupRecord.Pair?, description: ClusterPairDescription?, error: String?) {
+        // The guided flow: paired over the link, no SSH pair description.
+        if let pairing = linkPairing() { return linkDescription(pairing: pairing) }
         let pair = settings.pair ?? (try? store.readRecord())?.pair
         guard let pair else { return (nil, nil, nil) }
         do {
@@ -203,6 +340,10 @@ private final class LiveContext: @unchecked Sendable {
     }
 
     func snapshot() -> ClusterSetupSnapshot {
+        if let given = settings.modelsDirectory {
+            _ = try? store.updateRecord { $0.modelsDirectory = given }
+        }
+        ensureResponder()
         let input = pairInput()
         let saved = savedConfiguration()
         let inbox = ClusterSetupLocalReader.inbox(store)
@@ -256,6 +397,19 @@ private final class LiveContext: @unchecked Sendable {
     }
 
     func reachPeer() -> ClusterSetupPeerResult {
+        if let pairing = linkPairing() {
+            do {
+                let started = DispatchTime.now().uptimeNanoseconds
+                let reached = try ClusterSetupLinkExchange.ask(pairing: pairing, selection: try linkSelection(),
+                    seconds: ClusterSetupOperations.peerSeconds)
+                lock.withLock { linkPeer = reached }
+                return .reached(reached.answer.report.cleaned(clean), seconds: Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)
+            } catch let failure as ClusterSetupFailure {
+                return .failed(failure.text)
+            } catch {
+                return .failed(clean(ClusterConsoleText.bounded(error)))
+            }
+        }
         do {
             let route = try route()
             let command = try route.ssh.setupReport(workerExecutable: route.peer.worker, modelDirectory: route.peer.models)
@@ -281,6 +435,9 @@ private final class LiveContext: @unchecked Sendable {
         guard let description = input.description, let memberID = input.pair?.memberID,
               let local = description.members.first(where: { $0.id == memberID }) else {
             return .failed(input.error ?? "this Mac has no pair description to plan from")
+        }
+        if linkPairing() != nil, lock.withLock({ linkPeer }) == nil {
+            return .failed("reach the other Mac over the paired link first (p)")
         }
         guard let peerProfile = peer.mac.profile else {
             return .failed("the other Mac's plan tool did not answer (\(peer.mac.profileError ?? "not installed")), so its memory is not known")
@@ -379,6 +536,25 @@ private final class LiveContext: @unchecked Sendable {
                 capabilityInput: directory.appendingPathComponent("capability.json"), capabilitySHA256: capability.sha256,
                 providerConfiguration: configuration)
             var lines = ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); this Mac leads."]
+            if let pairing = linkPairing() {
+                // Over the paired link: the other Mac's open wizard puts it in its inbox.
+                let delivery = try JSONEncoder().encode(ClusterSetupStore.Delivery(configuration: peerData, capability: capability.data,
+                    capabilitySHA256: capability.sha256))
+                let digest: String
+                do {
+                    digest = try ClusterSetupLinkExchange.deliver(pairing: pairing, selection: try linkSelection(),
+                        peerAddress: lock.withLock { linkPeer?.address }, delivery: delivery, seconds: ClusterSetupOperations.peerSeconds)
+                } catch let failure as ClusterSetupFailure {
+                    lines.append("Could not send \(peerID) its setup: \(failure.text). Press enter on step 4 again to resend it.")
+                    return .init(succeeded: false, lines: lines)
+                }
+                try store.updateRecord {
+                    $0.add(.init(clusterID: setupClusterID(peerData) ?? "", memberID: peerID,
+                        configurationSHA256: ClusterConfigurationSyntax.hash(digest) ? digest : "", at: ClusterConsoleText.timestamp()))
+                }
+                lines.append("Sent the other Mac its setup over the paired link: on that Mac, press a, then y, in `darkbloom cluster`.")
+                return .init(succeeded: true, lines: lines)
+            }
             // The other Mac gets its own setup in its inbox; it approves it there.
             let route = try route()
             let command = try route.ssh.sendSetup()

@@ -378,6 +378,7 @@ extension ClusterSetupState {
             return []
         }
         if let refusal = changeBlocker("running the check", allowOwnSession: false) { say(refusal); return [] }
+        if saved.overLink == true { say("The other Mac takes part over the paired link: start it there first (its step 6, s).") }
         return ask(.runCheck)
     }
 
@@ -386,7 +387,8 @@ extension ClusterSetupState {
             say("There is no saved setup to start yet: finish step 4.")
             return []
         }
-        guard saved.isLeader else {
+        // A follower reached over the paired link serves its rank itself (no SSH reaches it).
+        guard saved.isLeader || saved.overLink == true else {
             say("This Mac follows: the leader starts serving and reaches this Mac itself.")
             return []
         }

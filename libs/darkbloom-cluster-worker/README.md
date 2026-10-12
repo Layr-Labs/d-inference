@@ -96,6 +96,18 @@ floor that splitting the weights does not divide, and 129 all-sums per token
 cost more than the 5 ms saved. The local ring is not compiled into this MLX
 build, so the one-Mac two-rank step needs a socket reduction first.
 
+Where the floor is (M5 Max, same session): the host spends 6-7 ms of thread
+CPU per step (graph construction about 2 ms) and then waits for the GPU, so
+the GPU is the bound, not graph building. One decode step is 3,169 MLX
+primitives (`--census yes`: about 2,200 that launch kernels, 353 quantized
+matmuls, 305 RMS norms, 434 casts); half the weights still take 24 ms
+(bfloat16 partials; float32 partials add 256 casts, 1 ms), where reading them
+needs about 13 ms. Metal command-buffer limits
+(`MLX_MAX_OPS_PER_BUFFER` 50-400 x `MLX_MAX_MB_PER_BUFFER` 50-512 or 4096) do
+not move it (tokens identical, steps within 2%). `--mode shard-local
+--shard-rank R` is the floor meter: TP2 can only win where the shard alone
+plus about 6 ms of all-sums beats the faster Mac alone.
+
 ## Generation modes
 
 How the two ranks divide one request is declared to both workers at launch

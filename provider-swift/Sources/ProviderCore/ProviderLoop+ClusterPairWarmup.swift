@@ -54,7 +54,10 @@ extension ProviderLoop {
         let request = ChatCompletionRequest(model: modelID, messages: [ChatMessage(role: "user", content: "Reply with OK.")],
                                             temperature: 0, top_p: 1, top_k: 0, max_tokens: clusterWarmupMaxTokens,
                                             repetition_penalty: 1, presence_penalty: 0, frequency_penalty: 0, stream: true)
-        let stream = await bridge.submit(request: request, requestId: requestID)
+        // No prefix-cache receipt: the pair's workers serve only cold, receipt-free
+        // requests ("stop strings stay in the provider" refusal otherwise), as the
+        // pair's own scheduler submits them.
+        let stream = await bridge.submit(request: request, requestId: requestID, cacheEnabled: false)
         let outcome = ClusterWarmupOutcome()
         let consumer = Task {
             var chunks = 0

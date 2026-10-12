@@ -7,18 +7,6 @@ import DarkbloomClusterSecurity
 /// Installed darkbloom's configured worker-owner entry calls this service. No
 /// executable, model path, environment or bootstrap address is accepted on wire.
 public enum ClusterWorkerOwnerService {
-    /// Writes the last 4 KiB of a worker's stderr to this owner's stderr,
-    /// one prefixed line per worker line, control characters removed.
-    static func forwardWorkerDiagnostics(_ tail: Data, termination: ClusterWorkerProcessTermination, limit: Int = 4096) {
-        guard !tail.isEmpty else { return }
-        let text = String(decoding: tail.suffix(limit), as: UTF8.self)
-        var out = "darkbloom-worker-diagnostics-v1 termination=\(termination) bytes=\(tail.count)\n"
-        for line in text.split(whereSeparator: \.isNewline) {
-            let clean = String(String.UnicodeScalarView(line.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))
-            if !clean.isEmpty { out += "worker: " + clean + "\n" }
-        }
-        FileHandle.standardError.write(Data(out.utf8))
-    }
     /// This factory must return an UNLAUNCHED direct child. With a bootstrap
     /// profile it must require that profile's attachment. Without one the child
     /// uses its native bootstrap and the caller must say so wherever it reports
@@ -391,11 +379,6 @@ private final class ServiceContext: @unchecked Sendable {
             attachment?.cancel(); lock.withLock { state.disconnect() }; return
         }
         attachment?.cancel()
-        // A worker that did not end with status 0 leaves its own stderr tail on
-        // this owner's diagnostics (the member's only record of why it ended).
-        if let termination = child.termination, termination != .exited(0) {
-            ClusterWorkerOwnerService.forwardWorkerDiagnostics(child.diagnosticTail, termination: termination)
-        }
         do {
             guard let termination = child.termination else { throw OwnerWire.invalid("Missing actual native terminal") }
             Self.echoWorkerTail(child, termination: termination)
@@ -442,12 +425,19 @@ private final class ServiceContext: @unchecked Sendable {
 extension ClusterWorkerOwnerService {
     /// S24: what an owner repeats on its standard error when its worker ended
     /// abnormally (nil after a clean exit): one exit line, then the last 12
-    /// lines (300 bytes each at most) of the worker's last 2 KiB of diagnostics.
+    /// lines (300 bytes each at most, control characters removed) of the
+    /// worker's last 2 KiB of diagnostics. It is also the member log's record
+    /// of why a worker ended (it replaces the separate stderr forwarder the
+    /// public end-to-end track added for the same purpose).
     static func workerExitEcho(rank: Int, termination: ClusterWorkerProcessTermination, diagnosticTail: Data) -> String? {
         if case .exited(0) = termination { return nil }
         let tail = String(decoding: diagnosticTail.suffix(2_048), as: UTF8.self)
         var text = "darkbloom-worker-exit-v1 rank=\(rank) termination=\(termination)\n"
-        for line in tail.split(whereSeparator: \.isNewline).suffix(12) { text += "darkbloom-worker-tail-v1 \(line.prefix(300))\n" }
+        for line in tail.split(whereSeparator: \.isNewline).suffix(12) {
+            // Control characters removed: the member log and the incident record are plain text.
+            let clean = String(String.UnicodeScalarView(line.prefix(300).unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))
+            text += "darkbloom-worker-tail-v1 \(clean)\n"
+        }
         return text
     }
 }

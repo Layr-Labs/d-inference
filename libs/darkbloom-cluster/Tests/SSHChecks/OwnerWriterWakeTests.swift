@@ -84,7 +84,7 @@ func milliseconds(_ value: UInt64) -> String { String(format: "%.3f", Double(val
         for ordinal in 1...36 {
             let sent = now()
             try e.sendWorkerCommand(.keepWarm(ordinal: ordinal), requestID: nil, deadline: sent + 5_000_000_000)
-            guard case .keptWarm(let answered, _) = try event(e), answered == ordinal else { throw OwnerWire.invalid("Expected keep-warm \(ordinal)") }
+            guard case .keptWarm(let answered, _, _) = try event(e), answered == ordinal else { throw OwnerWire.invalid("Expected keep-warm \(ordinal)") }
             if ordinal > 4 { keepWarm.append(now() - sent) }
         }
         // Requests as the leader drives them: reserve, start, then one decision

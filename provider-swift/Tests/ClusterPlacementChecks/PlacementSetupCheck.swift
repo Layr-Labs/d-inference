@@ -95,11 +95,12 @@ import Foundation
                     && configurations.count == 2 && configurations.allSatisfy { $0.generationMode == .phaseSplitMTP }
                     && decided.lines.contains { $0.contains("It decodes with the model's speculative (MTP) head") })
         }
-        // The other order is asked for: the M3 Ultra would decode, so plain decode is saved there.
-        let mirrored = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
-            localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one")
-        require("led by the M5, the M3 Ultra decodes without the head",
-            mirrored.setup?.leaderID == "mac-one" && mirrored.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
+        // The other order is asked for: this model's pair-serving grant (owner decision D4) lets only the M3 Ultra
+        // lead it, so the mirrored order is refused at plan time instead of being saved without the head.
+        refuses("led by the M5, the 9B fixture's grant refuses the order", because: "pipeline-only rank on apple_m3_ultra") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one")
+        }
         // Two Macs of no known generation: nothing prefers the head, the setup is what it was.
         let unknown = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
             localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed)

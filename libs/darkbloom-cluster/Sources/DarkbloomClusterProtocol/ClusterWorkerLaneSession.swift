@@ -20,6 +20,7 @@ public struct ClusterWorkerLaneSession: Sendable {
         var reusedTokens: Int?
         var cancellation: ClusterWorkerCancellationReason?
         var nativeFailure = false
+        var telemetrySent = false
     }
     private let identity: ClusterWorkerIdentity
     private let rank: Int
@@ -132,6 +133,13 @@ public struct ClusterWorkerLaneSession: Sendable {
                     && stored.allSatisfy({ $0 < prompt })
                     && (rank == 1 || (r.tokenCount > 0 && r.lastDecision != nil)), "Prompt cache report is out of order")
                 requests[id]!.reusedTokens = reused
+            case .requestTelemetry:
+                let id = try current(frame.requestID); try deadline(id, now)
+                let r = requests[id]!
+                // Once per request, before its finish, after any prompt cache report.
+                try workerRequire(r.phase == .running && !r.telemetrySent
+                    && (rank == 1 || (r.tokenCount > 0 && r.lastDecision != nil)), "Request telemetry is out of order")
+                requests[id]!.telemetrySent = true
             case .finished(let reason):
                 let id = try current(frame.requestID); try deadline(id, now)
                 let r = requests[id]!
@@ -165,8 +173,9 @@ public struct ClusterWorkerLaneSession: Sendable {
             case .shutdownComplete:
                 try workerRequire(phase == .shuttingDown && requests.isEmpty, "Unrequested shutdown acknowledgment")
                 phase = .closed
-            case .keptWarm(let ordinal, _):
-                try workerRequire(phase == .warming && ordinal == keepWarmOrdinal, "Unrequested keep-warm acknowledgment")
+            case .keptWarm(let ordinal, _, let serving):
+                try workerRequire(phase == .warming && ordinal == keepWarmOrdinal
+                    && (serving.map { $0 <= profile.maximumContextTokens } ?? true), "Unrequested keep-warm acknowledgment")
                 phase = .idle
             }
             eventSequence += 1

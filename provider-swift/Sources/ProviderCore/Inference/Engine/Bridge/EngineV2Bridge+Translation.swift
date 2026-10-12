@@ -294,7 +294,8 @@ enum EngineV2Translation {
             case .shuttingDown:
                 // Same posture as the bridge's own shutdown refusal.
                 return "request queue full: engine is shutting down"
-            case .invalidConfiguration:
+            case .invalidConfiguration, .refusedForCapacity:
+                // A capacity refusal keeps its retryable wording below.
                 break
             }
         }

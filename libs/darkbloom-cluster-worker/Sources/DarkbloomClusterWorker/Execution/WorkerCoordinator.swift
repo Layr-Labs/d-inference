@@ -211,7 +211,7 @@ final class WorkerCoordinator: @unchecked Sendable {
                     // The owner gives back a reservation that never started
                     // (the other rank refused the request): release it and
                     // stay available. Any other cancel here is a failure.
-                    guard let id = command.requestID, activeRequest() == id, admittedNotStarted == id else {
+                    guard let id = command.requestID, activeRequests() == [id], admittedNotStarted == id else {
                         throw WorkerFailure.invalid("Request cancelled before native start or after its return")
                     }
                     try runtime.releaseReservation(id)

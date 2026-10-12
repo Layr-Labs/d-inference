@@ -491,10 +491,13 @@ public struct PairDriver: Sendable {
 
         // 6b. Continuous batching: each batch request alone, then the waves.
         if !c.batchRequests.isEmpty {
-            let limit = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
-            while !finalLease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
-            guard finalLease.isRetired else { return finish("failed", "the last repetition did not retire before the batch phase") }
-            finalLease.releaseResources()
+            // A refused last repetition left no lease to retire.
+            if let finalLease {
+                let limit = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+                while !finalLease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
+                guard finalLease.isRetired else { return finish("failed", "the last repetition did not retire before the batch phase") }
+                finalLease.releaseResources()
+            }
             var batch = PairBatchTiming(lanes: c.batchLanes, kvBackend: c.kvBackend ?? "paged", solo: [], waves: [],
                 note: "Driver clock per request from its own start command; a wave's requests are started together "
                     + "from separate threads. Solo rows are each request file run alone in the same loaded session.")

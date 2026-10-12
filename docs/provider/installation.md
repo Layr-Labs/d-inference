@@ -214,6 +214,12 @@ that exact version is blocked; a newer release installs normally.
 The unprivileged updater never touches the root fan helper; after an update run
 `sudo darkbloom fan enable` again if you use [fan control](./fan-control.md).
 
+## Two Macs as one provider
+
+Two Macs joined by a Thunderbolt 5 cable are set up once with `darkbloom cluster`
+on each Mac: see [two-mac-cluster.md](./two-mac-cluster.md) (six steps, no SSH,
+no network settings typed).
+
 ## Uninstall
 
 ```bash

@@ -100,8 +100,12 @@ public struct ClusterWorkerLaunch: Sendable {
     public let executable: URL
     public let arguments: [String]
     public let environment: [String: String]
-    public init(executable: URL, arguments: [String], environment: [String: String]) {
+    /// Written to the child's input before anything else (S16: the worker's
+    /// data-plane credential line). Never an argument or a variable.
+    public let initialInput: Data?
+    public init(executable: URL, arguments: [String], environment: [String: String], initialInput: Data? = nil) {
         self.executable = executable; self.arguments = arguments; self.environment = environment
+        self.initialInput = initialInput
     }
 }
 
@@ -203,6 +207,13 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
         }
         guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
             throw ClusterWorkerOwnerError.invalid("Cannot suppress pipe SIGPIPE")
+        }
+        if let line = launch.initialInput {
+            guard !line.isEmpty, line.count <= 4096, line.last == 10, !line.dropLast().contains(10) else {
+                throw ClusterWorkerOwnerError.invalid("Invalid initial worker input")
+            }
+            // First on the command stream; the pump writes it before any renewal or command.
+            outgoing.append((line, 0, startupDeadline)); queuedBytes += line.count
         }
     }
 

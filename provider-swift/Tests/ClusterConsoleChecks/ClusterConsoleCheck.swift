@@ -71,6 +71,8 @@ import Darwin
             ("wizard: report, code, record, inbox and readers on captured outputs", wizardObservations),
             ("wizard: which steps are done, and where a new run resumes", wizardProgress),
             ("wizard: reducer, every step, failure and fix", wizardReducer),
+            ("wizard: pairing over the link (S17), reducer and pseudo-terminal", wizardLinkPairing),
+            ("wizard: step 4 over the paired link (report, facts, inbox delivery), no SSH", wizardLinkExchange),
             ("wizard: screen at every size, in colour and ASCII", wizardScreen),
             ("wizard: what each step says, and the planner on captured readings", wizardContent),
             ("wizard: the walkthrough on a pseudo-terminal", wizardOnPseudoTerminal),

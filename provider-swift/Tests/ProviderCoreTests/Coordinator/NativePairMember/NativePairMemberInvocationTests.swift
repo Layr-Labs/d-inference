@@ -175,10 +175,10 @@ struct NativePairMemberInvocationTests {
         } catch { await peer.close(); throw error }
     }
 
-    /// What a real member does in this build: the installed owner cannot serve
-    /// a committed start, so preparation is declined with a signed cancel and
-    /// the coordinator never commits. Nothing launches and the member stays
-    /// attached and reusable.
+    /// What a real member does when its installed owner cannot serve a
+    /// committed start (a setup without the link control channel):
+    /// preparation is declined with a signed cancel and the coordinator never
+    /// commits. Nothing launches and the member stays attached and reusable.
     @Test func memberWhoseOwnerCannotServeACommittedStartDeclinesPreparation() async throws {
         let fixture = try NativePairMemberFixture(ownerServesCommittedStart: false)
         let peer = MemberFixturePeer(installation: fixture.installations[0])
@@ -200,10 +200,11 @@ struct NativePairMemberInvocationTests {
         } catch { await peer.close(); throw error }
     }
 
-    @Test func thisBuildsInstalledOwnerDoesNotServeACommittedStart() {
-        // Flipping this requires an installed owner that serves the member
-        // key profile and a worker that accepts its bootstrap attachment;
-        // until then a production member must decline preparation (above).
-        #expect(DistributedInstalledOwner.servesCommittedNativeStart == false)
+    @Test func thisBuildsInstalledOwnerServesACommittedStartOnlyOverTheLink() {
+        // The installed owner serves a coordinator-committed start under the
+        // combined profile (prelude through the session, mesh rounds over the
+        // link control channel, S10); a setup without the link still declines
+        // preparation (above).
+        #expect(DistributedInstalledOwner.servesCommittedNativeStart == true)
     }
 }

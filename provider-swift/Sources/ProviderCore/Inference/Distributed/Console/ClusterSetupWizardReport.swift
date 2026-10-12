@@ -37,14 +37,16 @@ public struct ClusterSetupReport: Codable, Sendable, Equatable {
     public var pairingCode: ClusterSetupPairingCode?
     /// The doctor's checks, as `darkbloom cluster doctor` reports them.
     public var checks: [ClusterSetupCheck]
+    /// What this Mac pinned in the pairing ceremony over the link (S17); nil when it never paired.
+    public var linkPairings: ClusterSetupLinkPairings?
 
     public init(observedAt: String, version: String, mac: ClusterSetupMac, link: ClusterSetupLink, saved: ClusterSetupSaved,
                 inbox: ClusterSetupSetupSummary?, inboxError: String? = nil, journal: ClusterDeviceJournalObservation, memoryGuard: ClusterSetupMemoryGuard,
                 models: [ClusterSetupLocalModel], modelsError: String?, pairingCode: ClusterSetupPairingCode?,
-                checks: [ClusterSetupCheck]) {
+                checks: [ClusterSetupCheck], linkPairings: ClusterSetupLinkPairings? = nil) {
         self.observedAt = observedAt; self.version = version; self.mac = mac; self.link = link; self.saved = saved
         self.inbox = inbox; self.inboxError = inboxError; self.journal = journal; self.memoryGuard = memoryGuard; self.models = models
-        self.modelsError = modelsError; self.pairingCode = pairingCode; self.checks = checks
+        self.modelsError = modelsError; self.pairingCode = pairingCode; self.checks = checks; self.linkPairings = linkPairings
     }
 
     public func encoded() throws -> Data {
@@ -273,6 +275,9 @@ public struct ClusterSetupSetupSummary: Codable, Sendable, Equatable {
     public var filesExpected: Int?
     /// What each Mac holds, as the plan tool says; nil when not read.
     public var holdings: String?
+    /// The follower is reached over the link control channel (a setup made by
+    /// the guided flow after pairing), not over SSH; nil when not known.
+    public var overLink: Bool? = nil
 
     public var isLeader: Bool { role == ClusterConfiguration.Role.leader.rawValue }
 }
@@ -305,6 +310,31 @@ public struct ClusterSetupLocalModel: Codable, Sendable, Equatable {
     public init(folder: String, modelID: String, version: String, artifactSHA256: String, totalBytes: Int64) {
         self.folder = folder; self.modelID = modelID; self.version = version
         self.artifactSHA256 = artifactSHA256; self.totalBytes = totalBytes
+    }
+}
+
+/// The pairings this Mac stored in the ceremony over the link (S17), by
+/// public values only: shortened pins, the other Mac's attested name, the
+/// roster label and generation. `error` says why the store could not be read.
+public struct ClusterSetupLinkPairings: Codable, Sendable, Equatable {
+    public struct Pairing: Codable, Sendable, Equatable {
+        public var peerPin: String
+        public var peerName: String
+        public var clusterID: String
+        public var generation: UInt64
+        public var pairedAt: String
+
+        public init(peerPin: String, peerName: String, clusterID: String, generation: UInt64, pairedAt: String) {
+            self.peerPin = peerPin; self.peerName = peerName; self.clusterID = clusterID; self.generation = generation
+            self.pairedAt = pairedAt
+        }
+    }
+    public var localPin: String
+    public var pairings: [Pairing]
+    public var error: String?
+
+    public init(localPin: String, pairings: [Pairing], error: String? = nil) {
+        self.localPin = localPin; self.pairings = pairings; self.error = error
     }
 }
 

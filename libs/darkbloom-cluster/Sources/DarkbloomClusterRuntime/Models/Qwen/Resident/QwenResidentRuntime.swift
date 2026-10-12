@@ -54,7 +54,7 @@ public final class QwenResidentRuntime {
         self.producerStage = producerStage; producerModel = producerStage?.loaded.model
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
-            requestCapacityBytes: capacity)
+            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane)
     }
 
     /// Keep-warm tier 1: one asynchronous pulse on a dedicated stream of this
@@ -93,7 +93,8 @@ public final class QwenResidentRuntime {
         let capacity = try recordingCapacity(prefillPolicy)
         try control.check()
         return .init(identity: baseReady.identity, rank: baseReady.rank, profile: baseReady.profile,
-            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity)
+            executionPlanSHA256: baseReady.executionPlanSHA256, requestCapacityBytes: capacity,
+            dataPlane: baseReady.dataPlane)
     }
 
     private func prefillAllowance(_ policy: QwenResidentPrefillPolicy, promptCount: Int,
@@ -360,6 +361,8 @@ public final class QwenResidentRuntime {
                 + " output=\(reserved.request.outputCount) reserved=\(reserved.allowance.reservedBytes)"
                 + " transient=\(reserved.allowance.transientBytes) active_before=\(before.activeMemory)"
                 + " peak=\(after.peakMemory) active_after=\(after.activeMemory) cache_after=\(after.cacheMemory)")
+            // S16: the session's record counters and key generations so far.
+            collective.logDataPlaneStatus()
             // Output is fully prepared and control completed before this slot
             // is cleared. A thrown encode keeps the failed owner unavailable.
             reservation = nil; phaseSplitAllowance = nil
@@ -380,6 +383,7 @@ public final class QwenResidentRuntime {
         guard operation.try() else { throw ProbeError("Cannot release a running native request") }
         defer { operation.unlock() }
         try control.beginClose()
+        collective.logDataPlaneStatus()
         do {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in

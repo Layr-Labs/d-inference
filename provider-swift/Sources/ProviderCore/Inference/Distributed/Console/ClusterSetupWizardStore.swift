@@ -67,6 +67,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     public var confirmed: [Confirmation] = []
     public var sent: [Sent] = []
     public var checks: [CheckPass] = []
+    /// The folder that holds this Mac's model folders, as the guided flow was
+    /// told once (`--model-dir`); nil until then.
+    public var modelsDirectory: String? = nil
 
     public init(pair: Pair? = nil) { self.pair = pair }
 

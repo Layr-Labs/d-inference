@@ -48,17 +48,18 @@ public final class ClusterKeepWarm {
         let rank = collective.rank, peer = 1 - rank
         let mine = MLXArray([Int32](repeating: Int32(rank + 1), count: 16)).reshaped([1, 16])
         func receive() throws {
-            let got = try collective.receiveCompleted(shape: [1, 16], dtype: .int32, from: peer, maximumBytes: 64, check: check)
+            let got = try collective.receiveCompleted(shape: [1, 16], dtype: .int32, from: peer, maximumBytes: 64,
+                scope: .session(.keepWarm, "rank\(peer)"), check: check)
             guard got.asArray(Int32.self) == [Int32](repeating: Int32(peer + 1), count: 16) else {
                 throw ProbeError("Keep-warm ping received another rank's record")
             }
         }
         if rank == 0 {
-            _ = try collective.sendCompleted(mine, to: peer, maximumBytes: 64, check: check)
+            _ = try collective.sendCompleted(mine, to: peer, maximumBytes: 64, scope: .session(.keepWarm, "rank\(rank)"), check: check)
             try receive()
         } else {
             try receive()
-            _ = try collective.sendCompleted(mine, to: peer, maximumBytes: 64, check: check)
+            _ = try collective.sendCompleted(mine, to: peer, maximumBytes: 64, scope: .session(.keepWarm, "rank\(rank)"), check: check)
         }
         return DispatchTime.now().uptimeNanoseconds - started
     }

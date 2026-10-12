@@ -34,7 +34,9 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                 material: { .generation(agreementFingerprint: agreement.fingerprint) },
-                disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
+                disagreementMessage: "Generation membership/request/source readiness differs",
+                scope: .request(.requestAgreement, requestID: agreement.request.requestID,
+                    agreementFingerprint: agreement.fingerprint, "generation-readiness"), check: checked)
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
             var session: MiMoLayerStageSession?

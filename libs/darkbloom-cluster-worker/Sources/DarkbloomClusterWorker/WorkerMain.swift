@@ -54,6 +54,12 @@ import Foundation
             let startup = try configuration.startupDeadlineUptimeNanoseconds.map {
                 try WorkerStartupDeadline.arm(uptimeNanoseconds: $0)
             }
+            // The data-plane credential, before the control reader takes the pipe.
+            let dataPlane = configuration.dataPlaneEncrypted
+                ? try WorkerDataPlaneTrust.read(descriptor: STDIN_FILENO,
+                    until: min(configuration.lease.uptimeNanoseconds, configuration.startupDeadlineUptimeNanoseconds ?? UInt64.max),
+                    epoch: configuration.load.identity.membershipEpoch, rank: configuration.load.rank)
+                : nil
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, lease: configuration.lease)
             try pipes.check()
             // The control reader runs from here, through the load, so the
@@ -68,22 +74,26 @@ import Foundation
             // The registered model's own adapter executes it: GPT-OSS has its
             // own runtime (with its own recording entry); the dense and MiMo
             // families share the native wrapper, and only the dense one records.
+            // The owner's attachment (S07): the native key prelude, then the
+            // exchange that creates the JACCL group through both owners.
+            let attachment = try configuration.bootstrap?.attach(epoch: configuration.load.identity.membershipEpoch,
+                rank: configuration.load.rank)
             let runtime: any WorkerRuntime
             if configuration.family == .gptoss {
-                runtime = try GPTOSSWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap,
+                runtime = try GPTOSSWorkerRuntime(configuration.load, attachment: attachment,
                     evidenceDirectory: configuration.evidenceDirectory,
-                    generationMode: configuration.generationMode, qualification: qualification)
+                    generationMode: configuration.generationMode, qualification: qualification, dataPlane: dataPlane)
             } else {
                 guard configuration.family == .qwenDense || configuration.evidenceDirectory == nil else {
                     throw WorkerFailure.invalid("Only the dense adapter has a recording runtime; run this model without --evidence-directory")
                 }
                 runtime = try configuration.evidenceDirectory.map {
-                    try RecordingWorkerRuntime(configuration.load, bootstrap: configuration.bootstrap, evidenceDirectory: $0,
+                    try RecordingWorkerRuntime(configuration.load, attachment: attachment, evidenceDirectory: $0,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
-                        qualification: qualification)
-                } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, bootstrap: configuration.bootstrap,
+                        qualification: qualification, dataPlane: dataPlane)
+                } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
-                        qualification: qualification)
+                        qualification: qualification, dataPlane: dataPlane)
             }
             // Qualification only: a standing wired limit for the loaded stage.
             // Every exit below resets it to zero.

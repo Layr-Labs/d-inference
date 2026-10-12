@@ -67,8 +67,11 @@ extension ClusterLinkRepair {
             return ended(.approvalDeclined)
         case .unavailable:
             // The entry stays: what an administrator changes with the manual
-            // commands is then still this record's to restore.
-            return ended(.approvalUnavailable, manualCommands: request.manualCommands)
+            // commands is then still this record's to restore. The commands go
+            // into one owner-only script, so the administrator types one line.
+            var result = ended(.approvalUnavailable, manualCommands: request.manualCommands)
+            result.manualScript = environment.writeManualScript("link-fix.sh", manualScriptBody(request, purpose: "isolates \(interface) for the cluster"))
+            return result
         case .commandFailed:
             forgetUnlessSomethingChanged()
             return ended(.commandFailed)
@@ -142,7 +145,10 @@ extension ClusterLinkRepair {
         let answer = environment.requestIsolationApproval(request)
         switch answer {
         case .declined: return ended(.approvalDeclined)
-        case .unavailable: return ended(.approvalUnavailable, manualCommands: request.manualCommands)
+        case .unavailable:
+            var result = ended(.approvalUnavailable, manualCommands: request.manualCommands)
+            result.manualScript = environment.writeManualScript("link-remove.sh", manualScriptBody(request, purpose: "restores \(interface)'s earlier network settings"))
+            return result
         case .applied, .commandFailed:
             // What is left decides, not the exit status.
             guard restoreNeeded(interface: interface, entry: entry, run: environment.toolRunner())?.isEmpty == true else {
@@ -151,6 +157,41 @@ extension ClusterLinkRepair {
             forget()
             return ended(.removed)
         }
+    }
+
+    /// The script an administrator runs with `sudo sh` where no prompt can be
+    /// shown: exactly the commands the prompt would run, under the same
+    /// `set -e` for an isolation (its stale-index guard stops everything), and
+    /// every command for a restore.
+    static func manualScriptBody(_ request: ClusterLinkIsolationRequest, purpose: String) -> String {
+        var lines = ["#!/bin/sh", "# Darkbloom link setup v2: \(purpose). Run once as an administrator: sudo sh <this file>",
+                     "# These are the commands macOS's approval prompt would run. Undo: darkbloom cluster link --remove"]
+        if case .isolate = request.purpose { lines.append("set -e") }
+        return (lines + request.commands).joined(separator: "\n") + "\n"
+    }
+
+    /// Ports that are isolated exactly as link setup v2 leaves them (no
+    /// finding, Darkbloom's service present, this Mac's own derived address on
+    /// the port) but have no record entry: the commands were run by hand. Each
+    /// is recorded with the services found switched off on it, so `--remove`
+    /// can restore them. Returns the interfaces recorded.
+    static func adoptIsolatedPorts(report: ClusterLinkReadinessReport, record: ClusterLinkIsolationRecord?, run: ClusterLinkToolRunner,
+                                   in environment: Environment) -> [String] {
+        guard let record, let machineID = environment.machineIdentifier(),
+              let machine = ClusterLinkIsolationInspection.machine(run: run), case .output(let listing) = run(.interfaceList) else { return [] }
+        var adopted = [String]()
+        for device in report.devices where device.verdict == .ready {
+            guard let interface = device.interface, let status = device.isolation, status.isolated, status.clusterServicePresent,
+                  let hardwarePort = status.hardwarePort, record.entry(on: interface) == nil else { continue }
+            let address = ClusterLinkClusterAddress.derived(machineIdentifier: machineID, interface: interface)
+            guard ClusterLinkNetworkFacts.lists(address.dottedDecimal, on: interface, inListing: listing) else { continue }
+            let ours = ClusterLinkServiceName.cluster(interface: interface)
+            let disabled = machine.services.filter { $0.interface == interface && !$0.enabled && $0.name != ours }.map(\.name)
+            let entry = ClusterLinkIsolationRecord.Entry(interface: interface, address: address, hardwarePort: hardwarePort,
+                bridge: nil, disabledServices: disabled)
+            if (try? environment.updateIsolationRecord { $0.set(entry) }) != nil { adopted.append(interface) }
+        }
+        return adopted
     }
 
     /// What is still to undo for a port: read now, from the record entry when

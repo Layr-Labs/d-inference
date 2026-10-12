@@ -33,6 +33,17 @@ final class BootstrapSocket: @unchecked Sendable {
         }
     }
 
+    /// For a cancelled listening socket only: closes every connection that is
+    /// queued and was never accepted, so its peer reads the end of the stream.
+    /// The descriptor is non-blocking; this returns when the queue is empty.
+    func refuseQueuedConnections() {
+        while true {
+            let fd = Darwin.accept(descriptor, nil, nil)
+            if fd >= 0 { Darwin.close(fd); continue }
+            if errno != EINTR { return }
+        }
+    }
+
     func check() throws {
         guard !lock.withLock({ cancelled }) else { throw ClusterBootstrapError.closed }
         guard DispatchTime.now().uptimeNanoseconds < deadline else { throw ClusterBootstrapError.deadline }

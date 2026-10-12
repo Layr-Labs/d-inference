@@ -46,10 +46,15 @@ public enum ClusterRecordType: UInt8, Sendable {
     /// are separate from the data plane's, so a record of one never opens as
     /// the other; the frame's own message and request identities are inside.
     case linkControl
+    /// Data plane (S16): the phase-split hand-off header and its state
+    /// segments, the decoding rank's relayed token batches (with or without
+    /// the speculative head) and their answers, the prefix agreement, and the
+    /// idle keep-warm exchange.
+    case handoffHeader, handoffState, tokenRelay, relayDecision, prefixAgreement, keepWarm
 
     var requiresRequest: Bool {
         switch self {
-        case .keyConfirmation, .loadAgreement, .loadedReady, .linkControl: false
+        case .keyConfirmation, .loadAgreement, .loadedReady, .linkControl, .keepWarm: false
         default: true
         }
     }
@@ -114,6 +119,56 @@ public struct ClusterRecordLimits: Sendable {
     }
 }
 
+/// Rekey without a fixed lifetime (S16). The sender moves its direction to
+/// the next key generation before a record that would exceed `records` records
+/// or `bytes` plaintext bytes under the current generation, or once the
+/// generation is `seconds` old (0: no time trigger). The generation travels in
+/// the authenticated header and the receiver follows it, one step at a time.
+/// Each generation's key is derived from the previous one, which is dropped.
+/// With a policy, the channel's limits bound each generation (the receiver
+/// refuses a sender that overruns them) instead of the whole session.
+public struct ClusterRecordRekeyPolicy: Sendable, Equatable {
+    public static let maximumSeconds: UInt64 = 86_400
+    public let records: UInt64
+    public let bytes: UInt64
+    public let seconds: UInt64
+
+    public init(records: UInt64, bytes: UInt64, seconds: UInt64) throws {
+        guard records > 0, records <= ClusterRecordLimits.hardMaximumRecords,
+              bytes > 0, bytes <= ClusterRecordLimits.hardMaximumCumulativePlaintextBytes,
+              seconds <= Self.maximumSeconds else { throw ClusterRecordError.invalidConfiguration }
+        self.records = records; self.bytes = bytes; self.seconds = seconds
+    }
+
+    /// The data plane's policy: a new key every 262,144 records, 2 GiB or ten
+    /// minutes per direction, whichever comes first.
+    public static let dataPlane = try! ClusterRecordRekeyPolicy(records: 262_144, bytes: 2 << 30, seconds: 600)
+
+    /// Qualification only: `records:<n>`, canonical decimal, 2...262,144. The
+    /// data plane's policy with a new key every n records per direction (its
+    /// byte and age limits unchanged), so one short request crosses several
+    /// key generations. Anything else is refused, never read loosely.
+    public static func qualification(_ text: String) throws -> ClusterRecordRekeyPolicy {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0] == "records", let records = UInt64(parts[1]), String(records) == parts[1],
+              (2...dataPlane.records).contains(records) else { throw ClusterRecordError.invalidConfiguration }
+        return try ClusterRecordRekeyPolicy(records: records, bytes: dataPlane.bytes, seconds: dataPlane.seconds)
+    }
+
+    /// The sender rotates before a generation's limits are reached.
+    func fits(_ limits: ClusterRecordLimits) -> Bool {
+        records <= limits.maximumRecordsPerDirection
+            && bytes <= limits.maximumCumulativePlaintextBytesPerDirection
+    }
+
+    var canonicalBytes: Data {
+        var result = Data("darkbloom/rdma-record/rekey-policy/v1\0".utf8)
+        result.clusterAppendBigEndian(records); result.clusterAppendBigEndian(bytes)
+        result.clusterAppendBigEndian(seconds)
+        return result
+    }
+}
+
 public struct ClusterRecordStatus: Sendable, Equatable {
     public let active: Bool
     public let operationInFlight: Bool
@@ -121,6 +176,9 @@ public struct ClusterRecordStatus: Sendable, Equatable {
     public let openedRecords: UInt64
     public let sealedPlaintextBytes: UInt64
     public let openedPlaintextBytes: UInt64
+    /// Key generations in use: zero until the first rekey.
+    public var sendGeneration: UInt32 = 0
+    public var receiveGeneration: UInt32 = 0
 }
 
 func clusterRecordUUIDBytes(_ value: UUID) -> Data {

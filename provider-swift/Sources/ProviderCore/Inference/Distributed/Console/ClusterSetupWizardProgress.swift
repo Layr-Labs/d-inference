@@ -33,9 +33,13 @@ extension ClusterSetupState {
     var pairingCode: ClusterSetupPairingCode? { local?.pairingCode }
 
     var pairingConfirmed: Bool {
+        if linkPaired { return true }
         guard let code = pairingCode else { return false }
         return record.confirmed(code: code.code) != nil
     }
+
+    /// This Mac pinned another Mac's key in the ceremony over the link (S17).
+    var linkPaired: Bool { local?.linkPairings?.pairings.isEmpty == false }
 
     /// The other Mac has saved the setup this Mac's plan gave it.
     var peerHasItsSetup: Bool? {

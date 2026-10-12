@@ -493,6 +493,24 @@ final class ClusterLinkControlPolicyTests: XCTestCase {
             peerAddress: nil, policy: .thunderboltOnly, inspector: FixedInspector(facts: facts)) }, .invalidInterfaceName)
     }
 
+    func testCarrierIsTheInterfaceThatReachesTheLeadersAddress() {
+        let shared = address("192.0.2.1"), alias = address("169.254.10.20", mask: 0xFFFF_0000)
+        let leader = ClusterLinkIPv4Address("192.0.2.20")!
+        // Today's second Mac: the port holds only a link-local alias, the bridge holds Internet Sharing's subnet.
+        XCTAssertEqual(ClusterLinkInterfaceAdmission.carrier(reaching: leader,
+            candidates: [(name: "en6", addresses: [alias]), (name: "bridge0", addresses: [shared, alias])]), "bridge0")
+        // A port with its own address on the subnet wins over its bridge (link setup v2, today's first Mac).
+        XCTAssertEqual(ClusterLinkInterfaceAdmission.carrier(reaching: leader,
+            candidates: [(name: "en7", addresses: [address("192.0.2.30")]), (name: "bridge0", addresses: [shared])]), "en7")
+        // A listener's own address is on its own subnet.
+        XCTAssertEqual(ClusterLinkInterfaceAdmission.carrier(reaching: leader,
+            candidates: [(name: "en7", addresses: [address("192.0.2.20")])]), "en7")
+        // Nothing reaches it: no carrier (the caller falls back and admission names the refusal).
+        XCTAssertNil(ClusterLinkInterfaceAdmission.carrier(reaching: ClusterLinkIPv4Address("10.219.9.1")!,
+            candidates: [(name: "en6", addresses: [alias]), (name: "bridge0", addresses: [shared])]))
+        XCTAssertNil(ClusterLinkInterfaceAdmission.carrier(reaching: leader, candidates: []))
+    }
+
     func testAddressParsingIsStrictAndRedacted() {
         XCTAssertNil(ClusterLinkIPv4Address("192.0.2"))
         XCTAssertNil(ClusterLinkIPv4Address("192.0.02.1"))

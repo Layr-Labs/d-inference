@@ -107,6 +107,20 @@ struct ClusterLinkIsolationRecord: Equatable, Sendable {
 struct ClusterLinkIsolationStore {
     let paths: ClusterUserPaths
 
+    /// Writes the commands an approval would run as an owner-only script beside
+    /// the record, for a Mac where macOS cannot show its prompt (an SSH session
+    /// without a desktop): `sudo sh <script>` is then the one line to type.
+    /// Returns the path to show (`~/...`), or nil when it could not be written.
+    func writeScript(name: String, body: String) -> String? {
+        guard ["link-fix.sh", "link-remove.sh"].contains(name),
+              let directory = try? ClusterConfigurationFiles.directory(paths.deviceDirectory, create: true, privateMode: true) else { return nil }
+        Darwin.close(directory.descriptor)
+        let file = paths.deviceDirectory.appendingPathComponent(name)
+        guard (try? ClusterConfigurationFiles.update(file, maximum: 64 * 1024) { _ in Data(body.utf8) }) != nil else { return nil }
+        let home = paths.homeDirectory.path
+        return file.path.hasPrefix(home + "/") ? "~" + file.path.dropFirst(home.count) : file.path
+    }
+
     /// An absent file is an empty record. An unsafe or malformed one is an error.
     func load() throws -> ClusterLinkIsolationRecord {
         let file = paths.linkIsolationRecordFile

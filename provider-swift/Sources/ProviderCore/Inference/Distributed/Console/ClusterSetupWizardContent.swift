@@ -312,33 +312,54 @@ enum ClusterSetupContent {
         let g = b.glyphs
         guard let pair = state.pair else {
             if let error = state.snapshot?.pairError {
-                b.verdict(g.blocked, "The pair description given to this wizard cannot be read: \(error)", .bad, from: .wired("pair.saved"))
+                b.verdict(g.blocked, state.linkPaired ? "Paired, but step 4 cannot plan from this Mac yet: \(error)"
+                    : "The pair description given to this wizard cannot be read: \(error)", .bad, from: .wired("pair.saved"))
             } else {
                 b.verdict(g.waiting, "This Mac does not know the other Mac yet.", .warning, from: .wired("pair.saved"))
             }
             b.blank()
-            if let code = state.pairingCode {
-                b.heading("This Mac's pairing code")
-                b.row([.init("      "), .init(" \(code.spaced) ", .selected)], from: .wired("pair.code"))
-                b.text("From this Mac's own SSH host key. When the leader reaches this Mac, its screen shows the code of the Mac it reached: it must be this one.", from: .wired("pair.code"))
-                if state.pairingConfirmed {
-                    b.verdict(g.done, "Confirmed \(state.record.confirmed(code: code.code)?.at ?? ""): the leader's screen showed this code.", .good, from: .wired("pair.confirm"))
-                } else {
-                    b.action("enter", "The leader's screen shows \(code.spaced)", from: .wired("pair.confirm"))
-                }
-                b.blank()
-            }
+            // No SSH in the user path (owner gate 2026-10-11): pairing is the
+            // ceremony over the link; no host-key code, no pair description.
+            linkPairing(state, &b)
+            b.blank()
             b.heading("What to do")
-            b.text("On the leader: run `darkbloom cluster --pair <description> --capability <record> --capability-sha256 <digest> --member <this Mac's ID>` once; later runs remember it.", from: .frame)
-            b.text("On the follower: nothing to type. The leader's step 4 sends this Mac its setup, and you approve it here. Press r to look again.", from: .frame)
-            b.text("Finding the other Mac by itself is not built yet; the pair is described once.", .dim, from: .frame)
+            b.text("Run `darkbloom cluster` on both Macs and press l on each: they find each other on the cable, both screens show the same six digits, and you type y on each Mac. Nothing else to type.", from: .frame)
+            if state.linkPaired {
+                b.text("Paired: step 4 takes the model and the plan. Press r to look again.", from: .frame)
+            }
             return
         }
         b.heading("Pair")
         let role = pair.leads.map { $0 ? "this Mac leads" : "this Mac follows" } ?? "who leads comes from the plan in step 4"
         b.fact("Cluster", "\(pair.clusterID) \u{B7} this Mac: \(pair.localMemberID) \u{B7} the other Mac: \(pair.peerMemberID)", from: .wired("pair.saved"))
-        b.fact("From", sourceWords(pair.source) + " \u{B7} " + role, from: .wired("pair.saved"))
+        // Paired over the link (S17): the other Mac is reached over the paired link, never SSH, and no host-key code applies.
+        let overLink = state.linkPaired && (pair.source == .description || state.savedSetup?.overLink == true)
+        b.fact("From", (overLink && pair.source == .description ? "the pairing over the link" : sourceWords(pair.source)) + " \u{B7} " + role,
+            from: .wired("pair.saved"))
         b.blank()
+
+        if pair.canReachPeer, overLink {
+            b.heading("The other Mac")
+            switch state.peer {
+            case .unknown:
+                b.text("Not reached yet.", .dim, from: .wired("pair.verify"))
+                b.action("p", "Reach it over the paired link", from: .wired("pair.verify"))
+            case .reaching(let since):
+                b.text("\(g.spin(state.now)) Reaching it over the paired link\u{2026} \(seconds(state.now, since))", .accent, from: .wired("pair.verify"))
+            case .failed(let reason):
+                b.verdict(g.blocked, "Could not reach the other Mac over the paired link: \(reason)", .bad, from: .wired("pair.verify"))
+                b.text("Open `darkbloom cluster` on the other Mac too: its open wizard answers over the cable. No address and no SSH are needed.", indent: 6, from: .frame)
+                b.action("p", "Try again", from: .wired("pair.verify"))
+            case .reached(let report, let seconds, _):
+                b.verdict(g.done, String(format: "Answered over the paired link in %.2f s, authenticated by the pairing's key.", seconds), .good, from: .wired("pair.verify"))
+                b.fact("Other Mac", peerWords(report), from: .wired("peer.report"))
+            }
+            b.blank()
+            linkPairing(state, &b)
+            b.blank()
+            b.action("enter", "Next: model and plan (paired over the link)", from: .frame)
+            return
+        }
 
         if pair.canReachPeer {
             b.heading("The other Mac")
@@ -373,15 +394,57 @@ enum ClusterSetupContent {
                     b.verdict(g.blocked, "This Mac's own host key is not the one its setup pins. Do not approve anything until that is explained.", .bad, from: .wired("pair.code"))
                 }
             }
-            if state.pairingConfirmed {
-                let at = state.record.confirmed(code: code.code)?.at ?? ""
+            if let confirmed = state.record.confirmed(code: code.code) {
+                let at = confirmed.at
                 b.verdict(g.done, "Confirmed\(at.isEmpty ? "" : " \(at)"): both screens showed this code.", .good, from: .wired("pair.confirm"))
                 b.action("enter", "Next: model and plan", from: .frame)
+            } else if state.linkPaired {
+                b.action("enter", "Next: model and plan (paired over the link)", from: .frame)
             } else if !reachedFirst {
                 b.action("enter", "Both screens show \(code.spaced)", from: .wired("pair.confirm"))
             }
         } else {
             b.text(pair.canReachPeer ? "No code: the setup's pinned known-hosts file has no host key." : "No code: this Mac's own SSH server did not answer with its host key (is Remote Login on?).", .warning, from: .wired("pair.code"))
+        }
+        b.blank()
+        linkPairing(state, &b)
+    }
+
+    /// The pairing ceremony over the Thunderbolt link (S17): no SSH, a code on
+    /// both screens, each Mac pinning the other's attested Secure Enclave key.
+    static func linkPairing(_ state: ClusterSetupState, _ b: inout Builder) {
+        let g = b.glyphs
+        b.heading("Pair over the link (no SSH)")
+        for pairing in state.local?.linkPairings?.pairings ?? [] {
+            b.verdict(g.done, "Paired with \(pairing.peerName): its Secure Enclave key \(pairing.peerPin)\u{2026} is pinned; roster \(pairing.clusterID), generation \(pairing.generation).",
+                .good, from: .wired("pair.link"))
+        }
+        if let error = state.local?.linkPairings?.error {
+            b.verdict(g.blocked, "The pairing store cannot be trusted: \(error)", .bad, from: .wired("pair.link"))
+        }
+        switch state.linkPairing {
+        case .idle, .finished:
+            if case .finished(let succeeded, let lines) = state.linkPairing {
+                if let first = lines.first { b.verdict(succeeded ? g.done : g.blocked, first, succeeded ? .good : .bad, from: .wired("pair.link")) }
+                for line in lines.dropFirst() { b.text(line, indent: 6, from: .wired("pair.link")) }
+            }
+            if !state.linkPaired {
+                b.text("Each Mac pins the other's attested Secure Enclave key. Both screens show one code; nothing to type but y or n.", from: .wired("pair.link"))
+            }
+            b.action("l", state.linkPaired ? "Pair again: press l on both Macs" : "Pair: press l on both Macs; each finds the other on the cable", from: .wired("pair.link"))
+            b.action("c", "Connect to an address the other Mac shows (only if finding it fails)", from: .wired("pair.link"))
+        case .enteringAddress(let text):
+            b.row([.init("      Other Mac's address: "), .init(" \(text)_ ", .selected)], from: .wired("pair.link"))
+            b.text("enter: dial it \u{B7} escape: cancel", .dim, indent: 6, from: .frame)
+        case .waiting(let text):
+            b.text("\(g.spin(state.now)) \(text)", .accent, from: .wired("pair.link"))
+        case .code(let code, let peer):
+            b.row([.init("      "), .init(" \(code.prefix(3)) \(code.suffix(3)) ", .selected)], from: .wired("pair.link"))
+            for line in peer { b.text(line, indent: 6, from: .wired("pair.link")) }
+            b.text("Compare it with the other Mac's screen: y if both show it, n if not.", from: .wired("pair.link"))
+        case .confirmedHere(let peerConfirmed):
+            b.text(peerConfirmed ? "\(g.spin(state.now)) Both Macs confirmed; storing the pins and the roster\u{2026}"
+                : "\(g.spin(state.now)) Confirmed here; waiting for the other Mac\u{2026}", .accent, from: .wired("pair.link"))
         }
     }
 
@@ -456,7 +519,8 @@ enum ClusterSetupContent {
             return
         }
         guard state.mayPlan else {
-            b.verdict(g.waiting, state.pair == nil ? "Pair first: step 3." : "Waiting for the leader to send this Mac its setup. Run `darkbloom cluster` on the leader; press r here to look again.", .warning, from: .wired("pair.inbox"))
+            b.verdict(g.waiting, state.pair == nil ? (state.linkPaired && state.snapshot?.pairError != nil
+                ? "Paired, but this Mac cannot plan yet: \(state.snapshot?.pairError ?? "")" : "Pair first: step 3.") : "Waiting for the leader to send this Mac its setup. Run `darkbloom cluster` on the leader; press r here to look again.", .warning, from: .wired("pair.inbox"))
             return
         }
         guard state.peerReport != nil else {
@@ -669,6 +733,34 @@ enum ClusterSetupContent {
         let g = b.glyphs
         guard let saved = local.saved.setup else {
             b.verdict(g.waiting, "There is no saved setup to serve yet: step 4.", .warning, from: .wired("pair.saved"))
+            return
+        }
+        if !saved.isLeader, saved.overLink == true {
+            // Reached over the paired link: this Mac serves its own rank (`darkbloom cluster link-follower`).
+            switch state.session {
+            case .none, .ended:
+                if case .ended(let description, let clean) = state.session {
+                    b.verdict(clean ? g.done : g.blocked, "Following \(description).", clean ? .good : .bad, from: .wired("session.process"))
+                    if !clean, !state.sessionOutput.isEmpty {
+                        b.heading("Its last output")
+                        for line in state.sessionOutput.suffix(6) { b.text(line, .dim, indent: 4, from: .wired("session.process")) }
+                    }
+                    b.blank()
+                }
+                b.fact("Model", "\(saved.publicModelID) \u{B7} this Mac holds rank \(saved.localRank)", from: .wired("pair.saved"))
+                b.fact("Left wired", leftWired(local.memoryGuard), local.memoryGuard.decision == .refused ? .bad : .normal, from: .wired("session.cleanup"))
+                b.action("s", "Start following: this Mac serves its rank to the leader over the paired link", enabled: local.memoryGuard.decision != .refused,
+                    from: .wired("session.start"))
+            case .launching:
+                b.text("\(g.spin(state.now)) Starting `darkbloom cluster link-follower`\u{2026}", .accent, from: .wired("session.process"))
+            case .running(let pid, _):
+                b.text("\(g.spin(state.now)) Following (process \(pid)): the leader opens this Mac's rank over the paired link when it starts serving.",
+                    .accent, from: .wired("session.process"))
+                for line in state.sessionOutput.suffix(4) { b.text(line, .dim, indent: 4, from: .wired("session.process")) }
+                b.action("x", "Stop following", from: .wired("session.stop"))
+            case .stopping(let pid):
+                b.text("\(g.spin(state.now)) Stopping process \(pid)\u{2026}", .accent, from: .wired("session.process"))
+            }
             return
         }
         guard saved.isLeader else {

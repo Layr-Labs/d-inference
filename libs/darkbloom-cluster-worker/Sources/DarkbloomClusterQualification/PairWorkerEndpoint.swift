@@ -68,8 +68,15 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
     private var admittedValue: Bool?
     private var refusalValue: String?
 
+    /// Written to the worker's input before anything else: its data-plane
+    /// credential line (S16). Never logged or kept after it is written.
+    private var initialLine: Data?
+    private var dataPlaneAtReady: ClusterWorkerDataPlane?
+    /// What the worker reported about its data plane when it became ready.
+    public var dataPlane: ClusterWorkerDataPlane? { lock.withLock { dataPlaneAtReady } }
+
     public init(command: [String], expectedIdentity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil) throws {
+                executionPlanSHA256: String, stopRenewalsAfterNanoseconds: UInt64? = nil, initialLine: Data? = nil) throws {
         // Validates the identity, rank, profile and plan the way a worker does.
         _ = try ClusterWorkerSession(identity: expectedIdentity, rank: rank, profile: profile,
                                      executionPlanSHA256: executionPlanSHA256)
@@ -79,6 +86,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         self.expectedIdentity = expectedIdentity; self.rank = rank; expectedProfile = profile
         self.executionPlanSHA256 = executionPlanSHA256
         self.stopRenewalsAfterNanoseconds = stopRenewalsAfterNanoseconds
+        self.initialLine = initialLine
         writer = DispatchQueue(label: "darkbloom.pair-check.writer.\(rank)")
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = Array(command.dropFirst())
@@ -149,6 +157,13 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
             }
             launchedAt = started
             leaseDeadline = started + ClusterWorkerLease.ttlNanoseconds
+            // First on the input, before any renewal or command is queued.
+            if let line = initialLine {
+                initialLine = nil
+                writer.async { [self] in
+                    do { try input.fileHandleForWriting.write(contentsOf: line) } catch { fail(.closed) }
+                }
+            }
         }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close()
         try? diagnostics.fileHandleForWriting.close()
@@ -247,7 +262,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                       ready.profile == expectedProfile, ready.executionPlanSHA256 == executionPlanSHA256 else {
                     throw ClusterWorkerOwnerError.invalid("Worker readiness differs from the expected identity, profile or plan")
                 }
-                readyValue = ready; capacityAtReady = ready.requestCapacityBytes
+                readyValue = ready; capacityAtReady = ready.requestCapacityBytes; dataPlaneAtReady = ready.dataPlane
                 readyAt = DispatchTime.now().uptimeNanoseconds
             } else if nextEvent == 0 { throw ClusterWorkerOwnerError.invalid("Worker event precedes readiness") }
             guard incoming.count < 64 else { throw ClusterWorkerOwnerError.invalid("Worker event queue exceeded bound") }

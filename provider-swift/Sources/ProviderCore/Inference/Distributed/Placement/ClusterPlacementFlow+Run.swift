@@ -12,9 +12,14 @@ extension ClusterPlacementFlow {
     /// tool, which is installed beside its worker as this Mac's is.
     static func peerProfileCommand(local: ClusterPairDescription.Member,
                                    peer: ClusterPairDescription.Member) throws -> ClusterWorkerLaunch {
+        // The SSH route is the developer harness's only: a pair reached over the
+        // link has its profiles exchanged by the guided flow (`darkbloom cluster`).
+        guard let trust = local.trust else {
+            throw ClusterConfigurationError.invalid("This pair is reached over the link control channel: plan it with `darkbloom cluster`, which asks the other Mac over the paired link")
+        }
         let route = try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
-            knownHostsFile: URL(fileURLWithPath: local.trust.knownHostsFile),
-            identityFile: URL(fileURLWithPath: local.trust.identityFile), installedDarkbloom: peer.ownerExecutable)
+            knownHostsFile: URL(fileURLWithPath: trust.knownHostsFile),
+            identityFile: URL(fileURLWithPath: trust.identityFile), installedDarkbloom: peer.ownerExecutable)
         let tool = URL(fileURLWithPath: peer.workerExecutable).deletingLastPathComponent().appendingPathComponent(toolName)
         return try route.describeDevice(planTool: tool.path)
     }

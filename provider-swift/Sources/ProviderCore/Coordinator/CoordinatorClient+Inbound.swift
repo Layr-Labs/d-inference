@@ -98,7 +98,9 @@ extension CoordinatorClient {
             if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
-            if config.executionRole == .clusterMember {
+            // A member serving its pair slot (S09) hands the request to the
+            // loop like any provider; every other member refuses it here.
+            if config.executionRole == .clusterMember, state.memberPairSlotModel == nil {
                 sendOnCurrentConnection(encodeInferenceError(requestId: requestId,
                     failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
                     identifier: "inference_error")

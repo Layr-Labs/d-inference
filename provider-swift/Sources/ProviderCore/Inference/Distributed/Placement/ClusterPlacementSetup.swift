@@ -23,8 +23,24 @@ public struct ClusterPairDescription: Codable, Sendable, Equatable {
         /// on rank 0's, so it is used only once the planner has said which
         /// member that is.
         public let linkAddress: String
-        /// The SSH trust inputs as they are on this member's own disk.
-        public let trust: ClusterConfiguration.Trust
+        /// The SSH trust inputs as they are on this member's own disk; nil on a
+        /// pair reached over the link control channel (`linkControl`), which
+        /// has no SSH configuration at all.
+        public let trust: ClusterConfiguration.Trust?
+        /// This member's own copy of the pairing's edge secret, for a pair
+        /// reached over the link control channel.
+        public var linkSecretFile: String? = nil
+    }
+
+    /// The link control channel both members' setups use instead of SSH: the
+    /// pairing's link epoch and edge (S17), and the port the leader listens on.
+    public struct LinkControl: Codable, Sendable, Equatable {
+        public let port: Int
+        public let linkEpoch: String
+        public let edgeID: String
+        public init(port: Int, linkEpoch: String, edgeID: String) {
+            self.port = port; self.linkEpoch = linkEpoch; self.edgeID = edgeID
+        }
     }
 
     public let schema: String
@@ -36,6 +52,8 @@ public struct ClusterPairDescription: Codable, Sendable, Equatable {
     public let coordinatorPort: Int
     public let members: [Member]
     public let tokenizerFiles: [ClusterConfiguration.TokenizerFile]
+    /// Nil for a pair reached over SSH (a developer harness only).
+    public var linkControl: LinkControl? = nil
 
     public static func decode(_ data: Data) throws -> ClusterPairDescription {
         guard !data.isEmpty, data.count <= maximumBytes else {
@@ -45,7 +63,22 @@ public struct ClusterPairDescription: Codable, Sendable, Equatable {
         guard value.schema == schemaName, value.members.count == 2, Set(value.members.map(\.id)).count == 2 else {
             throw ClusterConfigurationError.invalid("A pair description names exactly two distinct members")
         }
+        try value.requireOneRoute()
         return value
+    }
+
+    /// Every member is reached the same one way: SSH trust on each (developer
+    /// harness), or the link control channel with each member's secret file.
+    func requireOneRoute() throws {
+        if linkControl != nil {
+            guard members.allSatisfy({ $0.trust == nil && $0.linkSecretFile != nil }) else {
+                throw ClusterConfigurationError.invalid("A pair reached over the link names each member's link secret and no SSH trust")
+            }
+        } else {
+            guard members.allSatisfy({ $0.trust != nil && $0.linkSecretFile == nil }) else {
+                throw ClusterConfigurationError.invalid("A pair reached over SSH names each member's SSH trust")
+            }
+        }
     }
 }
 
@@ -96,6 +129,7 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
              "modelDirectory": member.modelDirectory, "runtimeBinarySHA256": member.runtimeBinarySHA256,
              "jacclDevice": member.jacclDevice]
         }
+        try description.requireOneRoute()
         var configurations: [String: Data] = [:]
         for (rank, member) in ranked.enumerated() {
             var object: [String: Any] = ["schema": ClusterConfiguration.schemaName, "clusterID": description.clusterID,
@@ -104,11 +138,17 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
                 "prefillSchedule": chosen.prefillSchedule.rawValue,
                 "chunkTokens": description.chunkTokens, "requestTimeoutSeconds": description.requestTimeoutSeconds,
                 "peers": peers, "coordinator": ["address": ranked[0].linkAddress, "port": description.coordinatorPort],
-                "trust": ["identityFile": member.trust.identityFile, "knownHostsFile": member.trust.knownHostsFile,
-                          "knownHostsSHA256": member.trust.knownHostsSHA256],
                 "tokenizerFiles": description.tokenizerFiles.map {
                     ["path": $0.path, "sha256": $0.sha256, "purpose": $0.purpose.rawValue]
                 }]
+            if let link = description.linkControl, let secretFile = member.linkSecretFile {
+                // Reached over the link control channel: no SSH configuration at all.
+                object["linkControl"] = ["schema": ClusterLinkControlAttachment.schemaName, "port": link.port,
+                                         "linkEpoch": link.linkEpoch, "edgeID": link.edgeID, "secretFile": secretFile]
+            } else if let trust = member.trust {
+                object["trust"] = ["identityFile": trust.identityFile, "knownHostsFile": trust.knownHostsFile,
+                                   "knownHostsSHA256": trust.knownHostsSHA256]
+            }
             // The pipeline has one saved spelling, the omitted one.
             if chosen.mode != .pipeline { object["generationMode"] = chosen.mode.rawValue }
             let input = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])

@@ -33,43 +33,28 @@ struct DistributedInstalledTimeBudgets: Sendable, Equatable {
     }
 }
 
-/// A model the installed path will not serve on a pair, and why.
+/// A registered model this build has no time budgets for.
 struct DistributedInstalledServingRefusal: Error, Equatable, CustomStringConvertible {
-    enum Reason: Equatable { case pairServingWithheld, noRow }
     let runtimeModelID: String
     let publicModelID: String
-    let reason: Reason
 
     var description: String {
-        switch reason {
-        case .pairServingWithheld:
-            return "This cluster's model, \(publicModelID) (registered as \(runtimeModelID)), is not open to serving on a two-Mac pair. "
-                + "Serving a model on a pair needs its own explicit grant for that model, and none has been given for this one. "
-                + "That is a policy decision, not a fault in this setup: no cluster setting, generation mode or time budget changes it."
-        case .noRow:
-            return "This darkbloom's pair-serving table has no row for the registered model \(runtimeModelID) (\(publicModelID)). "
-                + "That is an omission in this build, not a fault in the setup: a model is served on a pair only with time budgets measured for it."
-        }
+        "This darkbloom's pair-serving table has no row for the registered model \(runtimeModelID) (\(publicModelID)). "
+            + "That is an omission in this build, not a fault in the setup: a model is served on a pair only with time budgets measured for it."
     }
 }
 
-/// The registered models the installed path knows, one row each: whether a
-/// pair may serve the model and, if so, with which time budgets.
+/// The registered models the installed path knows, one row each: the time
+/// budgets a pair serves the model with. Whether a pair may serve the model,
+/// and on which chip classes, is its grant (`ClusterPairServingGrants`), not
+/// this table.
 ///
 /// A row is keyed by the runtime's own model identity, which comes from the
-/// worker's capability record and which a setup cannot rename. The provider's
-/// model eligibility gate is keyed by the public model identity and is
-/// separate; this table relaxes nothing in it.
+/// worker's capability record and which a setup cannot rename.
 enum DistributedInstalledPairServingTable {
-    enum PairServing: Sendable, Equatable {
-        case open(DistributedInstalledTimeBudgets)
-        /// Not granted. The budgets are groundwork derived for the day it is;
-        /// nothing in the serving path can read them.
-        case withheld(groundwork: DistributedInstalledTimeBudgets)
-    }
     struct Row: Sendable, Equatable {
         let runtimeModelID: String
-        let pairServing: PairServing
+        let budgets: DistributedInstalledTimeBudgets
     }
 
     /// Registered Qwen3.5 9B.
@@ -92,15 +77,18 @@ enum DistributedInstalledPairServingTable {
     ///   pipeline and within a relayed batch of about 0.25 s under phase
     ///   split; the first token of the longest prompt (8,192 tokens) was
     ///   measured 4.0 to 4.6 s after the request arrived. 10 s is twice that.
-    static let qwen35 = Row(runtimeModelID: "registered_qwen35_9b", pairServing: .open(.init(
+    static let qwen35 = Row(runtimeModelID: "registered_qwen35_9b", budgets: .init(
         startupAllowanceNanoseconds: 90_000_000_000,
         firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 1,
         admissionWaitNanoseconds: 5_000_000_000,
         shutdownAcknowledgementNanoseconds: 2_000_000_000, stopMarginNanoseconds: 15_000_000_000,
-        cleanStopWaitNanoseconds: 10_000_000_000)))
+        cleanStopWaitNanoseconds: 10_000_000_000))
 
-    /// Registered Qwen3.8 27B. Derived from single-Mac measurements; no pair
-    /// has run this model.
+    /// Registered Qwen3.8 27B, granted on mixed chips (owner decision D4,
+    /// `ClusterPairServingGrants.qwen38_27b`). Derived from single-Mac
+    /// measurements, then checked against the pair's own: across the cable
+    /// the pair has run this model since 2026-10-09 (pipeline, phase split,
+    /// MTP, prefix reuse, prompts to 30,720 tokens) inside these budgets.
     ///
     /// - Startup, 120 s. Rank 1's stage loaded in 7.4 to 13.7 s (cut 16). Under
     ///   phase split rank 1 loads the whole model; for the 9B that took 1.7
@@ -115,23 +103,20 @@ enum DistributedInstalledPairServingTable {
     ///   weights to release (15.1 GB against 5.0 GB).
     /// - Clean-stop wait, 20 s: the first token of the longest prompt is
     ///   expected about 15 s after the request arrives, without lookahead.
-    static let qwen38 = Row(runtimeModelID: "registered_qwen38_27b", pairServing: .withheld(groundwork: .init(
+    static let qwen38 = Row(runtimeModelID: "registered_qwen38_27b", budgets: .init(
         startupAllowanceNanoseconds: 120_000_000_000,
         firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 4,
         admissionWaitNanoseconds: 5_000_000_000,
         shutdownAcknowledgementNanoseconds: 6_000_000_000, stopMarginNanoseconds: 20_000_000_000,
-        cleanStopWaitNanoseconds: 20_000_000_000)))
+        cleanStopWaitNanoseconds: 20_000_000_000))
 
     static let rows = [qwen35, qwen38]
 
-    /// The budgets of a model a pair may serve; a refusal for every other model.
+    /// The budgets of a model this build has a row for; a refusal for every other model.
     static func servingBudgets(runtimeModelID: String, publicModelID: String) throws -> DistributedInstalledTimeBudgets {
         guard let row = rows.first(where: { $0.runtimeModelID == runtimeModelID }) else {
-            throw DistributedInstalledServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noRow)
+            throw DistributedInstalledServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
         }
-        guard case .open(let budgets) = row.pairServing else {
-            throw DistributedInstalledServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .pairServingWithheld)
-        }
-        return budgets
+        return row.budgets
     }
 }

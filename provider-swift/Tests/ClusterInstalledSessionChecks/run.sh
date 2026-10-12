@@ -21,7 +21,7 @@ build_module() {
     DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
     DarkbloomClusterSecurity) task_dependencies+=(-lDarkbloomClusterBootstrap) ;;
     DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity) ;;
-    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation) ;;
+    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
   esac
   xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
     -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
@@ -45,14 +45,18 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Config/ClusterNativeMemberAttachment.swift" \
+  "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
+  "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
+  "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
+  "$task_sources/Coordinator/NativePairMemberServing.swift" "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift
 
@@ -65,7 +69,7 @@ for task_name in InstalledProbeFixture InstalledProbeFixtureWithoutFeatures Inst
     # The same stand-in built as a worker that predates the progress guard.
     InstalledProbeFixtureWithoutFeatures) task_inputs=("$task_fixtures/InstalledProbeFixture.swift"); task_defines=(-D FIXTURE_WITHOUT_WORKER_FEATURES) ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
-    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
+    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE) ;;
     InstalledSessionCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_fixtures/InstalledSessionCheck.swift") ;;
   esac
   xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \

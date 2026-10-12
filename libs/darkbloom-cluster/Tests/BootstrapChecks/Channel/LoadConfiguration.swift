@@ -30,3 +30,11 @@ public struct QwenResidentLoadConfiguration: Sendable {
 
 // CPU fixture stand-in: tests do not invoke an allocator or native runtime.
 public enum QwenResidentAllocatorPolicy: Sendable { case unchanged, disableFreedBufferCache }
+
+// CPU fixture stand-in for the runtime's owner bootstrap slot. The actual one
+// calls the pinned mlx-c bridge (BootstrapChecks runs it against that bridge);
+// argument admission never installs an exchange.
+public enum JACCLOwnerBootstrap {
+    public typealias Exchange = @Sendable (UInt64, Data) throws -> Data
+    public static func install(rank: Int, exchange: @escaping Exchange) throws {}
+}

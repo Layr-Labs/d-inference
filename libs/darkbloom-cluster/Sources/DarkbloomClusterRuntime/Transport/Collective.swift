@@ -1,4 +1,6 @@
 import Cmlx
+import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 import Foundation
 import MLX
 
@@ -35,21 +37,27 @@ public final class Collective {
     private var tokenSequence: TokenSelectionSequence?
     private(set) var modelReductionCount = 0
     private let localSocket: CollectiveLocalSocket?
+    /// The keyed data plane (S16), once the pinned exchange confirmed. From
+    /// then on every transfer between the ranks is an authenticated, encrypted
+    /// record; nothing goes in the clear.
+    private var protected: CollectiveAuthenticatedRecords?
+    private var protectedIO: CollectiveRecordByteIO?
+    /// Set as soon as a launch supplies a credential: a transfer before the
+    /// exchange confirms, or one without a record scope, is refused.
+    public private(set) var protectionRequired = false
+    /// What the exchange established; nil for a plaintext data plane.
+    public private(set) var dataPlane: ClusterDataPlaneReceipt?
 
     public var transportLabel: String { transport.rawValue }
     public var correctnessOnly: Bool { transport != .jaccl }
 
     public static var jacclAvailable: Bool { mlx_distributed_is_available("jaccl") }
 
+    /// JACCL is created through the owner's exchange when this worker
+    /// installed one (`JACCLOwnerBootstrap`); otherwise JACCL opens its own
+    /// coordinator socket (the direct native bootstrap). The two are never
+    /// substituted for each other: an installed exchange is always used.
     public init(transport: ClusterTransport = .jaccl) throws {
-        // STAGING DIVERGENCE (recorded in the handoff source ledger): the
-        // research source also accepted an optional owner `JACCLBootstrap`
-        // for PID-authenticated group creation. The pinned Darkbloom mlx-c
-        // does not expose the JACCL bootstrap C API
-        // (`mlx_distributed_init_jaccl_with_bootstrap`), so that path is not
-        // staged; only direct backend initialization remains. Adding the
-        // bootstrap back requires the mlx-c pin decision recorded in the
-        // handoff — never a local reimplementation.
         guard transport != .localSocketTest else {
             throw ProbeError("local-socket-test is created with its rank and loopback endpoint, not from a native backend")
         }
@@ -62,8 +70,11 @@ public final class Collective {
             log("Using loopback-test transport for correctness only; timings are not cluster-performance evidence")
         }
         var initialized = mlx_distributed_group_new()
+        let owner = transport == .jaccl ? JACCLOwnerBootstrap.take() : nil
+        if let owner { log("JACCL bootstrap through the authenticated owner (rank \(owner.rank)); no coordinator socket is opened") }
         try MLX.withError { error in
-            let status = mlx_distributed_init(&initialized, true, transport.backend)
+            let status = owner.map { JACCLOwnerBootstrap.initialize(&initialized, rank: $0.rank, exchange: $0.exchange) }
+                ?? mlx_distributed_init(&initialized, true, transport.backend)
             try error.check()
             guard status == 0 else { throw ProbeError("\(transport.rawValue) initialization failed: \(status)") }
         }
@@ -75,6 +86,9 @@ public final class Collective {
         }
         if let expectedRank, rank != expectedRank {
             throw ProbeError("Loopback backend initialized an unexpected rank")
+        }
+        if let owner, rank != owner.rank {
+            throw ProbeError("The owner bootstrap initialized another rank")
         }
     }
 
@@ -92,6 +106,8 @@ public final class Collective {
 
     func sum(_ input: MLXArray) -> MLXArray {
         precondition(localSocket == nil, "local-socket-test carries point-to-point transfers only")
+        // A reduction cannot be an authenticated record: a keyed data plane refuses it.
+        precondition(!protectionRequired, "A keyed data plane carries authenticated point-to-point records only")
         // Control agreements and token selection are Int32. Count floating
         // model reductions separately to detect optimized-path hook bypasses.
         if [.float16, .bfloat16, .float32].contains(input.dtype) { modelReductionCount += 1 }
@@ -103,8 +119,44 @@ public final class Collective {
 
     /// Serialized point-to-point completion; this is not a peer-consumed ACK.
     /// The returned Send handle aliases the input. Caller must not overlap MLX work.
+    /// On a keyed data plane `scope` is required and the array leaves as
+    /// authenticated, encrypted records (the input itself is returned).
     public func sendCompleted(_ input: MLXArray, to peer: Int, maximumBytes: Int,
-                       check: () throws -> Void) throws -> MLXArray {
+                              scope: CollectiveRecordScope? = nil, check: () throws -> Void) throws -> MLXArray {
+        if let protected {
+            guard peer == 1 - rank, let scope else {
+                protected.invalidate()
+                throw ProbeError("A keyed data plane refuses a transfer without its record scope")
+            }
+            try protected.sendArray(input, scope: scope, maximumBytes: maximumBytes, check: check)
+            return input
+        }
+        guard !protectionRequired else {
+            throw ProbeError("A data-plane transfer was attempted before the data plane was keyed")
+        }
+        return try rawSendCompleted(input, to: peer, maximumBytes: maximumBytes, check: check)
+    }
+
+    /// Known-shape, exact-dtype receive with evaluated owned-storage admission.
+    /// Validate the wire header first; a failed transfer fences the whole cohort.
+    public func receiveCompleted(shape: [Int], dtype: DType, from peer: Int, maximumBytes: Int,
+                                 scope: CollectiveRecordScope? = nil, check: () throws -> Void) throws -> MLXArray {
+        if let protected {
+            guard peer == 1 - rank, let scope else {
+                protected.invalidate()
+                throw ProbeError("A keyed data plane refuses a transfer without its record scope")
+            }
+            return try protected.receiveArray(shape: shape, dtype: dtype, scope: scope, maximumBytes: maximumBytes, check: check)
+        }
+        guard !protectionRequired else {
+            throw ProbeError("A data-plane transfer was attempted before the data plane was keyed")
+        }
+        return try rawReceiveCompleted(shape: shape, dtype: dtype, from: peer, maximumBytes: maximumBytes, check: check)
+    }
+
+    /// The native path itself: the hellos, then ciphertext frames only.
+    func rawSendCompleted(_ input: MLXArray, to peer: Int, maximumBytes: Int,
+                          check: () throws -> Void) throws -> MLXArray {
         try withExtendedLifetime(self) {
             if let localSocket {
                 guard peer == 1 - rank else { throw ProbeError("Point-to-point transfer requires the other rank of a two-rank group") }
@@ -115,10 +167,8 @@ public final class Collective {
         }
     }
 
-    /// Known-shape, exact-dtype receive with evaluated owned-storage admission.
-    /// Validate the wire header first; a failed transfer fences the whole cohort.
-    public func receiveCompleted(shape: [Int], dtype: DType, from peer: Int, maximumBytes: Int,
-                          check: () throws -> Void) throws -> MLXArray {
+    func rawReceiveCompleted(shape: [Int], dtype: DType, from peer: Int, maximumBytes: Int,
+                             check: () throws -> Void) throws -> MLXArray {
         try withExtendedLifetime(self) {
             if let localSocket {
                 guard peer == 1 - rank else { throw ProbeError("Point-to-point transfer requires the other rank of a two-rank group") }
@@ -128,6 +178,78 @@ public final class Collective {
                 group: handle, rank: rank, size: size, maximumBytes: maximumBytes, check: check)
         }
     }
+
+    /// The data plane's keys (S16, D1): exchange signed hellos on the raw path,
+    /// verify the peer's against the identity this rank pins before deriving
+    /// anything, confirm the keys, then carry every later transfer as records.
+    /// `scopeSHA256` is the load agreement both ranks are about to compare.
+    /// Called once, right after the group exists and before any other transfer.
+    public func establishDataPlane(credential: ClusterDataPlaneCredential, scopeSHA256: Data,
+                                   tamper: CollectiveRecordTamper? = nil,
+                                   rekey: ClusterRecordRekeyPolicy = .dataPlane,
+                                   check: () throws -> Void) throws -> ClusterDataPlaneReceipt {
+        guard protected == nil, dataPlane == nil, size == 2, credential.rank == rank else {
+            throw ProbeError("The data plane is keyed once, by this rank's own credential")
+        }
+        protectionRequired = true
+        let exchange = try ClusterDataPlaneKeyExchange(credential: credential, scopeSHA256: scopeSHA256)
+        // Rank 0 sends first; both send before either judges what it received.
+        func swap(_ mine: Data) throws -> Data {
+            func send() throws {
+                try withExtendedLifetime(mine) {
+                    _ = try rawSendCompleted(MLXArray(mine, [mine.count], type: UInt8.self), to: 1 - rank,
+                        maximumBytes: mine.count, check: check)
+                }
+            }
+            func receive() throws -> Data {
+                let array = try rawReceiveCompleted(shape: [mine.count], dtype: .uint8, from: 1 - rank,
+                    maximumBytes: mine.count, check: check)
+                let copied = array.asData(access: .copy)
+                guard copied.data.count == mine.count else { throw ProbeError("Data-plane hello size differs") }
+                return copied.data
+            }
+            if rank == 0 { try send(); return try receive() }
+            let value = try receive(); try send(); return value
+        }
+        do {
+            let tag = try exchange.accept(peerHello: try swap(exchange.hello))
+            try exchange.confirm(peerTag: try swap(tag))
+            let limits = try ClusterRecordLimits(maximumPlaintextBytes: CollectiveAuthenticatedRecords.chunkBytes)
+            let io = try CollectiveRecordByteIO(collective: self,
+                maximumFrameBytes: limits.maximumPlaintextBytes + ClusterRecordTransferAccounting.framingBytes,
+                tamper: tamper)
+            let (transport, receipt) = try exchange.makeTransport(io: io, limits: limits, rekey: rekey)
+            protected = try CollectiveAuthenticatedRecords(transport: transport, io: io)
+            protectedIO = io; dataPlane = receipt
+            log("darkbloom-data-plane-v1 rank=\(rank) protection=\(ClusterWorkerDataPlane.encrypted) peer_verified=1"
+                + " transcript=\(receipt.transcriptHex) edge=\(receipt.edgeHex) record_bytes=\(limits.maximumPlaintextBytes)"
+                + " rekey_records=\(rekey.records) rekey_bytes=\(rekey.bytes) rekey_seconds=\(rekey.seconds)")
+            return receipt
+        } catch {
+            exchange.invalidate()
+            throw ProbeError("Data-plane key exchange failed: \(error)")
+        }
+    }
+
+    /// The readiness record's data-plane field.
+    public var workerDataPlane: ClusterWorkerDataPlane? {
+        dataPlane.map { .init(protection: ClusterWorkerDataPlane.encrypted, peerVerified: $0.peerVerified,
+                              transcriptSHA256: $0.transcriptHex, edgeID: $0.edgeHex) }
+    }
+
+    /// Records sealed and opened and the key generations in use.
+    public var dataPlaneStatus: ClusterRecordTransportStatus? { protected?.status }
+
+    /// One line with what the keyed data plane carried in this session, for
+    /// the launcher's evidence: records and plaintext bytes each way and the
+    /// key generation each direction reached. Nothing for a plaintext plane.
+    public func logDataPlaneStatus() {
+        guard let status = dataPlaneStatus else { return }
+        log("darkbloom-data-plane-status-v1 rank=\(rank) " + status.lineFields)
+    }
+
+    /// Fail closed at once: later transfers refuse.
+    public func invalidateDataPlane() { protected?.invalidate() }
 
     public func barrier() {
         let result = sum(MLXArray(Int32(rank + 1)))

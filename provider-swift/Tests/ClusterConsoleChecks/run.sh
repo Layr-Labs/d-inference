@@ -23,7 +23,7 @@ build_module() {
     DarkbloomClusterSecurity) task_dependencies+=(-lDarkbloomClusterBootstrap) ;;
     DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity) ;;
     DarkbloomClusterPlacement) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
-    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation) ;;
+    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
   esac
   xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
     -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
@@ -58,8 +58,11 @@ build_module InstalledContract \
   "$task_sources/Config/ClusterConfigurationFiles.swift" \
   "$task_sources/Config/ClusterConfigurationPaths.swift" \
   "$task_sources/Config/ClusterConfigurationStore.swift" \
-  "$task_sources/Config/ClusterNativeMemberAttachment.swift" \
+  "$task_sources/Config/ClusterNativeMemberAttachment.swift" "$task_sources/Config/ClusterLinkControlAttachment.swift" \
   "$task_sources/Config/ClusterPairApproval.swift" \
+  "$task_sources/Config/ClusterRuntimeApproval.swift" "$task_sources/Protocol/ClusterRosterRegistration.swift" \
+  "$task_sources/Coordinator/NativePairMemberServing.swift" "$task_fixtures/AttestationSignerStandIn.swift" \
+  "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
   "$task_sources/Config/ClusterGenerationSelection.swift" \
   "$task_sources/Config/ClusterCapabilityRecord.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" \
@@ -68,6 +71,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusValues.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterStatusCodec.swift \
@@ -83,16 +87,17 @@ build_module InstalledContract \
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
 for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker ConsoleSessionStandIn ClusterConsoleCheck; do
+  task_defines=()
   case "$task_name" in
     InstalledProbeFixture) task_inputs=("$task_fixtures/InstalledProbeFixture.swift") ;;
     InstalledFakeOwner) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_fixtures/InstalledFakeOwner.swift") ;;
-    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift") ;;
+    InstalledFakeWorker) task_inputs=("$task_fixtures/InstalledFixtureIdentity.swift" "$task_cluster/Tests/ProcessChecks/FakeClusterWorker.swift"); task_defines=(-D FAKE_WORKER_PRELUDE) ;;
     # The stand-in for `darkbloom start --local --distributed`: the real
     # installed session over the fabricated owner and worker children.
     ConsoleSessionStandIn) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_checks/StandIn/ConsoleSessionStandIn.swift") ;;
     ClusterConsoleCheck) task_inputs=("$task_fixtures/InstalledFixture.swift" "$task_checks"/*.swift) ;;
   esac
-  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" \
+  xcrun swiftc "${task_flags[@]}" -parse-as-library "${task_fixture_links[@]}" ${task_defines[@]+"${task_defines[@]}"} \
     "${task_inputs[@]}" -o "$task_build/$task_name"
 done
 

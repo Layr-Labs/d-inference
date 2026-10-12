@@ -48,8 +48,18 @@ final class EndpointBox: @unchecked Sendable {
 }
 
 @main enum InstalledSessionCheck {
+    /// The installed launch arguments with the combined profile's attachment,
+    /// which always comes last, checked and removed.
+    static func withoutBootstrap(_ plan:DistributedInstalledPlan,binding:ClusterOwnerBinding,deadline:UInt64) throws->[String] {
+        let start=try DistributedInstalledNativeStart.starts(plan:plan,epoch:binding.identity.membershipEpoch)[binding.rank]
+        let attachment=try ClusterOwnerBootstrapAttachment(profile:.nativeKeyPreludeMesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000,nativeStart:start)
+        defer{attachment.cancel()}
+        let arguments=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)
+        try require(Array(arguments.suffix(attachment.workerArguments.count))==attachment.workerArguments,"bootstrap arguments are not last")
+        return Array(arguments.dropLast(attachment.workerArguments.count))
+    }
     static func main() async throws {
-        signal(SIGALRM){_ in Darwin._exit(124)};alarm(50);defer{alarm(0)}
+        signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}
         let root=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("installed-check-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:root)}
         let fixture=try InstalledFixture.make(root:root,probe:URL(fileURLWithPath:CommandLine.arguments[1]),
@@ -62,27 +72,48 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
         try pairedSetupRefusesLocalSession(fixture)
+        try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)
         try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
         try ordinaryProviderExclusion(fixture)
         try generationModeSelection(fixture,prepared)
         try perModelBudgets(fixture,prepared)
         try longPromptsFitTheInstalledSession(fixture)
-        try pairServingStaysWithheld(fixture)
+        try pairServingGrant(fixture)
         try unreadableCapabilityRecord(fixture)
         try await phaseSplitSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
         try await normalAndDrain(fixture,prepared)
         try await noRequestLimit(fixture,prepared)
         try await failedStart(fixture,prepared)
+        try await followerRefusalNamed(fixture,prepared)
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, withheld pair serving, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
         return try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:object),capability:f.capability,capabilitySHA256:f.configuration.capabilitySHA256)
+    }
+    /// No SSH in the user path: a setup that reaches the follower over SSH is
+    /// refused before anything starts unless the developer flag is set; a
+    /// link control setup is never refused for its route.
+    static func developerSSHGate(_ f:InstalledFixture) throws {
+        try require(f.configuration.trust != nil && f.configuration.linkControl == nil,"fixture is not an SSH setup")
+        var message=""
+        do { try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[:]) } catch { message=String(describing:error) }
+        try require(message.contains("over SSH") && message.contains("darkbloom cluster setup") && !message.contains(DistributedInstalledDeveloperSSH.environmentKey),
+            "an SSH setup was not refused without the developer flag (or the refusal offers the flag): \(message)")
+        try rejected{ try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"yes"]) }
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"1"])
+        let link=try changedConfiguration(f){ object in
+            object["trust"]=nil
+            object["linkControl"]=["schema":"darkbloom_cluster_link_control_v1","port":47999,"linkEpoch":UUID().uuidString.lowercased(),
+                                   "edgeID":UUID().uuidString.lowercased(),"secretFile":f.root.appendingPathComponent("link-secret").path]
+        }
+        try require(link.linkControl != nil && link.trust == nil,"link fixture differs")
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(link,environment:[:])
     }
     /// A setup saved for coordinator pairing loads and validates, and the
     /// session this Mac would launch itself refuses it before any owner starts.
@@ -126,35 +157,51 @@ final class EndpointBox: @unchecked Sendable {
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")
         try rejected{_ = try ClusterLocalOwnerConfiguration(installedDarkbloom:URL(fileURLWithPath:"/unsafe/../owner"))}
     }
-    /// The installed build starts its ranks with the runtime's own bootstrap and
-    /// says so. The owner-authenticated arguments stay a contract, not a default:
-    /// they are appended only for a build that selects that exchange.
+    /// The installed build starts its ranks with the owner-authenticated
+    /// bootstrap (S07): the native key prelude, then the mesh rounds, through
+    /// both owners and the leader's relay. A launch without its attachment, or
+    /// with another profile's, is a mismatch, never a silent downgrade.
     static func bootstrapSelection(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
         let plan=prepared.plan
-        try require(plan.bootstrap == .directNative && plan.bootstrap.ownerProfile==nil && !plan.bootstrap.ownerAuthenticated,"installed bootstrap selection differs")
+        try require(plan.bootstrap == .ownerAuthenticated && plan.bootstrap.ownerProfile == .nativeKeyPreludeMesh2 && plan.bootstrap.ownerAuthenticated,"installed bootstrap selection differs")
         let binding=try plan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
         let deadline=DispatchTime.now().uptimeNanoseconds+100_000_000_000
-        let direct=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline-1,attachment:nil)
-        try require(!direct.contains{$0.hasPrefix("--bootstrap-")},"direct native launch carried bootstrap arguments the worker refuses")
-        try require(Array(direct.suffix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)],"startup deadline was not passed to the worker")
-        let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
-        try require(legacy==Array(direct.dropLast(2)) && legacy.count==24,"a worker without the startup argument must be started without it")
+        let starts=try DistributedInstalledNativeStart.starts(plan:plan,epoch:binding.identity.membershipEpoch)
+        try require(starts.count==2 && starts.map(\.rank)==[0,1] && starts[0].common.canonicalBytes==starts[1].common.canonicalBytes,"native starts differ")
+        // Each owner admits only the start its own setup derives, for its own rank.
+        let authorize=DistributedInstalledNativeStart.authorizer(plan:plan)
+        try authorize(starts[plan.configuration.localRank])
+        try rejected{try authorize(starts[1-plan.configuration.localRank])}
+        let attachment=try ClusterOwnerBootstrapAttachment(profile:.nativeKeyPreludeMesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000,
+            nativeStart:starts[plan.configuration.localRank])
+        defer{attachment.cancel()}
+        try require(attachment.workerArguments.count==8 && attachment.workerArguments[0]=="--bootstrap-socket-path"
+            && attachment.workerArguments[6]=="--native-authorization-start-base64","authenticated argument contract changed")
+        let launched=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline-1,attachment:attachment)
+        try require(Array(launched.suffix(10).prefix(2))==["--startup-deadline-uptime-nanoseconds",String(deadline-1)]
+            && Array(launched.suffix(8))==attachment.workerArguments,"startup deadline or bootstrap arguments were not passed to the worker")
+        let legacy=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)
+        try require(legacy.count==24+8,"a worker without the startup argument must be started without it")
+        // S16: a worker whose owner received its data-plane credential is told so;
+        // the credential itself is its first input line, never an argument.
+        let keyed=try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment,dataPlane:true)
+        try require(keyed==Array(legacy.dropLast(8))+["--data-plane","encrypted_v1"]+attachment.workerArguments,"a keyed launch must add exactly the data-plane argument")
         // A startup may outlast the first lease grant (the lease is renewed
         // during the load), but not the protocol's hour; a first grant is at
         // most one lease grant away.
-        _ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:nil)
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:DispatchTime.now().uptimeNanoseconds+3_601_000_000_000,attachment:nil)}
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:DispatchTime.now().uptimeNanoseconds+121_000_000_000,startupDeadline:nil,attachment:nil)}
-        let attachment=try ClusterOwnerBootstrapAttachment(profile:.mesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000)
-        defer{attachment.cancel()}
-        try require(attachment.workerArguments.count==6 && attachment.workerArguments[0]=="--bootstrap-socket-path","authenticated argument contract changed")
-        // Supplying the attachment to a build that selected the direct exchange
-        // is a mismatch, never a silent upgrade or downgrade.
-        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:attachment)}
+        _ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:deadline+1,attachment:attachment)
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:DispatchTime.now().uptimeNanoseconds+3_601_000_000_000,attachment:attachment)}
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:DispatchTime.now().uptimeNanoseconds+121_000_000_000,startupDeadline:nil,attachment:attachment)}
+        // No attachment, or the mesh-only profile's: a mismatch.
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)}
+        let meshOnly=try ClusterOwnerBootstrapAttachment(profile:.mesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000)
+        defer{meshOnly.cancel()}
+        try rejected{_ = try plan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:meshOnly)}
         let (session,_)=try session(f,prepared)
         let observed=session.diagnosticObservation
-        try require(observed.nativeBootstrap == .directNative && !observed.nativeBootstrapOwnerAuthenticated,"status claimed an authenticated bootstrap")
+        try require(observed.nativeBootstrap == .ownerAuthenticated && observed.nativeBootstrapOwnerAuthenticated,"status did not report the authenticated bootstrap")
         try require(observed.collectiveProgressLimitMilliseconds==60_000,"status omitted the collective progress limit")
+        try require(observed.encryptedDataPlane==nil && observed.peerVerified==nil,"status observed a data plane before both ranks were ready")
         try require(session.cooperativeStopAllowanceNanoseconds==85_000_000_000,"stop allowance does not cover the clean-stop wait and the progress limit")
     }
     /// A pin names whatever binary was installed. The installed path also
@@ -230,12 +277,12 @@ final class EndpointBox: @unchecked Sendable {
             let configuration=try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:member),capability:split.capability,capabilitySHA256:split.configuration.capabilitySHA256)
             let rankPlan=try DistributedInstalledPlan(saved:.init(configuration:configuration,capability:split.capability),paths:split.paths)
             let binding=try rankPlan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
-            let arguments=try rankPlan.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+            let arguments=try withoutBootstrap(rankPlan,binding:binding,deadline:deadline)
             // The same setup without the field: the pipeline's command line, to which the mode adds exactly one pair.
             member.removeValue(forKey:"generationMode")
             let pipeline=try DistributedInstalledPlan(saved:.init(configuration:ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:member),
                 capability:split.capability,capabilitySHA256:split.configuration.capabilitySHA256),capability:split.capability),paths:split.paths)
-            let plain=try pipeline.nativeArguments(binding:binding,deadline:deadline,startupDeadline:nil,attachment:nil)
+            let plain=try withoutBootstrap(pipeline,binding:binding,deadline:deadline)
             try require(arguments==plain+["--generation-mode","phase_split_v1"] && !plain.contains("--generation-mode"),
                 "rank \(rank) was not started with the pipeline's arguments plus the selected mode: \(arguments)")
             try require(!arguments.contains("--qualification-switches"),"the owner passed a qualification switch")
@@ -258,7 +305,7 @@ final class EndpointBox: @unchecked Sendable {
         let nine=DistributedInstalledTimeBudgets(startupAllowanceNanoseconds:90_000_000_000,firstTokenBaseMilliseconds:10_000,firstTokenMillisecondsPerPromptToken:1,
             admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,stopMarginNanoseconds:15_000_000_000,
             cleanStopWaitNanoseconds:10_000_000_000)
-        try require(Table.qwen35.pairServing == .open(nine),"the 9B's budgets changed, or the 9B is no longer open")
+        try require(Table.qwen35.budgets == nine,"the 9B's budgets changed")
         try require(prepared.plan.budgets==nine,"the plan did not take its budgets from the selected model's row")
         try require(nine.pairTiming == ClusterWorkerPairTiming(admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,cleanStopWaitNanoseconds:10_000_000_000),"the 9B's pair timing differs from its row")
         let (session,_)=try session(f,prepared)
@@ -268,8 +315,8 @@ final class EndpointBox: @unchecked Sendable {
         let split=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-split"),probe:f.probe,owner:f.owner,worker:f.worker,
             generationMode:"phase_split_v1",advertisedModes:allModes).prepare()
         try require(split.plan.budgets==nine,"the generation mode changed a time budget")
-        // The 27B's row is withheld; its groundwork figures follow from its own measurements.
-        guard case .withheld(let big)=Table.qwen38.pairServing else { throw CheckFailure(message:"the 27B's row is not withheld") }
+        // The 27B's row is open (S08); its figures follow from its own measurements.
+        let big=Table.qwen38.budgets
         let slowestStageLoad=13.7,phaseSplitFactor=12.3/7.3,slowPrefillTokensPerSecond=300.0
         try require(Double(big.startupAllowanceNanoseconds)/1e9 >= 5*slowestStageLoad*phaseSplitFactor
             && big.startupAllowanceNanoseconds <= 150_000_000_000,"27B startup allowance is not five whole-model loads inside half a session")
@@ -296,38 +343,50 @@ final class EndpointBox: @unchecked Sendable {
         let measured:[String:(decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(67,15.61),
             "registered_qwen38_27b":(23,39.91)]
         for row in Table.rows {
-            let budgets:DistributedInstalledTimeBudgets
-            switch row.pairServing { case .open(let value): budgets=value; case .withheld(let value): budgets=value }
+            let budgets=row.budgets
             guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }
             let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
             try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
         }
     }
-    /// The 27B is not open to pair serving. Nothing in the installed path can
-    /// start it: not a setup, not a mode, not its budgets.
-    static func pairServingStaysWithheld(_ f:InstalledFixture) throws {
+    /// Pair serving is granted per registered model with the chip classes each
+    /// role may run on (owner decision D4). The 27B is granted on the M3 Ultra
+    /// and the M5 Max for either role: its setups prepare in every mode, under
+    /// its own budgets, whatever the public name, and the plan admits exactly
+    /// the listed classes for the rank it runs. A registered model without a
+    /// row is still refused.
+    static func pairServingGrant(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
-        func isPolicy(_ message:String)->Bool {
-            message.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && message.contains("registered_qwen38_27b") && message.contains("not open to serving on a two-Mac pair")
-                && message.contains("policy decision") && message.contains("generation mode or time budget")
-        }
         for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
-            // Saving a setup is not serving it, and stays possible.
             let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
                 generationMode:mode,advertisedModes:allModes,registered:model)
-            let prepare=try refusal{_ = try big.prepare()}
-            try require(isPolicy(prepare),"27B refusal does not say why: \(prepare)")
-            try require(isPolicy(try refusal{_ = try DistributedInstalledValidation.validate(reference:big.reference,paths:big.paths,deadline:DispatchTime.now().uptimeNanoseconds+5_000_000_000)}),
-                "the shared validation did not refuse the 27B as policy")
-            try require(isPolicy(try refusal{_ = try DistributedInstalledPlan(saved:.init(configuration:big.configuration,capability:big.capability),paths:big.paths)}),
-                "a plan exists for a model that is not served on a pair")
+            let prepared=try big.prepare()
+            try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
+            try require(prepared.plan.grant==ClusterPairServingGrants.qwen38_27b,"the 27B was prepared under another model's grant")
+            // The fixture is the leader: rank 0 of two, the pipeline-only rank.
+            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip)) }
+            for chip in ["Apple M4 Max","Apple M5 Pro","Apple M1 (Virtual)"] {
+                let refused=try refusal{try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip))}
+                try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
+                    && refused.contains("policy decision"),"\(chip) was not refused for the 27B's rank 0: \(refused)")
+            }
         }
-        // The refusal is keyed on the runtime's model, whatever the public name; a model without a row is refused too.
-        let withheld=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")}
-        try require(withheld.contains("renamed/public-id") && withheld.contains("registered_qwen38_27b") && withheld.contains("policy decision"),"renamed 27B: \(withheld)")
+        // The 9B was checked with the M3 Ultra leading only: an M5 Max cannot run its rank 0.
+        let nine=try f.prepare()
+        try require(nine.plan.grant==ClusterPairServingGrants.qwen35_9b,"the 9B was prepared under another model's grant")
+        try nine.plan.requireLocalRankGranted(numericsClass:.appleM3Ultra)
+        let led=try refusal{try nine.plan.requireLocalRankGranted(numericsClass:.appleM5Max)}
+        try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains("apple_m5_max"),"9B led by the M5 Max: \(led)")
+        // Budgets and grant are keyed on the runtime's model, whatever the public name.
+        let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
+        try require(renamed==Table.qwen38.budgets,"renamed 27B budgets differ")
+        try require(try ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")==ClusterPairServingGrants.qwen38_27b,
+            "renamed 27B grant differs")
         let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
+        let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
+        try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
     }
     /// A worker whose description this build cannot read is a mixed install,
     /// and the refusal says so instead of reporting a difference.
@@ -404,11 +463,14 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{try prepared.requireUnchanged()};try FileManager.default.removeItem(at:fallback)
         try prepared.requireUnchanged()
     }
-    static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false) throws->(DistributedInstalledSession,EndpointBox) {
+    typealias RankOne=@Sendable (DistributedInstalledPlan,ClusterWorkerIdentity,UInt64,(any ClusterOwnerBootstrapExchange)?) throws->any ClusterOwnedWorkerEndpoint
+    static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false,
+                        rankOne:RankOne?=nil) throws->(DistributedInstalledSession,EndpointBox) {
         let base=f.root.appendingPathComponent("session-"+UUID().uuidString);try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let box=EndpointBox()
-        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay in
+        let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay,_ in
             if failSecond && rank==1 { throw CheckFailure(message:"fabricated second launch refusal") }
+            if rank==1, let rankOne { return try rankOne(plan,id,lifetime,relay) }
             let directory=base.appendingPathComponent("rank-\(rank)");try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
             let ready=base.appendingPathComponent("ready-\(rank).json")
             let frame=ClusterWorkerEventFrame(membershipEpoch:id.membershipEpoch,sequence:0,requestID:nil,
@@ -459,10 +521,59 @@ final class EndpointBox: @unchecked Sendable {
         do { try await s.start() }
         catch let error as CheckFailure where error.message == "fabricated second launch refusal" { refused = true }
         try require(refused, "second launch refusal accepted")
-        let result=await s.stop(until:DispatchTime.now().uptimeNanoseconds+6_000_000_000)
-        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint")
+        // The surviving rank's worker was started into the combined bootstrap
+        // for a peer that was never launched. The fence cancels its owner's
+        // bootstrap listener, which refuses the worker's connection, so the
+        // worker ends at once instead of at the bootstrap's own bound (30 s),
+        // with its cleanup and release proven.
+        let began=DispatchTime.now().uptimeNanoseconds
+        let result=await s.stop(until:began+10_000_000_000)
+        try require(DispatchTime.now().uptimeNanoseconds-began<5_000_000_000,"partial startup held the surviving rank inside its bootstrap")
+        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint: \(box.snapshot.map { "termination \(String(describing:$0.ownerTermination)) cleanup \($0.nativeCleanupObserved) tail \(String(decoding:$0.diagnosticTail,as:UTF8.self).suffix(600))" })")
         try require(result == .released || result == .quarantined,"partial startup returned live readiness")
         try require(!s.canRotate || box.snapshot[0].ownerDeviceLeaseReleasedObserved,"partial rotate missing release")
+    }
+    /// A follower member that refuses the open (here its setup is for another
+    /// plan) ends the start with its own reason instead of a bare closed
+    /// stream, and the surviving rank is released as at any partial start.
+    /// The follower is the real link server, joined to the leader's link
+    /// endpoint in this process (no socket, no SSH).
+    static func followerRefusalNamed(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
+        final class Loop: ClusterLinkWorkerTransport, @unchecked Sendable {
+            let lock=NSLock(); var target:(@Sendable (Data)->Void)?
+            func send(_ bytes:Data) throws {
+                guard let target=lock.withLock({ self.target }) else { throw CheckFailure(message:"link loop not joined") }
+                target(bytes)
+            }
+        }
+        let toFollower=Loop(),toLeader=Loop(),router=ClusterLinkWorkerRouter()
+        let server=ClusterLinkWorkerServer(transport:toLeader,clusterID:p.plan.configuration.clusterID,rank:1,
+            bootstrapProfile:p.plan.bootstrap.ownerProfile,admit:{ _ in throw ClusterConfigurationError.invalid("The leader opened another plan") })
+        toLeader.lock.withLock { toLeader.target={ router.deliver($0) } }
+        toFollower.lock.withLock { toFollower.target={ server.deliver($0) } }
+        let(s,box)=try session(f,p,rankOne:{ plan,id,lifetime,relay in
+            try ClusterLinkWorkerEndpoint(transport:toFollower,clusterID:plan.configuration.clusterID,expectedIdentity:id,
+                profile:plan.capability.profile,rank:1,executionPlanSHA256:plan.partition.planSHA256,
+                lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay,router:router)
+        })
+        var named:String?
+        do { try await s.start() }
+        catch let refusal as DistributedInstalledStartRefusal {
+            try require(refusal.rank==1,"the refusal names rank \(refusal.rank)")
+            named=String(describing:refusal)
+        }
+        try require(named?.contains("refused the session") == true && named?.contains("The leader opened another plan") == true,
+            "the start did not carry the follower's reason: \(String(describing:named))")
+        let began=DispatchTime.now().uptimeNanoseconds
+        let result=await s.stop(until:began+10_000_000_000)
+        try require(DispatchTime.now().uptimeNanoseconds-began<5_000_000_000,"a refused follower held the surviving rank")
+        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"the surviving rank was not cleaned up")
+        try require(result == .released || result == .quarantined,"a refused start returned live readiness")
+        try require(!server.busy && server.served==0,"the refusing follower launched something")
+        // Any other failure is passed through unchanged; the reason prints as plain ASCII.
+        try require(DistributedInstalledSession.startFailure(ClusterWorkerOwnerError.closed,endpoints:[]) as? ClusterWorkerOwnerError == .closed,
+            "a failure without a refusal was rewritten")
+        try require(DistributedInstalledStartRefusal(rank:1,reason:"a\u{1b}[2Jb\u{7f}").reason=="a?[2Jb?","a refusal reason kept control characters")
     }
     /// No fixed lifetime: a session whose owners' leases are renewed outlives
     /// the first lease grant, here a session that serves on past the first

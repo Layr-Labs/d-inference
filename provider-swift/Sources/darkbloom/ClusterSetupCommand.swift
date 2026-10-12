@@ -42,6 +42,10 @@ extension Cluster {
         var capabilitySHA256: String?
         @Option(help: "This Mac's member ID in the pair description.")
         var member: String?
+        @Option(name: .customLong("model-dir"), help: "Absolute path of the folder holding this Mac's model folders (once; the wizard remembers it).")
+        var modelDir: String?
+        @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
+        var worker: String?
 
         func validate() throws { try validateWizardOptions() }
 
@@ -94,7 +98,8 @@ extension Cluster {
                 case .fix(let device):
                     // Blocks while the person at the screen answers the macOS prompt; a dry run asks nothing.
                     let result = await Task.detached { ClusterLinkRepair.fix(device: device, mode: mode, dryRun: dryRun) }.value
-                    manualCommands = result.manualCommands
+                    // One short line where the commands went into an owner-only script.
+                    manualCommands = result.manualScript.map { ["sudo sh \($0)"] } ?? result.manualCommands
                     step = flow.repaired(result)
                 case .finish(let exitCode):
                     // A dry run also ends with status 0, so readiness is what was observed, not the status.

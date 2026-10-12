@@ -3,6 +3,7 @@ import Darwin
 import DarkbloomClusterPlacement
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
+import DarkbloomClusterSecurity
 
 /// Reads this Mac for the wizard: the same probes and files the cluster
 /// subcommands read, put together as one report. It changes nothing.
@@ -49,7 +50,21 @@ enum ClusterSetupLocalReader {
             link: .init(report: link, thunderbolt: thunderbolt), saved: .init(saved, generationMode: savedConfiguration?.selectedGenerationMode.rawValue),
             inbox: inbox.summary, inboxError: inbox.error,
             journal: journal, memoryGuard: .init(ClusterOrphanWiredGuard.evaluate(role: "wizard")), models: models,
-            modelsError: modelsError, pairingCode: pairingCode(installation), checks: doctor)
+            modelsError: modelsError, pairingCode: pairingCode(installation), checks: doctor,
+            linkPairings: linkPairings(ClusterPairingStore.default()))
+    }
+
+    /// The ceremony's store, as public values; nil when this Mac never paired.
+    static func linkPairings(_ store: ClusterPairingStore) -> ClusterSetupLinkPairings? {
+        do {
+            guard let records = try store.load() else { return nil }
+            return .init(localPin: String(records.localPin.prefix(16)), pairings: records.pairings.map {
+                .init(peerPin: String($0.peerPin.prefix(16)), peerName: ClusterConsoleText.bounded($0.peerName, maximum: 96),
+                      clusterID: ClusterConsoleText.bounded($0.clusterID, maximum: 128), generation: $0.roster.generation, pairedAt: $0.pairedAt)
+            })
+        } catch {
+            return .init(localPin: "", pairings: [], error: ClusterConsoleText.bounded(error))
+        }
     }
 
     static func installation(saved: ClusterConfiguration?, inbox: ClusterConfiguration?, description: ClusterPairDescription?,
@@ -58,10 +73,10 @@ enum ClusterSetupLocalReader {
         if let configuration = saved ?? inbox {
             let local = configuration.peers[configuration.localRank]
             value = .init(workerExecutable: local.workerExecutable, modelDirectory: local.modelDirectory, clusterID: configuration.clusterID,
-                knownHostsFile: configuration.trust.knownHostsFile, sshPort: local.port, leads: configuration.role == .leader)
+                knownHostsFile: configuration.trust?.knownHostsFile, sshPort: local.port, leads: configuration.role == .leader)
         } else if let description, let member = description.members.first(where: { $0.id == localMemberID }) {
             value = .init(workerExecutable: member.workerExecutable, modelDirectory: member.modelDirectory, clusterID: description.clusterID,
-                knownHostsFile: member.trust.knownHostsFile, sshPort: member.port, leads: true)
+                knownHostsFile: member.trust?.knownHostsFile, sshPort: member.port, leads: true)
         }
         if let worker = overrides.workerExecutable { value.workerExecutable = worker }
         if let models = overrides.modelDirectory { value.modelDirectory = models }

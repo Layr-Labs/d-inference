@@ -106,6 +106,12 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
     /// run instead. They contain the address, so they are never encoded; the
     /// command line prints them on standard error.
     public let manualCommands: [String]
+    /// Set only for `approvalUnavailable` of link setup v2: the owner-only
+    /// script holding those commands (`~/...`), so the one line to type is
+    /// `sudo sh <script>`. No address is in the path.
+    public internal(set) var manualScript: String?
+    /// Ports found isolated by hand (no record) and recorded by this run.
+    public let adopted: [String]
     /// For the sentences of link setup v2 only, never encoded: the port's
     /// hardware port name ("Thunderbolt 2") and the bridge it is or was in.
     let hardwarePort: String?
@@ -113,7 +119,7 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
 
     init(operation: Operation, outcome: ClusterLinkRepairOutcome, device: String? = nil, interface: String? = nil,
          candidates: [String] = [], durable: Bool? = nil, isolated: Bool? = nil, plannedCommands: [String] = [],
-         manualCommands: [String] = [], hardwarePort: String? = nil, bridge: String? = nil) {
+         manualCommands: [String] = [], hardwarePort: String? = nil, bridge: String? = nil, adopted: [String] = []) {
         self.operation = operation
         self.outcome = outcome
         self.device = device
@@ -123,12 +129,13 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
         self.isolated = isolated
         self.plannedCommands = plannedCommands
         self.manualCommands = manualCommands
+        self.adopted = adopted
         self.hardwarePort = hardwarePort
         self.bridge = bridge
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, operation, outcome, state, unmet, findings, device, interface, candidates, durable, isolated, plannedCommands, message
+        case schema, operation, outcome, state, unmet, findings, device, interface, candidates, durable, isolated, plannedCommands, manualScript, adopted, message
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -146,6 +153,8 @@ public struct ClusterLinkRepairResult: Encodable, Sendable, Equatable {
         try container.encodeIfPresent(durable, forKey: .durable)
         try container.encodeIfPresent(isolated, forKey: .isolated)
         if !plannedCommands.isEmpty { try container.encode(plannedCommands, forKey: .plannedCommands) }
+        try container.encodeIfPresent(manualScript, forKey: .manualScript)
+        if !adopted.isEmpty { try container.encode(adopted, forKey: .adopted) }
         try container.encode(message, forKey: .message)
     }
 }

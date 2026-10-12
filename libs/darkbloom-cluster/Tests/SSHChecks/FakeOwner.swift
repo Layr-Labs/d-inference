@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
+import DarkbloomClusterSecurity
 @testable import DarkbloomClusterRemote
 
 @main struct FakeOwner {
@@ -89,10 +90,18 @@ import DarkbloomClusterProcess
         // retired within a test's patience. The order of the stages is unchanged.
         let policy: ClusterWorkerSignalPolicy = options.contains("quick")
             ? .init(terminateMarginNanoseconds: 300_000_000, killMarginNanoseconds: 500_000_000, reapMarginNanoseconds: 1_000_000_000) : .standard
+        let authorize: @Sendable (ClusterNativeAuthorizationStart) throws -> Void = { start in
+            guard start.common.epoch == fixtureIdentity.membershipEpoch, start.rank == rank else {
+                throw ClusterOwnerStateError.invalid("Fake native start differs")
+            }
+        }
         try ClusterWorkerOwnerService.serveConfigured(input: STDIN_FILENO,
             output: options.contains("garbage") ? filter.fileHandleForWriting.fileDescriptor : STDOUT_FILENO,
             clusterID: "cpu-test", leaseDirectory: directory,
-            bootstrapProfile: behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
+            bootstrapProfile: behavior.hasPrefix("bootstrap-prelude") ? .nativeKeyPreludeMesh2 : behavior.hasPrefix("bootstrap") ? .mesh2 : nil,
+            // The combined profile's committed start: this stand-in admits one
+            // for its own membership epoch and rank only.
+            authorizeNativeStart: behavior.hasPrefix("bootstrap-prelude") ? authorize : nil,
             binding: { epoch, lease, incarnation in
                 guard epoch == fixtureIdentity.membershipEpoch else { throw ClusterOwnerStateError.invalid("Fake epoch differs") }
                 return try .init(clusterID: "cpu-test", ownerIncarnation: incarnation, leaseID: lease,

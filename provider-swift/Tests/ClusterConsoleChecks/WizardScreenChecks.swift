@@ -193,8 +193,9 @@ extension ClusterConsoleCheck {
         expect(text("2 preview").contains("networksetup -createnetworkservice"), "the preview lists the commands")
         expect(text("2 applied").contains("Fixed: the port belongs to the cluster"), "the result shows in plain words")
         let follower = text("3 no pair, follower code")
-        expect(follower.contains("482 913") && follower.contains("own SSH host key"), "a lone Mac shows its own code")
-        expect(follower.contains("--pair"), "and how the leader is given its pair")
+        expect(follower.contains("Pair over the link (no SSH)") && follower.contains("press l on each"), "a lone Mac pairs over the link")
+        expect(!follower.contains("SSH host key") && !follower.contains("--pair <description>") && !follower.contains("482 913"),
+               "and is offered no SSH host-key code or pair description (owner gate: no SSH in the user path)")
         expect(text("3 reached").contains("holds the host key the setup pins"), "the pinned connection's meaning is said")
         expect(text("3 failed").contains("did not accept this Mac's key"), "a failed reach says why")
         expect(text("3 confirmed").contains("both screens showed this code"), "a confirmation shows")

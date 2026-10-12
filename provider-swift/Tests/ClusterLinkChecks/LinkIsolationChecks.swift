@@ -367,6 +367,43 @@ extension ClusterLinkCheck {
             "manual commands for an administrator")
         expect(!compactJSON(noPrompt).contains("sudo"), "manual commands stay out of JSON")
         expect(unavailable.isolationRecord.entry(on: "en7") != nil, "the entry stays for what an administrator may do")
+        // Where no prompt can be shown (SSH without a desktop): one owner-only script, one short line to type.
+        let scripted = FakeIsolationWorld(IsolationFixtures.macA)
+        var written = [(name: String, body: String)]()
+        var scriptedEnvironment = scripted.environment
+        scriptedEnvironment.writeManualScript = { name, body in
+            written.append((name, body))
+            return "~/.darkbloom/cluster-device/" + name
+        }
+        let oneLine = ClusterLinkRepair.fix(device: nil, mode: .durable, dryRun: false, in: scriptedEnvironment)
+        expectEqual(oneLine.outcome, .approvalUnavailable, "still unavailable")
+        expectEqual(oneLine.manualScript, "~/.darkbloom/cluster-device/link-fix.sh", "the script to run")
+        expectEqual(written.map(\.name), ["link-fix.sh"], "one script written")
+        let body = written.first?.body ?? ""
+        let bodyLines = body.split(separator: "\n").map(String.init)
+        expect(body.hasPrefix("#!/bin/sh\n") && bodyLines.contains("set -e"), "a shell script under set -e: \(body)")
+        expect(bodyLines.contains("/usr/sbin/networksetup -createnetworkservice 'Darkbloom Cluster Link (en7)' 'Thunderbolt 6'"),
+            "the exact commands the prompt would run")
+        expect(!bodyLines.contains { $0.hasPrefix("sudo ") }, "commands without sudo: the one line runs the script with sudo")
+        expectEqual(bodyLines.filter { !$0.hasPrefix("#") && $0 != "set -e" }.count, noPrompt.manualCommands.count, "every command, nothing else")
+        expect(oneLine.message.contains("sudo sh ~/.darkbloom/cluster-device/link-fix.sh") && oneLine.message.contains("--remove"),
+            "the message names the one line and the undo: \(oneLine.message)")
+        expect(compactJSON(oneLine).contains("\"manualScript\":\"~/.darkbloom/cluster-device/link-fix.sh\""), "JSON names the script")
+        expectNoAddress(compactJSON(oneLine), "script JSON")
+        expect(scripted.isolationRecord.entry(on: "en7") != nil, "the record is written first, so --remove works after the script")
+
+        // Isolated by hand with the same commands, with no record: adopted, so --remove can restore it.
+        let byHand = FakeIsolationWorld(IsolationFixtures.macAIsolated())
+        expectEqual(byHand.fix(dryRun: true).adopted, [], "a dry run records nothing")
+        let adopted = byHand.fix()
+        expectEqual(adopted.outcome, .alreadyReady, "already ready: \(adopted.message)")
+        expectEqual(adopted.adopted, ["en7"], "the port is adopted")
+        expectEqual(byHand.isolationRecord.entry(on: "en7"), .init(interface: "en7", address: IsolationFixtures.macAAddress,
+            hardwarePort: "Thunderbolt 6", bridge: nil, disabledServices: ["Thunderbolt 6"]), "recorded as the approval would have")
+        expect(byHand.isolationRequests.isEmpty, "no prompt")
+        expect(adopted.message.contains("recorded") && adopted.message.contains("--remove"), "the message says so")
+        expectNoAddress(compactJSON(adopted), "adopted JSON")
+        expectEqual(byHand.fix().adopted, [], "a second run has nothing to adopt")
         let partial = FakeIsolationWorld(IsolationFixtures.macA)
         partial.isolationApproval = { _, world in
             // The service was made, then a later command failed.

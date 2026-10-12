@@ -11,10 +11,26 @@ final class NativePairMemberControl: @unchecked Sendable {
     private var session: NativePairMemberSession?
     private var inboundSequence: UInt64 = 0
     private var epochs = Set<String>()
+    /// What serves a committed start once its owner launched (S10). Weak: the
+    /// provider loop that serves holds this control.
+    private weak var servingHostReference: (any NativePairMemberServingHost)?
     init(installation: NativePairMemberInstallation, signer: any AttestationSigner) {
         self.installation = installation; self.signer = signer
     }
+    var servingHost: (any NativePairMemberServingHost)? {
+        get { lock.withLock { servingHostReference } }
+        set { lock.withLock { servingHostReference = newValue } }
+    }
     var status: String { lock.withLock { session?.status ?? "idle" } }
+    /// The heartbeat's `cluster_session` (S16): present only while an owner
+    /// runs for a session; the data-plane properties are what its worker
+    /// published in its readiness.
+    var sessionStatus: ClusterSessionStatus? {
+        guard let current = lock.withLock({ session }), let plane = current.dataPlaneObservation else { return nil }
+        let value = ClusterSessionStatus(epoch: current.epoch, generation: current.generation,
+            encryptedDataPlane: plane.encrypted, peerVerified: plane.peerVerified)
+        return value.isValid ? value : nil
+    }
     /// A new connection. A session away in its disconnect grace (its
     /// registration on this connection claimed it with `resume`) moves to it;
     /// the coordinator then renews its grant here.
@@ -54,7 +70,8 @@ final class NativePairMemberControl: @unchecked Sendable {
                 if message.type == "native_pair_prepare" {
                     guard session == nil, epochs.count < 1024, epochs.insert(message.epoch).inserted else { throw NativePairMemberError.inactive }
                     let value = try NativePairMemberSession(installation: installation, connection: expected,
-                        message: message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds) { [weak self] old, reusable in
+                        message: message, receivedAt: receivedAt, wallUnixNanoseconds: wallUnixNanoseconds,
+                        servingHost: servingHostReference) { [weak self] old, reusable in
                             self?.finished(old, reusable: reusable)
                         }
                     session = value; start = value

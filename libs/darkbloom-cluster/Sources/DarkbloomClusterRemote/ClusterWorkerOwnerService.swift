@@ -24,6 +24,11 @@ public enum ClusterWorkerOwnerService {
     public typealias BindingFactory = @Sendable (UUID, UUID, UUID) throws -> ClusterOwnerBinding
 
     public typealias AttachedNativeFactory = @Sendable (ClusterOwnerBinding, UInt64, ClusterOwnerBootstrapAttachment?) throws -> ClusterWorkerProcess
+    /// The same with the worker's data-plane credential line from the open
+    /// frame (S16), already checked against this owner's epoch and rank; nil
+    /// when the leader sent none. The factory writes it as the worker's first
+    /// input line (`ClusterWorkerLaunch.initialInput`).
+    public typealias KeyedNativeFactory = @Sendable (ClusterOwnerBinding, UInt64, ClusterOwnerBootstrapAttachment?, Data?) throws -> ClusterWorkerProcess
     /// There is no configured owner lifetime. The leader opens with a first
     /// rank-lease grant of at most `ClusterWorkerLease.maximumNanoseconds` and
     /// renews it with `renew` frames while it keeps the session; the native
@@ -40,6 +45,18 @@ public enum ClusterWorkerOwnerService {
                              bootstrapProfile: ClusterOwnerBootstrapProfile?,
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
                              binding: BindingFactory, native: AttachedNativeFactory) throws {
+        try serveKeyed(input: input, output: output, clusterID: clusterID, leaseDirectory: leaseDirectory,
+            bootstrapProfile: bootstrapProfile, authorizeNativeStart: authorizeNativeStart, binding: binding,
+            native: { binding, deadline, attachment, trust in
+                guard trust == nil else { throw OwnerWire.invalid("This owner launches no keyed data plane") }
+                return try native(binding, deadline, attachment)
+            })
+    }
+
+    public static func serveKeyed(input: Int32, output: Int32, clusterID: String, leaseDirectory: URL,
+                             bootstrapProfile: ClusterOwnerBootstrapProfile?,
+                             authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
+                             binding: BindingFactory, native: KeyedNativeFactory) throws {
         let pipe = try ClusterOwnerPipe(input: input, output: output, readingCommands: true)
         let begin = DispatchTime.now().uptimeNanoseconds
         guard let bytes = try pipe.read(until: begin + 5_000_000_000) else { throw ClusterWorkerOwnerErrorProxy.deadline }
@@ -50,11 +67,11 @@ public enum ClusterWorkerOwnerService {
         }
         // Opt-in is configured locally. Wire start bytes alone never enable it.
         let nativeStart: ClusterNativeAuthorizationStart?
-        if bootstrapProfile == .nativeKeyPrelude {
+        if bootstrapProfile?.carriesNativeStart == true {
             guard let authorizeNativeStart, let bytes = open.nativeStart else { throw OwnerWire.invalid("Native authorization is not configured") }
             let value = try ClusterNativeAuthorizationStart(encoded: bytes)
             guard value.common.epoch == open.epoch, value.leaseID == open.lease,
-                  let deadline = open.nativeLocalDeadline, deadline > DispatchTime.now().uptimeNanoseconds else {
+                  bootstrapProfile != .nativeKeyPrelude || (open.nativeLocalDeadline ?? 0) > DispatchTime.now().uptimeNanoseconds else {
                 throw OwnerWire.invalid("Native committed start identity/deadline differs")
             }
             try authorizeNativeStart(value)
@@ -63,6 +80,12 @@ public enum ClusterWorkerOwnerService {
         let ownerBinding = try binding(open.epoch, open.lease, nativeStart?.ownerIncarnation ?? UUID())
         guard ownerBinding.route.clusterID == clusterID, ownerBinding.route.membershipEpoch == open.epoch,
               ownerBinding.route.leaseID == open.lease else { throw OwnerWire.invalid("Configured owner binding differs") }
+        if let line = open.dataPlaneTrust {
+            guard let trust = try? ClusterWorkerCodec.decodeDataPlaneTrust(line), trust.rank == ownerBinding.rank,
+                  trust.membershipEpoch == ownerBinding.identity.membershipEpoch else {
+                throw OwnerWire.invalid("Data-plane credential belongs to another rank or epoch")
+            }
+        }
         if let nativeStart {
             guard ownerBinding.rank == nativeStart.rank,
                   ownerBinding.executionPlanSHA256 == nativeStart.common.planSHA256.map({ String(format: "%02x", $0) }).joined(),
@@ -86,7 +109,7 @@ public enum ClusterWorkerOwnerService {
         try context.publish(kind: "hello", launchID: launchID)
         let child: ClusterWorkerProcess
         do {
-            child = try native(ownerBinding, state.lifetimeDeadlineUptimeNanoseconds, attachment)
+            child = try native(ownerBinding, state.lifetimeDeadlineUptimeNanoseconds, attachment, open.dataPlaneTrust)
             context.child = child
             guard child.launchedProcessIdentifier == nil, child.termination == nil, !child.nativeCleanupObserved, child.expectedIdentity == ownerBinding.identity, child.rank == ownerBinding.rank,
                   child.expectedProfile == ownerBinding.profile, child.executionPlanSHA256 == ownerBinding.executionPlanSHA256,
@@ -323,7 +346,7 @@ private final class ServiceContext: @unchecked Sendable {
                 }
                 catch ClusterWorkerOwnerError.closed { break }
                 if case .ready = frame.event {
-                    guard attachment?.profile != .nativeKeyPrelude else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
+                    guard attachment?.profile.publishesReadiness != false else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
                     try attachment?.requireCompleted()
                 }
                 try lock.withLock {

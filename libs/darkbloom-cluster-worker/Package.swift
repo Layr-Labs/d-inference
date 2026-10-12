@@ -26,6 +26,9 @@ let package = Package(
     targets: [
         .executableTarget(name: "DarkbloomClusterWorker", dependencies: [
             .product(name: "DarkbloomClusterBootstrap", package: "darkbloom-cluster"),
+            // The native key prelude of the owner's bootstrap (S07) and the
+            // data-plane credential (S16): certificate check before any model work.
+            .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             // The orphan-wired guard at worker start (no MLX).
@@ -50,6 +53,8 @@ let package = Package(
         .target(name: "DarkbloomClusterQualification", dependencies: [
             .product(name: "DarkbloomClusterProtocol", package: "darkbloom-cluster"),
             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+            // Per-run member identities and worker credentials for the data plane (S16).
+            .product(name: "DarkbloomClusterSecurity", package: "darkbloom-cluster"),
         ]),
         .target(name: "DarkbloomClusterPrompt", dependencies: [
             "DarkbloomClusterQualification",

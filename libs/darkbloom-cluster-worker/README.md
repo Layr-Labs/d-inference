@@ -370,11 +370,17 @@ both.
   fails part-way prints one record with what it still held after release. See
   [handoff/DESIGN-resource-gate-v3.md](../../handoff/DESIGN-resource-gate-v3.md).
 - The owner-authenticated JACCL bootstrap (`--bootstrap-socket-path`,
-  `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`) is parsed
-  but refused: the pinned mlx-c does not carry the bootstrap bridge. Without
-  those flags the worker uses the direct native bootstrap, where JACCL opens its
-  own coordinator socket. The installed provider therefore starts the worker
-  without them and reports `nativeBootstrap: directNative` in `cluster status`.
+  `--bootstrap-owner-pid`, `--bootstrap-deadline-uptime-nanoseconds`, and with
+  the combined profile `--native-authorization-start-base64`) is accepted: the
+  worker connects to its owner's PID-authenticated local socket, runs the
+  native key prelude when a start is given (an X25519 agreement with the other
+  rank, bound to the committed start), and creates its JACCL group through the
+  pinned mlx-c bridge `mlx_distributed_init_jaccl_with_bootstrap`: the four mesh
+  rounds travel through both authenticated owners and the leader's relay, and
+  JACCL opens no coordinator socket. A worker given the attachment whose load
+  did not use it stops; there is no fallback. Without those flags the worker
+  uses the direct native bootstrap, where JACCL opens its own coordinator
+  socket.
 - `--prefill-schedule` accepts `serial_v1` and `one_chunk_lookahead_v1`;
   omission means serial. `--describe-runtime` advertises the supported
   schedules; capability metadata does not report readiness or available memory.

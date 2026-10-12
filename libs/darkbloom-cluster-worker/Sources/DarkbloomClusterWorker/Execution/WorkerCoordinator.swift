@@ -84,6 +84,22 @@ final class WorkerCoordinator: @unchecked Sendable {
         self.runtime = runtime
     }
 
+    /// The rank-side force-cancel (owner's oMLX 85480430 hook, by signal):
+    /// ends every active request of this rank the way a lost input does. The
+    /// forced exit is claimed first (release, dead-man), the executor's
+    /// failure path then cancels each active request, publishes it as failed,
+    /// releases the model and the process exits; the owner records the
+    /// terminal. One line on standard error acknowledges the request.
+    /// Returns the requests that were active.
+    @discardableResult
+    func forceCancel(reason: String) -> Int {
+        let ids = activeRequests()
+        exitHooks.begin("force-cancel-\(reason)")
+        fail(WorkerFailure.invalid("Force-cancel: \(reason)"))
+        WorkerForceCancelSignal.note("darkbloom-force-cancel-v1 role=worker reason=\(reason) applied=yes requests=\(ids.count)")
+        return ids.count
+    }
+
     /// Starts the control reader. Idempotent. From here a lost input or a
     /// failed read begins the forced exit even while the model loads.
     func startReading() {

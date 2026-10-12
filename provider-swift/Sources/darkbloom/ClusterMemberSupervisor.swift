@@ -91,6 +91,11 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         }
         while !isStopping {
             guard await waitForLink() else { break }
+            // Before every run (the first and each restart): nothing of the
+            // previous run or of a dead session may be left, so a restart
+            // never counts a leftover as a crash and never loads over memory
+            // an orphan still holds (the owner's auto_restart orphan gate).
+            await sweepOrphansBeforeRun()
             let outcome = await superviseOneRun(updateSlot: &updateSlot)
             switch outcome {
             case .stopped:
@@ -127,6 +132,19 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         update(phase: .stopped, detail: "operator stop")
         log("supervisor stopped")
         return 0
+    }
+
+    // MARK: - Orphan sweep
+
+    /// The orphan sweep on the supervisor's own clock; the member it starts
+    /// sweeps again at its start. Waits for a leftover's contract (bounded),
+    /// so a member recycled a moment ago is given its own exit first.
+    private func sweepOrphansBeforeRun() async {
+        let outcome = await Task.detached(priority: .utility) { () -> String? in
+            do { return ClusterOrphanSweep.summary(try ClusterOrphanSweep.reap(waitForContract: true)) }
+            catch { return "orphan sweep skipped: \(error)" }
+        }.value
+        if let outcome { log(outcome) }
     }
 
     // MARK: - Link gate

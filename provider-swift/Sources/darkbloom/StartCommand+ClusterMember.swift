@@ -81,6 +81,12 @@ extension Start {
         let heartbeat = ClusterMemberHeartbeat()
         heartbeat.startEarly()
         defer { heartbeat.stop() }
+        // Nothing of a dead session may be left when this member starts, and
+        // nothing of this one when it ends: the orphan sweep (owners and
+        // workers whose parent is gone, a stranded device journal, stale
+        // bootstrap directories), reported in this member's log.
+        Self.sweepOrphans(phase: "start", waitForContract: true)
+        defer { Self.sweepOrphans(phase: "end", waitForContract: false) }
         let (loop, prepared) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
@@ -114,6 +120,21 @@ extension Start {
             // finding 3); the process exits and its supervisor decides.
             await Self.awaitFinished(task, atMostSeconds: 30)
             throw error
+        }
+    }
+
+    /// The orphan sweep at a member's start and end. Its outcome is one log
+    /// line when it found something; a sweep that cannot run (no home) is
+    /// noted and never fails the member.
+    static func sweepOrphans(phase: String, waitForContract: Bool) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        do {
+            let report = try ClusterOrphanSweep.reap(waitForContract: waitForContract)
+            if let line = ClusterOrphanSweep.summary(report) {
+                FileHandle.standardOutput.write(Data("\(stamp) cluster-member \(phase): \(line)\n".utf8))
+            }
+        } catch {
+            FileHandle.standardOutput.write(Data("\(stamp) cluster-member \(phase): orphan sweep skipped: \(error)\n".utf8))
         }
     }
 

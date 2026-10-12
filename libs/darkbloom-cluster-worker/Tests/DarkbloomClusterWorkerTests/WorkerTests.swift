@@ -101,16 +101,27 @@ private final class Harness {
         guard pipe(&a) == 0, pipe(&b) == 0 else { throw WorkerFailure.invalid("Test pipe creation failed") }
         input = a[1]; output = b[0]
         let childInput = a[0], childOutput = b[1], runtime = runtime, result = result, done = done, hooks = exits.hooks
+        let box = coordinatorBox
         done.enter()
         Thread.detachNewThread {
             do {
                 let io = try WorkerPipes(input: childInput, output: childOutput,
                     deadline: DispatchTime.now().uptimeNanoseconds + leaseNanoseconds)
-                try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks).run()
+                let coordinator = try WorkerCoordinator(runtime: runtime, pipes: io, exitHooks: hooks)
+                box.set(coordinator)
+                try coordinator.run()
             } catch { result.save(error) }
             close(childInput); close(childOutput); done.leave()
         }
     }
+    /// The coordinator under test, for the force-cancel hook (set before `run`).
+    final class CoordinatorBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: WorkerCoordinator?
+        func set(_ coordinator: WorkerCoordinator) { lock.lock(); value = coordinator; lock.unlock() }
+        var coordinator: WorkerCoordinator? { lock.lock(); defer { lock.unlock() }; return value }
+    }
+    let coordinatorBox = CoordinatorBox()
     /// One rank-lease renewal line, outside the request sequence.
     func renew(ttl: UInt64) throws {
         renewals += 1
@@ -647,6 +658,36 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertTrue(h.exits.reasons.contains("worker-failure"), "\(h.exits.reasons)")
         XCTAssertTrue(h.exits.beganBeforeRelease)
+    }
+
+    /// The rank-side force-cancel hook (SIGUSR1 handler): mid-request it
+    /// claims the forced exit first, the active request is published as
+    /// failed, the model is released and the run ends; the signal's reason is
+    /// what the exit records.
+    func testForceCancelMidRequestReleasesAndEndsTheWorker() throws {
+        let h = try Harness(), id = UUID()
+        try h.start(id); _ = try h.event()
+        var coordinator: WorkerCoordinator?
+        for _ in 0..<50 { coordinator = h.coordinatorBox.coordinator; if coordinator != nil { break }; usleep(20_000) }
+        XCTAssertEqual(coordinator?.forceCancel(reason: "signal-usr1"), 1, "one active request")
+        XCTAssertEqual(try h.event().event, .failed(.runtimeError))
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
+        XCTAssertEqual(h.exits.reasons.first, "force-cancel-signal-usr1", "\(h.exits.reasons)")
+        XCTAssertTrue(h.exits.beganBeforeRelease)
+    }
+
+    /// Idle, a force-cancel still ends the worker through the same path (the
+    /// owner then starts a fresh one): nothing is left half-cancelled.
+    func testForceCancelWhileIdleEndsTheWorkerWithNoRequestToFail() throws {
+        let h = try Harness()
+        _ = try h.event()
+        var coordinator: WorkerCoordinator?
+        for _ in 0..<50 { coordinator = h.coordinatorBox.coordinator; if coordinator != nil { break }; usleep(20_000) }
+        XCTAssertEqual(coordinator?.forceCancel(reason: "test"), 0)
+        XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(h.runtime.didClose)
+        XCTAssertEqual(h.exits.reasons, ["force-cancel-test"])
     }
 
     func testCleanShutdownThenEOFNeverBeginsTheForcedExit() throws {

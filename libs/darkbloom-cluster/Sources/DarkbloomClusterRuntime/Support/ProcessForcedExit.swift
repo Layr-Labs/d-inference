@@ -24,6 +24,16 @@ import os
 /// a blocked release, a full diagnostic pipe or a wedged native call cannot
 /// keep the process alive past the bound.
 ///
+/// One extension, for work that is demonstrably progressing: a release or an
+/// unwind that completes a durable write (a cache snapshot, a journal) calls
+/// `noteProgress()` after each one. At its deadline the dead-man reads that
+/// stamp once; if a write completed within the last half of the bound, the
+/// deadline moves by one more bound, exactly once, and the next deadline is
+/// final. Progress that stopped, or that never started, gets no extension.
+/// This is the owner's engine-teardown rule (oMLX `_EngineTeardown`, a58afee1:
+/// the close budget doubles once, only while persistence reports a recently
+/// completed write, and is fatal otherwise).
+///
 /// What a release from a thread other than the native executor cannot do while
 /// that executor is inside a native collective: it does not tear down the JACCL
 /// group (its queue pairs and registered buffers belong to the polling thread
@@ -53,6 +63,25 @@ public enum ProcessForcedExit {
     }
 
     private static let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// Uptime of the last completed durable write, 0 when none. One aligned
+    /// 64-bit word: stored by the writer, read by the dead-man without a lock
+    /// (an aligned word store is single-copy atomic on every Mac this runs on).
+    nonisolated(unsafe) private static let progressStamp: UnsafeMutablePointer<UInt64> = {
+        let pointer = UnsafeMutablePointer<UInt64>.allocate(capacity: 1)
+        pointer.initialize(to: 0)
+        return pointer
+    }()
+
+    /// A durable write just completed (a cache snapshot, a journal). Cheap;
+    /// call after every completed write, never before it starts. Only a stamp
+    /// within the last half of the dead-man bound earns the one extension.
+    public static func noteProgress() {
+        progressStamp.pointee = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+    }
+
+    /// The stamp `noteProgress()` last wrote, for reports; 0 when none.
+    public static var lastProgressUptimeNanoseconds: UInt64 { progressStamp.pointee }
 
     /// Installs what a claim releases. A process that holds native memory
     /// installs it once, before it touches that memory; a process that never
@@ -171,21 +200,45 @@ public enum ProcessForcedExit {
 
     private struct DeadMan {
         let deadline: UInt64
+        let bound: UInt64
         let status: Int32
+        let progress: UnsafeMutablePointer<UInt64>
+    }
+
+    /// The extension rule, pure: with the stamp of the last completed write,
+    /// the deadline just reached and the bound, the new deadline (one bound
+    /// later) or nil when the process must end now. Granted at most once by
+    /// the caller. A write counts only if it completed within the last half
+    /// of the bound before the deadline, and not in the future.
+    static func extendedDeadline(progress: UInt64, deadline: UInt64, bound: UInt64) -> UInt64? {
+        guard progress != 0, progress <= deadline, deadline - progress <= bound / 2 else { return nil }
+        let sum = deadline.addingReportingOverflow(bound)
+        return sum.overflow ? UInt64.max : sum.partialValue
     }
 
     private static func armDeadMan(status: Int32, after nanoseconds: UInt64) -> Bool {
         let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let sum = now.addingReportingOverflow(nanoseconds)
         let arguments = UnsafeMutablePointer<DeadMan>.allocate(capacity: 1)
-        arguments.initialize(to: .init(deadline: sum.overflow ? UInt64.max : sum.partialValue, status: status))
+        arguments.initialize(to: .init(deadline: sum.overflow ? UInt64.max : sum.partialValue, bound: nanoseconds,
+                                       status: status, progress: progressStamp))
         var thread: pthread_t?
         let created = pthread_create(&thread, nil, { raw in
             let value = raw.assumingMemoryBound(to: DeadMan.self).pointee
+            var deadline = value.deadline
+            var extended = false
             while true {
                 let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                if now >= value.deadline { Darwin._exit(value.status) }
-                let remaining = min(value.deadline - now, 100_000_000)
+                if now >= deadline {
+                    // No lock, no allocation, no write: one word read, one
+                    // decision, then the end or the single extension.
+                    if !extended, let later = ProcessForcedExit.extendedDeadline(
+                        progress: value.progress.pointee, deadline: deadline, bound: value.bound) {
+                        extended = true; deadline = later; continue
+                    }
+                    Darwin._exit(value.status)
+                }
+                let remaining = min(deadline - now, 100_000_000)
                 var nap = timespec(tv_sec: 0, tv_nsec: Int(remaining))
                 nanosleep(&nap, nil)
             }

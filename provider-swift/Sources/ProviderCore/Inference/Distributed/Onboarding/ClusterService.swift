@@ -214,7 +214,9 @@ public final class ClusterService: @unchecked Sendable {
         let digest = try store.receive(data)
         guard followsPeer(pairing), let candidate = store.inboxCandidate else { return digest }
         let configuration = settings.wizard.providerConfiguration, paths = context.paths
-        let result = ClusterConsoleObserver.approve(candidate, expectedSHA256: digest,
+        // Applied exactly as received: the digest of the inbox's own bytes, read once here.
+        let expected = try candidate.contents().configurationSHA256
+        let result = ClusterConsoleObserver.approve(candidate, expectedSHA256: expected,
             holdingIn: try ClusterConsoleInstanceLock.userTemporaryDirectory()) { reviewed in
                 try ClusterConfigurationStore(paths: paths).configure(configurationInput: reviewed.configurationInput,
                     capabilityInput: reviewed.capabilityInput, capabilitySHA256: candidate.capabilitySHA256,

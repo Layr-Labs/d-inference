@@ -3521,7 +3521,7 @@ makes no network request, writes no login token and updates no host.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
-./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
+./scripts/check-release-version.sh # validate ProviderCore.version; optional tag and binary must match
 python3 scripts/check-go-toolchain.py # exact local/container pins satisfy go.mod
 python3 scripts/test-go-toolchain.py  # old production mismatch, patch minimum, drift and digest regressions
 python3 scripts/test-provider-release-resolution.py # signed-validation and publication routing before credentials
@@ -3544,7 +3544,7 @@ an insufficient patch version and an absent digest; it also executes the guard
 against the checkout. This is not a substitute for the full production Docker
 build in [the build guide](build.md#9-coordinator-container-image).
 
-For a provider version-only preparation, run source/fallback parity and the
+For a provider version-only preparation, run source/tag/binary parity and the
 release-script tests without cold-building Swift/MLX. Inspect existing caches
 first; reuse Go's content-addressed caches and only compatible Swift/Metal
 caches. Do not point a separate worktree at another active Swift scratch path or
@@ -3552,6 +3552,13 @@ present an old binary as the new candidate. A changed checkout path, SDK,
 compiler or dependency pin can invalidate Swift build reuse. Exact signed-bundle
 runtime, numerical and upgrade checks remain required by the
 [0.9.18 rollout gates](../operations/provider-release.md#0918-candidate-rollout).
+
+`test-provider-release-resolution.py` exercises the real shell resolver and
+version guard with a stale or absent retained coordinator copy, matching and
+mismatched tag/binary versions, and invalid or ambiguous provider source.
+`test-provider-release-resume.py` checks that retained-build recovery reads only
+the original provider version while preserving signed-tag, source-ancestry,
+successful-build/SDK and immutable-artifact requirements.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

@@ -35,6 +35,7 @@ class FakeAPI:
         self.artifacts = [{"id":10,"name":f"unsigned-provider-{SHA}-1","expired":False,"size_in_bytes":100,
                           "digest":"sha256:" + "b"*64,"workflow_run":{"id":123,"head_sha":SHA}}]
         self.provider_version = "0.9.13"
+        self.content_requests = []
         self.comparison = {"status": "ahead", "merge_base_commit": {"sha": SHA}}
     def get(self,path):
         if path == "actions/runs/123":return self.run
@@ -47,8 +48,10 @@ class FakeAPI:
         if path == "compare/" + "d"*40 + "..." + "d"*40:
             return {"status":"identical","merge_base_commit":{"sha":"d"*40}}
         if path.startswith("contents/"):
-            source = ('public static let version = "'+self.provider_version+'"' if "ProviderCore.swift" in path
-                      else 'var LatestProviderVersion = "0.9.13"')
+            self.content_requests.append(path)
+            if path != f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={SHA}":
+                raise AssertionError("Release recovery read a non-provider version source: " + path)
+            source = 'public static let version = "'+self.provider_version+'"'
             return {"content":base64.b64encode(source.encode()).decode()}
         raise AssertionError(path)
     def pages(self,path,key):
@@ -101,11 +104,14 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_success_binds_original_source_attempt_and_immutable_artifact(self):
-        value=select(FakeAPI(),"123","1")
+        api = FakeAPI()
+        value=select(api,"123","1")
         self.assertEqual(value["source_sha"],SHA)
         self.assertEqual(value["build_run_id"],"123")
         self.assertEqual(value["unsigned_artifact_id"],"10")
         self.assertEqual(value["release_tag"],"v0.9.13")
+        self.assertEqual(api.content_requests,
+                         [f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={SHA}"])
 
     def test_untrusted_incomplete_expired_or_replaced_inputs_fail(self):
         mutations = [

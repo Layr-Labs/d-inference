@@ -51,6 +51,8 @@ prepared input.
 Failed or unparsed results remain in the manifest; existing evidence is never
 overwritten; the output directory must be empty for a new run. Periods in model
 IDs remain part of distinct task/profile filenames.
+Generation task failures also make the command exit nonzero after all requested
+arms are recorded; score-only collection does not invent a generation pass.
 The script supports the system Python 3.9 on the remote M5 host.
 
 Example:

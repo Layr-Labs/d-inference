@@ -234,7 +234,9 @@ def main():
                     print(json.dumps({"finished": label, "exitCode": code, "seconds": round(elapsed, 3),
                                       "taskPassed": entry.get("taskPassed"), "nll": entry.get("meanForcedTokenNLL")}), flush=True)
         if any(item["exitCode"] != 0 or not item["reportParsed"]
-               or not item.get("identityPassed") for item in results):
+               or not item.get("identityPassed")
+               or (item["mode"] != "scores" and item.get("taskPassed") is not True)
+               for item in results):
             raise SystemExit(1)
     finally:
         try:

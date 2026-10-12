@@ -90,7 +90,7 @@ else:
     report.update(runtimeIdentity={'binary_sha256':binary,'metallib_sha256':metal},
                   promptSHA256=settings.get('promptHash',sha(path)),
                   renderDate=settings.get('date',option('--runtime-prompt-date')),
-                  finishReason='stop',text=json.dumps(answer))
+                  finishReason=settings.get('finishReason','stop'),text=settings.get('outputText',json.dumps(answer)))
 if settings.get('mutateInput'):path.write_text(path.read_text()+' ')
 if settings.get('mutateConfig'):original.write_text(original.read_text()+' ')
 if settings.get('mutateSnapshot'):
@@ -442,7 +442,7 @@ class QualificationRunnerContractTests(unittest.TestCase):
             with self.subTest(scores=scores), tempfile.TemporaryDirectory() as temporary:
                 fixture = Fixture(Path(temporary), {"wrongAnswer": not scores})
                 result, manifest = fixture.run(scores=scores)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.returncode, 0 if scores else 1, result.stderr)
                 raw = {str(fixture.report_path(entry)): fixture.report_path(entry).read_bytes()
                        for entry in manifest["results"]}
                 for entry in manifest["results"]:
@@ -471,6 +471,19 @@ class QualificationRunnerContractTests(unittest.TestCase):
                         self.assertFalse(entry["taskPassed"])
                         self.assertEqual(entry["answer"], {"answer": "wrong"})
                         self.assertNotIn("meanForcedTokenNLL", entry)
+
+    def test_generation_task_failure_returns_nonzero_and_retains_all_evidence(self):
+        for settings in ({"wrongAnswer": True}, {"finishReason": "length"}, {"outputText": "not-json"}):
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(Path(temporary), settings)
+                result, manifest = fixture.run()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(len(manifest["results"]), 2)
+                for entry in manifest["results"]:
+                    self.assertTrue(entry["reportParsed"])
+                    self.assertTrue(entry["identityPassed"])
+                    self.assertFalse(entry["taskPassed"])
+                self.assertEqual(fixture.curate().returncode, 0)
 
     def test_curator_rejects_forged_assistant_identity_binding_without_raw_changes(self):
         for mutation in ("identity", "path", "filename"):

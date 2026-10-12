@@ -51,10 +51,10 @@ struct CBv2PagedBatchSyntheticTests {
         return model
     }
 
-    static func geometry(_ model: Qwen35TextModel, host: CBv2StageKVHost?) throws -> CBv2RequestGeometry {
+    static func geometry(_ model: Qwen35TextModel, host: CBv2StageKVHost?, maximumTokens: Int = 64) throws -> CBv2RequestGeometry {
         try CBv2RequestGeometry(model: model, family: .qwen35,
             feedForwardKind: QwenRoutedExpertStageModel.feedForwardKind(model), layerCount: 8,
-            vocabularySize: vocabulary, configurationData: configuration(), maximumTokens: 64, host: host)
+            vocabularySize: vocabulary, configurationData: configuration(), maximumTokens: maximumTokens, host: host)
     }
 
     static func logits(_ model: Qwen35TextModel, _ tokens: [[Int]], caches: [any CBv2AttendingLayerCache],
@@ -161,7 +161,8 @@ struct CBv2PagedBatchSyntheticTests {
     @Test func hostRefusesALaneBeyondItsCapacityAndReleasesOnRetire() throws {
         let model = try Self.model()
         let host = try CBv2StageKVHost(model: model, kind: .paged, lanes: 1, maximumTokensPerRequest: 32, maximumChunkTokens: Self.chunk)
-        let first = try CBv2OwnedRequestState(geometry: Self.geometry(model, host: host), promptCount: 20, outputCount: 12)
+        let first = try CBv2OwnedRequestState(geometry: Self.geometry(model, host: host, maximumTokens: 32),
+            promptCount: 20, outputCount: 12)
         // The pool's ceiling is one request of 32 tokens plus one segment; a
         // second full-length request may still fit the segment slack, so ask
         // for more than the slack holds through the backend directly.

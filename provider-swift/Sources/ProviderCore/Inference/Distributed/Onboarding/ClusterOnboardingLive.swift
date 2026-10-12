@@ -349,7 +349,7 @@ private final class OnboardingLive: @unchecked Sendable {
             do {
                 answer = try JSONDecoder().decode(ClusterServicePromptAnswer.self, from: try command(.init(op: .prompt, text: text), seconds: 200))
             } catch {
-                return .failure(.init("The test request did not reach \(peerName): \(error)"))
+                return .failure(.init("The test request did not reach \(peerName): \((error as? ClusterSetupFailure)?.text ?? "\(error)")"))
             }
         }
         if let error = answer.error { return .failure(.init("The test request failed: \(error)")) }
@@ -383,7 +383,8 @@ private final class OnboardingLive: @unchecked Sendable {
             try store.updateRecord { $0.leadership?.serving = false }
             _ = try command(.init(op: .stop))
         } catch {
-            return .failure(.init("This Mac stopped serving; \(peerName) did not answer (\(error)). This Mac's cluster service tells it to stop as soon as it answers again."))
+            let reason = (error as? ClusterSetupFailure)?.text ?? "\(error)"
+            return .failure(.init("This Mac stopped serving; \(peerName) did not answer (\(reason)). This Mac's cluster service tells it to stop as soon as it answers again."))
         }
         return .success(["Both Macs stop their parts now (each releases its memory first). Run `darkbloom cluster` here to serve again."])
     }

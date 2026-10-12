@@ -66,6 +66,9 @@ or waiting indefinitely for an uncancellable native task.
 This is a target-only loaded-engine/resumption gate, not MTP, SSD persistence,
 APNs, daemon installation, worker recovery or fleet-rollout qualification.
 Compilation and opt-in skips do not constitute a successful physical run.
+The [October 11 native result](../reports/2026-10-11-native-serving-resumption-qualification.md)
+records a full pass for the exact signed Stage C candidate and platform source,
+including the earlier fixture failures and the unchanged production boundaries.
 
 ## App Attest provider dispatch
 

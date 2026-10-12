@@ -41,7 +41,7 @@ public enum ClusterLinkReadinessState: String, Encodable, Sendable, CaseIterable
         case .portBridgedWithoutAddress:
             return "The active Thunderbolt port belongs to the Thunderbolt Bridge and has no IPv4 address of its own; press f in step 2 of `darkbloom cluster` (or run `darkbloom cluster link --fix`) to take it out of the bridge with Darkbloom's own address after one approval in a macOS prompt."
         case .gidNotPublished:
-            return "The active Thunderbolt port has not published the IPv4-mapped GID that cluster serving needs; reconnect the cable and look at step 2 of `darkbloom cluster` again, because Darkbloom will not change that port beyond its one approved link fix."
+            return "The active Thunderbolt port has not published the IPv4-mapped GID that cluster serving needs; reconnect the cable and look at step 2 of `darkbloom cluster` again, because `darkbloom cluster link --fix` only adds a missing address and Darkbloom will not change anything else for you."
         case .probeFailed:
             return "Darkbloom could not read this Mac's RDMA or network interface state within its time and output limits; run `ibv_devinfo` and `ifconfig` in Terminal to see what they report, because Darkbloom will not retry with broader access or change anything for you."
         }

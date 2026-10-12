@@ -391,8 +391,11 @@ private final class LiveContext: @unchecked Sendable {
               let peer = description.members.first(where: { $0.id != memberID }) else {
             throw ClusterSetupFailure(input.error ?? "this Mac has no pinned route to the other one: it follows, or it was given no pair description")
         }
+        guard let trust = local.trust else {
+            throw ClusterSetupFailure("this pair is reached over the paired link, not SSH")
+        }
         return (try ClusterSSHConfiguration(host: peer.host, user: peer.user, port: peer.port,
-            knownHostsFile: URL(fileURLWithPath: local.trust.knownHostsFile), identityFile: URL(fileURLWithPath: local.trust.identityFile),
+            knownHostsFile: URL(fileURLWithPath: trust.knownHostsFile), identityFile: URL(fileURLWithPath: trust.identityFile),
             installedDarkbloom: peer.ownerExecutable), (peer.workerExecutable, peer.modelDirectory))
     }
 
@@ -402,7 +405,7 @@ private final class LiveContext: @unchecked Sendable {
                 let started = DispatchTime.now().uptimeNanoseconds
                 let reached = try ClusterSetupLinkExchange.ask(pairing: pairing, selection: try linkSelection(),
                     seconds: ClusterSetupOperations.peerSeconds)
-                lock.withLock { linkPeer = reached }
+                lock.withLock { linkPeer = (reached.answer, reached.peerAddress) }
                 return .reached(reached.answer.report.cleaned(clean), seconds: Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9)
             } catch let failure as ClusterSetupFailure {
                 return .failed(failure.text)

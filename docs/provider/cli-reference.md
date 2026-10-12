@@ -465,6 +465,8 @@ leave remote invalidation unconfirmed but still permit local deletion. Output
 distinguishes confirmed revocation, local-only logout with a warning, and no
 saved credential. Tokens and response bodies are not logged. This requires a
 matching platform endpoint; local completion does not establish remote support.
+The request URL keeps the original coordinator's host and port while changing
+only the WebSocket scheme and endpoint path; path text cannot become an authority.
 
 ### `darkbloom benchmark`
 

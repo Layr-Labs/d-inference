@@ -1,5 +1,9 @@
 version: "1.1"
 created: "2026-05-14"
+# Provider endpoint-resumption and logout lifecycle coverage added 2026-10-12:
+# A-008, TB-011 and T-053 now describe the provider wire/custody
+# boundary and platform-owned retained evidence. This scoped source review does
+# not re-verify historical findings, change receipt policy or claim deployment.
 # Advisory documentation drift reviewed 2026-10-12: receipt/policy language in
 # TB-011, T-054, T-057 and related comments aligned with darkbloom-platform's
 # EvaluateAuthorization/EvaluateReceiptMonitoring, checked against local source:
@@ -294,6 +298,23 @@ assets:
     name: provider_api_tokens
     description: Coordinator-issued tokens that providers use to register via WebSocket.
     sensitivity: high
+    notes: >
+      LogoutCommand.swift captures the coordinator origin from daemon state under
+      the lifecycle lease before stopping, requiring matching PID and current kernel
+      process-start identity. It confirms provider exit and holds lifecycle/instance
+      locks through saved-token revocation/deletion, even when credentials are missing.
+      Without a live matched origin, configuration is resolved after stopping; an
+      invalid/unreachable origin leaves remote invalidation unconfirmed. ProviderLogout.swift
+      uses URLComponents to retain host/port, map ws to http or wss to https, replace
+      the path with /v1/device/revoke and clear query/fragment; userinfo and redirects
+      are refused. Existing non-TLS development configuration is not upgraded to TLS.
+      POST's Authorization: Bearer <token> selects only that saved provider credential.
+      Only HTTP 204 confirms revocation; offline local deletion is not remote invalidity.
+      No immediate fleet-wide teardown or endpoint-specific rate-limit guarantee follows.
+      Code: provider-swift/Sources/darkbloom/LogoutCommand.swift (run, liveCoordinatorURL),
+      provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift (perform, revokeToken).
+      Platform-owned token contract:
+      https://github.com/Layr-Labs/darkbloom-platform/blob/7e30300b8335ffb5446cc51515b698b26602e711/docs/reference/api-contracts.md#provider-token-revocation
 
   - id: A-009
     name: payment_ledger
@@ -1130,8 +1151,8 @@ trust_boundaries:
       legacy MDM/APNs path, not an automatic upgrade of its trust_level or flags.
     how_it_works: >
       ProviderLoop.handleAppAttestShadow first opens a challenge encrypted to its own
-      process X25519 endpoint. Only protocol 3 is negotiated; older protocols get no
-      frames and pre-v3 stored enrollments cannot resume. The capability replaces
+      process X25519 endpoint. Only Apple-proof protocol 3 is negotiated; older proof
+      protocols get no frames and pre-v3 stored enrollments cannot resume. The capability replaces
       the old fixed claimed-version gate; it is not itself code qualification.
       Protocol 3 binds account, session, endpoint, environment,
       credential, challenge, app-reported status/hardware and the legacy verification
@@ -1139,6 +1160,22 @@ trust_boundaries:
       nonce/signature/counter, exact Mac ACL and authenticated code measurement before
       EvaluateAuthorization evaluates the serving policy. Names containing shadow
       remain in the shared protocol; only an explicit serving policy grants permission.
+
+      Endpoint-resumption protocol 1 is separate from Apple-proof protocol 3.
+      Its 4 KiB strict codec and domain-separated boxes bind a fresh 32-byte socket
+      nonce, endpoint and single-use 30-second challenge. The same process key answers
+      only on the originating socket; custody neither advances Apple counters nor
+      grants local permission. The platform rechecks retained evidence and current
+      policy before atomic ownership transfer. Its ceiling is the earliest of the
+      original 15-minute proof limit, first-disconnect + 5 minutes and the policy
+      deadline frozen at that disconnect; retries cannot slide it. Known revocation,
+      erasure, security denial and feature disable invalidate applicable retained work.
+      Existing final-writer and stricter reward/MDM gates remain. Provider code:
+      provider-swift/Sources/ProviderCore/Protocol/AppAttestResume.swift (AppAttestResumeWire),
+      provider-swift/Sources/ProviderCore/Crypto/AppAttestResumeCustody.swift (appAttestResumeResponse),
+      provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+AppAttestResume.swift (answerAppAttestResume).
+      Platform-owned resumption contract (not the retained Go copy in this repository):
+      https://github.com/Layr-Labs/darkbloom-platform/blob/7e30300b8335ffb5446cc51515b698b26602e711/docs/reference/provider-authorization.md#bounded-endpoint-resumption
 
       Basic serving requires verified current binding, protocol3 hardware/verification-key
       match, complete private archive, production rollout/build eligibility, approved
@@ -3394,6 +3431,14 @@ threats:
       - description: >
           Explicit credential revocation denies matching live presenters and retained
           grant keys across both paths; failed storage reads never extend readiness.
+        status: implemented
+      - description: >
+          TB-011's provider codec/crypto and platform-owned resumption contract reject
+          custody replay or rebinding across sockets/accounts/tokens/endpoints: a fresh
+          socket nonce, exact-byte response, origin-only reply, single-use consumption,
+          current policy/ownership checks and frozen caps prevent detached evidence
+          from resetting proof age. Revocation/erasure still fences retained work;
+          custody cannot refresh Apple proof or bypass final-writer authorization.
         status: implemented
       - description: >
           Autopilot reward qualification evaluates the lease interval at the original

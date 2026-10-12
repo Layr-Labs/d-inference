@@ -130,10 +130,43 @@ import Testing
         #expect(!confirmed)
     }
 
+    @Test func revocationPreservesAuthorityWhenReplacingWebSocketPath() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [LogoutAuthorityProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        for (coordinator, expected) in [
+            ("wss://api.example/ws/provider.attacker.test", "https://api.example/v1/device/revoke"),
+            ("wss://api.example:8443/ws/provider.attacker.test?x=1#fragment", "https://api.example:8443/v1/device/revoke"),
+            ("ws://127.0.0.1:12345/ws/provider.attacker.test", "http://127.0.0.1:12345/v1/device/revoke"),
+            ("https://api.example/nested/path?x=1", "https://api.example/v1/device/revoke"),
+            ("WSS://api.example/ws/provider", "https://api.example/v1/device/revoke"),
+        ] {
+            // Encode the expected URL in this synthetic token so the URLProtocol
+            // can check each request without shared mutable capture state.
+            #expect(await ProviderLogout.revokeToken(expected, coordinatorURL: coordinator, session: session))
+        }
+    }
+
     @Test(arguments: ["file:///tmp/no-coordinator", "http://user:password@127.0.0.1:1", "not a URL"])
     func invalidCoordinatorCannotConfirmRevocation(url: String) async {
         #expect(await !ProviderLogout.revokeToken("synthetic-provider-token", coordinatorURL: url))
     }
+}
+
+private final class LogoutAuthorityProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(url.absoluteString)")
+        #expect(url.path == "/v1/device/revoke")
+        #expect(url.query == nil && url.fragment == nil)
+        let response = HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 private actor LogoutHTTPCapture {

@@ -11,6 +11,8 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var lastEnd: String?
         /// Seconds until the next start while it waits after an end.
         public var restartInSeconds: Int?
+        /// The last error line this Mac's part printed (its log), when its last run ended.
+        public var lastError: String?
     }
     public struct Session: Codable, Sendable, Equatable {
         public var observed: Bool
@@ -170,6 +172,7 @@ public final class ClusterService: @unchecked Sendable {
         while !stopped {
             ensureResponder(say: say)
             supervise(say: say)
+            publish()
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
         }
         lock.withLock { stopping = true }
@@ -283,9 +286,35 @@ public final class ClusterService: @unchecked Sendable {
                 modelName: record?.leadership?.modelName, sessionLeader: leads, localRank: configuration?.localRank,
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning ?? false, starts: starts, lastEnd: lastEnd,
-                    restartInSeconds: child == nil && wait > 0 ? Int(wait.rounded(.up)) : nil),
+                    restartInSeconds: child == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
+                    lastError: child?.isRunning == true ? nil : Self.lastError()),
                 session: session)
         }
+    }
+
+    /// The last "Error:" line of this Mac's part's log, bounded; nil when there is none.
+    public static func lastError() -> String? {
+        guard let log = try? paths().rankLog, let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
+        let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
+        guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
+        return ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240)
+    }
+
+    /// Kept beside the lock each tick, so `darkbloom cluster` on this Mac reads it without the link.
+    private func publish() {
+        guard let file = try? Self.paths().pid.deletingLastPathComponent().appendingPathComponent("service-status.json"),
+              let data = try? JSONEncoder().encode(status()) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    /// The status the running service last published on this Mac.
+    public static func published() -> ClusterServiceStatus? {
+        guard let file = try? paths().pid.deletingLastPathComponent().appendingPathComponent("service-status.json"),
+              let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(ClusterServiceStatus.self, from: data)
     }
 
     // MARK: - This Mac's part

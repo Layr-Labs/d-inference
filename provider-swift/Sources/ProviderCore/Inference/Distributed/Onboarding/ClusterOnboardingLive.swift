@@ -308,18 +308,27 @@ private final class OnboardingLive: @unchecked Sendable {
         var said: String?
         while Date() < deadline {
             let now = session()
-            let line: String
+            var line: String
             if let session = now.session, session.observed {
                 if session.ready, let port = session.port {
                     return .success(.init(servedBy: now.local ? "this Mac" : peerName, port: port))
                 }
                 line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
             } else if let child = now.child, let end = child.lastEnd, !child.running {
-                line = "rank 0 on \(peerName) ended (\(end)); it starts again" + (child.restartInSeconds.map { " in \($0) s" } ?? "")
+                line = "rank 0 on \(peerName) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
             } else if let error = now.error {
                 line = "waiting for \(peerName): \(error)"
             } else {
                 line = "starting"
+            }
+            // This Mac's own part, when it is the one that keeps ending.
+            if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, end != "stopped" {
+                line += "; this Mac's part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+            }
+            // Members are asked for their own part only when rank 0 is here.
+            if now.local, let member = try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)),
+               !member.child.running, let end = member.child.lastEnd {
+                line += "; \(peerName)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
             }
             if line != said { progress(line); said = line }
             sleep(2)

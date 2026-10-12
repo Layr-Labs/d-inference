@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-12
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -26,14 +26,27 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 
 | Contract | Behavior | Code |
 |---|---|---|
-| Exact approved artifact | Binary, full CodeDirectory, bundle, metallib, version/platform/backend/URL, source commit and CI run; operator/test evidence retained separately from the public release catalog | `coordinator/store/app_attest_builds.go` (`AppAttestBuildIdentity`, `AppAttestBuildQualification`) |
-| Approval API | Admin `GET/POST /v1/admin/app-attest/builds`; POST contains `release`, `code_directory_hash`, `source_commit`, `ci_run_id`, `evidence`. Attribution and timestamps are server-owned. A scoped CI release key cannot approve | `coordinator/api/releases/app_attest_builds.go` (`HandleAdminAppAttestBuilds`) |
-| Publication gate | Production workflow sets `require_app_attest_qualification=true`; the coordinator also requires it whenever production App Attest serving is enabled. Missing/mismatched/revoked approval returns 409; unreadable policy returns 503; previous latest remains unchanged | `coordinator/api/releases/app_attest_publication.go` (`persistReleaseForPublication`) |
+| Exact official artifact | Existing identity shape: binary, full CodeDirectory, bundle, metallib, version/platform/backend/URL, source commit and CI run. Existing durable records and private audit evidence are preserved | `coordinator/store/app_attest_builds.go` (`AppAttestBuildIdentity`, `AppAttestBuildQualification`) |
+| Automatic registration | The updated platform's existing scoped `POST /v1/releases` verifies the artifact and records its complete native identity before publication. Partial identity fails closed. Source/run claims are trusted from authenticated CI, not independently GitHub-verified | [Platform contract](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md#durable-build-qualification) |
+| Compatibility approval | Admin `GET/POST /v1/admin/app-attest/builds` retains the existing identity/evidence body. This is a recovery tool, not a release prerequisite. The release key cannot use admin endpoints | `coordinator/api/releases/app_attest_builds.go` (`HandleAdminAppAttestBuilds`) |
+| Publication fence | Existing `require_app_attest_qualification` wire intent remains supported. The platform retains `SetQualifiedRelease` and its revocation row-lock fence; conflicting/revoked identity returns 409 and unavailable policy returns 503 | [Platform contract](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md#durable-build-qualification) |
 | Qualification refresh | Poll every five seconds; `BuildQualificationFreshness = 30 * time.Second` from read start. Every lease recomputes qualification and full code match from retained verified Apple metadata; no I/O at dispatch | `coordinator/appattest/service/build_qualifications.go` (`RefreshBuildQualifications`, `applyBuildQualification`); `coordinator/internal/appattest/authorization/controller.go` (`Controller.Apply`) |
 | Build withdrawal | Admin `POST /v1/admin/app-attest/builds/revoke` with `binary_hash` and `reason`; 200 includes `revoked`, `changed`, `max_propagation_seconds`. Local qualification generation fences before acknowledgement; remote/stale-store leases expire within 30 seconds. A build tombstone also overrides env-only approvals | `coordinator/api/releases/app_attest_builds.go` (`HandleAdminAppAttestBuildRevoke`); `coordinator/registry/app_attest_authorization.go` (`SetAppAttestQualificationGeneration`) |
 | Failure and retry | Malformed approval 400, missing/invalid authentication 401, authenticated non-admin or non-interactive credentials 403, conflicting/revoked immutable identity 409, unavailable/pending durable policy 503. Idempotent retry preserves original audit evidence. Revocation never restores through approval retry | `coordinator/store/postgres/app_attest_builds.go` (`QualifyAppAttestBuild`, `SetQualifiedRelease`) |
 
 The [qualification runbook](../operations/app-attest-build-qualification.md) gives the staged publication, migration and rollback procedure. Build withdrawal removes App Attest eligibility; it does not fabricate a credential violation or revoke independently valid legacy evidence.
+
+CI is the authority for official identity, not proof that runtime Apple APIs
+work. Per-release hardware qualification and manual approval are not required.
+Runtime Apple proof, Apple receipt verification and matching official
+CodeDirectory/runtime hashes remain mandatory. Deploy the platform change first;
+no new endpoint, authority key or configuration is needed.
+
+Legacy calls without identity remain compatible only when neither request nor
+server requires the durable-build gate. Any supplied identity field requires
+complete validated metadata; partial identity never falls back to legacy
+publication. The platform records the CI actor and original source/run evidence
+without replacing existing audit data on retry.
 
 ## New-provider setup
 

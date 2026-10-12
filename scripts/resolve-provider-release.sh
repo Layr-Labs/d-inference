@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve workflow inputs before environment approval or access to signing keys.
+# Resolve workflow inputs after source verification, before access to signing keys.
 set -euo pipefail
 
 if [ -n "${RELEASE_RESUME_RUN_ID:-}" ]; then

@@ -1,6 +1,6 @@
 # Provider trust during MDM and App Attest coexistence
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-12
 
 Darkbloom supports two independent provider authorization paths: legacy MDM/APNs verification and qualified App Attest. A connection can satisfy either or both. This explanation separates those paths from their shared dispatch checks and from claims neither path proves. The [authorization reference](../../reference/provider-authorization.md) owns configuration, deadlines and migration procedures.
 
@@ -76,7 +76,13 @@ The diagram describes public serving. Authenticated owner routing may relax the 
 1. **App Attest grants do not rewrite legacy evidence.** A current lease substitutes for specific legacy authorization requirements; it never sets `TrustHardware`, `MDAVerified` or `CodeAttested`. Common runtime/transport/privacy checks remain — `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextAuthorizationAtLocked`).
 2. **Selection is not final authorization.** Every inference handoff rechecks current connection, account/machine/endpoint binding and applicable policy after frame preparation and owner acknowledgment. Later invalidation fences subsequent handoffs but cannot recall committed frames — `coordinator/registry/inference_authorization.go` (`WriteInferenceTextDeferred`, `InferenceHandoff.Authorize`).
 3. **Missing evidence and hard denial differ.** Expiry or a transient lookup/Apple failure cannot extend App Attest permission; independently valid legacy evidence can remain usable only for connections eligible for the legacy path. Noncohort connections cannot fall back to legacy evidence, including on owner routes. Explicit credential revocation and security denial fence matching live connections across both paths — `coordinator/appattest/service/authorizer.go` (`refresh`); `coordinator/registry/app_attest_authorization.go` (`providerLegacyServingAuthorizedLocked`, `RevokeAppAttestCredential`); `coordinator/registry/app_attest_denial.go` (`denyAppAttestProviderLocked`).
-4. **Build publication is not qualification.** Serving requires current approved artifact/code identity, receipt and revocation evidence, with independent policy and qualification generation invalidation. Apple's truncated measurement must uniquely bind the durable full hash — `coordinator/appattest/service/build_qualifications.go` (`applyBuildQualification`); `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`).
+4. **Official registration is not runtime authorization.** Trusted CI registers the complete official identity through the existing scoped release API. Serving still requires real Apple proof and Apple receipt verification, matching official code/runtime hashes, and current revocation evidence. Apple's truncated measurement must uniquely bind the durable full hash — `coordinator/appattest/service/build_qualifications.go` (`applyBuildQualification`); `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`).
+
+CI and repository writers are trusted for official build identity, not proof
+that runtime Apple APIs work. Per-release hardware qualification and manual
+approval are not required; optional hardware smoke is separate. Deploy the
+matching platform persistence change before using the provider workflow. See
+[official-build registration](../../operations/app-attest-build-qualification.md).
 For existing deployments only, `applyBuildQualification` can use configured exact build/code mappings for a full Apple measurement when no durable row exists and the qualification snapshot is fresh. Durable rows and revocation tombstones override this compatibility path; truncated measurements and new release publication require durable qualification.
 
 5. **Legacy evidence cannot use the retired downgrade exceptions.** Every registration blob must meet `RegistrationAttestationMaxAge`, regardless of its claimed provider version. A challenge for an attested SE key requires a valid `status_signature`; missing SIP or Secure Boot status fails the challenge. These checks constrain signed claims and freshness, not independent physical measurement — `coordinator/api/provider/trust/attestation.go`, `coordinator/api/provider/trust/attestation.go`, `coordinator/internal/provider/challenge/challenge_verify.go` (`VerifyProviderAttestation`, `verifyChallengeResponse`).

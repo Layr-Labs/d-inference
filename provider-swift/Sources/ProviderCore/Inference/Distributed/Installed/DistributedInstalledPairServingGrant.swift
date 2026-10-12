@@ -43,6 +43,7 @@ public struct ClusterNumericsClass: Hashable, Comparable, Sendable, CustomString
 
     public static let appleM3Ultra = ClusterNumericsClass(chipName: "Apple M3 Ultra")!
     public static let appleM5Max = ClusterNumericsClass(chipName: "Apple M5 Max")!
+    public static let appleM5Ultra = ClusterNumericsClass(chipName: "Apple M5 Ultra")!
 
     public var description: String { rawValue }
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -156,6 +157,7 @@ public enum ClusterPairServingGrants {
     public static let acceptedCrossClassVerdicts = ["exact", "tokensEqualLogitsDiffer", "divergedAtNearTie"]
 
     private static let m3Ultra = ClusterNumericsClass.appleM3Ultra, m5Max = ClusterNumericsClass.appleM5Max
+    private static let m5Ultra = ClusterNumericsClass.appleM5Ultra
 
     /// The orientation every family's check ran in: M3 Ultra rank 0, M5 Max
     /// rank 1 (the decoding rank).
@@ -164,15 +166,23 @@ public enum ClusterPairServingGrants {
               pipelineRankAllowedNumericsClasses: [m3Ultra], evidence: evidence)
     }
 
-    public static let qwen35_9b = normalOrder("registered_qwen35_9b",
-        "M3 Ultra rank 0 and M5 Max rank 1 across the cable since 2026-10-08: pipeline, compact decode, phase split, "
-        + "phase split with MTP, prefix reuse and prompts to 30,720 tokens; every comparison exact, tokens equal or a near tie")
+    /// The M5 Ultra decodes since 2026-10-12: M3 Ultra rank 0 and M5 Ultra rank 1 at the product's plan (cut 16, phase split
+    /// with MTP), tokens equal Mac A's reference (`tokensEqualLogitsDiffer`) and a near tie at output 33 against the M5
+    /// Ultra's own (`divergedAtNearTie`); evidence `universal-20261010/m5ultra/hw/9b/`.
+    public static let qwen35_9b = ClusterPairServingGrant(runtimeModelID: "registered_qwen35_9b",
+        decodingRankAllowedNumericsClasses: [m5Max, m5Ultra], pipelineRankAllowedNumericsClasses: [m3Ultra],
+        evidence: "M3 Ultra rank 0 and M5 Max rank 1 across the cable since 2026-10-08: pipeline, compact decode, phase split, "
+        + "phase split with MTP, prefix reuse and prompts to 30,720 tokens; every comparison exact, tokens equal or a near tie; "
+        + "M3 Ultra rank 0 and M5 Ultra rank 1 (2026-10-12, cut 16, phase split with MTP): tokens equal Mac A's reference, a near tie against the M5 Ultra's")
     /// Both orders ran: the M3 Ultra decodes in the mirrored one.
+    /// The M5 Ultra decodes since 2026-10-12 (M3 Ultra rank 0, cut 32, phase split with MTP: tokens equal both Macs'
+    /// references; evidence `universal-20261010/m5ultra/hw/27b/`).
     public static let qwen38_27b = ClusterPairServingGrant(runtimeModelID: "registered_qwen38_27b",
-        decodingRankAllowedNumericsClasses: [m3Ultra, m5Max], pipelineRankAllowedNumericsClasses: [m3Ultra, m5Max],
+        decodingRankAllowedNumericsClasses: [m3Ultra, m5Max, m5Ultra], pipelineRankAllowedNumericsClasses: [m3Ultra, m5Max],
         evidence: "M3 Ultra rank 0 and M5 Max rank 1 (cut 16): pipeline, compact decode, phase split, phase split with MTP, "
             + "prefix reuse and prompts to 30,720 tokens; M5 Max rank 0 and M3 Ultra rank 1 (cuts 48 and 40): pipeline, compact decode "
-            + "and phase split; every comparison against both Macs' references exact, tokens equal or a near tie (1 ulp)")
+            + "and phase split; every comparison against both Macs' references exact, tokens equal or a near tie (1 ulp); "
+            + "M3 Ultra rank 0 and M5 Ultra rank 1 (2026-10-12, cut 32, phase split with MTP): tokens equal both Macs' references")
     public static let qwen35_35b_a3b = normalOrder("registered_qwen35_35b_a3b",
         "cut 12, pipeline, compact decode and phase split: a near tie (0 ulp) broken the way the M5 Max alone breaks it; 5,120 tokens equal")
     public static let qwen36_35b_a3b = normalOrder("registered_qwen36_35b_a3b",

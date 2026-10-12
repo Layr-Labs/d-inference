@@ -35,8 +35,8 @@ import DarkbloomClusterProtocol
             }
         }
         let grant = try ClusterPairServingGrants.grant(runtimeModelID: q27, publicModelID: q27Public)
-        #expect(grant.allowedNumericsClasses == [.appleM3Ultra, .appleM5Max])
-        #expect(grant.allowedNumericsClasses(for: .decodingRank) == [.appleM3Ultra, .appleM5Max])
+        #expect(grant.allowedNumericsClasses == [.appleM3Ultra, .appleM5Max, .appleM5Ultra])
+        #expect(grant.allowedNumericsClasses(for: .decodingRank) == [.appleM3Ultra, .appleM5Max, .appleM5Ultra])
         #expect(grant.allowedNumericsClasses(for: .pipelineRank) == [.appleM3Ultra, .appleM5Max])
         for family in [ChipFamily.m3, .m5] {
             #expect(!ModelRuntimeRequirements.isEligible(modelID: q27Public,
@@ -47,21 +47,28 @@ import DarkbloomClusterProtocol
     /// A class the grant does not list is refused for every rank, with the
     /// role, the class and the listed classes in the reason.
     @Test func aChipClassNotListedIsRefused() throws {
-        for chip in ["Apple M4 Max", "Apple M5 Pro", "Apple M3 Max", "Apple M5 Ultra", "Apple M2 Ultra", "Apple M5"] {
+        for chip in ["Apple M4 Max", "Apple M5 Pro", "Apple M3 Max", "Apple M2 Ultra", "Apple M5"] {
             let numericsClass = cls(chip)
             for rank in 0..<2 {
                 let refused = refusal { try ClusterPairServingGrants.requireRank(rank, of: 2, numericsClass: numericsClass,
                     runtimeModelID: q27, publicModelID: q27Public) }
                 let role: ClusterPairServingRole = rank == 1 ? .decodingRank : .pipelineRank
+                let allowed: [ClusterNumericsClass] = rank == 1 ? [.appleM3Ultra, .appleM5Max, .appleM5Ultra] : [.appleM3Ultra, .appleM5Max]
                 #expect(refused?.reason == .classNotAllowed(rank: rank, role: role, numericsClass: numericsClass,
-                    allowed: [.appleM3Ultra, .appleM5Max]), "\(chip) rank \(rank)")
+                    allowed: allowed), "\(chip) rank \(rank)")
                 let text = refused?.description ?? ""
-                #expect(text.contains(numericsClass.rawValue) && text.contains("apple_m3_ultra or apple_m5_max"))
+                #expect(text.contains(numericsClass.rawValue) && text.contains(allowed.map(\.rawValue).joined(separator: " or ")))
                 #expect(text.contains(q27Public) && text.contains(q27) && text.contains("policy decision"))
             }
             // A placement with one unlisted rank is refused as a whole.
             #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, numericsClass],
                 runtimeModelID: q27, publicModelID: q27Public) } != nil)
+        }
+        // The M5 Ultra decodes the 9B and the 27B (its cross-cable checks ran as rank 1), and leads neither.
+        for model in [("registered_qwen35_9b", "Qwen3.5-9B"), (q27, q27Public)] {
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model.0, publicModelID: model.1)
+            #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra],
+                runtimeModelID: model.0, publicModelID: model.1) } != nil, "\(model.1) led by the M5 Ultra")
         }
         // A grant restricts by role: the 9B ran with the M3 Ultra leading only.
         try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B")
@@ -110,7 +117,7 @@ import DarkbloomClusterProtocol
         #expect(future?.reason == .noGrant && future?.description.contains("has no grant") == true)
         let nine = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: .appleM3Ultra,
             runtimeModelID: "registered_qwen35_9b", publicModelID: q27Public) }
-        #expect(nine?.reason == .classNotAllowed(rank: 1, role: .decodingRank, numericsClass: .appleM3Ultra, allowed: [.appleM5Max]))
+        #expect(nine?.reason == .classNotAllowed(rank: 1, role: .decodingRank, numericsClass: .appleM3Ultra, allowed: [.appleM5Max, .appleM5Ultra]))
     }
 
     /// Single-Mac serving requirements are unchanged by any of this.

@@ -34,7 +34,7 @@ together with the other member, and asks for macOS permissions once.
    The command ends with a **Permissions** line: either macOS will ask once,
    or the reasons it will not (an ad-hoc build, an executable outside
    `Darkbloom.app`, a release without the Local Network usage string).
-   Run it at the Mac, not over SSH, so you are there when macOS asks.
+   Run it in Terminal on that Mac's own screen, so you are there when macOS asks.
 2. The first time the member reaches the link, macOS shows
    **"Darkbloom" would like to find and connect to devices on your local
    network**. Click **Allow** on each Mac where it appears. This is the only
@@ -78,7 +78,7 @@ no change to any system setting:
 
 | Permission | Why the member needs it | What makes it once |
 |---|---|---|
-| Local Network privacy | The follower dials the leader over the Thunderbolt link (a local network address). Processes started from Terminal or SSH are exempt, which is why a member started in an SSH session works and the same binary started by launchd is refused (`Local network prohibited`) until approved. | The LaunchAgent runs the executable inside `Darkbloom.app` (the recorded path is the resolved one, not the `~/.darkbloom/bin` symlink); the app carries `CFBundleIdentifier` `io.darkbloom.provider` and `NSLocalNetworkUsageDescription`, and is Developer-ID signed, notarized and stapled. The approval follows that signed identity, so updates keep it. The owner and worker processes the member starts inherit it. No configuration profile can pre-approve Local Network, so one click per Mac is the minimum. |
+| Local Network privacy | The follower dials the leader over the Thunderbolt link (a local network address). A member started by hand in a shell runs under that shell's approval (or a remote-login exemption on a bench rig), which is why it works there while the same binary started by launchd is refused (`Local network prohibited`) until Darkbloom itself is approved. | The LaunchAgent runs the executable inside `Darkbloom.app` (the recorded path is the resolved one, not the `~/.darkbloom/bin` symlink); the app carries `CFBundleIdentifier` `io.darkbloom.provider` and `NSLocalNetworkUsageDescription`, and is Developer-ID signed, notarized and stapled. The approval follows that signed identity, so updates keep it. The owner and worker processes the member starts inherit it. No configuration profile can pre-approve Local Network, so one click per Mac is the minimum. |
 | Application firewall (when on) | A rank that listens: by default only the leader (rank 0) listens; a follower only dials out. | With **Automatically allow downloaded signed software** on (the macOS default), any Developer-ID-signed program may accept connections without an alert. The release signs the main executable and, when shipped in `Contents/Helpers`, the cluster worker and placement tool under their own identifiers. An ad-hoc build is not covered and raises one alert per new build. |
 
 The release workflow (`.github/workflows/release-swift.yml`) writes the usage

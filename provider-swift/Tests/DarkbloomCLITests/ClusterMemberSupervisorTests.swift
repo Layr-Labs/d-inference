@@ -20,7 +20,8 @@ struct ClusterMemberSupervisorTests {
         }
     }
 
-    private func configuration(directory: URL, script: String, window: Int = 30) -> ClusterMemberSupervisor.Configuration {
+    private func configuration(directory: URL, script: String, window: Int = 30,
+                               guardLimits: ClusterMemberLivenessGuard.Limits = .production) -> ClusterMemberSupervisor.Configuration {
         .init(executable: "/bin/sh", childArguments: ["-c", script],
               environment: ["PATH": "/usr/bin:/bin"],
               statePath: directory.appendingPathComponent("state.json"),
@@ -28,7 +29,7 @@ struct ClusterMemberSupervisorTests {
               setup: nil, coordinatorURL: "wss://example.invalid", autoUpdate: false,
               budgetLimits: .init(maxQuickFailures: 3, quickFailureWindowSeconds: Double(window),
                                   initialBackoffSeconds: 1, maxBackoffSeconds: 4),
-              guardLimits: .production, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"])
+              guardLimits: guardLimits, recycleGraceSeconds: 5, reexecArguments: ["/bin/false"])
     }
 
     private func state(_ directory: URL) -> ClusterMemberSupervisorState? {
@@ -87,6 +88,36 @@ struct ClusterMemberSupervisorTests {
         #expect(kill(second, 0) != 0, "the member is gone after an operator stop")
         #expect(state(directory)?.phase == .stopped)
         #expect(state(directory)?.runs == 2)
+    }
+
+    /// A member that stays alive but stops beating (a wedged loop) is
+    /// recycled by the liveness guard and restarted through the budget.
+    @Test func aMemberWhoseHeartbeatStopsIsRecycledAndRestarted() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("s18-guard-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var limits = ClusterMemberLivenessGuard.Limits()
+        limits.intervalSeconds = 1
+        limits.startGraceSeconds = 2
+        limits.downSeconds = 3
+        // One heartbeat, then silence while the process lives on.
+        let script = #"printf '{"pid":%d,"version":"t","phase":"registered","writtenAt":%s}' $$ "$(date +%s)" "#
+            + #"> "$DARKBLOOM_CLUSTER_MEMBER_HEALTH_FILE"; exec sleep 60"#
+        let supervisor = ClusterMemberSupervisor(configuration: configuration(directory: directory, script: script,
+                                                                              guardLimits: limits))
+        let run = Task { await supervisor.run() }
+        #expect(await waitUntil(seconds: 10) { state(directory)?.phase == .running })
+        let first = try #require(state(directory)?.current?.pid)
+        #expect(await waitUntil(seconds: 20) {
+            guard let current = state(directory), current.runs >= 2, current.phase == .running else { return false }
+            return current.current?.pid != first
+        }, "recycled after the heartbeat went stale, then restarted")
+        let recycled = try #require(state(directory)?.lastRun)
+        #expect(recycled.pid == first)
+        let end = recycled.end ?? ""
+        #expect(end.contains("recycled by the liveness guard"), "\(end)")
+        #expect(kill(first, 0) != 0, "the stalled member is gone")
+        supervisor.requestStop()
+        #expect(await run.value == 0)
     }
 
     @Test func aSecondSupervisorForTheSameStateRefusesToStart() async throws {

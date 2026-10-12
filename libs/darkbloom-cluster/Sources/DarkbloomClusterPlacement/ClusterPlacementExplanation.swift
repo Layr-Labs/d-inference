@@ -241,8 +241,7 @@ public enum ClusterPlacementExplanation {
             case .rowFactor:
                 return "It decodes with the model's speculative (MTP) head, as one Mac does by default, credited with "
                     + "\(number(layout.speculativeDecodeFactor ?? 1, 2))x its plain decode (the smallest speed-up the pair measured with the head) "
-                    + "because \(decoder.label)'s GPU is of the first generation with matrix accelerators (Apple M\(ClusterSpeculativeCredit.firstAcceleratedGeneration)) or a later one. "
-                    + "Every token is still the model's own greedy choice."
+                    + "because \(decoder.label)'s GPU is of the first generation with matrix accelerators (Apple M\(ClusterSpeculativeCredit.firstAcceleratedGeneration)) or a later one."
             }
         }
         if prefers {

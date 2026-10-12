@@ -5,6 +5,8 @@ pull requests add one fragment; release preparation alone updates this file.
 
 ## v0.9.20 — candidate (unpublished)
 
+- Raise the default SSD cache write budget from 750 GB to 4 TB (4,000 decimal GB)
+  per rolling day. Saved limits and environment overrides continue to take precedence.
 - Prepare the provider release identity for 0.9.20. Publication remains pending;
   the unreleased entries and fragments below have not been marked as shipped.
 

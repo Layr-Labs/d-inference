@@ -278,11 +278,15 @@ private final class OnboardingLive: @unchecked Sendable {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
             _ = try command(.init(op: .serve, model: title))
         } catch let failure as ClusterSetupFailure {
-            return .failure(.init("\(peerName) was not started: \(failure.text)"))
+            return .failure(.init(["\(peerName) was not started yet: \(failure.text)", Self.startsWhenItAnswers(peerName)]))
         } catch {
-            return .failure(.init("\(peerName) was not started: \(error)"))
+            return .failure(.init(["\(peerName) was not started yet: \(error)", Self.startsWhenItAnswers(peerName)]))
         }
         return .success(["Started \(peerName)'s part over the cable (its cluster service runs it); this Mac's service runs its own."])
+    }
+
+    static func startsWhenItAnswers(_ peer: String) -> String {
+        "This Mac's cluster service starts \(peer)'s part as soon as it answers; run `darkbloom cluster` here to see how it is going."
     }
 
     /// The Mac that runs rank 0 and the serving API, and its session.
@@ -362,7 +366,8 @@ private final class OnboardingLive: @unchecked Sendable {
         let model = leadership?.modelName ?? "the chosen model"
         let now = session()
         if let session = now.session, session.observed {
-            lines.append(session.ready ? "Serving \(model) from \(now.local ? "this Mac" : peerName) at 127.0.0.1:\(session.port ?? 0) (\(session.readyRanks) of \(session.ranks) parts ready)."
+            lines.append(session.ready ? ClusterOnboardingReady(servedBy: now.local ? "this Mac" : peerName, port: session.port ?? 0).servingLine(model: model)
+                + " (\(session.readyRanks) of \(session.ranks) parts ready)."
                 : "\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
         } else if let error = now.error {
             lines.append("\(peerName) does not answer over the cable now (\(error)); it rejoins by itself when it is back.")
@@ -378,7 +383,7 @@ private final class OnboardingLive: @unchecked Sendable {
             try store.updateRecord { $0.leadership?.serving = false }
             _ = try command(.init(op: .stop))
         } catch {
-            return .failure(.init("This Mac stopped serving; \(peerName) did not answer (\(error)) and stops when it next hears from this Mac."))
+            return .failure(.init("This Mac stopped serving; \(peerName) did not answer (\(error)). This Mac's cluster service tells it to stop as soon as it answers again."))
         }
         return .success(["Both Macs stop their parts now (each releases its memory first). Run `darkbloom cluster` here to serve again."])
     }

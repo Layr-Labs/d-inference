@@ -91,6 +91,8 @@ public final class ClusterService: @unchecked Sendable {
     private var backoff: Double = 3
     private var responder: ClusterSetupLinkExchange.Responder?
     private var stopping = false
+    private var syncing = false
+    private var nextSync = Date.distantPast
 
     public init(settings: Settings) throws {
         var wizard = settings.wizard
@@ -172,6 +174,7 @@ public final class ClusterService: @unchecked Sendable {
         while !stopped {
             ensureResponder(say: say)
             supervise(say: say)
+            syncMembers(say: say)
             publish()
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
         }
@@ -210,6 +213,43 @@ public final class ClusterService: @unchecked Sendable {
     private func followsPeer(_ pairing: ClusterSetupLinkExchange.Pairing) -> Bool {
         guard let leadership = try? store.readRecord().leadership else { return false }
         return leadership.role == ClusterOnboardingRole.member.rawValue && leadership.leaderPin == pairing.peerPin
+    }
+
+    /// On the leader: every `ClusterOnboardingSync.dueEverySeconds`, ask the member for its status and send
+    /// what differs from this Mac's record (serve with the model, or stop), on a thread of its own so this
+    /// Mac's own supervision never waits on the cable. A member that missed a start or a stop follows once it
+    /// answers again.
+    private func syncMembers(say: @escaping @Sendable (String) -> Void) {
+        guard let record = try? store.readRecord(), let leadership = record.leadership,
+              leadership.role == ClusterOnboardingRole.leader.rawValue else { return }
+        let begin: Bool = lock.withLock {
+            guard !syncing, !stopping, Date() >= nextSync else { return false }
+            syncing = true
+            nextSync = Date().addingTimeInterval(ClusterOnboardingSync.dueEverySeconds)
+            return true
+        }
+        guard begin else { return }
+        let context = self.context
+        Thread.detachNewThread { [weak self] in
+            defer { self?.lock.withLock { self?.syncing = false } }
+            guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin,
+                  let selection = try? context.linkSelection() else { return }
+            func send(_ command: ClusterServiceCommand, seconds: Double) -> ClusterServiceStatus? {
+                guard let body = try? JSONEncoder().encode(command),
+                      let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
+                          body: body, seconds: seconds).reply else { return nil }
+                return try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply)
+            }
+            let member = send(.init(op: .status), seconds: 10)
+            switch ClusterOnboardingSync.action(leaderServing: leadership.serving, leaderModel: leadership.modelName,
+                                                memberServing: member?.serving, memberModel: member?.modelName) {
+            case .none: return
+            case .serve(let model):
+                if send(.init(op: .serve, model: model), seconds: 10) != nil { say("the member had missed the start: started its part") }
+            case .stop:
+                if send(.init(op: .stop), seconds: 10) != nil { say("the member had missed the stop: stopped its part") }
+            }
+        }
     }
 
     /// A setup from the leader: a member applies it at once; anything else only reaches the inbox.

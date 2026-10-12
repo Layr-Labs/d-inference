@@ -101,6 +101,35 @@ public struct ClusterOnboardingReady: Sendable, Equatable {
     public var servedBy: String
     public var port: Int
     public init(servedBy: String, port: Int) { self.servedBy = servedBy; self.port = port }
+
+    /// "Serving <model> from …": the serving API listens on loopback on the Mac that runs rank 0, so when that is
+    /// the other Mac the line says the address is on that Mac (this Mac's own loopback serves nothing).
+    public func servingLine(model: String) -> String {
+        servedBy == "this Mac" ? "Serving \(model) from this Mac at 127.0.0.1:\(port)"
+            : "Serving \(model) from \(servedBy), at 127.0.0.1:\(port) on that Mac"
+    }
+}
+
+/// The leader keeps its members in step: its cluster service asks each member
+/// for its status every `dueEverySeconds` and sends what differs from the
+/// leader's own record (serve with the model, or stop). A member that missed a
+/// start or a stop (asleep, restarting, cable out) so follows the leader once
+/// it answers again, with nobody running a command.
+public enum ClusterOnboardingSync {
+    public enum Action: Sendable, Equatable {
+        case none
+        case serve(String?)
+        case stop
+    }
+
+    public static let dueEverySeconds: Double = 15
+
+    /// `memberServing` nil: the member did not answer (asked again at the next check).
+    public static func action(leaderServing: Bool, leaderModel: String?, memberServing: Bool?, memberModel: String?) -> Action {
+        guard let memberServing else { return .none }
+        if leaderServing { return memberServing && memberModel == leaderModel ? .none : .serve(leaderModel) }
+        return memberServing ? .stop : .none
+    }
 }
 
 /// A step that failed, in words for the screen.
@@ -450,7 +479,7 @@ public enum ClusterOnboardingDriver {
         for line in progress.take() { console.say("  " + line) }
         switch ready! {
         case .success(let where_):
-            console.say("Serving \(choice.title) from \(where_.servedBy) at 127.0.0.1:\(where_.port).")
+            console.say(where_.servingLine(model: choice.title) + ".")
         case .failure(let failure):
             for line in failure.lines { console.say(line) }
             console.say("Both Macs keep trying by themselves; run `darkbloom cluster` here to see how it is going.")

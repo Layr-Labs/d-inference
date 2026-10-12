@@ -49,7 +49,11 @@ The older six-step wizard is still there as `darkbloom cluster --wizard`.
 Each Mac's cluster service runs that Mac's part while the leader has the
 cluster serving: when a part ends (a member restarted, a session lost a member)
 it starts it again, and the leader's session re-forms once the member is back,
-with no question. In this build the service itself is started by
+with no question. The leader's service also checks the member every 15 seconds:
+a member that missed a start or a stop (asleep, restarting, cable out) is
+started or stopped as soon as it answers again. The serving API listens on
+127.0.0.1 of the Mac that runs rank 0, which the planner chooses; the leader's
+screen names that Mac. In this build the service itself is started by
 `darkbloom cluster` (on either Mac, no key needed); starting it at login with
 the always-on LaunchAgent (S18) is not in this build yet.
 

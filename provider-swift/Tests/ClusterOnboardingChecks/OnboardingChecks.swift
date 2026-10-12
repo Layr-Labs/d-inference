@@ -27,6 +27,8 @@ import Darwin
         leaderAgainServing()
         leaderPairedNotServing()
         noModelOffered()
+        servingLineNamesTheMac()
+        leaderKeepsMembersInStep()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -217,7 +219,9 @@ import Darwin
         let code = run.finish()
         expect(code == 0, "leader: exit 0, got \(String(describing: code))")
         let text = run.text
-        expect(text.contains("Serving Qwen3.5-9B from Apple M3 Ultra, 256 GB at 127.0.0.1:8000."), "leader: serving line")
+        expect(text.contains("Serving Qwen3.5-9B from Apple M3 Ultra, 256 GB, at 127.0.0.1:8000 on that Mac."),
+            "leader: serving line names the Mac whose loopback serves")
+        expect(!text.contains("256 GB at 127.0.0.1"), "leader: never shows the other Mac's loopback as if it were this Mac's")
         expect(text.contains("Nothing else is needed on the other Mac. After a Mac restarts, run `darkbloom cluster` on it once (it asks nothing)."), "leader: the member needs nothing, and the restart gap is said")
         expect(!text.contains("Run `darkbloom cluster` on the other Mac too."), "leader: the link flow's own ending is not repeated")
         expect(run.keys == 3, "leader: three keys (y, enter, y), got \(run.keys)")
@@ -225,6 +229,33 @@ import Darwin
             "waitReady", "testRequest"], "leader: operations in order: \(recorder.all)")
         expect(!text.lowercased().contains("ssh") && !text.contains("10.219"), "leader: no SSH and no address on screen")
         transcript("leader-from-scratch", text, keys: run.keys)
+    }
+
+    /// The serving API listens on loopback on the Mac that runs rank 0: the line says which Mac that is.
+    static func servingLineNamesTheMac() {
+        expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).servingLine(model: "Qwen3.5-9B")
+            == "Serving Qwen3.5-9B from this Mac at 127.0.0.1:8000", "serving here: this Mac's loopback")
+        expect(ClusterOnboardingReady(servedBy: "Apple M3 Ultra, 256 GB", port: 8100).servingLine(model: "Qwen3.5-9B")
+            == "Serving Qwen3.5-9B from Apple M3 Ultra, 256 GB, at 127.0.0.1:8100 on that Mac", "serving there: that Mac's loopback")
+    }
+
+    /// The leader's cluster service keeps each member on the leader's serving state (serve or stop, and the model),
+    /// so a member that missed a start or a stop (asleep, restarting, cable out) follows once it answers again.
+    static func leaderKeepsMembersInStep() {
+        typealias Sync = ClusterOnboardingSync
+        expect(Sync.action(leaderServing: true, leaderModel: "9B", memberServing: nil, memberModel: nil) == .none,
+            "sync: a member that does not answer is asked again later, nothing sent now")
+        expect(Sync.action(leaderServing: true, leaderModel: "9B", memberServing: false, memberModel: nil) == .serve("9B"),
+            "sync: a member that missed the start is started")
+        expect(Sync.action(leaderServing: true, leaderModel: "27B", memberServing: true, memberModel: "9B") == .serve("27B"),
+            "sync: a member on another model is told the leader's")
+        expect(Sync.action(leaderServing: true, leaderModel: "9B", memberServing: true, memberModel: "9B") == .none,
+            "sync: a member in step is left alone")
+        expect(Sync.action(leaderServing: false, leaderModel: "9B", memberServing: true, memberModel: "9B") == .stop,
+            "sync: a member that missed the stop is stopped")
+        expect(Sync.action(leaderServing: false, leaderModel: nil, memberServing: false, memberModel: nil) == .none,
+            "sync: nothing serving, nothing sent (a leader that has not chosen a model yet)")
+        expect(Sync.dueEverySeconds > 0 && Sync.dueEverySeconds <= 30, "sync: checked often enough that a member follows within half a minute")
     }
 
     static func memberFromScratch() {

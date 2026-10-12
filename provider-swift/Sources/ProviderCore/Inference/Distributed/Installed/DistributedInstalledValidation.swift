@@ -48,7 +48,7 @@ struct DistributedInstalledValidation: Sendable {
                 expectedSHA256: trust.knownHostsSHA256, maximumBytes: 64 * 1024, deadline: deadline))
         }
         if let link = plan.configuration.linkControl {
-            try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: link.secretFile), privateMode: true)
+            try Self.linkSecretMetadata(link.secretFile)
         }
         // Recompute native profile/Plan/arithmetic metadata using the verified
         // installed worker. The command does not construct a model or request.
@@ -67,7 +67,7 @@ struct DistributedInstalledValidation: Sendable {
             try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: trust.identityFile), privateMode: true)
         }
         if let link = plan.configuration.linkControl {
-            try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: link.secretFile), privateMode: true)
+            try Self.linkSecretMetadata(link.secretFile)
         }
         // These are the exact file candidates opened by the existing local
         // tokenizer loader. An unpinned fallback must not become active.
@@ -78,6 +78,22 @@ struct DistributedInstalledValidation: Sendable {
             guard lstat(path, &value) != 0, errno == ENOENT else {
                 throw ClusterConfigurationError.invalid("Unpinned local tokenizer template exists")
             }
+        }
+    }
+
+    /// A link key made by the pairing ceremony (S17) lives in the pairing
+    /// store as `.darkbloom/cluster-pairing/edge-<pin>.secret`. When that file
+    /// is gone the Macs were unpaired (`darkbloom cluster pair --forget`), so
+    /// say that instead of a missing credential. Either way the start fails.
+    static func linkSecretMetadata(_ path: String) throws {
+        do { try ClusterConfigurationFiles.credentialMetadata(URL(fileURLWithPath: path), privateMode: true) } catch {
+            let url = URL(fileURLWithPath: path)
+            var value = stat()
+            if url.deletingLastPathComponent().lastPathComponent == "cluster-pairing", url.lastPathComponent.hasPrefix("edge-"),
+               lstat(path, &value) != 0, errno == ENOENT {
+                throw ClusterConfigurationError.invalid("The link key of this Mac's pairing is gone: the Macs were unpaired. Pair them again with `darkbloom cluster pair`, then save the setup again.")
+            }
+            throw error
         }
     }
 }

@@ -317,21 +317,15 @@ enum ClusterSetupContent {
                 b.verdict(g.waiting, "This Mac does not know the other Mac yet.", .warning, from: .wired("pair.saved"))
             }
             b.blank()
-            if let code = state.pairingCode {
-                b.heading("This Mac's pairing code")
-                b.row([.init("      "), .init(" \(code.spaced) ", .selected)], from: .wired("pair.code"))
-                b.text("From this Mac's own SSH host key. When the leader reaches this Mac, its screen shows the code of the Mac it reached: it must be this one.", from: .wired("pair.code"))
-                if state.pairingConfirmed {
-                    b.verdict(g.done, "Confirmed \(state.record.confirmed(code: code.code)?.at ?? ""): the leader's screen showed this code.", .good, from: .wired("pair.confirm"))
-                } else {
-                    b.action("enter", "The leader's screen shows \(code.spaced)", from: .wired("pair.confirm"))
-                }
-                b.blank()
-            }
+            // No SSH in the user path (owner gate 2026-10-11): pairing is the
+            // ceremony over the link; no host-key code, no pair description.
+            linkPairing(state, &b)
+            b.blank()
             b.heading("What to do")
-            b.text("On the leader: run `darkbloom cluster --pair <description> --capability <record> --capability-sha256 <digest> --member <this Mac's ID>` once; later runs remember it.", from: .frame)
-            b.text("On the follower: nothing to type. The leader's step 4 sends this Mac its setup, and you approve it here. Press r to look again.", from: .frame)
-            b.text("Finding the other Mac by itself is not built yet; the pair is described once.", .dim, from: .frame)
+            b.text("Run `darkbloom cluster` on both Macs and press l on each: they find each other on the cable, both screens show the same six digits, and you type y on each Mac. Nothing else to type.", from: .frame)
+            if state.linkPaired {
+                b.text("Paired: step 4 takes the model and the plan. Press r to look again.", from: .frame)
+            }
             return
         }
         b.heading("Pair")
@@ -373,15 +367,57 @@ enum ClusterSetupContent {
                     b.verdict(g.blocked, "This Mac's own host key is not the one its setup pins. Do not approve anything until that is explained.", .bad, from: .wired("pair.code"))
                 }
             }
-            if state.pairingConfirmed {
-                let at = state.record.confirmed(code: code.code)?.at ?? ""
+            if let confirmed = state.record.confirmed(code: code.code) {
+                let at = confirmed.at
                 b.verdict(g.done, "Confirmed\(at.isEmpty ? "" : " \(at)"): both screens showed this code.", .good, from: .wired("pair.confirm"))
                 b.action("enter", "Next: model and plan", from: .frame)
+            } else if state.linkPaired {
+                b.action("enter", "Next: model and plan (paired over the link)", from: .frame)
             } else if !reachedFirst {
                 b.action("enter", "Both screens show \(code.spaced)", from: .wired("pair.confirm"))
             }
         } else {
             b.text(pair.canReachPeer ? "No code: the setup's pinned known-hosts file has no host key." : "No code: this Mac's own SSH server did not answer with its host key (is Remote Login on?).", .warning, from: .wired("pair.code"))
+        }
+        b.blank()
+        linkPairing(state, &b)
+    }
+
+    /// The pairing ceremony over the Thunderbolt link (S17): no SSH, a code on
+    /// both screens, each Mac pinning the other's attested Secure Enclave key.
+    static func linkPairing(_ state: ClusterSetupState, _ b: inout Builder) {
+        let g = b.glyphs
+        b.heading("Pair over the link (no SSH)")
+        for pairing in state.local?.linkPairings?.pairings ?? [] {
+            b.verdict(g.done, "Paired with \(pairing.peerName): its Secure Enclave key \(pairing.peerPin)\u{2026} is pinned; roster \(pairing.clusterID), generation \(pairing.generation).",
+                .good, from: .wired("pair.link"))
+        }
+        if let error = state.local?.linkPairings?.error {
+            b.verdict(g.blocked, "The pairing store cannot be trusted: \(error)", .bad, from: .wired("pair.link"))
+        }
+        switch state.linkPairing {
+        case .idle, .finished:
+            if case .finished(let succeeded, let lines) = state.linkPairing {
+                if let first = lines.first { b.verdict(succeeded ? g.done : g.blocked, first, succeeded ? .good : .bad, from: .wired("pair.link")) }
+                for line in lines.dropFirst() { b.text(line, indent: 6, from: .wired("pair.link")) }
+            }
+            if !state.linkPaired {
+                b.text("Each Mac pins the other's attested Secure Enclave key. Both screens show one code; nothing to type but y or n.", from: .wired("pair.link"))
+            }
+            b.action("l", state.linkPaired ? "Pair again: press l on both Macs" : "Pair: press l on both Macs; each finds the other on the cable", from: .wired("pair.link"))
+            b.action("c", "Connect to an address the other Mac shows (only if finding it fails)", from: .wired("pair.link"))
+        case .enteringAddress(let text):
+            b.row([.init("      Other Mac's address: "), .init(" \(text)_ ", .selected)], from: .wired("pair.link"))
+            b.text("enter: dial it \u{B7} escape: cancel", .dim, indent: 6, from: .frame)
+        case .waiting(let text):
+            b.text("\(g.spin(state.now)) \(text)", .accent, from: .wired("pair.link"))
+        case .code(let code, let peer):
+            b.row([.init("      "), .init(" \(code.prefix(3)) \(code.suffix(3)) ", .selected)], from: .wired("pair.link"))
+            for line in peer { b.text(line, indent: 6, from: .wired("pair.link")) }
+            b.text("Compare it with the other Mac's screen: y if both show it, n if not.", from: .wired("pair.link"))
+        case .confirmedHere(let peerConfirmed):
+            b.text(peerConfirmed ? "\(g.spin(state.now)) Both Macs confirmed; storing the pins and the roster\u{2026}"
+                : "\(g.spin(state.now)) Confirmed here; waiting for the other Mac\u{2026}", .accent, from: .wired("pair.link"))
         }
     }
 

@@ -13,13 +13,13 @@ final class WizardRun: @unchecked Sendable {
 
     init(_ operations: WizardScriptedOperations, columns: Int = 80, rows: Int = 24,
          options: ClusterSetupState.Options = .init(questionDwellMilliseconds: 0), glyphs: ClusterSetupGlyphs = .unicode,
-         color: Bool = true, handlesSignals: Bool = false) throws {
+         color: Bool = true, handlesSignals: Bool = false, custom: ClusterSetupOperations? = nil) throws {
         self.operations = operations
         terminal = try PseudoTerminal(columns: columns, rows: rows)
         initialMode = terminal.mode
         let configuration = ClusterSetupRunLoop.Configuration(options: options, color: color, glyphs: glyphs, idleMilliseconds: 40,
             busyMilliseconds: 20, escapeMilliseconds: 250, handlesSignals: handlesSignals, clock: { "2026-10-10T15:30:00Z" })
-        let slave = terminal.slave, scripted = operations.operations
+        let slave = terminal.slave, scripted = custom ?? operations.operations
         Thread.detachNewThread { [self] in
             let result = Result { try ClusterSetupRunLoop.run(input: slave, output: slave, configuration: configuration, operations: scripted) }
             lock.withLock { outcome = result }

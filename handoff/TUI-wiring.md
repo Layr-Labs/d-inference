@@ -1,6 +1,6 @@
 # Terminal UI wiring (gate G3)
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
 
 What every element of the two cluster screens reads or runs: the setup wizard
 that bare `darkbloom cluster` opens on a terminal (six steps: this Mac, the
@@ -37,6 +37,7 @@ the link fix runs only after `f` (a dry run that lists the commands) and `y`.
 | `link.thunderbolt` | Generation and speed of the cluster port's connection (Thunderbolt 5 at 80 Gb/s or more; 40 Gb/s called Thunderbolt 4 or USB4), what it connects to, the other ports | `system_profiler -json SPThunderboltDataType`, matched to the port by its hardware port name ("Thunderbolt N" is receptacle N); unit identifiers and route strings are not kept | wired |
 | `pair.code` | The six-digit pairing code both screens show | SHA-256 of the follower's SSH host key fingerprint: on the leader the key its setup pins, shown only after the pinned connection succeeded; on any other Mac its own key, read with `ssh-keyscan` from 127.0.0.1 | wired |
 | `pair.confirm` | The person saw the same code on both screens: `enter`, then `y` | `ClusterSetupStore.updateRecord`, the wizard's record | wired |
+| `pair.link` | Pair over the Thunderbolt link with no SSH (S17): `l` listens and shows what to type on the other Mac, `c` dials the address it shows; both screens show one six-digit code, `y` on each Mac when they match (only `y` after the dwell, or `n`, answers); then each Mac's pinned key, roster and generation | `ClusterLinkPairing.run`, the operation behind `darkbloom cluster pair` (commitment-based code exchange on the link control channel, Secure Enclave proofs, attested keys, roster countersigned by both); read back from `~/.darkbloom/cluster-pairing/pairings.json` (owner-only) | wired |
 | `pair.inbox` | A setup the leader sent, waiting for this Mac's approval | `darkbloom cluster inbox --receive` on this Mac (strict codecs against the capability it carries), read back from `~/.darkbloom/cluster-setup/` | wired |
 | `peer.report` | What the other Mac reports about itself: chip, memory, cable, saved setup, journal, memory left wired, models | `darkbloom cluster report --json` on the other Mac over the pinned route | wired |
 | `model.inventory` | Model folders on this Mac and on the other | `manifest.json` of each folder beside the setup's model directory (model ID, version, aggregate digest, size); the other Mac's report | wired |

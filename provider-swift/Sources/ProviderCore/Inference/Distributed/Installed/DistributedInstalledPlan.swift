@@ -101,8 +101,10 @@ struct DistributedInstalledPlan: Sendable {
     /// `attachment` is present exactly when the selected bootstrap is the
     /// owner-authenticated one; its three arguments are appended unchanged.
     /// `startupDeadline` is passed only to a worker that knows the argument.
+    /// `dataPlane`: the owner received this worker's credential line (S16);
+    /// the worker then keys its data plane and expects that line first.
     func nativeArguments(binding: ClusterOwnerBinding, deadline: UInt64, startupDeadline: UInt64?,
-                         attachment: ClusterOwnerBootstrapAttachment?) throws -> [String] {
+                         attachment: ClusterOwnerBootstrapAttachment?, dataPlane: Bool = false) throws -> [String] {
         guard binding.identity == identity(epoch: binding.identity.membershipEpoch),
               binding.rank == configuration.localRank, binding.profile == capability.profile,
               binding.executionPlanSHA256 == partition.planSHA256,
@@ -127,6 +129,7 @@ struct DistributedInstalledPlan: Sendable {
                 schedule: configuration.selectedPrefillSchedule))
             + (try DistributedInstalledGenerationSelection.workerArguments(configuration: configuration, capability: capability))
             + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
+            + (dataPlane ? ["--data-plane", ClusterWorkerDataPlaneTrust.argument] : [])
             + (attachment?.workerArguments ?? [])
     }
 }

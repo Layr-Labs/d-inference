@@ -32,9 +32,11 @@ extension ClusterConsolePairing {
         self.init(clusterID: configuration.clusterID, memberID: configuration.memberID, role: configuration.role,
             localRank: local.rank, peerID: peer.id, peerRank: peer.rank, linkDevice: local.jacclDevice,
             trust: .observe(configuration.trust),
-            pairApproval: configuration.nativeMember.map {
-                .init(id: $0.approval.id, model: $0.approval.model, generation: $0.approval.generation,
-                    notAfter: $0.approval.notAfter, allowedChips: $0.approval.allowedChips)
+            pairApproval: configuration.nativeMember.flatMap { member in
+                member.approval.map { .init(id: $0.id, model: $0.model, generation: $0.generation,
+                    notAfter: $0.notAfter, allowedChips: $0.allowedChips) }
+                ?? member.clusterApproval.map { .init(id: $0.id, model: $0.model, generation: $0.generation,
+                    notAfter: $0.notAfter, allowedChips: $0.allowedNumericsClasses) }
             })
     }
 }

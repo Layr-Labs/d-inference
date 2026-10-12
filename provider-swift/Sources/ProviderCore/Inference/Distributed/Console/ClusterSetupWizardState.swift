@@ -257,8 +257,22 @@ public enum ClusterSetupEvent: Sendable {
     case sessionObserved(ClusterSetupLive)
     case session(ClusterConsoleSessionEvent)
     case prompt(ClusterSetupPromptEvent)
+    /// The pairing ceremony over the link (S17), as it moves.
+    case linkPairing(ClusterSetupLinkPairingEvent)
     case terminationSignal(Int32)
     case inputClosed
+}
+
+/// What the pairing ceremony over the Thunderbolt link (S17) reports to the
+/// wizard. Text only: no key, no secret, no address beyond the one the person
+/// gives the other Mac.
+public enum ClusterSetupLinkPairingEvent: Equatable, Sendable {
+    /// Listening (with what to run or type on the other Mac), dialing, connected.
+    case waiting(String)
+    /// The code to compare, and what the other Mac's attestation says about it.
+    case code(String, peer: [String])
+    case peerDecided(Bool)
+    case finished(succeeded: Bool, lines: [String])
 }
 
 /// Work the reducer asks the run loop to do; each result comes back as an event.
@@ -277,6 +291,10 @@ public enum ClusterSetupEffect: Equatable, Sendable {
     case pollSession
     case sendPrompt(text: String, maxTokens: Int)
     case recordCheck(ClusterSetupRecord.CheckPass)
+    /// Starts the pairing ceremony over the link: listening, or dialing the address given.
+    case pairOverLink(connect: String?)
+    /// The person's answer to the ceremony's code.
+    case answerLinkCode(accept: Bool)
 }
 
 /// Everything the wizard is between two events. The reducer is its only
@@ -364,6 +382,8 @@ public struct ClusterSetupState: Sendable {
     public enum Question: Equatable, Sendable {
         case applyLinkFix
         case confirmCode(code: String)
+        /// The pairing ceremony's code (S17): `y` confirms it, `n` declines.
+        case confirmLinkCode(code: String)
         case adoptPlan(folder: String, planKey: String)
         case approveInbox(expectedSHA256: String)
         case runCheck
@@ -376,6 +396,24 @@ public struct ClusterSetupState: Sendable {
         case sending(String, reply: String)
         case answered(String, reply: String, ClusterSetupPromptResult)
         case failed(String, reason: String)
+    }
+
+    /// The pairing ceremony over the link (S17), as step 3 shows it.
+    public enum LinkPairing: Sendable, Equatable {
+        case idle
+        /// The address of the other Mac being typed (`c`).
+        case enteringAddress(String)
+        case waiting(String)
+        case code(String, peer: [String])
+        case confirmedHere(peerConfirmed: Bool)
+        case finished(succeeded: Bool, lines: [String])
+
+        var running: Bool {
+            switch self {
+            case .waiting, .code, .confirmedHere: return true
+            case .idle, .enteringAddress, .finished: return false
+            }
+        }
     }
 
     enum Leaving: Equatable, Sendable { case confirmStop, afterSession, afterAction }
@@ -427,6 +465,9 @@ public struct ClusterSetupState: Sendable {
     var peerPollAt: UInt64 = 0
     public internal(set) var sessionOutput = [String]()
     public internal(set) var prompt: Prompt = .closed
+    public internal(set) var linkPairing: LinkPairing = .idle
+    /// The other Mac confirmed the ceremony's code (it may answer before this Mac does).
+    var linkPeerConfirmed = false
     /// What a session this screen stopped left behind, once it was read again.
     public internal(set) var cleanup: [String] = []
     var cleanupPending = false
@@ -453,6 +494,7 @@ public struct ClusterSetupState: Sendable {
         switch linkFix { case .previewing, .applying: return true; default: break }
         if case .running = check { return true }
         if case .sending = prompt { return true }
+        if linkPairing.running { return true }
         return session.isActive
     }
 

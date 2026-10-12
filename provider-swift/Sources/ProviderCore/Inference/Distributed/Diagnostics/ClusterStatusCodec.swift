@@ -38,6 +38,9 @@ enum ClusterStatusCodec {
                   everyMemberAdvertisesHead: binding.peers.allSatisfy { $0.supportedGenerationModes.contains(.phaseSplitMTP) })
                   == .init(enabled: value.session.mtpEnabled, offReason: value.session.mtpOffReason),
               value.session.nativeBootstrapOwnerAuthenticated == value.session.nativeBootstrap.ownerAuthenticated,
+              // S16: a verified peer only on an encrypted data plane, and only once both ranks are observed ready.
+              value.session.peerVerified != true || value.session.encryptedDataPlane == true,
+              (value.session.encryptedDataPlane == nil) == (value.session.peerVerified == nil),
               (1...3_600_000).contains(value.session.collectiveProgressLimitMilliseconds) else {
             throw ClusterConfigurationError.invalid("Status is stale, malformed or belongs to another saved setup")
         }

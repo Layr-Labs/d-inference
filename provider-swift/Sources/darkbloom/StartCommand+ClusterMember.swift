@@ -37,7 +37,10 @@ extension Start {
         // A setup saved for coordinator pairing yields this Mac's member
         // installation; every other setup yields none and registers no claim.
         let installation = try current.withCurrentReference { _ in
-            let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName)
+            let installation = try prepared.nativeMemberInstallation(chip: hardware.chipName) { metallib in
+                try ClusterMemberDeviceProfile.current(chipName: hardware.chipName, gpuCores: hardware.gpuCores,
+                    metallibSHA256: metallib)
+            }
             try prepared.requireUnchanged()
             return installation
         }
@@ -56,6 +59,10 @@ extension Start {
         let loop = try ProviderLoop(config: loopConfig)
         if let installation {
             do { try await loop.installNativePairMember(installation) } catch {
+                // The roster names this Mac by the key that paired (S17); another key means this Mac must pair again.
+                if await loop.nativePairRosterNamesAnotherKey(installation) {
+                    throw ClusterConfigurationError.invalid("This Mac cannot register the saved roster: \(ClusterPairingRosterCheck.Refusal.identityChanged)")
+                }
                 throw ClusterConfigurationError.invalid("This Mac cannot register the saved pair approval: it needs its attestation signing key and the approved chip and model")
             }
         }

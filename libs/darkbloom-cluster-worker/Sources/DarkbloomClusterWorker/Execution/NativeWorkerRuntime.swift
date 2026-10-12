@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import DarkbloomClusterRuntime
+import DarkbloomClusterSecurity
 import Foundation
 
 /// Exactly one native executor uses this wrapper; cancel is the facade's
@@ -18,17 +19,19 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     init(_ configuration: QwenResidentLoadConfiguration, family: ClusterResidentModelCatalog.Family = .qwenDense,
          attachment: WorkerOwnerAttachment? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
-         qualification: QwenResidentQualificationSwitches = .refused) throws {
+         qualification: QwenResidentQualificationSwitches = .refused,
+         dataPlane: ClusterDataPlaneCredential? = nil) throws {
         // With the owner's attachment, the exchange it installed creates the
         // JACCL group (no coordinator socket); a load that did not use it stops.
         self.attachment = attachment
         switch family {
         case .qwenDense:
             owner = .qwenDense(try .load(configuration, generationMode: generationMode,
-                speculativeTerms: speculativeTerms, qualification: qualification))
+                speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane))
         case .mimoV26:
             guard speculativeTerms == nil else { throw WorkerFailure.invalid("MiMo has no speculative decoding on a pair") }
-            owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification))
+            owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification,
+                dataPlane: dataPlane))
         case .gptoss:
             throw WorkerFailure.invalid("GPT-OSS runs on its own worker runtime, not the native wrapper")
         }

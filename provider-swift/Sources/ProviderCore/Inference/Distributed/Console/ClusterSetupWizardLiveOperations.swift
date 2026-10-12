@@ -4,6 +4,7 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
+import DarkbloomClusterSecurity
 
 /// The wizard's operations as the installed command runs them. Each one is
 /// the function behind an existing `darkbloom cluster` subcommand, a
@@ -36,7 +37,7 @@ extension ClusterSetupOperations {
         let configuration = settings.providerConfiguration
         let clean = ClusterConsoleFreeText(homeDirectory: paths.homeDirectory.path)
         let context = LiveContext(paths: paths, store: store, settings: settings, clean: clean)
-        return ClusterSetupOperations(
+        var operations = ClusterSetupOperations(
             snapshot: { context.snapshot() },
             reachPeer: { context.reachPeer() },
             planModels: { peer in context.plan(peer: peer) },
@@ -86,6 +87,78 @@ extension ClusterSetupOperations {
                     events: events)
             },
             sendPrompt: { text, maxTokens, events in context.prompt(text: text, maxTokens: maxTokens, events: events) })
+        let pairing = ClusterSetupLinkPairingRunner()
+        operations.pairOverLink = { connect, events in pairing.run(connect: connect, events: events) }
+        operations.answerLinkCode = { accept in pairing.answer(accept) }
+        return operations
+    }
+}
+
+/// The wizard's step 3 running `darkbloom cluster pair`'s ceremony: the same
+/// identity, attestation, store and link channel, with the screen in place of
+/// the terminal prompt. One ceremony at a time; the person's answer is handed
+/// to the ceremony that asked.
+final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var respond: (@Sendable (Bool) -> Void)?
+    private var pendingAnswer: Bool?
+
+    func run(connect: String?, events: @escaping @Sendable (ClusterSetupLinkPairingEvent) -> Void) {
+        let store = ClusterPairingStore.default()
+        let identity: any ClusterPairingIdentity
+        do { identity = try ClusterPairingProvider.identity() } catch {
+            events(.finished(succeeded: false, lines: ["Not paired: \(error)"])); return
+        }
+        var request = ClusterPairCommandRequest()
+        request.connect = connect
+        let peer = connect.flatMap(ClusterLinkIPv4Address.init)
+        let interface: String
+        do { interface = try ClusterPairCommandLine.resolveInterface(request, peer: peer) } catch {
+            events(.finished(succeeded: false, lines: ["Not paired: \(error)"])); return
+        }
+        let chipName = (try? HardwareDetector.detect().chipName) ?? "Mac"
+        let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface, store: store, clusterID: nil)
+        var options = ClusterLinkPairing.Options(role: peer == nil ? .listener : .connector, interface: interface, peerAddress: peer)
+        // No address: find the other Mac on the cable, or wait there for it (it finds this one).
+        if peer == nil { options.discovery = .find }
+        let callbacks = ClusterLinkPairing.Callbacks(progress: { progress in
+            switch progress {
+            case .searching(let name):
+                events(.waiting("Looking for the other Mac on \(name)\u{2026}"))
+            case .listening(let name, let port):
+                let address = (try? ClusterLinkInterfaceAdmission.select(interface: name, localAddress: nil, peerAddress: nil,
+                    policy: .thunderboltOnly, inspector: ClusterLinkSystemInterfaceInspector()))?.local.address.dottedDecimal
+                let other = "on the other Mac press l: it finds this Mac by itself" + (address.map { " (or press c and type \($0)"
+                    + (port == ClusterLinkPairing.defaultPort ? "" : ", port \(port)") + ")" } ?? "")
+                events(.waiting("Waiting on \(name) for the other Mac, up to 10 minutes: \(other)."))
+            case .dialing: events(.waiting("Dialing the other Mac over the link\u{2026}"))
+            case .connected: events(.waiting("Connected over the link; exchanging keys\u{2026}"))
+            case .refused(let reason): events(.waiting("Link connection refused (\(reason)); still trying\u{2026}"))
+            case .storing: events(.waiting("Storing the pins and the roster (owner-only files)\u{2026}"))
+            }
+        }, askConfirmation: { [self] code, peerInfo, respond in
+            let early: Bool? = lock.withLock {
+                self.respond = respond
+                defer { pendingAnswer = nil }
+                return pendingAnswer
+            }
+            events(.code(code, peer: ClusterPairingTerminal.describe(peerInfo)))
+            if let early { answer(early) }
+        }, peerDecided: { accepted in events(.peerDecided(accepted)) })
+        let result = ClusterLinkPairing.run(options: options, participant: participant, hooks: ClusterPairingProvider.hooks,
+            store: store, callbacks: callbacks)
+        lock.withLock { respond = nil; pendingAnswer = nil }
+        let lines = ClusterPairingTerminal.summary(result)
+        if case .success = result { events(.finished(succeeded: true, lines: lines)) } else { events(.finished(succeeded: false, lines: lines)) }
+    }
+
+    func answer(_ accept: Bool) {
+        let current: (@Sendable (Bool) -> Void)? = lock.withLock {
+            defer { respond = nil }
+            if respond == nil { pendingAnswer = accept }
+            return respond
+        }
+        current?(accept)
     }
 }
 

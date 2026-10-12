@@ -116,7 +116,9 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                 material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
-                disagreementMessage: "Generation membership/request/source readiness differs", check: checked)
+                disagreementMessage: "Generation membership/request/source readiness differs",
+                scope: .request(.requestAgreement, requestID: unplannedAgreement.request.requestID,
+                    agreementFingerprint: unplannedAgreement.fingerprint, "generation-readiness"), check: checked)
             // Before the session: the consumer stage's computed prompt rows are
             // the head's history. A prefix reused from the cache is not observed
             // again (exact tokens either way; the head drafts from what it saw).
@@ -479,8 +481,10 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
     let enabled = cache?.enabled ?? false
     let local = QwenStagePrefixOffer(enabled: enabled, frontiers: enabled
         ? cache!.frontiers(scope: scope, tokens: request.promptTokenIDs, maximumFrontier: request.promptCount - 1) : [])
+    let record = CollectiveRecordScope.request(.prefixAgreement, requestID: request.requestID,
+        agreementFingerprint: agreement.fingerprint, "prefix")
     let peer = QwenStagePrefixOffer(words: try exchangeQwenStagePrefixWords(collective: collective,
-        words: local.words, check: check), promptCount: request.promptCount)
+        words: local.words, scope: record.part("offer"), check: check), promptCount: request.promptCount)
     let choice = QwenStagePrefixChoice.choose(local: local, peer: peer, promptCount: request.promptCount)
     var restoredSession: QwenLayerStageSession?
     var key: String?
@@ -502,7 +506,7 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
     let confirmation = QwenStagePrefixConfirmation(choice: choice,
         restored: choice.reusedPrefix == 0 || restoredSession != nil, key: key)
     let peerConfirmation = QwenStagePrefixConfirmation(words: try exchangeQwenStagePrefixWords(collective: collective,
-        words: confirmation.words, check: check))
+        words: confirmation.words, scope: record.part("confirmation"), check: check))
     let settled = QwenStagePrefixConfirmation.settle(local: confirmation, peer: peerConfirmation)
     if settled.reusedPrefix != choice.reusedPrefix || restoredSession == nil {
         try restoredSession?.cancel(); restoredSession = nil

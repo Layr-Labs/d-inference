@@ -113,6 +113,7 @@ public enum ClusterSetupScreen {
         switch question {
         case .applyLinkFix: return "y: apply these commands (macOS asks once). Any other key: not now."
         case .confirmCode(let code): return "Do both screens show \(code.prefix(3)) \(code.suffix(3))? y: yes, n: no."
+        case .confirmLinkCode(let code): return "Do both screens show \(code.prefix(3)) \(code.suffix(3))? y: yes, n: no."
         case .adoptPlan: return "y: save this plan here and send the other Mac its setup. Other key: no."
         case .approveInbox(let digest): return "y: save setup \(digest.prefix(12)) and trust its pinned key. Other key: no."
         case .runCheck: return "y: run the check (both Macs load the model briefly). Other key: no."

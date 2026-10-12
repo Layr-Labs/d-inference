@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterRemote
 import Darwin
 
 /// What the pinned worker binary itself carries, read from its verified bytes.
@@ -15,6 +16,9 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
 
     let hasProgressGuard: Bool
     let acceptsStartupDeadline: Bool
+    /// S16: the worker keys its data plane (`--data-plane encrypted_v1` and a
+    /// credential line); detected from the domain its pinned exchange signs.
+    var acceptsDataPlane = false
 
     /// `executable` was just hashed against its pin; the caller re-checks that
     /// it did not change after this read.
@@ -39,7 +43,8 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
             let needle = Array(text.utf8)
             return needle.withUnsafeBytes { memmem(mapped, count, $0.baseAddress, $0.count) != nil }
         }
-        let result = Self(hasProgressGuard: contains(progressGuardMarker), acceptsStartupDeadline: contains(startupDeadlineArgument))
+        let result = Self(hasProgressGuard: contains(progressGuardMarker), acceptsStartupDeadline: contains(startupDeadlineArgument),
+            acceptsDataPlane: contains(ClusterDataPlaneLaunch.workerMarker))
         try executable.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result

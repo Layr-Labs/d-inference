@@ -10,7 +10,7 @@ public enum ClusterSetupWizardWiring {
     public static let wired: [String] = [
         "mac.profile", "mac.disk", "mac.version",
         "link.rdma", "link.port", "link.isolation", "link.thunderbolt", "link.fix",
-        "pair.saved", "pair.verify", "pair.code", "pair.confirm", "pair.inbox", "pair.approve", "peer.report",
+        "pair.saved", "pair.verify", "pair.code", "pair.confirm", "pair.link", "pair.inbox", "pair.approve", "peer.report",
         "model.inventory", "model.plan", "model.adopt",
         "check.run",
         "session.start", "session.stop", "session.process", "session.status", "session.cleanup",
@@ -25,7 +25,7 @@ public enum ClusterSetupWizardWiring {
     /// The keys and what each runs, by wired row.
     public static let keys: [(key: String, step: ClusterSetupStep, wiring: String)] = [
         ("f", .cable, "link.fix"), ("y", .cable, "link.fix"),
-        ("p", .pair, "pair.verify"), ("enter", .pair, "pair.confirm"),
+        ("p", .pair, "pair.verify"), ("enter", .pair, "pair.confirm"), ("l", .pair, "pair.link"), ("c", .pair, "pair.link"),
         ("enter", .model, "model.adopt"), ("a", .model, "pair.approve"),
         ("c", .check, "check.run"),
         ("s", .serve, "session.start"), ("x", .serve, "session.stop"), ("t", .serve, "host.request"),

@@ -26,11 +26,15 @@ public enum DistributedInstalledOwner {
     static func memberAuthorizer(plan: DistributedInstalledPlan, attachment: ClusterNativeMemberAttachment)
         throws -> @Sendable (ClusterNativeAuthorizationStart) throws -> Void {
         let policy = try NativePairMemberPolicy(attachment.policyBytes), rank = plan.configuration.localRank
+        // A cluster approval fixes no plan: the start must name the one this
+        // Mac's setup derives (and its member registered).
+        let digits = Array(plan.partition.planSHA256.utf8).map { $0 < 58 ? $0 - 48 : $0 - 87 }
+        let derived = Data(stride(from: 0, to: 64, by: 2).map { digits[$0] << 4 | digits[$0 + 1] })
         return { start in
             guard start.rank == rank else {
                 throw ClusterConfigurationError.invalid("The committed native start names another rank")
             }
-            do { try policy.require(start) }
+            do { try policy.require(start, plan: policy.cluster == nil ? nil : derived) }
             catch { throw ClusterConfigurationError.invalid("The committed native start differs from this Mac's installed approval") }
         }
     }
@@ -70,7 +74,7 @@ public enum DistributedInstalledOwner {
         let plan = prepared.plan, features = prepared.validation.workerFeatures
         try prepared.requireUnchanged()
         try features.requireProgressGuard()
-        try ClusterWorkerOwnerService.serveConfigured(input: input, output: output,
+        try ClusterWorkerOwnerService.serveKeyed(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
             bootstrapProfile: plan.bootstrap.ownerProfile,
             // The committed native start of the combined profile is admitted
@@ -82,7 +86,7 @@ public enum DistributedInstalledOwner {
                     ?? DistributedInstalledNativeStart.authorizer(plan: plan) : nil,
             binding: { epoch, lease, incarnation in
                 try plan.binding(epoch: epoch, lease: lease, incarnation: incarnation)
-            }, native: { binding, deadline, attachment in
+            }, native: { binding, deadline, attachment, dataPlaneTrust in
                 // The bootstrap is this build's one selection, never a fallback:
                 // an attachment is required exactly when that selection is the
                 // owner-authenticated exchange. No native path accepts an
@@ -93,6 +97,10 @@ public enum DistributedInstalledOwner {
                 }
                 try prepared.requireUnchanged()
                 try DistributedInstalledFiles.check(deadline)
+                // S16: a credential is honoured only by a worker that keys its data plane.
+                guard dataPlaneTrust == nil || features.acceptsDataPlane else {
+                    throw ClusterConfigurationError.invalid("The installed worker does not key its data plane; install a worker built with it")
+                }
                 try beforeNativeLaunch()
                 // The worker has no fixed lifetime: `deadline` is its first
                 // rank-lease grant, which its supervisor renews while this
@@ -102,8 +110,9 @@ public enum DistributedInstalledOwner {
                 return try ClusterWorkerProcess(launch: .init(
                     executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
                     arguments: plan.nativeArguments(binding: binding, deadline: deadline,
-                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment),
-                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL)),
+                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment,
+                        dataPlane: dataPlaneTrust != nil),
+                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL), initialInput: dataPlaneTrust),
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
                     startupDeadline: startup, initialLeaseDeadline: deadline,

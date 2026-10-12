@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 @_spi(Benchmark) import DarkbloomClusterRuntime
+import DarkbloomClusterSecurity
 import Foundation
 
 /// The same resident owner driven through its recording entry, selected only by
@@ -21,7 +22,8 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     init(_ configuration: QwenResidentLoadConfiguration, attachment: WorkerOwnerAttachment? = nil,
          evidenceDirectory: String, generationMode: ClusterGenerationMode = .pipeline,
          speculativeTerms: QwenMTPTerms? = nil,
-         qualification: QwenResidentQualificationSwitches = .refused) throws {
+         qualification: QwenResidentQualificationSwitches = .refused,
+         dataPlane: ClusterDataPlaneCredential? = nil) throws {
         self.attachment = attachment
         // Opened before any model work: an unusable directory fails the launch.
         sink = try WorkerEvidenceSink(path: evidenceDirectory)
@@ -30,7 +32,7 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .oneChunkLookahead: policy = .oneChunkLookahead
         }
         owner = try .load(configuration, generationMode: generationMode, speculativeTerms: speculativeTerms,
-            qualification: qualification)
+            qualification: qualification, dataPlane: dataPlane)
         try JACCLOwnerBootstrap.requireConsumedIfInstalled()
     }
 

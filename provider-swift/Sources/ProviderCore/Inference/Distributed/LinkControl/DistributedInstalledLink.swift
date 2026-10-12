@@ -9,13 +9,13 @@ import Logging
 /// Link edge refusals and connections on the member path (no payload).
 let clusterLinkMemberLog = Logger(label: "darkbloom.cluster-link")
 #else
-/// The model-free check runners compile this directory with plain swiftc,
-/// without swift-log: there the link edge lines are dropped.
-let clusterLinkMemberLog = ClusterLinkMemberLogStandIn()
+/// The plain-swiftc check runners build this file without swift-log: the
+/// same calls, discarded.
 struct ClusterLinkMemberLogStandIn: Sendable {
     func info(_ message: @autoclosure () -> String) {}
     func warning(_ message: @autoclosure () -> String) {}
 }
+let clusterLinkMemberLog = ClusterLinkMemberLogStandIn()
 #endif
 
 /// The follower rank over the link control channel (PROD-PLAN S08), for a

@@ -62,10 +62,9 @@ final class NativePairMemberSession: @unchecked Sendable {
     /// is ready, or when its data plane is not keyed).
     var dataPlaneObservation: (encrypted: Bool, peerVerified: Bool)? {
         condition.lock(); let live = launched && !stopped, endpoint = endpoint; condition.unlock()
-        guard live, endpoint != nil else { return nil }
-        // This build's worker readiness carries no data-plane record (S16's
-        // worker adds it): its data plane is plaintext, and it says so.
-        return (false, false)
+        guard live, let endpoint else { return nil }
+        let plane = endpoint.readiness?.dataPlane
+        return (plane?.protection == ClusterWorkerDataPlane.encrypted, plane?.encryptedAndVerified == true)
     }
     /// Whether a dropped control connection leaves this session in its grace:
     /// committed, keys exchanged, owner launched, not stopped.
@@ -78,6 +77,7 @@ final class NativePairMemberSession: @unchecked Sendable {
          servingHost: (any NativePairMemberServingHost)? = nil,
          onFinished: @escaping @Sendable (NativePairMemberSession, Bool) -> Void) throws {
         let (policy, start) = try NativePairMemberPolicy.preparation(Data(base64Encoded: message.payload)!)
+        try installation.requireStart(start)
         guard policy.bytes == installation.policy.bytes, start.rank == installation.rank,
               NativePairMemberInstallation.hex(Self.uuidBytes(start.common.epoch)) == message.epoch,
               start.common.membershipGeneration == message.generation,
@@ -253,7 +253,12 @@ final class NativePairMemberSession: @unchecked Sendable {
             // concurrent cancel wins between this check and actual Process.run.
             condition.lock(); let allowed = !stopped && committed; condition.unlock()
             guard allowed else { throw NativePairMemberError.inactive }
-            let created = try bootstrap.map { try installation.launch(start: start, until: firstGrant, bootstrap: $0) }
+            // S16: a roster member keys its worker's data plane with a
+            // credential its own Secure Enclave key certifies, pinned to the
+            // peer member's roster key (never issued by another Mac).
+            let trust = try installation.roster.map { try $0.dataPlaneTrust(start: start, signer: connection.memberSigner) }
+            let created = try bootstrap.map { try installation.launch(start: start, until: firstGrant, bootstrap: $0,
+                    dataPlaneTrust: trust) }
                 ?? installation.launch(start: start, until: firstGrant, relay: relay!)
             condition.lock(); endpoint = created; launched = true; let cancelled = stopped
             if !cancelled, servingHost != nil { serving = true }

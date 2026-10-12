@@ -60,7 +60,15 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     /// its follower over the link control channel.
     typealias EndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64,
         (any ClusterOwnerBootstrapExchange)?, DistributedInstalledLinkLeader?) throws -> any ClusterOwnedWorkerEndpoint
-    private let endpointFactory: EndpointFactory
+    /// The same with the rank's data-plane credential line (S16), or nil.
+    typealias KeyedEndpointFactory = @Sendable (DistributedInstalledPlan, ClusterWorkerIdentity, Int, UInt64,
+        (any ClusterOwnerBootstrapExchange)?, DistributedInstalledLinkLeader?, Data?) throws -> any ClusterOwnedWorkerEndpoint
+    private let endpointFactory: KeyedEndpointFactory
+    /// S16: whether this session keys its data plane: the installed worker
+    /// carries the keyed data plane and both ranks run the same build. Each
+    /// rank then gets its own credential on its owner route, and the pair is
+    /// ready only with one encrypted, peer-verified session on both ranks.
+    let keysDataPlane: Bool
     private let lock = NSLock()
     private let startup = InstalledCompletion(), stopped = InstalledCompletion()
     private let notifications = DispatchQueue(label: "darkbloom.installed-session.invalidation")
@@ -120,7 +128,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
                 draining: $0.isDraining, valid: $0.isValid) }, members: members,
             mtpEnabled: speculation.enabled, mtpOffReason: speculation.offReason,
             nativeBootstrap: prepared.plan.bootstrap,
-            collectiveProgressLimitMilliseconds: DistributedInstalledPlan.collectiveProgressLimitMilliseconds)
+            collectiveProgressLimitMilliseconds: DistributedInstalledPlan.collectiveProgressLimitMilliseconds,
+            encryptedDataPlane: values.1?.readiness.map(\.encryptedDataPlane),
+            peerVerified: values.1?.readiness.map(\.peerVerified))
     }
 
     /// Longest a stop can legitimately take. A request that is still running
@@ -181,9 +191,22 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         return try .init(prepared: prepared)
     }
 
-    init(prepared: DistributedInstalledPreparation, endpointFactory: @escaping EndpointFactory = DistributedInstalledSession.installedEndpoint) throws {
+    /// Stand-ins and checks: a factory without credentials, a plaintext data plane.
+    convenience init(prepared: DistributedInstalledPreparation, endpointFactory: @escaping EndpointFactory) throws {
+        try self.init(prepared: prepared, keyedEndpointFactory: { plan, identity, rank, lifetime, relay, link, _ in
+            try endpointFactory(plan, identity, rank, lifetime, relay, link)
+        }, keysDataPlane: false)
+    }
+
+    init(prepared: DistributedInstalledPreparation,
+         keyedEndpointFactory: @escaping KeyedEndpointFactory = DistributedInstalledSession.installedEndpoint,
+         keysDataPlane: Bool? = nil) throws {
         try prepared.plan.configuration.requireOrdinarySessionRoute()
-        self.endpointFactory = endpointFactory
+        self.endpointFactory = keyedEndpointFactory
+        let peers = prepared.plan.configuration.peers
+        self.keysDataPlane = keysDataPlane ?? (prepared.validation.workerFeatures.acceptsDataPlane
+            && Set(prepared.plan.identity(epoch: UUID()).peers.map(\.buildSHA256)).count == 1 && peers.count == 2
+            && prepared.plan.configuration.linkControl == nil)
         self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
         diagnosticBinding = try ClusterStatusBinding(configuration: configuration, capability: capability)
         model = prepared.model
@@ -246,9 +269,11 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             link = leader
             try leader.waitForFollower(until: min(startupDeadline, DispatchTime.now().uptimeNanoseconds + 30_000_000_000))
         }
+        let credentials: [Data?] = keysDataPlane
+            ? try ClusterDataPlaneLaunch.sessionCredentialLines(epoch: wireIdentity.membershipEpoch) : [nil, nil]
         for rank in 0..<2 {
             try requireStarting()
-            let endpoint = try endpointFactory(prepared.plan, wireIdentity, rank, lifetime, relay, link)
+            let endpoint = try endpointFactory(prepared.plan, wireIdentity, rank, lifetime, relay, link, credentials[rank])
             let stopped = lock.withLock { endpoints.append(endpoint); return phase != .starting }
             if stopped { endpoint.requestNativeCleanup(); throw DistributedEngineError.shuttingDown }
         }
@@ -261,6 +286,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         lock.withLock { self.pair = pair }
         let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
+        // S16: a keyed session is ready only when both ranks report the same
+        // encrypted data plane with each peer verified against its pin.
+        if keysDataPlane, pair.readiness?.peerVerified != true { throw DistributedEngineError.unavailable }
         try lock.withLock {
             guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
             self.observedMembershipEpoch = pair.readiness?.identity.membershipEpoch
@@ -281,16 +309,22 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     private static func installedEndpoint(plan: DistributedInstalledPlan, wireIdentity: ClusterWorkerIdentity,
         rank: Int, lifetime: UInt64, relay: (any ClusterOwnerBootstrapExchange)?,
-        link: DistributedInstalledLinkLeader?) throws -> any ClusterOwnedWorkerEndpoint {
+        link: DistributedInstalledLinkLeader?, dataPlaneTrust: Data?) throws -> any ClusterOwnedWorkerEndpoint {
         let peer = plan.configuration.peers[rank]
         let endpoint: any ClusterOwnedWorkerEndpoint
         if rank == plan.configuration.localRank {
             endpoint = try ClusterRemoteWorkerEndpoint(localOwner: .init(installedDarkbloom: URL(fileURLWithPath: peer.ownerExecutable)),
                 clusterID: plan.configuration.clusterID, expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
-                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
+                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust)
         } else if let link {
             // No SSH: the follower member serves this rank over the link.
+            // The link worker wire carries no data-plane credential: a session
+            // over the link keys nothing here (see `keysDataPlane`); the
+            // coordinator-formed pair keys each rank from its own member.
+            guard dataPlaneTrust == nil else {
+                throw ClusterConfigurationError.invalid("A follower reached over the link control channel takes no launcher-issued data-plane credential")
+            }
             endpoint = try link.endpoint(plan: plan, identity: wireIdentity, rank: rank, lifetime: lifetime, relay: relay)
         } else {
             try DistributedInstalledDeveloperSSH.requireFollowerRoute(plan.configuration)
@@ -303,7 +337,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             endpoint = try ClusterRemoteWorkerEndpoint(configuration: ssh, clusterID: plan.configuration.clusterID,
                 expectedIdentity: wireIdentity, profile: plan.capability.profile, rank: rank,
                 executionPlanSHA256: plan.partition.planSHA256,
-                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay)
+                lifetimeDeadlineUptimeNanoseconds: lifetime, bootstrapRelay: relay, dataPlaneTrust: dataPlaneTrust)
         }
         return endpoint
     }

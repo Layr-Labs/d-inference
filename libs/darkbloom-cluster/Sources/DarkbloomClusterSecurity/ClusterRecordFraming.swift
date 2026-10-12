@@ -10,13 +10,22 @@ struct ClusterRecordHeader: Sendable {
     let type: ClusterRecordType
     let sequence: UInt64
     let plaintextBytes: Int
+    /// The direction's key generation (S16 rekey). Zero for a channel without
+    /// a rekey policy, which keeps those bytes exactly as before; nonzero only
+    /// after the sender moved to a later key. Authenticated with the header.
+    let generation: UInt32
+
+    init(direction: UInt8, type: ClusterRecordType, sequence: UInt64, plaintextBytes: Int, generation: UInt32 = 0) {
+        self.direction = direction; self.type = type; self.sequence = sequence
+        self.plaintextBytes = plaintextBytes; self.generation = generation
+    }
 
     var encoded: Data {
         var result = Data(Self.magic)
         result.append(contentsOf: [1, ClusterRecordSuite.aes256GcmHkdfSha256V1.rawValue, direction, type.rawValue])
         result.clusterAppendBigEndian(sequence)
         result.clusterAppendBigEndian(UInt32(plaintextBytes))
-        result.append(contentsOf: [0, 0, 0, 0])
+        result.clusterAppendBigEndian(generation)
         return result
     }
 
@@ -28,8 +37,7 @@ struct ClusterRecordHeader: Sendable {
         let bytes = Array(prefix) // Exactly 24 bytes; independent of Data slice indices.
         guard Array(bytes[0..<4]) == magic, bytes[4] == 1,
               bytes[5] == ClusterRecordSuite.aes256GcmHkdfSha256V1.rawValue,
-              bytes[6] <= 1, let type = ClusterRecordType(rawValue: bytes[7]),
-              bytes[20..<24].allSatisfy({ $0 == 0 }) else {
+              bytes[6] <= 1, let type = ClusterRecordType(rawValue: bytes[7]) else {
             throw ClusterRecordError.malformedRecord
         }
         var sequence: UInt64 = 0
@@ -39,7 +47,12 @@ struct ClusterRecordHeader: Sendable {
         guard length > 0, UInt64(length) <= UInt64(maximumPlaintextBytes) else {
             throw ClusterRecordError.recordTooLarge
         }
-        return .init(direction: bytes[6], type: type, sequence: sequence, plaintextBytes: Int(length))
+        // Whether this generation is acceptable is the channel state's decision
+        // (a channel without a rekey policy accepts only zero).
+        var generation: UInt32 = 0
+        for byte in bytes[20..<24] { generation = (generation << 8) | UInt32(byte) }
+        return .init(direction: bytes[6], type: type, sequence: sequence, plaintextBytes: Int(length),
+                     generation: generation)
     }
 
     var recordByteCount: Int { Self.byteCount + plaintextBytes + Self.tagByteCount }

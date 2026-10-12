@@ -27,6 +27,13 @@ public struct ClusterSetupOperations: Sendable {
     public var launchSession: @Sendable (_ events: @escaping @Sendable (ClusterConsoleSessionEvent) -> Void) throws -> any ClusterConsoleSessionHandle
     /// One streamed request through the local serving API; returns when it has ended.
     public var sendPrompt: @Sendable (_ text: String, _ maxTokens: Int, _ events: @escaping @Sendable (ClusterSetupPromptEvent) -> Void) -> Void
+    /// The pairing ceremony over the link (S17), the operation behind `darkbloom cluster pair`:
+    /// listens (nil) or dials the address given, reports as it moves, and returns when it has ended.
+    public var pairOverLink: @Sendable (_ connect: String?, _ events: @escaping @Sendable (ClusterSetupLinkPairingEvent) -> Void) -> Void = { _, events in
+        events(.finished(succeeded: false, lines: ["Pairing over the link is not available in this build."]))
+    }
+    /// The person's answer to the ceremony's code, delivered to the running ceremony.
+    public var answerLinkCode: @Sendable (_ accept: Bool) -> Void = { _ in }
 
     public init(snapshot: @escaping @Sendable () -> ClusterSetupSnapshot,
                 reachPeer: @escaping @Sendable () -> ClusterSetupPeerResult,
@@ -253,6 +260,10 @@ public enum ClusterSetupRunLoop {
                     }
                 case .interruptSession:
                     active.interruptOnce()
+                case .pairOverLink(let connect):
+                    work.async { operations.pairOverLink(connect) { mailbox.post(.linkPairing($0)) } }
+                case .answerLinkCode(let accept):
+                    work.async { operations.answerLinkCode(accept) }
                 }
             }
         }

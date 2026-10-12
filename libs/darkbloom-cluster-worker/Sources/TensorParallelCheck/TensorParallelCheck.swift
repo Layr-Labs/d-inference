@@ -8,7 +8,8 @@ import MLX
 //
 //   darkbloom-cluster-tp-check run --mode full|simulated|tp|hybrid --model-dir DIR --request FILE --report FILE
 //       [--backend jaccl|ring] [--timing lazy|explicit] [--prefill-rank R] [--record-top K] [--repeats N] [--warmup yes|no]
-//       [--wired-residency yes|no] [--deadline-seconds S] [--output-count N]
+//       [--wired-residency yes|no] [--deadline-seconds S] [--output-count N] [--partials float32|bfloat16]
+//       [--shard-rank R (shard-local)] [--census yes|no (no peer: one decode step's primitives by name)]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
@@ -61,6 +62,8 @@ struct RunReport: Codable {
     var stepMaxMilliseconds: Double
     var peakActiveBytes: Int
     var buildP50Milliseconds: Double?
+    var constructP50Milliseconds: Double?
+    var buildCPUP50Milliseconds: Double?
     var prefillSeconds: Double?
     var handoffSeconds: Double?
     var handoffBytes: Int?
@@ -90,6 +93,9 @@ struct Report: Codable {
     var wiredResidencyBytes: Int?
     var reductionsPerForward: Int?
     var floatingReductions: Int?
+    /// Diagnostic (--census yes): primitives of one decode step's graph by name, and their total.
+    var census: [String: Int]?
+    var censusTotal: Int?
     var runs: [RunReport] = []
     var topTokenIDs: [[Int]]?
     var topLogits: [[Float]]?
@@ -113,6 +119,7 @@ struct Options {
     var repeats = 1
     var warmup = true
     var wiredResidency = true
+    var census = false
     var deadlineSeconds = 900
     var outputCount: Int?
     var reference = ""
@@ -153,6 +160,7 @@ struct Options {
             case "--repeats": repeats = Int(try value()) ?? 0
             case "--warmup": warmup = try yesNo(try value())
             case "--wired-residency": wiredResidency = try yesNo(try value())
+            case "--census": census = try yesNo(try value())
             case "--deadline-seconds": deadlineSeconds = Int(try value()) ?? 0
             case "--output-count": outputCount = Int(try value())
             case "--reference": reference = try value()
@@ -170,6 +178,7 @@ struct Options {
             }
             guard !FileManager.default.fileExists(atPath: report) else { throw Failure("the report file already exists") }
             if ["tp", "hybrid", "shard-local"].contains(mode) && recordTop > 0 { throw Failure("a tp rank does not record logits") }
+            if census && ["tp", "hybrid"].contains(mode) { throw Failure("the census runs only without a peer") }
         } else {
             guard !reference.isEmpty, !candidate.isEmpty, nearTieULPs >= 0 else {
                 throw Failure("compare needs --reference and --candidate")
@@ -225,10 +234,12 @@ enum RunCommand {
             group = g
             role = .shard(rank: g.rank, size: g.size)
             note("rank \(g.rank) of \(g.size) over \(options.backend.rawValue)\(options.backend == .ring ? " (correctness only, not a pair timing)" : "")")
-            let workload = [Int32(outputCount), Int32(request.chunkSize), Int32(request.promptTokenIDs.count),
-                            Int32(options.repeats), options.warmup ? 1 : 0, options.timing == .lazy ? 1 : 2,
-                            options.mode == "hybrid" ? Int32(10 + options.prefillRank) : 0]
-            guard try g.agree(workload),
+            // Every option that changes the collectives (count, order, shape, dtype) is agreed before loading.
+            let launch = QwenTensorParallelLaunch(outputCount: outputCount, chunkSize: request.chunkSize,
+                promptTokens: request.promptTokenIDs.count, repeats: options.repeats, warmup: options.warmup,
+                explicitTiming: options.timing == .explicit, bfloat16Partials: options.partials == "bfloat16",
+                hybridPrefillRank: options.mode == "hybrid" ? options.prefillRank : nil)
+            guard try g.agree(launch.agreement),
                   try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";"))) else {
                 throw Failure("the ranks disagree on the workload, the model configuration, the prompt or the arithmetic environment")
             }
@@ -268,6 +279,14 @@ enum RunCommand {
             loadedParameterBytes: model.loadedParameterBytes, wiredResidencyBytes: residency?.receipt.appliedBytes,
             reductionsPerForward: group == nil ? nil : model.plan.reductionsPerForward)
 
+        if options.census {
+            let counts = try model.decodeStepCensus(prompt: Array(request.promptTokenIDs.prefix(min(64, request.promptTokenIDs.count))))
+            report.census = counts
+            report.censusTotal = counts.values.reduce(0, +)
+            Memory.clearCache()
+            note("census: \(report.censusTotal!) primitives in one decode step; top: " + counts.sorted { $0.value > $1.value }
+                .prefix(12).map { "\($0.key)=\($0.value)" }.joined(separator: " "))
+        }
         if options.warmup {
             let warm = Array(request.promptTokenIDs.prefix(min(64, request.promptTokenIDs.count)))
             _ = try generate(warm, 4, recordTop: 0)
@@ -287,6 +306,8 @@ enum RunCommand {
                 stepP90Milliseconds: Statistics.percentile(steps, 0.9) * 1e3,
                 stepMaxMilliseconds: (steps.max() ?? 0) * 1e3, peakActiveBytes: generation.peakActiveBytes,
                 buildP50Milliseconds: generation.buildSeconds.isEmpty ? nil : Statistics.percentile(generation.buildSeconds, 0.5) * 1e3,
+                constructP50Milliseconds: generation.constructSeconds.isEmpty ? nil : Statistics.percentile(generation.constructSeconds, 0.5) * 1e3,
+                buildCPUP50Milliseconds: generation.buildCPUSeconds.isEmpty ? nil : Statistics.percentile(generation.buildCPUSeconds, 0.5) * 1e3,
                 prefillSeconds: generation.prefillSeconds, handoffSeconds: generation.handoffSeconds,
                 handoffBytes: generation.handoffBytes)
             report.runs.append(run)
@@ -294,9 +315,10 @@ enum RunCommand {
                 report.topTokenIDs = generation.topTokenIDs
                 report.topLogits = generation.topLogits
             }
-            note(String(format: "run %d: first token %.3f s (%.0f tok/s prefill), decode %.2f tok/s (p50 %.2f ms, p90 %.2f ms, graph build+submit p50 %.2f ms), tokens %@",
+            note(String(format: "run %d: first token %.3f s (%.0f tok/s prefill), decode %.2f tok/s (p50 %.2f ms, p90 %.2f ms, graph build+submit p50 %.2f ms: construct %.2f, thread CPU %.2f), tokens %@",
                         index, run.firstTokenSeconds, run.prefillTokensPerSecond, run.decodeTokensPerSecond,
                         run.stepP50Milliseconds, run.stepP90Milliseconds, run.buildP50Milliseconds ?? -1,
+                        run.constructP50Milliseconds ?? -1, run.buildCPUP50Milliseconds ?? -1,
                         String(run.tokenIDsSHA256.prefix(16))))
             if let handoff = run.handoffSeconds {
                 note(String(format: "run %d: hybrid prefill %@ s, state hand-off %.3f s, %d bytes", index,

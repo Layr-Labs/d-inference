@@ -1,3 +1,4 @@
+import Cmlx
 import Foundation
 import MLX
 import MLXLLM
@@ -191,6 +192,12 @@ public final class QwenTensorParallelModel {
         /// Host time per step spent building the next step's graph and submitting it
         /// (`asyncEval` returns once the graph is encoded for the GPU).
         public var buildSeconds: [Double] = []
+        /// Host time per step spent constructing the next step's graph only (before `asyncEval`).
+        public var constructSeconds: [Double] = []
+        /// This thread's CPU time over the same span as `buildSeconds`. Close to it: the host
+        /// is the bound (graph construction and kernel encoding). Far below it: `asyncEval`
+        /// waited for the GPU (MLX holds at most 10 command buffers in flight), so the GPU is.
+        public var buildCPUSeconds: [Double] = []
         public var peakActiveBytes = 0
         /// Hybrid only: prefill on one rank, its state cut by heads and moved.
         public var prefillSeconds: Double?
@@ -199,6 +206,42 @@ public final class QwenTensorParallelModel {
     }
 
     static func now() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+    static func threadCPU() -> Double { Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1e9 }
+
+    /// Diagnostic: the primitives of one decode step's graph after `prompt`, by name (MLX's own
+    /// graph printout; view-only primitives such as reshapes and slices launch no kernel). Only
+    /// for roles without a peer: it evaluates the prompt alone and never evaluates the step.
+    public func decodeStepCensus(prompt: [Int]) throws -> [String: Int] {
+        if case .shard = role, !(reduction is QwenTensorParallelLocalReduction) {
+            throw ProbeError("Tensor parallel census: only without a peer (full, simulated or shard-local)")
+        }
+        guard !prompt.isEmpty else { throw ProbeError("Tensor parallel census: empty prompt") }
+        let cache = model.newCache(parameters: nil)
+        let first = select(prefill(prompt, chunk: prompt.count, cache: cache))
+        eval([first] + cache.flatMap { $0.innerState() })
+        let next = select(model(first.reshaped(1, 1), cache: cache)[0..., -1, 0...])
+        guard let file = tmpfile() else { throw ProbeError("Tensor parallel census: no temporary file") }
+        defer { fclose(file) }
+        let namer = mlx_node_namer_new()
+        defer { mlx_node_namer_free(namer) }
+        let outputs = mlx_vector_array_new()
+        defer { mlx_vector_array_free(outputs) }
+        mlx_vector_array_append_value(outputs, next.ctx)
+        guard mlx_print_graph(file, namer, outputs) == 0 else { throw ProbeError("Tensor parallel census: graph printout failed") }
+        fflush(file)
+        rewind(file)
+        var counts: [String: Int] = [:]
+        var line: UnsafeMutablePointer<CChar>?
+        var capacity = 0
+        defer { free(line) }
+        while getline(&line, &capacity, file) > 0, let line {
+            let text = String(cString: line)
+            guard let name = text.split(separator: " ", maxSplits: 1).first, !name.isEmpty,
+                  text.contains(" -> ") else { continue }
+            counts[String(name), default: 0] += 1
+        }
+        return counts
+    }
 
     /// The next token from this rank's logits `[1, V or V/size]`: an `[1]` int32
     /// array, not evaluated. A shard's choice is the argmax over every rank's
@@ -279,11 +322,15 @@ public final class QwenTensorParallelModel {
             var nextTop: (MLXArray, MLXArray)?
             if step + 1 < outputCount {
                 let buildStarted = Self.now()
+                let cpuStarted = Self.threadCPU()
                 let stepLogits = model(current.reshaped(1, 1), cache: cache)[0..., -1, 0...]
                 next = select(stepLogits)
                 nextTop = recordTop > 0 ? top(stepLogits, recordTop) : nil
+                let constructed = Self.now()
                 if let nextTop { asyncEval(next!, nextTop.0, nextTop.1) } else { asyncEval(next!) }
                 result.buildSeconds.append(Self.now() - buildStarted)
+                result.constructSeconds.append(constructed - buildStarted)
+                result.buildCPUSeconds.append(Self.threadCPU() - cpuStarted)
             }
             let token = Int(current.item(Int32.self))
             let time = Self.now()

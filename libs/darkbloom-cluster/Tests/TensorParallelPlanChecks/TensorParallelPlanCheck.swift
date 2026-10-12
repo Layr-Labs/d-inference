@@ -160,6 +160,35 @@ func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor],
     print("\(label): \(loaded) tensors cut or replicated, \(skipped) skipped, \(rowParallel.count) row-parallel projections")
 }
 
+/// Every launch option that changes the collectives must change the first
+/// agreement, or two ranks launched differently meet in mismatched all-sums.
+func checkLaunchAgreement() {
+    let base = QwenTensorParallelLaunch(outputCount: 128, chunkSize: 512, promptTokens: 1024, repeats: 2, warmup: true,
+                                        explicitTiming: false, bfloat16Partials: false, hybridPrefillRank: nil)
+    check(base.agreement == base.agreement, "launch: the same launch agrees with itself")
+    var variants: [(String, QwenTensorParallelLaunch)] = []
+    func variant(_ label: String, _ change: (inout QwenTensorParallelLaunch) -> Void) {
+        var launch = base
+        change(&launch)
+        variants.append((label, launch))
+    }
+    variant("output count") { $0.outputCount = 1024 }
+    variant("chunk size") { $0.chunkSize = 256 }
+    variant("prompt tokens") { $0.promptTokens = 5120 }
+    variant("repeats") { $0.repeats = 3 }
+    variant("warmup") { $0.warmup = false }
+    variant("explicit timing") { $0.explicitTiming = true }
+    variant("bfloat16 partials") { $0.bfloat16Partials = true }
+    variant("hybrid, prefill rank 0") { $0.hybridPrefillRank = 0 }
+    variant("hybrid, prefill rank 1") { $0.hybridPrefillRank = 1 }
+    for (label, launch) in variants {
+        check(launch != base, "launch: \(label) variant equals the base")
+        check(launch.agreement != base.agreement, "launch: a rank launched with a different \(label) still agrees")
+    }
+    check(variants[7].1.agreement != variants[8].1.agreement, "launch: the hybrid prefill ranks agree with each other")
+    print("launch agreement: \(variants.count) single-option variants checked")
+}
+
 /// Names and shapes from safetensors headers (8-byte length + JSON); no payload is read.
 func checkpointTensors(_ directory: URL) throws -> [Tensor] {
     let index = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("model.safetensors.index.json"))) as! [String: Any]
@@ -213,6 +242,8 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         check(shard["num_attention_heads"] as? Int == 12 && shard["num_key_value_heads"] as? Int == 2
               && shard["linear_num_key_heads"] as? Int == 8 && shard["linear_num_value_heads"] as? Int == 24
               && shard["intermediate_size"] as? Int == 8704 && shard["mtp_num_hidden_layers"] as? Int == 0, "27B shard configuration")
+
+        checkLaunchAgreement()
 
         for path in CommandLine.arguments.dropFirst() {
             let directory = URL(fileURLWithPath: path)

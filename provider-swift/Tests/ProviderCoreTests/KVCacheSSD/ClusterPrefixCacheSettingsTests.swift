@@ -47,7 +47,10 @@ struct ClusterPrefixCacheSettingsTests {
     }
 
     @Test func savedSettingsAreReadFromTheProviderConfigurationOrDefault() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-cache-settings-\(UUID().uuidString)", isDirectory: true)
+        // The private-mode reader refuses symlinked path components (/var is one), so the
+        // directory lives inside the checkout, as the installed-session check runner's does.
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent(".cluster-cache-settings-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }
         let missing = directory.appendingPathComponent("absent.json")

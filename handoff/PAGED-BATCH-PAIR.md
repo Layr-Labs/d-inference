@@ -9,8 +9,8 @@
 
 | Item | Status |
 |---|---|
-| Paged KV (the product's `PagedKVBackend`) in every Qwen 3.5 stage, on by default | Built; see the results section for what ran on hardware |
-| Continuous batching on the pair (`DARKBLOOM_CLUSTER_BATCH_LANES=2...8`, pipeline mode) | Built; see the results section |
+| Paged KV (the product's `PagedKVBackend`) in every Qwen 3.5 stage, on by default | Built; ran on the M3 Ultra + M5 Ultra pair (9B, 27B): lossless under the pass rule; one-request decode 6-12 % slower than contiguous (finding below) |
+| Continuous batching on the pair (`DARKBLOOM_CLUSTER_BATCH_LANES=2...8`, pipeline mode) | Built; ran on the pair: 9B 201 tok/s and 27B 64.5 tok/s aggregate at 8 concurrent, rows near-tie lossless |
 | Owner side (`ClusterWorkerPair(lanes:)`, event routing by request) | Built; model-free checks pass |
 | Provider (`DistributedCBv2Engine` serves as many requests as the pair's lanes; installed owner passes the lanes) | Built; engine unit test |
 | Prefix-cache reuse inside the batch loop (a joining lane's prefix agreed in its join step) | Built |
@@ -111,8 +111,52 @@ ranks on Mac A) check correctness only; they are not hardware figures.
 | 4 lanes paged: each request alone == the one-request worker (p0, exact); waves of 2 and 4 | Completed; wave 2 == wave 4 for every request; vs alone first difference at 32 / 78 / 79 / 144 (qmv_wide rounding, above); aggregate 93 tok/s (2 requests), 147 tok/s (4) vs ~58 tok/s one request (socket) |
 | Provider: `DistributedCBv2Engine` batch-lanes unit test | Pass |
 
-Cable runs (Mac A + M5 Ultra, 9B and 27B, concurrency 1/2/4/8): not run yet
-(the second Mac was being replaced while this branch was built).
+Near-tie judge: Mac A single-Mac references of the same eight requests with
+per-step top logits (staged reference, paged default; a recorded pair run has
+no step records). Socket waves vs those references: every row exact or a
+near tie (0-2 bf16 ulp).
+
+### Cable: Mac A (M3 Ultra) + M5 Ultra, Thunderbolt 5 RDMA, 2026-10-12 01:20-01:28 PDT
+
+Eight requests per model (prompts 512-2048 tokens, 192 generated, greedy,
+prefix cache off), pipeline mode, paged KV by default. 9B cut 4, 27B cut 16
+(rank 0 on Mac A). Timing is the driver's clock per request.
+
+| | 9B | 27B |
+|---|---|---|
+| One-request worker, paged (default): first token / decode | 0.19-0.69 s / 72.1-76.4 tok/s | 0.72-2.75 s / 32.0-34.3 tok/s |
+| One-request worker, contiguous (`--kv-backend contiguous`) | 0.19-0.68 s / 82.5-84.4 tok/s | 0.72-2.73 s / 35.4-35.8 tok/s |
+| Batch loop (8 lanes, paged), each request alone | 0.19-0.69 s / 83.3-87.1 tok/s | 0.71-2.73 s / 35.7-36.5 tok/s |
+| Aggregate, concurrency 1 / 2 / 4 / 8 | 79.7 / 118.1 / 167.5 / 200.9 tok/s | 32.2 / 47.8 / 56.9 / 64.5 tok/s |
+| Stage KV pool ceiling, 1 lane (A / B) | 192 MiB / 960 MiB | 576 MiB / 1600 MiB |
+| Stage KV pool ceiling, 8 lanes (A / B; committed per 64 MB segment as used) | 1.06 GiB / 7.06 GiB | 4.06 GiB / 12.06 GiB |
+| Peak worker footprint, paged 1 lane / contiguous 1 lane / paged 8 lanes (A; B) | 2.01 / 1.96 / 1.96 GiB; 5.33 / 4.77 / 5.98 GiB | 5.72 / 5.19 / 5.73 GiB; 12 / 12 / 14 GiB (top rounds to whole GiB) |
+
+Correctness (pass rule: exact, or first divergence at a near tie <= 4 bf16
+ulp of the reference's top-1):
+
+- Every row of every run (one-request paged, one-request contiguous, batch
+  loop alone, waves 1/2/4/8; 8 requests x 2 models) against the Mac A
+  references: exact or a near tie, gaps 0-2 ulp (most 0 ulp: exact bf16
+  ties). Every pair row diverges from the M3 Ultra reference somewhere in
+  192 tokens: rank 1 runs on the M5 Ultra (a different numerics class).
+- A recorded paged pair run vs the established Mac A reference of the
+  integration branch (comparator, schedule difference allowed):
+  `divergedAtNearTie` (9B at index 47, 0 ulp; 27B at 117, 1 ulp).
+- The batch loop's solo runs equal the one-request paged worker's tokens
+  exactly for all 8 requests of both models. Waves differ from solo at near
+  ties (qmv_wide, above); 27B waves of 1 and 2 equal solo.
+- Batch-invariance probe (synthetic weights, the 9B's shapes): norm, rope,
+  depthwise conv and the gated delta step are batch-invariant; only the
+  quantized projections change between one row and a batch.
+
+FINDING: the one-request worker with paged KV decodes 6-12 % slower than
+contiguous (9B 72-76 vs 83-84 tok/s, 27B 32-34 vs 35-36), while the batch
+loop's paged decode of the same request alone is as fast as contiguous. First
+token is unchanged. Suspect (source read, not yet measured): the
+one-request state validation after every step snapshots each attention row,
+which on the paged backend builds a page gather per layer per token; the
+batch loop's row validation does not.
 
 ## Not built
 

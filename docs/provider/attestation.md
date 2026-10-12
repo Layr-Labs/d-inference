@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -52,10 +52,10 @@ and the [wire contract](../reference/api-contracts.md#verification-presentation-
 
 A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures or interrupted attempts, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
 
-After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's current receipt, build and security checks.
+After a macOS upgrade, the running signed app checks App Attest again on its next coordinator connection. If a completed Apple callback reports key-generation failure without a usable ID, Darkbloom can retry after one minute within its persisted hourly budget; timeout, cancellation and busy admission retain the safer one-hour cooldown. A definite Apple service-unavailable assertion gets one local retry using the same key and challenge. These attempts cannot grant access without Apple's verified proof and the coordinator's applicable authorization, build and security checks.
 
 
-If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then every ten minutes while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Persistent generic errors can still require a signed provider update and diagnosis from the bounded native Apple error code; `darkbloom status` or `darkbloom doctor` reports current authorization. The [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+App Attest renewal and transient retries follow a coordinator-driven bounded schedule. The [updated platform recovery policy](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md#controls) distinguishes first-proof backoff from recovery after an accepted proof; retries neither grant permission nor extend the original 15-minute assertion validity, and current policy can shorten serving further. Keep the provider running and check `darkbloom status` or `darkbloom doctor`; persistent native errors still need diagnosis, not credential/profile deletion. This source reference does not establish which schedule a deployed coordinator runs.
 
 When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
 
@@ -73,7 +73,7 @@ For the last two, run `darkbloom report` from an administrator account; macOS le
 
 If an Apple DeviceCheck call never answers, every later App Attest call answers `busy` until the provider process restarts. The provider reports the stall and restarts itself through the normal drain when it is idle; the thresholds and limits are in the [App Attest reference](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle). The log line starts with `App Attest: Apple operation stalled`. Run `darkbloom restart` to recover immediately.
 
-After first enrollment, Apple may provide a receipt that is not yet a verified risk receipt or lacks its risk metric. The coordinator keeps the connection pending and requests another signed assertion after one minute, five minutes, then at the normal ten-minute interval while receipt renewal completes. Continue checking `darkbloom status`; the absence of a verified risk metric cannot be treated as approval.
+After enrollment, a missing or unverified recurring risk receipt or missing risk metric remains unknown. Under the [updated platform receipt policy](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md#receipt-monitoring-and-stricter-readiness), this alone does not clear an accepted, otherwise valid basic serving grant or require extra assertions. First authorization still requires a fresh cryptographically verified proof and coordinator acceptance under current build, revocation and identity checks. Rewards and MDM-removal readiness retain stricter verified-receipt and decision-freshness requirements; use the coordinator's explicit readiness verdict, not basic serving approval, and do not assume every deployment uses the updated policy.
 
 A verified assertion is one step toward authorization. Current serving also
 requires the complete proof archive, the same authenticated account and

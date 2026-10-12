@@ -22,6 +22,7 @@ enum DiffusionGemmaProviderBridge {
         completePrefixCache: SSDHybridCheckpointStore? = nil,
         retainMemoryPrefixes: Bool = true, prefillChunkSize: Int = 512,
         prefixCacheStatus: PrefixCacheModelStatus? = nil, pageBacked: Bool = false,
+        kvBackendFallbackReason: String? = nil,
         kvQuantization: EngineV2KVQuantizationSelection = .native,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) async throws -> Prepared {
@@ -92,6 +93,7 @@ enum DiffusionGemmaProviderBridge {
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: pageBacked ? .paged : .contiguous, kvQuantization: kvQuantization,
                 pagedPageSize: pageConfig?.pageSize,
+                kvBackendFallbackReason: kvBackendFallbackReason,
                 advertisedContextTokens: config.maxPositionEmbeddings)
             return Prepared(bridge: bridge, tokenizer: tokenizer, sizing: sizing)
         }

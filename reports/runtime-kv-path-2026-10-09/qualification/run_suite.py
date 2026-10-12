@@ -148,8 +148,8 @@ def main():
             destination.flush()
             os.fchmod(destination.fileno(), 0o400)
         environment = child_environment(os.environ)
-        assistant = None
-        if args.assistant_directory is not None and any(mode != "scores" for mode in modes):
+        assistant = {"identities": {}} if args.mtp and any(mode != "scores" for mode in modes) else None
+        if args.assistant_directory is not None and assistant is not None:
             files = assistant_files(args.assistant_directory, allow_symlinks=True)
             assistant_snapshot = pathlib.Path(tempfile.mkdtemp(prefix=".assistant-", dir=args.output.resolve()))
             for name in files:
@@ -158,8 +158,8 @@ def main():
                 destination.chmod(0o400)
             assistant_snapshot.chmod(0o500)
             verify_assistant(args.assistant_directory, assistant_snapshot, files)
-            assistant = {"sourcePath": str(args.assistant_directory.absolute()), "path": str(assistant_snapshot),
-                         "files": files, "identities": {}}
+            assistant.update(sourcePath=str(args.assistant_directory.absolute()), path=str(assistant_snapshot),
+                             files=files)
         qualification = {"suiteSHA256": prepared.digest, "configSHA256": config_digest,
                          "configPath": str(args.config.resolve()), "activeConfigPath": str(active_config),
                          "environment": environment_identity(environment),
@@ -195,10 +195,10 @@ def main():
                                     "--max-tokens", str(identity["maximumGeneratedTokens"])]
                         if args.mtp:
                             command.append("--runtime-mtp")
-                            if assistant is not None:
+                            if assistant_snapshot is not None:
                                 command += ["--runtime-assistant-directory", assistant["path"]]
                     print(json.dumps({"started": label, "utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}), flush=True)
-                    if assistant is not None:
+                    if assistant_snapshot is not None:
                         verify_assistant(args.assistant_directory, assistant_snapshot, assistant["files"])
                     verify_candidate(args.candidate, receipt)
                     code, elapsed = launch(command, stem, args.timeout, environment)
@@ -208,7 +208,7 @@ def main():
                              "configBeforeSHA256": config_digest}
                     try:
                         verify_candidate(args.candidate, receipt)
-                        if assistant is not None:
+                        if assistant_snapshot is not None:
                             verify_assistant(args.assistant_directory, assistant_snapshot, assistant["files"])
                         entry["configAfterSHA256"] = sha(active_config)
                         report = json.loads(evidence_path(stem, ".json").read_text())
@@ -221,7 +221,7 @@ def main():
                         projection = report_projection(report, mode, identity)
                         if assistant is not None and mode != "scores":
                             assistant["identities"][model] = assistant_identity(
-                                report, assistant["files"], assistant["identities"].get(model))
+                                report, assistant.get("files"), assistant["identities"].get(model))
                         entry.update(projection)
                         entry["reportParsed"] = True
                     except (ValueError, KeyError, RuntimeError, OSError) as error:

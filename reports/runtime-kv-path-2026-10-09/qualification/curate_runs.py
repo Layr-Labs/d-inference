@@ -95,23 +95,27 @@ def report_projection(report, mode, identity=None):
     return result
 
 
-def assistant_identity(report, files, previous=None):
+def assistant_identity(report, files=None, previous=None):
     identity = report.get("assistantIdentity")
     if (report.get("mtpRequested") is not True or report.get("mtpActive") is not True
             or not isinstance(identity, dict)
             or any(not isinstance(value, str) for value in identity.values())):
         raise RuntimeError("Missing active MTP assistant identity")
-    if not isinstance(files, dict) or not 2 <= len(files) <= 64:
-        raise RuntimeError("Invalid assistant snapshot inventory")
-    config_hash = require_hash(files["config.json"])
-    expected = {"source": "local", "revision": "local-" + config_hash[:16],
-                "config_sha256": config_hash}
-    for name, digest in files.items():
-        if name != "config.json":
-            if Path(name).name != name or not name.endswith(".safetensors"):
-                raise RuntimeError("Invalid assistant snapshot filename")
-            expected["weight_sha256." + name] = require_hash(digest)
+    expected = None
+    if files is not None:
+        if not isinstance(files, dict) or not 2 <= len(files) <= 64:
+            raise RuntimeError("Invalid assistant snapshot inventory")
+        config_hash = require_hash(files["config.json"])
+        expected = {"source": "local", "revision": "local-" + config_hash[:16],
+                    "config_sha256": config_hash}
+        for name, digest in files.items():
+            if name != "config.json":
+                if Path(name).name != name or not name.endswith(".safetensors"):
+                    raise RuntimeError("Invalid assistant snapshot filename")
+                expected["weight_sha256." + name] = require_hash(digest)
     if identity.get("source") == "local":
+        if expected is None:
+            raise RuntimeError("Local MTP assistant has no frozen snapshot")
         if identity != expected:
             raise RuntimeError("Reported assistant differs from frozen snapshot")
     elif identity.get("source") == "inline":
@@ -207,13 +211,23 @@ def main():
                 entry.pop("outputText", None)
                 entry.pop("diagnosticTop1", None)
                 entry.update(artifacts)
-                if assistant is not None and entry["mode"] != "scores":
-                    command = entry["command"]
-                    if ("--runtime-mtp" not in command or "--runtime-assistant-directory" not in command
-                            or command[command.index("--runtime-assistant-directory") + 1] != assistant["path"]):
-                        raise RuntimeError("Run assistant path differs from frozen snapshot")
+                command = entry["command"]
+                if entry["mode"] != "scores" and (assistant is not None or "--runtime-mtp" in command
+                                                  or report.get("mtpRequested") is True
+                                                  or report.get("mtpActive") is True):
+                    if "--runtime-mtp" not in command:
+                        raise RuntimeError("Run MTP request differs from raw report")
+                    if prepared is not None and assistant is None:
+                        raise RuntimeError("Missing run MTP assistant binding")
+                    files = assistant.get("files") if assistant is not None else None
+                    if ("--runtime-assistant-directory" in command
+                            or assistant is not None and ("files" in assistant or "path" in assistant)):
+                        if (files is None or "--runtime-assistant-directory" not in command
+                                or command.index("--runtime-assistant-directory") + 1 >= len(command)
+                                or command[command.index("--runtime-assistant-directory") + 1] != assistant["path"]):
+                            raise RuntimeError("Run assistant path differs from frozen snapshot")
                     assistant_identities[entry["modelID"]] = assistant_identity(
-                        report, assistant["files"], assistant_identities.get(entry["modelID"]))
+                        report, files, assistant_identities.get(entry["modelID"]))
                 if entry["mode"] == "scores":
                     diagnostic = report["diagnostic"]
                     repeated = report["repeatedDiagnostic"]

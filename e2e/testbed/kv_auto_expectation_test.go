@@ -228,20 +228,35 @@ func TestAutomaticKVPrewarmPreservesExplicitExpectedBackend(t *testing.T) {
 
 func TestSuiteAutomaticExpectationVerifiesTheResolvedPolicy(t *testing.T) {
 	for _, tc := range []struct {
-		precision string
-		backend   string
-		wantError bool
+		name, precision, livePrecision, backend string
+		wantError                               bool
 	}{
-		{"", KVBackendPaged, false},
-		{"", KVBackendContiguous, false},
-		{"native", KVBackendContiguous, false},
-		{"balanced", KVBackendPaged, false},
-		{"balanced", KVBackendContiguous, true},
-		{"native", "unknown", true},
-		{"native", nativeAutoBackend, true},
+		{"default paged", "", "native", KVBackendPaged, false},
+		{"default contiguous", "", "native", KVBackendContiguous, false},
+		{"blank default", " \n", "native", KVBackendPaged, false},
+		{"explicit native", "native", "native", KVBackendContiguous, false},
+		{"native off alias", "off", "native", KVBackendPaged, false},
+		{"native zero alias", "0", "native", KVBackendContiguous, false},
+		{"default balanced paged", "", "balanced", KVBackendPaged, true},
+		{"default balanced contiguous", "", "balanced", KVBackendContiguous, true},
+		{"default k8v4 paged", "", "k8v4", KVBackendPaged, true},
+		{"default k8v4 contiguous", "", "k8v4", KVBackendContiguous, true},
+		{"default k8v8 paged", "", "k8v8", KVBackendPaged, true},
+		{"default k8v8 contiguous", "", "k8v8", KVBackendContiguous, true},
+		{"explicit native regressed", "native", "balanced", KVBackendPaged, true},
+		{"explicit packed", "balanced", "balanced", KVBackendPaged, false},
+		{"explicit packed backend mismatch", "balanced", "balanced", KVBackendContiguous, true},
+		{"unknown backend", "native", "native", "unknown", true},
+		{"private predicate is not a backend", "native", "native", nativeAutoBackend, true},
 	} {
-		t.Run(tc.precision+"/"+tc.backend, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvExpectKVBackend, "")
 			t.Setenv(EnvKVQuantization, tc.precision)
+			if tc.precision == "" {
+				if err := os.Unsetenv(EnvKVQuantization); err != nil {
+					t.Fatal(err)
+				}
+			}
 			r := registry.New(kvExpectationLogger())
 			registerAutoKVProvider(r, protocol.ModelInfo{ID: "model", ModelType: "gpt_oss", Quantization: "4bit"})
 			backend := tc.backend
@@ -256,8 +271,11 @@ func TestSuiteAutomaticExpectationVerifiesTheResolvedPolicy(t *testing.T) {
 					}},
 				},
 			})
+			provider, state := automaticKVStateFixture(t, r, "auto-box", "model", tc.backend, tc.livePrecision)
+			writeAutomaticKVState(t, provider, state)
 			suite := Suite{Ctx: context.Background(), Logger: kvExpectationLogger(),
-				Coordinator: &Coordinator{Registry: r}, Config: SuiteConfig{ExpectKVBackend: KVBackendAuto}}
+				Coordinator: &Coordinator{Registry: r}, Providers: []*Provider{provider},
+				Config: SuiteConfig{ExpectKVBackend: KVBackendAuto}}
 			err := suite.verifyKVBackendExpectation()
 			if (err != nil) != tc.wantError {
 				t.Fatalf("automatic policy verification error = %v, wantError=%t", err, tc.wantError)

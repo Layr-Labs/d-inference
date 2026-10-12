@@ -45,7 +45,7 @@ if settings.get('badJSON'):
     print('failed before a report');sys.exit(2)
 score='--teacher-forced-input' in args
 path=pathlib.Path(option('--teacher-forced-input' if score else '--runtime-prompt-file'))
-document=json.loads(path.read_text()) if score else json.loads((path.parent/'fixture-scores-input.json').read_text())
+document=json.loads(path.read_text()) if score else json.loads((path.parent/(option('--model')+'-scores-input.json')).read_text())
 report={'verifiedModelAggregateSHA256':document['expectedModelAggregateSHA256'],
         'resolvedBackend':settings.get('backend','paged'),'kvQuantization':option('--kv-quantization'),
         'firstTokenMilliseconds':12.5,'totalMilliseconds':25.0,
@@ -79,6 +79,23 @@ if '--runtime-assistant-directory' in args:
                   assistantDirectoryMode=assistant.stat().st_mode & 0o777,
                   assistantModes={p.name:p.stat().st_mode & 0o777 for p in assistant.iterdir()},
                   assistantSymlinks=[p.name for p in assistant.iterdir() if p.is_symlink()])
+elif '--runtime-mtp' in args:
+    config_hash=hashlib.sha256(option('--model').encode()).hexdigest()
+    if settings.get('assistantIdentityDrift') and option('--kv-quantization')!='native':config_hash='d'*64
+    report.update(mtpRequested=True,mtpActive=True,
+                  assistantIdentity={'source':'inline','revision':'inline-'+config_hash[:8]+'-'+'b'*8,
+                                     'config_sha256':config_hash,'inline_index_sha256':'b'*64})
+fault=settings.get('assistantIdentityFault')
+if fault=='missing':report.pop('assistantIdentity',None)
+if fault=='type':report['assistantIdentity']='inline'
+if fault=='none':report['assistantIdentity']={'source':'none'}
+if fault=='config_hash':report['assistantIdentity']['config_sha256']='g'*64
+if fault=='index_hash':report['assistantIdentity']['inline_index_sha256']=None
+if fault=='revision':report['assistantIdentity']['revision']='unbound'
+if fault=='inactive':report['mtpActive']=False
+if fault=='not_requested':report['mtpRequested']=False
+if fault=='local':report['assistantIdentity']={'source':'local','revision':'local-'+'a'*16,'config_sha256':'a'*64,
+                                            'weight_sha256.weights.safetensors':'b'*64}
 binary=sha(pathlib.Path(sys.argv[0]));metal=sha(pathlib.Path(sys.argv[0]).parent/'mlx.metallib')
 if score:
     diagnostic={'records':[{'nanCount':0,'infiniteCount':0}],'top1':[3]}
@@ -165,11 +182,11 @@ class Fixture:
         return {name: digest(self.assistant / name) for name in contents}
 
     def run(self, scores=False, environment=None, config=None, profiles=None, timeout=10, cwd=None,
-            mtp=False, assistant=None):
+            mtp=False, assistant=None, models=None):
         command = [sys.executable, str(RUNNER), "--candidate", str(self.candidate),
                    "--config", str(self.config if config is None else config),
                    "--inputs", str(self.inputs), "--output", str(self.stage),
-                   "--models", "fixture", "--tasks", "none" if scores else "retrieval", "--timeout", str(timeout)]
+                   "--models", *(models or ["fixture"]), "--tasks", "none" if scores else "retrieval", "--timeout", str(timeout)]
         if scores:
             command.append("--scores")
         if profiles is not None:
@@ -200,7 +217,7 @@ class Fixture:
         (self.stage / "run.json").write_text(json.dumps(manifest))
 
     def report_path(self, entry):
-        label = "fixture-" + entry["mode"] + "-" + entry["requestedPrecision"]
+        label = entry["modelID"].replace("/", "--") + "-" + entry["mode"] + "-" + entry["requestedPrecision"]
         if "--runtime-mtp" in entry["command"]:
             label += "-mtp"
         return self.stage / (label + ".json")
@@ -370,6 +387,118 @@ class QualificationRunnerContractTests(unittest.TestCase):
                 self.assertTrue(manifest["results"][0]["reportParsed"])
                 self.assertEqual(manifest["results"][1]["reportParsed"], not drift)
                 self.assertEqual(fixture.curate().returncode, 0)
+
+    def test_implicit_mtp_binds_stable_identities_per_model_without_claiming_a_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(Path(temporary))
+            second_score = fixture.inputs / "second-scores-input.json"
+            document = json.loads(fixture.score.read_text())
+            document.update(modelID="second", expectedModelAggregateSHA256="d" * 64)
+            second_score.write_text(json.dumps(document))
+            suite_path = fixture.inputs / "suite.json"
+            suite = json.loads(suite_path.read_text())
+            suite["scoreInputs"].append(dict(suite["scoreInputs"][0], modelID="second", file=second_score.name,
+                                             inputSHA256=digest(second_score)))
+            suite_path.write_text(json.dumps(suite))
+            result, manifest = fixture.run(mtp=True, models=["fixture", "second"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            binding = manifest["qualification"]["assistant"]
+            self.assertEqual(set(binding), {"identities"})
+            self.assertEqual(set(binding["identities"]), {"fixture", "second"})
+            self.assertNotEqual(binding["identities"]["fixture"], binding["identities"]["second"])
+            self.assertEqual(len(manifest["results"]), 4)
+            self.assertFalse(list(fixture.stage.glob(".assistant-*")))
+            self.assertFalse(fixture.assistant.exists())
+            self.assertFalse(Path(manifest["qualification"]["activeConfigPath"]).exists())
+            for entry in manifest["results"]:
+                report = json.loads(fixture.report_path(entry).read_text())
+                self.assertTrue(entry["reportParsed"])
+                self.assertTrue(entry["identityPassed"])
+                self.assertTrue(entry["taskPassed"])
+                self.assertTrue(report["mtpRequested"])
+                self.assertTrue(report["mtpActive"])
+                self.assertEqual(report["assistantIdentity"], binding["identities"][entry["modelID"]])
+                self.assertNotIn("--runtime-assistant-directory", entry["command"])
+                self.assertEqual(entry["configAfterSHA256"], manifest["qualification"]["configSHA256"])
+                self.assertEqual(report["resourceSHA256"], next(iter(fixture.resources.values())))
+            curated = fixture.curate()
+            self.assertEqual(curated.returncode, 0, curated.stderr)
+            output = json.loads((fixture.root / "curated.json").read_text())
+            self.assertEqual(output["stages"][0]["qualification"]["assistant"], binding)
+
+    def test_implicit_mtp_drift_is_retained_and_cannot_be_promoted_by_curation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(Path(temporary), {"assistantIdentityDrift": True})
+            result, manifest = fixture.run(mtp=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(len(manifest["results"]), 2)
+            first, second = manifest["results"]
+            self.assertTrue(first["reportParsed"])
+            self.assertFalse(second["reportParsed"])
+            self.assertIn("MTP assistant identity changed", second["parseError"])
+            first_report = json.loads(fixture.report_path(first).read_text())
+            second_report = json.loads(fixture.report_path(second).read_text())
+            self.assertNotEqual(first_report["assistantIdentity"], second_report["assistantIdentity"])
+            self.assertEqual(manifest["qualification"]["assistant"]["identities"]["fixture"],
+                             first_report["assistantIdentity"])
+            self.assertFalse(Path(manifest["qualification"]["activeConfigPath"]).exists())
+            self.assertEqual(fixture.curate().returncode, 0)
+            for entry in manifest["results"]:
+                entry.update(reportParsed=True, identityPassed=True, taskPassed=True)
+            manifest["qualification"]["assistant"]["identities"]["fixture"] = second_report["assistantIdentity"]
+            (fixture.stage / "run.json").write_text(json.dumps(manifest))
+            curated = fixture.curate()
+            self.assertNotEqual(curated.returncode, 0)
+            self.assertIn("MTP assistant identity changed", curated.stderr)
+            for entry in manifest["results"]:
+                self.assertEqual(digest(fixture.report_path(entry)), entry["jsonSHA256"])
+
+    def test_implicit_mtp_missing_invalid_and_inactive_identities_cannot_qualify(self):
+        for fault in ("missing", "type", "none", "config_hash", "index_hash", "revision",
+                      "inactive", "not_requested", "local"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(Path(temporary), {"assistantIdentityFault": fault})
+                result, manifest = fixture.run(mtp=True, profiles=["native"])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                entry = manifest["results"][0]
+                self.assertFalse(entry["reportParsed"])
+                self.assertNotIn("taskPassed", entry)
+                self.assertEqual(manifest["qualification"]["assistant"], {"identities": {}})
+                self.assertFalse(Path(manifest["qualification"]["activeConfigPath"]).exists())
+                self.assertEqual(fixture.curate().returncode, 0)
+                entry.update(reportParsed=True, identityPassed=True, taskPassed=True)
+                report = json.loads(fixture.report_path(entry).read_text())
+                manifest["qualification"]["assistant"]["identities"]["fixture"] = report.get("assistantIdentity")
+                (fixture.stage / "run.json").write_text(json.dumps(manifest))
+                self.assertNotEqual(fixture.curate().returncode, 0)
+                self.assertEqual(digest(fixture.report_path(entry)), entry["jsonSHA256"])
+
+    def test_curator_requires_implicit_binding_and_matching_raw_mtp_request(self):
+        for mutation in ("identity", "missing_binding", "hidden_request"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                fixture = Fixture(Path(temporary))
+                result, manifest = fixture.run(mtp=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if mutation == "identity":
+                    manifest["qualification"]["assistant"]["identities"]["fixture"]["config_sha256"] = "f" * 64
+                else:
+                    del manifest["qualification"]["assistant"]
+                    if mutation == "hidden_request":
+                        for entry in manifest["results"]:
+                            old = fixture.report_path(entry)
+                            entry["command"].remove("--runtime-mtp")
+                            new = fixture.report_path(entry)
+                            old.rename(new)
+                            old.with_suffix(".log").rename(new.with_suffix(".log"))
+                (fixture.stage / "run.json").write_text(json.dumps(manifest))
+                curated = fixture.curate()
+                self.assertNotEqual(curated.returncode, 0)
+                if mutation == "missing_binding":
+                    self.assertIn("Missing run MTP assistant binding", curated.stderr)
+                elif mutation == "hidden_request":
+                    self.assertIn("Run MTP request differs from raw report", curated.stderr)
+                for entry in manifest["results"]:
+                    self.assertEqual(digest(fixture.report_path(entry)), entry["jsonSHA256"])
 
     def test_assistant_snapshot_cleanup_on_failed_and_timed_out_children(self):
         for setting, value in (("badJSON", True), ("sleep", 60), ("inactiveAssistant", True)):

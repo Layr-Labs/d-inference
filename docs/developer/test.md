@@ -3588,6 +3588,9 @@ in the testbed config; only persistent updater/watchdog services are disabled.
 Its automatic-policy assertion still requires each advertised model to report
 a concrete usable backend. Native auto may resolve paged or contiguous; the
 explicit paged lanes continue to require paged without accepting fallback.
+Native/default automatic checks also require resolved `kv_quantization=native`
+in fresh daemon state bound to the fixture account, tracked provider process and
+exact model. Backend selection alone is not precision evidence.
 Explicit `contiguous` test controls
 also write `engine_v2_kv_quantization = "native"`; paged and automatic controls
 retain the provider's live precision default. The default smoke refuses

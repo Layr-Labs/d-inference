@@ -36,9 +36,13 @@ configuration's parent directory must permit creation of that private copy.
 Candidate binaries, metallib and the complete SwiftPM resource inventory are
 rechecked around every arm. An explicitly supplied MTP assistant is copied into
 a bounded read-only snapshot, with source/copy hashes and reported assistant
-identity checked for every arm. Inline assistants retain their production
-precedence and must keep a consistent reported identity. Score-only runs do not
-stage an unused assistant.
+identity checked for every arm. Every MTP generation arm, including `--mtp`
+without `--assistant-directory`, must report active MTP and a valid assistant
+identity that stays identical across the same model's arms. Inline assistants
+retain their production precedence. Their binding records the reported
+config/index identity, not an owned copy or an additional weight-snapshot proof.
+Only explicit snapshots record file hashes and a snapshot path. Score-only runs
+do not stage an unused assistant or require a generation identity.
 
 Children receive only an explicit system/locale environment allowlist. The
 recorded values and digest exclude ambient inference, MLX, Metal, loader and
@@ -94,7 +98,10 @@ separate; the dated report names the usable cohorts. CPU regressions exercise
 the actual CLI with changed execution identities and unchanged raw-hash validity.
 For schema2, curation also checks the retained prepared files, per-entry input
 binding, configuration checks and the declared environment allowlist. Unknown
-run schemas refuse curation. Historical schema1 runs retain their original
+run schemas refuse curation. MTP generation identities are revalidated from raw
+reports and compared per model with the recorded binding; missing, inactive,
+invalid or changing assistants cannot be promoted by editing run summaries.
+Historical schema1 runs retain their original
 limitations: their runner inherited ambient settings and did not enforce these
 new pre-execution checks. They are not relabeled as scrubbed. Optional explicit
 `--inputs /owned/inputs /owned/inputs-1024` checks retained historical raw prompt

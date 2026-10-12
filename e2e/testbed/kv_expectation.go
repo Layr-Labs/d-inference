@@ -82,9 +82,7 @@ func (s *Suite) verifyKVBackendExpectation() error {
 		return err
 	}
 	if expected == KVBackendAuto || (expected == "" && s.Config.PrewarmAutomaticKVBackend) {
-		return verifyAutomaticRegistryKVBackends(
-			s.Ctx, s.Coordinator.Registry, os.Getenv(EnvKVQuantization),
-			kvExpectationTimeout, s.Logger, s.Coordinator.Registry.SendLoadModel)
+		return s.verifyAutomaticKVBackendExpectation(os.Getenv(EnvKVQuantization), kvExpectationTimeout)
 	}
 	if expected == "" {
 		return nil

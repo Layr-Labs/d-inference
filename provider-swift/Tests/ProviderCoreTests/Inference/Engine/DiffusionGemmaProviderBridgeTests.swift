@@ -105,8 +105,9 @@ struct DiffusionGemmaProviderBridgeTests {
     }
 
     private func bundle(
-        selection: EngineV2KVQuantizationSelection, backend: String,
+        selection: EngineV2KVQuantizationSelection = .native, backend: String = "auto",
         environment: [String: String] = [:],
+        kvBytesCapacity: Int = 0,
         preflight: (([CBv2LayerKind]) throws -> Void)? = nil
     ) async throws -> ProviderEngineBundle {
         let configuration = try configuration()
@@ -116,7 +117,7 @@ struct DiffusionGemmaProviderBridgeTests {
             tokenizer: TokenizerHandle(StubBridgeTokenizer()),
             sizing: .init(weightsBytes: 1, fp16KVBytesPerToken: 512,
                 maxContextLength: 2048, defaultMaxTokens: 4),
-            kvBytesCapacity: 0, maxConcurrentRequests: 2, kvBudget: budget(),
+            kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: 2, kvBudget: budget(),
             kvBackendConfig: backend, kvQuantizationConfig: selection.rawValue,
             specDecPreparation: .init(artifact: nil, status: .disabled(.targetUnsupported, configured: false)),
             assemblyOverrides: .init(pagedPreflight: preflight),
@@ -147,6 +148,29 @@ struct DiffusionGemmaProviderBridgeTests {
                 preflight: { _ in Issue.record("Disabled paging reached kernel preflight") })
             await bundle.bridge.shutdown()
         }
+    }
+
+    @Test(arguments: ["auto", "contiguous", "paged"], [false, true])
+    func nativeFactoryReportsOnlyActualKillSwitchFallback(backend: String, killed: Bool) async throws {
+        let bundle = try await bundle(backend: backend,
+            environment: killed ? [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"] : [:],
+            kvBytesCapacity: capacity,
+            preflight: { _ in Issue.record("Native precision reached packed kernel preflight") })
+        let bridge = bundle.bridge
+        let expectedPaged = backend == "paged" && !killed
+        let expectedReason = backend == "paged" && killed ? "kill_switch" : nil
+        let engine = try #require(await bridge.ownedEngine as? CBv2NativeBlockEngine)
+        #expect(engine.usesPagedStorage == expectedPaged)
+        #expect(await bridge.kvBackendKind == (expectedPaged ? .paged : .contiguous))
+        #expect(await bridge.kvBackendFallbackReason == expectedReason)
+        #expect(bridge.kvQuantization == .native)
+        let slot = await bridge.backendSlotCapacity()
+        let diagnostic = bridge.slotPosture(await bridge.mtpStatusSnapshot())
+        #expect(slot.kvBackend == (expectedPaged ? "paged" : "contiguous"))
+        #expect(slot.kvBackendFallbackReason == expectedReason)
+        #expect(diagnostic.kvBackend == slot.kvBackend)
+        #expect(diagnostic.kvBackendFallbackReason == expectedReason)
+        await bridge.shutdown()
     }
 
     @Test(arguments: [false, true])

@@ -54,6 +54,8 @@ func TestGlobalFundingQueueRefreshesQuoteAndSendsOnce(t *testing.T) {
 	f.mu.Lock()
 	f.availableUSD = nil
 	f.rate = 81
+	// Keep this case in the dispatch phase; settlement has separate coverage.
+	f.state = "processing"
 	f.mu.Unlock()
 	var wg sync.WaitGroup
 	for range 8 {
@@ -61,6 +63,10 @@ func TestGlobalFundingQueueRefreshesQuoteAndSendsOnce(t *testing.T) {
 		go func() { defer wg.Done(); _ = s.syncGlobalPayout(context.Background(), p.ID) }()
 	}
 	wg.Wait()
+	// A later worker must only reconcile, not submit another payment.
+	if err := s.syncGlobalPayout(context.Background(), p.ID); err != nil {
+		t.Fatal(err)
+	}
 	got, _ := st.GetGlobalPayout(p.ID)
 	if got.Status != "processing" || got.ExternalID != "obp_gp" || got.DestinationAmount != 81_000 {
 		t.Fatalf("expired quote was not refreshed %+v", got)

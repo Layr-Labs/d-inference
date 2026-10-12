@@ -13,7 +13,8 @@ import (
 
 // Native auto may legitimately resolve either storage backend after the
 // provider's model policy, capability vetoes and observable fallback. This
-// private expectation still requires a real, usable slot and a concrete tag.
+// private expectation still requires a real, usable slot and a concrete tag;
+// the suite separately verifies native live precision from provider state.
 const nativeAutoBackend = "native_auto"
 
 // EnvKVQuantization is the provider's public precision selector. Forward it
@@ -44,22 +45,20 @@ func automaticBackendExpectation(modelType, precision string) (string, error) {
 	}
 }
 
-func verifyAutomaticRegistryKVBackends(
-	ctx context.Context, reg *registry.Registry, precision string, timeout time.Duration,
-	logger *slog.Logger, sendLoadModel func(string, string) error,
-) error {
-	type target struct {
-		providerID, model, modelType string
-		expected                     string
-		autopilot                    bool
-	}
-	var targets []target
+type automaticKVTarget struct {
+	providerID, model, modelType string
+	expected                     string
+	autopilot                    bool
+}
+
+func automaticKVTargets(reg *registry.Registry, precision string) ([]automaticKVTarget, error) {
+	var targets []automaticKVTarget
 	reg.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
 		defer p.Mu().Unlock()
 		for _, model := range p.Models {
 			if model.ID != "" {
-				targets = append(targets, target{
+				targets = append(targets, automaticKVTarget{
 					providerID: p.ID, model: model.ID, modelType: model.ModelType,
 					autopilot: p.ModelAutopilot != nil && p.ModelAutopilot.Enabled,
 				})
@@ -67,13 +66,7 @@ func verifyAutomaticRegistryKVBackends(
 		}
 	})
 	if len(targets) == 0 {
-		return fmt.Errorf("automatic KV benchmark prewarm has no advertised model slots")
-	}
-	if timeout <= 0 {
-		return fmt.Errorf("automatic KV prewarm timeout must be positive, got %v", timeout)
-	}
-	if logger == nil {
-		logger = slog.Default()
+		return nil, fmt.Errorf("automatic KV benchmark prewarm has no advertised model slots")
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		return targets[i].providerID+"/"+targets[i].model < targets[j].providerID+"/"+targets[j].model
@@ -81,9 +74,47 @@ func verifyAutomaticRegistryKVBackends(
 	for i := range targets {
 		expected, err := automaticBackendExpectation(targets[i].modelType, precision)
 		if err != nil {
-			return fmt.Errorf("automatic KV prewarm %s/%s: %w", targets[i].providerID, targets[i].model, err)
+			return nil, fmt.Errorf("automatic KV prewarm %s/%s: %w", targets[i].providerID, targets[i].model, err)
 		}
 		targets[i].expected = expected
+	}
+	return targets, nil
+}
+
+func (s *Suite) verifyAutomaticKVBackendExpectation(precision string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(s.Ctx, timeout)
+	defer cancel()
+	if err := verifyAutomaticRegistryKVBackends(ctx, s.Coordinator.Registry, precision,
+		timeout, s.Logger, s.Coordinator.Registry.SendLoadModel); err != nil {
+		return err
+	}
+	targets, err := automaticKVTargets(s.Coordinator.Registry, precision)
+	if err != nil {
+		return err
+	}
+	for _, slot := range targets {
+		if slot.expected == nativeAutoBackend || slot.modelType == "mimo_v2" {
+			if err := s.verifyNativeKVPrecision(ctx, slot); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func verifyAutomaticRegistryKVBackends(
+	ctx context.Context, reg *registry.Registry, precision string, timeout time.Duration,
+	logger *slog.Logger, sendLoadModel func(string, string) error,
+) error {
+	targets, err := automaticKVTargets(reg, precision)
+	if err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("automatic KV prewarm timeout must be positive, got %v", timeout)
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	deadline := time.Now().Add(timeout)
 	for _, slot := range targets {

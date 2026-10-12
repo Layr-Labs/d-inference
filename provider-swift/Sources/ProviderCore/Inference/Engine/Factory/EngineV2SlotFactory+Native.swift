@@ -225,8 +225,11 @@ extension EngineV2SlotFactory {
                 modelType: modelType, global: checkpointQuantizationConfig,
                 byModel: checkpointQuantizationConfigByModel, modelID: modelId,
                 environment: environment, purpose: .checkpoint)
-            let pageBacked = !EngineV2KVBackendPolicy.killSwitchDisabled(environment: environment)
-                && (backend.lowercased() == "paged" || (backend.lowercased() == "auto" && precision != .native))
+            let prefersPaged = backend.lowercased() == "paged"
+                || (backend.lowercased() == "auto" && precision != .native)
+            let pageBacked = prefersPaged
+                && !EngineV2KVBackendPolicy.killSwitchDisabled(environment: environment)
+            let fallbackReason = prefersPaged && !pageBacked ? "kill_switch" : nil
             try EngineV2KVQuantizationPolicy.requireResolvedBackend(
                 pageBacked ? .paged : .contiguous, selection: precision)
             let prefix = try await prepareDiffusionPrefixCache(modelId: modelId, modelDirectory: modelDirectory,
@@ -243,6 +246,7 @@ extension EngineV2SlotFactory {
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,
                     replayStrategy: prefix.store == nil ? .none : .direct,
                     state: prefix.status.state, reason: prefix.status.reason), pageBacked: pageBacked,
+                kvBackendFallbackReason: fallbackReason,
                 kvQuantization: precision, pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch { await prefix.store?.closeAndWait(); throw error }
             let status = MTPActivationStatus.disabled(.targetUnsupported, configured: false)

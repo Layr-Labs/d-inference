@@ -24,7 +24,8 @@ end-to-end platform authorization.
 ## Native serving qualification
 
 `NativeServeQualificationTests` checks literal-loopback refusal, owner-only
-descriptor inputs, failed-observer lifetime ownership and bounded in-memory App Attest key-ID/budget storage without
+descriptor inputs (including callback-arm marker value, permissions and symlink
+refusal), failed-observer lifetime ownership and bounded in-memory App Attest key-ID/budget storage without
 Apple calls or model allocation. Build the isolated provider test product and run
 `swift test --skip-build --filter NativeServeQualificationTests` after normal
 source-matched metallib staging.

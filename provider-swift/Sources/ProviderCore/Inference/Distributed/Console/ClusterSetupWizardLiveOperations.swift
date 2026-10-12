@@ -188,6 +188,7 @@ private final class LiveContext: @unchecked Sendable {
     /// Answers the other Mac's wizard while this one is open (both Macs run one).
     private var responder: ClusterSetupLinkExchange.Responder?
     private var responderStarting = false
+    private var workerDigest: (key: String, digest: String)?
 
     init(paths: ClusterUserPaths, store: ClusterSetupStore, settings: ClusterSetupOperations.LiveSettings, clean: ClusterConsoleFreeText) {
         self.paths = paths; self.store = store; self.settings = settings; self.clean = clean
@@ -247,7 +248,6 @@ private final class LiveContext: @unchecked Sendable {
         }
         let folders = (try? ClusterSetupModelFolders.list(parent: URL(fileURLWithPath: models))) ?? []
         let modelDirectory = URL(fileURLWithPath: models).appendingPathComponent(folders.first?.folder ?? "models").path
-        let workerData = try ClusterConfigurationFiles.read(URL(fileURLWithPath: worker), maximum: 1 << 30)
         let link = ClusterLinkReadinessProbe.inspectLocalLink(isolation: false)
         let active = link.devices.filter(\.portActive)
         guard let device = (active.first { $0.verdict == .ready } ?? active.first)?.device else {
@@ -255,8 +255,19 @@ private final class LiveContext: @unchecked Sendable {
         }
         return ClusterSetupMemberFacts(memberID: pairing.localMemberID, linkAddress: selection.local.address.dottedDecimal,
             user: NSUserName(), ownerExecutable: Self.ownerExecutable(settings.darkbloomExecutable), workerExecutable: worker,
-            modelDirectory: modelDirectory, runtimeBinarySHA256: ClusterConfigurationCodec.sha256(workerData),
+            modelDirectory: modelDirectory, runtimeBinarySHA256: try workerSHA256(worker),
             jacclDevice: device, linkSecretFile: pairing.secretFile)
+    }
+
+    /// The worker's digest, read again only when its size or change time moved (each refresh asks).
+    func workerSHA256(_ path: String) throws -> String {
+        var info = stat()
+        guard stat(path, &info) == 0 else { throw ClusterSetupFailure("this Mac's cluster worker cannot be read") }
+        let key = "\(path)|\(info.st_size)|\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)|\(info.st_ino)"
+        if let cached = lock.withLock({ workerDigest }), cached.key == key { return cached.digest }
+        let digest = ClusterConfigurationCodec.sha256(try ClusterConfigurationFiles.read(URL(fileURLWithPath: path), maximum: 1 << 30))
+        lock.withLock { workerDigest = (key, digest) }
+        return digest
     }
 
     /// The installed owner a setup names: this executable. DEBUG builds only:

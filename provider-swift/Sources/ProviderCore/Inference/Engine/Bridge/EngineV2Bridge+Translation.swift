@@ -307,6 +307,11 @@ enum EngineV2Translation {
                 return "engine_v2 backend ineligible: \(reason)"
             }
         }
+        // A pair engine's refusal names its reason (e.g. which admission rule
+        // refused), which `localizedDescription` hides as "error 1".
+        if let engineError = error as? DistributedEngineError {
+            return "engine_v2 submit failed: \(engineError)"
+        }
         // Unknown throw: do NOT claim capacity exhaustion (which would be
         // retried) — surface as a generic generation failure (500).
         return "engine_v2 submit failed: \(error.localizedDescription)"

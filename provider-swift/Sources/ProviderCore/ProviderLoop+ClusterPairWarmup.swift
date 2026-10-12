@@ -47,8 +47,13 @@ extension ProviderLoop {
             return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
         }
         let requestID = "cluster-warmup-\(UUID().uuidString.prefix(12).lowercased())"
+        // Every sampling knob explicit and greedy: an omitted knob takes the model's
+        // generation_config default (e.g. Qwen top_p 0.95 / top_k 20), which the
+        // pair engine refuses as non-greedy (`unsupportedRequest`), so the canary
+        // would retire every pair it was meant to warm.
         let request = ChatCompletionRequest(model: modelID, messages: [ChatMessage(role: "user", content: "Reply with OK.")],
-                                            temperature: 0, max_tokens: clusterWarmupMaxTokens, stream: true)
+                                            temperature: 0, top_p: 1, top_k: 0, max_tokens: clusterWarmupMaxTokens,
+                                            repetition_penalty: 1, presence_penalty: 0, frequency_penalty: 0, stream: true)
         let stream = await bridge.submit(request: request, requestId: requestID)
         let outcome = ClusterWarmupOutcome()
         let consumer = Task {

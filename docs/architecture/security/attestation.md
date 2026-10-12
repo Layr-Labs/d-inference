@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-10
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the
@@ -38,6 +38,27 @@ privacy, challenge and liveness checks. This reports owner eligibility only;
 it neither changes the public trust floor nor creates App Attest/legacy evidence.
 
 MDM removal guidance is a separate local operation. `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift` (`installedTarget`) validates the exact Darkbloom profile and, when needed, uses `ProfileInventoryAuthorization.readAuthenticatedProfiles` for a fixed read-only inventory. That helper requires its own process group to own the foreground terminal before launching native `sudo` authentication, inherits only terminal input/error and captured XML output, and returns no target on denial or background execution. The CLI never removes the profile itself or grants serving permission; coordinator authorization still gates the App Attest path.
+
+## Provider connection control
+
+`ProviderLoop+Serve.swift` consumes `app_attest_shadow`, `trust_status` and
+connection invalidation independently of the ordered inference/model consumer.
+These actor-isolated handlers do not await model work. A suspended model load
+therefore does not postpone starting App Attest or writing received authorization
+to daemon state. Connect, disconnect and stream termination clear the old local
+grant and invalidate the previous App Attest task generation before subsequent
+challenges are handled. Delayed model cleanup does not clear a replacement
+connection's grant.
+
+The existing App Attest client and Apple-operation admission still serialize
+proof work. Cancellation cannot cancel Apple's underlying native call; a late
+callback cannot send an old session's proof through a replacement connection
+after connection invalidation has been processed by the reader.
+Local Apple success is not a completed outbound write or coordinator acceptance.
+This dispatch change adds no retry, grace period or trusted lifetime; the
+coordinator still verifies fresh evidence and enforces expiry and revocation.
+Synchronous actor occupation, system suspension, Apple service availability and
+transport failure remain separate availability limits.
 
 ## Presentation and dispatch history
 

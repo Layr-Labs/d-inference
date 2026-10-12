@@ -1,9 +1,9 @@
 # Release a provider version
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-08
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
-constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
+constants, compile selected changelog fragments, push a `vX.Y.Z` tag, approve the `prod`
 environment, and let [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml)
 build, sign, notarize, retain, stage and register the bundle. The coordinator
 re-downloads artifacts and requires independent App Attest qualification before
@@ -18,11 +18,12 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-### 0.9.19 candidate rollout
+### Published 0.9.19
 
-**0.9.19 is prepared, not published or qualified.** This candidate adds the
-[SSD write-endurance correction](../../CHANGELOG.md#0919---prepared-candidate-not-published).
-Before publication, verify `scripts/check-release-version.sh 0.9.19`, the full
+`v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
+from source `31a6dcbc658007ba160455f73749fe88960f9697`. It includes the
+[SSD write-endurance correction](../../CHANGELOG.md#v0919).
+For a new candidate, verify `scripts/check-release-version.sh`, the full
 provider/MLX build, LaunchAgent integration and provider regression suites, and
 the exact signed artifact. Confirm that cache reconstruction and provider
 restart retain the write budget, and measure live disk writes separately from
@@ -32,9 +33,11 @@ version preparation is not authorization to tag, register, publish or deploy.
 
 ### 0.9.18 candidate rollout
 
-**0.9.18 is prepared, not published or qualified.** The latest published release
-at preparation is 0.9.17. The [changelog](../../CHANGELOG.md) identifies the
-merged provider, pinned SDK and nested MLX changes; pending PRs are excluded.
+`v0.9.18` was [published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
+from source `f57a671856bd7a9dd3646e0c77db6ef46751c854`. The steps below retain
+its rollout checks for future candidates and older deployments; publication
+does not establish that every environment or optional feature was activated.
+The [changelog](../../CHANGELOG.md#v0918) identifies included source changes.
 The paired version constants do not change `GET /v1/releases/latest` until
 registration succeeds.
 
@@ -492,17 +495,22 @@ built binary (`darkbloom 0.9.15` or `0.9.15`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.
 
-### 2. Write the changelog entry
+### 2. Compile selected changelog fragments
 
-`CHANGELOG.md` is hand-written, newest first. Convention (from the existing
-headings): while in development the top section is
-`## Unreleased (YYYY-MM-DD) — <theme>`; at release time rename it to
-`## vX.Y.Z (shipped; YYYY-MM-DD)` (or `## Release candidate vX.Y.Z (not
-shipped; YYYY-MM-DD)` for a candidate that was tagged but not promoted).
-Bullets start with a bold lead-in (`- **Per-request profiler** — …`) and name
-exact identifiers (tables, env vars, message fields). Nothing in the pipeline
-reads `CHANGELOG.md`; the release row's `changelog` field comes from the **tag
-message** (step 4), so write the tag message from this entry.
+Before an authorized release, run `make changelog-check` and preview the selected
+notes with `python3 scripts/changelog.py render --version X.Y.Z --date YYYY-MM-DD NAME.md ...`.
+The names are basenames from `changelog.d/`; omitting them selects every pending
+note. Review tag-bound source inclusion, then insert the rendered section above
+the previous release in `CHANGELOG.md` and remove exactly those fragments in the
+release-preparation commit. Rendering neither edits history nor consumes notes.
+Never regenerate the root changelog in ordinary PRs;
+[contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention)
+covers old-PR migration.
+
+The annotated tag message and GitHub publication remain separate release
+contracts. Nothing in the release pipeline reads `CHANGELOG.md`; the release
+row's `changelog` field comes from the **tag message** (step 4), so write the tag
+message from the reviewed entry.
 
 ### 3. Merge to `master` and wait for CI
 

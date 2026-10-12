@@ -170,7 +170,7 @@ final class CBv2OwnedRequestState {
                     .deliver(to: observer, check: check)
             }
             try validateOutput(output)
-            try validateState(after: committedTokens + tokenCount)
+            try validateState(after: committedTokens + tokenCount, storageViews: tokenCount > 1 || !pagedHost)
             try check()
             try evaluation!.commit()
             evaluation = nil; evaluationWasStaged = false
@@ -304,7 +304,15 @@ final class CBv2OwnedRequestState {
         }
     }
 
-    func validateState(after count: Int) throws {
+    /// A paged host's row snapshot is a page gather per attention layer: built
+    /// after every decode token it costs the one-request worker 6-12 % of its
+    /// decode rate (the batch loop never built it). One-token decode steps on a
+    /// paged host check each row's frontier and binding; the attendable views'
+    /// shape and dtype are checked at adoption, after every prefill frame and
+    /// after every speculative window, as before.
+    var pagedHost: Bool { geometry.host?.kind == .paged }
+
+    func validateState(after count: Int, storageViews: Bool = true) throws {
         // A host's caches are shared: bind this request's rows (a no-op when
         // they are bound already) before checking what the caches hold.
         if hosted { _ = bank.layerCaches(rowStates: [rows]) }
@@ -317,6 +325,7 @@ final class CBv2OwnedRequestState {
                 geometry.caches[index].positionOffsets.asArray(Int32.self) == [Int32(count)] else {
                 throw ProbeError("CBv2 KV ownership or device token frontier differs")
             }
+            guard storageViews else { continue }
             let snapshot = row.snapshot()
             let shape = [1, kind.kvHeads, retained, kind.headDim]
             guard snapshot.offset == count, snapshot.keys.shape == shape, snapshot.values.shape == shape,

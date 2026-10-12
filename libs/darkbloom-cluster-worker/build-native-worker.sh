@@ -90,10 +90,12 @@ fi
 # build writes macOS-layout bundles (`Contents/Resources`), where the lookup
 # never finds it, so a paged stage would refuse to load. Place the one source
 # beside the binary, as the metallib is; never two different copies.
-shopt -s nullglob
-paged_sources=("$binary_dir"/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal
-  "$binary_dir"/mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/pagedattention.metal)
-shopt -u nullglob
+# (Literal paths: nullglob would keep a missing one, so keep only regular files.)
+paged_sources=()
+for candidate in "$binary_dir/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal" \
+    "$binary_dir/mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/pagedattention.metal"; do
+  if [[ -f "$candidate" && ! -L "$candidate" ]]; then paged_sources+=("$candidate"); fi
+done
 if [[ ${#paged_sources[@]} == 0 || ! -s "${paged_sources[0]}" ]]; then
   echo 'Built MLXLMCommon bundle carries no paged-attention source' >&2
   exit 1

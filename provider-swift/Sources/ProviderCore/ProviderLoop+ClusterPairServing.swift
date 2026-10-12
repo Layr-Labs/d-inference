@@ -70,9 +70,18 @@ public struct ClusterPairServingContext: Sendable {
             let peer: any ClusterWorkerEndpoint
             do { peer = try follower(start, relay) } catch { relay?.cancel(); throw error }
             // A failed wait for readiness already asked both ranks to clean up.
-            let pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
-                startupDeadline: now + startupAllowanceNanoseconds,
-                timing: timing, keepWarm: .standard)
+            let pair: ClusterWorkerPair
+            do {
+                pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
+                    startupDeadline: now + startupAllowanceNanoseconds,
+                    timing: timing, keepWarm: .standard)
+            } catch {
+                // The follower's refusal names why; the pair alone only sees its link close.
+                if let link = peer as? ClusterLinkWorkerEndpoint, let reason = link.refusalReason {
+                    throw ClusterPairSlotError.notServing("the follower refused its rank: \(reason) (\(error))")
+                }
+                throw error
+            }
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens) }
             catch { Task { await pair.shutdown() }; throw error }
         }

@@ -301,6 +301,11 @@ final class NativePairMemberSession: @unchecked Sendable {
             stopServing()
             condition.lock(); if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
         }
+        // The owner's own diagnostics (its worker's stderr tail) are the only
+        // record of why a pair did not form or a worker ended: keep them.
+        if let tail = condition.withLock({ endpoint })?.diagnosticTail, !tail.isEmpty {
+            nativeMemberLog.info("committed session \(start.common.epoch) rank \(installation.rank) owner diagnostics: \(Self.diagnosticSummary(tail))")
+        }
         let cancelJoined = cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success
         condition.lock()
         let reusable = cancelJoined && ((!committed && !launched) || (clean && outcome == "released"))
@@ -308,6 +313,14 @@ final class NativePairMemberSession: @unchecked Sendable {
         ownedRunFinished = true; condition.broadcast()
         condition.unlock()
         onFinished(self, reusable)
+    }
+    /// The last 4 KiB of an owner's diagnostics on one line, control characters removed.
+    static func diagnosticSummary(_ tail: Data, limit: Int = 4096) -> String {
+        let text = String(decoding: tail.suffix(limit), as: UTF8.self)
+        let lines = text.split(whereSeparator: \.isNewline).map { line in
+            String(String.UnicodeScalarView(line.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))
+        }
+        return (tail.count > limit ? "... " : "") + lines.filter { !$0.isEmpty }.joined(separator: " | ")
     }
     /// Hands the launched owner to the serving host. A host that cannot serve
     /// ends the session: cancellation, native cleanup, release.

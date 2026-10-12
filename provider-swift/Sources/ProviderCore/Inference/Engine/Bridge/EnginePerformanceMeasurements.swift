@@ -145,7 +145,9 @@ struct EnginePerformanceMeasurements {
             value = restart || now - at > EnginePerformanceMeasurements.freshness
                 ? tps : 0.3 * tps + 0.7 * value
             count = count == .max ? .max : count + 1
-            at = now
+            // Completed work can arrive out of order. Freshness follows the
+            // newest observation, not the last receipt consumed.
+            at = max(at, now)
         }
         func wire(now: ContinuousClock.Instant) -> PerformanceRateObservation {
             let seconds = max(0, WedgeMonitor.seconds(now - at))

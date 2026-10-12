@@ -212,7 +212,9 @@ final class CBv2OwnedRequestState {
             }
             let caches = bank.layerCaches(rowStates: [rows])
             evaluation = try recurrent.bind(); evaluationWasStaged = false
-            let outputs = try forward(caches, evaluation!)
+            let outputs = try Self.buildingWindow(bank: bank, pagedHost: pagedHost) {
+                try forward(caches, evaluation!)
+            }
             let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
             guard evaluation!.isCaptured else {
                 throw ProbeError("CBv2 speculative window did not capture its recurrent positions")
@@ -224,6 +226,23 @@ final class CBv2OwnedRequestState {
             isFailed = true
             throw error
         }
+    }
+
+    /// Builds a speculative window's forward. On a paged host every layer
+    /// cache attends the `1 + k` window one query column at a time (the
+    /// one-token decode kernel per column), exactly as the single-Mac
+    /// engine's MTP verification round does; otherwise a paged cache serves
+    /// the window as a prompt chunk and re-gathers the request's whole
+    /// history from its pages per attention layer per round, which made MTP
+    /// decode collapse with context (9B at 30K: 25.7 vs 133 tok/s
+    /// contiguous). Contiguous storage keeps the window it always had.
+    static func buildingWindow<R>(bank: CBv2LayerCacheBank, pagedHost: Bool,
+                                  _ forward: () throws -> R) throws -> R {
+        guard pagedHost else { return try forward() }
+        guard bank.supportsMTPRectangularVerification else {
+            throw ProbeError("Paged stage KV cannot serialise a speculative window")
+        }
+        return try bank.withMTPRectangularVerification(forward)
     }
 
     /// After the caller evaluated the roots `beginWindow` returned.

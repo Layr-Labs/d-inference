@@ -79,7 +79,7 @@ import DarkbloomClusterProtocol
 
     @Test func theShippedRecordsAreAllUsed() {
         #expect(!ClusterPairServingGrants.records.isEmpty)
-        #expect(ClusterPairServingGrants.records.allSatisfy(\.isConsistent))
+        #expect(ClusterPairServingGrants.records.allSatisfy { $0.isConsistent })
         #expect(ClusterPairServingGrants.decisions.ignored == 0)
         #expect(ClusterPairServingGrants.records.allSatisfy { $0.producer == "darkbloom-cluster-pair-check record" })
     }

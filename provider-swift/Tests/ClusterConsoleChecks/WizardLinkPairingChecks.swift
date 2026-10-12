@@ -30,7 +30,7 @@ extension ClusterConsoleCheck {
         var d = WizardDrive(size: .init(columns: 100, rows: 40))
         _ = d.state.begin(); d.send(.snapshot(lone()))
         expectEqual(d.state.step, .pair, "a lone Mac opens at step 3")
-        expect(d.text.contains("Pair over the link (no SSH)") && d.text.contains("Listen: this Mac waits"), "step 3 offers the link: \(d.text)")
+        expect(d.text.contains("Pair over the link (no SSH)") && d.text.contains("Pair: press l on both Macs"), "step 3 offers the link: \(d.text)")
         expectEqual(d.key(.character("l")), [.pairOverLink(connect: nil)], "l starts the ceremony as listener")
         expectEqual(d.key(.character("l")), [], "a second l does not start another")
         expect(d.state.notice?.contains("already running") == true, "and says why")

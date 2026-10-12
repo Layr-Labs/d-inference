@@ -118,15 +118,19 @@ final class ClusterSetupLinkPairingRunner: @unchecked Sendable {
         }
         let chipName = (try? HardwareDetector.detect().chipName) ?? "Mac"
         let participant = ClusterPairingProvider.participant(identity: identity, chipName: chipName, interface: interface, store: store, clusterID: nil)
-        let options = ClusterLinkPairing.Options(role: peer == nil ? .listener : .connector, interface: interface, peerAddress: peer)
+        var options = ClusterLinkPairing.Options(role: peer == nil ? .listener : .connector, interface: interface, peerAddress: peer)
+        // No address: find the other Mac on the cable, or wait there for it (it finds this one).
+        if peer == nil { options.discovery = .find }
         let callbacks = ClusterLinkPairing.Callbacks(progress: { progress in
             switch progress {
+            case .searching(let name):
+                events(.waiting("Looking for the other Mac on \(name)\u{2026}"))
             case .listening(let name, let port):
                 let address = (try? ClusterLinkInterfaceAdmission.select(interface: name, localAddress: nil, peerAddress: nil,
                     policy: .thunderboltOnly, inspector: ClusterLinkSystemInterfaceInspector()))?.local.address.dottedDecimal
-                let other = address.map { "on the other Mac press c and type \($0)" + (port == ClusterLinkPairing.defaultPort ? "" : " (port \(port))")
-                    + ", or run `darkbloom cluster pair --connect \($0)`" } ?? "on the other Mac press c and type this Mac's link address"
-                events(.waiting("Listening on \(name) for 10 minutes: \(other)."))
+                let other = "on the other Mac press l: it finds this Mac by itself" + (address.map { " (or press c and type \($0)"
+                    + (port == ClusterLinkPairing.defaultPort ? "" : ", port \(port)") + ")" } ?? "")
+                events(.waiting("Waiting on \(name) for the other Mac, up to 10 minutes: \(other)."))
             case .dialing: events(.waiting("Dialing the other Mac over the link\u{2026}"))
             case .connected: events(.waiting("Connected over the link; exchanging keys\u{2026}"))
             case .refused(let reason): events(.waiting("Link connection refused (\(reason)); still trying\u{2026}"))

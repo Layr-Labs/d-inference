@@ -41,6 +41,8 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
         ClusterLinkPairing.Callbacks(progress: { [weak self] progress in
             guard let self else { return }
             switch progress {
+            case .searching(let interface):
+                self.say("Looking for the other Mac on \(interface)…")
             case .listening(let interface, let port):
                 self.say("Listening on \(interface), port \(port), for \(Int(ClusterPairingPolicy.codeLifetimeSeconds / 60)) minutes.")
                 if let command = otherMacCommand(interface, port) { self.say("On the other Mac run:  \(command)") }

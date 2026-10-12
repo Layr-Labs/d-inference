@@ -46,6 +46,9 @@ import Foundation
             ("offer rate limit", offerRateLimit),
             ("link channel: pairing over loopback", linkPairing),
             ("link channel: decline, lockout, expiry", linkRefusals),
+            ("discovery: datagrams, targets, who dials, who yields", discoveryShapes),
+            ("discovery: a listener answers on loopback, rate limit", discoveryLoopback),
+            ("discovery: both press l, no address typed", discoveryCeremony),
             ("pseudo-terminal: both confirm", terminalBothConfirm),
             ("pseudo-terminal: one declines", terminalDecline),
         ]

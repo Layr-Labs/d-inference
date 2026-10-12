@@ -481,7 +481,7 @@ extension ClusterSetupState {
         if linkPairing.running { say("The pairing over the link is already running."); return [] }
         if let refusal = changeBlocker("pairing") { say(refusal); return [] }
         linkPeerConfirmed = false
-        linkPairing = .waiting(connect == nil ? "Starting to listen on the link\u{2026}" : "Dialing the other Mac over the link\u{2026}")
+        linkPairing = .waiting(connect == nil ? "Looking for the other Mac on the link\u{2026}" : "Dialing the other Mac over the link\u{2026}")
         return [.pairOverLink(connect: connect)]
     }
 

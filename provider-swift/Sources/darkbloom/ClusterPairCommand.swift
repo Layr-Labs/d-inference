@@ -4,8 +4,10 @@ import ProviderCore
 
 extension Cluster {
     /// Pairs this Mac with the other Mac on the Thunderbolt link, with no SSH
-    /// (PROD-PLAN S17). Run it on both Macs: one listens, the other connects
-    /// to the address the first prints. Both screens then show the same six
+    /// (PROD-PLAN S17). Run it on both Macs: each looks for the other on the
+    /// cable; the first waits and the second finds it and dials (no address
+    /// to type; `--connect` remains for a link where probes do not pass).
+    /// Both screens then show the same six
     /// digits; type y on each Mac when they match. Each Mac then pins the
     /// other's attested Secure Enclave key, both countersign the cluster
     /// roster the coordinator registers, and both store the key of their link
@@ -14,8 +16,10 @@ extension Cluster {
         static let configuration = CommandConfiguration(commandName: "pair",
             abstract: "Pair with the other Mac over the Thunderbolt link (Secure Enclave keys, a code on both screens, no SSH).")
 
-        @Option(name: .customLong("connect"), help: "The other Mac's link address, as it printed it. Without it this Mac listens.")
+        @Option(name: .customLong("connect"), help: "The other Mac's link address, as it printed it. Without it this Mac finds the other Mac on the cable, or waits for it.")
         var connect: String?
+        @Flag(help: "Only wait for the other Mac (it finds this one); do not look for it first.")
+        var listen = false
         @Option(help: "Link interface, such as en7 or bridge0 (default: the one Thunderbolt interface with IPv4).")
         var interface: String?
         @Option(help: "RDMA device of the link, such as rdma_en7; picks the interface that carries its IPv4.")
@@ -39,7 +43,7 @@ extension Cluster {
             var request = ClusterPairCommandRequest()
             request.connect = connect; request.interface = interface; request.device = device
             request.localAddress = localAddress; request.port = port; request.clusterID = clusterID
-            request.loopbackForTests = loopback; request.lifetimeSeconds = lifetimeSeconds
+            request.loopbackForTests = loopback; request.lifetimeSeconds = lifetimeSeconds; request.listenOnly = listen
             return request
         }
 

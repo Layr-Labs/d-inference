@@ -41,6 +41,21 @@ public enum ClusterLinkPairing {
         /// From the start of the run to the second confirmation.
         public var lifetimeSeconds: Double = ClusterPairingPolicy.codeLifetimeSeconds
         public var limits: ClusterLinkControlLimits
+        /// Finding each other without an address (ClusterLinkPairingDiscovery).
+        public var discovery: Discovery = .off
+        /// `.find`: how long this Mac looks for a listening Mac before it listens itself.
+        public var searchSeconds: Double = 2.5
+
+        public enum Discovery: Sendable, Equatable {
+            /// Only the address given (the connector) or nothing (the listener).
+            case off
+            /// A listener also answers probes, so the other Mac needs no address.
+            case answer
+            /// No address given: dial the Mac that answers a probe; when none
+            /// does, listen (answering probes). If both Macs end up listening,
+            /// the one with the lower address stops and dials the other.
+            case find
+        }
 
         public init(role: ClusterPairingRole, interface: String, localAddress: ClusterLinkIPv4Address? = nil,
                     peerAddress: ClusterLinkIPv4Address? = nil) {
@@ -72,6 +87,8 @@ public enum ClusterLinkPairing {
     }
 
     public enum Progress: Sendable, Equatable {
+        /// Looking for a listening Mac on this interface (discovery `.find`).
+        case searching(interface: String)
         /// Listener: bound; the interface and port to give the other Mac.
         case listening(interface: String, port: UInt16)
         case dialing
@@ -95,9 +112,61 @@ public enum ClusterLinkPairing {
                            inspector: any ClusterLinkInterfaceInspecting = ClusterLinkSystemInterfaceInspector())
         -> Swift.Result<Result, ClusterPairingError> {
         do { try store.checkGate() } catch let error as ClusterPairingError { return .failure(error) } catch { return .failure(.persistenceFailed) }
+        if options.discovery == .find, options.peerAddress == nil {
+            return runFinding(options: options, participant: participant, hooks: hooks, store: store, callbacks: callbacks,
+                              inspector: inspector)
+        }
         if options.role == .connector, options.peerAddress == nil { return .failure(.transport) }
         let driver = Driver(options: options, participant: participant, hooks: hooks, store: store, callbacks: callbacks)
         return driver.run(inspector: inspector)
+    }
+
+    /// Discovery `.find` with no address: dial the one Mac that answers, else
+    /// listen; a listener that hears a listener with a lower address stops
+    /// before any code is shown and dials it instead.
+    static func runFinding(options: Options, participant: ClusterPairingParticipant, hooks: ClusterPairingHooks,
+                           store: ClusterPairingStore, callbacks: Callbacks,
+                           inspector: any ClusterLinkInterfaceInspecting) -> Swift.Result<Result, ClusterPairingError> {
+        let selection: ClusterLinkInterfaceSelection
+        do {
+            selection = try ClusterLinkInterfaceAdmission.select(interface: options.interface, localAddress: options.localAddress,
+                peerAddress: nil, policy: options.policy, inspector: inspector)
+        } catch {
+            store.audit("ceremony_failed", ["reason": "listen_refused"])
+            callbacks.progress(.refused((error as? ClusterLinkInterfaceRefusal).map { "\($0)" } ?? "interfaceRefused"))
+            return .failure(.transport)
+        }
+        let started = DispatchTime.now().uptimeNanoseconds
+        func remaining() -> Double { options.lifetimeSeconds - Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9 }
+        func dial(_ found: ClusterLinkPairingDiscovery.Found) -> Swift.Result<Result, ClusterPairingError> {
+            var connector = options
+            connector.role = .connector
+            connector.peerAddress = found.address
+            connector.port = found.port
+            connector.discovery = .off
+            connector.lifetimeSeconds = max(1, remaining())
+            store.audit("listener_found", ["interface": selection.interface])
+            return Driver(options: connector, participant: participant, hooks: hooks, store: store, callbacks: callbacks)
+                .run(inspector: inspector)
+        }
+        callbacks.progress(.searching(interface: selection.interface))
+        let found = ClusterLinkPairingDiscovery.find(selection: selection, port: options.port,
+                                                     seconds: min(options.searchSeconds, max(0, remaining())))
+        if found.count > 1 {
+            store.audit("ceremony_failed", ["reason": "several_listeners"])
+            callbacks.progress(.refused("severalListeners"))
+            return .failure(.transport)
+        }
+        if let only = found.first { return dial(only) }
+        var listener = options
+        listener.role = .listener
+        listener.peerAddress = nil
+        listener.localAddress = selection.local.address
+        listener.lifetimeSeconds = max(1, remaining())
+        let driver = Driver(options: listener, participant: participant, hooks: hooks, store: store, callbacks: callbacks)
+        let result = driver.run(inspector: inspector)
+        if let other = driver.yieldedTo { return dial(other) }
+        return result
     }
 
     /// One run: the channel endpoint, the session, the timers. Every session
@@ -117,6 +186,9 @@ public enum ClusterLinkPairing {
         var result: Swift.Result<Result, ClusterPairingError>?
         var offers = ClusterPairingOfferBucket()
         var askedPerson = false
+        /// Discovery `.find`: the listener with a lower address this one stopped for.
+        var yieldedTo: ClusterLinkPairingDiscovery.Found?
+        var responder: ClusterLinkPairingDiscovery.Responder?
 
         init(options: Options, participant: ClusterPairingParticipant, hooks: ClusterPairingHooks, store: ClusterPairingStore,
              callbacks: Callbacks) {
@@ -143,6 +215,7 @@ public enum ClusterLinkPairing {
                     listener = created
                     queue.sync { peer = created.peer(for: bootstrapEdge) }
                     callbacks.progress(.listening(interface: created.selection?.interface ?? options.interface, port: port))
+                    if options.discovery != .off, let selection = created.selection { startResponder(selection, tcpPort: port) }
                 } catch {
                     store.audit("ceremony_failed", ["reason": "listen_refused"])
                     callbacks.progress(.refused((error as? ClusterLinkInterfaceRefusal).map { "\($0)" } ?? "bindFailed"))
@@ -170,9 +243,31 @@ public enum ClusterLinkPairing {
             // Let the last message (committed or abort) reach the other Mac before the channel closes.
             let last = queue.sync { peer }
             try? last?.waitUntilAcknowledged(timeout: .seconds(3))
+            responder?.stop()
             listener?.stop()
             client?.stop()
             return queue.sync { result ?? .failure(.transport) }
+        }
+
+        /// Answers probes while listening (best effort: a listener whose
+        /// responder cannot open still pairs with a typed address). With
+        /// `.find`, two listeners that hear each other: the higher address
+        /// keeps listening, the lower one stops (before any code) and dials.
+        private func startResponder(_ selection: ClusterLinkInterfaceSelection, tcpPort: UInt16) {
+            let local = selection.local.address
+            let created = ClusterLinkPairingDiscovery.Responder(selection: selection, udpPort: options.port, tcpPort: tcpPort,
+                announce: options.discovery == .find) { [weak self] other in
+                guard let self, ClusterLinkPairingDiscovery.shouldYield(local: local, other: other.address) else { return }
+                self.queue.async {
+                    guard self.result == nil, self.session == nil, !self.askedPerson else { return }
+                    self.yieldedTo = other
+                    self.store.audit("yielded_to_listener", ["interface": selection.interface])
+                    self.finish(.failure(.transport))
+                }
+            }
+            do { try created.start(); responder = created } catch {
+                store.audit("discovery_unavailable", ["interface": selection.interface])
+            }
         }
 
         // MARK: Channel events (any thread) -> queue

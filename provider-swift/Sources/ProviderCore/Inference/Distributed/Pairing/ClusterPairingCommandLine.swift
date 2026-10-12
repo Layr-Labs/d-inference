@@ -11,6 +11,9 @@ public struct ClusterPairCommandRequest: Sendable {
     public var localAddress: String?
     public var port: Int = Int(ClusterLinkPairing.defaultPort)
     public var clusterID: String?
+    /// Only listen (answering probes): no search first, never dial. Default
+    /// without `connect`: find the other Mac on the cable, or wait for it.
+    public var listenOnly = false
     public var loopbackForTests = false
     public var lifetimeSeconds: Double = ClusterPairingPolicy.codeLifetimeSeconds
 
@@ -20,6 +23,7 @@ public struct ClusterPairCommandRequest: Sendable {
     public func problem() -> String? {
         guard (1024...65_535).contains(port) else { return "--port must be 1024...65535." }
         if let connect, ClusterLinkIPv4Address(connect) == nil { return "--connect takes the IPv4 address the other Mac printed." }
+        if listenOnly, connect != nil { return "Choose --listen or --connect, not both." }
         if let localAddress, ClusterLinkIPv4Address(localAddress) == nil { return "--local-address must be an IPv4 address." }
         if let clusterID, !ClusterPairingLabel.isValid(clusterID) { return "--cluster-id takes letters, digits, '-', '.' and '_' (at most 128)." }
         guard lifetimeSeconds > 0, lifetimeSeconds <= ClusterPairingPolicy.codeLifetimeSeconds else {
@@ -53,6 +57,7 @@ public enum ClusterPairCommandLine {
         options.port = UInt16(request.port)
         options.policy = request.loopbackForTests ? .loopbackForTests : .thunderboltOnly
         options.lifetimeSeconds = request.lifetimeSeconds
+        if peer == nil { options.discovery = request.listenOnly ? .answer : .find }
         let terminal = ClusterPairingTerminal()
         terminal.say("Pairing over the Thunderbolt link: no SSH, no password, nothing to type but y or n.")
         terminal.say("This Mac:       \(ClusterPairingProvider.displayName(chipName: chipName)); Secure Enclave key pin "
@@ -61,8 +66,9 @@ public enum ClusterPairCommandLine {
         let callbacks = terminal.callbacks { interface, port in
             guard let selection = try? ClusterLinkInterfaceAdmission.select(interface: interface, localAddress: local,
                 peerAddress: nil, policy: policy, inspector: ClusterLinkSystemInterfaceInspector()) else { return nil }
-            return "darkbloom cluster pair --connect \(selection.local.address.dottedDecimal)"
-                + (port == ClusterLinkPairing.defaultPort ? "" : " --port \(port)")
+            let portText = port == ClusterLinkPairing.defaultPort ? "" : " --port \(port)"
+            return "darkbloom cluster pair\(portText)   (it finds this Mac; if not: darkbloom cluster pair --connect "
+                + "\(selection.local.address.dottedDecimal)\(portText))"
         }
         let result = ClusterLinkPairing.run(options: options, participant: participant, hooks: ClusterPairingProvider.hooks,
             store: store, callbacks: callbacks)

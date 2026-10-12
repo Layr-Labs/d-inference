@@ -412,8 +412,8 @@ enum ClusterSetupContent {
             if !state.linkPaired {
                 b.text("Each Mac pins the other's attested Secure Enclave key. Both screens show one code; nothing to type but y or n.", from: .wired("pair.link"))
             }
-            b.action("l", state.linkPaired ? "Pair again: this Mac listens" : "Listen: this Mac waits and shows what to type on the other Mac", from: .wired("pair.link"))
-            b.action("c", "Connect: type the address the other Mac shows", from: .wired("pair.link"))
+            b.action("l", state.linkPaired ? "Pair again: press l on both Macs" : "Pair: press l on both Macs; each finds the other on the cable", from: .wired("pair.link"))
+            b.action("c", "Connect to an address the other Mac shows (only if finding it fails)", from: .wired("pair.link"))
         case .enteringAddress(let text):
             b.row([.init("      Other Mac's address: "), .init(" \(text)_ ", .selected)], from: .wired("pair.link"))
             b.text("enter: dial it \u{B7} escape: cancel", .dim, indent: 6, from: .frame)

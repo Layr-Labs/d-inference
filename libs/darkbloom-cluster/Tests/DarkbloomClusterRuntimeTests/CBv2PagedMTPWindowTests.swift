@@ -105,22 +105,38 @@ struct CBv2PagedMTPWindowTests {
         }
         #expect(results[0] == results[1], "paged and contiguous verify windows pick different tokens")
     }
+}
 
-    @Test func pagedPrefillAcrossManyChunksEqualsContiguousRowsBitForBit() throws {
-        // A prompt of several chunks: every later chunk attends the gathered
-        // history with the contiguous backend's symbolic causal mask, so the
-        // paged prefill rows must equal contiguous ones bit for bit.
-        let model = try Synthetic.model()
-        let long = (0..<45).map { ($0 * 37 + 11) % Synthetic.vocabulary }
-        var rows: [[Float]] = []
-        for kind in [ClusterStageKVBackendKind.paged, .contiguous] {
-            let host = try CBv2StageKVHost(model: model, kind: kind, lanes: 1, maximumTokensPerRequest: 64,
-                maximumChunkTokens: Synthetic.chunk)
-            let state = try CBv2OwnedRequestState(geometry: Synthetic.geometry(model, host: host),
-                promptCount: long.count, outputCount: 4)
-            rows.append(try Synthetic.prefill(model, state, long).asType(.float32).asArray(Float.self))
-            try state.retire()
+// Interim default (2026-10-12): a stage that decodes one request at a time with
+// a speculative head stores its KV contiguously unless the launch names a
+// backend; batch lanes and stages without a head keep paged. Model-free.
+@Suite("Stage KV backend default follows what the stage serves")
+struct ClusterStageKVBackendDefaultTests {
+    @Test func oneRequestMTPStagesDefaultToContiguousEverythingElseToPaged() throws {
+        #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: 1) == .contiguous)
+        #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: false, batchLanes: 1) == .paged)
+        for lanes in 2...8 {
+            #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: true, batchLanes: lanes) == .paged)
+            #expect(try ClusterStageKVBackendKind.resolved(environment: [:], speculative: false, batchLanes: lanes) == .paged)
         }
-        #expect(rows[0] == rows[1], "paged prefill row differs from contiguous")
+        // The plain default the other tools read is unchanged.
+        #expect(try ClusterStageKVBackendKind.fromEnvironment([:]) == .paged)
+    }
+
+    @Test func aNamedBackendAlwaysWinsAndAnUnknownOneStopsTheLoad() throws {
+        let name = ClusterStageKVBackendKind.environmentName
+        for speculative in [true, false] {
+            for lanes in [1, 4] {
+                #expect(try ClusterStageKVBackendKind.resolved(environment: [name: "paged"], speculative: speculative,
+                    batchLanes: lanes) == .paged)
+                #expect(try ClusterStageKVBackendKind.resolved(environment: [name: " Contiguous "], speculative: speculative,
+                    batchLanes: lanes) == .contiguous)
+                #expect(throws: (any Error).self) {
+                    _ = try ClusterStageKVBackendKind.resolved(environment: [name: "ring"], speculative: speculative,
+                        batchLanes: lanes)
+                }
+            }
+        }
+        #expect(try ClusterStageKVBackendKind.resolved(environment: [name: "  "], speculative: true, batchLanes: 1) == .contiguous)
     }
 }

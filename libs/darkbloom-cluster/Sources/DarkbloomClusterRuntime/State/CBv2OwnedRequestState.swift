@@ -230,8 +230,11 @@ final class CBv2OwnedRequestState {
 
     /// Builds a speculative window's forward. On a paged host every layer
     /// cache attends the `1 + k` window one query column at a time (the
-    /// one-token decode kernel per column), exactly as the single-Mac
-    /// engine's MTP verification round does; otherwise a paged cache serves
+    /// one-token decode kernel per column), as the single-Mac engine's MTP
+    /// verification round does, with the columns of a one-request window
+    /// dispatched together (`PagedMTPBatchedColumns`: independent decode rows
+    /// of the same kernel, one launch; the cache falls back to one launch
+    /// per column where that is ineligible); otherwise a paged cache serves
     /// the window as a prompt chunk and re-gathers the request's whole
     /// history from its pages per attention layer per round, which made MTP
     /// decode collapse with context (9B at 30K: 25.7 vs 133 tok/s
@@ -242,7 +245,7 @@ final class CBv2OwnedRequestState {
         guard bank.supportsMTPRectangularVerification else {
             throw ProbeError("Paged stage KV cannot serialise a speculative window")
         }
-        return try bank.withMTPRectangularVerification(forward)
+        return try bank.withMTPRectangularVerification(batched: true, forward)
     }
 
     /// After the caller evaluated the roots `beginWindow` returned.

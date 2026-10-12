@@ -317,7 +317,8 @@ public enum QwenStagedGenerationReference {
                 }
                 // The same KV storage as the workers: the oracle must attend as they do.
                 // Two lanes: a phase split adopts into stage 0 while its producer is open.
-                let kvKind = try ClusterStageKVBackendKind.fromEnvironment(processEnvironment)
+                let kvKind = try ClusterStageKVBackendKind.resolved(environment: processEnvironment,
+                    speculative: speculativeDepth != nil, batchLanes: 1)
                 for stage in stages {
                     try CBv2StageKVHost.install(on: stage.loaded, kind: kvKind, lanes: 2,
                         maximumTokensPerRequest: request.maximumTokens, maximumChunkTokens: request.chunkSize)

@@ -23,6 +23,26 @@ public struct DistributedInstalledStartRefusal: Error, CustomStringConvertible, 
     }
 }
 
+/// SSH to the other Mac is a developer and test harness only (owner gate,
+/// 2026-10-11: no SSH in the user path). The product reaches the follower over
+/// the link control channel (a setup with `linkControl`, made by pairing). A
+/// setup that reaches it over SSH (`trust`, no `linkControl`) serves only in a
+/// process started with `DARKBLOOM_CLUSTER_DEVELOPER_SSH=1`, which nothing in
+/// the product sets and the setup never offers.
+public enum DistributedInstalledDeveloperSSH {
+    public static let environmentKey = "DARKBLOOM_CLUSTER_DEVELOPER_SSH"
+
+    static func enabled(_ environment: [String: String]) -> Bool { environment[environmentKey] == "1" }
+
+    /// Refuses a setup whose follower is reached over SSH unless the developer
+    /// flag is set. A link control setup always passes.
+    static func requireFollowerRoute(_ configuration: ClusterConfiguration,
+                                     environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+        guard configuration.linkControl == nil, !enabled(environment) else { return }
+        throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Pair the two Macs again with `darkbloom cluster setup`, so the follower is served over the cable's link control channel")
+    }
+}
+
 /// One start attempt and its retained cleanup obligation. Missing peer proof is
 /// quarantine, never an empty slot or authority to start another cohort.
 public final class DistributedInstalledSession: @unchecked Sendable {
@@ -155,6 +175,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         guard prepared.plan.configuration.role == .leader else {
             throw ClusterConfigurationError.invalid("Only the configured leader starts a provider session")
         }
+        // Before anything is launched: a setup that would reach the follower
+        // over SSH is refused outside the developer harness.
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(prepared.plan.configuration)
         return try .init(prepared: prepared)
     }
 
@@ -270,6 +293,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             // No SSH: the follower member serves this rank over the link.
             endpoint = try link.endpoint(plan: plan, identity: wireIdentity, rank: rank, lifetime: lifetime, relay: relay)
         } else {
+            try DistributedInstalledDeveloperSSH.requireFollowerRoute(plan.configuration)
             guard let trust = plan.configuration.trust else {
                 throw ClusterConfigurationError.invalid("This setup has neither SSH trust nor a link control attachment for its follower")
             }

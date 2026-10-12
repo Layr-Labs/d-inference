@@ -72,6 +72,7 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
         try pairedSetupRefusesLocalSession(fixture)
+        try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)
         try progressGuardIsRequired(fixture,prepared,unguarded:URL(fileURLWithPath:CommandLine.arguments[4]))
         try ordinaryProviderExclusion(fixture)
@@ -89,11 +90,30 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
         return try ClusterConfigurationCodec.decode(JSONSerialization.data(withJSONObject:object),capability:f.capability,capabilitySHA256:f.configuration.capabilitySHA256)
+    }
+    /// No SSH in the user path: a setup that reaches the follower over SSH is
+    /// refused before anything starts unless the developer flag is set; a
+    /// link control setup is never refused for its route.
+    static func developerSSHGate(_ f:InstalledFixture) throws {
+        try require(f.configuration.trust != nil && f.configuration.linkControl == nil,"fixture is not an SSH setup")
+        var message=""
+        do { try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[:]) } catch { message=String(describing:error) }
+        try require(message.contains("over SSH") && message.contains("darkbloom cluster setup") && !message.contains(DistributedInstalledDeveloperSSH.environmentKey),
+            "an SSH setup was not refused without the developer flag (or the refusal offers the flag): \(message)")
+        try rejected{ try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"yes"]) }
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"1"])
+        let link=try changedConfiguration(f){ object in
+            object["trust"]=nil
+            object["linkControl"]=["schema":"darkbloom_cluster_link_control_v1","port":47999,"linkEpoch":UUID().uuidString.lowercased(),
+                                   "edgeID":UUID().uuidString.lowercased(),"secretFile":f.root.appendingPathComponent("link-secret").path]
+        }
+        try require(link.linkControl != nil && link.trust == nil,"link fixture differs")
+        try DistributedInstalledDeveloperSSH.requireFollowerRoute(link,environment:[:])
     }
     /// A setup saved for coordinator pairing loads and validates, and the
     /// session this Mac would launch itself refuses it before any owner starts.

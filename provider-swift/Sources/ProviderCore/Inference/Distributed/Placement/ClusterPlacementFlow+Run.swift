@@ -32,7 +32,7 @@ extension ClusterPlacementFlow {
         } catch {
             throw ClusterConfigurationError.invalid("The other Mac (\(peer.id)) did not give its profile over the pinned SSH route. "
                 + "Either this Mac's identity is not accepted there, its pinned host key differs, or \(toolName) is not installed beside "
-                + "that Mac's worker. Run `\(toolName) device --json` on that Mac and pass the file with --peer-profile instead.")
+                + "that Mac's worker. Run `\(toolName) device --json --index` on that Mac and pass the file with --peer-profile instead.")
         }
         do { return try ClusterDeviceProfile.decode(data) } catch {
             throw ClusterConfigurationError.invalid("The other Mac (\(peer.id)) answered over the pinned SSH route with something that is not a device profile; "
@@ -60,8 +60,9 @@ extension ClusterPlacementFlow {
             throw ClusterConfigurationError.invalid("\(toolName) is not installed beside this Mac's worker (\(tool.path)). "
                 + "It is built and released with the worker; install the two together.")
         }
+        // With its speed index: two Macs' indices relate their speeds when no speed was measured for the model.
         let localProfile = try ClusterDeviceProfile.decode(DistributedCapabilityProbe.run(executable: tool,
-            arguments: ["device", "--json"], deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
+            arguments: ["device", "--json", "--index"], deadline: deadline, maximumOutputBytes: ClusterDeviceProfile.maximumEncodedBytes))
         let layout = try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["layout", "--model-dir", local.modelDirectory, "--json"], deadline: deadline,
             maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))

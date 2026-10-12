@@ -9,6 +9,7 @@
 
 import Foundation
 import MLXLMCommon
+import ProviderAppAttest
 
 public enum LaunchAgent: Sendable {
 
@@ -298,7 +299,7 @@ public enum LaunchAgent: Sendable {
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
     ///
-    /// One value-conditional entry rides along: the operator drain
+    /// A value-conditional entry rides along: the operator drain
     /// refinement of the expert-slice route
     /// (`GemmaOptimizationEnvironment.daemonDrainPassthrough`). Serving
     /// defaults to `trust`; launchd does not inherit the installing shell, so
@@ -313,6 +314,11 @@ public enum LaunchAgent: Sendable {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value
             }
+        }
+        // Persist only the worker opt-in, never native diagnostic/fault flags.
+        let workerKey = AppAttestWorkerSelection.qualificationEnvironment
+        if environment[workerKey] == "1" {
+            out[workerKey] = "1"
         }
         // An explicitly empty/invalid memory policy fails toward free-only in
         // foreground mode too. Persist its canonical value instead of dropping

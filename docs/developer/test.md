@@ -1397,6 +1397,12 @@ new diagnostics/build-source edits. These focused owners cover distinct boundari
 The [endpoint-resumption and logout suites](#provider-endpoint-resumption-and-logout)
 cover the separate protocol-1 and local credential boundaries.
 
+`LaunchAgentEnvironmentTests` checks exact-`1` worker opt-in through serialized
+daemon plists while excluding diagnostic/fault flags. `AppAttestUpdateLifecycleTests`
+checks latched worker dispatch and excludes the legacy stall-restart monitor;
+`AppAttestQualificationCommandTests` rejects the unsupported component-only
+`transport-resumption` scenario before reading private inputs.
+
 Use the [signed native qualification procedure](../../scripts/nativequalification/README.md#actual-apple-test)
 only with explicit authorization and isolated credentials; run its backend
 counterpart from sibling `darkbloom-platform`. Its

@@ -1,5 +1,7 @@
 version: "1.1"
 created: "2026-05-14"
+# Stage D worker boundary documented 2026-10-12 in TB-011: default-off candidate,
+# not production qualification or a revalidation of historical threat entries.
 # Provider endpoint-resumption and logout lifecycle coverage added 2026-10-12:
 # A-008, TB-011 and T-053 now describe the provider wire/custody
 # boundary and platform-owned retained evidence. This scoped source review does
@@ -1161,6 +1163,17 @@ trust_boundaries:
       nonce/signature/counter, exact Mac ACL and authenticated code measurement before
       EvaluateAuthorization evaluates the serving policy. Names containing shadow
       remain in the shared protocol; only an explicit serving policy grants permission.
+
+      The Stage D supervised worker candidate is default-off, selected only with
+      DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION=1, and is not production-qualified.
+      The parent retains the process endpoint private key; a child of the same exact
+      Developer ID-signed executable performs Apple calls. Both peers authenticate
+      kernel audit and exact-code identity over bounded, typed IPC. A stuck worker
+      must be terminated and reaped before replacement; failed retirement quarantines
+      its slot. Worker failure does not enable fallback Apple calls in the parent,
+      bypass verification, add trust or change proof/authorization lifetimes.
+      Consumers still rely on the coordinator's proof verdict. Boundary and code map:
+      docs/architecture/security/identity-binding.md#supervised-app-attest-worker-candidate.
 
       Endpoint-resumption protocol 1 is separate from Apple-proof protocol 3.
       Its 4 KiB strict codec and domain-separated boxes bind a fresh 32-byte socket

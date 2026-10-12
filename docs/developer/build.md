@@ -1104,6 +1104,9 @@ loopback and software callbacks; they do not qualify the signed release.
 
 For the default-off supervised worker candidate, use the separate
 [local signed-app procedure](../../scripts/nativequalification/README.md#build-and-sign).
+The [worker opt-in](../reference/configuration.md#app-attest-worker-qualification)
+also reaches background serving through the provider's saved LaunchAgent plist;
+selection does not qualify an artifact, and diagnostic/fault flags are not forwarded.
 Freeze the provider source and take exclusive `.build` ownership before building;
 diagnostics/build-source edits require a fresh build and artifact identity, not
 the earlier test receipt. This staging helper does not publish, notarize, alter

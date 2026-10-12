@@ -32,6 +32,7 @@ private final class QualificationBundleAnchor {}
         for arguments in [
             ["--app-attest-qualification-v1"],
             ["--app-attest-qualification-v1", "ws://127.0.0.1:8080/ws/provider", "/must-not-read", "sign"],
+            ["--app-attest-qualification-v1", "ws://127.0.0.1:8080/ws/provider", "/must-not-read", "transport-resumption"],
             ["--app-attest-qualification-v1", "ws://127.0.0.1:8080/ws/provider", "/must-not-read", "worker-recovery", "--pid", "1"],
             ["--app-attest-qualification-v1", "ws://127.0.0.1:8080/ws/provider", "/must-not-read", "worker-recovery", "--endpoint", "anything"],
         ] {

@@ -583,12 +583,13 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 ### App Attest worker qualification
 
 These are internal qualification opt-ins, **not production-ready configuration**.
-They use exact `1`, not the general boolean parsing convention above. Neither is
-forwarded by the installed LaunchAgent; no `provider.toml` setting enables them.
+They use exact `1`, not the general boolean parsing convention above. Only the
+worker opt-in is forwarded by `darkbloom start` into the installed LaunchAgent;
+native diagnostic and fault-injection flags are not. No `provider.toml` setting enables them.
 
 | Variable | Values / default | Read in | Effect |
 |---|---|---|---|
-| `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/ProviderAppAttest/Worker/WorkerProtocol.swift` (`AppAttestWorkerSelection`); `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`usesAppAttestWorker`) | Select the supervised worker candidate. Default remains in-process App Attest; candidate failures do not fall back to in-process Apple calls or restart inference for a worker stall |
+| `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/ProviderAppAttest/Worker/WorkerProtocol.swift` (`AppAttestWorkerSelection`); `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`usesAppAttestWorker`); `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`passthroughEnvironment`) | Select the supervised worker candidate in foreground or background serving. Exact `1` is persisted in the provider plist; stop/start without it restores the default in-process path. Candidate failures do not fall back to in-process Apple calls or restart inference for a worker stall |
 | `DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/darkbloom/AppAttestQualificationCommand.swift` (`runIfRequested`); `scripts/nativequalification/stage-signed-app.sh` | Opt in to local signed-app staging/the private diagnostic entry; the diagnostic also requires the worker flag, signed resources and isolated loopback inputs. Does not enable serving or approve a build |
 
 The [worker security boundary](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)

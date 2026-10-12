@@ -33,8 +33,19 @@ private actor UpdateRetiringWorker: AppAttestWorkerExchangeClient {
     }
 }
 
+private actor DispatchFailingWorker: AppAttestWorkerExchangeClient {
+    var calls = 0
+    func respond(to request: AppAttestShadowPayload, status: AppAttestStatus) async throws -> AppAttestWorkerReply {
+        calls += 1
+        throw AppAttestWorkerError.deadlineExceeded
+    }
+    func cancelExchange() async throws {}
+    func stop() async throws {}
+}
+
 private extension ProviderLoop {
     func installUpdateRetiringWorker(_ worker: UpdateRetiringWorker) { appAttestWorkerClient = worker }
+    func installDispatchFailingWorker(_ worker: DispatchFailingWorker) { appAttestWorkerClient = worker }
 }
 
 private struct WorkerUpdateFixture {
@@ -89,6 +100,44 @@ private struct WorkerUpdateFixture {
 }
 
 @Suite(.serialized) struct AppAttestUpdateLifecycleTests {
+    @Test(.timeLimit(.minutes(1))) func qualificationFlagLatchesWorkerDispatchWithoutStallRestart() async {
+        await #expect(processExitsWith: .success) {
+            setenv(AppAttestWorkerSelection.qualificationEnvironment, "1", 1)
+            let fixture = try await WorkerUpdateFixture()
+            defer { Task { await fixture.cleanup() } }
+            unsetenv(AppAttestWorkerSelection.qualificationEnvironment)
+            #expect(await fixture.loop.usesAppAttestWorker)
+            let worker = DispatchFailingWorker()
+            await fixture.loop.installDispatchFailingWorker(worker)
+            let transport = CoordinatorClient(config: AppAttestResumeFixture.config(url: fixture.url.mockProviderWebSocketURL()),
+                stats: AtomicProviderStats(), state: ProviderState())
+            let (events, _) = await transport.start()
+            defer { Task { await transport.shutdown() } }
+            _ = try #require(try await fixture.mock.awaitFirstRegister(timeout: .seconds(5)))
+            var iterator = events.makeAsyncIterator()
+            let (request, reply) = try await workerUpdateRequest("assert", mock: fixture.mock, iterator: &iterator)
+            await fixture.loop.handleAppAttestShadow(request, reply: reply)
+            await fixture.loop.appAttestShadowTask?.value
+            _ = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(5)) { $0.appAttestShadow.count == 1 })
+            #expect(await worker.calls == 1)
+            #expect(fixture.mock.snapshot().appAttestShadow[0].result == "busy")
+            #expect(await fixture.loop.appAttestShadowClient == nil)
+            #expect(await fixture.loop.appAttestStallMonitorTask == nil)
+
+            let (timeoutRequest, timeoutReply) = try await workerUpdateRequest("assert", mock: fixture.mock, iterator: &iterator)
+            var timeout = AppAttestShadowPayload(action: "assertion", session: timeoutRequest.session)
+            timeout.protocolVersion = 3
+            timeout.result = "operation_timeout"
+            let generation = await fixture.loop.appAttestShadowGeneration
+            await fixture.loop.finishAppAttestShadow(timeout, localStatus: nil, prepared: false,
+                generation: generation, reply: timeoutReply)
+            _ = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(5)) { $0.appAttestShadow.count == 2 })
+            #expect(fixture.mock.snapshot().appAttestShadow[1].result == "operation_timeout")
+            await fixture.loop.startAppAttestStallMonitorIfNeeded()
+            #expect(await fixture.loop.appAttestStallMonitorTask == nil)
+        }
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])
     func everyRestartWaitsForWorkerBeforeReleasingLease(alreadyInstalled: Bool) async throws {
         let fixture = try await WorkerUpdateFixture()

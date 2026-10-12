@@ -61,7 +61,7 @@ enum AppAttestQualificationCommand {
             guard ProcessInfo.processInfo.environment[AppAttestQualificationCommand.environmentKey] == "1",
                   AppAttestWorkerSelection.qualificationCandidateEnabled else { throw Failure.optInRequired }
             guard arguments.count == 4, arguments[0] == AppAttestQualificationCommand.argument,
-                  ["worker-recovery", "callback-recovery", "transport-resumption"].contains(arguments[3]) else { throw Failure.invalidArguments }
+                  ["worker-recovery", "callback-recovery"].contains(arguments[3]) else { throw Failure.invalidArguments }
             url = try AppAttestQualificationCommand.coordinatorURL(arguments[1])
             let directory = try PrivateInputs(path: arguments[2])
             token = try directory.hexadecimalFile("auth-token")

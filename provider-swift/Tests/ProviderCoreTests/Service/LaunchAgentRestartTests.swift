@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+@testable import ProviderAppAttest
 import Testing
 
 @testable import ProviderCore
@@ -49,6 +50,27 @@ struct LaunchAgentRestartTests {
 
 @Suite("LaunchAgent environment passthrough")
 struct LaunchAgentEnvironmentTests {
+    @Test func workerOptInSurvivesDaemonPlistWithoutDiagnosticFlags() throws {
+        let key = AppAttestWorkerSelection.qualificationEnvironment
+        for value: String? in [nil, "", "0", "true", "yes", " 1 ", "1"] {
+            var environment = [
+                "DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION": "1",
+                "DARKBLOOM_NATIVE_SERVE_QUALIFICATION": "1",
+                "DARKBLOOM_NATIVE_WORKER_SERVE_QUALIFICATION": "1",
+                "UNRELATED_SECRET": "excluded",
+            ]
+            environment[key] = value
+            let plist = LaunchAgent.makeServicePlist(
+                label: LaunchAgent.label, programArguments: ["/test/darkbloom", "start", "--foreground"],
+                logPath: "/test/provider.log", environment: environment)
+            let encoded = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            let decoded = try #require(try PropertyListSerialization.propertyList(from: encoded, format: nil) as? [String: Any])
+            let forwarded = decoded["EnvironmentVariables"] as? [String: String] ?? [:]
+            #expect(forwarded == (value == "1" ? [key: "1"] : [:]))
+            #expect(AppAttestWorkerSelection.enabled(in: forwarded) == (value == "1"))
+        }
+    }
+
     @Test func memoryPolicyMatchesForegroundIncludingInvalidAndEmptyValues() {
         let key = SystemMemory.availabilityEnvironmentKey
         for value: String? in [nil, "reclaimable", "free-only", " FREE-ONLY ", "typo", ""] {

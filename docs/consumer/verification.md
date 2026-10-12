@@ -22,6 +22,14 @@ keeps suspended model work from delaying App Attest and status handling. It
 does not extend a consumer-visible authorization deadline or replace the
 coordinator's decision.
 
+The default-off Stage D [supervised App Attest worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate),
+selected with `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION=1`, keeps the endpoint
+private key in the parent while a child of the same signed executable makes
+Apple calls. The peers authenticate over bounded IPC, and a stuck worker must
+be retired before replacement. This adds no verification bypass or extra trust,
+and changes no proof or authorization lifetime. Consumers still read the
+coordinator's proof verdict as before; the candidate is not production-qualified.
+
 Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
 
 Under the upcoming [frozen legacy MDM policy](../architecture/security/enrollment.md#frozen-legacy-authorization-cohort), legacy MDM authorization is restricted to already successfully verified devices with a durable frozen authenticated account/key/serial association. Soft-deleted accounts and provider records cannot qualify for its initial snapshot. New accounts, devices and associations cannot join it after the first upgraded startup, and restarts do not reopen it. Membership alone is not verification: current posture, freshness, revocation and code-identity gates still apply. New identities require qualified App Attest; unsupported OS versions do not create a legacy fallback. No grace period has been chosen and no cohort expiry is implemented.

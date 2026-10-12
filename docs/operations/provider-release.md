@@ -20,7 +20,11 @@ hashes and permanent revocation remain enforced. See
 
 Production secret jobs require a verified signed annotated tag in reviewed
 `master` ancestry; dev/manual/recovery runs use trusted `master`. Resolution runs
-from trusted `master` policy, then pins downstream checkouts to the verified SHA. Jobs use
+from trusted `master` policy, then pins downstream checkouts to the verified SHA.
+Production publication rechecks the tag signature/target and current master
+ancestry immediately before registration; a tag withdrawn before that check
+cannot publish.
+Jobs use
 existing repository-scoped secrets without `prod`/`dev` environment attachments.
 No shared environment or security setting changes are needed. This assumes
 trusted repository writers; YAML checks do not defend against a hostile writer
@@ -101,8 +105,8 @@ registration succeeds.
 
 Released **0.9.17** separates normal model selection from Autopilot's
 verified cached inventory using protocol 3. Version preparation does not publish
-the release; tag only the reviewed merged commit and qualify the retained signed
-artifact before production registration. Validate a one-model selection with
+the release; tag only the reviewed merged commit and register the exact retained
+signed artifact through CI. Validate a one-model selection with
 additional cached models: waiting/shadow enrollment must not load those models,
 change preload or memory policy, or expose them as serving models in My Macs.
 Check explicit overrides, scheduled windows, and selected-model successor updates.

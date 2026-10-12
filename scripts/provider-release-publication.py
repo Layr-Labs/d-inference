@@ -181,11 +181,14 @@ def await_latest(env, payload):
 
 def publish(root, env):
     payload = checked_payload(root, env)
-    if env.get('RELEASE_RESUME_RUN_ID'):
-        from provider_release_resume.api import GitHub, verify_tag
-        if env.get('RELEASE_TAG') != 'v' + payload['version']:
-            raise ValueError('Resumed publication tag and version differ')
-        verify_tag(GitHub(env['GITHUB_REPOSITORY']), env['RELEASE_TAG'], payload['source_commit'])
+    if env['ENV_PREFIX'] == 'prod':
+        from provider_release_resume.api import GitHub, verify_source, verify_tag
+        tag = env.get('RELEASE_TAG') or env.get('GITHUB_REF_NAME')
+        if tag != 'v' + payload['version']:
+            raise ValueError('Publication tag and version differ')
+        api = GitHub(env['GITHUB_REPOSITORY'])
+        verify_tag(api, tag, payload['source_commit'])
+        verify_source(api, payload['source_commit'])
     coordinator(env, '/v1/releases', payload)
     # Confirm serving policy is active before public aliases/GitHub publication.
     # An older concurrently staged release must never roll latest aliases back.

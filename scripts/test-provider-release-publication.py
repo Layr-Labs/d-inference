@@ -33,6 +33,18 @@ class PublicationFixture(unittest.TestCase):
         self.payload = PUB.prepare(self.root, bundle, self.env)
         self.env['RELEASE_PAYLOAD_SHA256'] = PUB.sha256(self.root / 'release-payload.json')
         self.env['RELEASE_PROVENANCE_SHA256'] = PUB.sha256(self.root / 'release-provenance.json')
+        source = self.payload['source_commit']
+        self.git_state = {
+            'git/ref/tags/v0.9.8': {'object': {'type': 'tag', 'sha': 'e'*40}},
+            'git/tags/' + 'e'*40: {'verification': {'verified': True}, 'object': {'type': 'commit', 'sha': source}},
+            'commits/' + source: {'commit': {'verification': {'verified': True}}},
+            'git/ref/heads/master': {'object': {'sha': source}},
+            'compare/' + source + '...' + source: {'status': 'identical', 'merge_base_commit': {'sha': source}},
+        }
+        self.source_api = SimpleNamespace(get=lambda path: self.git_state[path])
+        github = patch('provider_release_resume.api.GitHub', return_value=self.source_api)
+        github.start()
+        self.addCleanup(github.stop)
 
 
 class PublicationTests(PublicationFixture):
@@ -62,6 +74,48 @@ class PublicationTests(PublicationFixture):
                 PUB.publish(self.root, env)
             api.assert_not_called()
             upload.assert_not_called()
+
+    def test_tag_and_master_withdrawal_block_normal_and_resumed_publication(self):
+        source = self.payload['source_commit']
+        original = json.dumps(self.git_state)
+        for resumed in (False, True):
+            for failure in ('deleted tag', 'retargeted tag', 'invalid signature', 'unreviewed source'):
+                with self.subTest(resumed=resumed, failure=failure):
+                    self.git_state = json.loads(original)
+                    if failure == 'deleted tag':
+                        del self.git_state['git/ref/tags/v0.9.8']
+                    elif failure == 'retargeted tag':
+                        self.git_state['git/tags/' + 'e'*40]['object']['sha'] = 'f'*40
+                    elif failure == 'invalid signature':
+                        self.git_state['git/tags/' + 'e'*40]['verification']['verified'] = False
+                    else:
+                        self.git_state['compare/' + source + '...' + source]['status'] = 'diverged'
+                    env = dict(self.env)
+                    if resumed:
+                        env.update(RELEASE_RESUME_RUN_ID='99', RELEASE_TAG='v0.9.8')
+                    with patch.object(PUB, 'coordinator') as api, patch.object(PUB, 'upload') as upload, \
+                            patch.object(PUB, 'publish_github_release') as publish:
+                        with self.assertRaises((KeyError, ValueError)):
+                            PUB.publish(self.root, env)
+                        api.assert_not_called()
+                        upload.assert_not_called()
+                        publish.assert_not_called()
+
+    def test_source_revalidation_immediately_precedes_registration(self):
+        events = []
+        def get(path):
+            events.append(path)
+            return self.git_state[path]
+        def api(env, path, payload=None):
+            events.append(path)
+            return self.payload
+        with patch.object(self.source_api, 'get', side_effect=get), \
+                patch.object(PUB, 'coordinator', side_effect=api), patch.object(PUB, 'upload'), \
+                patch.object(PUB, 'publish_github_release'):
+            PUB.publish(self.root, self.env)
+        registration = events.index('/v1/releases')
+        self.assertTrue(events[registration - 1].startswith('compare/'))
+        self.assertIn('git/ref/tags/v0.9.8', events[:registration])
 
     def test_stage_is_not_publication_or_qualification(self):
         self.assertFalse((self.root / 'qualification-request.json').exists())

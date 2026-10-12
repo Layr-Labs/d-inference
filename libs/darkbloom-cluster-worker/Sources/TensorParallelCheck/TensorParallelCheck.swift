@@ -233,13 +233,14 @@ enum RunCommand {
             let g = try QwenTensorParallelGroup(backend: options.backend)
             group = g
             role = .shard(rank: g.rank, size: g.size)
-            note("rank \(g.rank) of \(g.size) over \(options.backend.rawValue)\(options.backend == .ring ? " (correctness only, not a pair timing)" : "")")
+            note("rank \(g.rank) of \(g.size) over \(options.backend.rawValue)\(options.backend.correctnessOnly ? " (correctness only, not a pair timing)" : "")")
             // Every option that changes the collectives (count, order, shape, dtype) is agreed before loading.
             let launch = QwenTensorParallelLaunch(outputCount: outputCount, chunkSize: request.chunkSize,
                 promptTokens: request.promptTokenIDs.count, repeats: options.repeats, warmup: options.warmup,
                 explicitTiming: options.timing == .explicit, bfloat16Partials: options.partials == "bfloat16",
                 hybridPrefillRank: options.mode == "hybrid" ? options.prefillRank : nil)
-            guard try g.agree(launch.agreement),
+            // First exchange: fixed width in every build (4 int32 per rank), so a rank of another build is refused.
+            guard try g.digestsEqual(launch.digest),
                   try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";"))) else {
                 throw Failure("the ranks disagree on the workload, the model configuration, the prompt or the arithmetic environment")
             }
@@ -271,7 +272,7 @@ enum RunCommand {
 
         var report = Report(mode: options.mode + (options.partials == "bfloat16" ? "-bf16-partials" : ""), role: (options.mode == "hybrid" ? "hybrid-" : "") + role.label, rank: group?.rank ?? 0, size: group?.size ?? 1,
             backend: group.map { _ in options.backend.rawValue }, timing: group.map { _ in options.timing.rawValue },
-            correctnessOnly: options.backend == .ring && group != nil, chip: chipName(),
+            correctnessOnly: options.backend.correctnessOnly && group != nil, chip: chipName(),
             modelConfigurationSHA256: configurationSHA, modelID: request.modelID, requestID: request.requestID,
             promptTokens: request.promptTokenIDs.count, promptTokenIDsSHA256: request.promptTokenIDsSHA256,
             outputCount: outputCount, chunkSize: request.chunkSize, environment: snapshot,

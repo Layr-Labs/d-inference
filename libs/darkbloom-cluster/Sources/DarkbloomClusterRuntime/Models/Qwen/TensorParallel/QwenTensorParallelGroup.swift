@@ -8,21 +8,40 @@ import MLX
 /// `ring` is MLX's TCP ring between two ranks on ONE Mac over 127.0.0.1
 /// (`MLX_RANK`, `MLX_HOSTFILE`); it carries real reductions, so it qualifies a
 /// tensor-parallel run's arithmetic and control on one Mac, and it is never a
-/// pair timing or a hardware pass.
+/// pair timing or a hardware pass. `socket` is the same qualification without
+/// MLX's ring (absent from some builds): one TCP connection over 127.0.0.1
+/// (`QwenTensorParallelLocalSocket`), every reduction eager and summed on the
+/// CPU in rank order (IEEE addition of two values is commutative, so the sum
+/// equals JACCL's), correctness only.
 public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
     public enum Backend: String, Sendable, CaseIterable {
         case jaccl
         case ring
+        case socket
+
+        /// Two ranks on one Mac: qualifies arithmetic and control, never a timing.
+        public var correctnessOnly: Bool { self != .jaccl }
     }
 
     public let backend: Backend
     public let rank: Int
     public let size: Int
-    private let handle: mlx_distributed_group
+    private let handle: mlx_distributed_group?
+    private let link: QwenTensorParallelLocalSocket?
     public private(set) var floatingReductions = 0
 
     public init(backend: Backend) throws {
-        if backend == .ring { try Self.validateLocalRing() }
+        if backend.correctnessOnly { try Self.validateLocalRing() }
+        if backend == .socket {
+            let (rank, port) = try Self.localSocketEndpoint()
+            link = try QwenTensorParallelLocalSocket(rank: rank, port: port)
+            handle = nil
+            self.backend = backend
+            self.rank = rank
+            size = 2
+            return
+        }
+        link = nil
         guard mlx_distributed_is_available(backend.rawValue) else {
             throw ProbeError("The \(backend.rawValue) backend is not available in this build; no fallback is allowed")
         }
@@ -37,16 +56,17 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
         rank = Int(mlx_distributed_group_rank(initialized))
         size = Int(mlx_distributed_group_size(initialized))
         guard size == 2, (0..<size).contains(rank) else {
-            mlx_distributed_group_free(initialized)
+            // Fully initialized: deinit frees the group (an explicit free here would free it twice).
             throw ProbeError("Tensor parallel runs exactly two ranks, got rank=\(rank) size=\(size)")
         }
     }
 
-    deinit { mlx_distributed_group_free(handle) }
+    deinit { if let handle { mlx_distributed_group_free(handle) } }
 
     /// Unevaluated all-sum on the CPU stream: the graph decides when it runs.
     public func allSum(_ value: MLXArray) -> MLXArray {
         if [.float16, .bfloat16, .float32].contains(value.dtype) { floatingReductions += 1 }
+        guard let handle else { return socketAllSum(value) }
         var result = mlx_array_new()
         let status = mlx_distributed_all_sum(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
         precondition(status == 0, "\(backend.rawValue) all-sum graph construction failed")
@@ -86,13 +106,17 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
             throw ProbeError("Tensor parallel send: a one-dimensional buffer to another rank")
         }
         eval(value)
+        if let link {
+            try link.send(value.asData(access: .copy).data)
+            return
+        }
         let per = max(1, Self.maximumMessageBytes / value.itemSize)
         var start = 0
         while start < value.size {
             let piece = value[start ..< min(value.size, start + per)]
             var result = mlx_array_new()
             try MLX.withError { error in
-                let status = mlx_distributed_send(&result, piece.ctx, Int32(peer), handle, StreamOrDevice.cpu.ctx)
+                let status = mlx_distributed_send(&result, piece.ctx, Int32(peer), handle!, StreamOrDevice.cpu.ctx)
                 try error.check()
                 guard status == 0 else { throw ProbeError("send graph construction failed: \(status)") }
                 let sent = MLXArray(result)
@@ -116,6 +140,9 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
         case .int32: native = MLX_INT32
         default: throw ProbeError("Tensor parallel receive: unsupported dtype \(dtype)")
         }
+        if let link {
+            return MLXArray(try link.receive(count: count * dtype.size), [count], dtype: dtype)
+        }
         let per = max(1, Self.maximumMessageBytes / dtype.size)
         var pieces: [MLXArray] = []
         var start = 0
@@ -125,7 +152,7 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
             let shape = [Int32(length)]
             try MLX.withError { error in
                 let status = shape.withUnsafeBufferPointer {
-                    mlx_distributed_recv(&result, $0.baseAddress, $0.count, native, Int32(peer), handle, StreamOrDevice.cpu.ctx)
+                    mlx_distributed_recv(&result, $0.baseAddress, $0.count, native, Int32(peer), handle!, StreamOrDevice.cpu.ctx)
                 }
                 try error.check()
                 guard status == 0 else { throw ProbeError("recv graph construction failed: \(status)") }
@@ -137,6 +164,33 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
             start += length
         }
         return pieces.count == 1 ? pieces[0] : concatenated(pieces, axis: 0)
+    }
+
+    /// The socket backend's reduction: this rank's buffer evaluated now and
+    /// exchanged whole, then `rank 0 + rank 1` on the CPU stream. A link failure
+    /// ends the process (a reduction cannot return a partial result).
+    private func socketAllSum(_ value: MLXArray) -> MLXArray {
+        let mine = value.asData(access: .copy)
+        let theirs: Data
+        do { theirs = try link!.exchange(mine.data) } catch {
+            fatalError("tensor-parallel socket reduction failed: \(error)")
+        }
+        let other = MLXArray(theirs, mine.shape, dtype: mine.dType)
+        let local = MLXArray(mine.data, mine.shape, dtype: mine.dType)
+        return rank == 0 ? add(local, other, stream: .cpu) : add(other, local, stream: .cpu)
+    }
+
+    /// The socket backend: this rank (MLX_RANK) and rank 0's listening port
+    /// (the host file's first endpoint).
+    private static func localSocketEndpoint() throws -> (Int, UInt16) {
+        let environment = ProcessInfo.processInfo.environment
+        let file = environment["MLX_HOSTFILE"] ?? ""
+        let hosts = try JSONDecoder().decode([[String]].self, from: Data(contentsOf: URL(fileURLWithPath: file)))
+        guard let rank = Int(environment["MLX_RANK"] ?? ""),
+              let port = UInt16(hosts[0][0].dropFirst("127.0.0.1:".count)), port > 1023 else {
+            throw ProbeError("The local socket needs MLX_RANK and a 127.0.0.1 port above 1023 in MLX_HOSTFILE")
+        }
+        return (rank, port)
     }
 
     /// The local ring may only open two IPv4 loopback endpoints.

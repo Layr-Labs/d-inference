@@ -166,6 +166,7 @@ func checkLaunchAgreement() {
     let base = QwenTensorParallelLaunch(outputCount: 128, chunkSize: 512, promptTokens: 1024, repeats: 2, warmup: true,
                                         explicitTiming: false, bfloat16Partials: false, hybridPrefillRank: nil)
     check(base.agreement == base.agreement, "launch: the same launch agrees with itself")
+    check(base.digest == base.digest, "launch: the same launch has one digest")
     var variants: [(String, QwenTensorParallelLaunch)] = []
     func variant(_ label: String, _ change: (inout QwenTensorParallelLaunch) -> Void) {
         var launch = base
@@ -184,8 +185,10 @@ func checkLaunchAgreement() {
     for (label, launch) in variants {
         check(launch != base, "launch: \(label) variant equals the base")
         check(launch.agreement != base.agreement, "launch: a rank launched with a different \(label) still agrees")
+        check(launch.digest != base.digest, "launch: a rank launched with a different \(label) has the same first-exchange digest")
     }
     check(variants[7].1.agreement != variants[8].1.agreement, "launch: the hybrid prefill ranks agree with each other")
+    check(variants[7].1.digest != variants[8].1.digest, "launch: the hybrid prefill ranks share a digest")
     print("launch agreement: \(variants.count) single-option variants checked")
 }
 

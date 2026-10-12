@@ -148,6 +148,11 @@ func classifierChecks() {
         ("The serving session stopped without being asked to", ["rank 1 ended: its owner exited with status 75"], .collectiveStall),
         ("The serving session stopped without being asked to", ["rank 1 ended: its owner exited with status 1"], .peerLost),
         ("Native owner did not establish bilateral readiness", ["darkbloom-worker-exit-v1 rank=0 termination=exited(75)"], .collectiveStall),
+        // A link follower's refusal: the leader's own error is only that the link closed.
+        ("closed", ["rank 1 follower refused the open: follower is serving another session"], .modelBusy),
+        ("closed", ["rank 1 follower refused the open: bootstrap profile differs from this member's selection"], .planChanged),
+        ("closed", ["rank 1 follower refused the open: open refused: GPT-OSS stage load exceeds the allocator limit: needs 9 of 8 bytes"], .memoryGateRefused),
+        ("closed", ["rank 1 follower refused the open: follower is stopping"], .launchInterrupted),
         ("Native owner did not establish bilateral readiness",
          ["darkbloom-worker-exit-v1 rank=0 termination=signalled(6)\ndarkbloom-worker-tail-v1 GPT-OSS stage load exceeds the allocator limit: needs 9 of 8 bytes"], .memoryGateRefused),
         // The owner's oMLX launch failures (paraphrased failure modes, notes/03 section 9).

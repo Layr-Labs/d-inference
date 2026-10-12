@@ -163,8 +163,8 @@ public enum ClusterFailureClassifier {
         Rule("version", #"unsupported worker protocol version|protocol version|versions? (?:do not match|mismatch|differ)|python local=\S+ remote="#, .versionMismatch),
         Rule("model-identity", #"model identity differs|resident identity differs|checkpoint aggregate mismatch|checkpoint manifest differs|artifact (?:sha-?256 )?differs|installed input identity or sha-256 differs"#, .modelIdentityMismatch),
         Rule("model-missing", #"weight file is missing|model stage is incomplete|missing [^\n]*\.safetensors|model (?:directory|folder) [^\n]*(?:missing|not found)|missing the model|not found on this peer|cannot open installed input"#, .modelMissing),
-        Rule("plan", #"installed matrix changed|not the plan you approved|plan (?:sha-?256 )?differs|plan_mismatch|budgets, roles or layer split changed|leader opened another plan|did not activate the approved plan"#, .planChanged),
-        Rule("busy", #"while a request is (?:being )?served|model is busy|topology change refused"#, .modelBusy),
+        Rule("plan", #"installed matrix changed|not the plan you approved|plan (?:sha-?256 )?differs|plan_mismatch|budgets, roles or layer split changed|leader opened another plan|did not activate the approved plan|differs from this member's (?:cluster or rank|selection)|committed native start differs|native start without its profile|admission epoch differs"#, .planChanged),
+        Rule("busy", #"while a request is (?:being )?served|model is busy|topology change refused|follower is serving another session"#, .modelBusy),
         Rule("listener", #"bindfailed|address already in use|eaddrinuse|listener stopped during startup"#, .listenerFailed),
         Rule("unsupported", #"does not advertise|is not supported|not supported for distributed|no speculative decoding on a pair|cannot shard this model|unsupported generation mode"#, .unsupportedMode),
         Rule("cleanup", #"cleanup is unresolved|ownership cannot be resolved|outlived its own deadline and every signal|remote (?:rank )?kill failed|terminate\(\) (?:threw|failed)"#, .cleanupUnresolved),
@@ -172,7 +172,7 @@ public enum ClusterFailureClassifier {
         Rule("peer-lost", #"peer[ _](?:lost|failure|exited|closed)|peerfailure|rank \d (?:exited|ended|was lost)|worker exited while|lost (?:its|the) peer|connection reset|broken pipe|remote protocol error|ssh (?:exited|closed)"#, .peerLost),
         Rule("worker-crash", #"signalled|terminated by signal|exited with (?:status|code)|launcher terminated|worker failed"#, .workerCrashed),
         Rule("startup-timeout", #"startup exhausted its deadline|did not establish bilateral readiness|startup deadline|preflight deadline expired|metadata deadline expired|timed out|timeout|deadline expired|bindtimedout"#, .startupTimedOut),
-        Rule("interrupted", #"startupinterrupted|shuttingdown|cancellationerror|interrupted"#, .launchInterrupted),
+        Rule("interrupted", #"startupinterrupted|shuttingdown|cancellationerror|interrupted|follower is stopping"#, .launchInterrupted),
         Rule("configuration", #"saved setup|clusterconfigurationerror|configuration"#, .configurationInvalid),
     ]
 

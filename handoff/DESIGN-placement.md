@@ -523,7 +523,8 @@ Typed on purpose, and listed so that nobody mistakes them for detection:
   already differ beyond a near tie on two of four requests, and every pair
   with the M3 Ultra leading an M5 diverged at output 1 of the 4,096-token
   request at cuts 4, 8 and 10 while cut 12 gave the reference's tokens on
-  both pairs. The hand-off is bit-exact (the receiver checks the payload
+  both pairs (and cuts 11 and 16 on the M5 Ultra pair: 64 tokens equal both
+  references, serial and lookahead). The hand-off is bit-exact (the receiver checks the payload
   digest; rank 0's state equals the M3 Ultra reference's), so the departure
   is the composition of two chips' arithmetic, not a defect in the cut: no
   code change in the pair makes those cuts equal, and only a check can say

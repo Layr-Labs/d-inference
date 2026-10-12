@@ -143,6 +143,9 @@ import Foundation
         let gpt = ClusterPairServingGrants.records(runtimeModelID: "registered_gpt_oss_20b")
         require("GPT-OSS: its failed checks restrict its shapes", gpt.restrictsShapes
             && gpt.admits(chipClasses: [m3, m5u], cuts: [12], mode: .pipeline)
+            && gpt.admits(chipClasses: [m3, m5u], cuts: [11], mode: .pipeline)
+            && !gpt.admits(chipClasses: [m3, m5u], cuts: [10], mode: .pipeline)
+            && !gpt.admits(chipClasses: [m3, m5u], cuts: [12], mode: .pipelineCompactDecode)
             && !gpt.admits(chipClasses: [m3, m5u], cuts: [4], mode: .pipeline)
             && !gpt.admits(chipClasses: [m5u, m3], cuts: [12], mode: .pipeline))
         require("a model with no failed check keeps its grant by role and class",
@@ -202,9 +205,10 @@ import Foundation
             (ungated.chosen?.cut ?? 99) <= 10)
         let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
             localProfile: ultra3, peerProfile: ultra5, layout: layout, leader: "mac-one")
-        require("GPT-OSS on an M3 Ultra leading an M5 Ultra is planned only at its passed shape, cut 12 pipeline",
-            decided.result.chosen?.cut == 12 && decided.result.chosen?.mode == .pipeline
-                && decided.result.alternatives.allSatisfy { $0.cut == 12 && $0.mode == .pipeline }
+        // Passed at cuts 11, 12 and 16: the fastest of those, 11, gives the faster M5 Ultra the most layers.
+        require("GPT-OSS on an M3 Ultra leading an M5 Ultra is planned only at its passed shapes, the fastest first",
+            decided.result.chosen?.cut == 11 && decided.result.chosen?.mode == .pipeline
+                && decided.result.alternatives.allSatisfy { [11, 12, 16].contains($0.cut) && $0.mode == .pipeline }
                 && (decided.result.unqualifiedPossible ?? 0) > 0)
         require("the plan says why, with the passed placements",
             decided.lines.contains("Qualified placements")

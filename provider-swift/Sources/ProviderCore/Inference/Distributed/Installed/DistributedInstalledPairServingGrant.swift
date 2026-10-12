@@ -309,7 +309,7 @@ public enum ClusterPairServingGrants {
     /// why. Whatever this decides, a model with a failed check on record is
     /// planned only at shapes a check passed (`records`).
     public static let withheld: [String: String] = [
-        "registered_gpt_oss_20b": "its cross-cable check diverged at cuts 8 and 10 with an M5 Max decoding and at cut 4 with an M5 Ultra decoding (output 1 of the 4,096-token request, reference margins 0.51 to 0.82, not near ties), although cut 12 gave the reference's tokens on both pairs",
+        "registered_gpt_oss_20b": "its cross-cable check diverged at cuts 8 and 10 with an M5 Max decoding and at cut 4 with an M5 Ultra decoding (output 1 of the 4,096-token request, reference margins 0.51 to 0.82, not near ties), although cut 12 gave the reference's tokens on both pairs and cuts 11 and 16 on the M5 Ultra pair",
         "registered_mimo_v26_flash_mopd": "its 4,096-token cross-cable request departs from the reference at output 50 and the departure is not classified (the reference recorded no logits there), although the short request gave the reference's tokens",
         "registered_gemma4_26b_qat_4bit": "its cross-cable check diverged at cut 12 (token 7 of the 31-token request, margin 0.30, not a near tie), although cuts 15 and 18 passed",
         "registered_gemma4_26b_8bit": "its cross-cable check diverged at cut 12 (tokens 21 and 20 of the 4,096- and 5,120-token requests, margins of 0.25 and more, not near ties)",
@@ -333,9 +333,11 @@ public enum ClusterPairServingGrants {
     /// The passed checks of a withheld model, kept on record so that its plan
     /// keeps to them. A granted model's passed checks are its grant's.
     public static let withheldPassedChecks: [String: [ClusterPairServingQualification]] = [
-        // Cut 12 pipeline, the 4,096-token request: tokens equal both Macs' references with an M5 Max decoding
-        // (2026-10-11) and with an M5 Ultra decoding (2026-10-12, serial and lookahead).
-        "registered_gpt_oss_20b": passed(m3UltraLeads, cut: 12, .pipeline) + passed(m3UltraLeadsM5Ultra, cut: 12, .pipeline),
+        // Pipeline, the 4,096-token request: tokens equal both Macs' references at cut 12 with an M5 Max decoding
+        // (2026-10-11) and at cuts 11, 12 and 16 with an M5 Ultra decoding (2026-10-12, serial and lookahead).
+        "registered_gpt_oss_20b": passed(m3UltraLeads, cut: 12, .pipeline)
+            + passed(m3UltraLeadsM5Ultra, cut: 11, .pipeline) + passed(m3UltraLeadsM5Ultra, cut: 12, .pipeline)
+            + passed(m3UltraLeadsM5Ultra, cut: 16, .pipeline),
     ]
 
     /// Every check of a model on record, passed and failed.

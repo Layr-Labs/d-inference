@@ -79,8 +79,14 @@ enum ClusterSetupPlanning {
             let pair = pairDescription(description, folder: reading.model.folder, publicModelID: reading.model.modelID,
                 capabilitySHA256: capability.sha256, tokenizerFiles: reading.tokenizerFiles)
             do {
-                let decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
+                var decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
                     localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: localMemberID)
+                // Ports chosen on this Mac hold only when it leads; a plan the other Mac leads names the conventional ones.
+                if let setup = decided.setup, setup.leaderID != localMemberID, pair.ports != ClusterSetupPorts.Choice.conventional {
+                    decided = try ClusterPlacementFlow.decide(description: pair.withPorts(.conventional), capability: capability.record,
+                        localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
+                        measurements: measurements, leader: localMemberID)
+                }
                 guard let chosen = decided.result.chosen else {
                     return blocked(refusalWords(decided.result, localMemberID: localMemberID))
                 }
@@ -165,4 +171,20 @@ struct ClusterSetupFailure: Error, Sendable, Equatable {
     let text: String
     init(_ text: String) { self.text = ClusterConsoleText.bounded(text, maximum: 240) }
     init(_ error: Error) { self.init(String(describing: error)) }
+}
+
+extension ClusterPairDescription {
+    /// The coordinator and link control ports this description names.
+    var ports: ClusterSetupPorts.Choice {
+        .init(coordinator: UInt16(clamping: coordinatorPort), linkControl: UInt16(clamping: linkControl?.port ?? Int(ClusterSetupPorts.conventionalLinkControl)))
+    }
+
+    /// The same description naming other ports.
+    func withPorts(_ ports: ClusterSetupPorts.Choice) -> ClusterPairDescription {
+        var value = ClusterPairDescription(schema: schema, clusterID: clusterID, publicModelID: publicModelID, capabilitySHA256: capabilitySHA256,
+            chunkTokens: chunkTokens, requestTimeoutSeconds: requestTimeoutSeconds, coordinatorPort: Int(ports.coordinator), members: members,
+            tokenizerFiles: tokenizerFiles)
+        value.linkControl = linkControl.map { .init(port: Int(ports.linkControl), linkEpoch: $0.linkEpoch, edgeID: $0.edgeID) }
+        return value
+    }
 }

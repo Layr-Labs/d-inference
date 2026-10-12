@@ -69,6 +69,10 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
     /// `ClusterGenerationMode` raw value.
     public let generationMode: String
     public let prefillSchedule: String
+    /// Prompt tokens per prefill frame. A different chunk is a different
+    /// computation (the order of the prompt's arithmetic), so a setup prefills
+    /// at the chunk its model's records ran at.
+    public let chunkTokens: Int
     public let promptTokens: Int
     public let outputTokens: Int
     public let transport: String
@@ -82,11 +86,11 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
     public let producer: String
 
     public init(runtimeModelID: String, artifactSHA256: String, ranks: [Rank], cuts: [Int], generationMode: String,
-                prefillSchedule: String, promptTokens: Int, outputTokens: Int, transport: String,
+                prefillSchedule: String, chunkTokens: Int, promptTokens: Int, outputTokens: Int, transport: String,
                 pairReportSHA256: String, pairReportCreatedUTC: String, comparisons: [Comparison], producer: String) {
         schema = Self.schemaName
         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256; self.ranks = ranks; self.cuts = cuts
-        self.generationMode = generationMode; self.prefillSchedule = prefillSchedule
+        self.generationMode = generationMode; self.prefillSchedule = prefillSchedule; self.chunkTokens = chunkTokens
         self.promptTokens = promptTokens; self.outputTokens = outputTokens; self.transport = transport
         self.pairReportSHA256 = pairReportSHA256; self.pairReportCreatedUTC = pairReportCreatedUTC
         self.comparisons = comparisons
@@ -117,7 +121,7 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
     public var isConsistent: Bool {
         schema == Self.schemaName && !runtimeModelID.isEmpty && ranks.count >= 2
             && ranks.map(\.rank) == Array(0..<ranks.count) && ranks.allSatisfy { !$0.chip.isEmpty }
-            && cuts.count == ranks.count - 1 && cuts.allSatisfy { $0 > 0 } && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
+            && chunkTokens > 0 && cuts.count == ranks.count - 1 && cuts.allSatisfy { $0 > 0 } && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
             && mode != nil && transport == Self.crossCableTransport && passed == passesNearTieRule
             && comparisons.allSatisfy { $0.nearTieThresholdULPs >= 0 && $0.nearTieThresholdULPs.isFinite }
     }

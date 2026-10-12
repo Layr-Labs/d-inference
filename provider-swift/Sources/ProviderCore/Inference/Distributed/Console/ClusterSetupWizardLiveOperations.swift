@@ -39,8 +39,6 @@ extension ClusterSetupOperations {
 
     /// Seconds an SSH question to the other Mac may take.
     static let peerSeconds = 30.0
-    /// The port the native ranks meet on, at the leader's link address, in setups the guided flow writes.
-    static let nativeCoordinatorPort: UInt16 = 52_420
 
     public static func live(_ settings: LiveSettings) throws -> ClusterSetupOperations {
         let paths = try ClusterUserPaths()
@@ -330,10 +328,13 @@ private final class LiveContext: @unchecked Sendable {
                 workerExecutable: facts.workerExecutable, modelDirectory: facts.modelDirectory, runtimeBinarySHA256: facts.runtimeBinarySHA256,
                 jacclDevice: facts.jacclDevice, linkAddress: facts.linkAddress, trust: nil, linkSecretFile: facts.linkSecretFile)
         }
+        // The request limits are derived per model by the planner (zero asks for that); the ports are
+        // chosen on this Mac, which leads the plans it makes (ClusterSetupPorts).
+        let ports = ClusterSetupPorts.choose(linkAddress: local.linkAddress)
         let description = ClusterPairDescription(schema: ClusterPairDescription.schemaName, clusterID: pairing.clusterID,
-            publicModelID: "-", capabilitySHA256: String(repeating: "0", count: 64), chunkTokens: 512, requestTimeoutSeconds: 120,
-            coordinatorPort: Int(ClusterSetupOperations.nativeCoordinatorPort), members: [member(local), member(peer)], tokenizerFiles: [],
-            linkControl: .init(port: Int(ClusterLinkControlListener.defaultPort), linkEpoch: pairing.linkEpoch,
+            publicModelID: "-", capabilitySHA256: String(repeating: "0", count: 64), chunkTokens: 0, requestTimeoutSeconds: 0,
+            coordinatorPort: Int(ports.coordinator), members: [member(local), member(peer)], tokenizerFiles: [],
+            linkControl: .init(port: Int(ports.linkControl), linkEpoch: pairing.linkEpoch,
                                edgeID: pairing.edgeID))
         return (pair, description, nil)
     }

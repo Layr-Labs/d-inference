@@ -11,7 +11,7 @@ import DarkbloomClusterProtocol
                         verdicts: [String] = ["divergedAtNearTie"], transport: String = "jaccl") -> ClusterPairQualificationRecord {
         .init(runtimeModelID: model, artifactSHA256: String(repeating: "a", count: 64),
               ranks: chips.enumerated().map { .init(rank: $0.offset, chip: $0.element, operatingSystem: "27.0") },
-              cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", promptTokens: 4096, outputTokens: 128, transport: transport,
+              cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", chunkTokens: 512, promptTokens: 4096, outputTokens: 128, transport: transport,
               pairReportSHA256: String(repeating: "b", count: 64), pairReportCreatedUTC: "2026-10-12T00:00:00Z",
               comparisons: verdicts.map { .init(referenceChip: chips.last, verdict: $0, firstDivergenceIndex: 7,
                                                 gapInULPs: $0 == "diverged" ? 9 : 1, nearTieThresholdULPs: 4, allowed: ["cut"]) },

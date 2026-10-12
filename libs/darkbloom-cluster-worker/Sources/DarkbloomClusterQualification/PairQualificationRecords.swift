@@ -78,7 +78,7 @@ public enum PairQualificationRecords {
                 nearTieThresholdULPs: comparator.nearTieULPs, allowed: allowed)
         }
         return .init(runtimeModelID: identity.modelID, artifactSHA256: identity.artifactSHA256, ranks: recorded,
-            cuts: [identity.stageCut], generationMode: mode, prefillSchedule: identity.prefillSchedule,
+            cuts: [identity.stageCut], generationMode: mode, prefillSchedule: identity.prefillSchedule, chunkTokens: identity.chunkSize,
             promptTokens: identity.promptTokenCount, outputTokens: identity.outputCount, transport: transport,
             pairReportSHA256: QualificationHash.sha256(data), pairReportCreatedUTC: pair.createdUTC,
             comparisons: comparisons, producer: producer)

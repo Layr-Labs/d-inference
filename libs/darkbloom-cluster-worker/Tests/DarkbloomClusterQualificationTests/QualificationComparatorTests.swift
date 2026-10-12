@@ -324,7 +324,7 @@ final class PairQualificationRecordTests: XCTestCase {
         XCTAssertTrue(record.passed); XCTAssertTrue(record.isConsistent)
         XCTAssertEqual(record.ranks.map(\.chip), ["Apple M3 Ultra", "Apple M5 Max"])
         XCTAssertEqual(record.ranks.map(\.rank), [0, 1])
-        XCTAssertEqual(record.cuts, [12]); XCTAssertEqual(record.generationMode, "phase_split_v1")
+        XCTAssertEqual(record.cuts, [12]); XCTAssertEqual(record.generationMode, "phase_split_v1"); XCTAssertEqual(record.chunkTokens, 16)
         XCTAssertEqual(Set(record.comparisons.map(\.verdict)).count, 1, "\(record.comparisons)")
         XCTAssertTrue(record.comparisons.allSatisfy { $0.passes && $0.allowed == ["cut"] })
         XCTAssertEqual(record.comparisons.map(\.referenceChip), ["Apple M3 Ultra", "Apple M5 Max"])

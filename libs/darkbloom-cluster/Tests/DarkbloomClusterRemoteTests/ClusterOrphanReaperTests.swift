@@ -24,18 +24,18 @@ final class ClusterOrphanReaperTests: XCTestCase {
 
     func testPlanKeepsLiveParentsLiveEpochsAndItsOwnLineage() {
         // Pids far above any real one; the "alive parent" is this test process.
-        let me = getpid()
+        let me = getpid(), liveEpoch = UUID().uuidString.lowercased()
         let processes = [
             worker(900_001, parent: 1, epoch: epoch),            // parent gone -> candidate
             worker(900_002, parent: me, epoch: epoch),           // parent alive -> kept
-            worker(900_003, parent: 1, epoch: "live-epoch"),     // epoch live -> kept
+            worker(900_003, parent: 1, epoch: liveEpoch),        // epoch live -> kept
             owner(900_004, parent: 1),                           // owner, parent gone -> candidate
             owner(900_005, parent: me),                          // owner, parent alive -> kept
             worker(900_006, parent: nil),                        // parent unknown -> kept
             worker(900_007, parent: 1),                          // protected -> kept
             .init(processIdentifier: 900_008, arguments: ["/usr/bin/sleep", "60"], parentProcessIdentifier: 1, executableName: "sleep"),
         ]
-        let plan = ClusterOrphanReaper.plan(processes: processes, liveEpochs: ["live-epoch"], protectedProcessIdentifiers: [900_007])
+        let plan = ClusterOrphanReaper.plan(processes: processes, liveEpochs: [liveEpoch], protectedProcessIdentifiers: [900_007])
         XCTAssertEqual(plan.candidates.map(\.processIdentifier), [900_001, 900_004])
         XCTAssertEqual(plan.candidates.map(\.role), [.worker, .owner])
         XCTAssertEqual(plan.candidates.first?.membershipEpoch, epoch)
@@ -107,16 +107,29 @@ final class ClusterOrphanReaperTests: XCTestCase {
 
     /// A real reparented process named as the worker: the sweep ends it with
     /// SIGTERM; one that ignores SIGTERM is ended by SIGKILL after the margin.
+    /// (A copy of a system binary cannot run on this macOS, so the fake worker
+    /// is a four-line C program compiled here.)
     func testRealOrphansAreEndedTermFirstThenKill() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("reaper-" + UUID().uuidString.lowercased(), isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
         let fake = root.appendingPathComponent("darkbloom-cluster-worker").path
-        try FileManager.default.copyItem(atPath: "/bin/sh", toPath: fake)
+        let source = root.appendingPathComponent("fake.c")
+        try Data("""
+        #include <signal.h>
+        #include <string.h>
+        #include <unistd.h>
+        int main(int argc, char **argv) { for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--ignore-term")) signal(SIGTERM, SIG_IGN); for (;;) sleep(1); }
+        """.utf8).write(to: source)
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/cc"); compiler.arguments = [source.path, "-o", fake]
+        compiler.standardOutput = FileHandle.nullDevice; compiler.standardError = FileHandle.nullDevice
+        try compiler.run(); compiler.waitUntilExit()
+        XCTAssertEqual(compiler.terminationStatus, 0, "the fake worker compiled")
         let polite = UUID().uuidString.lowercased(), stubborn = UUID().uuidString.lowercased()
         // The intermediate shell exits at once; its children are reparented.
-        let script = "'\(fake)' -c 'sleep 60' x --membership-epoch \(polite) & "
-            + "'\(fake)' -c 'trap \"\" TERM; sleep 60' x --membership-epoch \(stubborn) & exit 0"
+        let script = "'\(fake)' --membership-epoch \(polite) & "
+            + "'\(fake)' --ignore-term --membership-epoch \(stubborn) & exit 0"
         let launcher = Process()
         launcher.executableURL = URL(fileURLWithPath: "/bin/sh"); launcher.arguments = ["-c", script]
         launcher.standardOutput = FileHandle.nullDevice; launcher.standardError = FileHandle.nullDevice
@@ -146,7 +159,8 @@ final class ClusterOrphanReaperTests: XCTestCase {
     }
 
     func testStaleBootstrapDirectoriesAreThoseWhoseSocketDoesNotAnswer() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("boot-" + UUID().uuidString.lowercased(), isDirectory: true)
+        // A short root: a UNIX socket path is at most 103 bytes.
+        let root = URL(fileURLWithPath: "/private/tmp/orphan-check-" + String(UUID().uuidString.lowercased().prefix(8)), isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
         // A dead listener left its directory and socket file; a directory with no socket at all; a live listener.
@@ -175,7 +189,9 @@ final class ClusterOrphanReaperTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
         let old = UUID().uuidString.lowercased(), fresh = UUID().uuidString.lowercased(), live = UUID().uuidString.lowercased()
-        for name in [old, fresh, live, "not-an-epoch", old.uppercased()] {
+        // (An upper-case spelling is not a canonical epoch either, but the file
+        // system here folds case, so it is not created beside the lower-case one.)
+        for name in [old, fresh, live, "not-an-epoch", "x" + UUID().uuidString.lowercased()] {
             try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: false)
         }
         let now = Date().timeIntervalSince1970

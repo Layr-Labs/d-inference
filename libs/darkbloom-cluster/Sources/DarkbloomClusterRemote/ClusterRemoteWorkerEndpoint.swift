@@ -64,6 +64,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     private let input = Pipe(), output = Pipe(), diagnostics = Pipe()
     private let lock = NSLock()
     private let arrivals = DispatchSemaphore(value: 0)
+    /// Wakes the writer whenever it has something new to write: a queued
+    /// command or bootstrap reply, a fence or release request, or the hello
+    /// that starts the renewal schedule. The writer writes as soon as it is
+    /// woken and otherwise rests until the next renewal is due.
+    private let writerWake = DispatchSemaphore(value: 0)
+    /// The longest an idle writer rests: the lifetime check and the owner's
+    /// exit are seen at least this often.
+    static let writerIdleNanoseconds: UInt64 = 50_000_000
     private let nativeEnded = DispatchGroup()
     private let ownerEnded = DispatchGroup()
     private var ownerTerminationValue: ClusterWorkerProcessTermination?
@@ -178,7 +186,9 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         nativeEnded.enter(); ownerEnded.enter()
         do { try ownerExit.run(process) } catch { nativeEnded.leave(); ownerEnded.leave(); throw error }
         try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? diagnostics.fileHandleForWriting.close()
-        DispatchQueue(label: "darkbloom.remote-owner.writer").async { self.writeLoop(pipe) }
+        // Every token's decision waits on this writer, so it runs at the
+        // priority of the request it serves.
+        DispatchQueue(label: "darkbloom.remote-owner.writer", qos: .userInteractive).async { self.writeLoop(pipe) }
         DispatchQueue(label: "darkbloom.remote-owner.reader").async { self.readLoop(pipe) }
     }
     public func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -189,8 +199,14 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
         guard invalid, !notified, let handler else { return nil }; notified = true; return handler
     }
     private func fail() {
-        let call = lock.withLock { invalid = true; ready = nil; if !cleanup { fenceRequested = true }; return notificationLocked() }
+        let (call, changed) = lock.withLock { () -> ((@Sendable () -> Void)?, Bool) in
+            // Only a new failure or a new fence order gives the writer work;
+            // the repeated calls after a lifetime expiry must not keep it awake.
+            let changed = !invalid || (!cleanup && !fenceRequested)
+            invalid = true; ready = nil; if !cleanup { fenceRequested = true }; return (notificationLocked(), changed)
+        }
         bootstrapRelay?.cancel(); nativeKeyRelay?.cancel()
+        if changed { writerWake.signal() }
         arrivals.signal(); if let call { notifications.async(execute: call) }
     }
     /// Called under Pair/Request locks: validates and queues only, never performs
@@ -205,6 +221,7 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             guard bytes.count <= 1_048_576 - queued else { throw OwnerWire.invalid("Remote command queue full") }
             outgoing.append((frame, deadline)); nextCommand += 1
         }
+        writerWake.signal()
     }
     public func receiveWorkerEvent(until deadline: UInt64, cancelled: () -> Bool) throws -> ClusterWorkerEventFrame {
         while DispatchTime.now().uptimeNanoseconds < deadline {
@@ -219,6 +236,23 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
     public func waitForNativeCleanup() { nativeEnded.wait() }
     public func waitUntilNativeCleanup() async {
         await withCheckedContinuation { c in nativeEnded.notify(queue: .global()) { c.resume() } }
+    }
+    /// The rank lease is renewed only while this endpoint keeps the owner:
+    /// after the hello, and never once it failed, fenced or saw cleanup.
+    /// The caller holds lock.
+    private var renewalCanBeSentLocked: Bool {
+        !invalid && !cleanup && !fenceRequested && !releaseRequested && incarnation != nil
+    }
+    /// When an idle writer looks again: at the next renewal while one can
+    /// still be sent, and never later than `writerIdleNanoseconds` from now.
+    /// `nextRenewalAt` means nothing before the hello (it is zero) or after a
+    /// fence, release or cleanup (it goes stale), so it is ignored then; an
+    /// overdue renewal that can be sent is due now.
+    static func writerWakeDeadline(now: UInt64, nextRenewalAt: UInt64, renewalCanBeSent: Bool) -> UInt64 {
+        let idle = now.addingReportingOverflow(writerIdleNanoseconds)
+        let latest = idle.overflow ? UInt64.max : idle.partialValue
+        guard renewalCanBeSent else { return latest }
+        return max(now, min(latest, nextRenewalAt))
     }
     private func writeLoop(_ pipe: ClusterOwnerPipe) {
         var sequence: UInt64 = 0
@@ -235,16 +269,18 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
             try pipe.write(open.encoded(commandStream: true), until: min(firstGrant, now + 5_000_000_000)); sequence += 1
             var sentFence = false, sentRelease = false
             while process.isRunning {
+                // Wakes from before this pass looked are answered by it. One
+                // that arrives after the drain stays counted, so none is lost.
+                while writerWake.wait(timeout: .now()) == .success {}
                 let now = DispatchTime.now().uptimeNanoseconds
                 if now >= localLifetimeDeadlineUptimeNanoseconds { fail() }
                 let work = lock.withLock { () -> (UUID?, Bool, Bool, (ClusterWorkerCommandFrame, UInt64)?, (UInt64, Data)?, Bool) in
                     let bootstrap = !invalid && !bootstrapReplies.isEmpty ? bootstrapReplies.removeFirst() : nil
-                    // The rank lease is renewed only while this endpoint keeps
-                    // the owner: never once it failed, fenced or saw cleanup.
-                    let renew = !invalid && !cleanup && !fenceRequested && !releaseRequested && incarnation != nil && now >= nextRenewalAt
+                    let renew = renewalCanBeSentLocked && now >= nextRenewalAt
                     let next = bootstrap == nil && !renew && !invalid && incarnation != nil && !outgoing.isEmpty ? outgoing.removeFirst() : nil
                     return (incarnation, fenceRequested && !cleanup, releaseRequested, next, bootstrap, renew)
                 }
+                var wrote = false
                 if let incarnation = work.0 {
                     let frame: OwnerWire?
                     var writeDeadline = min(ownerRetirementDeadlineUptimeNanoseconds, now + 500_000_000)
@@ -277,11 +313,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                     } else { frame = nil }
                     if let frame {
                         try pipe.write(frame.encoded(commandStream: true), until: writeDeadline)
-                        sequence += 1
+                        sequence += 1; wrote = true
                     }
                 }
                 if lock.withLock({ ownerReleased }) { return }
-                Thread.sleep(forTimeInterval: 0.005)
+                // A pass that wrote looks again at once: a renewal, a reply or
+                // a fence may have held back a queued frame. Otherwise rest
+                // until woken or until the next renewal is due.
+                if wrote { continue }
+                let wake = lock.withLock {
+                    Self.writerWakeDeadline(now: DispatchTime.now().uptimeNanoseconds, nextRenewalAt: nextRenewalAt,
+                        renewalCanBeSent: renewalCanBeSentLocked)
+                }
+                _ = writerWake.wait(timeout: .init(uptimeNanoseconds: wake))
             }
         } catch {
             fail()
@@ -407,11 +451,15 @@ public final class ClusterRemoteWorkerEndpoint: ClusterWorkerEndpoint, @unchecke
                         guard !self.invalid, !self.cleanup, self.bootstrapReplies.isEmpty else { throw OwnerWire.invalid("Bootstrap reply queue unavailable") }
                         self.bootstrapReplies.append((sequence, gathered)); self.nextBootstrapSequence += 1; self.bootstrapBusy = false
                     }
+                    self.writerWake.signal()
                 } catch { self.fail() }
             }
         }
         if complete { nativeEnded.leave() }
         if complete || invalidateEvent { fail() }
+        // The hello starts renewals and lets queued commands go out; a
+        // terminal asks for the release; a release ACK ends the writer.
+        writerWake.signal()
         arrivals.signal()
     }
 }

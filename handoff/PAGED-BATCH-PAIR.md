@@ -1,9 +1,9 @@
 # Paged KV in the stages and continuous batching on the pair
 
 > Branch `work/paged-batching` from `fa41f769d`. "Mac A" is the M3 Ultra
-> (256 GB), "Mac B" the M5 Max (128 GB). Raw logs and reports are outside the
-> repository in the task's evidence folder `paged-20261011`. Nothing here was
-> pushed.
+> (256 GB), "Mac B" the M5 Ultra (256 GB) that replaced the M5 Max on
+> 2026-10-11. Raw logs and reports are outside the repository in the task's
+> evidence folder `paged-20261011`. Nothing here was pushed.
 
 ## Status
 
@@ -13,7 +13,8 @@
 | Continuous batching on the pair (`DARKBLOOM_CLUSTER_BATCH_LANES=2...8`, pipeline mode) | Built; see the results section |
 | Owner side (`ClusterWorkerPair(lanes:)`, event routing by request) | Built; model-free checks pass |
 | Provider (`DistributedCBv2Engine` serves as many requests as the pair's lanes; installed owner passes the lanes) | Built; engine unit test |
-| Batch lanes with MTP, prefix-cache reuse inside the loop, lookahead prefill | Not built (one request at a time keeps them) |
+| Prefix-cache reuse inside the batch loop (a joining lane's prefix agreed in its join step) | Built |
+| Batch lanes with MTP, lookahead prefill | Not built (one request at a time keeps them) |
 
 ## Paged KV in the stages
 
@@ -41,6 +42,12 @@
   removed before the stage is released. A shutdown that finds a pool still
   holding pages is a failed release.
 - Gemma 4, Nemotron, MiMo and GPT-OSS keep their per-request contiguous storage.
+- Deployment: the paged backend compiles its kernel from `pagedattention.metal`,
+  which MLXLMCommon looks for at a bundle's root or beside the executable. The
+  native worker build writes macOS-layout bundles (`Contents/Resources`), so
+  `scripts/build-native-worker.sh` now places the source beside the worker and
+  refuses a missing or conflicting copy. Every installed worker directory needs
+  it: a paged stage refuses to load by name without it (no silent fallback).
 
 ## Continuous batching on the pair
 
@@ -54,13 +61,22 @@
   as the one-request boundary is. The opening exchange checks lanes, KV
   storage and geometry, and agrees the final-token split (split exactly when
   both prefix caches are on, as the one-request path does).
-- Lossless by construction: prefill frames end on each request's own chunk
-  grid (one frame per step, the request's own arithmetic); decode rows attend
-  only their own KV (both backends dispatch attention per row); quantized
-  projections at up to 8 rows stay on MLX's vector kernel on both chips
-  (`get_qmv_batch_limit` is at least 12), so a row's arithmetic is the
-  one-row arithmetic. The synthetic suite checks this bit for bit; the
-  hardware waves compare every request's tokens with the same request run alone.
+- Lossless under the pass rule, not bit for bit. Prefill frames end on each
+  request's own chunk grid (one frame per step) and keep the request's own
+  arithmetic; decode rows attend only their own KV (both backends dispatch
+  attention per row). But two or more decode rows share every affine
+  quantized projection, which MLX (`fdae3174`) runs as `qmv_wide` (8 lanes
+  reduce K per output) where one row runs `qmv_fast` (32 lanes): a batched
+  row rounds differently from the same request alone, identically for every
+  batch size from two up (wave 2 == wave 4 for every request on the local
+  socket). The shipped MTP verify window (2-4 rows) has the same property.
+  A batched request's tokens therefore equal its solo run exactly or first
+  diverge at a near tie (top-2 gap <= 4 bf16 ulp); the hardware waves record
+  every request's solo run and the near-tie verdicts. Exact rows need a
+  row-exact multi-row kernel (per-row `qmv_fast` arithmetic, including the
+  fused GDN input projection) or one-row projections per lane (exact but no
+  weight reuse, so no throughput gain). The synthetic suite (unquantized)
+  checks batched rows bit for bit.
 - Requests reach both ranks through their owners exactly as for one request
   (reserve, start, decisions on rank 0). `ClusterWorkerLaneSession` keeps each
   request's order identical to `ClusterWorkerSession`; the worker applies
@@ -83,11 +99,24 @@ aggregate throughput and whether every request's tokens equal its solo run
 
 ## Results
 
-Filled in from the evidence folder as runs complete.
+Filled in from the evidence folder as runs complete. Local-socket runs (both
+ranks on Mac A) check correctness only; they are not hardware figures.
+
+| Run (9B, local socket, both ranks on Mac A) | Result |
+|---|---|
+| Model-free: protocol lane checks (9 groups), 14 check runners, qualification XCTests | Pass |
+| Synthetic suite: batched rows == each request alone (paged and contiguous), paged tokens == contiguous; allowance bound (3 tests) | Pass |
+| One request, contiguous vs paged, pipeline | Both 192 tokens; paged first diverges from contiguous at index 32 (a near-tie flip; phase-split MTP and the batched rows pick the same token as contiguous) |
+| One request paged: phase split == pipeline exactly; phase-split MTP | Pass (MTP: same index-32 flip) |
+| 4 lanes paged: each request alone == the one-request worker (p0, exact); waves of 2 and 4 | Completed; wave 2 == wave 4 for every request; vs alone first difference at 32 / 78 / 79 / 144 (qmv_wide rounding, above); aggregate 93 tok/s (2 requests), 147 tok/s (4) vs ~58 tok/s one request (socket) |
+| Provider: `DistributedCBv2Engine` batch-lanes unit test | Pass |
+
+Cable runs (Mac A + M5 Ultra, 9B and 27B, concurrency 1/2/4/8): not run yet
+(the second Mac was being replaced while this branch was built).
 
 ## Not built
 
 - Batch lanes with MTP (the owner's oMLX capped MTP at one lane as well);
-  prefix-cache restore and store inside the batch loop; lookahead prefill and
+  lookahead prefill and
   mixed prefill quanta smaller than the request's chunk (they change a frame's
   arithmetic); two decode groups in flight to fill the pipeline bubble.

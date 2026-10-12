@@ -77,11 +77,18 @@ public struct DistributedResidentReadiness: Sendable {
     public let profileID: String
     /// The owner's conservative request-state budget, not the sum of peer RAM.
     public let requestCapacityBytes: Int
+    /// The longest context (prompt plus output) the owner serves now: for a
+    /// pair, what both ranks' host memory gates admit with their weights
+    /// resident, re-derived while idle. Nil when the owner states none (the
+    /// profile's maximum applies). A longer request is refused before admission.
+    public let servingContextTokens: Int?
 
-    public init(identity: DistributedResidentIdentity, profileID: String, requestCapacityBytes: Int) {
+    public init(identity: DistributedResidentIdentity, profileID: String, requestCapacityBytes: Int,
+                servingContextTokens: Int? = nil) {
         self.identity = identity
         self.profileID = profileID
         self.requestCapacityBytes = requestCapacityBytes
+        self.servingContextTokens = servingContextTokens
     }
 }
 
@@ -173,4 +180,9 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
     case unsupportedRequest(String)
     case unavailable
     case shuttingDown
+    /// This request alone was refused before it started, for capacity: it is
+    /// longer than the owner's serving context now, or a rank's host memory
+    /// gate refused its reservation (and the other rank gave its back). The
+    /// owner keeps serving; the client gets a retryable capacity status.
+    case refusedForCapacity(requestedContextTokens: Int, servingContextTokens: Int, reason: String)
 }

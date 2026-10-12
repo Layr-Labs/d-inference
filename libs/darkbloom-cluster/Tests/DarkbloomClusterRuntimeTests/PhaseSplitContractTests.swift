@@ -40,21 +40,28 @@ private enum PhaseSplitFixture {
             stopTokenIDs: stopTokenIDs)
     }
 
+    static let numericalPolicySHA256 = String(repeating: "3", count: 64)
+
+    static func source(cut: Int = 4, model: QwenRegisteredDenseModel = .qwen35NineB) throws -> QwenLayerStageWireSourceIdentity {
+        let plan = try plan(cut: cut, model: model)
+        return try QwenLayerStageWireSourceIdentity(
+            sourceConfigurationSHA256: sha256(try configuration(model)),
+            artifactAggregateSHA256: try specification(model).artifactSHA256,
+            storageCommitmentSHA256: String(repeating: "c", count: 64),
+            planFingerprint: plan.fingerprint, producerStageFingerprint: plan.stages[0].fingerprint)
+    }
+
     static func agreement(_ request: QwenLayerStageGenerationRequest, cut: Int = 4, split: Bool = true,
                           maximumSegmentBytes: Int = 16 * 1024 * 1024, relayBatchTokens: Int = 16,
                           epoch: UUID = UUID(uuidString: "6f0c7a54-11d2-4c1e-9a44-0d5a6a5f0b11")!,
                           model: QwenRegisteredDenseModel = .qwen35NineB,
                           speculativeHead: QwenMTPTerms? = nil) throws -> QwenLayerStageGenerationAgreement {
         let plan = try plan(cut: cut, model: model)
-        let source = try QwenLayerStageWireSourceIdentity(
-            sourceConfigurationSHA256: sha256(try configuration(model)),
-            artifactAggregateSHA256: try specification(model).artifactSHA256,
-            storageCommitmentSHA256: String(repeating: "c", count: 64),
-            planFingerprint: plan.fingerprint, producerStageFingerprint: plan.stages[0].fingerprint)
-        return try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: epoch, source: source,
+        return try QwenLayerStageGenerationAgreement(request: request, membershipEpoch: epoch,
+            source: try source(cut: cut, model: model),
             consumerStageFingerprint: plan.stages[1].fingerprint,
             rankBuildSHA256: [String(repeating: "1", count: 64), String(repeating: "1", count: 64)],
-            numericalPolicySHA256: String(repeating: "3", count: 64),
+            numericalPolicySHA256: numericalPolicySHA256,
             phaseSplit: split ? try QwenPhaseSplitPlan(plan: plan, geometry: try specification(model).expectedGeometry(),
                 request: request, maximumSegmentBytes: maximumSegmentBytes, relayBatchTokens: relayBatchTokens) : nil,
             speculativeHead: speculativeHead)
@@ -188,6 +195,23 @@ struct PhaseSplitContractTests {
         #expect(Set([plain.fingerprint, speculative.fingerprint, shallow.fingerprint]).count == 3)
         // A head only on the decoding rank of a phase split, never on the pipeline.
         #expect(throws: (any Error).self) { _ = try PhaseSplitFixture.agreement(request, split: false, speculativeHead: .standard) }
+    }
+
+    /// The reservation charges a request's prefix capture after the prefix
+    /// this rank holds for it, before any agreement exists: it must key the
+    /// cache exactly as the agreement does, before and after the prefix plan.
+    @Test func theReservationKeysThePrefixCacheAsTheAgreementDoes() throws {
+        let request = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 16)
+        let agreement = try PhaseSplitFixture.agreement(request, speculativeHead: .standard)
+        let reserved = qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
+            numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: request)
+        #expect(reserved == qwenStagePrefixScope(agreement))
+        let planned = try agreement.planned(try request.planned(reusedPrefix: 512, splitFinalToken: true))
+        #expect(qwenStagePrefixScope(planned) == reserved)
+        // Another chunk size is another scope.
+        let other = try PhaseSplitFixture.request(promptCount: 600, chunkSize: 8)
+        #expect(qwenStagePrefixScope(source: try PhaseSplitFixture.source(),
+            numericalPolicySHA256: PhaseSplitFixture.numericalPolicySHA256, request: other) != reserved)
     }
 
     @Test func everyRegisteredModelListsItsOwnGenerationModes() throws {

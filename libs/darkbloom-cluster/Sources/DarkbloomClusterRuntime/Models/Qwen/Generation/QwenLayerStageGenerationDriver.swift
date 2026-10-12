@@ -137,6 +137,48 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     agreement: unplannedAgreement, collective: collective, hiddenTap: decoder?.tap(), check: checked)
                 agreement = planned.agreement; session = planned.session; prefix = planned.summary
             }
+            // This request's capture, within what its reservation charged:
+            // older entries make room first, so the entries and this capture
+            // stay within the cache's budget together.
+            let captureLimit = prefixCache?.takeAdmittedCapture()
+            if let prefixCache, prefixCache.enabled, let owned = session, !owned.prefixCaptureFrontiers.isEmpty {
+                owned.prefixCaptureLimitBytes = captureLimit
+                owned.prefixCaptureMaximumFrontiers = prefixCache.entryLimit
+                // The history cost the reservation charged: measured once a capture
+                // of this stage was, conservative before (F32 rows and an Int32
+                // token), so the session keeps what its charge was computed for.
+                owned.prefixHistoryBytesPerToken = decoder == nil ? 0
+                    : prefixCache.historyBytesPerToken(estimate: agreement.request.profile.hiddenSize * 4 + 4)
+                prefixCache.makeRoom(forCapture: captureLimit ?? 0)
+            }
+            if let decoder, let prefixCache, prefixCache.enabled {
+                // The head keeps this prompt's history for the entries this
+                // request stores, and a restored prefix brings its own back:
+                // the head then drafts from the whole prompt, as a cold
+                // request's does. Exactness never depends on it.
+                decoder.keepsHistory = prefix.splitFinalToken
+                let reused = prefix.reusedPromptTokens
+                if reused > 0 {
+                    let tokens = Array(unplannedAgreement.request.promptTokenIDs[0..<reused])
+                    let history = prefixCache.state(scope: qwenStagePrefixScope(agreement),
+                        tokens: unplannedAgreement.request.promptTokenIDs, frontier: reused)?.speculativeHistory
+                    let adopted = history.map { decoder.adopt($0, prefixTokens: tokens) } ?? false
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) mtp-history=\(adopted ? "restored" : "absent")"
+                        + " frontier=\(reused)")
+                }
+            }
+            if let prefixCache, prefixCache.enabled, let owned = session {
+                // The running check may withdraw this capture when memory runs
+                // short (`QwenStagePrefixCache.withdrawCapture`): the session lets
+                // go of its frontiers and the head of its history, and the
+                // request goes on. The head keeps a history only for a prompt
+                // the session keeps.
+                decoder?.historyWanted = { [weak owned] in owned?.keepsPrefixCapture ?? false }
+                prefixCache.beginCapture { [weak owned, weak decoder] in
+                    owned?.withdrawPrefixCapture(); decoder?.dropKeptHistory()
+                }
+            }
+            defer { prefixCache?.endCapture() }
             diagnostics?.request = agreement.request
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
@@ -258,15 +300,36 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                decoder?.release()
+                // The head's history at each kept frontier, taken before the
+                // decoder lets go of it.
+                let histories = decoder.map { decoder in
+                    { (frontier: Int) in decoder.prefixHistory(at: frontier) }
+                }
+                defer { decoder?.release() }
                 // Both ranks retired cleanly: only now do this rank's captured
                 // frontiers become reusable. A failed request stores nothing.
                 var stored: [Int] = []
                 if let prefixCache, prefixCache.enabled {
-                    let states = owned.capturedPrefixStates()
+                    var states = owned.capturedPrefixStates()
+                    if let histories {
+                        for index in states.indices { states[index].speculativeHistory = histories(states[index].committedTokens) }
+                    }
+                    let historyBytes = states.isEmpty ? 0 : decoder?.keptHistoryBytes ?? 0
                     prefixCache.insert(scope: qwenStagePrefixScope(agreement), tokens: agreement.request.promptTokenIDs,
-                        states: states)
+                        states: states, sharedBytes: owned.capturedSharedBytes + historyBytes)
+                    if let cost = owned.prefixCaptureCost {
+                        let tokens = max(1, agreement.request.promptCount - 1)
+                        prefixCache.record(.init(attentionBytesPerToken: cost.attentionBytesPerToken,
+                            recurrentBytesPerFrontier: cost.recurrentBytesPerFrontier,
+                            historyBytesPerToken: historyBytes > 0 ? (historyBytes + tokens - 1) / tokens
+                                : cost.historyBytesPerToken))
+                    }
                     stored = states.map(\.committedTokens)
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) held_bytes=\(prefixCache.bytesInUse)"
+                        + " budget_bytes=\(prefixCache.budgetBytes) capture_limit=\(captureLimit.map(String.init) ?? "none")"
+                        + " captured_shared=\(owned.capturedSharedBytes + historyBytes)"
+                        + " captured_own=\(states.reduce(0) { $0 + $1.ownBytes })"
+                        + " capture_withdrawn=\(owned.prefixCaptureWithdrawn)")
                 }
                 owned.discardCapturedPrefix()
                 let prefixSummary = QwenStagePrefixSummary(reusedPromptTokens: prefix.reusedPromptTokens,

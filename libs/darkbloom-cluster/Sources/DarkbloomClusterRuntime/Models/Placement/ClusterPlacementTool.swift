@@ -121,6 +121,17 @@ public enum ClusterPlacementTool {
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = try parsed.integer("--prompt-tokens")
         policy.outputTokens = try parsed.integer("--output-tokens")
+        // A requested context beyond the layout's planned request: plan it at
+        // that context (the family's charge there), keeping the placement
+        // with the most room on its tightest Mac among the equally fast.
+        let requested = (policy.promptTokens ?? layout.maximumPromptTokens) + (policy.outputTokens ?? layout.maximumOutputTokens)
+        if requested > layout.maximumContextTokens, let directory = try parsed.one("--model-dir"),
+           let answer = try ClusterPlacementArtifact.requestedContext(directory: URL(fileURLWithPath: directory, isDirectory: true),
+               contextTokens: requested) {
+            policy.largestContextTokens = answer.largest
+            policy.requestChargeEveryRankBytes = answer.charge
+            policy.preferHeadroomWithinTies = true
+        }
         if let alternatives = try parsed.integer("--alternatives") { policy.alternatives = min(alternatives, 256) }
         if let regime = try parsed.one("--regime") {
             guard let value = ClusterPlacementPolicy.Regime(rawValue: regime) else { throw ProbeError("--regime is sustained or rested") }

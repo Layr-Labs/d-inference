@@ -51,6 +51,16 @@ public enum ClusterPlacementArtifact {
 
     /// The layout of the artifact in a directory, from its `config.json` and
     /// tensor headers.
+    /// For a request longer than the layout's planned one: the family's
+    /// largest context and its every-rank request charge at `contextTokens`,
+    /// or nil for a family that plans within its layout only.
+    public static func requestedContext(directory: URL, contextTokens: Int) throws -> (largest: Int, charge: Int)? {
+        let configuration = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
+        guard let family = try? QwenDensePlacementFamily(configuration: configuration),
+              contextTokens <= family.largestContextTokens else { return nil }
+        return (family.largestContextTokens, family.requestChargeEveryRankBytes(contextTokens: contextTokens))
+    }
+
     public static func layout(directory: URL) throws -> ClusterModelLayout {
         let configuration = try BoundedProbeInput.data(directory.appendingPathComponent("config.json"), maximumBytes: 1_048_576)
         return try ClusterPlacementLayouts.layout(configuration: configuration, tensors: storedTensors(directory: directory))

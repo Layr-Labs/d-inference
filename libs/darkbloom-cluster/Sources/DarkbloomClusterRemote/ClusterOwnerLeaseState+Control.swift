@@ -55,10 +55,14 @@ extension ClusterOwnerLeaseState {
         request?.charged = reservedBytes; request?.phase = .admitted
     }
 
-    public mutating func observeRefused(requestID: UUID) throws {
+    /// A refusal for memory, deadline or profile is the request's alone: the
+    /// native worker gave its reservation back and stays available, so the
+    /// charge is dropped and the lease keeps serving. A worker that refuses
+    /// as unavailable is gone, and the lease is quarantined as before.
+    public mutating func observeRefused(requestID: UUID, reason: ClusterWorkerRefusal = .unavailable) throws {
         try require(request?.id == requestID && request?.phase == .reserving, "Unexpected refusal")
-        // Preserve the existing pair's conservative partial-admission fencing.
-        quarantine()
+        guard reason != .unavailable else { quarantine(); return }
+        request = nil
     }
 
     public mutating func observeRetired(requestID: UUID, retirement: ClusterWorkerRetirement) throws {
@@ -69,9 +73,12 @@ extension ClusterOwnerLeaseState {
             try require(request?.phase == .running && request?.cancelled == false,
                         "Clean retirement requires an uncancelled started request")
         }
-        // The current native session/facade poisons its epoch after abnormal
-        // retirement. Resource release cannot make that model ready again.
-        if retirement != .clean { quarantine() }
+        // A reservation the leader cancelled before it started (the pair's
+        // other rank refused the request) is given back by the native worker,
+        // which stays available. Any other abnormal retirement poisons the
+        // native session's epoch; resource release cannot make it ready again.
+        let givenBack = retirement == .cancelled && request?.phase == .admitted && request?.cancelled == true
+        if retirement != .clean && !givenBack { quarantine() }
         request?.phase = .retired
     }
 

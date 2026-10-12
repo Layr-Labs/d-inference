@@ -42,6 +42,15 @@ struct QwenGenerationDiagnosticBudget: Encodable {
         ]))
     }
 
+    /// While the recorded request runs: its reservation and capture terms
+    /// less what this process grew by since the first check, no headroom
+    /// (`QwenResidentRequestAllowance.continuingRequirement`).
+    func remainingBytes(grown: Int, nativeOnly: Bool = false) throws -> Int {
+        try QwenResidentRequestAllowance.continuingRequirement(reservedBytes: originalRequestReservedBytes,
+            additionalBytes: nativeOnly ? extraNativeBytes : QwenLongPrefillCheckedBytes.sum([extraHostBytes, extraNativeBytes]),
+            grownBytes: grown)
+    }
+
     func requiredAllocatorBytes(active: Int, cache: Int, headroom: Int) throws -> Int {
         guard active >= 0, cache >= 0, headroom > 0 else { throw ProbeError("Invalid diagnostic allocator observation") }
         return try QwenLongPrefillCheckedBytes.sum([

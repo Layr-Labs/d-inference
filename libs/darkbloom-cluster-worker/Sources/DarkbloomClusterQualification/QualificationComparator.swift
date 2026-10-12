@@ -148,9 +148,18 @@ public struct QualificationComparator: Sendable {
             }
             return result
         }
-        guard result.completedFramesEqual != false, result.committedTokensEqual != false else {
-            result.reasons.append("tokens are equal but the frame count or committed frontier differs")
-            return result
+        if result.completedFramesEqual == false, result.committedTokensEqual != false,
+           let framing = prefillFramingExplains(reference: reference, candidate: candidate) {
+            // Same request, same tokens, same committed frontier: the frames
+            // differ only in how the prompt was framed, which each run's own
+            // recorded prefix plan accounts for exactly (the prefix cache runs
+            // the last prompt token alone; a restored prefix is not prefilled).
+            result.reasons.append(framing)
+        } else {
+            guard result.completedFramesEqual != false, result.committedTokensEqual != false else {
+                result.reasons.append("tokens are equal but the frame count or committed frontier differs")
+                return result
+            }
         }
         guard let logits = result.logits else {
             result.reasons.append("all \(prefix) tokens are equal, but \(result.logitsNotCompared!), so exact and tokensEqualLogitsDiffer cannot be told apart")
@@ -165,6 +174,30 @@ public struct QualificationComparator: Sendable {
             if logits.bytesEqual { result.reasons.append("the final row is bit-identical but \(result.state!.differingEntries.count) state entries differ") }
         }
         return result
+    }
+
+    /// A note when each run's frame count is exactly its own prefill framing
+    /// (its recorded prefix plan, or fixed chunks from zero without one) plus
+    /// one decode frame per token after the first, and the two framings
+    /// differ; nil otherwise.
+    func prefillFramingExplains(reference: QualificationSubject, candidate: QualificationSubject) -> String? {
+        let prompt = reference.identity.promptTokenCount, chunk = reference.identity.chunkSize
+        guard prompt == candidate.identity.promptTokenCount, chunk == candidate.identity.chunkSize,
+              reference.evidence.selectedTokenIDs.count == candidate.evidence.selectedTokenIDs.count,
+              !reference.evidence.selectedTokenIDs.isEmpty else { return nil }
+        let decodeFrames = reference.evidence.selectedTokenIDs.count - 1
+        func framing(_ subject: QualificationSubject) -> (frames: Int, label: String)? {
+            let plan = subject.evidence.prefillPlan ?? .init(reusedPromptTokens: 0, splitFinalPromptToken: false)
+            guard let prefill = plan.prefillFrames(prompt: prompt, chunk: chunk),
+                  subject.evidence.completedFrames == prefill + decodeFrames else { return nil }
+            let label = subject.evidence.prefillPlan == nil ? "fixed chunks" : (plan.splitFinalPromptToken
+                ? "prefix cache: \(plan.reusedPromptTokens) reused, last prompt token alone" : "prefix cache: \(plan.reusedPromptTokens) reused")
+            return (prefill, label)
+        }
+        guard let a = framing(reference), let b = framing(candidate), a.frames != b.frames else { return nil }
+        return "the prompt was framed differently (reference \(a.frames) prefill frames, \(a.label); candidate "
+            + "\(b.frames), \(b.label)); tokens and the committed frontier are equal, so the frame counts are compared "
+            + "through each run's own framing"
     }
 
     private func zipOptional<T>(_ a: T?, _ b: T?) -> (T, T)? {

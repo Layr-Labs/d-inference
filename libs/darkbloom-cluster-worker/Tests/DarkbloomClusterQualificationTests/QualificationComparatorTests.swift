@@ -54,6 +54,70 @@ private enum Constructed {
 }
 
 final class QualificationComparatorTests: XCTestCase {
+    /// Prefix reuse on (the default) runs the last prompt token in a frame of
+    /// its own: 4 prefill frames for 40 tokens in frames of 16 instead of 3.
+    /// Tokens and frontier equal, the frame counts are compared through each
+    /// run's own framing (round 2 read `incomparable` here).
+    func testPrefixCacheFramingIsComparedThroughEachRunsOwnPlan() throws {
+        var split = Constructed.pair()
+        split.completedFrames = 9
+        split.prefillPlan = .init(reusedPromptTokens: 0, splitFinalPromptToken: true)
+        XCTAssertEqual(split.prefillPlan?.prefillFrames(prompt: 40, chunk: 16), 4)
+        let exact = try Constructed.compare(Constructed.reference(), split)
+        XCTAssertEqual(exact.verdict, .exact, exact.reasons.joined(separator: "; "))
+        XCTAssertEqual(exact.completedFramesEqual, false)
+        XCTAssertTrue(exact.reasons.contains { $0.contains("framed differently") }, exact.reasons.joined(separator: "; "))
+        var row = Constructed.row; row[4] += 0.125
+        var differing = Constructed.pair(row: row)
+        differing.completedFrames = 9; differing.prefillPlan = split.prefillPlan
+        XCTAssertEqual(try Constructed.compare(Constructed.reference(), differing).verdict, .tokensEqualLogitsDiffer)
+        // A cache hit that reused 32 tokens frames [32, 39, 40]: 3 frames.
+        var hit = Constructed.pair()
+        hit.prefillPlan = .init(reusedPromptTokens: 32, splitFinalPromptToken: true)
+        hit.completedFrames = 8
+        XCTAssertEqual(try Constructed.compare(Constructed.reference(), hit).verdict, .exact)
+    }
+
+    /// A frame difference no recorded plan accounts for stays incomparable.
+    func testUnexplainedFrameDifferenceStaysIncomparable() throws {
+        var unexplained = Constructed.pair()
+        unexplained.completedFrames = 9
+        XCTAssertEqual(try Constructed.compare(Constructed.reference(), unexplained).verdict, .incomparable)
+        unexplained.prefillPlan = .init(reusedPromptTokens: 16, splitFinalPromptToken: true)  // 3 frames, not 4
+        XCTAssertEqual(try Constructed.compare(Constructed.reference(), unexplained).verdict, .incomparable)
+        var frontier = Constructed.pair()
+        frontier.completedFrames = 9; frontier.committedTokens = 46
+        frontier.prefillPlan = .init(reusedPromptTokens: 0, splitFinalPromptToken: true)
+        XCTAssertEqual(try Constructed.compare(Constructed.reference(), frontier).verdict, .incomparable)
+    }
+
+    /// The sidecar's prefix summary becomes the evidence's plan; what each
+    /// rank stored differs between the ranks and is not read.
+    func testPairEvidenceReadsTheAgreedPrefixPlan() throws {
+        func record(rank: Int, stored: [Int]) -> Data {
+            var value: [String: Any] = ["schema": PairEvidence.schema, "rank": rank,
+                "requestFingerprint": String(repeating: "c", count: 64), "profileFingerprint": String(repeating: "d", count: 64),
+                "execution": ["selectedTokenIDs": [1, 2], "completedFrames": 5, "committedTokens": 41, "finishReason": "length",
+                    "tokenChainSHA256": String(repeating: "e", count: 64),
+                    "prefixCache": ["reusedPromptTokens": 0, "agreedPromptTokens": 0, "splitFinalToken": true,
+                                    "storedFrontiers": stored, "cacheEntries": stored.count]],
+                "agreement": ["requestID": "r", "sourceConfigurationSHA256": "s", "artifactAggregateSHA256": "a",
+                    "storageCommitmentSHA256": "t", "planFingerprint": "p", "stageFingerprints": ["0", "1"],
+                    "numericalPolicySHA256": "n"],
+                "stateEntries": [["globalLayerIndex": rank, "component": "ssm", "shape": [1], "dtype": "float32",
+                    "byteCount": 4, "sha256": String(repeating: "f", count: 64)]],
+                "stageStateSHA256": String(repeating: "9", count: 64)]
+            if rank == 1 {
+                value["finalLogits"] = ["shape": [1, 2], "dtype": "bfloat16", "byteCount": 4,
+                    "logicalBytesSHA256": String(repeating: "8", count: 64), "values": [0.5, 1.0]]
+            }
+            return try! JSONSerialization.data(withJSONObject: value)
+        }
+        let joined = try PairEvidence.join([PairEvidence.decode(record(rank: 0, stored: [32, 39]), rank: 0),
+                                            PairEvidence.decode(record(rank: 1, stored: [39]), rank: 1)])
+        XCTAssertEqual(joined.evidence.prefillPlan, .init(reusedPromptTokens: 0, splitFinalPromptToken: true))
+    }
+
     func testExactWhenTokensFinalRowAndStateAreIdentical() throws {
         let result = try Constructed.compare(Constructed.reference(), Constructed.pair())
         XCTAssertEqual(result.verdict, .exact)

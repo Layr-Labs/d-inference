@@ -63,6 +63,15 @@ final class GPTOSSWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         return result.completion.finishReason
     }
 
+    func releaseReservation(_ id: UUID) throws {
+        if sink != nil {
+            guard let reservation = active, reservation.id == id else {
+                throw WorkerFailure.invalid("Recording release has no matching reservation")
+            }
+        }
+        try owner.releaseReservation(requestID: id)
+        active = nil
+    }
     func cancel(_ id: UUID) { owner.cancel(requestID: id) }
     func keepWarmPulse() throws -> UInt64 { try owner.keepWarmPulse() }
     func dataPlanePing() throws -> UInt64 { try owner.dataPlanePing() }

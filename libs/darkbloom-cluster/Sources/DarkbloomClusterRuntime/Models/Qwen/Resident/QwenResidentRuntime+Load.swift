@@ -130,6 +130,12 @@ extension QwenResidentRuntime {
                 try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
                     loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, check: { try control.check() })
             }
+            // The context the gate admitted at load and the allocator's active
+            // bytes with the model resident: the serving context's first value
+            // and its idle baseline (`refreshServingContext`).
+            var servingContext: Int?
+            var activeLoaded = 0
+            var prefixBudget: Int?
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 do {
@@ -216,6 +222,10 @@ extension QwenResidentRuntime {
                         rank: collective.rank, mode: mode, speculativeTerms: speculativeTerms)
                     try admitted.allowance.requireLive(additionalNativeBytes: admitted.extraNativeBytes,
                         additionalHostBytes: admitted.extraHostBytes)
+                    servingContext = admitted.contextTokens
+                    prefixBudget = QwenStagePrefixCache.budget(roomBytes: admitted.roomBytes)
+                    log("darkbloom-prefix-v1 rank=\(collective.rank) budget_bytes=\(prefixBudget ?? 0)"
+                        + " room_bytes=\(admitted.roomBytes)")
                     log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.runtimeModelID)"
                         + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.contextTokens)"
                         + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
@@ -235,6 +245,7 @@ extension QwenResidentRuntime {
                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                         disagreementMessage: "Resident peers did not load matching verified stage commitments", scope: .session(.loadedReady, "resident-loaded"), check: checked)
                     try checked()
+                    activeLoaded = Memory.activeMemory
                     return try QwenLongPrefillCheckedBytes.sum([maximum.reservedBytes, prefill?.reservedBytes ?? 0,
                         split?.reservedBytes ?? 0])
                 } catch {
@@ -249,7 +260,8 @@ extension QwenResidentRuntime {
             return .init(admission: admission, control: control, collective: collective,
                 stage: stage!, capacity: capacity, lifecycle: lifecycle,
                 generationMode: mode, producerStage: producerStage, speculativeHead: speculativeHead,
-                speculativeTerms: speculativeTerms, qualificationFault: fault)
+                speculativeTerms: speculativeTerms, qualificationFault: fault,
+                servingContextTokens: servingContext, activeLoadedBytes: activeLoaded, prefixBudgetBytes: prefixBudget)
         } catch {
             let primary = error; control.fail(); speculativeHead = nil; stage = nil; producerStage = nil
             do {

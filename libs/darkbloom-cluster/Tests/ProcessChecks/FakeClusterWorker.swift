@@ -69,6 +69,11 @@ import DarkbloomClusterSecurity
         if behavior == "slow-exit" { signal(SIGTERM) { _ in _exit(99) } }
         var session = try ClusterWorkerSession(identity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan)
         var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
+        var reservations = 0
+        // "context-A" or "context-A-B": readiness says it serves A context
+        // tokens, every keep-warm answer says B (a rank re-deriving its
+        // serving context from live memory while idle).
+        let contexts = behavior.hasPrefix("context-") ? behavior.dropFirst(8).split(separator: "-").compactMap { Int($0) } : []
         func emit(_ event: ClusterWorkerEvent) throws {
             let id: UUID?
             switch event { case .ready, .unavailable, .shutdownComplete, .keptWarm: id = nil; default: id = requestID }
@@ -77,7 +82,8 @@ import DarkbloomClusterSecurity
             try FileHandle.standardOutput.write(contentsOf: ClusterWorkerCodec.encode(frame)); sequence += 1
         }
         try emit(.ready(.init(identity: fixtureIdentity, rank: rank, profile: fixtureProfile,
-            executionPlanSHA256: fixturePlan, requestCapacityBytes: behavior == "larger" ? 2048 : 1024)))
+            executionPlanSHA256: fixturePlan, requestCapacityBytes: behavior == "larger" ? 2048 : 1024,
+            servingContextTokens: contexts.first)))
         // Neither reads its command stream again; "deaf" also ignores SIGTERM.
         if behavior == "deaf" { signal(SIGTERM, SIG_IGN) }
         if behavior == "deaf" || behavior == "deaf-term" { while true { pause() } }
@@ -105,7 +111,8 @@ import DarkbloomClusterSecurity
                     if let raw = ProcessInfo.processInfo.environment["TEST_MIN_REMAINING"], let minimum = UInt64(raw),
                        value.deadlineUptimeNanoseconds < DispatchTime.now().uptimeNanoseconds + minimum { exit(66) }
                     if behavior == "slow-admit" { Thread.sleep(forTimeInterval: 0.3) }
-                    if behavior == "refuse" { try emit(.refused(.capacity)) }
+                    reservations += 1
+                    if behavior == "refuse" || (behavior == "refuse-once" && reservations == 1) { try emit(.refused(.capacity)) }
                     else { try emit(.admitted(reservedBytes: behavior == "larger" ? 1400 : 800)) }
                 case .start:
                     if behavior == "hang" || behavior == "stall" { continue }
@@ -146,7 +153,7 @@ import DarkbloomClusterSecurity
                     if behavior == "hang" || behavior == "stall" { continue }
                     try emit(.retired(.cancelled))
                 case .keepWarm(let ordinal):
-                    try emit(.keptWarm(ordinal: ordinal, microseconds: 1))
+                    try emit(.keptWarm(ordinal: ordinal, microseconds: 1, servingContextTokens: contexts.dropFirst().first))
                 case .shutdown:
                     // "slow-shutdown": releasing takes half a second. Status 21
                     // reports that the command stream was closed before the

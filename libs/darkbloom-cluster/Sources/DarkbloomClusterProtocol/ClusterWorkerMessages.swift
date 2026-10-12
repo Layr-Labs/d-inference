@@ -151,11 +151,21 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// Nil: a worker started without a data-plane credential (plaintext
     /// transfers; qualification and diagnosis only).
     public let dataPlane: ClusterWorkerDataPlane?
+    /// The longest context (prompt plus output) this rank's host memory gate
+    /// admitted when it became ready, with its weights resident; at most the
+    /// profile's `maximumContextTokens`. The profile is what the model and
+    /// protocol allow; this is what this Mac can serve now. Nil from a worker
+    /// that does not derive one (then the profile's maximum is all it says).
+    /// A rank re-derives it while idle and reports it on every keep-warm
+    /// answer (`ClusterWorkerEvent.keptWarm`).
+    public let servingContextTokens: Int?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
-                executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil) {
+                executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
+                servingContextTokens: Int? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
+        self.servingContextTokens = servingContextTokens
     }
 }
 
@@ -215,7 +225,10 @@ public enum ClusterWorkerEvent: Equatable, Sendable {
     case unavailable(ClusterWorkerCancellationReason)
     case shutdownComplete
     /// The keep-warm exchange of that ordinal completed in `microseconds`.
-    case keptWarm(ordinal: Int, microseconds: Int)
+    /// `servingContextTokens` is the longest context this rank's host memory
+    /// gate admits now, re-derived while idle (see `ClusterWorkerReady`); nil
+    /// from a worker that does not derive one.
+    case keptWarm(ordinal: Int, microseconds: Int, servingContextTokens: Int? = nil)
 }
 
 public struct ClusterWorkerCommandFrame: Equatable, Sendable {

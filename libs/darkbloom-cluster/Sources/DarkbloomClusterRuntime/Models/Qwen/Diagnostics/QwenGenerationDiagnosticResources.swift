@@ -10,6 +10,8 @@ final class QwenGenerationDiagnosticResources {
     private(set) var minimumActualFreeBytes = Int.max
     private(set) var minimumAllocatorLimitBytes = Int.max
     private var previousCheck: UInt64?
+    /// Allocator active bytes at the first check (the recording's admission).
+    private var activeAtFirstCheck: Int?
     /// This capture's record at the host memory gate, and its first sample.
     private let watch = QwenDenseStageLoadWatch("Generation diagnostics")
 
@@ -64,16 +66,30 @@ final class QwenGenerationDiagnosticResources {
     func requireLive(force: Bool = false) throws {
         let now = DispatchTime.now().uptimeNanoseconds
         if !force, let previousCheck, now >= previousCheck, now - previousCheck < 250_000_000 { return }
-        try QwenResidentResourceEnvironment.require()
+        // The first check admits the recording with the request's whole charge
+        // and the headroom; later checks, while it runs, ask for what is still
+        // to be allocated, as the request's own gate does (`requireContinuing`).
+        let start = activeAtFirstCheck
+        if start == nil { try QwenResidentResourceEnvironment.require() } else { try QwenResidentResourceEnvironment.requirePower() }
         let os = try QwenDenseStageLoadResources.observeOS()
         let native = QwenDenseStageLoadResources.observeNative()
-        let free = try budget.requiredActualFreeBytes(minimum: QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            headroom: QwenDenseStageLoadPolicy.loadingHeadroomBytes)
-        let allocator = try budget.requiredAllocatorBytes(active: native.activeBytes, cache: native.cacheBytes,
-            headroom: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
-        guard try watch.admits(os, bytes: free), native.allocatorLimitBytes >= allocator else {
+        let free: Int, floor: Int, allocator: Int
+        if let start {
+            let grown = native.activeBytes - start
+            free = try budget.remainingBytes(grown: grown); floor = QwenDenseStageLoadPolicy.minimumTrulyFreeBytes
+            allocator = try QwenLongPrefillCheckedBytes.sum([native.activeBytes, native.cacheBytes,
+                budget.remainingBytes(grown: grown, nativeOnly: true), QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
+        } else {
+            free = try budget.requiredActualFreeBytes(minimum: QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
+                headroom: QwenDenseStageLoadPolicy.loadingHeadroomBytes)
+            floor = QwenDenseStageLoadPolicy.minimumAdmissibleBytes
+            allocator = try budget.requiredAllocatorBytes(active: native.activeBytes, cache: native.cacheBytes,
+                headroom: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
+        }
+        guard try watch.admits(os, bytes: free, floor: floor), native.allocatorLimitBytes >= allocator else {
             throw ProbeError("Generation diagnostics exceed the allocator limit")
         }
+        if activeAtFirstCheck == nil { activeAtFirstCheck = native.activeBytes }
         observationCount = try QwenLongPrefillCheckedBytes.sum([observationCount, 1])
         minimumActualFreeBytes = min(minimumActualFreeBytes, os.actualFreeBytes)
         minimumAllocatorLimitBytes = min(minimumAllocatorLimitBytes, native.allocatorLimitBytes)

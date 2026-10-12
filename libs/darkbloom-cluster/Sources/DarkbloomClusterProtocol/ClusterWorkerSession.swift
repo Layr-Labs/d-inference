@@ -150,8 +150,9 @@ public struct ClusterWorkerSession: Sendable {
             case .shutdownComplete:
                 try workerRequire(phase == .shuttingDown && requestID == nil, "Unrequested shutdown acknowledgment")
                 phase = .closed
-            case .keptWarm(let ordinal, _):
-                try workerRequire(phase == .warming && ordinal == keepWarmOrdinal, "Unrequested keep-warm acknowledgment")
+            case .keptWarm(let ordinal, _, let serving):
+                try workerRequire(phase == .warming && ordinal == keepWarmOrdinal
+                    && (serving.map { $0 <= profile.maximumContextTokens } ?? true), "Unrequested keep-warm acknowledgment")
                 phase = .idle
             }
             eventSequence += 1

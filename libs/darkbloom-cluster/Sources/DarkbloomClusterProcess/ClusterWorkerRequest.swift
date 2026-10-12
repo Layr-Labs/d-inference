@@ -59,9 +59,13 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             }
             let event = try worker.receiveWorkerEvent(until: deadline, cancelled: { self.isCancelled })
             guard event.requestID == requestID else { throw ClusterWorkerOwnerError.unavailable }
-            if case .refused = event.event {
+            if case .refused(let reason) = event.event {
                 lock.withLock { submissions[index] = .refused }
-                throw ClusterWorkerOwnerError.unavailable
+                // A rank that says it is unavailable is gone for every request;
+                // any other refusal (memory, deadline, profile) is this
+                // request's alone, and the caller gives back what the other
+                // rank admitted (`withdrawRefused`).
+                throw reason == .unavailable ? ClusterWorkerOwnerError.unavailable : ClusterWorkerOwnerError.refused(reason)
             }
             guard case .admitted(let allocation) = event.event,
                   allocation <= local.capacityLimitBytes, allocation <= capacity else {
@@ -78,6 +82,31 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
         DispatchQueue.global().asyncAfter(deadline: .init(uptimeNanoseconds: reservation.deadlineUptimeNanoseconds)) { [weak self] in
             if let self, !self.retired.isComplete { self.cancel(reason: .deadline) }
         }
+    }
+
+    /// After a request-scoped refusal (`ClusterWorkerOwnerError.refused`):
+    /// every rank that admitted the reservation is told to cancel it and must
+    /// answer with its own `retired(cancelled)` before `deadline`; nothing was
+    /// started, so no rank ran a forward or touched the data plane. True when
+    /// every admitted rank gave its reservation back (the request is then
+    /// retired and the pair keeps serving); false when any did not, and the
+    /// caller must then quarantine the pair as for any other failure.
+    func withdrawRefused(until deadline: UInt64) -> Bool {
+        let state = lock.withLock { () -> (submitted: [Submission], clean: Bool) in
+            (submissions, cancellation == nil && !started && !admitted)
+        }
+        guard state.clean, state.submitted.contains(.refused),
+              state.submitted.allSatisfy({ $0 == .admitted || $0 == .refused || $0 == .none }) else { return false }
+        for index in 0..<2 where state.submitted[index] == .admitted {
+            do {
+                try owner.workers[index].sendWorkerCommand(.cancel(.callerCancelled), requestID: requestID, deadline: deadline)
+                let value = try owner.workers[index].receiveWorkerEvent(until: deadline)
+                guard value.requestID == requestID, value.event == .retired(.cancelled) else { return false }
+            } catch { return false }
+        }
+        lock.withLock { started = true; released = false; byteReservation = 0 }
+        retired.complete()
+        return true
     }
 
     public func start(emit: @escaping @Sendable (ClusterWorkerRequestEvent) -> Bool) throws {

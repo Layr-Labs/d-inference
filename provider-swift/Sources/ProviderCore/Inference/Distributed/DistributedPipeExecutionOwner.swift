@@ -29,7 +29,8 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
 
     public func readiness() -> DistributedResidentReadiness? {
         guard let value = pair.readiness else { return nil }
-        return .init(identity: identity, profileID: profile.id, requestCapacityBytes: value.requestCapacityBytes)
+        return .init(identity: identity, profileID: profile.id, requestCapacityBytes: value.requestCapacityBytes,
+            servingContextTokens: value.servingContextTokens)
     }
     public func setReadinessInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         pair.setInvalidationHandler(handler)
@@ -70,7 +71,16 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit)
         // CBv2 request IDs may be reused after retirement. Each native request
         // gets a fresh UUID; the lease retains its original public CBv2 identity.
-        let native = try pair.reserve(requestID: UUID(), reservation: value, admissionDeadline: deadlines.admission)
+        let native: ClusterWorkerRequest
+        do {
+            native = try pair.reserve(requestID: UUID(), reservation: value, admissionDeadline: deadlines.admission)
+        } catch ClusterWorkerOwnerError.refused(let reason) {
+            // This request alone; the pair is idle and serving. Its reason and
+            // the context the pair serves now reach the client (503).
+            throw DistributedEngineError.refusedForCapacity(
+                requestedContextTokens: request.promptTokens.count + request.maxTokens,
+                servingContextTokens: pair.servingContextTokens, reason: reason.rawValue)
+        }
         return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native)
     }
     public func shutdown() async { await pair.shutdown() }

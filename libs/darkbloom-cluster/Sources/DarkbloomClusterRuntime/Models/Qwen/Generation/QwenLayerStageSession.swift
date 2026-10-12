@@ -47,6 +47,21 @@ final class QwenLayerStageSession {
     /// Prompt frontiers at which this stage keeps a copy of its committed
     /// state for the rank-local prefix cache. Empty when the cache is off.
     var prefixCaptureFrontiers: Set<Int> = []
+    /// Most bytes this request's captures may hold together (its prompt's
+    /// attention copy and speculative history, and one recurrent state a
+    /// kept frontier), as charged in its reservation; nil is unbounded.
+    var prefixCaptureLimitBytes: Int?
+    /// Most frontiers one request keeps (the cache's entry limit).
+    var prefixCaptureMaximumFrontiers = Int.max
+    /// The decoding rank's speculative history, a prompt token, kept with
+    /// these captures (counted against the limit); 0 elsewhere.
+    var prefixHistoryBytesPerToken = 0
+    /// Measured at the first capture frontier; decides what is kept.
+    private(set) var prefixCaptureCost: QwenStagePrefixCaptureCost?
+    private var prefixKept: Set<Int>?
+    /// Set when the running check withdrew this request's capture
+    /// (`withdrawPrefixCapture`): nothing more is captured or kept.
+    private(set) var prefixCaptureWithdrawn = false
     /// Recurrent state captured at each frontier, keyed by global layer.
     private var capturedRecurrent: [Int: [Int: (conv: MLXArray, ssm: MLXArray)]] = [:]
     /// Attention state captured once, at the deepest frontier; shallower
@@ -379,14 +394,20 @@ final class QwenLayerStageSession {
     }
 
     /// Keeps this stage's committed state at a prompt frontier. Recurrent
-    /// state is the confirmed generation (immutable arrays, referenced as the
-    /// product's own hybrid checkpoints are). Attention rows are copied once,
-    /// at the deepest frontier, into arrays this session owns alone, so no
-    /// later write to the request's rows can reach them.
+    /// state is the confirmed generation, kept compact: `contiguous` shares an
+    /// array that owns its storage and copies (bit for bit) only one that
+    /// views a larger buffer, such as the convolution tail, a three-row slice
+    /// of its whole prefill chunk, which would otherwise keep the chunk alive
+    /// once per frontier. Attention rows are copied once, at the deepest
+    /// frontier, into arrays this session owns alone, so no later write to
+    /// the request's rows can reach them; shallower frontiers view that copy.
+    /// What is kept stays within `prefixCaptureLimitBytes`: the deepest
+    /// frontier first, then the deepest grid frontiers that fit.
     private func capturePrefix(at frontier: Int) throws {
         guard frontier == state.committedTokens, frontier < request.promptCount else {
             throw ProbeError("Prefix capture differs from the committed prompt frontier")
         }
+        guard !prefixCaptureWithdrawn else { return }
         let global = Dictionary(uniqueKeysWithValues: descriptor.layers.map { ($0.localIndex, $0.globalIndex) })
         let confirmed = state.geometry.recurrent.layers.isEmpty ? [:] : (state.recurrent.confirmedStateSnapshot() ?? [:])
         var recurrent: [Int: (conv: MLXArray, ssm: MLXArray)] = [:]
@@ -397,9 +418,7 @@ final class QwenLayerStageSession {
             }
             recurrent[index] = (conv: conv, ssm: ssm)
         }
-        capturedRecurrent[frontier] = recurrent
-        guard frontier == prefixCaptureFrontiers.max() else { return }
-        var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        var rows: [Int: (keys: MLXArray, values: MLXArray)] = [:]
         for (position, optionalRow) in state.rows.enumerated() {
             guard let row = optionalRow, let local = state.geometry.kinds[position].modelLayerIndex,
                   let index = global[local] else { throw ProbeError("Prefix capture lacks an attention row") }
@@ -407,11 +426,36 @@ final class QwenLayerStageSession {
             guard snapshot.offset == frontier, snapshot.keys.dim(2) == frontier else {
                 throw ProbeError("Prefix capture attention frontier differs")
             }
-            let one = MLXArray(1).asType(snapshot.keys.dtype)
-            attention[index] = (keys: snapshot.keys * one, values: snapshot.values * one)
+            rows[index] = (keys: snapshot.keys, values: snapshot.values)
+        }
+        let planned = prefixCaptureFrontiers.sorted()
+        if prefixKept == nil {
+            // Logical sizes: the compact size of what would be kept.
+            let attention = rows.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: (attention + frontier - 1) / frontier,
+                recurrentBytesPerFrontier: recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes },
+                historyBytesPerToken: prefixHistoryBytesPerToken)
+            prefixCaptureCost = cost
+            prefixKept = cost.kept(planned, limit: prefixCaptureLimitBytes ?? Int.max,
+                maximum: prefixCaptureMaximumFrontiers)
+        }
+        guard prefixKept?.contains(frontier) == true else { return }
+        let compact = recurrent.mapValues { (conv: contiguous($0.conv), ssm: contiguous($0.ssm)) }
+        eval(compact.values.flatMap { [$0.conv, $0.ssm] })
+        capturedRecurrent[frontier] = compact
+        guard frontier == planned.last else { return }
+        var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        for (index, row) in rows {
+            let one = MLXArray(1).asType(row.keys.dtype)
+            attention[index] = (keys: row.keys * one, values: row.values * one)
         }
         eval(attention.values.flatMap { [$0.keys, $0.values] })
         capturedAttention = (frontier, attention)
+    }
+
+    /// Bytes of the attention copy the captured states view together.
+    var capturedSharedBytes: Int {
+        capturedAttention?.layers.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes } ?? 0
     }
 
     /// The captured states, deepest attention copy shared by prefix views.
@@ -428,7 +472,21 @@ final class QwenLayerStageSession {
         }
     }
 
-    func discardCapturedPrefix() { capturedRecurrent.removeAll(); capturedAttention = nil }
+    func discardCapturedPrefix() { capturedRecurrent.removeAll(); capturedAttention = nil; prefixKept = nil }
+
+    /// The running check withdrew this request's capture to keep the request
+    /// going: what was captured is let go now (its storage returns once the
+    /// last reference goes), and no later frontier is captured. Exactness is
+    /// untouched: captures are copies or immutable confirmed states, and the
+    /// frames do not depend on them.
+    func withdrawPrefixCapture() {
+        prefixCaptureWithdrawn = true
+        capturedRecurrent.removeAll(); capturedAttention = nil
+    }
+
+    /// Whether this request keeps its prompt for the cache: its deepest
+    /// frontier was captured within its limit and not withdrawn.
+    var keepsPrefixCapture: Bool { !prefixCaptureWithdrawn && capturedAttention != nil }
 
     func snapshot(includeBytes: Bool = false, check: () throws -> Void) throws -> CBv2OwnedStateSnapshot {
         do {

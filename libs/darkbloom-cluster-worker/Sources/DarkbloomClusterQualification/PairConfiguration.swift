@@ -115,6 +115,10 @@ public struct PairConfiguration: Sendable {
     public var followRequests: [QualificationRequest] = []
     /// Diagnosis: both workers keep no prompt prefixes (cold prefill always).
     public var prefixCacheOff = false
+    /// Whether the pair refuses a request longer than its serving context
+    /// before asking either rank (the product's behaviour). Off to qualify a
+    /// rank's own gate refusal at reservation (`--serving-context-check off`).
+    public var servingContextCheck = true
     public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an

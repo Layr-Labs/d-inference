@@ -142,7 +142,8 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
     /// (critical pressure, swap under pressure, stale or implausible
     /// counters) is thrown too, and noted.
     func admits(_ os: QwenDenseStageLoadOSObservation, bytes: Int,
-                now: UInt64 = DispatchTime.now().uptimeNanoseconds) throws -> Bool {
+                now: UInt64 = DispatchTime.now().uptimeNanoseconds,
+                floor: Int = QwenDenseStageLoadPolicy.minimumAdmissibleBytes) throws -> Bool {
         lock.lock()
         let register = !registered
         registered = true
@@ -153,7 +154,7 @@ final class QwenDenseStageLoadWatch: @unchecked Sendable {
         let decision: QwenDenseStageLoadAdmission
         do {
             decision = try QwenDenseStageLoadPolicy.decide(os, requiredBytes: bytes, purpose: purpose,
-                now: now, since: since)
+                now: now, since: since, floor: floor)
         } catch {
             unjudged += 1; lastUnjudged = String(describing: error)
             throw error

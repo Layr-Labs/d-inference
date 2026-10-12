@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import Foundation
+import MLX
 
 /// Executes one already-reserved request inside the runtime's autorelease and
 /// publication scopes. Returns CPU values; the runtime retains model ownership.
@@ -9,11 +10,64 @@ enum QwenResidentRequestExecution {
         guard let phaseSplit else { try reserved.requireLive(); return }
         try reserved.allowance.requireLive(additionalNativeBytes: QwenLongPrefillCheckedBytes.sum([
             reserved.prefillAllowance?.extraNativeBytes ?? 0, reserved.recordingCharge?.capture.extraNativeBytes ?? 0,
-            phaseSplit.extraNativeBytes,
+            phaseSplit.extraNativeBytes, reserved.prefixCaptureBytes,
         ]), additionalHostBytes: QwenLongPrefillCheckedBytes.sum([
             reserved.prefillAllowance?.extraHostBytes ?? 0, reserved.recordingCharge?.capture.extraHostBytes ?? 0,
             phaseSplit.extraHostBytes,
         ]))
+    }
+
+    /// While the request runs: what it still needs, given that this process's
+    /// allocator grew by `grown` bytes since the request started.
+    static func requireContinuing(_ reserved: QwenResidentReservation, phaseSplit: QwenPhaseSplitAllowance?,
+                                  grown: Int) throws {
+        try reserved.requireContinuing(grown: grown, additionalNativeBytes: phaseSplit?.extraNativeBytes ?? 0,
+            additionalHostBytes: phaseSplit?.extraHostBytes ?? 0)
+    }
+
+    /// One live check of a running request: the prefix cache never makes it
+    /// fail for memory. Kept prefixes give way first (`yieldingMemory`); if
+    /// the check still refuses, the request's own capture, which is optional,
+    /// is withdrawn (released, nothing stored for this request), its freed
+    /// buffers returned to the system, and the request is checked again
+    /// without that charge (`live` is given the capture charge to check).
+    /// Only a refusal with both gone fails the request. Returns the capture
+    /// charge from now on.
+    static func checkRunning(captureBytes: Int, prefixCache: QwenStagePrefixCache?, rank: Int,
+                             live: (_ captureBytes: Int) throws -> Void) throws -> Int {
+        guard let prefixCache else { try live(captureBytes); return captureBytes }
+        do {
+            try prefixCache.yieldingMemory { try live(captureBytes) }
+            return captureBytes
+        } catch where captureBytes > 0 {
+            prefixCache.withdrawCapture()
+            Stream.gpu.synchronize()
+            Memory.clearCache()
+            log("darkbloom-prefix-v1 rank=\(rank) capture-withdrawn bytes=\(captureBytes) entries=\(prefixCache.count): \(error)")
+            try live(0)
+            return 0
+        }
+    }
+
+    /// The source identity both ranks' generation agreement carries for a
+    /// request on this loaded stage.
+    static func sourceIdentity(stage: any LayerStageResidentStage, admission: any LayerStageResidentAdmission) throws
+        -> QwenLayerStageWireSourceIdentity {
+        let receipt = stage.loaded.receipt
+        return try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
+            artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
+            storageCommitmentSHA256: receipt.storageCommitmentSHA256,
+            planFingerprint: admission.plan.fingerprint,
+            producerStageFingerprint: admission.plan.stages[0].fingerprint)
+    }
+
+    /// The prefix cache's scope of a request on this loaded stage, as its
+    /// generation agreement will key it (`qwenStagePrefixScope`), before the
+    /// agreement exists: at reservation.
+    static func prefixScope(stage: any LayerStageResidentStage, admission: any LayerStageResidentAdmission,
+                            request: QwenLayerStageGenerationRequest) throws -> String {
+        qwenStagePrefixScope(source: try sourceIdentity(stage: stage, admission: admission),
+            numericalPolicySHA256: admission.arithmeticSHA256, request: request)
     }
 
     static func run(stage: any LayerStageResidentStage, producerStage: (any LayerStageResidentStage)? = nil,
@@ -24,6 +78,7 @@ enum QwenResidentRequestExecution {
                     admission: any LayerStageResidentAdmission,
                     collective: Collective, control: QwenResidentControl,
                     reserved: QwenResidentReservation, prefixCache: QwenStagePrefixCache? = nil,
+                    activeAtStart: Int? = nil,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
     ) throws -> (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) {
         guard generationMode.isPhaseSplit == (phaseSplitAllowance != nil),
@@ -32,12 +87,7 @@ enum QwenResidentRequestExecution {
               (generationMode.usesSpeculativeHead && collective.rank == 1) == (speculativeHead != nil) else {
             throw ProbeError("Resident generation mode differs from its loaded stages, head or reservation")
         }
-        let receipt = stage.loaded.receipt
-        let source = try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
-            artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
-            storageCommitmentSHA256: receipt.storageCommitmentSHA256,
-            planFingerprint: admission.plan.fingerprint,
-            producerStageFingerprint: admission.plan.stages[0].fingerprint)
+        let source = try sourceIdentity(stage: stage, admission: admission)
         // Both ranks derive the hand-off terms from their own Plan, registered
         // geometry and this request; the agreement fingerprint carries them.
         var split: QwenPhaseSplitPlan?
@@ -55,13 +105,27 @@ enum QwenResidentRequestExecution {
             phaseSplit: split, compactDecode: generationMode == .pipelineCompactDecode,
             speculativeHead: speculativeTerms)
         var lastResourceCheck: UInt64 = 0, ordinal = 0
+        // The prompt-prefix capture still charged to this request (zero once withdrawn).
+        var captureCharge = reserved.prefixCaptureBytes
         func check() throws {
             try control.check(deadline: reserved.deadline)
             let now = DispatchTime.now().uptimeNanoseconds
             if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                // Kept prefixes give way to the request's own admission.
-                if let prefixCache { try prefixCache.yieldingMemory { try requireLive(reserved, phaseSplit: phaseSplitAllowance) } }
-                else { try requireLive(reserved, phaseSplit: phaseSplitAllowance) }
+                // Admitted at its reservation; from here it asks only for what
+                // it still needs (`requireContinuing`). A caller without the
+                // allocator's start figure keeps the reservation's own check.
+                func live(_ capture: Int) throws {
+                    var current = reserved
+                    current.prefixCaptureBytes = capture
+                    if let activeAtStart {
+                        try requireContinuing(current, phaseSplit: phaseSplitAllowance,
+                            grown: Memory.activeMemory - activeAtStart)
+                    } else {
+                        try requireLive(current, phaseSplit: phaseSplitAllowance)
+                    }
+                }
+                captureCharge = try checkRunning(captureBytes: captureCharge, prefixCache: prefixCache, rank: collective.rank,
+                    live: live)
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
             }
             try control.check(deadline: reserved.deadline)

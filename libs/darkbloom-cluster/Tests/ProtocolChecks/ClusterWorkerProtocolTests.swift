@@ -34,13 +34,14 @@ private struct Conversation {
             executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: ready.requestCapacityBytes)))
     }
     mutating func command(_ command: ClusterWorkerCommand, now: UInt64 = 10) throws {
-        let request: UUID? = command == .shutdown ? nil : id
+        var request: UUID? = command == .shutdown ? nil : id
+        if case .keepWarm = command { request = nil }
         try session.accept(.init(membershipEpoch: epoch, sequence: commandSequence, requestID: request, command: command), now: now)
         commandSequence += 1
     }
     mutating func event(_ event: ClusterWorkerEvent, now: UInt64 = 10) throws {
         let request: UUID?
-        switch event { case .ready, .unavailable, .shutdownComplete: request = nil; default: request = id }
+        switch event { case .ready, .unavailable, .shutdownComplete, .keptWarm: request = nil; default: request = id }
         try session.accept(.init(membershipEpoch: epoch, sequence: eventSequence, requestID: request, event: event), now: now)
         eventSequence += 1
     }
@@ -53,8 +54,50 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        try promptCache()
-        print("{\"passed\":true,\"groups\":8,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache(); try servingContextAndGiveBack()
+        print("{\"passed\":true,\"groups\":9,\"modelExecution\":false,\"localPipeIO\":true}")
+    }
+    /// Round-2 fixes: the serving context travels in readiness and in every
+    /// keep-warm answer; a refused reservation and a reservation given back
+    /// before start (`cancel` then `retired(cancelled)`) both leave the worker
+    /// idle and available for the next request.
+    static func servingContextAndGiveBack() throws {
+        let serving = ClusterWorkerReady(identity: identity, rank: 1, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, servingContextTokens: 12)
+        for event: ClusterWorkerEvent in [.ready(serving), .keptWarm(ordinal: 3, microseconds: 40, servingContextTokens: 12),
+                                          .keptWarm(ordinal: 4, microseconds: 40)] {
+            let frame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: event)
+            try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Serving context round trip")
+        }
+        // Absent on the wire when nil: an older reader's records are unchanged.
+        let plain = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: .ready(ready))
+        try check(!String(decoding: try ClusterWorkerCodec.encode(plain), as: UTF8.self).contains("servingContext"),
+            "A worker without a serving context writes none")
+        for bad in [0, 21] {
+            let value = ClusterWorkerReady(identity: identity, rank: 0, profile: profile,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, servingContextTokens: bad)
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: nil, event: .ready(value))) }
+        }
+        // Refused for capacity: idle and available, the next reservation proceeds.
+        var refused = try Conversation()
+        try refused.command(.reserve(reservation()))
+        try refused.event(.refused(.capacity))
+        try check(refused.session.locallyAvailable && refused.session.activeRequestID == nil, "Capacity refusal keeps the worker")
+        refused.id = UUID(); try refused.command(.reserve(reservation())); try refused.event(.admitted(reservedBytes: 512))
+        // Given back before start: cancel, retired(cancelled), available again.
+        var given = try Conversation()
+        try given.command(.reserve(reservation())); try given.event(.admitted(reservedBytes: 512))
+        try given.command(.cancel(.callerCancelled)); try given.event(.retired(.cancelled))
+        try check(given.session.locallyAvailable && given.session.activeRequestID == nil && !given.session.protocolFailed,
+            "A reservation given back before start keeps the worker")
+        given.id = UUID(); try given.command(.reserve(reservation())); try given.event(.admitted(reservedBytes: 512))
+        // A keep-warm answer may not claim more than the profile allows.
+        var warm = try Conversation()
+        try warm.command(.keepWarm(ordinal: 1))
+        try warm.event(.keptWarm(ordinal: 1, microseconds: 1, servingContextTokens: 20))
+        try warm.command(.keepWarm(ordinal: 2))
+        try refuses { try warm.event(.keptWarm(ordinal: 2, microseconds: 1, servingContextTokens: 21)) }
     }
     static func roundTrips() throws {
         let commands: [ClusterWorkerCommand] = [.reserve(reservation()), .start,

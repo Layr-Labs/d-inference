@@ -24,6 +24,10 @@ public struct ClusterWorkerPairReadiness: Sendable {
     /// against its pin.
     public var encryptedDataPlane: Bool { dataPlane?.protection == ClusterWorkerDataPlane.encrypted }
     public var peerVerified: Bool { dataPlane?.encryptedAndVerified == true }
+    /// The longest context (prompt plus output) both ranks' host memory gates
+    /// admit now (`ClusterWorkerPair.servingContextTokens`); a request longer
+    /// than this is refused before either rank is asked.
+    public let servingContextTokens: Int
 }
 
 /// How long a pair's owner waits for a rank to answer. None of these waits
@@ -67,6 +71,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     public let executionPlanSHA256: String
     public let timing: ClusterWorkerPairTiming
     public let keepWarm: ClusterWorkerKeepWarmPolicy
+    /// Whether a request longer than the serving context is refused before
+    /// either rank is asked (the default). Off only to qualify a rank's own
+    /// gate refusal at reservation.
+    public let refusesAboveServingContext: Bool
     let workers: [any ClusterWorkerEndpoint]
     private let lock = NSLock()
     private var active: ClusterWorkerRequest?
@@ -91,6 +99,12 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     private var lastKeepWarmMicroseconds: Int?
     private var keepWarmTimer: DispatchSourceTimer?
     private let keepWarmQueue = DispatchQueue(label: "darkbloom.worker-pair.keep-warm")
+    /// Each rank's latest serving context: from its readiness, then from
+    /// every keep-warm answer (a rank re-derives it from its live admissible
+    /// memory while idle). Nil for a rank that reports none.
+    private var rankServingContext: [Int?] = [nil, nil]
+    /// Requests refused before they started (request-scoped), for diagnostics.
+    private var refusedCount = 0
     /// The earliest current rank-lease deadline of the two ranks on THIS Mac's
     /// clock: each owner renews its rank's lease while it keeps the pair, so
     /// this moves forward and is never a lifetime.
@@ -106,16 +120,31 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             // One keyed session or none: ranks that disagree are not a pair.
             guard a.dataPlane == b.dataPlane, a.dataPlane.map({ $0.peerVerified }) ?? true else { return nil }
             return .init(identity: identity, profile: profile, executionPlanSHA256: executionPlanSHA256,
-                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane)
+                requestCapacityBytes: sum.partialValue, dataPlane: a.dataPlane, servingContextTokens: servingContextLocked)
         }
     }
+
+    /// The longest context (prompt plus output) the pair serves now: the
+    /// smaller of what each rank's host memory gate last admitted with its
+    /// weights resident (at readiness, then re-derived on every keep-warm
+    /// exchange while idle), never more than the profile's maximum. A request
+    /// above it is refused before either rank is asked
+    /// (`ClusterWorkerOwnerError.refused(.capacity)`); one within it can still
+    /// be refused by a rank's live gate at reservation, for that request alone.
+    public var servingContextTokens: Int { lock.withLock { servingContextLocked } }
+    private var servingContextLocked: Int {
+        rankServingContext.compactMap { $0 }.reduce(profile.maximumContextTokens) { min($0, $1) }
+    }
+    /// Requests refused before they started since the pair became ready.
+    public var requestsRefused: Int { lock.withLock { refusedCount } }
 
     /// `keepWarm` is explicit at every serving call site: the installed
     /// session and the pair driver pass `.standard` (keep-warm is on by
     /// default in the product); a caller that names nothing gets none.
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
                 timing: ClusterWorkerPairTiming = .standard,
-                keepWarm: ClusterWorkerKeepWarmPolicy = .off) throws {
+                keepWarm: ClusterWorkerKeepWarmPolicy = .off, refusesAboveServingContext: Bool = true) throws {
+        self.refusesAboveServingContext = refusesAboveServingContext
         guard timing.isWithinLimits else {
             throw ClusterWorkerOwnerError.invalid("Pair waits must be between one nanosecond and one minute")
         }
@@ -130,6 +159,7 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         executionPlanSHA256 = workers[0].executionPlanSHA256
         do { try Self.awaitReadiness(of: workers, until: startupDeadline) }
         catch { for worker in workers { worker.requestNativeCleanup() }; throw error }
+        rankServingContext = workers.map { $0.readiness?.servingContextTokens }
         for worker in workers { worker.setInvalidationHandler { [weak self] in self?.invalidate() } }
         if keepWarm.enabled { startKeepWarm() }
     }
@@ -160,19 +190,25 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         guard let ordinal else { return }
         let deadline = DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds
         var longest = 0, failed = false
+        var serving: [Int?] = [nil, nil]
         do {
             for worker in workers { try worker.sendWorkerCommand(.keepWarm(ordinal: ordinal), requestID: nil, deadline: deadline) }
-            for worker in workers {
+            for (index, worker) in workers.enumerated() {
                 let event = try worker.receiveWorkerEvent(until: deadline)
-                guard event.requestID == nil, case .keptWarm(let answered, let microseconds) = event.event, answered == ordinal else {
+                guard event.requestID == nil, case .keptWarm(let answered, let microseconds, let context) = event.event,
+                      answered == ordinal else {
                     throw ClusterWorkerOwnerError.invalid("Keep-warm was answered with another event")
                 }
-                longest = max(longest, microseconds)
+                longest = max(longest, microseconds); serving[index] = context
             }
         } catch { failed = true }
         lock.withLock {
             warming = false
-            if !failed { keepWarmExchanges += 1; lastKeepWarmMicroseconds = longest }
+            if !failed {
+                keepWarmExchanges += 1; lastKeepWarmMicroseconds = longest
+                // A rank that re-derived its serving context reports it here.
+                for index in 0..<2 where serving[index] != nil { rankServingContext[index] = serving[index] }
+            }
         }
         if failed {
             // Any failure of the data plane while idle is a failed pair: its
@@ -264,6 +300,13 @@ public final class ClusterWorkerPair: @unchecked Sendable {
                   reservation.capacityLimitBytes <= a.requestCapacityBytes + b.requestCapacityBytes else {
                 throw ClusterWorkerOwnerError.unavailable
             }
+            // Longer than a rank's gate admits now: refused up front, for this
+            // request alone; neither rank is asked and the pair stays as it is.
+            guard !refusesAboveServingContext
+                    || reservation.promptTokenIDs.count + reservation.outputCount <= servingContextLocked else {
+                refusedCount += 1
+                throw ClusterWorkerOwnerError.refused(.capacity)
+            }
             let value = ClusterWorkerRequest(owner: self, requestID: requestID, reservation: reservation)
             active = value; activeReleased = WorkerCompletion(); admittedCount += 1
             requestIDs.insert(requestID); requestOrder.append(requestID)
@@ -271,12 +314,25 @@ public final class ClusterWorkerPair: @unchecked Sendable {
             return value
         }
         do { try lease.admit(until: admissionDeadline); return lease }
-        catch {
+        catch ClusterWorkerOwnerError.refused(let reason)
+            where lease.withdrawRefused(until: DispatchTime.now().uptimeNanoseconds + timing.admissionWaitNanoseconds) {
+            // A rank refused this request (its live gate, its deadline or its
+            // profile) and every rank that had admitted it gave it back. Only
+            // this request failed: the pair is valid and idle again.
+            lease.releaseResources()
+            lock.withLock { refusedCount += 1 }
+            throw ClusterWorkerOwnerError.refused(reason)
+        } catch {
             invalidate(); lease.cancel(reason: .runtimeError)
+            // A refusal whose reservation could not be given back on every
+            // rank ends the pair like any other failure; say so to the caller.
+            let failure: Error = (error as? ClusterWorkerOwnerError).map {
+                if case .refused = $0 { return ClusterWorkerOwnerError.unavailable }; return $0
+            } ?? error
             // Provider reserve must not throw with a reservation left behind.
             // Internal IO/watchdog queues continue independently while this caller
             // waits for actual cleanup or process exit; no timeout releases state.
-            lease.waitForRetirement(); lease.releaseResources(); throw error
+            lease.waitForRetirement(); lease.releaseResources(); throw failure
         }
     }
 

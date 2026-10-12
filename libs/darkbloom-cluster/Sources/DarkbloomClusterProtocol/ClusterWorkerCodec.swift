@@ -86,8 +86,9 @@ public enum ClusterWorkerCodec {
         case .retired(let outcome): value["kind"] = "retired"; value["outcome"] = outcome.rawValue
         case .unavailable(let reason): value["kind"] = "unavailable"; value["reason"] = reason.rawValue
         case .shutdownComplete: value["kind"] = "shutdownComplete"
-        case .keptWarm(let ordinal, let microseconds):
+        case .keptWarm(let ordinal, let microseconds, let serving):
             value["kind"] = "keptWarm"; value["ordinal"] = ordinal; value["microseconds"] = microseconds
+            if let serving { value["servingContextTokens"] = serving }
         }
         return try encoded(value, maximum: ClusterWorkerLimits.eventBytes)
     }
@@ -125,7 +126,8 @@ public enum ClusterWorkerCodec {
         case "retired": event = .retired(try r.enumeration("outcome"))
         case "unavailable": event = .unavailable(try r.enumeration("reason"))
         case "shutdownComplete": event = .shutdownComplete
-        case "keptWarm": event = .keptWarm(ordinal: try r.int("ordinal"), microseconds: try r.int("microseconds"))
+        case "keptWarm": event = .keptWarm(ordinal: try r.int("ordinal"), microseconds: try r.int("microseconds"),
+            servingContextTokens: try r.optionalInt("servingContextTokens"))
         default: throw ClusterWorkerProtocolError.invalid("Unknown worker event")
         }
         try r.finish()
@@ -185,6 +187,7 @@ public enum ClusterWorkerCodec {
             "maximumPromptTokens": r.profile.maximumPromptTokens, "maximumOutputTokens": r.profile.maximumOutputTokens,
             "maximumChunkTokens": r.profile.maximumChunkTokens, "maximumContextTokens": r.profile.maximumContextTokens],
          "executionPlanSHA256": r.executionPlanSHA256, "requestCapacityBytes": r.requestCapacityBytes]
+            .merging(r.servingContextTokens.map { ["servingContextTokens": $0] } ?? [:]) { first, _ in first }
     }
     private static func ready(_ object: [String: Any]) throws -> ClusterWorkerReady {
         var r = WorkerObject(object), id = WorkerObject(try r.object("identity")), p = WorkerObject(try r.object("profile"))
@@ -207,7 +210,7 @@ public enum ClusterWorkerCodec {
         }
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
-            dataPlane: dataPlane)
+            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"))
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

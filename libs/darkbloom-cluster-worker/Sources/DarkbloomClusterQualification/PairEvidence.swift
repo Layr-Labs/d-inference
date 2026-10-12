@@ -13,6 +13,13 @@ public struct PairEvidence: Decodable, Equatable, Sendable {
         public let committedTokens: Int
         public let finishReason: String
         public let tokenChainSHA256: String
+        /// The runtime's prefix-cache summary; only the plan both ranks agreed
+        /// is read (what each rank stored differs and is not compared).
+        public let prefixCache: PrefixPlan?
+    }
+    public struct PrefixPlan: Decodable, Equatable, Sendable {
+        public let reusedPromptTokens: Int
+        public let splitFinalToken: Bool
     }
     public struct Agreement: Decodable, Equatable, Sendable {
         public let requestID: String
@@ -79,7 +86,11 @@ public struct PairEvidence: Decodable, Equatable, Sendable {
                                logicalBytesSHA256: row.logicalBytesSHA256, values: row.values),
             stateEntries: entries,
             stateSHA256: QualificationStateEntry.fingerprint(entries, committedTokens: a.execution.committedTokens))
-        return (evidence, .init(requestFingerprint: a.requestFingerprint, profileFingerprint: a.profileFingerprint,
+        var joined = evidence
+        joined.prefillPlan = a.execution.prefixCache.map {
+            .init(reusedPromptTokens: $0.reusedPromptTokens, splitFinalPromptToken: $0.splitFinalToken)
+        }
+        return (joined, .init(requestFingerprint: a.requestFingerprint, profileFingerprint: a.profileFingerprint,
             stageSHA256: a.agreement.stageFingerprints, storageCommitmentSHA256: a.agreement.storageCommitmentSHA256,
             arithmeticSHA256: a.agreement.numericalPolicySHA256, planSHA256: a.agreement.planFingerprint,
             artifactSHA256: a.agreement.artifactAggregateSHA256,

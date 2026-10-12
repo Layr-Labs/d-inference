@@ -370,7 +370,8 @@ private final class ServiceContext: @unchecked Sendable {
                         try state.observeAdmitted(requestID: frame.requestID!, reservedBytes: bytes)
                         if let admissionDeadline, now >= admissionDeadline { state.disconnect() }
                         admissionDeadline = nil
-                    case .refused: try state.observeRefused(requestID: frame.requestID!); admissionDeadline = nil
+                    case .refused(let reason):
+                        try state.observeRefused(requestID: frame.requestID!, reason: reason); admissionDeadline = nil
                     case .retired(let outcome):
                         try state.observeRetired(requestID: frame.requestID!, retirement: outcome)
                         try releaseRequest(frame.requestID!)

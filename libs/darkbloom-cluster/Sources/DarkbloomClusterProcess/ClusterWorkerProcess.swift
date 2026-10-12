@@ -4,6 +4,12 @@ import DarkbloomClusterProtocol
 
 public enum ClusterWorkerOwnerError: Error, Equatable, Sendable {
     case invalid(String), unavailable, deadline, cancelled, closed
+    /// The request was refused before it started, for `reason`, and nothing
+    /// of it is left on either rank: a rank refused its reservation (or the
+    /// pair's serving context is shorter than the request) and every rank
+    /// that had admitted it gave its reservation back. The pair is still
+    /// valid and takes the next request. Only this request failed.
+    case refused(ClusterWorkerRefusal)
 }
 
 /// Recorded by the direct-child supervisor, never inferred from a pipe event.

@@ -122,6 +122,16 @@ struct QwenResidentRequestAllowance {
 
 enum QwenResidentResourceEnvironment {
     static func require() throws {
+        try requirePower()
+        _ = try QwenDenseStageLoadResources.requireInitial()
+    }
+
+    /// AC power, normal power mode and a nominal or fair thermal state: the
+    /// environment part of `require`, without the entry check's 6 GiB of
+    /// admissible memory. A request that was admitted and is running asks for
+    /// what it still needs instead (`requireContinuing`); asking it for the
+    /// entry floor counted its own allocations against it.
+    static func requirePower() throws {
         guard let unmanaged = IOPSCopyPowerSourcesInfo() else { throw ProbeError("Cannot observe resident power source") }
         let info = unmanaged.takeRetainedValue()
         let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
@@ -130,7 +140,6 @@ enum QwenResidentResourceEnvironment {
               thermal == .nominal || thermal == .fair else {
             throw ProbeError("Resident execution requires AC, normal power mode and nominal/fair thermal state")
         }
-        _ = try QwenDenseStageLoadResources.requireInitial()
     }
 
     static func allocationBound(_ bytes: Int) throws -> Int {

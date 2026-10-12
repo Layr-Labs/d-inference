@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-12
 
 Changelog checks use Python's standard library, with no package installation.
 Run `make changelog-check` to validate pending fragments and
@@ -454,18 +454,18 @@ jobs queued behind a provider quota do not shorten the critical path. See
 
 The provider consumes the local packages through immutable Git submodule pins:
 
-| Package | Merged revision | Included update |
+| Package | Pinned revision | Included update |
 |---|---|---|
 | `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
 | `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
 | `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources; retains [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `3fd4944c3b3ee5cb45c5cbfac8805876332d3a29` | Includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
+| `libs/mlx-swift-lm` | `33333d25c14880986beb4cf4317eea01ec43e3f4` | [PR #298](https://github.com/Layr-Labs/mlx-swift-lm/pull/298): native inference with quantized checkpoints, retained optional live-packed KV and native-block capacity projection; includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
 
 Keep both local packages in the provider build. The SDK's standalone package
-manifest pins Swift `0f4fe403bef6899e8a72882bc6d4036a7a62ae31`, not the provider's
-current Swift gitlink; the nested-test
-procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
-Swift gitlink. Keep `libs/mlx` and `libs/mlx-swift/Source/Cmlx/mlx` on the same
+manifest pins the same Swift revision shown above; the nested-test
+procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+binds validation to the recorded local Swift gitlink. Keep `libs/mlx` and
+`libs/mlx-swift/Source/Cmlx/mlx` on the same
 merged MLX commit for the `gather_mm` / `gather_qmm` row-tile backport. The Swift
 pin includes kernel sources regenerated from that nested MLX revision, including
 the signed integer floor-division corrections from [MLX PR #32](https://github.com/Layr-Labs/mlx/pull/32)
@@ -482,6 +482,9 @@ Neither that policy nor the newer native retirement and MLX kernels are
 qualified by the original demanded-prefix full-model results. The
 [dependency validation procedure](test.md#merged-sdk-pin-validation) separates
 required tiny-fixture regressions from fresh full-model performance qualification.
+Native inference with quantized checkpoint storage has its own
+[qualification report](../reports/2026-10-11-native-inference-checkpoint-storage.md),
+with the measured source identities, supported artifacts and scope limits.
 The earlier SDK [PR #170](https://github.com/Layr-Labs/mlx-swift-lm/pull/170)
 pin `4101d4c1bfa6b3175e7f34393e8c235a75a7c1be` had production libraries and a
 package manifest matching review head `b52335b839d80c8e6d4194ebbd8809d737cd8eb3`.

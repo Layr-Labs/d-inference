@@ -22,14 +22,15 @@ enum DiffusionGemmaProviderBridge {
         completePrefixCache: SSDHybridCheckpointStore? = nil,
         retainMemoryPrefixes: Bool = true, prefillChunkSize: Int = 512,
         prefixCacheStatus: PrefixCacheModelStatus? = nil, pageBacked: Bool = false,
-        kvQuantization: EngineV2KVQuantizationSelection = .native
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) async throws -> Prepared {
         try EngineV2KVQuantizationPolicy.requireResolvedBackend(
             pageBacked ? .paged : .contiguous, selection: kvQuantization)
         guard !pageBacked || sharedBudget != nil else {
             throw CBv2KVError.backendIneligible(reason: "Native paged serving requires process memory admission")
         }
-        return try await container.perform { context in
+        return try await container.perform(nonSendable: pagedPreflightOverride) { context, pagedPreflightOverride in
             let config = context.model.configuration.textConfig
             let embedding = context.model.model.decoder.embedTokens
             let dtype = (embedding as? QuantizedEmbedding)?.scales.dtype ?? embedding.weight.dtype
@@ -53,6 +54,18 @@ enum DiffusionGemmaProviderBridge {
             let pageConfig: PagedKVPoolConfig? = pageBacked ? makePagedConfiguration(
                 configuration: context.model.configuration, kvBytesCapacity: kvBytesCapacity,
                 dtype: dtype, prefillChunkSize: prefillChunkSize, kvQuantization: kvQuantization) : nil
+            if let pageConfig, pageConfig.quantization != nil {
+                // Packed kernel compilation can terminate the process. Probe
+                // the loaded geometry in the existing child before owning a pool.
+                let layerKinds = config.diffusionPagedLayerKinds
+                if let pagedPreflightOverride {
+                    try pagedPreflightOverride(layerKinds)
+                } else {
+                    try PagedKernelPreflight.run(
+                        layerKinds: layerKinds, precision: kvQuantization,
+                        nativeLayerIndices: pageConfig.nativeLayerIndices)
+                }
+            }
             let engine = try context.makeNativeEngine(
                 kvBytesCapacity: kvBytesCapacity, maxConcurrentRequests: maxConcurrentRequests,
                 prefillChunkSize: prefillChunkSize,
@@ -70,7 +83,11 @@ enum DiffusionGemmaProviderBridge {
                 // Absolute deadline checks are unchanged; a native forecast and
                 // native phase leases remain required before serving qualification.
                 prefillDeadlineProjectionEnabled: false,
-                kvBytesPerToken: nativeRate, kvBudget: sharedBudget,
+                kvBytesPerToken: nativeRate,
+                // Quote the actual pool's worst-case native band once per
+                // active/prospective request, without reserving it again.
+                fixedRequestBytes: engine.maximumNativeRecentFeasibilityBytes,
+                kvBudget: sharedBudget,
                 ssdHybridCheckpointStore: completePrefixCache,
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: pageBacked ? .paged : .contiguous, kvQuantization: kvQuantization,

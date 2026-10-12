@@ -243,7 +243,7 @@ extension EngineV2SlotFactory {
                 prefixCacheStatus: .init(modelId: modelId, backend: pageBacked ? .paged : .contiguous,
                     replayStrategy: prefix.store == nil ? .none : .direct,
                     state: prefix.status.state, reason: prefix.status.reason), pageBacked: pageBacked,
-                kvQuantization: precision)
+                kvQuantization: precision, pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch { await prefix.store?.closeAndWait(); throw error }
             let status = MTPActivationStatus.disabled(.targetUnsupported, configured: false)
             await prepared.bridge.configureMTPStatus(status, metricsInterval: startServingTelemetry ? .seconds(60) : .zero)

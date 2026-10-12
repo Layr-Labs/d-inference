@@ -1,6 +1,6 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints. Explicit live packed
@@ -137,6 +137,14 @@ Vision-capable DiffusionGemma pools quote the existing whole-visual-block bound
 before allocation; the text chunk and canvas bounds remain independently
 enforced (`DiffusionGemmaPrefillGeometry.maximumVisualBlockTokens`,
 `DiffusionGemmaProviderBridge.makePagedConfiguration`).
+
+Before constructing a live-packed Diffusion engine, the provider runs the
+existing child/parent kernel preflight for the SDK's Diffusion layer kinds and
+selected precision. Its heartbeat includes the actual engine's maximum
+native-recent feasibility bound in each active or prospective request quote.
+This conservative reporting allowance adds no physical reservation;
+request-sized admission and native allocation accounting remain authoritative
+(`DiffusionGemmaProviderBridge.make`, `CBv2NativeBlockEngine.maximumNativeRecentFeasibilityBytes`).
 
 ## Invariants
 

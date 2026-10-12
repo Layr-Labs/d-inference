@@ -247,8 +247,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     /// A follower member that refuses the open reaches the pair only as a
     /// closed stream; the start then fails with the follower's own reason.
-    /// Any other failure is returned unchanged.
-    static func startFailure(_ error: Error, endpoints: [any ClusterOwnedWorkerEndpoint]) -> Error {
+    /// Any other failure is returned unchanged. The coordinator-formed pair
+    /// (`ClusterPairServingContext.pairOwner`) uses the same rule.
+    static func startFailure(_ error: Error, endpoints: [any ClusterWorkerEndpoint]) -> Error {
         for case let link as ClusterLinkWorkerEndpoint in endpoints {
             if let reason = link.refusalReason { return DistributedInstalledStartRefusal(rank: link.rank, reason: reason) }
         }

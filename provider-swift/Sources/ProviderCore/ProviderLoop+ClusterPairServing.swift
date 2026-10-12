@@ -69,10 +69,14 @@ public struct ClusterPairServingContext: Sendable {
             }
             let peer: any ClusterWorkerEndpoint
             do { peer = try follower(start, relay) } catch { relay?.cancel(); throw error }
-            // A failed wait for readiness already asked both ranks to clean up.
-            let pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
-                startupDeadline: now + startupAllowanceNanoseconds,
-                timing: timing, keepWarm: .standard)
+            // A failed wait for readiness already asked both ranks to clean up;
+            // a follower member that refused the open is named with its reason.
+            let pair: ClusterWorkerPair
+            do {
+                pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
+                    startupDeadline: now + startupAllowanceNanoseconds,
+                    timing: timing, keepWarm: .standard)
+            } catch { throw DistributedInstalledSession.startFailure(error, endpoints: [start.endpoint, peer]) }
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens) }
             catch { Task { await pair.shutdown() }; throw error }
         }

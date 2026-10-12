@@ -761,3 +761,14 @@ final class PairDriverTests: XCTestCase {
             transport: ["/bin/sh", "-c"], remote: false))
     }
 }
+
+final class PairTelemetryLineTests: XCTestCase {
+    func testTelemetryLineCarriesEveryFigureAndMarksMissingOnes() {
+        let full = ClusterWorkerRequestTelemetry(handoffNanoseconds: 81_000_000, handoffBytes: 4_194_304, mtpDrafted: 40,
+                                                 mtpAccepted: 31, prefillNanoseconds: 512_000_000)
+        XCTAssertEqual(PairWorkerEndpoint.telemetryLine(full),
+                       "requestTelemetry:handoffNs=81000000:handoffBytes=4194304:mtpAccepted=31:mtpDrafted=40:prefillNs=512000000")
+        XCTAssertEqual(PairWorkerEndpoint.telemetryLine(ClusterWorkerRequestTelemetry(prefillNanoseconds: 7)),
+                       "requestTelemetry:handoffNs=-:handoffBytes=-:mtpAccepted=-:mtpDrafted=-:prefillNs=7")
+    }
+}

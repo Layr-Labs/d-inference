@@ -377,8 +377,9 @@ extension CBv2OwnedRequestState {
     /// hosted stage at once (continuous batching): every request's rows are
     /// bound to the host's caches in the order given, every request binds its
     /// own recurrent evaluation, and one forward computes all of them. Each
-    /// row attends only its own KV (both backends dispatch attention per row),
-    /// so a row's result does not depend on its batchmates.
+    /// row attends only its own KV (both backends dispatch attention per row);
+    /// the shared projections round two or more rows differently from one
+    /// (MLX `qmv_wide`), identically for every batch size from two up.
     ///
     /// Any failure marks every request failed; the caller retires them all.
     static func runBatch(_ states: [CBv2OwnedRequestState], tokenCount: Int, check: () throws -> Void,

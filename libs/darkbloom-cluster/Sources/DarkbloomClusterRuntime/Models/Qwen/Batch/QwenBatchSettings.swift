@@ -8,7 +8,9 @@ import Foundation
 /// launched with another count stops at the first exchange, before either
 /// stage is read (the owner's oMLX rule: identical graph-shaping settings on
 /// both ranks). Prefill frames always end on each request's own chunk grid,
-/// one frame per step, so every frame's arithmetic is the unbatched one.
+/// one frame per step, so every prefill frame's arithmetic is the unbatched
+/// one; batched decode rows round like an MTP verify window's rows (near-tie
+/// lossless, see `QwenResidentRuntime+Batch.swift`).
 public struct QwenBatchSettings: Equatable, Sendable {
     /// Requests served together, 1...8. One is the earlier one-request-at-a-time
     /// owner, unchanged.

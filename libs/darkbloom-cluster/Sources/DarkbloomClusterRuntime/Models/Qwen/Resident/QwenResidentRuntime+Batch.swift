@@ -70,11 +70,17 @@ final class QwenBatchLaneTable {
 /// start, as for one request); the header only names them, with the first
 /// bytes of the request fingerprint, so both ranks provably run the same one.
 ///
-/// Every frame keeps the arithmetic of the request run alone: prefill frames
-/// end on the request's own chunk grid (one frame per step, earliest joined
-/// lane first), the last prompt token is split off exactly when the
-/// one-request path splits it, and decode rows attend only their own KV.
-/// Greedy selection on rank 1, as for one request.
+/// Prefill frames keep the arithmetic of the request run alone: they end on
+/// the request's own chunk grid (one frame per step, earliest joined lane
+/// first) and the last prompt token is split off exactly when the one-request
+/// path splits it. Decode rows attend only their own KV, but two or more rows
+/// share each quantized projection, which MLX runs as `qmv_wide` instead of a
+/// lone row's `qmv_fast`: a batched row's rounding differs from the same
+/// request alone (identically for every batch size from two up), as the MTP
+/// verify window's rows already do. The lanes are therefore lossless under
+/// the near-tie rule, not bit for bit (exact rows need the batched one-row
+/// product layout: see `handoff/PAGED-BATCH-PAIR.md`). Greedy selection on
+/// rank 1, as for one request.
 extension QwenResidentRuntime {
     /// Lane reservation: the same request allowance a single request gets,
     /// gated live together with every lane already charged. A full set of

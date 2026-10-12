@@ -222,8 +222,14 @@ enum QwenDenseStageLoadPolicy {
         let abovePages = max(0, os.fileBackedPages - reservePages)
         // Second kernel bound: taking x inactive file pages leaves fewer than
         // half of the file cache inactive once x exceeds 2 * inactive - total.
+        // Speculative pages (read ahead, never touched) are file pages the
+        // pageout scan takes first, before it weighs anonymous against file
+        // pages; at the least they count as inactive ones here. Left out, a
+        // Mac whose cache is mostly speculative (186.8 GiB of 232.8 GiB on the
+        // M5 Ultra after another program read its weights) counted nothing
+        // while macOS called it 97 % free.
         let beforeAnonymousPages = try os.inactiveFileBackedPages.map {
-            max(0, try product([$0, inactiveFileCacheTargetDenominator]) - os.fileBackedPages)
+            max(0, try product([try sum([$0, os.speculativePages]), inactiveFileCacheTargetDenominator]) - os.fileBackedPages)
         }
         let countablePages = min(abovePages, beforeAnonymousPages ?? 0)
         let aboveBytes = try product([abovePages, page]), countableBytes = try product([countablePages, page])

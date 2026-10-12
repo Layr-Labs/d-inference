@@ -207,7 +207,7 @@ one request that took its first sample earlier:
 pageable   = active + inactive + free (speculative included)
 reserve    = max(pageable × 10 / 27 rounded up, kernel-reported minimum if readable)
 above      = max(0, file-backed − reserve)
-before     = max(0, 2 × inactive file-backed − file-backed)        0 if not reported
+before     = max(0, 2 × (inactive file-backed + speculative) − file-backed)   0 if not reported
 harmed     = compressed since first sample > 512 MiB
              ∨ swapped out since first sample > 64 MiB
 counted    = 0                                 unless pressure is normal and not harmed
@@ -306,7 +306,9 @@ that machine.
 - **A flat fraction of file-backed pages.** It ignores both kernel bounds.
 - **Purgeable pages.** 0.2–1.8 GiB on these Macs.
 - **Speculative pages as a separate term.** They are file-backed and already
-  inside the counted quantity.
+  inside the counted quantity. (Revised 2026-10-12: they are inside `above`, but
+  the second bound counted them only on its file-backed side, never as pages the
+  scan can take; see "Speculative pages" below.)
 - **The sysctl alone for the reserve.** It was 10 GiB stale at the moment a
   decision would have been taken.
 - **Waiting and re-sampling, or reclaiming explicitly.** The cache-heavy
@@ -760,3 +762,23 @@ Still to decide:
    compression staying near zero while the reusable count falls by what the
    load took; and the same on a Mac where reusable pages share the inactive
    queue with idle application memory, which is where it is likely to fail.
+
+## Speculative pages (2026-10-12)
+
+On the M5 Ultra, after another account's program had read about 190 GB of its
+own weights, vm_stat showed 2.0 GiB free, 186.8 GiB speculative, 40 GiB
+inactive, 20 GiB active, 5.5 GiB wired and 232.8 GiB file-backed, unchanged for
+two and a half hours; `memory_pressure` reported 97 % free. The rule above
+counted no cache at all ("0.00 GiB before half of the cache is active"), because
+speculative pages entered the second bound only as file-backed pages, and every
+load, even the 6 GiB floor, was refused.
+
+Speculative pages are read-ahead file pages nobody has touched; the pageout
+scan takes aged ones first, before it chooses between anonymous and file
+pages. The second bound now counts them as inactive file pages (the smaller of
+the two readings: taken first they would add one page each, aged into the
+inactive queue they add to its share), so on that sample `before` is over 200 GiB,
+`above` 140 GiB, and the cap of 32 GiB is what is counted. Nothing else
+changes: the reserve, the three quarters, the cap, the floor and the guard
+still apply, and the policy identifier stays `..._v3` (the rule is refined,
+the decision record's fields are unchanged).

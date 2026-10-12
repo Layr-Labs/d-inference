@@ -182,4 +182,21 @@ struct ClusterPairingProviderTests {
         #expect(ClusterPairCommandLine.isPin(String(repeating: "a", count: 64)))
         #expect(!ClusterPairCommandLine.isPin(String(repeating: "A", count: 64)))
     }
+
+    /// After `darkbloom cluster pair --forget`, a saved setup's link key (the
+    /// pairing's) is gone: the start names the unpairing, not a bare credential.
+    @Test func aStartAfterUnpairingNamesTheUnpairing() throws {
+        let stores = (Self.temporaryStore(), Self.temporaryStore())
+        let (left, _) = try Self.pair(SoftwareSigner(), SoftwareSigner(), stores: stores)
+        let secret = left.link.secretFile
+        try DistributedInstalledValidation.linkSecretMetadata(secret)
+        _ = try stores.0.forget(peerPin: left.peerPin)
+        do { try DistributedInstalledValidation.linkSecretMetadata(secret); Issue.record("an unpaired link key passed") } catch {
+            #expect("\(error)".contains("the Macs were unpaired"))
+        }
+        let other = stores.0.directory.deletingLastPathComponent().appendingPathComponent("link.secret").path
+        do { try DistributedInstalledValidation.linkSecretMetadata(other); Issue.record("a missing credential passed") } catch {
+            #expect(!"\(error)".contains("unpaired"))
+        }
+    }
 }

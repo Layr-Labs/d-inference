@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Native loaded-engine callback recovery](https://github.com/Layr-Labs/darkbloom-platform/blob/7e69b67aa4173e7af021de4f846e4c4667a25aed/docs/reports/2026-10-12-native-loaded-worker-callback-qualification.md) - platform-owned receipt for real callback withholding, worker retirement/replacement and paid encrypted inference with an unchanged loaded provider engine.
 - [Native loaded-engine endpoint resumption](2026-10-11-native-serving-resumption-qualification.md) - real Apple verification, full loopback coordinator, encrypted inference across a 125-second break, unchanged loaded engine and assertion counter, and exactly-one-refund evidence.
 - [Autopilot shadow evidence and calibration](2026-10-07-autopilot-shadow-evidence.md) - read-only week/day demand, output-limit calibration, retained controller decisions and synthetic placement valuation, with replay and causal limits.
 - [Typical MTP acceptance benchmarks](2026-10-07-typical-mtp-acceptance-benchmarks.md) - controlled three-model M5 Max before/exact/typical decode measurements, weighted acceptance and paired spread, with quality and default-change limits.

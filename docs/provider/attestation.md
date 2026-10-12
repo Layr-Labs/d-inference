@@ -83,9 +83,11 @@ The separate [supervised worker candidate](../architecture/security/identity-bin
 is internal, defaults off and is **not ready for production**. It retires the
 worker rather than restarting the inference process; do not enable its
 [qualification flag](../reference/configuration.md#app-attest-worker-qualification)
-as an operator workaround. The [recorded native component passes](../../scripts/nativequalification/README.md#qualification-status)
-apply only to the tested signed artifacts. Loaded-engine continuity and composed
-two-minute resumption remain pending; a rebuilt binary needs fresh qualification.
+as an operator workaround. The [recorded native passes](../../scripts/nativequalification/README.md#qualification-status)
+separate worker components, loaded-engine callback recovery and Stage C
+resumption. They apply only to the tested signed artifacts; rebuilt binaries
+need fresh qualification, and physical OS/update/reboot and fleet-rollout gates
+remain separate.
 macOS 27, GUI-session checks and an intact signature alone are not Apple acceptance.
 
 During a same-process reconnect the provider can answer a fresh, encrypted

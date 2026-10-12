@@ -206,10 +206,11 @@ provider path**. The internal, default-off
 instead terminates and reaps its owned child before replacement, preserving the
 parent's memory-only endpoint key and existing credential budgets. It does not
 fall back to parent Apple calls or restart inference for a worker stall. The
-[recorded native component passes](../../scripts/nativequalification/README.md#qualification-status)
-apply only to the tested signed artifacts, not later rebuilds. Loaded-engine
-continuity and composed two-minute resumption remain pending; implementation
-and transport tests are not Apple qualification.
+[recorded native passes](../../scripts/nativequalification/README.md#qualification-status)
+separate worker components, the loaded-engine callback scenario and Stage C
+resumption. They apply only to the tested signed artifacts, not later rebuilds
+or the remaining physical OS/update/reboot and fleet-rollout matrix.
+Implementation and transport tests alone are not Apple qualification.
 The separate [endpoint-resumption protocol](protocol-messages.md#app-attest-endpoint-resumption-candidate)
 can avoid a new Apple call on same-process reconnect only with its platform
 counterpart. It does not extend the original assertion or proof deadlines.

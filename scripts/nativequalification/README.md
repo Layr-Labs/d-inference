@@ -7,12 +7,15 @@ No keys are imported and no artifacts are uploaded or notarized by this helper.
 
 ## Qualification Status
 
-As of 2026-10-11, **two source/artifact-bound native component gates passed** on
-an M4 Max (`Mac16,5`, macOS 27.0.1 `26A434`): suspended-worker recovery and real
-assertion-callback discard/recovery. Both used Apple's real service and the
-production-root Go verifier. Loaded-engine continuity and composed-coordinator
-two-minute resumption are still **pending**; these passes do not establish a
-production-ready worker or qualify a later rebuilt binary. The internal
+As of 2026-10-12, the suspended-worker and real assertion-callback components
+have source/artifact-bound passes, and the separate
+[full loaded-engine callback scenario passed](https://github.com/Layr-Labs/darkbloom-platform/blob/7e69b67aa4173e7af021de4f846e4c4667a25aed/docs/reports/2026-10-12-native-loaded-worker-callback-qualification.md)
+on the same M4 Max (`Mac16,5`, macOS 27.0.1 `26A434`). All use Apple's real
+service and the production-root Go verifier. The full scenario additionally
+requires legitimate serving authorization and encrypted paid inference before,
+strictly inside the callback/reap windows, and after fresh proof acceptance.
+These passes do not complete the physical OS/update/reboot or fleet-rollout
+matrix and do not qualify a later rebuilt binary. The internal
 `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` selection defaults to `false`;
 see [configuration](../../docs/reference/configuration.md#app-attest-worker-qualification).
 
@@ -22,7 +25,8 @@ see [configuration](../../docs/reference/configuration.md#app-attest-worker-qual
 | Precise callback component | Signed binary SHA-256 `9945083386bd57a45c84df7145563c2013966714dbc4b666c3252c7da5920222`; actual assertion invocation and discarded callback observed, real `operation_timeout`, reap after 25.15 / 25.32 seconds, replacement's same-credential assertion accepted |
 | Signed code identity | Developer ID category 6 / type-2 CodeDirectory evidence matched the measured artifacts; callback artifact full CD hash `ceec7aac33a773b7ec01b065730642418833c426c8140bb94a7dbae47793d370` |
 | Local tests | 107 App Attest + 6 CLI tests passed before the callback consumer addition; its focused 30-test check also passed. These are not a full provider-suite claim |
-| Two-minute engine qualification | **Pending**; this diagnostic loads no model and cannot supply that result |
+| Loaded-engine callback qualification | **PASS**, independently recorded in the linked October 12 report; the real serving loop retained its parent, endpoint and loaded model/engine through actual callback withholding and worker replacement |
+| Two-minute engine resumption | **PASS in the separate [Stage C run](../../docs/reports/2026-10-11-native-serving-resumption-qualification.md)**; the component diagnostic below loads no model and cannot supply that result |
 
 Earlier copied-artifact tests genuinely failed at `is_supported_false` in both
 parent and child, even with matching effective grants. Adding the granted team
@@ -137,8 +141,17 @@ the old gate is never released. The runner forwards the actual timeout payload,
 requires confirmed reap before a fresh prepare, and verifies the replacement's
 assertion against the same Apple credential with increasing counters.
 
-This test deliberately loads **no model**, advertises no serving privacy grant,
+This component test deliberately loads **no model**, advertises no serving privacy grant,
 and does not claim engine/inference or composed-coordinator resumption coverage.
 The independent real 120-second resumption qualification must use the completed
 platform integration and legitimate full runtime authorization; never seed a
 fake serving grant to make this proof test appear to cover that requirement.
+
+For the full loaded-engine callback case, use the platform's
+`TestSignedProviderLoopLoadedEngineCallbackRecovery` with the explicit native
+serving/model inputs in its [test procedure](https://github.com/Layr-Labs/darkbloom-platform/blob/7e69b67aa4173e7af021de4f846e4c4667a25aed/docs/developer/test.md#app-attest-endpoint-and-native-gates)
+and `-timeout=20m`. Its child selects the existing serving qualification CLI
+and both worker opt-ins. The owner-only `arm-worker-callback` marker is written
+only after initial real proof and a warm engine; normal coordinator renewal and
+retry timing remain unchanged. Independent safety/refactor review, frozen source,
+exclusive GPU ownership and an exact signed artifact are prerequisites.

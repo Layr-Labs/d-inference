@@ -71,6 +71,14 @@ The [October 11 native result](../reports/2026-10-11-native-serving-resumption-q
 records a full pass for the exact signed Stage C candidate and platform source,
 including the earlier fixture failures and the unchanged production boundaries.
 
+The separate [loaded-engine callback scenario](https://github.com/Layr-Labs/darkbloom-platform/blob/7e69b67aa4173e7af021de4f846e4c4667a25aed/docs/reports/2026-10-12-native-loaded-worker-callback-qualification.md)
+passed on its own frozen signed artifact. The platform test uses the same real
+serving factory plus `DARKBLOOM_NATIVE_WORKER_SERVE_QUALIFICATION=1` and
+`DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION=1`, normal renewal/retry clocks and
+paid encrypted probes strictly inside the callback-withheld and reap-to-retry
+windows. It does not qualify physical OS/security transitions, reboot,
+self-update or fleet rollout.
+
 ## App Attest provider dispatch
 
 `ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
@@ -1389,11 +1397,11 @@ cover the separate protocol-1 and local credential boundaries.
 Use the [signed native qualification procedure](../../scripts/nativequalification/README.md#actual-apple-test)
 only with explicit authorization and isolated credentials; run its backend
 counterpart from sibling `darkbloom-platform`. Its
-[status and pending evidence](../../scripts/nativequalification/README.md#qualification-status)
+[artifact-bound evidence](../../scripts/nativequalification/README.md#qualification-status)
 record native IPC/suspended-worker and real assertion-callback discard/recovery
-component passes on specific signed artifacts. Loaded-engine continuity and
-composed two-minute resumption remain pending; a later rebuild is not qualified
-by those component results.
+component passes, the separately qualified loaded-engine callback scenario and
+the distinct Stage C resumption run. A later rebuild is not qualified by those
+results; physical OS/update/reboot and fleet-rollout gates remain separate.
 Do not turn opt-in native failures into skips, count signing as Apple acceptance,
 or treat transport fixtures as serving qualification.
 

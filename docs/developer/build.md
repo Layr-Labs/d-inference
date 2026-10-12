@@ -1100,9 +1100,10 @@ Freeze the provider source and take exclusive `.build` ownership before building
 diagnostics/build-source edits require a fresh build and artifact identity, not
 the earlier test receipt. This staging helper does not publish, notarize, alter
 the installer/profile contract or approve a build. The
-[recorded native component passes](../../scripts/nativequalification/README.md#qualification-status)
-are artifact-bound; loaded-engine continuity and composed two-minute resumption
-remain pending, and a rebuilt binary requires fresh qualification.
+[recorded native passes](../../scripts/nativequalification/README.md#qualification-status)
+separate the worker components, loaded-engine callback scenario and Stage C
+resumption. All are artifact-bound; rebuilt binaries require fresh qualification,
+and physical OS/update/reboot and fleet-rollout gates remain separate.
 The native verifier and canonical backend docs live in sibling
 [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform), never in the
 retained platform tree of the provider repository.

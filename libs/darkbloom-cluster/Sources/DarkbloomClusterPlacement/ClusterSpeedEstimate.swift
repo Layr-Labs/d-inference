@@ -1,15 +1,28 @@
 import Foundation
 
-/// Two rates for a whole model on one device alone.
+/// Two rates for a whole model on one device alone, and, when measured, the
+/// decode rate of the same device running the model's speculative head.
 public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     public let prefillTokensPerSecond: Double
     public let decodeTokensPerSecond: Double
-    public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double) {
+    /// Decode with the model's own speculative (MTP) head, measured on this
+    /// device (a staged reference's MTP run). Nil when not measured; never
+    /// transferred from another device, since the head's gain is the chip's own.
+    public let speculativeDecodeTokensPerSecond: Double?
+    public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double,
+                speculativeDecodeTokensPerSecond: Double? = nil) {
         self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
+        self.speculativeDecodeTokensPerSecond = speculativeDecodeTokensPerSecond
     }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
+            && (speculativeDecodeTokensPerSecond.map { $0.isFinite && $0 > 0 } ?? true)
+    }
+    /// The same rates without the speculative one: what may be said of
+    /// another device scaled from these.
+    var withoutSpeculative: ClusterSpeedRates {
+        .init(prefillTokensPerSecond: prefillTokensPerSecond, decodeTokensPerSecond: decodeTokensPerSecond)
     }
 }
 
@@ -37,8 +50,13 @@ public struct ClusterSpeedKey: Codable, Hashable, Sendable {
 /// was idle; `sustained` is the rate the repetitions settle at. A probe that
 /// ran once reports no sustained figure, and the planner says it used a
 /// rested one.
+///
+/// Schema v2 adds one optional rate per regime, decode with the model's
+/// speculative head; a record without one is written as v1, byte for byte as
+/// before, and a v1 record still loads.
 public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public static let schemaName = "darkbloom_cluster_speed_measurement_v1"
+    public static let schemaNameV2 = "darkbloom_cluster_speed_measurement_v2"
     public let schema: String
     public let key: ClusterSpeedKey
     /// Prompt length and chunk size the prefill rate was measured at.
@@ -62,7 +80,9 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public init(key: ClusterSpeedKey, promptTokens: Int, chunkTokens: Int, probedLayers: Int, layerCount: Int,
                 rested: ClusterSpeedRates, sustained: ClusterSpeedRates?, hashBytesPerSecond: Double? = nil,
                 materializeBytesPerSecond: Double? = nil, measuredUTC: String, provenance: String) throws {
-        schema = Self.schemaName; self.key = key; self.promptTokens = promptTokens; self.chunkTokens = chunkTokens
+        let speculative = rested.speculativeDecodeTokensPerSecond != nil || sustained?.speculativeDecodeTokensPerSecond != nil
+        schema = speculative ? Self.schemaNameV2 : Self.schemaName
+        self.key = key; self.promptTokens = promptTokens; self.chunkTokens = chunkTokens
         self.probedLayers = probedLayers; self.layerCount = layerCount; self.rested = rested
         self.sustained = sustained; self.hashBytesPerSecond = hashBytesPerSecond
         self.materializeBytesPerSecond = materializeBytesPerSecond; self.measuredUTC = measuredUTC; self.provenance = provenance
@@ -70,7 +90,10 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        guard schema == Self.schemaName, promptTokens > 0, chunkTokens > 0, layerCount > 0,
+        // A v1 record cannot carry a speculative rate; a v2 record may.
+        let speculative = rested.speculativeDecodeTokensPerSecond != nil || sustained?.speculativeDecodeTokensPerSecond != nil
+        guard schema == Self.schemaNameV2 || (schema == Self.schemaName && !speculative),
+              promptTokens > 0, chunkTokens > 0, layerCount > 0,
               (1...layerCount).contains(probedLayers), rested.valid, sustained?.valid ?? true,
               hashBytesPerSecond.map({ $0.isFinite && $0 > 0 }) ?? true,
               materializeBytesPerSecond.map({ $0.isFinite && $0 > 0 }) ?? true,
@@ -216,6 +239,8 @@ public enum ClusterSpeedEstimator {
             }
             return nil
         }
+        // A speculative rate is never scaled to another device: the head's gain
+        // depends on the chip (it lost on the M3 Ultra and won on the M5 Max).
         func scaled(_ rates: ClusterSpeedRates, _ r: (prefill: Double, decode: Double, source: ClusterDeviceSpeed.Source, note: String)) -> ClusterSpeedRates {
             .init(prefillTokensPerSecond: rates.prefillTokensPerSecond * r.prefill,
                   decodeTokensPerSecond: rates.decodeTokensPerSecond * r.decode)
@@ -235,7 +260,8 @@ public enum ClusterSpeedEstimator {
             }
             if let reference, let m = own[reference] {
                 // Nothing relates this device to the measured one.
-                return .init(source: .assumedEqual, absolute: false, rested: m.rested, sustained: m.sustained,
+                return .init(source: .assumedEqual, absolute: false, rested: m.rested.withoutSpeculative,
+                    sustained: m.sustained?.withoutSpeculative,
                     explanation: "no measurement on this Mac and nothing to scale by; assumed equal to the measured Mac")
             }
             // No device has measured this model: only ratios can be known.

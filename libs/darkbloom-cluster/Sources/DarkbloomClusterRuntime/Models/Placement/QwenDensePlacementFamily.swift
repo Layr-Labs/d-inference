@@ -44,6 +44,10 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     var admittedCuts: [Int] { definition.supportedCuts }
     var generationModes: [ClusterGenerationMode] { definition.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { definition.supportedPrefillSchedules }
+    var speculativeDecodeFactor: Double? { definition.speculativeDecodeFactor }
+    /// The inline head every row with `phase_split_mtp_v1` ships, under `mtp.`
+    /// (`QwenMTPHeadFiles`); no stage loads it.
+    func isSpeculativeHead(storedTensor name: String) -> Bool { name.hasPrefix("mtp.") }
     /// The request a placement is planned and fitted for: the earlier
     /// reservation (8,192 prompt, 128 output, 8,320 context), not the profile's
     /// derived limits (up to 32,768 context, `QwenResidentContextLimits`). A

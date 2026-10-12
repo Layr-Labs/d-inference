@@ -9,7 +9,7 @@ extension DistributedInstalledOwner {
     public static func serve(reference: ClusterConfigurationReference) throws {
         try serve(reference: reference,
             providerInstanceLock: ProcessLifecycle.defaultPIDFile().appendingPathExtension("lock"),
-            localNumericsClass: ClusterNumericsClass.local(),
+            localChipClass: ClusterChipClass.local(),
             // A port macOS is reconfiguring at this moment gets a bounded wait,
             // instead of a rank that JACCL refuses for want of an IPv4-mapped GID.
             linkReady: { device in try ClusterLinkLaunchReadiness.waitForLink(device: device) })

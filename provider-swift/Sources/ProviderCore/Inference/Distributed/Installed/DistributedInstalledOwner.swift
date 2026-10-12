@@ -42,10 +42,10 @@ public enum DistributedInstalledOwner {
     /// `providerInstanceLock` is the ordinary provider's instance lock file.
     /// `linkReady` runs immediately before the native launch with this Mac's
     /// RDMA device; it returns once the link is usable or throws.
-    /// `localNumericsClass` is this Mac's own class; the rank this owner runs
+    /// `localChipClass` is this Mac's own class; the rank this owner runs
     /// must be granted on it before anything is served.
     static func serve(reference: ClusterConfigurationReference, providerInstanceLock: URL,
-                      localNumericsClass: ClusterNumericsClass?,
+                      localChipClass: ClusterChipClass?,
                       linkReady: @escaping @Sendable (String) throws -> Void = { _ in }) throws {
         // An ordinary provider on this Mac uses the same GPU and memory and
         // does not take the cluster's device scope. Refuse before anything is
@@ -60,7 +60,7 @@ public enum DistributedInstalledOwner {
         // The follower's owner is the only part of this provider on that Mac
         // in a session the leader launches: its rank is checked here, on the
         // Mac that runs it, with that Mac's class.
-        try prepared.plan.requireLocalRankGranted(numericsClass: localNumericsClass)
+        try prepared.plan.requireLocalRankGranted(chipClass: localChipClass)
         let device = prepared.plan.localPeer.jacclDevice
         try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO,
             beforeNativeLaunch: {

@@ -110,7 +110,86 @@ enum DistributedInstalledPairServingTable {
         shutdownAcknowledgementNanoseconds: 6_000_000_000, stopMarginNanoseconds: 20_000_000_000,
         cleanStopWaitNanoseconds: 20_000_000_000))
 
-    static let rows = [qwen35, qwen38]
+    /// Registered Qwen3.5 35B A3B (20.9 GB), granted in the order its
+    /// cross-cable checks ran (`ClusterPairServingGrants.qwen35_35b_a3b`).
+    /// Every figure is the pair's own, across the cable, 2026-10-09 to 10-11.
+    ///
+    /// - Startup, 150 s. Both ranks were ready in 18.0 to 25.8 s as a pipeline
+    ///   and in 28.4 to 29.0 s under phase split, where rank 1 loads the whole
+    ///   model. 150 s is five times the slowest.
+    /// - First token, 10 s plus 1 ms per prompt token. The slower Mac prefills
+    ///   this model alone at 1,460 to 1,860 tokens a second, 0.54 to 0.69 ms
+    ///   per token, rounded up. The pair's first token was measured 1.0 to
+    ///   8.5 s after a 4,096-token request (the longest, the first request of
+    ///   a session) against 14.1 s here, and 8.7 s after 16,384 tokens.
+    /// - Admission, 5 s: bookkeeping, as for every model.
+    /// - Shutdown acknowledgement, 8 s, and stop margin, 25 s: four times the
+    ///   9B's weights to release; shutdown was measured in 0.13 to 0.22 s.
+    /// - Clean-stop wait, 20 s: twice the first token of the longest prompt
+    ///   measured (16,384 tokens, 8.7 s).
+    static let qwen35A3B = Row(runtimeModelID: "registered_qwen35_35b_a3b", budgets: .init(
+        startupAllowanceNanoseconds: 150_000_000_000,
+        firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 1,
+        admissionWaitNanoseconds: 5_000_000_000,
+        shutdownAcknowledgementNanoseconds: 8_000_000_000, stopMarginNanoseconds: 25_000_000_000,
+        cleanStopWaitNanoseconds: 20_000_000_000))
+
+    /// Registered Qwen3.6 35B A3B, text only (21.3 GB): the same shape and
+    /// the same figures as the Qwen3.5 35B A3B within the spread of the runs.
+    /// Ready in 18.1 to 25.1 s as a pipeline, 28.5 to 29.1 s under phase split
+    /// and 30.4 to 30.6 s with its MTP head loaded; the slower Mac alone
+    /// prefills at 1,730 to 1,860 tokens a second; first token 1.0 to 3.0 s
+    /// after 4,096 tokens and 8.3 s after 16,384; shutdown 0.12 to 0.22 s.
+    static let qwen36A3B = Row(runtimeModelID: "registered_qwen36_35b_a3b", budgets: qwen35A3B.budgets)
+
+    /// Registered Ternary Bonsai 2 27B (8.6 GB), granted in the order its
+    /// cross-cable checks ran (`ClusterPairServingGrants.bonsai_2_27b`).
+    ///
+    /// - Startup, 90 s. Both ranks were ready in 7.4 to 9.4 s as a pipeline
+    ///   and in 11.5 to 11.8 s under phase split; 90 s is seven times that.
+    /// - First token, 10 s plus 4 ms per prompt token. The slower Mac prefills
+    ///   this model alone at 280 to 300 tokens a second, 3.3 to 3.6 ms per
+    ///   token, rounded up. At 8,192 tokens the budget is 42.8 s against
+    ///   21.4 s measured on the pair without lookahead and 11.9 to 14.5 s with
+    ///   it; at 16,384 tokens 75.5 s against 45.5 s.
+    /// - Admission, 5 s.
+    /// - Shutdown acknowledgement, 3 s, and stop margin, 15 s: under twice the
+    ///   9B's weights; shutdown was measured in 0.12 to 0.27 s.
+    /// - Clean-stop wait, 30 s: the first token of the longest prompt this
+    ///   build admits (8,192 tokens) came 21.4 s after the request without
+    ///   lookahead.
+    static let bonsai2 = Row(runtimeModelID: "registered_ternary_bonsai_2_27b", budgets: .init(
+        startupAllowanceNanoseconds: 90_000_000_000,
+        firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 4,
+        admissionWaitNanoseconds: 5_000_000_000,
+        shutdownAcknowledgementNanoseconds: 3_000_000_000, stopMarginNanoseconds: 15_000_000_000,
+        cleanStopWaitNanoseconds: 30_000_000_000))
+
+    /// Registered Nemotron 3.5 Lightning (19.1 GB), granted in the order its
+    /// cross-cable checks ran (`ClusterPairServingGrants.nemotron35_lightning`).
+    ///
+    /// - Startup, 120 s. Both ranks were ready in 14.9 to 16.8 s as a pipeline
+    ///   and in 19.7 s under phase split; 120 s is six times that.
+    /// - First token, 10 s plus 1 ms per prompt token. The slower Mac prefills
+    ///   this model alone at about 1,750 tokens a second, 0.57 ms per token,
+    ///   rounded up. The pair's first token was measured 0.2 to 4.7 s after a
+    ///   34-token request, 2.0 to 5.5 s after 4,096 tokens and 8.3 s after
+    ///   16,384.
+    /// - Admission, 5 s.
+    /// - Shutdown acknowledgement, 8 s, and stop margin, 25 s: four times the
+    ///   9B's weights; shutdown was measured in 0.15 to 0.17 s.
+    /// - Clean-stop wait, 20 s: twice the first token of the longest prompt
+    ///   measured (16,384 tokens, 8.3 s).
+    static let nemotron35 = Row(runtimeModelID: "registered_nemotron35_lightning", budgets: .init(
+        startupAllowanceNanoseconds: 120_000_000_000,
+        firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 1,
+        admissionWaitNanoseconds: 5_000_000_000,
+        shutdownAcknowledgementNanoseconds: 8_000_000_000, stopMarginNanoseconds: 25_000_000_000,
+        cleanStopWaitNanoseconds: 20_000_000_000))
+
+    /// One row for every model with a pair-serving grant, in the grants' order,
+    /// and none for a model whose grant is withheld.
+    static let rows = [qwen35, qwen38, qwen35A3B, qwen36A3B, bonsai2, nemotron35]
 
     /// The budgets of a model this build has a row for; a refusal for every other model.
     static func servingBudgets(runtimeModelID: String, publicModelID: String) throws -> DistributedInstalledTimeBudgets {

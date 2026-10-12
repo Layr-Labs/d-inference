@@ -12,12 +12,21 @@ public struct ClusterMemberPreparation: Sendable {
     public let model: ModelInfo
     let validation: DistributedInstalledValidation
 
-    public static func prepare(reference: ClusterConfigurationReference) throws -> Self {
+    /// `localChipClass` is this Mac's own class
+    /// (`ClusterChipClass.local()`): the model's pair-serving grant must
+    /// list it for the rank this Mac runs (owner decision D4). The single-Mac
+    /// requirements of the model are not applied to a member: see
+    /// DistributedServingEligibility. The grant is decided from the verified
+    /// metadata, before the model's weights are read: a start that policy
+    /// refuses costs no pass over tens of gigabytes.
+    public static func prepare(reference: ClusterConfigurationReference,
+                               localChipClass: ClusterChipClass?) throws -> Self {
         let paths = try ClusterUserPaths()
         let gate = try ClusterDeviceExclusion(directoryURL: paths.deviceDirectory)
         return try withExtendedLifetime(gate) {
             let validation = try DistributedInstalledValidation.validate(reference: reference,
                 paths: paths, deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+            try validation.plan.requireLocalRankGranted(chipClass: localChipClass)
             let installed = validation.model
             guard var model = ModelScanner.parseModelInfo(snapshotDir: installed.directory,
                     modelName: installed.publicModelID) else {
@@ -39,13 +48,6 @@ public struct ClusterMemberPreparation: Sendable {
     }
 
     public func requireUnchanged() throws { try validation.requireUnchanged() }
-
-    /// Refuses unless the model's pair-serving grant lists this Mac's chip
-    /// class for the rank this Mac runs. The single-Mac requirements of the
-    /// model are not applied to a member: see DistributedServingEligibility.
-    public func requirePairServingGrant(localNumericsClass: ClusterNumericsClass?) throws {
-        try validation.plan.requireLocalRankGranted(numericsClass: localNumericsClass)
-    }
 
     /// DEBUG builds only: a harness that shuttles the members' public roster
     /// values by hand (`darkbloom cluster member-identity`) may skip the

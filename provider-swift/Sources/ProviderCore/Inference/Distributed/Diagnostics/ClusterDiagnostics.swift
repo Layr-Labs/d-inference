@@ -67,7 +67,7 @@ public enum ClusterDiagnostics {
             checks += await Task.detached {
                 ClusterInstalledMetadataChecks.localInstalledMetadata(reference: reference, paths: saved.paths,
                     deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000,
-                    localNumericsClass: ClusterNumericsClass.local())
+                    localChipClass: ClusterChipClass.local())
             }.value
         } else {
             checks.append(.init(name: "localInstalledMetadata", outcome: .notRun, detail: "Run cluster doctor for local installed metadata checks."))

@@ -144,7 +144,7 @@ public enum DistributedInstalledLinkFollower {
         // The rank this Mac serves must be granted on this Mac's own class: a
         // follower whose chip the model's grant does not list says so when it
         // starts, instead of at each open (its owner checks again before it serves).
-        try plan.requireLocalRankGranted(numericsClass: ClusterNumericsClass.local())
+        try plan.requireLocalRankGranted(chipClass: ClusterChipClass.local())
         let leader = try DistributedInstalledLinkEdge.leaderAddress(plan.configuration)
         let edge = try DistributedInstalledLinkEdge.edge(configuration: plan.configuration, peerAddress: leader)
         final class Box: @unchecked Sendable {

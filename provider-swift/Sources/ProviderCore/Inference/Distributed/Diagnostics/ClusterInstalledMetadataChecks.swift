@@ -3,11 +3,11 @@ import Foundation
 /// The doctor's check of this Mac's saved setup against its installation.
 enum ClusterInstalledMetadataChecks {
     /// Runs the validation every start runs, then the model's pair-serving
-    /// grant for the rank this Mac runs, with `localNumericsClass` (this Mac's
+    /// grant for the rank this Mac runs, with `localChipClass` (this Mac's
     /// own class on a real Mac). A model or placement a pair may not serve is
     /// reported as that, under `pairServingPolicy`, not as a metadata fault.
     static func localInstalledMetadata(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
-                                       deadline: UInt64, localNumericsClass: ClusterNumericsClass?) -> [ClusterDiagnosticsReport.Check] {
+                                       deadline: UInt64, localChipClass: ClusterChipClass?) -> [ClusterDiagnosticsReport.Check] {
         let validation: DistributedInstalledValidation
         do {
             validation = try DistributedInstalledValidation.validate(reference: reference, paths: paths, deadline: deadline)
@@ -21,7 +21,7 @@ enum ClusterInstalledMetadataChecks {
         let metadata = ClusterDiagnosticsReport.Check(name: "localInstalledMetadata", outcome: .passed,
             detail: "Local worker hash, config/manifest/tokenizer pins, trust-file metadata/pin and installed runtime description verified. Weight payloads and SSH authentication were not tested.")
         do {
-            try validation.plan.requireLocalRankGranted(numericsClass: localNumericsClass)
+            try validation.plan.requireLocalRankGranted(chipClass: localChipClass)
         } catch {
             return [.init(name: "pairServingPolicy", outcome: .failed, detail: ClusterDiagnosticsReport.boundedDetail(error)), metadata]
         }

@@ -501,7 +501,12 @@ Typed on purpose, and listed so that nobody mistakes them for detection:
   need) and the share within which a Mac alone is called "as fast" (3 %).
 - The margins that turn a predicted time into a budget (wiring (c)).
 - The pair-serving grant per model, and which chip pairs are qualified to
-  produce equal tokens (decision D4). A plan is not a grant.
+  produce equal tokens (decision D4). A plan is not a grant. The guided step
+  reads the grant only to rule an order out: with the two profiles' chip
+  names it holds the planner to the order the grant leaves, refuses a
+  requested order the grant excludes, and says so in the plan
+  (`ClusterPlacementFlow.leaderUnderGrant`). Each Mac still checks its own
+  rank with its own chip before it serves.
 - The session envelope (16 requests, 300 s).
 
 ## Wiring, in order

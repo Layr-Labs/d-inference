@@ -80,6 +80,7 @@ final class EndpointBox: @unchecked Sendable {
         try perModelBudgets(fixture,prepared)
         try longPromptsFitTheInstalledSession(fixture)
         try pairServingGrant(fixture)
+        try adaptersOnTheInstalledPath(fixture)
         try unreadableCapabilityRecord(fixture)
         try await phaseSplitSession(fixture)
         try fileAndProbeChecks(fixture,prepared)
@@ -326,26 +327,44 @@ final class EndpointBox: @unchecked Sendable {
         try require(nine.firstTokenBaseMilliseconds+8192*nine.firstTokenMillisecondsPerPromptToken==18_192,"9B first-token budget at 8,192 tokens")
         try require(big.shutdownAcknowledgementNanoseconds==3*nine.shutdownAcknowledgementNanoseconds
             && big.stopMarginNanoseconds>nine.stopMarginNanoseconds && big.admissionWaitNanoseconds==nine.admissionWaitNanoseconds,"27B release and admission waits")
-        // Every model the runtime registers has exactly one row.
-        let registered=ClusterRuntimeAdapter.qwen35Dense.registeredProfiles.map(\.runtimeModelID)
-        try require(Table.rows.map(\.runtimeModelID)==registered,"the table and the runtime's registered models differ")
+        // Every model with a pair-serving grant has exactly one row, in the grants' order; a model
+        // whose grant is withheld has none, so neither half alone can open it.
+        try require(Table.rows.map(\.runtimeModelID)==ClusterPairServingGrants.granted.map(\.runtimeModelID),"the table's rows and the granted models differ")
+        for model in ClusterPairServingGrants.withheld.keys {
+            let none=try refusal{_ = try Table.servingBudgets(runtimeModelID:model,publicModelID:"p")}
+            try require(none.contains("no row for the registered model \(model)"),"a withheld model has a row: \(model)")
+        }
+        // The rows opened with the other granted families: each allowance covers what the pair measured
+        // across the cable (seconds: slowest start in any mode, the slower Mac's prefill rate alone).
+        let family:[(DistributedInstalledPairServingTable.Row,slowestStart:Double,slowPrefillTokensPerSecond:Double)]=[
+            (Table.qwen35A3B,29.0,1460),(Table.qwen36A3B,30.6,1730),(Table.bonsai2,11.8,278),(Table.nemotron35,19.7,1749)]
+        for (row,slowestStart,slowPrefill) in family {
+            let b=row.budgets
+            try require(Double(b.startupAllowanceNanoseconds)/1e9 >= 4.9*slowestStart && b.startupAllowanceNanoseconds<=150_000_000_000,"\(row.runtimeModelID): startup allowance")
+            try require(Double(b.firstTokenMillisecondsPerPromptToken) >= 1000/slowPrefill,"\(row.runtimeModelID): first-token rate is faster than its slower Mac alone")
+            try require(b.firstTokenBaseMilliseconds==nine.firstTokenBaseMilliseconds && b.admissionWaitNanoseconds==nine.admissionWaitNanoseconds
+                && b.shutdownAcknowledgementNanoseconds>=nine.shutdownAcknowledgementNanoseconds && b.stopMarginNanoseconds>=nine.stopMarginNanoseconds,"\(row.runtimeModelID): release and admission waits")
+        }
     }
-    /// No session lifetime (handoff/DESIGN-no-fixed-lifetime.md): a 30,720-token
+    /// No session lifetime (handoff/DESIGN-no-fixed-lifetime.md): a long
     /// prompt with 128 outputs is bounded only by each row's own request
-    /// budgets. The pair's measured first token at 30,720 tokens (both Macs,
-    /// normal order) is inside each row's first-token budget.
+    /// budgets. The pair's measured first token at the longest prompt each
+    /// model has run across the cable (both Macs, normal order) is inside its
+    /// row's first-token budget.
     static func longPromptsFitTheInstalledSession(_ f:InstalledFixture) throws {
         typealias Table=DistributedInstalledPairServingTable
-        let prompt=30_720
-        // At 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b and
-        // hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
-        // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up.
-        let measured:[String:(decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(67,15.61),
-            "registered_qwen38_27b":(23,39.91)]
+        // 9B and 27B at 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b
+        // and hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
+        // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up. The
+        // other families at 16,384 tokens, one run each (evidence/universal-20261010/hw/<family>/p16k-*).
+        let measured:[String:(prompt:Int,decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(30_720,67,15.61),
+            "registered_qwen38_27b":(30_720,23,39.91),"registered_qwen35_35b_a3b":(16_384,65,8.68),
+            "registered_qwen36_35b_a3b":(16_384,65,8.33),"registered_ternary_bonsai_2_27b":(16_384,29,45.52),
+            "registered_nemotron35_lightning":(16_384,77,8.28)]
         for row in Table.rows {
             let budgets=row.budgets
             guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }
-            let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
+            let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(rates.prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
             try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
         }
     }
@@ -365,9 +384,9 @@ final class EndpointBox: @unchecked Sendable {
             try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
             try require(prepared.plan.grant==ClusterPairServingGrants.qwen38_27b,"the 27B was prepared under another model's grant")
             // The fixture is the leader: rank 0 of two, the pipeline-only rank.
-            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip)) }
+            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
             for chip in ["Apple M4 Max","Apple M5 Pro","Apple M1 (Virtual)"] {
-                let refused=try refusal{try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip))}
+                let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip))}
                 try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
                     && refused.contains("policy decision"),"\(chip) was not refused for the 27B's rank 0: \(refused)")
             }
@@ -375,8 +394,8 @@ final class EndpointBox: @unchecked Sendable {
         // The 9B was checked with the M3 Ultra leading only: an M5 Max cannot run its rank 0.
         let nine=try f.prepare()
         try require(nine.plan.grant==ClusterPairServingGrants.qwen35_9b,"the 9B was prepared under another model's grant")
-        try nine.plan.requireLocalRankGranted(numericsClass:.appleM3Ultra)
-        let led=try refusal{try nine.plan.requireLocalRankGranted(numericsClass:.appleM5Max)}
+        try nine.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
+        let led=try refusal{try nine.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
         try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains("apple_m5_max"),"9B led by the M5 Max: \(led)")
         // Budgets and grant are keyed on the runtime's model, whatever the public name.
         let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
@@ -387,6 +406,47 @@ final class EndpointBox: @unchecked Sendable {
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
         let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
         try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
+    }
+    /// The installed path starts workers for the adapter of every granted
+    /// model, each with the rank environment its arithmetic policy requires
+    /// beside the values every rank is given, under that model's own budgets
+    /// and grant; and for no other adapter.
+    static func adaptersOnTheInstalledPath(_ f:InstalledFixture) throws {
+        typealias Table=DistributedInstalledPairServingTable
+        let cases:[(String,ClusterRuntimeAdapter,String,[String:String],DistributedInstalledTimeBudgets)]=[
+            ("a35",.qwen35RoutedExperts,"registered_qwen35_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],Table.qwen35A3B.budgets),
+            ("a36",.qwen35RoutedExperts,"registered_qwen36_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],Table.qwen36A3B.budgets),
+            ("bonsai",.qwen35PrismHadamard,"registered_ternary_bonsai_2_27b",
+                ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC":"1","DARKBLOOM_BONSAI_F16_CONSTANT_CACHE":"1"],Table.bonsai2.budgets),
+            ("nemotron",.nemotronH,"registered_nemotron35_lightning",[:],Table.nemotron35.budgets)]
+        for (name,adapter,model,extra,budgets) in cases {
+            let fixture=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-"+name),probe:f.probe,owner:f.owner,worker:f.worker,
+                generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
+            let prepared=try fixture.prepare()
+            let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
+            try require(environment.count==10+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+                && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
+                && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
+            try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")
+            // The fixture is the leader: rank 0, which these grants list on the M3 Ultra only.
+            try prepared.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
+            let led=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
+            try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains(model),"\(name) led by the M5 Max: \(led)")
+        }
+        // The dense adapter's environment is the ten values it always had.
+        try require(try f.prepare().plan.adapterEnvironment.isEmpty,"the dense adapter gained an environment value")
+        // An adapter value can never replace one of the fixed ten.
+        try require(DistributedInstalledPlan.adapterArithmeticEnvironment.values.allSatisfy{$0.keys.allSatisfy{key in
+            !["PATH","LANG","LC_ALL","DARKBLOOM_CBV2_ATTN_QUERY_BLOCK","DARKBLOOM_BF16_WEIGHTS","MLX_ENABLE_TF32","JACCL_RANK","JACCL_IBV_DEVICES",
+              "JACCL_COORDINATOR","JACCL_PROGRESS_TIMEOUT_MS"].contains(key)}},"an adapter names a fixed environment value")
+        // The adapters this path starts are exactly the adapters of the granted models.
+        let granted=Set(ClusterPairServingGrants.granted.compactMap{ClusterRuntimeAdapter.registering(runtimeModelID:$0.runtimeModelID)})
+        try require(Set(DistributedInstalledPlan.adapterArithmeticEnvironment.keys)==granted,"the installed path's adapters and the granted models' adapters differ")
+        // A model whose grant is withheld is refused before its adapter is looked at.
+        let withheld=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-gptoss"),probe:f.probe,owner:f.owner,worker:f.worker,
+            registered:("registered_gpt_oss_20b","registered_gpt_oss_20b_greedy_generation_v1","fixture/gptoss"),adapter:.gptossLayerStage)
+        let refused=try refusal{_ = try withheld.prepare()}
+        try require(refused.contains("is not granted pair serving") && refused.contains("registered_gpt_oss_20b"),"a withheld model on its own adapter: \(refused)")
     }
     /// A worker whose description this build cannot read is a mixed install,
     /// and the refusal says so instead of reporting a difference.

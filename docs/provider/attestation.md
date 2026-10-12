@@ -14,6 +14,11 @@ and is not restated here.
 
 Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
 
+App Attest replies and received grant updates can progress while model loading
+is suspended. A local Apple success still does not establish coordinator
+acceptance; use the current coordinator verdict when diagnosing expiry. See
+[provider connection control](../architecture/security/attestation.md#provider-connection-control).
+
 A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
 
 Account erasure also clears delayed account-specific proof writes and frozen
@@ -112,6 +117,19 @@ New setup remains pending if App Attest is unavailable or unqualified; diagnose
 with `darkbloom doctor` instead of installing an MDM profile. Under the upcoming
 policy, the legacy steps below apply only to frozen identities, not to every
 older-macOS machine or existing local enrollment.
+
+During a same-process reconnect the provider can answer a fresh, encrypted
+[endpoint-resumption challenge](../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+without another Apple call. This proves custody of its existing in-memory key,
+not permission to serve or a fresh Apple proof. The matching platform support
+must be present and must recheck retained evidence and current policy. A process
+restart loses that key; this is not cross-process continuity. Continue to use the
+coordinator verdict, not local response generation, as authorization evidence.
+
+`darkbloom logout` stops the provider before removing its saved credential and
+attempts token revocation. If remote revocation is unconfirmed, its output says
+so; local deletion is not proof that remote copies were invalidated. See
+[logout flags and failure behavior](cli-reference.md#darkbloom-login--darkbloom-logout).
 
 ## Existing machines and upgrade notices
 

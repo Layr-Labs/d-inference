@@ -1,6 +1,52 @@
 # Test
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
+
+## Provider endpoint resumption and logout
+
+Stage C's synthetic tests require neither real Apple calls nor credentials:
+
+| Coverage | Suites / sources |
+|---|---|
+| Exact shared Go vector, authenticated bytes, reflection, malformed fields, time bounds and protocol negotiation | `provider-swift/Tests/ProviderCoreTests/Crypto/AppAttestResumeTests.swift`; fixture `provider-swift/Tests/ProviderCoreTests/Fixtures/app-attest-resumption-v1.json` |
+| Real loopback WebSocket reconnect, fresh socket nonce, stale callback rejection, one response per socket and unchanged model state | `provider-swift/Tests/ProviderCoreTests/Coordinator/AppAttestResumeTransportTests.swift` |
+| Stop-before-revoke/delete, missing token, stop/deletion failures, exact HTTP 204 and redirect/offline refusal | `provider-swift/Tests/ProviderCoreTests/Auth/ProviderLogoutTests.swift` |
+| Logout flags, real current-process identity refusal and accurate completion messages | `provider-swift/Tests/DarkbloomCLITests/LogoutCommandTests.swift` |
+
+After `swift build --build-tests` and source-matched metallib staging, run
+`swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|LogoutCommand'`
+from `provider-swift/`. Keep test state paths isolated as in
+`scripts/run-provider-tests.sh`; these tests must never stop an operator process.
+The existing coordinator and serve-loop App Attest suites remain regression
+coverage. These transport tests do not establish native Apple qualification or
+end-to-end platform authorization.
+
+## App Attest provider dispatch
+
+`ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
+App Attest client against a loopback coordinator. It holds a model-load wait
+and an Apple callback to check responsive challenge/status handling, reconnect
+invalidation, absence of overlapping proof operations and key reuse. Apple and
+model work are local fixtures; these tests never contact Apple or a live
+coordinator. Build and stage the source-matched Metal library through
+`make provider-test`, or use its build/staging steps before a focused
+`swift test --skip-build --no-parallel --filter ServeLoopAppAttestTests`.
+
+`ServeLoopAppAttestInteropTests` is an opt-in peer for the platform repository's
+`TestSwiftProviderAppAttestInterop`. Set `DARKBLOOM_SWIFT_INTEROP_PACKAGE` to this
+built `provider-swift` directory when running that Go test. The driver starts
+both processes on loopback and injects proof/grant loss, reconnects and
+revocation. It seeds prior enrollment, receipt and qualified runtime facts;
+software callbacks produce signatures for the real verifier. It does not
+qualify a signed release on Apple hardware or test initial Apple enrollment.
+
+## Changelog fragments
+
+Run `python3 scripts/test-changelog.py` and `make changelog-check` from the root.
+The tests use temporary files to verify independent fragments, deterministic
+and selected release rendering, Markdown preservation, invalid inputs,
+duplicate versions and read-only behavior. CI's Release Integrity job runs both;
+ordinary PRs never regenerate the shared release history.
 
 ## Autopilot rewards
 
@@ -1283,18 +1329,21 @@ new diagnostics/build-source edits. These focused owners cover distinct boundari
 
 | Boundary | Provider test owner |
 |---|---|
-| Strict resume wire/transcript, endpoint/nonce/expiry binding and both registration encoders | `provider-swift/Tests/ProviderCoreTests/Crypto/AppAttestResumeTests.swift` |
-| Real local WebSocket reconnect and stale reply capabilities | `provider-swift/Tests/ProviderCoreTests/Coordinator/AppAttestResumeTransportTests.swift`, `AppAttestShadowReplyTests.swift` in the same directory |
+| Origin-bound protocol-3 replies even before the loop consumes disconnect | `provider-swift/Tests/ProviderCoreTests/Coordinator/AppAttestShadowReplyTests.swift` |
 | Worker framing, deadlines, process ownership and reap-before-replacement | `provider-swift/Tests/ProviderAppAttestTests/WorkerTransportTests.swift`, `WorkerProcessTests.swift` in the same directory |
-| Stop-before-revoke, raw bearer, `204` confirmation, offline/redirect refusal and CLI flags | `provider-swift/Tests/ProviderCoreTests/Auth/ProviderLogoutTests.swift`; `provider-swift/Tests/DarkbloomCLITests/LogoutCommandTests.swift` |
-| Shutdown/update retirement barrier | `provider-swift/Tests/ProviderCoreTests/Service/ProviderLifecycleTests.swift` |
+| Shutdown/update retirement, cancellation, lifecycle takeover and fresh-prepare cleanup retry | `provider-swift/Tests/ProviderCoreTests/Service/ProviderLifecycleTests.swift`; `provider-swift/Tests/ProviderCoreTests/Update/AppAttestUpdateLifecycleTests.swift` |
+
+The [endpoint-resumption and logout suites](#provider-endpoint-resumption-and-logout)
+cover the separate protocol-1 and local credential boundaries.
 
 Use the [signed native qualification procedure](../../scripts/nativequalification/README.md#actual-apple-test)
 only with explicit authorization and isolated credentials; run its backend
 counterpart from sibling `darkbloom-platform`. Its
 [status and pending evidence](../../scripts/nativequalification/README.md#qualification-status)
-distinguish the failed Apple support gate, IPC/suspended-worker tests, a native
-operation that never calls back, and real two-minute engine/resumption coverage.
+record native IPC/suspended-worker and real assertion-callback discard/recovery
+component passes on specific signed artifacts. Loaded-engine continuity and
+composed two-minute resumption remain pending; a later rebuild is not qualified
+by those component results.
 Do not turn opt-in native failures into skips, count signing as Apple acceptance,
 or treat transport fixtures as serving qualification.
 

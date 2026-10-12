@@ -1,6 +1,12 @@
 # Build
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
+
+Changelog checks use Python's standard library, with no package installation.
+Run `make changelog-check` to validate pending fragments and
+`make changelog-preview` to print them. Neither command edits `CHANGELOG.md`;
+only an authorized release-preparation change updates published history. See
+[contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -1075,13 +1081,20 @@ ls console-ui/.next
 
 ## App Attest release qualification
 
+For local provider dispatch and Swift/Go recovery checks, build the test targets
+and stage the source-matched Metal library using `make provider-test`. The
+[App Attest provider dispatch tests](test.md#app-attest-provider-dispatch) use
+loopback and software callbacks; they do not qualify the signed release.
+
 For the default-off supervised worker candidate, use the separate
 [local signed-app procedure](../../scripts/nativequalification/README.md#build-and-sign).
 Freeze the provider source and take exclusive `.build` ownership before building;
 diagnostics/build-source edits require a fresh build and artifact identity, not
 the earlier test receipt. This staging helper does not publish, notarize, alter
 the installer/profile contract or approve a build. The
-[reported native gate remains failed](../../scripts/nativequalification/README.md#qualification-status).
+[recorded native component passes](../../scripts/nativequalification/README.md#qualification-status)
+are artifact-bound; loaded-engine continuity and composed two-minute resumption
+remain pending, and a rebuilt binary requires fresh qualification.
 The native verifier and canonical backend docs live in sibling
 [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform), never in the
 retained platform tree of the provider repository.

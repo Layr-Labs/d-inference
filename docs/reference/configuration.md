@@ -52,7 +52,7 @@ then-current eligible membership; dev startup does not establish a cutoff.
 
 | Setting | Default / bounds | Consumer |
 |---|---|---|
-| `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom start/stop/restart/update/logout --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
 | `darkbloom switch --timeout` | `600` seconds; 0–3600; `0` means no waiting for unfinished work, with a 30-second barrier allowance when already settled; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift` (`drainForModelSwitch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
@@ -66,6 +66,19 @@ for recovery and explicit force semantics. Existing loaded launchd jobs must be
 restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
+
+## Provider endpoint resumption and logout
+
+| Setting | Behavior | Consumer |
+|---|---|---|
+| Endpoint-resumption capability | No new environment variable or config key. Normal serving installs a fixed process-key responder; registration advertises protocol 1 and a fresh nonce per socket. No responder means both fields are omitted. | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`) |
+| `darkbloom logout --config` | Uses the selected runtime configuration's `coordinator.url` for token revocation after stopping; does not change the saved coordinator | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout.run`) |
+
+The [wire contract](protocol-messages.md#app-attest-endpoint-resumption-candidate)
+does not create local trust or change proof validity. The
+[logout contract](../provider/cli-reference.md#darkbloom-login--darkbloom-logout)
+defines stop-before-delete, force handling and remote confirmation. No worker
+mode or update configuration changes are part of this addition.
 
 ## Provider model selection
 

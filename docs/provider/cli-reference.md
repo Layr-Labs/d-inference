@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -431,7 +431,7 @@ and `ProviderLogout.perform` in `provider-swift/Sources/ProviderCore/Auth/Provid
 | Flag | Type | Default | Effect / source |
 |---|---|---|---|
 | `--config <path>` | path | Global config default | Select the coordinator for revocation (`Logout.configOptions`) |
-| `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator drain acknowledgement (`ServiceDrain.swift`, `DrainOptions`) |
+| `--timeout <seconds>` | integer, 0-3600 | `600` | Wait for accepted work and the coordinator drain acknowledgement (`ServiceDrain.swift`, `DrainOptions`) |
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work; process exit must still be confirmed (`DrainOptions`, `Logout.requireExited`) |
 
 The command disables watchdog/login recovery, drains and stops the provider,
@@ -449,7 +449,8 @@ timeout, follows no redirects, and confirms remote revocation only for HTTP
 `204`. Offline errors, cancellation, unsupported endpoints and every other status
 leave remote invalidation unconfirmed but still permit local deletion. Output
 distinguishes confirmed revocation, local-only logout with a warning, and no
-saved credential. Tokens and response bodies are not logged.
+saved credential. Tokens and response bodies are not logged. This requires a
+matching platform endpoint; local completion does not establish remote support.
 
 This revokes only the current token, not every machine/account credential. It
 does not remove App Attest/SE keys, model downloads or management profiles.

@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -99,6 +99,9 @@ helper or a signing service. It defaults off and is not ready for production;
 see [selection](../../reference/configuration.md#app-attest-worker-qualification)
 and the [reported native qualification gate](../../../scripts/nativequalification/README.md#qualification-status).
 The in-process path above remains the default.
+Native suspended-worker and real assertion-callback recovery passed on the
+recorded signed artifacts. Loaded-engine continuity and composed two-minute
+resumption remain pending; these passes do not qualify a rebuilt artifact.
 The child entry is `--app-attest-worker-v1` (`AppAttestWorkerHost.argument`),
 not a public CLI signing command.
 
@@ -157,13 +160,32 @@ inference process to recover verification, or manufactures serving permission.
 `ProviderLoop` reports infrastructure failures as `busy`, not an Apple
 invalid-key result that spends rotation budgets. Shutdown/re-exec waits for
 retirement (`ProviderLoop.stopAppAttestWorkerAndWait` in
-`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`).
-The [separate socket-resumption protocol](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
-proves continued endpoint custody only; neither mechanism creates new local
-trust or extends the original proof lifetime. Canonical backend authorization
-and its Stage C counterpart belong in sibling
-[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/architecture/security/identity-binding.md),
-not the retained coordinator tree here.
+`provider-swift/Sources/ProviderCore/ProviderLoop+AppAttestShadow.swift`). Updates
+use `stopAppAttestWorkerForUpdateAndWait` before commit and before restart,
+including already-installed candidates, and recheck cancellation and drain
+ownership at the side-effect boundaries. A failed update retains an uncertain
+worker owner; only a fresh `prepare` while idle can retry its bounded cleanup.
+Terminal shutdown cannot reopen that owner. See
+[same-process endpoint resumption](#same-process-endpoint-resumption) for the
+independent custody protocol.
+
+### Same-process endpoint resumption
+
+`ProviderLoop.run` in `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`
+captures its existing `NodeKeyPair` in the coordinator client's synchronous
+responder. The private key stays in process memory; it is not serialized into
+configuration, persisted, regenerated on reconnect or given to an Apple worker.
+The [protocol-1 transcript](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+binds the encrypted challenge to that endpoint and a fresh nonce for the actual
+socket. `CoordinatorClient.answerAppAttestResume` checks current connection
+identity and registration, answers once, and writes directly to that socket
+without suspending or using the reconnecting outbound router.
+
+This is custody evidence only. A new process cannot answer for the old endpoint,
+and a stale socket/nonce cannot answer on a replacement connection. No local
+trust is created and no Apple proof lifetime is extended. Backend retained-proof,
+account, revocation and current authorization checks remain platform-owned;
+provider support does not imply that counterpart is deployed.
 
 ### Stable identity for coordinator state
 

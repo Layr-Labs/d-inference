@@ -215,12 +215,22 @@ struct ClusterPairSlotTests {
         let owner = ScriptedPairOwner()
         let hold = DispatchSemaphore(value: 0)
         owner.hold = hold
+        // The canary gives up at its deadline and cancels its request; the
+        // slot then retires, which waits for that request to retire before
+        // the owner shuts down (a wedged pair's cancel lands only at the
+        // engine's safety deadline). Release the held request once the canary
+        // has given up, as the cancel finally landing would.
+        let release = Task {
+            _ = await clusterPairWait(.seconds(30)) { await loop.clusterPairWarmup != nil }
+            hold.signal()
+        }
         try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        await release.value
         let warmup = try #require(await loop.clusterPairWarmup)
         #expect(!warmup.succeeded && (warmup.detail ?? "").contains("timed out"), "\(warmup)")
+        #expect(warmup.seconds < 10, "the canary's own deadline bounds it: \(warmup)")
         #expect(await clusterPairWait { await loop.clusterPairSlotSnapshot.id == nil })
         #expect(await loop.state.refusingNewWork)
-        hold.signal()
         #expect(await clusterPairWait { owner.shutdownCount == 1 })
     }
 

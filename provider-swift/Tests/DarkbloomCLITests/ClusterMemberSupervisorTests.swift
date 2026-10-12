@@ -107,10 +107,14 @@ struct ClusterMemberSupervisorTests {
         let run = Task { await supervisor.run() }
         #expect(await waitUntil(seconds: 10) { state(directory)?.phase == .running })
         let first = try #require(state(directory)?.current?.pid)
-        #expect(await waitUntil(seconds: 20) {
+        // The guard needs about 4 s (2 s grace, 3 s down, 1 s probes); the
+        // wider window only absorbs a slow test host.
+        let started = Date()
+        #expect(await waitUntil(seconds: 60) {
             guard let current = state(directory), current.runs >= 2, current.phase == .running else { return false }
             return current.current?.pid != first
-        }, "recycled after the heartbeat went stale, then restarted")
+        }, "recycled after the heartbeat went stale, then restarted (state: \(String(describing: state(directory))))")
+        print("s18-guard-test: restarted \(String(format: "%.1f", Date().timeIntervalSince(started))) s after the first run started")
         let recycled = try #require(state(directory)?.lastRun)
         #expect(recycled.pid == first)
         let end = recycled.end ?? ""

@@ -9,7 +9,7 @@ import DarkbloomClusterProtocol
 @Suite struct DistributedServingEligibilityTests {
     private let families: [ChipFamily] = [.m1, .m2, .m3, .m4, .m5, .m6, .unknown]
     private let q27 = "registered_qwen38_27b", q27Public = "EigenLabs/Qwen3.8-27B-4bit-mtp"
-    private func cls(_ chip: String) -> ClusterNumericsClass { ClusterNumericsClass(chipName: chip)! }
+    private func cls(_ chip: String) -> ClusterChipClass { ClusterChipClass(chipName: chip)! }
     private func refusal(_ body: () throws -> Void) -> ClusterPairServingRefusal? {
         do { try body(); return nil } catch let refusal as ClusterPairServingRefusal { return refusal } catch { return nil }
     }
@@ -28,16 +28,16 @@ import DarkbloomClusterProtocol
     /// both classes for both roles, so every rank of both placements passes on
     /// its own Mac, although neither member meets the single-Mac requirements.
     @Test func grantAllowsAnM3UltraRankAndAnM5MaxRankForThe27B() throws {
-        for placement in [[ClusterNumericsClass.appleM3Ultra, .appleM5Max], [.appleM5Max, .appleM3Ultra]] {
+        for placement in [[ClusterChipClass.appleM3Ultra, .appleM5Max], [.appleM5Max, .appleM3Ultra]] {
             try ClusterPairServingGrants.requirePlacement(placement, runtimeModelID: q27, publicModelID: q27Public)
-            for (rank, numericsClass) in placement.enumerated() {
-                try ClusterPairServingGrants.requireRank(rank, of: 2, numericsClass: numericsClass, runtimeModelID: q27, publicModelID: q27Public)
+            for (rank, chipClass) in placement.enumerated() {
+                try ClusterPairServingGrants.requireRank(rank, of: 2, chipClass: chipClass, runtimeModelID: q27, publicModelID: q27Public)
             }
         }
         let grant = try ClusterPairServingGrants.grant(runtimeModelID: q27, publicModelID: q27Public)
-        #expect(grant.allowedNumericsClasses == [.appleM3Ultra, .appleM5Max])
-        #expect(grant.allowedNumericsClasses(for: .decodingRank) == [.appleM3Ultra, .appleM5Max])
-        #expect(grant.allowedNumericsClasses(for: .pipelineRank) == [.appleM3Ultra, .appleM5Max])
+        #expect(grant.chipClasses == [.appleM3Ultra, .appleM5Max])
+        #expect(grant.chipClasses(for: .decodingRank) == [.appleM3Ultra, .appleM5Max])
+        #expect(grant.chipClasses(for: .pipelineRank) == [.appleM3Ultra, .appleM5Max])
         for family in [ChipFamily.m3, .m5] {
             #expect(!ModelRuntimeRequirements.isEligible(modelID: q27Public,
                 available: DistributedServingEligibility.memberCapabilities(chipFamily: family)))
@@ -48,30 +48,30 @@ import DarkbloomClusterProtocol
     /// role, the class and the listed classes in the reason.
     @Test func aChipClassNotListedIsRefused() throws {
         for chip in ["Apple M4 Max", "Apple M5 Pro", "Apple M3 Max", "Apple M5 Ultra", "Apple M2 Ultra", "Apple M5"] {
-            let numericsClass = cls(chip)
+            let chipClass = cls(chip)
             for rank in 0..<2 {
-                let refused = refusal { try ClusterPairServingGrants.requireRank(rank, of: 2, numericsClass: numericsClass,
+                let refused = refusal { try ClusterPairServingGrants.requireRank(rank, of: 2, chipClass: chipClass,
                     runtimeModelID: q27, publicModelID: q27Public) }
                 let role: ClusterPairServingRole = rank == 1 ? .decodingRank : .pipelineRank
-                #expect(refused?.reason == .classNotAllowed(rank: rank, role: role, numericsClass: numericsClass,
+                #expect(refused?.reason == .classNotAllowed(rank: rank, role: role, chipClass: chipClass,
                     allowed: [.appleM3Ultra, .appleM5Max]), "\(chip) rank \(rank)")
                 let text = refused?.description ?? ""
-                #expect(text.contains(numericsClass.rawValue) && text.contains("apple_m3_ultra or apple_m5_max"))
+                #expect(text.contains(chipClass.rawValue) && text.contains("apple_m3_ultra or apple_m5_max"))
                 #expect(text.contains(q27Public) && text.contains(q27) && text.contains("policy decision"))
             }
             // A placement with one unlisted rank is refused as a whole.
-            #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, numericsClass],
+            #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, chipClass],
                 runtimeModelID: q27, publicModelID: q27Public) } != nil)
         }
         // A grant restricts by role: the 9B ran with the M3 Ultra leading only.
         try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B")
         let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra],
             runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B") }
-        #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, numericsClass: .appleM5Max, allowed: [.appleM3Ultra]))
+        #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]))
         // A chip with no class (a virtual machine, an unknown name) is refused.
-        let unknown = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: nil, runtimeModelID: q27, publicModelID: q27Public) }
+        let unknown = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: nil, runtimeModelID: q27, publicModelID: q27Public) }
         #expect(unknown?.reason == .unknownChip(rank: 1, role: .decodingRank))
-        #expect(unknown?.description.contains("no numerics class") == true)
+        #expect(unknown?.description.contains("no chip class") == true)
     }
 
     /// A member that claims `mlx_nax` (and `apple_m5`) meets the 27B's
@@ -81,12 +81,12 @@ import DarkbloomClusterProtocol
         let claimed: Set<ProviderRuntimeCapability> = [.appleM5, .mlxNAX, .modelRevisions]
         #expect(ModelRuntimeRequirements.isEligible(modelID: q27Public, available: claimed))
         for name in claimed.map(\.rawValue) + ["Apple M5 Max mlx_nax", "Apple mlx_nax", "apple_m5_max", "Apple M5 NAX"] {
-            #expect(ClusterNumericsClass(chipName: name) == nil, "\(name) made a class")
+            #expect(ClusterChipClass(chipName: name) == nil, "\(name) made a class")
         }
-        for numericsClass in [ClusterNumericsClass(chipName: "Apple M5 Pro"), ClusterNumericsClass(chipName: "Apple M4 Max"), nil] {
+        for chipClass in [ClusterChipClass(chipName: "Apple M5 Pro"), ClusterChipClass(chipName: "Apple M4 Max"), nil] {
             for rank in 0..<2 {
-                #expect(refusal { try ClusterPairServingGrants.requireRank(rank, of: 2, numericsClass: numericsClass,
-                    runtimeModelID: q27, publicModelID: q27Public) } != nil, "\(String(describing: numericsClass)) rank \(rank)")
+                #expect(refusal { try ClusterPairServingGrants.requireRank(rank, of: 2, chipClass: chipClass,
+                    runtimeModelID: q27, publicModelID: q27Public) } != nil, "\(String(describing: chipClass)) rank \(rank)")
             }
         }
         // The member loop admits a model by a grant only in the member role and
@@ -101,16 +101,16 @@ import DarkbloomClusterProtocol
     /// The grant is keyed by the runtime's model, which a setup cannot rename.
     @Test func renamingTheModelChangesNothing() throws {
         try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: q27, publicModelID: "renamed/public-id")
-        let renamed = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: self.cls("Apple M4 Max"),
+        let renamed = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: self.cls("Apple M4 Max"),
             runtimeModelID: q27, publicModelID: "renamed/public-id") }
         #expect(renamed?.description.contains("renamed/public-id") == true && renamed?.description.contains(q27) == true)
         // The 27B's public name on another runtime model gets that model's decision.
-        let future = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: .appleM5Max,
+        let future = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM5Max,
             runtimeModelID: "registered_future", publicModelID: q27Public) }
         #expect(future?.reason == .noGrant && future?.description.contains("has no grant") == true)
-        let nine = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: .appleM3Ultra,
+        let nine = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM3Ultra,
             runtimeModelID: "registered_qwen35_9b", publicModelID: q27Public) }
-        #expect(nine?.reason == .classNotAllowed(rank: 1, role: .decodingRank, numericsClass: .appleM3Ultra, allowed: [.appleM5Max]))
+        #expect(nine?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM3Ultra, allowed: [.appleM5Max]))
     }
 
     /// Single-Mac serving requirements are unchanged by any of this.
@@ -138,7 +138,7 @@ import DarkbloomClusterProtocol
         #expect(Set(decided) == Set(registered))
         #expect(decided.count == Set(decided).count)
         for grant in ClusterPairServingGrants.granted {
-            #expect(!grant.decodingRankAllowedNumericsClasses.isEmpty && !grant.pipelineRankAllowedNumericsClasses.isEmpty && !grant.evidence.isEmpty)
+            #expect(!grant.decodingRankChipClasses.isEmpty && !grant.pipelineRankChipClasses.isEmpty && !grant.evidence.isEmpty)
             try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: grant.runtimeModelID, publicModelID: "p")
         }
         for (model, reason) in ClusterPairServingGrants.withheld {
@@ -170,10 +170,43 @@ import DarkbloomClusterProtocol
         for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"] {
             try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p")
             let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: model, publicModelID: "p") }
-            #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, numericsClass: .appleM5Max, allowed: [.appleM3Ultra]), "\(model)")
-            let decoding = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, numericsClass: .appleM3Ultra, runtimeModelID: model, publicModelID: "p") }
-            #expect(decoding?.reason == .classNotAllowed(rank: 1, role: .decodingRank, numericsClass: .appleM3Ultra, allowed: [.appleM5Max]), "\(model)")
+            #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]), "\(model)")
+            let decoding = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM3Ultra, runtimeModelID: model, publicModelID: "p") }
+            #expect(decoding?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM3Ultra, allowed: [.appleM5Max]), "\(model)")
         }
+    }
+
+    /// Each grant rests on placements in the shape of the coordinator's parity
+    /// qualification (one chip class per rank in rank order, `cuts`, `mode`),
+    /// and its role classes are exactly the classes those placements ran in
+    /// each role: a class cannot be listed for a role no passed check ran it in.
+    @Test func grantsRestOnWellFormedQualifications() {
+        for grant in ClusterPairServingGrants.granted {
+            #expect(!grant.qualifications.isEmpty, "\(grant.runtimeModelID)")
+            for qualification in grant.qualifications {
+                #expect(qualification.isWellFormed, "\(grant.runtimeModelID) \(qualification)")
+            }
+            let placements = grant.qualifications.map { "\($0.chipClasses.map(\.rawValue)) \($0.cuts) \($0.mode.rawValue)" }
+            #expect(placements.count == Set(placements).count, "\(grant.runtimeModelID) lists one placement twice")
+            #expect(grant.decodingRankChipClasses == Set(grant.qualifications.compactMap(\.chipClasses.last)))
+        }
+        let q27 = ClusterPairServingGrants.qwen38_27b
+        #expect(q27.qualifications.contains(.init(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [16], mode: .phaseSplitMTP)))
+        #expect(q27.qualifications.contains(.init(chipClasses: [.appleM5Max, .appleM3Ultra], cuts: [48], mode: .phaseSplit)))
+        // Without its mirrored-order checks the 27B would be granted the order the others have, and no more.
+        let normalOrderOnly = ClusterPairServingGrant(runtimeModelID: q27.runtimeModelID,
+            qualifications: q27.qualifications.filter { $0.chipClasses.first == .appleM3Ultra }, evidence: "")
+        #expect(normalOrderOnly.decodingRankChipClasses == [.appleM5Max] && normalOrderOnly.pipelineRankChipClasses == [.appleM3Ultra])
+        #expect(ClusterPairServingGrant(runtimeModelID: q27.runtimeModelID, qualifications: [], evidence: "").chipClasses.isEmpty)
+        // The coordinator's shape rules for a placement.
+        #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra], cuts: [], mode: .pipeline).isWellFormed)
+        #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [16, 20], mode: .pipeline).isWellFormed)
+        #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [0], mode: .pipeline).isWellFormed)
+        #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [20, 16], mode: .pipeline).isWellFormed)
+        #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [16, 20], mode: .pipeline).isWellFormed)
+        // Modes are spelled as the coordinator's plan modes.
+        #expect(Set(ClusterGenerationMode.allCases.map(\.rawValue))
+            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"])
     }
 
     @Test func rolesAndPlacementShape() {
@@ -188,13 +221,13 @@ import DarkbloomClusterProtocol
             == .placementShape(rank: 0, rankCount: 1))
     }
 
-    @Test func numericsClassSpelling() {
-        #expect(ClusterNumericsClass.appleM3Ultra.rawValue == "apple_m3_ultra")
-        #expect(ClusterNumericsClass.appleM5Max.rawValue == "apple_m5_max")
-        #expect(ClusterNumericsClass(chipName: "Apple M4")?.rawValue == "apple_m4")
-        #expect(ClusterNumericsClass(chipName: "apple m5 pro")?.rawValue == "apple_m5_pro")
+    @Test func chipClassSpelling() {
+        #expect(ClusterChipClass.appleM3Ultra.rawValue == "apple_m3_ultra")
+        #expect(ClusterChipClass.appleM5Max.rawValue == "apple_m5_max")
+        #expect(ClusterChipClass(chipName: "Apple M4")?.rawValue == "apple_m4")
+        #expect(ClusterChipClass(chipName: "apple m5 pro")?.rawValue == "apple_m5_pro")
         for name in ["Apple M1 (Virtual)", "Intel(R) Core(TM) i9", "", "Apple", "Apple M Max", "Apple M10 Max", "Apple M5 Max Extra", "M5 Max"] {
-            #expect(ClusterNumericsClass(chipName: name) == nil, "\(name)")
+            #expect(ClusterChipClass(chipName: name) == nil, "\(name)")
         }
     }
 

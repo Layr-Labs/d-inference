@@ -60,14 +60,14 @@ struct DistributedInstalledPlan: Sendable {
         adapterEnvironment = environment
     }
 
-    /// This Mac's rank under the grant, with this Mac's own numerics class
-    /// (`ClusterNumericsClass.local()` on a real Mac). Each Mac checks the rank
+    /// This Mac's rank under the grant, with this Mac's own chip class
+    /// (`ClusterChipClass.local()` on a real Mac). Each Mac checks the rank
     /// it runs, right before it serves or launches it, so a placement starts
     /// only when every rank's class is listed for its role. A capability
     /// record, a saved setup or a peer never supplies the class.
-    func requireLocalRankGranted(numericsClass: ClusterNumericsClass?) throws {
+    func requireLocalRankGranted(chipClass: ClusterChipClass?) throws {
         try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
-            numericsClass: numericsClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID)
+            chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID)
     }
 
     /// How this build's native ranks find each other; see the type.

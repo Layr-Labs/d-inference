@@ -2,19 +2,25 @@ import Foundation
 import Darwin
 import DarkbloomClusterProtocol
 
-/// The numerics class of one Mac: its chip family and tier, spelled
+/// The chip class of one Mac: its chip family and tier, spelled
 /// `apple_m3_ultra`, `apple_m5_max`, `apple_m4` (no tier word for the base
-/// chip). Two Macs of one class give exactly equal results for one artifact
-/// and runtime; across classes a pair passes on the owner's near-tie rule
-/// (decision D4). The spelling is the coordinator's: a member's
-/// `device_profile.numerics_class` and a cluster approval's
-/// `allowed_numerics_classes` (darkbloom-platform, `native_pair_catalog_file.go`).
+/// chip). A pair-serving grant lists the chip classes each role may run on
+/// (owner decision D4); across classes a pair passes on the owner's near-tie
+/// rule. The coordinator derives the same class, by the same rule, from a
+/// member's attested chip name for its own per-role grant
+/// (`decoding_rank_chip_classes`, `pipeline_rank_chip_classes`).
+///
+/// A chip class is not a member's registered numerics class
+/// (`device_profile.numerics_class`, which also names the GPU architecture,
+/// the Metal library and the operating system). That one is what a cluster
+/// approval's `allowed_numerics_classes` and a parity qualification's
+/// `numerics_classes` compare; it is not an input here.
 ///
 /// A class is read from the chip's own name on the Mac that runs the rank.
 /// It is never taken from a capability record, a saved setup, a peer or a
 /// runtime capability: a kernel capability such as `mlx_nax` is not a class
 /// and does not make one, so claiming it opens nothing.
-public struct ClusterNumericsClass: Hashable, Comparable, Sendable, CustomStringConvertible {
+public struct ClusterChipClass: Hashable, Comparable, Sendable, CustomStringConvertible {
     public let rawValue: String
 
     /// The class of a chip as the system names it (`machdep.cpu.brand_string`
@@ -33,16 +39,16 @@ public struct ClusterNumericsClass: Hashable, Comparable, Sendable, CustomString
 
     /// This Mac's class, from the kernel's brand string: no GPU, no child
     /// process. Nil when the chip has no class.
-    public static func local() -> ClusterNumericsClass? {
+    public static func local() -> ClusterChipClass? {
         var size = 0
         guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 1, size <= 256 else { return nil }
         var buffer = [UInt8](repeating: 0, count: size)
         guard sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0) == 0 else { return nil }
-        return ClusterNumericsClass(chipName: String(decoding: buffer.prefix(while: { $0 != 0 }), as: UTF8.self))
+        return ClusterChipClass(chipName: String(decoding: buffer.prefix(while: { $0 != 0 }), as: UTF8.self))
     }
 
-    public static let appleM3Ultra = ClusterNumericsClass(chipName: "Apple M3 Ultra")!
-    public static let appleM5Max = ClusterNumericsClass(chipName: "Apple M5 Max")!
+    public static let appleM3Ultra = ClusterChipClass(chipName: "Apple M3 Ultra")!
+    public static let appleM5Max = ClusterChipClass(chipName: "Apple M5 Max")!
 
     public var description: String { rawValue }
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -66,35 +72,62 @@ public enum ClusterPairServingRole: String, Sendable, CaseIterable {
     }
 }
 
-/// One registered model's grant to be served by a pair: the numerics classes
-/// each role may run on. A placement is served only when every rank's class
-/// is listed for its role. Keyed by the runtime's own model identity, which
-/// comes from the worker's capability record and which a setup cannot
-/// rename; the public model identity only names the model in a refusal.
+/// One placement a cross-cable check ran and passed under the near-tie rule:
+/// each rank's chip class in rank order, the layer cuts and the generation
+/// mode. It has the shape of the coordinator's parity qualification record
+/// (one class per rank in rank order, `cuts`, `mode`), with chip classes where
+/// that record names each rank's registered numerics class.
+///
+/// A grant's role classes come from its qualifications only: a class reaches
+/// a role when a passed check ran it in that role. The cut and the mode are
+/// not part of the provider's decision (a pair is planned from each Mac's
+/// detected hardware, at whatever cut fits); public traffic is bounded to the
+/// exact classes, cuts and mode by the coordinator's parity qualification.
+public struct ClusterPairServingQualification: Sendable, Equatable {
+    public let chipClasses: [ClusterChipClass]
+    public let cuts: [Int]
+    public let mode: ClusterGenerationMode
+
+    /// The shape the coordinator requires of a parity qualification: two or
+    /// more ranks, one cut fewer than the ranks, cuts positive and ascending.
+    public var isWellFormed: Bool {
+        chipClasses.count >= 2 && cuts.count == chipClasses.count - 1 && cuts.allSatisfy { $0 > 0 }
+            && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
+    }
+}
+
+/// One registered model's grant to be served by a pair: the chip classes each
+/// role may run on, derived from the placements its cross-cable checks passed
+/// in. A placement is served only when every rank's class is listed for its
+/// role. Keyed by the runtime's own model identity, which comes from the
+/// worker's capability record and which a setup cannot rename; the public
+/// model identity only names the model in a refusal.
 ///
 /// This is the provider's half of owner decision 4 (operator approval per
 /// model with allowed chip classes per rank). Public traffic also needs the
-/// coordinator's promotable parity qualification for the exact classes, cut
+/// coordinator's promotable parity qualification for the exact classes, cuts
 /// and mode; a placement without one serves its owner only.
 public struct ClusterPairServingGrant: Sendable, Equatable {
     public let runtimeModelID: String
-    public let decodingRankAllowedNumericsClasses: Set<ClusterNumericsClass>
-    public let pipelineRankAllowedNumericsClasses: Set<ClusterNumericsClass>
-    /// The cross-cable runs the grant rests on, in plain words.
+    /// The placements the grant rests on.
+    public let qualifications: [ClusterPairServingQualification]
+    /// The same runs in plain words.
     public let evidence: String
 
-    public func allowedNumericsClasses(for role: ClusterPairServingRole) -> Set<ClusterNumericsClass> {
+    /// Every class a qualification ran as its last rank.
+    public var decodingRankChipClasses: Set<ClusterChipClass> { Set(qualifications.compactMap(\.chipClasses.last)) }
+    /// Every class a qualification ran at a rank before its last.
+    public var pipelineRankChipClasses: Set<ClusterChipClass> { Set(qualifications.flatMap { $0.chipClasses.dropLast() }) }
+
+    public func chipClasses(for role: ClusterPairServingRole) -> Set<ClusterChipClass> {
         switch role {
-        case .decodingRank: decodingRankAllowedNumericsClasses
-        case .pipelineRank: pipelineRankAllowedNumericsClasses
+        case .decodingRank: decodingRankChipClasses
+        case .pipelineRank: pipelineRankChipClasses
         }
     }
 
-    /// Every class some rank may have: what the coordinator's cluster
-    /// approval lists as `allowed_numerics_classes` for this model.
-    public var allowedNumericsClasses: Set<ClusterNumericsClass> {
-        decodingRankAllowedNumericsClasses.union(pipelineRankAllowedNumericsClasses)
-    }
+    /// Every class some rank may have.
+    public var chipClasses: Set<ClusterChipClass> { decodingRankChipClasses.union(pipelineRankChipClasses) }
 }
 
 /// Why a pair may not serve a placement.
@@ -106,10 +139,10 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         case withheld(String)
         /// The placement has fewer than two ranks, or the rank is outside it.
         case placementShape(rank: Int, rankCount: Int)
-        /// The Mac that runs this rank has a chip with no numerics class.
+        /// The Mac that runs this rank has a chip with no chip class.
         case unknownChip(rank: Int, role: ClusterPairServingRole)
         /// This rank's class is not listed for its role.
-        case classNotAllowed(rank: Int, role: ClusterPairServingRole, numericsClass: ClusterNumericsClass, allowed: [ClusterNumericsClass])
+        case classNotAllowed(rank: Int, role: ClusterPairServingRole, chipClass: ClusterChipClass, allowed: [ClusterChipClass])
     }
     public let runtimeModelID: String
     public let publicModelID: String
@@ -127,12 +160,12 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         case .placementShape(let rank, let rankCount):
             return model + " cannot be placed: rank \(rank) of a placement of \(rankCount) ranks. A pair-serving grant applies to two or more ranks in order."
         case .unknownChip(let rank, let role):
-            return model + " cannot run rank \(rank) (the \(role.words)) on this Mac: its chip has no numerics class, so no grant can list it. "
-                + "A class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not make one." + policy
-        case .classNotAllowed(let rank, let role, let numericsClass, let allowed):
+            return model + " cannot run rank \(rank) (the \(role.words)) on this Mac: its chip has no chip class, so no grant can list it. "
+                + "A chip class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not make one." + policy
+        case .classNotAllowed(let rank, let role, let chipClass, let allowed):
             return model + " is granted pair serving with the \(role.words) on \(allowed.map(\.rawValue).joined(separator: " or ")); "
-                + "rank \(rank) of this placement is that rank and runs on \(numericsClass.rawValue). "
-                + "A class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not change it. "
+                + "rank \(rank) of this placement is that rank and runs on \(chipClass.rawValue). "
+                + "A chip class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not change it. "
                 + "Choose a placement whose ranks run on the listed classes; a class is added only after a cross-cable check on it passes." + policy
         }
     }
@@ -155,41 +188,61 @@ public enum ClusterPairServingGrants {
     /// `diverged` and `incomparable` fail it.
     public static let acceptedCrossClassVerdicts = ["exact", "tokensEqualLogitsDiffer", "divergedAtNearTie"]
 
-    private static let m3Ultra = ClusterNumericsClass.appleM3Ultra, m5Max = ClusterNumericsClass.appleM5Max
+    private static let m3Ultra = ClusterChipClass.appleM3Ultra, m5Max = ClusterChipClass.appleM5Max
+    /// The order every family's checks ran in: M3 Ultra rank 0, M5 Max rank 1
+    /// (the decoding rank).
+    private static let m3UltraLeads = [m3Ultra, m5Max]
+    /// The mirrored order, checked for the 27B only.
+    private static let m5MaxLeads = [m5Max, m3Ultra]
 
-    /// The orientation every family's check ran in: M3 Ultra rank 0, M5 Max
-    /// rank 1 (the decoding rank).
-    private static func normalOrder(_ runtimeModelID: String, _ evidence: String) -> ClusterPairServingGrant {
-        .init(runtimeModelID: runtimeModelID, decodingRankAllowedNumericsClasses: [m5Max],
-              pipelineRankAllowedNumericsClasses: [m3Ultra], evidence: evidence)
+    /// The passed checks of one order at one cut, one per mode.
+    private static func passed(_ chipClasses: [ClusterChipClass], cut: Int, _ modes: ClusterGenerationMode...) -> [ClusterPairServingQualification] {
+        modes.map { .init(chipClasses: chipClasses, cuts: [cut], mode: $0) }
     }
 
-    public static let qwen35_9b = normalOrder("registered_qwen35_9b",
-        "M3 Ultra rank 0 and M5 Max rank 1 across the cable since 2026-10-08: pipeline, compact decode, phase split, "
-        + "phase split with MTP, prefix reuse and prompts to 30,720 tokens; every comparison exact, tokens equal or a near tie")
+    public static let qwen35_9b = ClusterPairServingGrant(runtimeModelID: "registered_qwen35_9b",
+        qualifications: passed(m3UltraLeads, cut: 4, .pipeline, .phaseSplit, .phaseSplitMTP),
+        evidence: "M3 Ultra rank 0 and M5 Max rank 1 at cut 4 across the cable: pipeline and phase split with prompts of 5,120 to 30,720 tokens, "
+            + "phase split with MTP; every comparison against both Macs' references a near tie or tokens equal")
     /// Both orders ran: the M3 Ultra decodes in the mirrored one.
     public static let qwen38_27b = ClusterPairServingGrant(runtimeModelID: "registered_qwen38_27b",
-        decodingRankAllowedNumericsClasses: [m3Ultra, m5Max], pipelineRankAllowedNumericsClasses: [m3Ultra, m5Max],
+        qualifications: passed(m3UltraLeads, cut: 16, .pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP)
+            + passed(m5MaxLeads, cut: 48, .pipeline, .pipelineCompactDecode, .phaseSplit),
         evidence: "M3 Ultra rank 0 and M5 Max rank 1 (cut 16): pipeline, compact decode, phase split, phase split with MTP, "
-            + "prefix reuse and prompts to 30,720 tokens; M5 Max rank 0 and M3 Ultra rank 1 (cuts 48 and 40): pipeline, compact decode "
-            + "and phase split; every comparison against both Macs' references exact, tokens equal or a near tie (1 ulp)")
-    public static let qwen35_35b_a3b = normalOrder("registered_qwen35_35b_a3b",
-        "cut 12, pipeline, compact decode and phase split: a near tie (0 ulp) broken the way the M5 Max alone breaks it; 5,120 tokens equal")
-    public static let qwen36_35b_a3b = normalOrder("registered_qwen36_35b_a3b",
-        "cut 12, text only, pipeline, compact decode and phase split: tokens equal the M3 Ultra's reference; 5,120 tokens a near tie (1 ulp)")
-    public static let bonsai_2_27b = normalOrder("registered_ternary_bonsai_2_27b",
-        "cut 24, 8,192 prompt tokens, pipeline (serial and lookahead), compact decode and phase split: all 128 tokens equal")
-    public static let nemotron35_lightning = normalOrder("registered_nemotron35_lightning",
-        "short prompt, pipeline, compact decode and phase split: tokens equal")
+            + "prefix reuse and prompts to 30,720 tokens; M5 Max rank 0 and M3 Ultra rank 1 (cut 48): pipeline, compact decode "
+            + "and phase split; every comparison against both Macs' references a near tie (0 to 1 ulp) or tokens equal")
+    public static let qwen35_35b_a3b = ClusterPairServingGrant(runtimeModelID: "registered_qwen35_35b_a3b",
+        qualifications: passed(m3UltraLeads, cut: 12, .pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP)
+            + passed(m3UltraLeads, cut: 20, .pipeline, .phaseSplit, .phaseSplitMTP),
+        evidence: "cuts 12 and 20, pipeline, compact decode, phase split and phase split with MTP: a near tie (0 ulp) broken the way "
+            + "the M5 Max alone breaks it, or tokens equal; 5,120 tokens equal")
+    public static let qwen36_35b_a3b = ClusterPairServingGrant(runtimeModelID: "registered_qwen36_35b_a3b",
+        qualifications: passed(m3UltraLeads, cut: 12, .pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP)
+            + passed(m3UltraLeads, cut: 20, .pipeline, .phaseSplit, .phaseSplitMTP),
+        evidence: "cuts 12 and 20, text only, pipeline, compact decode, phase split and phase split with MTP: tokens equal the M3 Ultra's "
+            + "reference or first differ at a near tie (0 to 1 ulp)")
+    public static let bonsai_2_27b = ClusterPairServingGrant(runtimeModelID: "registered_ternary_bonsai_2_27b",
+        qualifications: passed(m3UltraLeads, cut: 24, .pipeline, .pipelineCompactDecode, .phaseSplit)
+            + passed(m3UltraLeads, cut: 32, .pipeline),
+        evidence: "cut 24, 8,192 prompt tokens, pipeline (serial and lookahead), compact decode and phase split: all 128 tokens equal; "
+            + "cut 32, 4,096 prompt tokens, pipeline: tokens equal")
+    public static let nemotron35_lightning = ClusterPairServingGrant(runtimeModelID: "registered_nemotron35_lightning",
+        qualifications: passed(m3UltraLeads, cut: 25, .pipeline, .pipelineCompactDecode, .phaseSplit)
+            + passed(m3UltraLeads, cut: 27, .pipeline) + passed(m3UltraLeads, cut: 20, .phaseSplit),
+        evidence: "cut 25, short prompt, pipeline, compact decode and phase split: tokens equal, or a near tie (4.0 ulp against the "
+            + "M5 Max's reference, the comparator's threshold); cut 27 pipeline and cut 20 phase split at 4,096 tokens: tokens equal or a near tie")
 
     public static let granted: [ClusterPairServingGrant] = [qwen35_9b, qwen38_27b, qwen35_35b_a3b, qwen36_35b_a3b,
                                                              bonsai_2_27b, nemotron35_lightning]
 
-    /// Registered models whose cross-cable check has not passed, and why.
+    /// Registered models whose cross-cable checks have not all passed, and
+    /// why. A grant admits a model at every cut the planner may choose, so a
+    /// model with a cut that diverged stays withheld even where another cut
+    /// passed.
     public static let withheld: [String: String] = [
-        "registered_gpt_oss_20b": "its cross-cable check diverged at output 1 of the 4,096-token request (reference margin 0.82, not a near tie)",
-        "registered_mimo_v26_flash_mopd": "its 4,096-token cross-cable request departs from the reference at output 50 and the departure is not classified (no logits were recorded)",
-        "registered_gemma4_26b_qat_4bit": "its cross-cable check diverged at cut 12 (token 7 of the 31-token request, margin 0.30, not a near tie); cut 18 passed, and a grant is per model, not per cut",
+        "registered_gpt_oss_20b": "its cross-cable check diverged at cuts 8 and 10 (output 1 of the 4,096-token request, reference margin 0.82, not a near tie), although cut 12 gave the reference's tokens",
+        "registered_mimo_v26_flash_mopd": "its 4,096-token cross-cable request departs from the reference at output 50 and the departure is not classified (the reference recorded no logits there), although the short request gave the reference's tokens",
+        "registered_gemma4_26b_qat_4bit": "its cross-cable check diverged at cut 12 (token 7 of the 31-token request, margin 0.30, not a near tie), although cuts 15 and 18 passed",
         "registered_gemma4_26b_8bit": "its cross-cable check diverged at cut 12 (tokens 21 and 20 of the 4,096- and 5,120-token requests, margins of 0.25 and more, not near ties)",
         "registered_gemma4_26b": "no cross-cable check has run on this artifact",
     ]
@@ -202,8 +255,8 @@ public enum ClusterPairServingGrants {
     }
 
     /// One rank of a placement, checked on the Mac that runs it with that
-    /// Mac's own class. Every rank checked this way is the whole placement.
-    public static func requireRank(_ rank: Int, of rankCount: Int, numericsClass: ClusterNumericsClass?,
+    /// Mac's own chip class. Every rank checked this way is the whole placement.
+    public static func requireRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass?,
                                    runtimeModelID: String, publicModelID: String) throws {
         let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
         func refuse(_ reason: ClusterPairServingRefusal.Reason) -> ClusterPairServingRefusal {
@@ -212,21 +265,21 @@ public enum ClusterPairServingGrants {
         guard let role = ClusterPairServingRole.of(rank: rank, rankCount: rankCount) else {
             throw refuse(.placementShape(rank: rank, rankCount: rankCount))
         }
-        guard let numericsClass else { throw refuse(.unknownChip(rank: rank, role: role)) }
-        let allowed = grant.allowedNumericsClasses(for: role)
-        guard allowed.contains(numericsClass) else {
-            throw refuse(.classNotAllowed(rank: rank, role: role, numericsClass: numericsClass, allowed: allowed.sorted()))
+        guard let chipClass else { throw refuse(.unknownChip(rank: rank, role: role)) }
+        let allowed = grant.chipClasses(for: role)
+        guard allowed.contains(chipClass) else {
+            throw refuse(.classNotAllowed(rank: rank, role: role, chipClass: chipClass, allowed: allowed.sorted()))
         }
     }
 
-    /// A whole placement: each rank's class in rank order.
-    public static func requirePlacement(_ rankClasses: [ClusterNumericsClass?], runtimeModelID: String, publicModelID: String) throws {
+    /// A whole placement: each rank's chip class in rank order.
+    public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String) throws {
         guard rankClasses.count >= 2 else {
             throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
                 reason: .placementShape(rank: 0, rankCount: rankClasses.count))
         }
-        for (rank, numericsClass) in rankClasses.enumerated() {
-            try requireRank(rank, of: rankClasses.count, numericsClass: numericsClass,
+        for (rank, chipClass) in rankClasses.enumerated() {
+            try requireRank(rank, of: rankClasses.count, chipClass: chipClass,
                             runtimeModelID: runtimeModelID, publicModelID: publicModelID)
         }
     }

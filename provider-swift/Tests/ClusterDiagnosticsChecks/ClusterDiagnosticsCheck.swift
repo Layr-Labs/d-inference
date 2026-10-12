@@ -196,7 +196,7 @@ private func reject(_ body: () throws -> Void) throws {
     static func modeAndServingPolicy(_ f: InstalledFixture) throws {
         func validation(_ fixture: InstalledFixture, chip: String = "Apple M3 Ultra") -> [ClusterDiagnosticsReport.Check] {
             ClusterInstalledMetadataChecks.localInstalledMetadata(reference: fixture.reference, paths: fixture.paths,
-                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, localNumericsClass: ClusterNumericsClass(chipName: chip))
+                deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000, localChipClass: ClusterChipClass(chipName: chip))
         }
         let ordinary = validation(f)
         try require(ordinary.map(\.name) == ["localInstalledMetadata"] && ordinary[0].outcome == .passed, "ordinary setup: \(ordinary.map(\.detail))")

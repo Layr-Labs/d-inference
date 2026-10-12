@@ -337,9 +337,9 @@ final class EndpointBox: @unchecked Sendable {
             try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
             try require(prepared.plan.grant==ClusterPairServingGrants.qwen38_27b,"the 27B was prepared under another model's grant")
             // The fixture is the leader: rank 0 of two, the pipeline-only rank.
-            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip)) }
+            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
             for chip in ["Apple M4 Max","Apple M5 Pro","Apple M1 (Virtual)"] {
-                let refused=try refusal{try prepared.plan.requireLocalRankGranted(numericsClass:ClusterNumericsClass(chipName:chip))}
+                let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip))}
                 try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
                     && refused.contains("policy decision"),"\(chip) was not refused for the 27B's rank 0: \(refused)")
             }
@@ -347,8 +347,8 @@ final class EndpointBox: @unchecked Sendable {
         // The 9B was checked with the M3 Ultra leading only: an M5 Max cannot run its rank 0.
         let nine=try f.prepare()
         try require(nine.plan.grant==ClusterPairServingGrants.qwen35_9b,"the 9B was prepared under another model's grant")
-        try nine.plan.requireLocalRankGranted(numericsClass:.appleM3Ultra)
-        let led=try refusal{try nine.plan.requireLocalRankGranted(numericsClass:.appleM5Max)}
+        try nine.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
+        let led=try refusal{try nine.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
         try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains("apple_m5_max"),"9B led by the M5 Max: \(led)")
         // Budgets and grant are keyed on the runtime's model, whatever the public name.
         let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
@@ -382,8 +382,8 @@ final class EndpointBox: @unchecked Sendable {
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
             try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")
             // The fixture is the leader: rank 0, which these grants list on the M3 Ultra only.
-            try prepared.plan.requireLocalRankGranted(numericsClass:.appleM3Ultra)
-            let led=try refusal{try prepared.plan.requireLocalRankGranted(numericsClass:.appleM5Max)}
+            try prepared.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
+            let led=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
             try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains(model),"\(name) led by the M5 Max: \(led)")
         }
         // The dense adapter's environment is the ten values it always had.

@@ -11,7 +11,7 @@ extension Start {
         // preparation, before the weights are read. The single-Mac
         // requirements of the model are for solo serving and are not applied.
         let prepared = try await Task.detached(priority: .userInitiated) {
-            try ClusterMemberPreparation.prepare(reference: reference, localNumericsClass: ClusterNumericsClass.local())
+            try ClusterMemberPreparation.prepare(reference: reference, localChipClass: ClusterChipClass.local())
         }.value
         try Task.checkCancellation()
         let path = try configOptions.config.map {

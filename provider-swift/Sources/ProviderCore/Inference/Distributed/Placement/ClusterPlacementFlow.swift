@@ -114,15 +114,15 @@ public enum ClusterPlacementFlow {
         } catch let refusal as ClusterPairServingRefusal {
             return (requested, refusal.description + " A setup made from this plan is refused when it is started.")
         }
-        let classes = members.map { ClusterNumericsClass(chipName: $0.chip) }
+        let classes = members.map { ClusterChipClass(chipName: $0.chip) }
         /// The refusal a start would give when `first` leads; nil when the grant allows the order.
         func refusal(leading first: Int) -> ClusterPairServingRefusal? {
             for (rank, member) in [first, 1 - first].enumerated() {
-                guard let numericsClass = classes[member], let role = ClusterPairServingRole.of(rank: rank, rankCount: 2) else { continue }
-                let allowed = grant.allowedNumericsClasses(for: role)
-                if !allowed.contains(numericsClass) {
+                guard let chipClass = classes[member], let role = ClusterPairServingRole.of(rank: rank, rankCount: 2) else { continue }
+                let allowed = grant.chipClasses(for: role)
+                if !allowed.contains(chipClass) {
                     return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-                        reason: .classNotAllowed(rank: rank, role: role, numericsClass: numericsClass, allowed: allowed.sorted()))
+                        reason: .classNotAllowed(rank: rank, role: role, chipClass: chipClass, allowed: allowed.sorted()))
                 }
             }
             return nil
@@ -137,9 +137,9 @@ public enum ClusterPlacementFlow {
         case (.some(let both), .some): throw both
         default:
             let leader = refused[0] == nil ? 0 : 1
-            func words(_ classes: Set<ClusterNumericsClass>) -> String { classes.sorted().map(\.rawValue).joined(separator: " or ") }
+            func words(_ classes: Set<ClusterChipClass>) -> String { classes.sorted().map(\.rawValue).joined(separator: " or ") }
             return (members[leader].id, "This model is granted pair serving with the decoding rank (the last) on "
-                + "\(words(grant.decodingRankAllowedNumericsClasses)) and the other rank on \(words(grant.pipelineRankAllowedNumericsClasses)). "
+                + "\(words(grant.decodingRankChipClasses)) and the other rank on \(words(grant.pipelineRankChipClasses)). "
                 + "On these two Macs that leaves one order, so \(members[leader].id) leads; the other order is not planned.")
         }
     }

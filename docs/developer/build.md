@@ -385,6 +385,8 @@ The Metal helper retains its exact source/toolchain contract.
 to execute successfully. A successful component download alone is insufficient:
 it clears stale lookup state, waits a bounded interval for registration, and uses
 Apple's explicit component export/import path if registration remains incomplete.
+The specific transient Metal asset-catalog download failure is retried at most
+three times within the existing setup deadline; other errors still fail immediately.
 It never switches to an older Xcode or silently accepts an unavailable compiler.
 
 The helper's `snapshot-mtimes` and `restore-mtimes` commands retain timestamps for

@@ -83,20 +83,33 @@ public enum AuthTokenStore: Sendable {
             at: dir,
             withIntermediateDirectories: true
         )
-        try token.write(to: path, atomically: true, encoding: .utf8)
-
-        // Restrict to owner read/write (0600).
         let attributes: [FileAttributeKey: Any] = [
             .posixPermissions: 0o600
         ]
-        try FileManager.default.setAttributes(attributes, ofItemAtPath: path.path)
         let issuerFile = issuerPath()
-        if let coordinatorURL {
-            let issuer = Issuer(tokenHash: tokenHash(token), coordinatorURL: coordinatorURL)
-            try JSONEncoder().encode(issuer).write(to: issuerFile, options: .atomic)
-            try FileManager.default.setAttributes(attributes, ofItemAtPath: issuerFile.path)
-        } else if FileManager.default.fileExists(atPath: issuerFile.path) {
-            try FileManager.default.removeItem(at: issuerFile)
+        var written: [URL] = []
+        do {
+            try token.write(to: path, atomically: true, encoding: .utf8)
+            written.append(path)
+            try FileManager.default.setAttributes(attributes, ofItemAtPath: path.path)
+            if let coordinatorURL {
+                let issuer = Issuer(tokenHash: tokenHash(token), coordinatorURL: coordinatorURL)
+                try JSONEncoder().encode(issuer).write(to: issuerFile, options: .atomic)
+                written.append(issuerFile)
+                try FileManager.default.setAttributes(attributes, ofItemAtPath: issuerFile.path)
+            } else if FileManager.default.fileExists(atPath: issuerFile.path) {
+                try FileManager.default.removeItem(at: issuerFile)
+            }
+        } catch {
+            // A failed login must not leave a token that blocks the next attempt.
+            // Only remove files this save wrote, not an unexpected path occupant.
+            let saveError = error
+            var rollbackError: Error?
+            for file in written {
+                do { try FileManager.default.removeItem(at: file) }
+                catch { if rollbackError == nil { rollbackError = error } }
+            }
+            throw rollbackError ?? saveError
         }
     }
 

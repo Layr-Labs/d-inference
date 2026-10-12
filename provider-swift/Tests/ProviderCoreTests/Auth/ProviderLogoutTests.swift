@@ -106,6 +106,31 @@ import Testing
         }
     }
 
+    @Test func failedIssuerSaveRollsBackTokenAndAllowsRetry() async {
+        await #expect(processExitsWith: .success) {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("issuer-failure-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let path = root.appendingPathComponent("auth_token")
+            let issuer = path.appendingPathExtension("issuer.json")
+            setenv("DARKBLOOM_AUTH_TOKEN_PATH", path.path, 1)
+            try FileManager.default.createDirectory(at: issuer, withIntermediateDirectories: true)
+            let occupant = issuer.appendingPathComponent("preserve")
+            try Data("existing path occupant".utf8).write(to: occupant)
+
+            #expect(throws: (any Error).self) {
+                try AuthTokenStore.save("failed-token", coordinatorURL: "https://issuer.example")
+            }
+            #expect(AuthTokenStore.load() == nil)
+            #expect(!FileManager.default.fileExists(atPath: path.path))
+            #expect(try Data(contentsOf: occupant) == Data("existing path occupant".utf8))
+
+            try FileManager.default.removeItem(at: issuer)
+            try AuthTokenStore.save("retry-token", coordinatorURL: "https://issuer.example")
+            #expect(AuthTokenStore.load() == "retry-token")
+            #expect(AuthTokenStore.issuer(for: "retry-token") == "https://issuer.example")
+        }
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [200, 202, 204, 301, 302, 307, 308, 401, 404, 500])
     func localHTTPRequiresExact204AndNeverFollowsRedirect(status: Int) async throws {
         let capture = LogoutHTTPCapture()

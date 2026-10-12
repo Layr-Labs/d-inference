@@ -435,7 +435,8 @@ SDK validation does not change coordinator normalization or model numerics
 /v1/device/code`, print URL and code, poll `POST /v1/device/token`, write
 `~/.darkbloom/auth_token`. It also records the successful token response's issuer
 in owner-only `auth_token.issuer.json`, bound to a hash of that token. The provider
-token is not a consumer API key.
+token is not a consumer API key. A failed save removes newly written credential
+files so login can be retried instead of leaving a partial local login.
 
 `logout` uses `Logout.run` in `provider-swift/Sources/darkbloom/LogoutCommand.swift`
 and `ProviderLogout.perform` in `provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`:

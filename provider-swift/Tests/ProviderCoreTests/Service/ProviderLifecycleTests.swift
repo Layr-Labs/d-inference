@@ -92,7 +92,7 @@ struct ProviderLifecycleTests {
         let worker = LifecycleWorker()
         await loop.installAppAttestWorker(worker)
         await loop.beginUpdateDraining()
-        #expect(await loop.stopAppAttestWorkerAndWait())
+        #expect(await loop.stopAppAttestWorkerForUpdateAndWait())
         #expect(await loop.appAttestWorkerStopped)
         await loop.resumeServingAfterUpdate()
         #expect(await !loop.appAttestWorkerStopped)

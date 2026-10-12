@@ -73,13 +73,14 @@ extension ProviderLoop {
         appAttestShadowGeneration &+= 1
         appAttestShadowTask?.cancel()
         appAttestShadowTask = nil
-        if stopWorker { appAttestWorkerStopped = true }
+        if stopWorker { appAttestWorkerStopReason = .shutdown }
         if let worker = appAttestWorkerClient {
             let previous = appAttestWorkerRetirement
+            let permanently = appAttestWorkerStopped
             appAttestWorkerRetirement = Task {
                 _ = await previous?.value
                 do {
-                    if stopWorker { try await worker.stop() }
+                    if permanently { try await worker.stop() }
                     else { try await worker.cancelExchange() }
                     return true
                 } catch {
@@ -99,13 +100,28 @@ extension ProviderLoop {
         return await appAttestWorkerRetirement?.value ?? true
     }
 
-    func resumeAppAttestWorkerAfterUpdate() async {
-        guard appAttestWorkerStopped, !isShuttingDown, !servingDrain.refusing else { return }
+    func stopAppAttestWorkerForUpdateAndWait() async -> Bool {
+        guard !Task.isCancelled, !isShuttingDown, updatePhase == .draining,
+              servingDrain.owner == .update, appAttestWorkerStopReason != .shutdown else { return false }
+        appAttestWorkerStopReason = .update
+        cancelAppAttestShadow()
         let retired = await appAttestWorkerRetirement?.value ?? true
-        guard retired, !isShuttingDown, !servingDrain.refusing else { return }
+        return retired && appAttestWorkerStopReason == .update
+    }
+
+    @discardableResult
+    func resumeAppAttestWorkerAfterUpdate() async -> Bool {
+        guard appAttestWorkerStopReason == .update, updatePhase == .idle,
+              !isShuttingDown, !servingDrain.refusing else { return false }
+        let generation = appAttestShadowGeneration
+        let retired = await appAttestWorkerRetirement?.value ?? true
+        guard retired, generation == appAttestShadowGeneration,
+              appAttestWorkerStopReason == .update, updatePhase == .idle,
+              !isShuttingDown, !servingDrain.refusing else { return false }
         appAttestWorkerClient = nil
         appAttestWorkerRetirement = nil
-        appAttestWorkerStopped = false
+        appAttestWorkerStopReason = nil
+        return true
     }
 }
 

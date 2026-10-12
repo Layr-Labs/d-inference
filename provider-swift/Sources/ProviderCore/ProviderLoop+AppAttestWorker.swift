@@ -3,8 +3,27 @@ import ProviderAppAttest
 
 extension ProviderLoop {
     func handleAppAttestWorker(_ request: AppAttestShadowPayload, reply: AppAttestShadowReply) {
-        guard !appAttestWorkerStopped, !isShuttingDown else { return }
+        guard !isShuttingDown, servingDrain.owner != .lifecycle else { return }
+        if appAttestWorkerStopped {
+            guard appAttestWorkerStopReason == .update else { return }
+            guard request.action == "prepare", updatePhase == .idle, !servingDrain.refusing else {
+                Task { await reply.send(Self.workerUnavailableReply(to: request)) }
+                return
+            }
+            // Retry bounded stop/reap on the retained owner, never discard an
+            // uncertain child. Only a fresh prepare can recover update quarantine.
+            cancelAppAttestShadow()
+            let generation = appAttestShadowGeneration
+            appAttestShadowTask = Task { [weak self] in
+                await self?.retryUpdateRetiredWorker(request, reply: reply, generation: generation)
+            }
+            return
+        }
         if appAttestWorkerClient == nil {
+            guard request.action == "prepare" else {
+                Task { await reply.send(Self.workerUnavailableReply(to: request)) }
+                return
+            }
             do {
                 appAttestWorkerClient = try AppAttestWorkerClient(
                     scope: loopConfig.coordinatorURL,
@@ -67,6 +86,19 @@ extension ProviderLoop {
             guard !Task.isCancelled else { return }
             await self?.finishAppAttestShadow(response, localStatus: local,
                 prepared: request.action == "prepare", generation: generation, reply: reply)
+        }
+    }
+
+    private func retryUpdateRetiredWorker(_ request: AppAttestShadowPayload,
+        reply: AppAttestShadowReply, generation: UInt64) async {
+        let resumed = await resumeAppAttestWorkerAfterUpdate()
+        guard generation == appAttestShadowGeneration else { return }
+        appAttestShadowTask = nil
+        guard !Task.isCancelled else { return }
+        if resumed {
+            handleAppAttestWorker(request, reply: reply)
+        } else {
+            await reply.send(Self.workerUnavailableReply(to: request))
         }
     }
 

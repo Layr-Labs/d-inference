@@ -121,16 +121,20 @@ extension ProviderLoop {
             beginDraining: { await me.beginUpdateDraining() },
             waitForDrain: { timeout in await me.waitForSafeDisconnect(timeout: timeout, reason: "auto-update") },
             commitInstall: {
-                guard await me.stopAppAttestWorkerAndWait() else {
+                guard await me.stopAppAttestWorkerForUpdateAndWait() else {
                     return .failed("App Attest worker has not exited; update postponed")
                 }
                 return await me.commitStagedUpdateBundle(updater: updater)
             },
             prepareInstalledRestart: {
-                await me.prepareInstalledCandidateRestart(
+                // Also covers restartRequired, which intentionally skips commit.
+                guard await me.stopAppAttestWorkerForUpdateAndWait() else {
+                    return .failed("App Attest worker has not exited; restart postponed")
+                }
+                return await me.prepareInstalledCandidateRestart(
                     updater: updater, baseline: launchSnapshot)
             },
-            restart: restart,
+            restart: { try await me.restartAfterAutoUpdate(restart) },
             restartDidFail: {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
@@ -146,7 +150,7 @@ extension ProviderLoop {
         case .drainTimedOut:
             logger.warning("Auto-update deferred: drain deadline reached; no requests cancelled and no restart issued")
         case .cancelled:
-            logger.info("Auto-update: cycle cancelled during the pre-install wait; nothing installed")
+            logger.info("Auto-update: cycle cancelled; restart withheld")
         case .upToDate:
             logger.info("Auto-update: already running latest version")
         case .quarantined(let version):
@@ -281,6 +285,11 @@ extension ProviderLoop {
     /// drain: admission is closed and accepted work plus terminal delivery
     /// have finished, so no request can observe the swap window.
     private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
+        // Retirement suspends the caller. Re-check at the synchronous mutation
+        // boundary before consuming the stage or touching the installed layout.
+        guard !Task.isCancelled, ownsUpdateDrain else {
+            return .failed("update cancelled or drain ownership lost before commit")
+        }
         guard let staged = stagedUpdateBundle else {
             return .failed("no staged update bundle to install")
         }
@@ -306,6 +315,9 @@ extension ProviderLoop {
         guard let session = updateSession else {
             return .failed("cross-process update lease was lost before candidate restart")
         }
+        guard !Task.isCancelled, ownsUpdateDrain else {
+            return .failed("update cancelled or drain ownership lost before candidate restart")
+        }
         do {
             try updater.prepareCandidateLaunch(
                 session: session,
@@ -317,6 +329,18 @@ extension ProviderLoop {
         } catch {
             return .failed("\(error)")
         }
+    }
+
+    private var ownsUpdateDrain: Bool {
+        !isShuttingDown && updatePhase == .draining && servingDrain.owner == .update
+    }
+
+    /// The controller resumes outside this actor after preparation. Do not let
+    /// that executor hop turn a lifecycle takeover into permission to restart.
+    private func restartAfterAutoUpdate(_ restart: @Sendable () throws -> Void) throws {
+        try Task.checkCancellation()
+        guard ownsUpdateDrain, appAttestWorkerStopReason == .update else { throw CancellationError() }
+        try restart()
     }
 
 }

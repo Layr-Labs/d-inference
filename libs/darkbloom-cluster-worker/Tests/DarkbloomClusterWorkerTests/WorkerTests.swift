@@ -670,11 +670,14 @@ final class WorkerTests: XCTestCase {
         var coordinator: WorkerCoordinator?
         for _ in 0..<50 { coordinator = h.coordinatorBox.coordinator; if coordinator != nil { break }; usleep(20_000) }
         XCTAssertEqual(coordinator?.forceCancel(reason: "signal-usr1"), 1, "one active request")
-        XCTAssertEqual(try h.event().event, .failed(.runtimeError))
+        // As after a lost input: nothing more is published once the worker
+        // fails; the owner's evidence is the exit it observes directly.
+        XCTAssertThrowsError(try h.event(), "the event stream ends with the worker")
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertNotNil(h.result.error); XCTAssertTrue(h.runtime.didClose)
         XCTAssertEqual(h.exits.reasons.first, "force-cancel-signal-usr1", "\(h.exits.reasons)")
         XCTAssertTrue(h.exits.beganBeforeRelease)
+        XCTAssertEqual(h.runtime.startCount, 1)
     }
 
     /// Idle, a force-cancel still ends the worker through the same path (the
@@ -687,7 +690,9 @@ final class WorkerTests: XCTestCase {
         XCTAssertEqual(coordinator?.forceCancel(reason: "test"), 0)
         XCTAssertEqual(h.done.wait(timeout: .now() + 2), .success)
         XCTAssertTrue(h.runtime.didClose)
-        XCTAssertEqual(h.exits.reasons, ["force-cancel-test"])
+        // The force-cancel claims first; the executor's own failure path joins it.
+        XCTAssertEqual(h.exits.reasons.first, "force-cancel-test", "\(h.exits.reasons)")
+        XCTAssertEqual(h.exits.reasons.last, "worker-failure")
     }
 
     func testCleanShutdownThenEOFNeverBeginsTheForcedExit() throws {

@@ -48,28 +48,31 @@ public enum ClusterOrphanSweep {
         public let signalled: [Int32]
     }
 
-    /// SIGUSR1 to every owner this user runs (each fences its worker: the
-    /// protocol's own drain, locally triggered); workers without an owner get
-    /// the signal themselves. Never SIGTERM, never SIGKILL.
-    public static func cancelAll() -> CancelAllReport {
+    /// SIGUSR1 to every owner started from THIS darkbloom binary (each fences
+    /// its worker: the protocol's own drain, locally triggered). An owner of
+    /// another install does not carry the hook, and a process without a
+    /// handler dies of SIGUSR1, so it is listed and never signalled; workers
+    /// are fenced by their owners, never signalled here (an orphaned worker
+    /// is the reaper's). Never SIGTERM, never SIGKILL.
+    public static func cancelAll(executablePath: String = Self.currentExecutablePath()) -> CancelAllReport {
         let processes = ClusterProcessTable.running()
         let mine = ClusterOrphanReaper.ownLineage()
-        var owners: [Int32] = [], workers: [Int32] = []
+        var owners: [Int32] = [], workers: [Int32] = [], signalled: [Int32] = []
         for entry in processes where !mine.contains(entry.processIdentifier) {
             switch ClusterOrphanReaper.role(of: entry) {
-            case .owner: owners.append(entry.processIdentifier)
+            case .owner:
+                owners.append(entry.processIdentifier)
+                guard entry.arguments.first == executablePath else { continue }
+                if Darwin.kill(entry.processIdentifier, SIGUSR1) == 0 { signalled.append(entry.processIdentifier) }
             case .worker: workers.append(entry.processIdentifier)
             case nil: break
             }
         }
-        var signalled: [Int32] = []
-        for owner in owners where Darwin.kill(owner, SIGUSR1) == 0 { signalled.append(owner) }
-        for worker in workers {
-            let parent = processes.first { $0.processIdentifier == worker }?.parentProcessIdentifier
-            // A worker whose owner was just signalled is fenced by it.
-            if let parent, owners.contains(parent) { continue }
-            if Darwin.kill(worker, SIGUSR1) == 0 { signalled.append(worker) }
-        }
         return .init(owners: owners.sorted(), workers: workers.sorted(), signalled: signalled.sorted())
+    }
+
+    /// This process's executable, as the process table spells it.
+    public static func currentExecutablePath() -> String {
+        ClusterProcessTable.arguments(of: getpid())?.first ?? Bundle.main.executablePath ?? ""
     }
 }

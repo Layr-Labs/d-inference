@@ -21,6 +21,47 @@ The existing coordinator and serve-loop App Attest suites remain regression
 coverage. These transport tests do not establish native Apple qualification or
 end-to-end platform authorization.
 
+## Native serving qualification
+
+`NativeServeQualificationTests` checks literal-loopback refusal, owner-only
+descriptor inputs and bounded in-memory App Attest key-ID/budget storage without
+Apple calls or model allocation. Build the isolated provider test product and run
+`swift test --skip-build --filter NativeServeQualificationTests` after normal
+source-matched metallib staging.
+
+The physical harness lives in the platform repository's `nativequalification`
+test package (`TestSignedProviderLoopLoadedEngineResumption`). It requires a
+separately built, final-signed SDK 27 `Darkbloom.app` under `.build`, explicit
+Apple/GPU execution approval and exclusive use of the GPU. The harness validates
+the exact signed artifact, registers its scoped LaunchServices entry and restores
+the prior registration after reaping its captured child process. No installed
+provider should be stopped or replaced.
+
+The diagnostic inputs are an existing canonical `0700` directory containing a
+`0600` `auth-token` (64 lowercase hexadecimal characters), a `0600` `model-id`
+and a private `models` HuggingFace cache directory. Model snapshot bytes may be
+read-only links to an existing local checkpoint. The runner creates a fresh
+`state` child, uses a real ephemeral Secure Enclave signer and Apple's real
+App Attest service, and retains key identifiers/budgets only in process memory.
+It does not read installed auth/config, use persistent signing keys, register
+APNs, install profiles, start launch agents or run updates. Normal `ProviderLoop`
+hardening, signed registration, encrypted inference, engine construction,
+memory admission and disconnect cleanup remain in use.
+
+The platform harness seeds only its private account/token, exact release/runtime
+approval and actual local model catalog. Initial Apple enrollment and assertion
+must pass the full coordinator router and verifier. It then checks encrypted
+inference before and after a 125-second transport break, unchanged process,
+endpoint and model/engine identities, unchanged load and Apple assertion
+counters, old-request termination and fresh capacity. A `0600` one-byte `done`
+file requests graceful shutdown; the diagnostic also has a 900-second limit.
+Passive `observation.json` contains only process identity, endpoint/instance
+hashes and counts, never request content, keys or proofs.
+
+This is a target-only loaded-engine/resumption gate, not MTP, SSD persistence,
+APNs, daemon installation, worker recovery or fleet-rollout qualification.
+Compilation and opt-in skips do not constitute a successful physical run.
+
 ## App Attest provider dispatch
 
 `ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and

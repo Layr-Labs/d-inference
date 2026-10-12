@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-11
 
 Changelog checks use Python's standard library, with no package installation.
 Run `make changelog-check` to validate pending fragments and
@@ -16,6 +16,14 @@ post-push verification. Branch updates still require the affected CI gates.
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator's live status or recovery evidence (`scripts/run-provider-tests.sh`).
+
+The [native serving qualification](test.md#native-serving-qualification) entry
+is compiled into the ordinary provider CLI but refuses without explicit opt-in
+and a verified release app. Build it in a separate worktree/output directory
+with source-matched MLX dependencies and metallib; sign the final app before
+the platform harness records its binary/CodeDirectory hashes. Do not replace
+the installed app, reuse a debug test binary or run a model while another
+qualification suite owns the GPU.
 
 The Autopilot E2E harness creates canonical inventory records and persists live
 desired mode only for its running, authenticated, suite-owned provider handles

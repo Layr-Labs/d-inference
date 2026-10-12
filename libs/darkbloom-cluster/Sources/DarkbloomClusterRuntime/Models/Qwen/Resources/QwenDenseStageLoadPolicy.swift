@@ -133,7 +133,8 @@ struct QwenDenseStageLoadNativeObservation: Encodable {
 ///
 /// Counted is three quarters of the file-backed memory inside both of the
 /// kernel's own bounds (above its file-cache minimum, and before fewer than
-/// half of the file cache is inactive), at most 32 GiB. Those bounds say
+/// half of the file cache is inactive, speculative pages counted inactive),
+/// at most 32 GiB. Those bounds say
 /// where the pageout scan is forced onto anonymous pages; inside them it may
 /// still compress, so counting cache is a bet that the kernel can evict
 /// closed files, and it is withdrawn the moment the bet is seen to fail: a
@@ -222,8 +223,16 @@ enum QwenDenseStageLoadPolicy {
         let abovePages = max(0, os.fileBackedPages - reservePages)
         // Second kernel bound: taking x inactive file pages leaves fewer than
         // half of the file cache inactive once x exceeds 2 * inactive - total.
+        // Speculative pages (read ahead and not used since) are file-backed,
+        // stand on the inactive side of the kernel's inactive target (it
+        // weighs inactive + speculative against half of active + inactive +
+        // speculative) and are the first the pageout scan takes, so they count
+        // with the inactive file pages. Without them a Mac whose cache is
+        // mostly read-ahead counted none of it: the M5 Ultra with 186 GiB
+        // speculative, 0 compressions and 97 % free by `memory_pressure`
+        // refused a 6 GiB stage (2026-10-11).
         let beforeAnonymousPages = try os.inactiveFileBackedPages.map {
-            max(0, try product([$0, inactiveFileCacheTargetDenominator]) - os.fileBackedPages)
+            max(0, try product([try sum([$0, os.speculativePages]), inactiveFileCacheTargetDenominator]) - os.fileBackedPages)
         }
         let countablePages = min(abovePages, beforeAnonymousPages ?? 0)
         let aboveBytes = try product([abovePages, page]), countableBytes = try product([countablePages, page])

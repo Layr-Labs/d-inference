@@ -45,6 +45,27 @@ struct StageLoadFileCacheGuardTests {
         #expect(reserve.fileCacheBeforeAnonymousBytes == 48 * Self.gib && reserve.countableFileCacheBytes == 8 * Self.gib)
     }
 
+    @Test func speculativePagesCountWithTheInactiveFilePagesInTheSecondBound() throws {
+        // Mostly read-ahead cache (the M5 Ultra on 2026-10-11): 60 GiB
+        // speculative, 15.75 GiB inactive file pages, 80 GiB file-backed.
+        // Without the speculative pages 2 x 15.75 - 80 < 0 counted nothing;
+        // with them 2 x 75.75 - 80 = 71.5 GiB can go first, so the reserve
+        // (40 GiB above it) is the smaller bound again.
+        let readAhead = Mac.observation(speculativeBytes: 60 * Self.gib)
+        let decision = try Mac.decide(readAhead, required: 16 * Self.gib)
+        #expect(decision.admitted && decision.inactiveFileBackedBytes == 15 * Self.gib + 768 * Self.mib)
+        #expect(decision.fileCacheBeforeAnonymousBytes == 71 * Self.gib + 512 * Self.mib)
+        #expect(decision.countableFileCacheBytes == 40 * Self.gib && decision.countedReclaimableBytes == 30 * Self.gib)
+        // A little read-ahead does not make up for a cache that is mostly
+        // active: 2 x (30 + 1) - 80 < 0 still counts nothing.
+        let active = try Mac.decide(Mac.observation(speculativeBytes: Self.gib, inactiveFileBackedBytes: 30 * Self.gib), required: 0)
+        #expect(!active.admitted && active.fileCacheBeforeAnonymousBytes == 0 && active.countedReclaimableBytes == 0)
+        // One page of read-ahead past half counts one page's three quarters.
+        let one = try Mac.decide(Mac.observation(speculativeBytes: 10 * Self.gib + Self.page,
+            inactiveFileBackedBytes: 30 * Self.gib), required: 0)
+        #expect(one.countableFileCacheBytes == 2 * Self.page)
+    }
+
     @Test func aKernelThatDoesNotSayHowMuchCacheIsInactiveCountsNone() throws {
         let unreported = try Mac.decide(Mac.observation(reportsInactive: false), required: 16 * Self.gib)
         #expect(!unreported.admitted && unreported.countedReclaimableBytes == 0)

@@ -144,6 +144,78 @@ struct NativePairMemberServingTests {
         } catch { await peer.close(); throw error }
     }
 
+    /// A member stop (pub2 on hardware: the leader closed its control
+    /// connection before its owner ended, so no receipt could arrive and the
+    /// coordinator fenced both devices for about two minutes): the member
+    /// ends its served start while the connection is open and returns only
+    /// after the owner released and the receipt was sent. No cancel frame.
+    @Test func aMemberStopEndsTheServedStartAndSendsTheReceiptBeforeReturning() async throws {
+        let fixture = try NativePairMemberFixture(), peer = MemberFixturePeer(installation: fixture.installations[0])
+        let host = RecordingServingHost(mock: peer.mock)
+        peer.control.servingHost = host
+        do {
+            try await peer.connect()
+            // Nothing running: returns at once.
+            #expect(await peer.control.endSessionBeforeClose(timeout: 1))
+            try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
+            _ = try await peer.wait("native_pair_prepared")
+            try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
+            _ = try await peer.wait("native_pair_hello")
+            #expect(host.served.count == 1 && host.stopped.isEmpty)
+            #expect(await peer.control.endSessionBeforeClose(timeout: 20))
+            // The session already ended released when the stop returns: its
+            // receipt was written (processed by the connection) before, so a
+            // close that follows cannot overtake it. The mock reads it a moment later.
+            #expect(["idle", "released"].contains(peer.control.status))
+            _ = try await peer.wait("native_pair_owner_released")
+            #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
+            #expect(host.stopped.first == fixture.starts[0].common.epoch)
+            #expect(host.framesWhenStopped?.contains("native_pair_owner_released") == false)
+            try fixture.requireRetired(0, confirmed: false)
+            await peer.close()
+        } catch { await peer.close(); throw error }
+    }
+
+    /// The coordinator's cancel repeats the session's first grant expiry even
+    /// after a renewal moved it (hardware pub4): the member still stops the
+    /// served start and sends its receipt on the same connection. A cancel
+    /// that arrives after the session ended is ignored, the connection stays.
+    @Test func aCancelWithTheFirstGrantAfterARenewalStillReleasesAndKeepsTheConnection() async throws {
+        let fixture = try NativePairMemberFixture(), peer = MemberFixturePeer(installation: fixture.installations[0])
+        let host = RecordingServingHost(mock: peer.mock)
+        peer.control.servingHost = host
+        do {
+            try await peer.connect()
+            try await peer.mock.pushNativePair(fixture.message("native_pair_prepare", rank: 0, nonce: peer.nonce, sequence: 1))
+            _ = try await peer.wait("native_pair_prepared")
+            try await peer.mock.pushNativePair(fixture.message("native_pair_owner_start", rank: 0, nonce: peer.nonce, sequence: 2))
+            _ = try await peer.wait("native_pair_hello")
+            // A renewal: ordinal 1, expiry 40 s later; the frame repeats it.
+            let renewed = fixture.expiresUnix + 40_000_000_000
+            var payload = Data([68, 66, 78, 76, 1])
+            for shift in stride(from: 56, through: 0, by: -8) { payload.append(UInt8(truncatingIfNeeded: UInt64(1) >> shift)) }
+            for shift in stride(from: 56, through: 0, by: -8) { payload.append(UInt8(truncatingIfNeeded: UInt64(renewed) >> shift)) }
+            try await peer.mock.pushNativePair(NativePairMessage(type: "native_pair_lease", memberNonce: peer.nonce,
+                epoch: withUnsafeBytes(of: fixture.starts[0].common.epoch.uuid) { memberHex(Data($0)) },
+                generation: 7, sequence: 3, payload: payload,
+                prepareBeforeUnixNano: fixture.prepareUnix, expiresAtUnixNano: renewed))
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(peer.context.isLive)
+            // The cancel carries the first grant (fixture.message's expiry).
+            try await peer.mock.pushNativePair(fixture.message("native_pair_cancel", rank: 0, nonce: peer.nonce, sequence: 4, payload: Data([68, 66, 78, 67, 1])))
+            _ = try await peer.wait("native_pair_owner_released")
+            #expect(peer.context.isLive)
+            #expect(host.stopped.first == fixture.starts[0].common.epoch)
+            try fixture.requireRetired(0, confirmed: false)
+            #expect(peer.mock.snapshot().nativePairs.map(\.type) == ["native_pair_prepared", "native_pair_hello", "native_pair_owner_released"])
+            // A late cancel for the ended session: ignored, still attached.
+            try await peer.mock.pushNativePair(fixture.message("native_pair_cancel", rank: 0, nonce: peer.nonce, sequence: 6, payload: Data([68, 66, 78, 67, 1])))
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(peer.context.isLive)
+            await peer.close()
+        } catch { await peer.close(); throw error }
+    }
+
     /// Probe, not a requirement of this slice: a cancel that lands right after
     /// the owner's launch, before its native child reached the key exchange
     /// (here a host that fails at once). Observed 2026-10-11: the member

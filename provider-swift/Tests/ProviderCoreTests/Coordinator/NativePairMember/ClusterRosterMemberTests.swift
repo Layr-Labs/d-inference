@@ -123,5 +123,14 @@ struct ClusterRosterMemberTests {
             == "g17s-nax1-mlx-f7fb1831-macos26.2")
         #expect(ClusterMemberDeviceProfile.numericsClass(architecture: "applegpu_g17p", metallibSHA256: "f7fb1831aa", os: os)
             == "g17p-nax0-mlx-f7fb1831-macos26.2")
+        // M5 Ultra (Metal reports applegpu_g17d): NAX on, and a class of its own: the M5 Max ('s')
+        // and the M5 Ultra ('d') never share a qualification, nor do two macOS minor versions.
+        let ultra = ClusterMemberDeviceProfile.numericsClass(architecture: "applegpu_g17d", metallibSHA256: "f7fb1831aa",
+            os: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 1))
+        #expect(ultra == "g17d-nax1-mlx-f7fb1831-macos27.0")
+        #expect(ultra != ClusterMemberDeviceProfile.numericsClass(architecture: "applegpu_g17s", metallibSHA256: "f7fb1831aa",
+            os: OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 1)))
+        #expect(ultra != ClusterMemberDeviceProfile.numericsClass(architecture: "applegpu_g17d", metallibSHA256: "f7fb1831aa",
+            os: OperatingSystemVersion(majorVersion: 27, minorVersion: 2, patchVersion: 0)))
     }
 }

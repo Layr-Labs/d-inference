@@ -51,6 +51,9 @@ final class NativePairMemberSession: @unchecked Sendable {
     private var endpoint: ClusterRemoteWorkerEndpoint?
     private var timer: DispatchSourceTimer?
     private var outcome: String = "preparing"
+    /// Set once `runOwned` returned: the receipt was sent, or the session
+    /// ended without one.
+    private var ownedRunFinished = false
     /// What serves this start once its owner launched (S10); nil keeps the
     /// session to the key prelude and release, as before.
     private let servingHost: (any NativePairMemberServingHost)?
@@ -113,6 +116,17 @@ final class NativePairMemberSession: @unchecked Sendable {
         condition.unlock()
         nativeMemberLog.warning("committed session \(start.common.epoch): grant lease expired")
         cancel(notify: true)
+    }
+
+    /// Waits until the owned run returned (its release receipt sent, or the
+    /// session ended without one) or the deadline passed. Returns whether it
+    /// returned. Blocks the calling thread.
+    func waitUntilFinished(deadline: Date) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        while !ownedRunFinished {
+            if !condition.wait(until: deadline) { return ownedRunFinished }
+        }
+        return true
     }
 
     /// A dropped control connection: an established session keeps its owner
@@ -287,12 +301,26 @@ final class NativePairMemberSession: @unchecked Sendable {
             stopServing()
             condition.lock(); if outcome != "released" { outcome = committed ? "quarantined" : "cancelled" }; condition.unlock()
         }
+        // The owner's own diagnostics (its worker's stderr tail) are the only
+        // record of why a pair did not form or a worker ended: keep them.
+        if let tail = condition.withLock({ endpoint })?.diagnosticTail, !tail.isEmpty {
+            nativeMemberLog.info("committed session \(start.common.epoch) rank \(installation.rank) owner diagnostics: \(Self.diagnosticSummary(tail))")
+        }
         let cancelJoined = cancellationPublication.wait(timeout: .init(uptimeNanoseconds: cleanupDeadline)) == .success
         condition.lock()
         let reusable = cancelJoined && ((!committed && !launched) || (clean && outcome == "released"))
         timer?.cancel(); timer = nil
+        ownedRunFinished = true; condition.broadcast()
         condition.unlock()
         onFinished(self, reusable)
+    }
+    /// The last 4 KiB of an owner's diagnostics on one line, control characters removed.
+    static func diagnosticSummary(_ tail: Data, limit: Int = 4096) -> String {
+        let text = String(decoding: tail.suffix(limit), as: UTF8.self)
+        let lines = text.split(whereSeparator: \.isNewline).map { line in
+            String(String.UnicodeScalarView(line.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))
+        }
+        return (tail.count > limit ? "... " : "") + lines.filter { !$0.isEmpty }.joined(separator: " | ")
     }
     /// Hands the launched owner to the serving host. A host that cannot serve
     /// ends the session: cancellation, native cleanup, release.
@@ -303,7 +331,7 @@ final class NativePairMemberSession: @unchecked Sendable {
             endpoint: endpoint, leaseDeadlineUptimeNanoseconds: lifetimeDeadline, mesh: mesh)
         Task.detached { [weak self] in
             do { try await host.serveCommittedStart(value) } catch {
-                nativeMemberLog.warning("committed session \(value.start.common.epoch): serving host failed: \(error)")
+                nativeMemberLog.warning("committed session \(value.start.common.epoch): serving host failed: \(String(reflecting: error))")
                 self?.cancel(notify: true)
             }
         }

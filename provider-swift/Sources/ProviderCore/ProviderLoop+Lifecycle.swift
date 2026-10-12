@@ -163,6 +163,7 @@ extension ProviderLoop {
     /// running after its stop signal: the stream ends, the slot retires.
     internal func shutdownStoppedClusterMember() async {
         guard isClusterMember, lifecycleRemaining == 0, await drainNativeMiMoOwners() else { return }
+        await releaseClusterMemberSessionBeforeClose()
         await coordinatorClient?.shutdown()
     }
 
@@ -179,7 +180,10 @@ extension ProviderLoop {
     ) async -> Bool {
         if servingDrain.phase == .drained {
             guard await drainNativeMiMoOwners() else { return false }
-            if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+            if coordinatorEventLoopStarted {
+                await releaseClusterMemberSessionBeforeClose()
+                await coordinatorClient?.shutdown()
+            }
             else if !(await shutdownBeforeRegistration()) { return false }
             return true
         }
@@ -197,7 +201,10 @@ extension ProviderLoop {
         // the already-drained path: retain pending/faulted owners and refuse
         // shutdown success until their actual transaction retirement finishes.
         guard await drainNativeMiMoOwners() else { return false }
-        if coordinatorEventLoopStarted { await coordinatorClient?.shutdown() }
+        if coordinatorEventLoopStarted {
+            await releaseClusterMemberSessionBeforeClose()
+            await coordinatorClient?.shutdown()
+        }
         else if !(await shutdownBeforeRegistration()) { return false }
         return true
     }

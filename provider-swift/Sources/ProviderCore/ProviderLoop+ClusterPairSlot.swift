@@ -255,6 +255,25 @@ extension ProviderLoop {
         return true
     }
 
+    /// A stopping member ends its pair session while its control connection
+    /// is still open: the pair slot retires (the leader's engine shuts its
+    /// owner down once the drained request finished), the member session ends
+    /// its owner, and the stop waits, bounded, until the owner released its
+    /// device and the session sent its authenticated release receipt. Closing
+    /// the connection first left no way for the receipt to arrive: the
+    /// coordinator then fenced both devices until the grant lease plus the
+    /// owner retirement limit passed (about two minutes on hardware) before
+    /// the pair could form again.
+    func releaseClusterMemberSessionBeforeClose() async {
+        guard isClusterMember else { return }
+        await retireClusterPairSlot(reason: "member stopping")
+        guard let control = nativePairMemberControl else { return }
+        if !(await control.endSessionBeforeClose(timeout: Self.memberSessionReleaseTimeoutSeconds)) {
+            logger.warning("Cluster member stopping: the pair session did not release within \(Int(Self.memberSessionReleaseTimeoutSeconds)) s; closing the control connection anyway")
+        }
+    }
+    static let memberSessionReleaseTimeoutSeconds: TimeInterval = 30
+
     /// The member's capacity: the pair slot's bridge, or no slot. Never a
     /// local memory sample: the pair's memory is on its owners, and a member
     /// refuses solo loads, so it offers no load headroom.

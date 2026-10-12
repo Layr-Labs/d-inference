@@ -76,7 +76,16 @@ public struct ClusterPairServingContext: Sendable {
                 pair = try ClusterWorkerPair(workers: [start.endpoint, peer],
                     startupDeadline: now + startupAllowanceNanoseconds,
                     timing: timing, keepWarm: .standard)
-            } catch { throw DistributedInstalledSession.startFailure(error, endpoints: [start.endpoint, peer]) }
+            } catch {
+                // The follower's refusal names why (sanitized); the pair alone only sees its link close.
+                let named = DistributedInstalledSession.startFailure(error, endpoints: [start.endpoint, peer])
+                if named is DistributedInstalledStartRefusal { throw named }
+                let link = peer as? ClusterLinkWorkerEndpoint
+                let own = start.endpoint as? ClusterRemoteWorkerEndpoint
+                throw ClusterPairSlotError.notServing("the pair did not become ready: \(String(reflecting: error)); "
+                    + "rank 0 ready \(start.endpoint.readiness != nil) owner \(own?.ownerTermination.map { "\($0)" } ?? "running"); "
+                    + "rank 1 ready \(peer.readiness != nil) owner \(link?.ownerTermination.map { "\($0)" } ?? "running")")
+            }
             do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens) }
             catch { Task { await pair.shutdown() }; throw error }
         }

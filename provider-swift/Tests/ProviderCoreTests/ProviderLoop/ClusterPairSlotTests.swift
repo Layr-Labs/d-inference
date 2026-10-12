@@ -205,7 +205,8 @@ struct ClusterPairSlotTests {
         let next = ScriptedPairOwner()
         let nextID = try await loop.publishClusterPairSlot(clusterPairSpecification(next), owner: next)
         #expect(await loop.clusterPairWarmup?.succeeded == true)
-        #expect(await loop.clusterPairSlotSnapshot.id == nextID && !(await loop.state.refusingNewWork))
+        let reopened = await loop.clusterPairSlotSnapshot
+        #expect(reopened.id == nextID && !reopened.refusing)
         #expect(await loop.retireClusterPairSlot(nextID, reason: "test"))
     }
 

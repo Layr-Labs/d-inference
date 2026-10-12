@@ -56,8 +56,11 @@ bytes, at least 40 decoded bytes. `id` and `ephemeral_public_key` each decode to
 `AppAttestResumeWire` strictly limits each accepted envelope and decrypted
 request to 4 KiB (`maximumBytes = 4096`), accepts only the specified members and
 rejects duplicates, unknown members, trailing data and non-integer numbers.
-`ProviderProtocolCodec` applies the wire validator on both decode directions;
+`ProviderProtocolCodec` identifies the top-level resume type with a bounded-allocation
+byte scan and applies the wire validator before full Codable decoding in both directions;
 the live responder validates its encoded response before exact-socket submission.
+Both codec `Data` decode APIs reject UTF-16/32 JSON before Foundation can transcode
+it past the UTF-8 scan. Ordinary UTF-8 inference frames retain their existing limits.
 
 The decrypted request has exactly these fields, checked by
 `NodeKeyPair.appAttestResumeResponse` in

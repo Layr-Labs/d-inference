@@ -11,11 +11,13 @@ struct Logout: AsyncParsableCommand {
     @OptionGroup var drain: DrainOptions
 
     mutating func run() async throws {
-        let config = try loadRuntimeConfiguration(configPath: configOptions.config).config
-        let previous = Self.localProviderIdentities()
+        var previous: [ProcessIdentity] = []
         // Keep start/recovery fenced until the saved token is gone, not merely
         // until Stop has finished. A missing token file does not skip the stop.
-        let session = try await ServiceDrain.prepare(options: drain)
+        let session = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { publish in
+            previous = Self.localProviderIdentities()
+            try publish()
+        })
         defer { session.release() }
         var instanceLock: URL?
         defer {
@@ -28,15 +30,31 @@ struct Logout: AsyncParsableCommand {
             // Foreground start uses this lock even when no launchd job exists.
             instanceLock = try ProcessLifecycle.acquireSingleInstanceLock()
         }, revokeToken: { token in
-            await ProviderLogout.revokeToken(token, coordinatorURL: config.coordinator.url)
+            await Self.revokeSavedToken(token)
         })
         for line in Self.completionLines(for: outcome) { print(line) }
     }
 
+    // Configuration and daemon state cannot prove who issued this saved token.
+    // Legacy credentials without bound issuer metadata are deleted locally only.
+    static func revokeSavedToken(
+        _ token: String,
+        issuer: (String) -> String? = AuthTokenStore.issuer,
+        revoke: (String, String) async -> Bool = { await ProviderLogout.revokeToken($0, coordinatorURL: $1) }
+    ) async -> Bool {
+        guard let coordinator = issuer(token) else { return false }
+        return await revoke(token, coordinator)
+    }
+
     private static func localProviderIdentities() -> [ProcessIdentity] {
-        [DaemonStateFile.read()?.processIdentity,
-         LaunchAgent.launchSnapshot()?.process,
-         ProcessLifecycle.existingPID().flatMap { ProcessIdentity.read(pid: $0) }].compactMap { $0 }
+        providerIdentities(state: DaemonStateFile.read(), launchProcess: LaunchAgent.launchSnapshot()?.process)
+    }
+
+    static func providerIdentities(state: DaemonState?, launchProcess: ProcessIdentity?) -> [ProcessIdentity] {
+        let recorded = state.flatMap { state in
+            state.processIdentity.flatMap { $0.pid == state.pid ? $0 : nil }
+        }
+        return [recorded, launchProcess].compactMap { $0 }
     }
 
     static func requireExited(_ identities: [ProcessIdentity]) throws {
@@ -52,7 +70,7 @@ struct Logout: AsyncParsableCommand {
             return [stopped, "Logged out. This provider token was revoked and the local credential was removed."]
         case .remoteUnconfirmed:
             return [stopped, "Logged out locally. The saved provider credential was removed.",
-                "Warning: Remote token invalidation was not confirmed. The coordinator may be offline or may not support device revocation."]
+                "Warning: Remote token invalidation was not confirmed. The coordinator could not be determined or reached, or it may not support device revocation."]
         case .noCredential:
             return [stopped, "No saved provider credential was found. Remote token invalidation could not be confirmed."]
         }

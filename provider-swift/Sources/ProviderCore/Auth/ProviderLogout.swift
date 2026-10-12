@@ -34,10 +34,14 @@ public enum ProviderLogout {
         session: URLSession? = nil
     ) async -> Bool {
         guard !token.isEmpty, !token.contains("\r"), !token.contains("\n"),
-              var components = URLComponents(string: coordinatorHTTPBase(coordinatorURL)),
-              components.scheme == "http" || components.scheme == "https",
+              var components = URLComponents(string: coordinatorURL),
               components.host?.isEmpty == false, components.user == nil, components.password == nil else {
             return false
+        }
+        switch components.scheme?.lowercased() {
+        case "ws", "http": components.scheme = "http"
+        case "wss", "https": components.scheme = "https"
+        default: return false
         }
         components.path = "/v1/device/revoke"
         components.query = nil

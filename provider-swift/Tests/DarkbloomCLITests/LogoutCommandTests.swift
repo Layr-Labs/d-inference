@@ -1,4 +1,5 @@
 import ArgumentParser
+import Foundation
 import Testing
 @testable import darkbloom
 @testable import ProviderCore
@@ -25,6 +26,67 @@ import Testing
         #expect(throws: ValidationError.self) { try Logout.requireExited([live]) }
         try Logout.requireExited([])
         try Logout.requireExited([.init(pid: live.pid, startTimeMicros: live.startTimeMicros + 1)])
+    }
+
+    @Test func reusedPIDCannotBecomeAnUnrelatedProvider() throws {
+        let current = try #require(ProcessIdentity.current())
+        let old = ProcessIdentity(pid: current.pid, startTimeMicros: current.startTimeMicros + 1)
+        var state = DaemonState(pid: old.pid, processIdentity: old,
+            version: "test", writtenAt: 0, startedAt: 0)
+        let identities = Logout.providerIdentities(state: state, launchProcess: nil)
+        #expect(identities == [old])
+        try Logout.requireExited(identities)
+        #expect(Logout.providerIdentities(state: nil, launchProcess: nil).isEmpty)
+        state.pid += 1
+        #expect(Logout.providerIdentities(state: state, launchProcess: nil).isEmpty)
+        #expect(throws: ValidationError.self) {
+            try Logout.requireExited(Logout.providerIdentities(state: nil, launchProcess: current))
+        }
+    }
+
+    @Test func revocationUsesSavedIssuerWithoutRunningProvider() async {
+        let confirmed = await Logout.revokeSavedToken("synthetic-token",
+            issuer: { token in
+                #expect(token == "synthetic-token")
+                return "wss://issuer.example/ws/provider"
+            }, revoke: { token, target in
+                #expect(token == "synthetic-token")
+                #expect(target == "wss://issuer.example/ws/provider")
+                return true
+            })
+        #expect(confirmed)
+    }
+
+    @Test func malformedConfigurationDoesNotPreventLocalLogout() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("provider.toml")
+        try "[invalid".write(to: path, atomically: true, encoding: .utf8)
+        #expect(throws: (any Error).self) { try loadRuntimeConfiguration(configPath: path.path) }
+        _ = try Logout.parse(["--config", path.path])
+        var calls: [String] = []
+        var saved: String? = "synthetic-token"
+        let outcome = try await ProviderLogout.perform(
+            stopProvider: { calls.append("stop") }, loadToken: { saved },
+            revokeToken: { token in
+                await Logout.revokeSavedToken(token, issuer: { _ in nil }, revoke: { _, _ in
+                        Issue.record("unknown issuer cannot select a revocation target")
+                        return true
+                    })
+            }, deleteToken: { calls.append("delete"); saved = nil })
+        #expect(calls == ["stop", "delete"])
+        #expect(saved == nil)
+        #expect(outcome == .remoteUnconfirmed)
+    }
+
+    @Test func unknownIssuerNeverSendsTokenToGuessedCoordinator() async {
+        let confirmed = await Logout.revokeSavedToken("synthetic-token", issuer: { _ in nil },
+            revoke: { _, _ in
+                Issue.record("must not guess an issuer from configuration or daemon state")
+                return true
+            })
+        #expect(!confirmed)
     }
 
     @Test func messagesDistinguishLocalDeletionFromConfirmedRevocation() {

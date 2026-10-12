@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-12
 
 The public HTTP surface of the coordinator, derived from its composed route bindings under `coordinator/api/`, including the `/v1/` catch-all. Every route is listed below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -466,7 +466,15 @@ for version displays; this fallback change does not publish an updater release.
 `GET /v1/releases/latest` requires a registered release and returns 404 when none
 exists (`coordinator/api/releases/read_handlers.go`, `HandleLatestRelease`).
 
-`POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/releases/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/releases/artifact_metadata.go` (`trustedReleaseArtifactURL`).
+The platform's updated `POST /v1/releases` retains scoped release-key
+authentication and the existing `code_directory_hash`, `source_commit`,
+`ci_run_id`, and `require_app_attest_qualification` fields. After artifact
+verification it records the complete official native identity before
+revocation-fenced publication. Partial identity fails closed; conflicting or
+revoked identity returns 409 and unavailable policy returns 503. No separate
+hardware approval is required. Deploy the platform change before using the
+provider workflow; the retained coordinator copy here is not its implementation
+owner. See the [platform API contract](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/api-contracts.md).
 
 Admin `GET/POST /v1/admin/app-attest/builds` lists/approves signed builds; admin `POST /v1/admin/app-attest/builds/revoke` records a permanent withdrawal. See [request/response and error contracts](provider-authorization.md#durable-build-qualification). With production App Attest serving enabled, even cached `/v1/releases/latest` and `/api/version` responses return 503 when the selected release lacks fresh qualification/catalog readiness; this does not silently select a different release.
 

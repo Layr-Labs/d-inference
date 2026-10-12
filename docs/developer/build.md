@@ -254,7 +254,13 @@ The provider email operator command builds separately with
 `go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
 part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
-Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
+Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` retains the final signed bundle and metadata, stages an immutable digest path, then registers the exact official build through the existing scoped `POST /v1/releases`. Deploy the platform persistence change first. No per-release hardware qualification or manual approval is required. A staging or publication retry reuses the original signed artifact without rebuilding or re-signing. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes and never replaces completed mismatched bytes. See [official-build registration](../operations/app-attest-build-qualification.md).
+
+Secret-bearing release jobs accept only verified signed annotated production
+tags in reviewed `master` ancestry, or trusted `master` for dev/manual/recovery
+runs. They use existing repository-scoped secrets without environment approval
+attachments; shared GitHub settings are unchanged. These checks assume trusted
+repository writers. CI establishes official identity, not runtime Apple success.
 
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
@@ -379,6 +385,8 @@ The Metal helper retains its exact source/toolchain contract.
 to execute successfully. A successful component download alone is insufficient:
 it clears stale lookup state, waits a bounded interval for registration, and uses
 Apple's explicit component export/import path if registration remains incomplete.
+The specific transient Metal asset-catalog download failure is retried at most
+three times within the existing setup deadline; other errors still fail immediately.
 It never switches to an older Xcode or silently accepts an unavailable compiler.
 
 The helper's `snapshot-mtimes` and `restore-mtimes` commands retain timestamps for

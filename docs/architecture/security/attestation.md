@@ -7,6 +7,12 @@ Attest authorization. The [provider trust overview](provider-trust.md) owns the
 shared decision model and threat boundaries; this page details the checks,
 legacy levels and flags, refresh behavior, and routing gates.
 
+Centralized authorization is owned by `Layr-Labs/darkbloom-platform`, not this
+repository's retained coordinator snapshot. The [platform-backed authorization
+reference](../../reference/provider-authorization.md#controls) supersedes that
+snapshot's receipt-required basic grants and freshness/renewal timings. This
+documents the platform contract, not a deployment or provider-side policy change.
+
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`InferenceHandoff.Authorize`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
 Model weight challenges accept the desired hash or a previously promoted,
@@ -105,7 +111,7 @@ Generic client-reported Apple API failures (`apple_error`) use bounded exchange 
 
 Closed client diagnostics separate local availability failures and synthetic callback/proof failures from native DeviceCheck errors. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds them before archival; `coordinator/appattest/service/observation.go` (`observeWithClientDiagnostics`) emits them only as evidence about a failed exchange. They do not enter `clientDataHash`, the verifier, or `EvaluateAuthorization`, so reporting a reason cannot grant serving.
 
-The [updated platform authorization contract](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md) separates basic serving from recurring receipt monitoring. Missing receipt/risk evidence alone does not clear an accepted, otherwise valid basic grant; it does withhold reward/MDM-removal readiness under the stricter receipt and decision-freshness checks. First authorization still requires a fresh cryptographically verified, durably accepted assertion, qualified build, non-revoked credential and bound identity. Renewal/retry scheduling is coordinator-driven and cannot extend the original 15-minute proof validity or current policy deadline. These are the linked platform revision's semantics, not a claim that every deployed coordinator has adopted them; provider protocol fields are unchanged.
+The [updated platform authorization contract](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md) separates `EvaluateAuthorization` for basic serving from `EvaluateReceiptMonitoring`. Missing recurring receipt/risk evidence alone neither blocks otherwise qualified basic serving nor adds assertions; it withholds reward/MDM-removal readiness under the stricter receipt and decision-freshness checks. First authorization still requires a fresh cryptographically verified, durably accepted assertion, qualified build, non-revoked credential, bound identity and successful current administrative reads. Only an established exact identity may retain last-known policy within the [original proof and administrative ceilings](../../reference/provider-authorization.md#controls). Failed reads, status delivery, receipt monitoring and renewal/retry attempts cannot extend those ceilings. These are the linked platform revision's semantics, not a claim that every deployed coordinator has adopted them; provider protocol fields are unchanged.
 
 Providers are adversarial ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). The legacy blob authenticates provider-supplied data with its embedded

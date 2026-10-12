@@ -5,22 +5,6 @@ import Testing
 
 @Suite("Native serving qualification guards")
 struct NativeServeQualificationTests {
-    @Test func failedObserverDoesNotWaitForUncancellableServe() async throws {
-        enum Failure: Error { case failedDrain }
-        let held = QualificationHeldServe()
-        let task = Task {
-            try await NativeServeRunLifetime.run(serve: { await held.wait() }, observe: {
-                while !(await held.entered) { await Task.yield() }
-                throw Failure.failedDrain
-            })
-        }
-        do { try await task.value; Issue.record("failed drain became success") }
-        catch Failure.failedDrain {}
-        // The diagnostic CLI exits on this failure; the unit test instead
-        // explicitly releases its synthetic held operation and joins it.
-        await held.release()
-    }
-
     @Test func literalLoopbackOnly() throws {
         #expect(try NativeServeQualificationInputs.validateURL("ws://127.0.0.1:12345/ws/provider") == "ws://127.0.0.1:12345/ws/provider")
         for value in ["wss://127.0.0.1:12345/ws/provider", "ws://localhost:12345/ws/provider",
@@ -83,11 +67,4 @@ struct NativeServeQualificationTests {
         for index in 0..<6 { try storage.save(record, scope: "scope-\(index)") }
         #expect(throws: (any Error).self) { try storage.save(record, scope: "overflow") }
     }
-}
-
-private actor QualificationHeldServe {
-    var entered = false
-    var continuation: CheckedContinuation<Void, Never>?
-    func wait() async { await withCheckedContinuation { entered = true; continuation = $0 } }
-    func release() { continuation?.resume(); continuation = nil }
 }

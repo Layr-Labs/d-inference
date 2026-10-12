@@ -82,6 +82,55 @@ import Testing
         }
     }
 
+    @Test func issuerMetadataIsBoundToSavedTokenAndRemovedWithIt() async {
+        await #expect(processExitsWith: .success) {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("issuer-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let path = root.appendingPathComponent("auth_token")
+            setenv("DARKBLOOM_AUTH_TOKEN_PATH", path.path, 1)
+            try AuthTokenStore.save("first-token", coordinatorURL: "https://issuer.example/v1/device/token")
+            #expect(AuthTokenStore.load() == "first-token")
+            #expect(AuthTokenStore.issuer(for: "first-token") == "https://issuer.example/v1/device/token")
+            #expect(AuthTokenStore.issuer(for: "other-token") == nil)
+            let metadata = path.appendingPathExtension("issuer.json")
+            let attributes = try FileManager.default.attributesOfItem(atPath: metadata.path)
+            #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+            let oldMetadata = try Data(contentsOf: metadata)
+            try AuthTokenStore.save("second-token")
+            #expect(AuthTokenStore.issuer(for: "second-token") == nil)
+            try oldMetadata.write(to: metadata)
+            #expect(AuthTokenStore.issuer(for: "second-token") == nil)
+            try AuthTokenStore.delete()
+            #expect(AuthTokenStore.load() == nil)
+            #expect(!FileManager.default.fileExists(atPath: metadata.path))
+        }
+    }
+
+    @Test func failedIssuerSaveRollsBackTokenAndAllowsRetry() async {
+        await #expect(processExitsWith: .success) {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("issuer-failure-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let path = root.appendingPathComponent("auth_token")
+            let issuer = path.appendingPathExtension("issuer.json")
+            setenv("DARKBLOOM_AUTH_TOKEN_PATH", path.path, 1)
+            try FileManager.default.createDirectory(at: issuer, withIntermediateDirectories: true)
+            let occupant = issuer.appendingPathComponent("preserve")
+            try Data("existing path occupant".utf8).write(to: occupant)
+
+            #expect(throws: (any Error).self) {
+                try AuthTokenStore.save("failed-token", coordinatorURL: "https://issuer.example")
+            }
+            #expect(AuthTokenStore.load() == nil)
+            #expect(!FileManager.default.fileExists(atPath: path.path))
+            #expect(try Data(contentsOf: occupant) == Data("existing path occupant".utf8))
+
+            try FileManager.default.removeItem(at: issuer)
+            try AuthTokenStore.save("retry-token", coordinatorURL: "https://issuer.example")
+            #expect(AuthTokenStore.load() == "retry-token")
+            #expect(AuthTokenStore.issuer(for: "retry-token") == "https://issuer.example")
+        }
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [200, 202, 204, 301, 302, 307, 308, 401, 404, 500])
     func localHTTPRequiresExact204AndNeverFollowsRedirect(status: Int) async throws {
         let capture = LogoutHTTPCapture()
@@ -130,10 +179,43 @@ import Testing
         #expect(!confirmed)
     }
 
+    @Test func revocationPreservesAuthorityWhenReplacingWebSocketPath() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [LogoutAuthorityProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        for (coordinator, expected) in [
+            ("wss://api.example/ws/provider.attacker.test", "https://api.example/v1/device/revoke"),
+            ("wss://api.example:8443/ws/provider.attacker.test?x=1#fragment", "https://api.example:8443/v1/device/revoke"),
+            ("ws://127.0.0.1:12345/ws/provider.attacker.test", "http://127.0.0.1:12345/v1/device/revoke"),
+            ("https://api.example/nested/path?x=1", "https://api.example/v1/device/revoke"),
+            ("WSS://api.example/ws/provider", "https://api.example/v1/device/revoke"),
+        ] {
+            // Encode the expected URL in this synthetic token so the URLProtocol
+            // can check each request without shared mutable capture state.
+            #expect(await ProviderLogout.revokeToken(expected, coordinatorURL: coordinator, session: session))
+        }
+    }
+
     @Test(arguments: ["file:///tmp/no-coordinator", "http://user:password@127.0.0.1:1", "not a URL"])
     func invalidCoordinatorCannotConfirmRevocation(url: String) async {
         #expect(await !ProviderLogout.revokeToken("synthetic-provider-token", coordinatorURL: url))
     }
+}
+
+private final class LogoutAuthorityProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(url.absoluteString)")
+        #expect(url.path == "/v1/device/revoke")
+        #expect(url.query == nil && url.fragment == nil)
+        let response = HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 private actor LogoutHTTPCapture {

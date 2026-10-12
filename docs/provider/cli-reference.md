@@ -433,14 +433,17 @@ SDK validation does not change coordinator normalization or model numerics
 `login` takes `--config` only and runs `performDeviceCodeLogin`
 (`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`): `POST
 /v1/device/code`, print URL and code, poll `POST /v1/device/token`, write
-`~/.darkbloom/auth_token`. The provider token is not a consumer API key.
+`~/.darkbloom/auth_token`. It also records the successful token response's issuer
+in owner-only `auth_token.issuer.json`, bound to a hash of that token. The provider
+token is not a consumer API key. A failed save removes newly written credential
+files so login can be retried instead of leaving a partial local login.
 
 `logout` uses `Logout.run` in `provider-swift/Sources/darkbloom/LogoutCommand.swift`
 and `ProviderLogout.perform` in `provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`:
 
 | Flag | Type | Default | Effect / source |
 |---|---|---|---|
-| `--config <path>` | path | Global config default | Select the coordinator for revocation (`Logout.configOptions`) |
+| `--config <path>` | path | Global config default | Accepted for CLI compatibility; never overrides the saved token's issuer (`Logout.configOptions`) |
 | `--timeout <seconds>` | integer, 0-3600 | `600` | Wait for accepted work and the coordinator drain acknowledgement (`ServiceDrain.swift`, `DrainOptions`) |
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work; process exit must still be confirmed (`DrainOptions`, `Logout.requireExited`) |
 
@@ -453,14 +456,20 @@ Unconfirmed exit, lock failure or a normal drain timeout refuses logout without
 removing the credential; a published drain remains closed with recovery disabled.
 
 After shutdown, it sends the current saved token **itself**, not its hash, as
-`Authorization: Bearer <token>` to `POST /v1/device/revoke` at the configured
-coordinator. `ProviderLogout.revokeToken` uses a ten-second request/resource
+`Authorization: Bearer <token>` to `POST /v1/device/revoke` at its recorded issuer.
+Changed configuration or a different running provider cannot retarget that
+credential. Legacy credentials without matching issuer metadata are removed
+locally with remote revocation explicitly unconfirmed; no URL is guessed.
+Unreadable or malformed configuration does not prevent local logout.
+`ProviderLogout.revokeToken` uses a ten-second request/resource
 timeout, follows no redirects, and confirms remote revocation only for HTTP
 `204`. Offline errors, cancellation, unsupported endpoints and every other status
 leave remote invalidation unconfirmed but still permit local deletion. Output
 distinguishes confirmed revocation, local-only logout with a warning, and no
 saved credential. Tokens and response bodies are not logged. This requires a
 matching platform endpoint; local completion does not establish remote support.
+The request URL keeps the original coordinator's host and port while changing
+only the WebSocket scheme and endpoint path; path text cannot become an authority.
 
 This revokes only the current token, not every machine/account credential. It
 does not remove App Attest/SE keys, model downloads or management profiles.

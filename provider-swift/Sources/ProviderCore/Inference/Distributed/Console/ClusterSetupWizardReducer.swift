@@ -123,8 +123,11 @@ extension ClusterSetupState {
     /// This Mac already saved a setup for this pair: plans are made again only on `r`.
     var hasClusterSetup: Bool { savedSetup != nil && savedSetup?.clusterID == pair?.clusterID }
 
-    /// A plan can be made here: this Mac holds the pair description it plans from.
-    var mayPlan: Bool { pair?.source == .description || snapshot?.record.pair != nil && pair?.canReachPeer == true }
+    /// A plan can be made here: this Mac holds the pair description it plans from, or it leads a pair it paired over
+    /// the link (S17), whose other Mac its wizard asks over the paired link, also to plan another model later.
+    var mayPlan: Bool {
+        pair?.source == .description || (snapshot?.record.pair != nil || linkPaired) && pair?.canReachPeer == true
+    }
 
     private mutating func requestRefresh() -> [ClusterSetupEffect] {
         guard !refreshing else {

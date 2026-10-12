@@ -7,26 +7,32 @@ No keys are imported and no artifacts are uploaded or notarized by this helper.
 
 ## Qualification Status
 
-As of 2026-10-11, the **reported Stage D native gate is FAIL**: the signed worker
-on an M4 Max running macOS 27 reports `isSupported == false`. No Apple proof has
-been accepted for this candidate, and no two-minute engine/resumption
-qualification has completed. This is not a resolved generic unsupported-OS
-condition, a qualified build, or a production-ready worker. The internal
+As of 2026-10-11, **two source/artifact-bound native component gates passed** on
+an M4 Max (`Mac16,5`, macOS 27.0.1 `26A434`): suspended-worker recovery and real
+assertion-callback discard/recovery. Both used Apple's real service and the
+production-root Go verifier. Loaded-engine continuity and composed-coordinator
+two-minute resumption are still **pending**; these passes do not establish a
+production-ready worker or qualify a later rebuilt binary. The internal
 `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` selection defaults to `false`;
 see [configuration](../../docs/reference/configuration.md#app-attest-worker-qualification).
 
 | Evidence | Current scope / pending result |
 |---|---|
-| Preserved candidate source | `1ff9e002a`; later diagnostics/build-source changes require their own source-bound validation |
-| Earlier focused tests | 162 tests reported passed for the earlier source; not a current full-suite pass, Apple acceptance or coverage of the newer Stage D diagnostics/build-source edits |
-| Worker support diagnostics | Current edits are untested at this checkpoint; rebuilt tests and a fresh signed native run are **pending** |
-| Apple proof and recovery | Accepted enrollment/assertions, exact signed-code measurements and post-retirement recovery are **pending**, not implied by successful signing or IPC checks |
+| Suspended-worker component | Signed binary SHA-256 `566a0bb8114d1c3b164930f7e7f30be1fa7691acc193515e206ba45e38bac94a`; actual enrollment and two accepted assertions, replay/hash negatives, approximately 80-second deadline and confirmed reap before replacement |
+| Precise callback component | Signed binary SHA-256 `9945083386bd57a45c84df7145563c2013966714dbc4b666c3252c7da5920222`; actual assertion invocation and discarded callback observed, real `operation_timeout`, reap after 25.15 / 25.32 seconds, replacement's same-credential assertion accepted |
+| Signed code identity | Developer ID category 6 / type-2 CodeDirectory evidence matched the measured artifacts; callback artifact full CD hash `ceec7aac33a773b7ec01b065730642418833c426c8140bb94a7dbae47793d370` |
+| Local tests | 107 App Attest + 6 CLI tests passed before the callback consumer addition; its focused 30-test check also passed. These are not a full provider-suite claim |
 | Two-minute engine qualification | **Pending**; this diagnostic loads no model and cannot supply that result |
 
-Record the final source/artifact-bound commands, literal outcomes and limitations
-in the canonical dated qualification report when available. Do not replace this
-failed checkpoint with inferred success, or reuse older counts for newly edited
-source. No new native run is claimed by this documentation update.
+Earlier copied-artifact tests genuinely failed at `is_supported_false` in both
+parent and child, even with matching effective grants. Adding the granted team
+identity alone did not resolve this. Refreshing the **exact final signed test
+app's LaunchServices registration** changed the unchanged callback artifact from
+unsupported to two successful real-proof runs. The harness now performs this
+scoped preparation and restores registration afterward. The earlier suspended
+artifact also passed without the AppKit diagnostic host after its first hosted
+run, so a per-process AppKit requirement is not inferred. No RDMA or OS security
+setting was changed, and RDMA enablement is not treated as a disqualifier.
 
 ## Build And Sign
 
@@ -72,6 +78,19 @@ DARKBLOOM_NATIVE_QUALIFICATION_APP="$OUTPUT/Darkbloom.app" \
   -run '^TestSignedWorkerRecovery$' -count=1 -v -timeout 6m
 ```
 
+Use `-run '^TestSignedCallbackRecovery$'` for the precise callback-discard gate.
+Set `DARKBLOOM_NATIVE_QUALIFICATION_APPKIT=1` only for the parent AppKit comparison.
+That host validates the same private inputs and signed identity before startup,
+captures support after `applicationDidFinishLaunching`, and registers no APNs.
+
+After signature verification, the explicitly enabled harness snapshots existing
+registered copies, refreshes only this `.build` candidate via `lsregister -f`,
+and then launches it. Cleanup waits for the captured process first, unregisters
+only a newly added candidate entry, and restores the previous preferred entry.
+Already-registered copies are not removed. It never launches or edits the
+operator's installed bundle or changes a system security setting. Signing and
+registration must refer to the same final bytes.
+
 Without opt-in the test skips. With opt-in, missing/invalid signed resources,
 Apple refusal, absent code measurements, replay acceptance, or failed recovery
 are failures, not skips. The test creates a fresh isolated local credential
@@ -107,6 +126,16 @@ It does not initialize AppKit, register an app or generate a key. Its raw local
 paths and entitlement observations stay in private qualification evidence, not
 coordinator wire claims, authorization or public logs. The new diagnostic is not
 evidence that the support failure is fixed.
+
+The callback scenario uses `armNextAssertionCallbackDiscardForQualification`.
+It accepts no PID, key, endpoint, or signing hash. The worker invokes the normal
+real `SystemAppAttestCallbacks.generateAssertion` and deliberately never delivers
+its callback to the caller. Two authenticated observations must identify the same
+worker generation and assertion sequence: invocation submitted, callback
+discarded. The normal 25-second deadline and production retirement path then run;
+the old gate is never released. The runner forwards the actual timeout payload,
+requires confirmed reap before a fresh prepare, and verifies the replacement's
+assertion against the same Apple credential with increasing counters.
 
 This test deliberately loads **no model**, advertises no serving privacy grant,
 and does not claim engine/inference or composed-coordinator resumption coverage.

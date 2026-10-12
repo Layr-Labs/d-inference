@@ -219,6 +219,12 @@ extension EngineV2SlotFactory {
             let precision = try EngineV2KVQuantizationPolicy.resolve(
                 modelType: modelType, global: kvQuantizationConfig,
                 byModel: kvQuantizationConfigByModel, modelID: modelId, environment: environment)
+            // Native diffusion checkpoints keep their native codec, but the
+            // selected storage override must still be valid before construction.
+            _ = try EngineV2KVQuantizationPolicy.resolve(
+                modelType: modelType, global: checkpointQuantizationConfig,
+                byModel: checkpointQuantizationConfigByModel, modelID: modelId,
+                environment: environment, purpose: .checkpoint)
             let pageBacked = !EngineV2KVBackendPolicy.killSwitchDisabled(environment: environment)
                 && (backend.lowercased() == "paged" || (backend.lowercased() == "auto" && precision != .native))
             try EngineV2KVQuantizationPolicy.requireResolvedBackend(

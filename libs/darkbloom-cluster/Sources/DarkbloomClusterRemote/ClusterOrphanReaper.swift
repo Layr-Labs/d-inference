@@ -18,8 +18,9 @@ import DarkbloomClusterProtocol
 ///   forced exit, an owner at its child's retirement ceiling. The reaper waits
 ///   for that contract (`contractGraceNanoseconds`: the rank lease plus the
 ///   longest owner allowance plus the dead-man) and only then sends SIGTERM,
-///   and SIGKILL only to a process that ignored SIGTERM for a whole kill
-///   margin — never earlier, because a SIGKILL cannot unwire.
+///   and SIGKILL only to a process that ignored SIGTERM for the longest kill
+///   margin an owner grants (120 s) — never earlier, because a SIGKILL cannot
+///   unwire.
 /// - A process whose parent is alive is never touched: its owner handles it.
 /// - A membership epoch the caller names as live (a session this process
 ///   still holds) is never touched either, whatever its parent.
@@ -164,8 +165,10 @@ public enum ClusterOrphanReaper {
     public struct Limits: Sendable {
         /// Wait for a leftover's own contract before SIGTERM.
         public var contractGraceNanoseconds: UInt64 = ClusterOrphanReaper.contractGraceNanoseconds
-        /// SIGTERM to SIGKILL: the protocol's floor for a loaded rank.
-        public var killMarginNanoseconds: UInt64 = ClusterWorkerSignalPolicy.minimumKillMarginNanoseconds
+        /// SIGTERM to SIGKILL: the longest margin any owner grants a loaded
+        /// rank (its planned bytes are unknown here, so the ceiling applies:
+        /// a SIGKILL before a rank has released is what strands wired memory).
+        public var killMarginNanoseconds: UInt64 = ClusterWorkerSignalPolicy.maximumKillMarginNanoseconds
         /// After SIGKILL, before giving up on the exit.
         public var reapMarginNanoseconds: UInt64 = ClusterWorkerSignalPolicy.standard.reapMarginNanoseconds
         public var pollNanoseconds: UInt64 = 200_000_000

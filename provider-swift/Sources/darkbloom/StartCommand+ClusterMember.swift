@@ -86,7 +86,7 @@ extension Start {
         // workers whose parent is gone, a stranded device journal, stale
         // bootstrap directories), reported in this member's log.
         Self.sweepOrphans(phase: "start", waitForContract: true)
-        defer { Self.sweepOrphans(phase: "end", waitForContract: false) }
+        defer { Self.sweepOrphans(phase: "end", waitForContract: true) }
         let (loop, prepared) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
         heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the

@@ -78,7 +78,8 @@ exchange) and the hybrid hand-off. The plan's coverage of a checkpoint is
 checked model-free by `libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh [MODEL_DIR...]`.
 
 ```sh
-# Both ranks: same arguments; rank 0 is the JACCL listener. Arithmetic environment as for the worker,
+# Both ranks: the same build (the first agreement's length is not fixed across builds) and the same
+# arguments; rank 0 is the JACCL listener. Arithmetic environment as for the worker,
 # plus MLX_METAL_FAST_SYNCH=1 (the lazy all-sum is slow without it).
 env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 MLX_METAL_FAST_SYNCH=1 \
   JACCL_RANK=0 JACCL_IBV_DEVICES=/ABS/matrix.json JACCL_COORDINATOR=ADDRESS:PORT \
@@ -96,15 +97,16 @@ floor that splitting the weights does not divide, and 129 all-sums per token
 cost more than the 5 ms saved. The local ring is not compiled into this MLX
 build, so the one-Mac two-rank step needs a socket reduction first.
 
-Where the floor is (M5 Max, same session): the host spends 6-7 ms of thread
-CPU per step (graph construction about 2 ms) and then waits for the GPU, so
-the GPU is the bound, not graph building. One decode step is 3,169 MLX
+Where the floor is (M5 Max, same session): the host spends 6-13 ms of thread
+CPU per 24-30 ms step (graph construction 2-4 ms) and then waits for the GPU,
+so the GPU is the bound, not graph building. One decode step is 3,169 MLX
 primitives (`--census yes`: about 2,200 that launch kernels, 353 quantized
 matmuls, 305 RMS norms, 434 casts); half the weights still take 24 ms
-(bfloat16 partials; float32 partials add 256 casts, 1 ms), where reading them
-needs about 13 ms. Metal command-buffer limits
+(bfloat16 partials; the float32 partial path, 256 more casts and float32-input
+row-parallel matmuls, adds 1 ms), where reading them needs about 13 ms. Metal
+command-buffer limits
 (`MLX_MAX_OPS_PER_BUFFER` 50-400 x `MLX_MAX_MB_PER_BUFFER` 50-512 or 4096) do
-not move it (tokens identical, steps within 2%). `--mode shard-local
+not move it (tokens identical, steps within about 2%). `--mode shard-local
 --shard-rank R` is the floor meter: TP2 can only win where the shard alone
 plus about 6 ms of all-sums beats the faster Mac alone.
 

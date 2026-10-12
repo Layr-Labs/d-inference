@@ -548,6 +548,305 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(try context.fixture.liveBinaryContents() == "2.0.0-darkbloom")
     }
 
+    @Test("unproven launch evidence cannot arm an attempt for a serving predecessor",
+          arguments: ["no-baseline-both", "no-baseline-runs", "no-baseline-process", "identity-became-readable"])
+    func unprovenLaunchEvidencePreservesIntent(scenario: String) async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let predecessor = ProcessIdentity(pid: 4242, startTimeMicros: 50_000_000)
+        let baseline: ProviderLaunchSnapshot? = scenario == "identity-became-readable"
+            ? ProviderLaunchSnapshot(label: "io.darkbloom.provider", runs: 10, process: nil)
+            : nil
+        let unchanged = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider",
+            runs: scenario == "no-baseline-process" ? nil : 10,
+            process: scenario == "no-baseline-runs" ? nil : predecessor)
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        try store.writeState(state)
+        // Use the real updater's lease and durable writer. Cancellation of a
+        // subsequent restart is represented by making no launch callback.
+        try context.updater.prepareCandidateLaunch(
+            operation: "test-unproven-launch-evidence", baseline: baseline)
+        let intentID = try #require(try store.loadState().candidate?.launchIntent?.id)
+        let restartsBefore = context.restarts.value
+        let watchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            launchSnapshot: { unchanged })
+        var lastHealth: WatchdogRecoveryService.HealthOutcome = .noCandidate
+        for now in [200.0, 501.0, 1_000.0] {
+            lastHealth = watchdog.observeHealthyProvider(
+                providerRunning: true,
+                daemonState: DaemonState(
+                    pid: predecessor.pid, version: "1.0.0", writtenAt: now, startedAt: 50),
+                now: now)
+            state = try store.loadState()
+            print("LAUNCH_REVIEW scenario=\(scenario) now=\(now) health=\(lastHealth) intent=\(String(describing: state.candidate?.launchIntent?.id)) pending=\(String(describing: state.candidate?.pendingAttemptID)) started=\(String(describing: state.candidate?.attemptStartedAt)) failures=\(String(describing: state.candidate?.failureCount))")
+            #expect(lastHealth == .stabilizing(since: nil))
+        }
+        #expect(state.candidate?.launchIntent?.id == intentID)
+        #expect(state.candidate?.pendingAttemptID == nil)
+        #expect(state.candidate?.attemptStartedAt == nil)
+        #expect(state.candidate?.failureCount == 0)
+        // Exercise the real recovery owner only when the actual health verdict
+        // requests it, matching WatchdogCommand's inactive-candidate branch.
+        if case .inactiveCandidate = lastHealth {
+            let result = await watchdog.recoverDownProvider(
+                autoUpdateEnabled: false, providerProcessAlive: true, now: 1_000)
+            print("LAUNCH_REVIEW scenario=\(scenario) recovery=\(result)")
+        }
+        state = try store.loadState()
+        print("LAUNCH_REVIEW scenario=\(scenario) final_failures=\(String(describing: state.candidate?.failureCount)) restart_delta=\(context.restarts.value - restartsBefore)")
+        #expect(state.candidate?.failureCount == 0)
+        #expect(context.restarts.value == restartsBefore)
+        #expect(state.quarantine == nil)
+        #expect(try context.fixture.persistentStateIsIntact())
+    }
+
+    @Test("prelaunch health observation retains evidence for a later silent launch",
+          arguments: [false, true])
+    func prelaunchHealthObservationRetainsIntent(processChanged: Bool) async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider", runs: 10,
+            process: ProcessIdentity(pid: 4242, startTimeMicros: 50_000_000))
+        let launched = ProviderLaunchSnapshot(
+            label: baseline.label, runs: processChanged ? 10 : 11,
+            process: processChanged
+                ? ProcessIdentity(pid: 4242, startTimeMicros: 175_000_000) : baseline.process)
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        try store.writeState(state)
+        try context.updater.prepareCandidateLaunch(
+            operation: "test-prelaunch-health-observation", baseline: baseline)
+        let intentID = try #require(try store.loadState().candidate?.launchIntent?.id)
+        let prelaunchWatchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            launchSnapshot: { baseline })
+        #expect(prelaunchWatchdog.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: DaemonState(pid: 4242, version: "1.0.0", writtenAt: 150, startedAt: 50),
+            now: 150) == .stabilizing(since: nil))
+        state = try store.loadState()
+        print("LAUNCH_REVIEW prelaunch process_changed=\(processChanged) intent_retained=\(state.candidate?.launchIntent?.id == intentID) pending=\(String(describing: state.candidate?.pendingAttemptID))")
+        #expect(state.candidate?.launchIntent?.id == intentID)
+        #expect(state.candidate?.pendingAttemptID == nil)
+        // Recreate the service, forcing recovery to rely on durable evidence.
+        let watchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            launchSnapshot: { launched })
+        #expect(watchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 200) == .stabilizing(since: nil))
+        state = try store.loadState()
+        print("LAUNCH_REVIEW after_launch process_changed=\(processChanged) now=200 pending_matches=\(state.candidate?.pendingAttemptID == intentID) started=\(String(describing: state.candidate?.attemptStartedAt))")
+        #expect(state.candidate?.pendingAttemptID == intentID)
+        #expect(state.candidate?.attemptStartedAt == 200)
+        #expect(watchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 499) == .stabilizing(since: nil))
+        var lastHealth: WatchdogRecoveryService.HealthOutcome = .noCandidate
+        for now in [501.0, 1_000.0] {
+            lastHealth = watchdog.observeHealthyProvider(
+                providerRunning: true, daemonState: nil, now: now)
+            print("LAUNCH_REVIEW after_launch process_changed=\(processChanged) now=\(now) health=\(lastHealth)")
+            #expect(lastHealth == .inactiveCandidate(attemptStartedAt: 200))
+        }
+        #expect(try store.loadState().candidate?.failureCount == 0)
+        let restartsBefore = context.restarts.value
+        if case .inactiveCandidate = lastHealth {
+            let result = await watchdog.recoverDownProvider(
+                autoUpdateEnabled: false, providerProcessAlive: true, now: 1_000)
+            #expect(result == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        }
+        state = try store.loadState()
+        print("LAUNCH_REVIEW after_launch process_changed=\(processChanged) final_failures=\(String(describing: state.candidate?.failureCount)) restart_delta=\(context.restarts.value - restartsBefore)")
+        #expect(state.candidate?.failureCount == 1)
+        #expect(context.restarts.value == restartsBefore + 1)
+        #expect(watchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 1_001) == .stabilizing(since: nil))
+        #expect(try store.loadState().candidate?.failureCount == 1)
+        #expect(try context.fixture.persistentStateIsIntact())
+    }
+
+    @Test("healthy launch reconciliation requires comparable evidence from the same job",
+          arguments: ["runs-only", "identity-only", "decreasing-runs", "missing-current-runs", "missing-saved-runs", "different-job"])
+    func partialLaunchEvidenceRequiresComparison(scenario: String) async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let predecessor = ProcessIdentity(pid: 4242, startTimeMicros: 50_000_000)
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider",
+            runs: ["identity-only", "missing-saved-runs"].contains(scenario) ? nil : 10,
+            process: scenario == "runs-only" ? nil : predecessor)
+        let current = ProviderLaunchSnapshot(
+            label: scenario == "different-job" ? "io.darkbloom.other" : baseline.label,
+            runs: ["identity-only", "missing-current-runs"].contains(scenario)
+                ? nil : (scenario == "decreasing-runs" ? 9 : 11),
+            process: scenario == "runs-only" ? nil
+                : (scenario == "identity-only"
+                    ? ProcessIdentity(pid: 4242, startTimeMicros: 175_000_000) : predecessor))
+        let launchProven = ["runs-only", "identity-only"].contains(scenario)
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        try store.writeState(state)
+        try context.updater.prepareCandidateLaunch(
+            operation: "test-partial-launch-evidence", baseline: baseline)
+        let intentID = try #require(try store.loadState().candidate?.launchIntent?.id)
+        let watchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            launchSnapshot: { current })
+        #expect(watchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 200) == .stabilizing(since: nil))
+        state = try store.loadState()
+        #expect(state.candidate?.launchIntent?.id == (launchProven ? nil : intentID))
+        #expect(state.candidate?.pendingAttemptID == (launchProven ? intentID : nil))
+        #expect(state.candidate?.attemptStartedAt == (launchProven ? 200 : nil))
+        #expect(watchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 501)
+            == (launchProven ? .inactiveCandidate(attemptStartedAt: 200) : .stabilizing(since: nil)))
+        #expect(try store.loadState().candidate?.failureCount == 0)
+        #expect(context.restarts.value == 1)
+        #expect(try context.fixture.persistentStateIsIntact())
+    }
+
+    @Test("interrupted launch receipt is recovered before a silent candidate times out", arguments: [false, true])
+    func interruptedLaunchReceiptTimesOut(processChanged: Bool) async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider", runs: 10,
+            process: ProcessIdentity(pid: 4242, startTimeMicros: 1))
+        let launched = ProviderLaunchSnapshot(
+            label: baseline.label, runs: processChanged ? 10 : 11,
+            process: processChanged
+                ? ProcessIdentity(pid: 4242, startTimeMicros: 2) : baseline.process)
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        let prepared = state.prepareLaunchIntent(now: 100, baseline: baseline)
+        #expect(prepared)
+        let intentID = try #require(state.candidate?.launchIntent?.id)
+        try store.writeState(state)
+
+        // A transient launchctl snapshot failure cannot erase the durable
+        // evidence needed by a later watchdog tick.
+        #expect(context.service.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 150
+        ) == .stabilizing(since: nil))
+        #expect(try store.loadState().candidate?.launchIntent?.id == intentID)
+
+        // Recreate the service from the durable pre-kickstart intent: the
+        // old watchdog died after launchd started the process, before it
+        // could persist markLaunchIssued. No heartbeat has arrived yet.
+        let restartedWatchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            launchSnapshot: { launched })
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 200
+        ) == .stabilizing(since: nil))
+        state = try store.loadState()
+        #expect(state.candidate?.pendingAttemptID == intentID)
+        #expect(state.candidate?.launchIntent == nil)
+        #expect(state.candidate?.attemptStartedAt == 200)
+        #expect(state.candidate?.failureCount == 0)
+
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 499
+        ) == .stabilizing(since: nil))
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 501
+        ) == .inactiveCandidate(attemptStartedAt: 200))
+        #expect(try store.loadState().candidate?.attemptStartedAt == 200)
+
+        let restartsBefore = context.restarts.value
+        let recovery = await restartedWatchdog.recoverDownProvider(
+            autoUpdateEnabled: false, providerProcessAlive: true, now: 501)
+        #expect(recovery == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        state = try store.loadState()
+        #expect(state.candidate?.failureCount == 1)
+        #expect(state.candidate?.pendingAttemptID != intentID)
+        #expect(state.candidate?.pendingAttemptID != nil)
+        #expect(context.restarts.value == restartsBefore + 1)
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 502
+        ) == .stabilizing(since: nil))
+        #expect(try store.loadState().candidate?.failureCount == 1)
+        #expect(try context.fixture.persistentStateIsIntact())
+    }
+
+    @Test("an unproven launch intent does not time out a serving process", arguments: [false, true])
+    func unprovenLaunchIntentDoesNotTimeOut(snapshotUnavailable: Bool) async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider", runs: 10, process: nil)
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        let prepared = state.prepareLaunchIntent(now: 100, baseline: baseline)
+        #expect(prepared)
+        try store.writeState(state)
+        let restartedWatchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            launchSnapshot: { snapshotUnavailable ? nil : baseline })
+
+        for now in [200.0, 501.0, 1_000.0] {
+            #expect(restartedWatchdog.observeHealthyProvider(
+                providerRunning: true, daemonState: nil, now: now
+            ) == .stabilizing(since: nil))
+        }
+        state = try store.loadState()
+        #expect(state.candidate?.pendingAttemptID == nil)
+        #expect(state.candidate?.attemptStartedAt == nil)
+        #expect(state.candidate?.failureCount == 0)
+        #expect(state.quarantine == nil)
+        #expect(context.restarts.value == 1)
+    }
+
+    @Test("a reconciled launch still promotes on continuous matching heartbeats")
+    func interruptedLaunchReceiptPromotes() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let baseline = ProviderLaunchSnapshot(
+            label: "io.darkbloom.provider", runs: 10, process: nil)
+        let launched = ProviderLaunchSnapshot(
+            label: baseline.label, runs: 11, process: nil)
+        let store = recoveryStore(context.fixture)
+        var state = try store.loadState()
+        state.cancelPendingAttempt()
+        let prepared = state.prepareLaunchIntent(now: 100, baseline: baseline)
+        #expect(prepared)
+        try store.writeState(state)
+        let restartedWatchdog = makeService(
+            updater: context.updater, restarts: context.restarts,
+            stabilizationSeconds: 60, launchSnapshot: { launched })
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true, daemonState: nil, now: 200
+        ) == .stabilizing(since: nil))
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: DaemonState(pid: 4242, version: "2.0.0", writtenAt: 210, startedAt: 150),
+            now: 210
+        ) == .stabilizing(since: 210))
+        #expect(restartedWatchdog.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: DaemonState(pid: 4242, version: "2.0.0", writtenAt: 271, startedAt: 150),
+            now: 271
+        ) == .promoted(version: "2.0.0"))
+        #expect(try store.loadState().candidate == nil)
+        #expect(context.restarts.value == 1)
+    }
+
     @Test("pending fresh candidate without a blocked rollback is not bridged from the healthy path")
     func freshPendingCandidateIsNotBridged() async throws {
         let context = try await installedCandidate()
@@ -1316,7 +1615,8 @@ struct WatchdogRecoveryIntegrationTests {
         restarts: RecoveryRestartCounter,
         stabilizationSeconds: Double = 180,
         candidateStartupTimeoutSeconds: Double = 300,
-        isPastTickDeadline: @escaping @Sendable () -> Bool = { false }
+        isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
+        launchSnapshot: @escaping @Sendable () -> ProviderLaunchSnapshot? = { nil }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
             updater: updater,
@@ -1327,7 +1627,7 @@ struct WatchdogRecoveryIntegrationTests {
                 },
                 // Injected: tests must never shell out to the real
                 // `launchctl print` for the host's provider job.
-                launchSnapshot: { nil },
+                launchSnapshot: launchSnapshot,
                 processAlive: { _ in true },
                 isPastTickDeadline: isPastTickDeadline,
                 log: { _ in }

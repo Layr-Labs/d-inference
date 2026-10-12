@@ -15,7 +15,8 @@ ARTIFACTS = {"darkbloom": "a" * 64, "mlx.metallib": "b" * 64}
 
 def generation():
     return {"runtimeIdentity": {"binary_sha256": ARTIFACTS["darkbloom"],
-                                "metallib_sha256": ARTIFACTS["mlx.metallib"]}}
+                                "metallib_sha256": ARTIFACTS["mlx.metallib"]},
+            "text": '{"answer":"ok"}', "finishReason": "stop", "firstTokenMilliseconds": 12.5}
 
 
 def scores():
@@ -28,7 +29,7 @@ def scores():
 
 class CuratedExecutionIdentityTests(unittest.TestCase):
     def invoke(self, report, mode="retrieval", parsed=True, expected=None, raw_changed=False,
-               native_peer=None, include_peer=True, peer_parsed=True, peer_changed=False):
+               native_peer=None, include_peer=True, peer_parsed=True, peer_changed=False, projection=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             stage = root / "stage"
@@ -40,8 +41,9 @@ class CuratedExecutionIdentityTests(unittest.TestCase):
             log.write_text("CPU fixture; no inference execution\n")
             digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
             entry = {"modelID": "fixture", "mode": mode, "requestedPrecision": "balanced",
-                     "command": [], "reportParsed": parsed, "exitCode": 0 if parsed else 2,
-                     "jsonSHA256": digest(raw), "logSHA256": digest(log)}
+                      "command": [], "reportParsed": parsed, "exitCode": 0 if parsed else 2,
+                      "jsonSHA256": digest(raw), "logSHA256": digest(log)}
+            entry.update(projection or {})
             manifest = {"candidateArtifacts": ARTIFACTS if expected is None else expected,
                         "candidateSourceDigest": "fixture-source", "results": [entry]}
             if native_peer is not None:
@@ -121,13 +123,38 @@ class CuratedExecutionIdentityTests(unittest.TestCase):
             self.assertIsNone(output)
 
     def test_failed_unparsed_results_are_retained_without_invented_identity(self):
-        result, output = self.invoke(None, parsed=False)
+        result, output = self.invoke(None, parsed=False, projection={
+            "taskPassed": True, "answer": {"answer": "invented"}, "meanForcedTokenNLL": 0.0,
+            "executableSHA256": ARTIFACTS["darkbloom"], "diagnosticChecks": {"finiteLogits": True}})
         self.assertEqual(result.returncode, 0, result.stderr)
         entry = output["stages"][0]["results"][0]
         self.assertFalse(entry["reportParsed"])
         self.assertEqual(entry["exitCode"], 2)
         self.assertNotIn("executableSHA256", entry)
         self.assertNotIn("metallibSHA256", entry)
+        for key in ("taskPassed", "answer", "meanForcedTokenNLL", "diagnosticChecks"):
+            self.assertNotIn(key, entry)
+
+    def test_legacy_projections_come_from_raw_without_inventing_unbound_passes(self):
+        forged = {"taskPassed": True, "answer": {"answer": "invented"}, "meanForcedTokenNLL": 0.0,
+                  "identityPassed": True, "firstTokenMilliseconds": -10,
+                  "diagnosticChecks": {"finiteLogits": False}}
+        for mode, report in (("retrieval", generation()), ("scores", scores())):
+            with self.subTest(mode=mode):
+                result, output = self.invoke(report, mode, projection=forged)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                entry = output["stages"][0]["results"][0]
+                self.assertNotIn("taskPassed", entry)
+                self.assertNotIn("identityPassed", entry)
+                if mode == "scores":
+                    self.assertEqual(entry["meanForcedTokenNLL"], 1.25)
+                    self.assertTrue(entry["diagnosticChecks"]["finiteLogits"])
+                    self.assertNotIn("answer", entry)
+                    self.assertNotIn("firstTokenMilliseconds", entry)
+                else:
+                    self.assertEqual(entry["answer"], {"answer": "ok"})
+                    self.assertEqual(entry["firstTokenMilliseconds"], 12.5)
+                    self.assertNotIn("meanForcedTokenNLL", entry)
 
     def test_raw_hash_drift_still_refuses_curation(self):
         result, output = self.invoke(generation(), raw_changed=True)

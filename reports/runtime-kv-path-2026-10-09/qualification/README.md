@@ -27,9 +27,18 @@ qualification builds; they are not published signed/notarized app bundles.
 file against `suite.json` before executing either profile. It makes private
 copies of the validated suite inputs inside the output directory and checks
 them before each arm. A schema2 run binds the suite, each selected input, the
-runner sources and a retained configuration snapshot. The command executes
-the original configuration URL to preserve relative model-cache paths; its
-bytes must match the snapshot before and after each arm.
+runner sources and a retained configuration snapshot. Every arm executes a
+unique read-only configuration copy beside the original configuration, so
+relative model-cache paths retain their meaning. Its bytes are checked before
+and after each arm, and the temporary copy is removed when the run ends. The
+configuration's parent directory must permit creation of that private copy.
+
+Candidate binaries, metallib and the complete SwiftPM resource inventory are
+rechecked around every arm. An explicitly supplied MTP assistant is copied into
+a bounded read-only snapshot, with source/copy hashes and reported assistant
+identity checked for every arm. Inline assistants retain their production
+precedence and must keep a consistent reported identity. Score-only runs do not
+stage an unused assistant.
 
 Children receive only an explicit system/locale environment allowlist. The
 recorded values and digest exclude ambient inference, MLX, Metal, loader and
@@ -76,7 +85,9 @@ scores. Missing, malformed, mismatched or contradictory identities refuse
 curation. Native top1 comparisons also require a parsed native score peer in
 the same manifest, its matching raw hash and both verified artifact identities;
 unlisted or unparsed files do not contribute. It produces a compact summary
-with answers, measurements and finite/repeat/top1 score observations. Failed and superseded stages remain
+with answers, measurements and finite/repeat/top1 score observations derived
+again from the verified raw reports, not trusted from mutable run summaries.
+Failed and superseded stages remain
 separate; the dated report names the usable cohorts. CPU regressions exercise
 the actual CLI with changed execution identities and unchanged raw-hash validity.
 For schema2, curation also checks the retained prepared files, per-entry input

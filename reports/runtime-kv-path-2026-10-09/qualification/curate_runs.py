@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 
 from qualification_environment import validate_environment
-from suite_inputs import PreparedSuite, validate_report_input
+from suite_inputs import PreparedSuite, require_hash, validate_report_input
 
 
 def sha(path):
@@ -54,6 +54,78 @@ def execution_artifacts(report, mode, expected, path):
     return result
 
 
+def output_object(text):
+    decoder = json.JSONDecoder()
+    objects = []
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    return objects[-1] if objects else None
+
+
+def report_projection(report, mode, identity=None):
+    result = {key: report[key] for key in (
+        "resolvedBackend", "kvQuantization", "finishReason", "promptTokenCount",
+        "completionTokenCount", "firstTokenMilliseconds", "totalMilliseconds",
+        "peakMLXMemoryBytes", "preRequestActiveMemoryBytes", "peakMLXMemoryDeltaBytes",
+        "peakObservedKVBytesInUse", "peakObservedPagedCommittedBytes",
+        "peakObservedPagedLivePageBytes", "mtpRequested", "mtpActive", "mtpMetrics",
+        "assistantIdentity", "meanForcedTokenNLL", "status", "inconclusiveReasons",
+        "verifiedModelAggregateSHA256", "executableSHA256", "metallibSHA256",
+        "inputSHA256", "concurrency", "kvCapacityBytes", "productionGrant",
+    ) if key in report}
+    if identity is not None:
+        result["identityPassed"] = (
+            report["verifiedModelAggregateSHA256"] == identity["expectedModelAggregateSHA256"]
+            and report["resolvedBackend"] == "paged"
+        )
+    if mode == "scores":
+        result["diagnosticTop1"] = report["diagnostic"]["top1"]
+    else:
+        answer = output_object(report["text"].rsplit("</think>", 1)[-1])
+        result.update(outputText=report["text"], answer=answer)
+        if identity is not None:
+            result["taskPassed"] = report["finishReason"] == "stop" and answer == identity["expected"]
+    return result
+
+
+def assistant_identity(report, files, previous=None):
+    identity = report.get("assistantIdentity")
+    if (report.get("mtpRequested") is not True or report.get("mtpActive") is not True
+            or not isinstance(identity, dict)
+            or any(not isinstance(value, str) for value in identity.values())):
+        raise RuntimeError("Missing active MTP assistant identity")
+    if not isinstance(files, dict) or not 2 <= len(files) <= 64:
+        raise RuntimeError("Invalid assistant snapshot inventory")
+    config_hash = require_hash(files["config.json"])
+    expected = {"source": "local", "revision": "local-" + config_hash[:16],
+                "config_sha256": config_hash}
+    for name, digest in files.items():
+        if name != "config.json":
+            if Path(name).name != name or not name.endswith(".safetensors"):
+                raise RuntimeError("Invalid assistant snapshot filename")
+            expected["weight_sha256." + name] = require_hash(digest)
+    if identity.get("source") == "local":
+        if identity != expected:
+            raise RuntimeError("Reported assistant differs from frozen snapshot")
+    elif identity.get("source") == "inline":
+        config_hash = require_hash(identity.get("config_sha256"))
+        index_hash = require_hash(identity.get("inline_index_sha256"))
+        if identity.get("revision") != "inline-" + config_hash[:8] + "-" + index_hash[:8]:
+            raise RuntimeError("Invalid inline assistant identity")
+    else:
+        raise RuntimeError("Requested assistant has no local or inline identity")
+    if previous is not None and identity != previous:
+        raise RuntimeError("MTP assistant identity changed between arms")
+    return identity
+
+
 def evidence_label(entry):
     label = entry["modelID"].replace("/", "--") + "-" + entry["mode"] + "-" + entry["requestedPrecision"]
     return label + ("-mtp" if "--runtime-mtp" in entry["command"] else "")
@@ -86,12 +158,13 @@ def validate_bound_input(report, entry, prepared, manifest, legacy_suites):
         if entry.get("configBeforeSHA256") != digest or entry.get("configAfterSHA256") != digest:
             raise RuntimeError("Run config validation differs from retained snapshot")
         validate_report_input(report, entry["mode"], identity, score_document, entry["requestedPrecision"])
+        return identity
     elif legacy_suites:
         for suite in legacy_suites:
             try:
                 identity, _, score_document = suite.select(entry["modelID"], entry["mode"])
                 validate_report_input(report, entry["mode"], identity, score_document, entry["requestedPrecision"])
-                return
+                return identity
             except (RuntimeError, KeyError, OSError):
                 continue
         raise RuntimeError("Legacy report input does not match an explicit prepared suite")
@@ -111,10 +184,14 @@ def main():
         manifest_path = directory / "run.json"
         manifest = json.loads(manifest_path.read_text())
         prepared = bound_suite(directory, manifest)
+        assistant = manifest.get("qualification", {}).get("assistant")
+        assistant_identities = {}
         results = []
         for original in manifest["results"]:
             entry = {key: value for key, value in original.items()
-                     if key not in ("outputText", "diagnosticTop1")}
+                     if key in ("modelID", "mode", "requestedPrecision", "command", "exitCode", "processSeconds",
+                                "jsonSHA256", "logSHA256", "inputIdentity", "configBeforeSHA256",
+                                "configAfterSHA256", "reportParsed", "parseError")}
             label = evidence_label(entry)
             raw = directory / (label + ".json")
             log = directory / (label + ".log")
@@ -124,14 +201,19 @@ def main():
             entry["rawLog"] = name + "/" + log.name
             if entry.get("reportParsed"):
                 report = json.loads(raw.read_text())
-                # The serving JSON does not always project these into run.json.
-                for field in ("executableSHA256", "metallibSHA256", "inputSHA256",
-                              "concurrency", "kvCapacityBytes", "productionGrant"):
-                    if field in report:
-                        entry[field] = report[field]
-                entry.update(execution_artifacts(
-                    report, entry["mode"], manifest["candidateArtifacts"], raw))
-                validate_bound_input(report, entry, prepared, manifest, legacy_suites)
+                artifacts = execution_artifacts(report, entry["mode"], manifest["candidateArtifacts"], raw)
+                identity = validate_bound_input(report, entry, prepared, manifest, legacy_suites)
+                entry.update(report_projection(report, entry["mode"], identity))
+                entry.pop("outputText", None)
+                entry.pop("diagnosticTop1", None)
+                entry.update(artifacts)
+                if assistant is not None and entry["mode"] != "scores":
+                    command = entry["command"]
+                    if ("--runtime-mtp" not in command or "--runtime-assistant-directory" not in command
+                            or command[command.index("--runtime-assistant-directory") + 1] != assistant["path"]):
+                        raise RuntimeError("Run assistant path differs from frozen snapshot")
+                    assistant_identities[entry["modelID"]] = assistant_identity(
+                        report, assistant["files"], assistant_identities.get(entry["modelID"]))
                 if entry["mode"] == "scores":
                     diagnostic = report["diagnostic"]
                     repeated = report["repeatedDiagnostic"]
@@ -168,9 +250,12 @@ def main():
                         entry["diagnosticChecks"]["nativeTop1Matches"] = sum(
                             left == right for left, right in zip(expected_top1, observed_top1))
             results.append(entry)
+        if assistant is not None and assistant.get("identities") != assistant_identities:
+            raise RuntimeError("Run assistant identities differ from raw reports")
         stage = {
             "name": name, "sourceDigest": manifest["candidateSourceDigest"],
             "artifacts": manifest["candidateArtifacts"],
+            "resources": manifest.get("candidateResources", {}),
             "runManifestSHA256": sha(manifest_path), "results": results,
         }
         if prepared is not None:

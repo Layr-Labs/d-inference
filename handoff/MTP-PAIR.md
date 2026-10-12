@@ -10,12 +10,20 @@ No SDK change.
 
 ## On by default, and the off switch
 
-- **Capability.** A model whose artifact ships a head lists `phase_split_mtp_v1` in its resident row (9B, 27B);
+- **Capability.** A model whose artifact ships a head lists `phase_split_mtp_v1` in its resident row (9B, 27B, both 35B A3B rows);
   its capability record then advertises `speculation: "decodingRankHeadExactGreedy"` (other models keep `"off"`).
-- **Placement.** The planner gives the speculative phase split the same holdings and time as the plain one and
-  prefers it (`ClusterPlacementPlanner.ordered`), so `darkbloom cluster plan` / setup writes `phase_split_mtp_v1`
-  into the saved setup whenever both workers advertise it. `darkbloom start --local --distributed` then starts both
-  workers with `--generation-mode phase_split_mtp_v1`.
+- **Placement (MTP credit).** The layout of a row that lists `phase_split_mtp_v1` carries
+  `speculativeDecodeFactor` (the smallest speed-up the pair measured with the head over the same phase split
+  without it: 9B 1.44, 27B 1.56, both 35B A3B rows 1.44) and `speculativeHead` (the `mtp.` tensors, charged to the
+  decoding rank's memory). `ClusterSpeculativeCredit` decides per decoding Mac: a measured rate with the head wins;
+  otherwise a GPU of the Apple M5 generation or later prefers the head and is credited the factor, and an older GPU
+  (the M3 Ultra) decodes plain. `ClusterPlacementPlanner.ordered` ranks by time, then head preference, then
+  headroom. So on a fresh install (no speed records: memory-only cuts) `darkbloom cluster plan` and the setup wizard
+  save `phase_split_mtp_v1` with the M5 decoding for the 9B (cut 16), the 27B (32) and both A3B rows (20) on the
+  M3 Ultra + M5 Ultra pair (product command run 2026-10-12, `T/evidence/universal-20261010/m5ultra/cluster-plan/`;
+  golden plans `Tests/PlacementChecks/Golden/pairs/m3ultra-m5ultra/`, printed byte-equal on both Macs).
+  `darkbloom start --local --distributed` then starts both workers with `--generation-mode phase_split_mtp_v1`.
+  A placement with the M3 Ultra decoding (the wizard run on the M5 Ultra makes it rank 0) gets no head.
 - **Status.** The installed session reports `mtpEnabled` and `mtpOffReason` (`none`,
   `setupSelectsPhaseSplitWithoutHead`, `generationModeRunsNoHead`, `runtimeCapabilityDisablesSpeculation`);
   `darkbloom cluster status` prints `MTP: on …` or the reason. The status codec checks the pair against the saved

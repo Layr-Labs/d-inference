@@ -763,3 +763,38 @@ Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33
   the speed-informed cuts (9B 4, 27B 4-8, A3B 8, Nemotron 11-13) appear only when speed records are supplied.
   If the setup wizard is run on the M5 Ultra it leads (rank 0 = the local member), the M3 Ultra decodes and gets no
   head; that order is slower than the M5 Ultra alone (planning finding F2, owner decision pending).
+- **Speed index in the profile (2026-10-12).** `darkbloom-cluster-plan device --index` adds the model-free index
+  (`qmm_h4096_b4_g64_x16_v1`, about a second of GPU work) as the profile's `speedIndex`; the setup wizard samples
+  both Macs' profiles with it, and the planner relates two Macs by the index ratio when no speed was measured for
+  the model (the estimator's existing `transferredByDeviceIndex` source). Measured on the pair (three runs each,
+  within 1 %): M3 Ultra prefill 4.7e5 / decode 2.6e4, M5 Ultra 2.34e6 / 4.55e4, a ratio of 4.98 and 1.76. The real
+  per-model ratios measured the same night: prefill 4.5 (9B), 5.1 (27B), 2.6 (A3B), 2.0 (Nemotron), 3.0 (GPT-OSS);
+  decode 1.54-1.74. The index orders the pair right on both shapes (the condition the benchmark was kept on),
+  matches decode and dense prefill, and overstates MoE prefill. With it a fresh install picks: 9B cut 4, 27B 8 (both
+  the measured-speed cuts), A3B 4 (measured-speed: 12), Nemotron 8 phase split, GPT-OSS 4, Gemma 4 5, Bonsai 8
+  phase split, MiMo 1.
+- **The M3 Ultra + M5 Ultra pair on hardware (2026-10-12, bin at 0e93b5d4f, TB5 RDMA over link setup v2).** Every
+  row below passed the near-tie rule against BOTH a Mac A staged reference and a fresh M5 Ultra staged reference:
+  9B (cut 16 and 4, phase_split_mtp_v1), 27B (32 and 8, phase_split_mtp_v1), Qwen3.5 / 3.6 35B A3B (20 and 4,
+  phase_split_mtp_v1, plus the 16,384 prompt), Nemotron (27 pipeline + 16,384, 8 phase split), GPT-OSS (12 pipeline +
+  16,384). Timed against each Mac alone in the same hold (request totals, 4,096 prompt + 64 outputs; 9B/27B 5,120 +
+  128):
+
+  | Row | Pair, memory-only cut | Pair, index cut | M5 Ultra alone (no head / with head*) | M3 Ultra alone |
+  |---|---|---|---|---|
+  | 9B | 3.88-3.98 s (16) | 2.39-2.47 s (4) | 2.21-2.27 s / ~1.82 s | 6.71-6.93 s |
+  | 27B | 12.25-12.44 s (32) | 7.04-7.17 s (8) | 6.29-6.41 s / ~5.2 s | 21.6-21.7 s |
+  | Qwen3.5 A3B | 2.02-2.18 s (20) | 1.43-1.57 s (4) | 1.56-1.68 s / ~1.31 s | 3.35-3.61 s |
+  | Qwen3.6 A3B | 2.00-2.16 s (20) | 1.41-1.57 s (4) | 1.55-1.67 s / ~1.31 s | 3.37-3.47 s |
+  | Nemotron | 2.65-2.76 s (27) | 1.90-2.00 s (8, phase split) | 1.63-1.73 s | 3.14-3.27 s |
+  | GPT-OSS | 2.46-2.58 s (12) | | 1.30-1.37 s | 3.20-3.25 s |
+
+  (*) the M5 Ultra's own speculative head, from its single-process reference (in-process clock). The pair ran the
+  serial prefill schedule here; the saved setups say `one_chunk_lookahead_v1`. Reading: on this pair the memory-only
+  split is 1.3-2x slower than the M5 Ultra alone; the index cut recovers most of it and beats the M5 Ultra without
+  its head on the A3B rows, but a pipeline/phase split does not beat the M5 Ultra with its head for any model that
+  fits the M5 Ultra. Against the M3 Ultra alone every pair plan is 1.6-3x faster.
+- **Memory gate on the M5 Ultra.** With 187 GiB of speculative (read-ahead, untouched) file cache from another
+  account's program, the gate counted no cache and refused every load; it now counts speculative pages as inactive
+  file pages in its second bound (`DESIGN-resource-gate-v3.md`, "Speculative pages"). The 32 GiB cap still applies,
+  so a load larger than free + 32 GiB (MiMo's M5 Ultra rank) waits until those pages are reclaimed.

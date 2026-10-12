@@ -82,7 +82,7 @@ launchd and does not enable production coordinator resumption. See
 | Setting | Behavior | Consumer |
 |---|---|---|
 | Endpoint-resumption capability | No new environment variable or config key. Normal serving installs a fixed process-key responder; registration advertises protocol 1 and a fresh nonce per socket. No responder means both fields are omitted. | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`) |
-| `darkbloom logout --config` | Fallback revocation coordinator when identity-checked live state has no URL. Configuration is read only after stopping; parse failure cannot block local logout. Does not change the saved coordinator. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout.run`, `revokeSavedToken`) |
+| `darkbloom logout --config` | Accepted for CLI compatibility, not used to retarget revocation. Logout uses issuer metadata bound to the saved token; missing metadata means local-only logout with a warning. Config parsing cannot block logout. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout.run`, `revokeSavedToken`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore.issuer`) |
 
 The [wire contract](protocol-messages.md#app-attest-endpoint-resumption-candidate)
 does not create local trust or change proof validity. The

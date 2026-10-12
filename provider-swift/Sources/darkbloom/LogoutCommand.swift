@@ -11,15 +11,10 @@ struct Logout: AsyncParsableCommand {
     @OptionGroup var drain: DrainOptions
 
     mutating func run() async throws {
-        let configPath = configOptions.config
-        var liveCoordinator: String?
         var previous: [ProcessIdentity] = []
         // Keep start/recovery fenced until the saved token is gone, not merely
         // until Stop has finished. A missing token file does not skip the stop.
         let session = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { publish in
-            // Capture the issuer under the lifecycle lease, before drain or
-            // forced termination can make its process identity historical.
-            liveCoordinator = Self.liveCoordinatorURL(from: DaemonStateFile.read())
             previous = Self.localProviderIdentities()
             try publish()
         })
@@ -35,27 +30,19 @@ struct Logout: AsyncParsableCommand {
             // Foreground start uses this lock even when no launchd job exists.
             instanceLock = try ProcessLifecycle.acquireSingleInstanceLock()
         }, revokeToken: { token in
-            await Self.revokeSavedToken(token, liveCoordinator: liveCoordinator,
-                configuredCoordinator: { try loadRuntimeConfiguration(configPath: configPath).config.coordinator.url })
+            await Self.revokeSavedToken(token)
         })
         for line in Self.completionLines(for: outcome) { print(line) }
     }
 
-    static func liveCoordinatorURL(from state: DaemonState?) -> String? {
-        guard let state, let identity = state.processIdentity,
-              state.pid == identity.pid, identity.isCurrent() else { return nil }
-        return state.coordinatorUrl
-    }
-
-    // Resolve the fallback only inside the post-stop revocation step. Broken
-    // configuration must not prevent local logout or override a live issuer.
+    // Configuration and daemon state cannot prove who issued this saved token.
+    // Legacy credentials without bound issuer metadata are deleted locally only.
     static func revokeSavedToken(
         _ token: String,
-        liveCoordinator: String?,
-        configuredCoordinator: () throws -> String,
+        issuer: (String) -> String? = AuthTokenStore.issuer,
         revoke: (String, String) async -> Bool = { await ProviderLogout.revokeToken($0, coordinatorURL: $1) }
     ) async -> Bool {
-        guard let coordinator = liveCoordinator ?? (try? configuredCoordinator()) else { return false }
+        guard let coordinator = issuer(token) else { return false }
         return await revoke(token, coordinator)
     }
 

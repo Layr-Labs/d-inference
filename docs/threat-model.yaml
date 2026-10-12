@@ -299,19 +299,20 @@ assets:
     description: Coordinator-issued tokens that providers use to register via WebSocket.
     sensitivity: high
     notes: >
-      LogoutCommand.swift captures the coordinator origin from daemon state under
-      the lifecycle lease before stopping, requiring matching PID and current kernel
-      process-start identity. It confirms provider exit and holds lifecycle/instance
+      Device login records the successful token response's issuer in owner-only
+      metadata bound to the token hash. Logout never infers that issuer from changed
+      configuration or another running provider. It confirms provider exit and holds lifecycle/instance
       locks through saved-token revocation/deletion, even when credentials are missing.
-      Without a live matched origin, configuration is resolved after stopping; an
-      invalid/unreachable origin leaves remote invalidation unconfirmed. ProviderLogout.swift
+      Missing or mismatched issuer metadata, including legacy tokens, permits only
+      local deletion with remote invalidation unconfirmed. ProviderLogout.swift
       uses URLComponents to retain host/port, map ws to http or wss to https, replace
       the path with /v1/device/revoke and clear query/fragment; userinfo and redirects
       are refused. Existing non-TLS development configuration is not upgraded to TLS.
       POST's Authorization: Bearer <token> selects only that saved provider credential.
       Only HTTP 204 confirms revocation; offline local deletion is not remote invalidity.
       No immediate fleet-wide teardown or endpoint-specific rate-limit guarantee follows.
-      Code: provider-swift/Sources/darkbloom/LogoutCommand.swift (run, liveCoordinatorURL),
+      Code: provider-swift/Sources/darkbloom/LogoutCommand.swift (run, revokeSavedToken),
+      provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift (AuthTokenStore),
       provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift (perform, revokeToken).
       Platform-owned token contract:
       https://github.com/Layr-Labs/darkbloom-platform/blob/7e30300b8335ffb5446cc51515b698b26602e711/docs/reference/api-contracts.md#provider-token-revocation

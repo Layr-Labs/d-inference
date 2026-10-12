@@ -6,11 +6,32 @@
 /// 3. Provider polls `/v1/device/token` until the user approves (or the code expires).
 /// 4. On approval, the coordinator returns an auth token which is saved to `~/.darkbloom/auth_token`.
 
+import CryptoKit
 import Foundation
 
 // MARK: - Token Storage
 
 public enum AuthTokenStore: Sendable {
+
+    private struct Issuer: Codable {
+        let tokenHash: String
+        let coordinatorURL: String
+    }
+
+    private static func issuerPath() -> URL { tokenPath().appendingPathExtension("issuer.json") }
+
+    public static func issuer(for token: String) -> String? {
+        guard let file = try? FileHandle(forReadingFrom: issuerPath()) else { return nil }
+        defer { try? file.close() }
+        guard let data = try? file.read(upToCount: 8193), data.count <= 8192,
+              let issuer = try? JSONDecoder().decode(Issuer.self, from: data),
+              issuer.tokenHash == tokenHash(token) else { return nil }
+        return issuer.coordinatorURL
+    }
+
+    private static func tokenHash(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Path to the canonical stored auth token. Test harnesses can override this with
     /// DARKBLOOM_AUTH_TOKEN_PATH to avoid touching the user's login state.
@@ -55,7 +76,7 @@ public enum AuthTokenStore: Sendable {
     }
 
     /// Save an auth token to disk with restricted permissions (owner read/write only).
-    public static func save(_ token: String) throws {
+    public static func save(_ token: String, coordinatorURL: String? = nil) throws {
         let path = tokenPath()
         let dir = path.deletingLastPathComponent()
         try FileManager.default.createDirectory(
@@ -69,6 +90,14 @@ public enum AuthTokenStore: Sendable {
             .posixPermissions: 0o600
         ]
         try FileManager.default.setAttributes(attributes, ofItemAtPath: path.path)
+        let issuerFile = issuerPath()
+        if let coordinatorURL {
+            let issuer = Issuer(tokenHash: tokenHash(token), coordinatorURL: coordinatorURL)
+            try JSONEncoder().encode(issuer).write(to: issuerFile, options: .atomic)
+            try FileManager.default.setAttributes(attributes, ofItemAtPath: issuerFile.path)
+        } else if FileManager.default.fileExists(atPath: issuerFile.path) {
+            try FileManager.default.removeItem(at: issuerFile)
+        }
     }
 
     /// Delete the auth token file.
@@ -76,6 +105,10 @@ public enum AuthTokenStore: Sendable {
         let path = tokenPath()
         if FileManager.default.fileExists(atPath: path.path) {
             try FileManager.default.removeItem(at: path)
+        }
+        let issuerFile = issuerPath()
+        if FileManager.default.fileExists(atPath: issuerFile.path) {
+            try FileManager.default.removeItem(at: issuerFile)
         }
     }
 }
@@ -227,8 +260,9 @@ public func performDeviceCodeLogin(
         tokenRequest.httpBody = body
 
         let tokenData: Data
+        let tokenResponse: URLResponse
         do {
-            (tokenData, _) = try await URLSession.shared.data(for: tokenRequest)
+            (tokenData, tokenResponse) = try await URLSession.shared.data(for: tokenRequest)
         } catch {
             // Network error -- retry on next tick.
             onPollTick?()
@@ -253,7 +287,10 @@ public func performDeviceCodeLogin(
             guard let token = tokenResp.token, !token.isEmpty else {
                 throw DeviceAuthError.invalidResponse("authorized but no token in response")
             }
-            try AuthTokenStore.save(token)
+            guard let issuer = tokenResponse.url else {
+                throw DeviceAuthError.invalidResponse("authorized response has no issuer URL")
+            }
+            try AuthTokenStore.save(token, coordinatorURL: issuer.absoluteString)
             return token
 
         default:

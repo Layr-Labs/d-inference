@@ -82,6 +82,30 @@ import Testing
         }
     }
 
+    @Test func issuerMetadataIsBoundToSavedTokenAndRemovedWithIt() async {
+        await #expect(processExitsWith: .success) {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("issuer-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let path = root.appendingPathComponent("auth_token")
+            setenv("DARKBLOOM_AUTH_TOKEN_PATH", path.path, 1)
+            try AuthTokenStore.save("first-token", coordinatorURL: "https://issuer.example/v1/device/token")
+            #expect(AuthTokenStore.load() == "first-token")
+            #expect(AuthTokenStore.issuer(for: "first-token") == "https://issuer.example/v1/device/token")
+            #expect(AuthTokenStore.issuer(for: "other-token") == nil)
+            let metadata = path.appendingPathExtension("issuer.json")
+            let attributes = try FileManager.default.attributesOfItem(atPath: metadata.path)
+            #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+            let oldMetadata = try Data(contentsOf: metadata)
+            try AuthTokenStore.save("second-token")
+            #expect(AuthTokenStore.issuer(for: "second-token") == nil)
+            try oldMetadata.write(to: metadata)
+            #expect(AuthTokenStore.issuer(for: "second-token") == nil)
+            try AuthTokenStore.delete()
+            #expect(AuthTokenStore.load() == nil)
+            #expect(!FileManager.default.fileExists(atPath: metadata.path))
+        }
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [200, 202, 204, 301, 302, 307, 308, 401, 404, 500])
     func localHTTPRequiresExact204AndNeverFollowsRedirect(status: Int) async throws {
         let capture = LogoutHTTPCapture()

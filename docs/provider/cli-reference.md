@@ -433,14 +433,16 @@ SDK validation does not change coordinator normalization or model numerics
 `login` takes `--config` only and runs `performDeviceCodeLogin`
 (`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`): `POST
 /v1/device/code`, print URL and code, poll `POST /v1/device/token`, write
-`~/.darkbloom/auth_token`. The provider token is not a consumer API key.
+`~/.darkbloom/auth_token`. It also records the successful token response's issuer
+in owner-only `auth_token.issuer.json`, bound to a hash of that token. The provider
+token is not a consumer API key.
 
 `logout` uses `Logout.run` in `provider-swift/Sources/darkbloom/LogoutCommand.swift`
 and `ProviderLogout.perform` in `provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`:
 
 | Flag | Type | Default | Effect / source |
 |---|---|---|---|
-| `--config <path>` | path | Global config default | Fallback coordinator for revocation when no live provider snapshot supplies one (`Logout.configOptions`) |
+| `--config <path>` | path | Global config default | Accepted for CLI compatibility; never overrides the saved token's issuer (`Logout.configOptions`) |
 | `--timeout <seconds>` | integer, 0-3600 | `600` | Wait for accepted work and the coordinator drain acknowledgement (`ServiceDrain.swift`, `DrainOptions`) |
 | `--force` | flag | `false` | Explicitly permit interruption of unfinished work; process exit must still be confirmed (`DrainOptions`, `Logout.requireExited`) |
 
@@ -451,13 +453,12 @@ and deletion. A missing token file does not skip shutdown. Unconfirmed exit,
 lock failure or a normal drain timeout refuses logout without removing the
 credential; a published drain remains closed with recovery disabled.
 
-Before shutdown, it captures the coordinator from the running provider's
-identity-checked state, including a `start --coordinator` override. After
-shutdown, it sends the current saved token **itself**, not its hash, as
-`Authorization: Bearer <token>` to `POST /v1/device/revoke` at that coordinator.
-When no live snapshot supplies a coordinator, the selected configuration is
-read only after the stop. An unreadable or malformed configuration leaves remote
-revocation unconfirmed but does not prevent local stop and credential removal.
+After shutdown, it sends the current saved token **itself**, not its hash, as
+`Authorization: Bearer <token>` to `POST /v1/device/revoke` at its recorded issuer.
+Changed configuration or a different running provider cannot retarget that
+credential. Legacy credentials without matching issuer metadata are removed
+locally with remote revocation explicitly unconfirmed; no URL is guessed.
+Unreadable or malformed configuration does not prevent local logout.
 `ProviderLogout.revokeToken` uses a ten-second request/resource
 timeout, follows no redirects, and confirms remote revocation only for HTTP
 `204`. Offline errors, cancellation, unsupported endpoints and every other status

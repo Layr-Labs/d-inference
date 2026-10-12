@@ -16,6 +16,7 @@ private final class Captured: @unchecked Sendable {
     func append(_ value: ClusterWorkerRequestEvent) { lock.withLock { values.append(value) } }
     var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id) = $0 { return id }; return nil } } }
     var clean: Bool { lock.withLock { values.contains { if case .finished = $0 { return true }; return false } } }
+    var failureText: String? { lock.withLock { values.lazy.compactMap { if case .failed(let text) = $0 { return text }; return nil }.first } }
     var telemetry: (ClusterWorkerRequestTelemetry?, ClusterWorkerRequestTelemetry?)? {
         lock.withLock { values.lazy.compactMap { if case .telemetry(let a, let b) = $0 { return (a, b) }; return nil }.first }
     }
@@ -205,15 +206,18 @@ private struct Harness: Sendable {
         defer { for worker in h.workers { worker.fence() } }
         let lease = try h.pair.reserve(requestID: UUID(), reservation: h.reservation())
         let entered = DispatchSemaphore(value: 0), leave = DispatchSemaphore(value: 0)
+        let cause = Captured()
         defer { leave.signal() }
         try lease.start { value in
-            if case .failed = value { entered.signal(); _ = leave.wait(timeout: .now() + 10) }
+            if case .failed = value { cause.append(value); entered.signal(); _ = leave.wait(timeout: .now() + 10) }
             return true
         }
         let began = await withCheckedContinuation { continuation in
             DispatchQueue.global().async { continuation.resume(returning: entered.wait(timeout: .now() + 2) == .success) }
         }
         try require(began, "Failure callback never entered")
+        // S24: the failure names its cause (the owner side's own fixed text), never a bare "failed".
+        try require(cause.failureText?.lowercased().contains("token") == true, "The failure does not name its cause: \(cause.failureText ?? "none")")
         try await h.awaitRetirement(lease)
         try require(h.workers.allSatisfy(\.observedExit), "A blocked failed callback cannot suppress real fencing")
         lease.releaseResources(); leave.signal(); try await h.finish()

@@ -88,10 +88,12 @@ final class LinkHarness: @unchecked Sendable {
     var reports: [String] { lock.withLock { lines } }
     func sawReport(_ prefix: String, seconds: Double) -> Bool { wait(seconds: seconds) { reports.contains { $0.hasPrefix(prefix) } } }
 
-    func linkEndpoint(relay: (any ClusterOwnerBootstrapExchange)?, lifetimeNanoseconds: UInt64 = 15_000_000_000) throws -> ClusterLinkWorkerEndpoint {
+    func linkEndpoint(relay: (any ClusterOwnerBootstrapExchange)?, lifetimeNanoseconds: UInt64 = 15_000_000_000,
+                      retirementAllowanceNanoseconds: UInt64 = ClusterLinkWorkerEndpoint.retirementAllowanceNanoseconds) throws -> ClusterLinkWorkerEndpoint {
         try ClusterLinkWorkerEndpoint(transport: ClusterLinkPeerWorkerTransport(peer: peer), clusterID: "cpu-test",
             expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: 1, executionPlanSHA256: fixturePlan,
-            lifetimeDeadlineUptimeNanoseconds: now() + lifetimeNanoseconds, bootstrapRelay: relay, router: router)
+            lifetimeDeadlineUptimeNanoseconds: now() + lifetimeNanoseconds, bootstrapRelay: relay,
+            retirementAllowanceNanoseconds: retirementAllowanceNanoseconds, router: router)
     }
 
     /// Closes the follower's standard input and waits for it to end itself.
@@ -145,7 +147,62 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try leaseLapsesOverALiveLink(follower, owner, worker); passed += 1
         try followerWorkerLost(follower, owner, worker); passed += 1
         try refusedOpen(follower, owner, worker); passed += 1
+        try fenceNamesItsCause(follower, owner, worker); passed += 1
+        try proofCeilingEndsTheWait(follower, owner, worker); passed += 1
         print("link-worker: \(passed) groups passed (two processes over loopback; not a hardware pass)")
+    }
+
+    /// A fence names its cause (S24): the follower's report, and so its
+    /// incident, carries the leader's reason; the proofs still come back over
+    /// the live link and the leader's waits end with them.
+    static func fenceNamesItsCause(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
+        try runRequest(pair)
+        let cause = "request 1c3269d9 failed on the pair: Rank 0 reported failure: runtimeError"
+        second.requestNativeCleanup(reason: cause)
+        try require(harness.sawReport("fenced leader fenced: " + cause, seconds: 10), "The follower was not told why it was fenced: \(harness.reports)")
+        let began = now()
+        try require(second.waitForOwnerReleased(deadline: now() + 15_000_000_000) && second.nativeCleanupObserved,
+            "The follower's proofs did not reach the leader after a fence: \(harness.reports) \(second.diagnosticSummary)")
+        let elapsed = Double(now() - began) / 1e9
+        first.requestNativeCleanup(reason: cause)
+        try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+        try shutdown(pair, seconds: 8)
+        let status = try harness.finish()
+        try require(status == 0 && harness.reports.contains("released true"), "Follower reports differ: \(harness.reports)")
+        print(String(format: "PASS a fence names its cause on the follower; proofs back %.1f s after the fence", elapsed))
+    }
+
+    /// After a fence the leader's waits on the follower end by themselves at
+    /// the follower's proof ceiling (its last lease plus the retirement
+    /// allowance) when no proof can arrive, here with the link down. Nothing
+    /// is claimed: cleanup and release stay unobserved and the endpoint says why.
+    static func proofCeilingEndsTheWait(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil, lifetimeNanoseconds: 3_000_000_000, retirementAllowanceNanoseconds: 1_000_000_000)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 6_000_000_000)
+        try require(pair.readiness != nil, "Pair not ready")
+        harness.listener.stop()
+        second.requestNativeCleanup(reason: "check: the leader fences with the link down")
+        let began = now()
+        let proven = second.waitForOwnerReleased(deadline: now() + 30_000_000_000)
+        let elapsed = Double(now() - began) / 1e9
+        try require(!proven && !second.nativeCleanupObserved && !second.ownerDeviceLeaseReleasedObserved, "A wait that ended without a proof claimed one")
+        try require(elapsed < 10, String(format: "The wait outlived the follower's proof ceiling: %.1f s", elapsed))
+        try require(second.diagnosticSummary.contains("proof ceiling passed") && second.diagnosticSummary.contains("check: the leader fences"),
+            "The endpoint does not say why: \(second.diagnosticSummary)")
+        first.requestNativeCleanup()
+        try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+        try shutdown(pair, seconds: 8)
+        let status = try harness.finish()
+        try require(status == 0, "Follower exit \(status): \(harness.reports)")
+        print(String(format: "PASS the proof ceiling ends the leader's wait with the link down: %.1f s (grant 3 s, allowance 1 s)", elapsed))
     }
 
     static func codec() throws {

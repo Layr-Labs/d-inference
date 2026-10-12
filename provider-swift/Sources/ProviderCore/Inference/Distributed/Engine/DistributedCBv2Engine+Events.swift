@@ -118,6 +118,12 @@ extension DistributedCBv2Engine {
         }
         // Internal cancellation is armed before best-effort instrumentation.
         if changed { observe(state, phase: .terminal, reason: state.terminal) }
+        if changed, case .error(let text) = reason {
+            // The cause, bounded, in the leader's log (S24): the owner side's
+            // fixed text or a rank's reason code, never prompt or token text.
+            clusterObservabilityLog(.warning, "distributed request failed",
+                ["generation": String(state.generation.uuidString.lowercased().prefix(8)), "reason": String(text.prefix(300))])
+        }
         publishFailure(state)
     }
 

@@ -364,7 +364,8 @@ private final class ServiceContext: @unchecked Sendable {
                     case .retired(let outcome):
                         try state.observeRetired(requestID: frame.requestID!, retirement: outcome)
                         try releaseRequest(frame.requestID!)
-                    case .failed, .unavailable: state.disconnect()
+                    case .failed(let reason): Self.echoWorkerTail(child, label: "event=failed:\(reason.rawValue)"); state.disconnect()
+                    case .unavailable(let reason): Self.echoWorkerTail(child, label: "event=unavailable:\(reason.rawValue)"); state.disconnect()
                     default: break
                     }
                 }
@@ -395,6 +396,15 @@ private final class ServiceContext: @unchecked Sendable {
     static func echoWorkerTail(_ child: ClusterWorkerProcess, termination: ClusterWorkerProcessTermination) {
         guard let text = ClusterWorkerOwnerService.workerExitEcho(rank: child.rank, termination: termination,
                                                                   diagnosticTail: child.diagnosticTail) else { return }
+        writeDiagnostics(text)
+    }
+    /// S24: the same tail when the worker reports a failed or unavailable
+    /// request while it is still alive, so that its own words for the cause
+    /// reach the member log and the leader's incident.
+    static func echoWorkerTail(_ child: ClusterWorkerProcess, label: String) {
+        writeDiagnostics(ClusterWorkerOwnerService.workerFailureEcho(rank: child.rank, label: label, diagnosticTail: child.diagnosticTail))
+    }
+    static func writeDiagnostics(_ text: String) {
         _ = fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
         let bytes = Array(text.utf8)
         var offset = 0
@@ -431,8 +441,14 @@ extension ClusterWorkerOwnerService {
     /// public end-to-end track added for the same purpose).
     static func workerExitEcho(rank: Int, termination: ClusterWorkerProcessTermination, diagnosticTail: Data) -> String? {
         if case .exited(0) = termination { return nil }
+        return workerDiagnosticEcho(header: "darkbloom-worker-exit-v1 rank=\(rank) termination=\(termination)", diagnosticTail: diagnosticTail)
+    }
+    static func workerFailureEcho(rank: Int, label: String, diagnosticTail: Data) -> String {
+        workerDiagnosticEcho(header: "darkbloom-worker-fail-v1 rank=\(rank) \(label)", diagnosticTail: diagnosticTail)
+    }
+    static func workerDiagnosticEcho(header: String, diagnosticTail: Data) -> String {
         let tail = String(decoding: diagnosticTail.suffix(2_048), as: UTF8.self)
-        var text = "darkbloom-worker-exit-v1 rank=\(rank) termination=\(termination)\n"
+        var text = header + "\n"
         for line in tail.split(whereSeparator: \.isNewline).suffix(12) {
             // Control characters removed: the member log and the incident record are plain text.
             let clean = String(String.UnicodeScalarView(line.prefix(300).unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }))

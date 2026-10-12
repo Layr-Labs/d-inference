@@ -46,6 +46,7 @@ public enum ClusterFailureReason: String, Codable, Sendable, CaseIterable {
     case cleanupUnresolved = "cleanup_unresolved"
     case modelBusy = "model_busy"
     case listenerFailed = "listener_failed"
+    case requestFailed = "request_failed"
     case runtimeError = "runtime_error"
     case unclassified = "unclassified"
 
@@ -159,6 +160,7 @@ public enum ClusterFailureClassifier {
         Rule("rdma-completion", #"work completion error|\[jaccl\][^\n]*status=\d"#, .rdmaCompletionError),
         Rule("collective-guard", #"collective progress (?:guard|limit)|no-progress stall|no progress for|collective_stall|progress guard (?:fired|expired)|guard exit|exit(?:ed)? (?:with )?(?:status |code )?75\b|termination=exited\(75\)"#, .collectiveStall),
         Rule("rank-lease", #"rank lease (?:lapsed|expired)|lease renewal refused|lease (?:expired|lapsed)"#, .rankLeaseExpired),
+        Rule("request-failed", #"darkbloom-worker-fail-v1|failed on the pair:|rank [01] (?:reported failure|became unavailable)|worker request failed"#, .requestFailed),
         Rule("runtime-mismatch", #"executable bytes differ from the expected binary|runtime description differs from the saved capability|installed worker changed while|has no collective progress guard|worker policy or device geometry differs|native launch differs from installed owner binding|importerror"#, .workerRuntimeMismatch),
         Rule("version", #"unsupported worker protocol version|protocol version|versions? (?:do not match|mismatch|differ)|python local=\S+ remote="#, .versionMismatch),
         Rule("model-identity", #"model identity differs|resident identity differs|checkpoint aggregate mismatch|checkpoint manifest differs|artifact (?:sha-?256 )?differs|installed input identity or sha-256 differs"#, .modelIdentityMismatch),
@@ -347,6 +349,9 @@ extension ClusterGuidance {
         .listenerFailed: .init(code: "listener_failed", title: "The local serving port could not be opened",
             explanation: "The leader could not listen on its local API port, so the pair was stopped again.",
             steps: ["Check that no other process uses the port (`darkbloom local` shows it), or choose another with --port."]),
+        .requestFailed: .init(code: "request_failed", title: "A request failed on the pair",
+            explanation: "A rank could not complete a request, so the pair stopped and gave its memory back. The technical detail (the owner side's own words and the worker's last lines) is recorded with this incident.",
+            steps: ["Start the pair again; it serves from scratch.", "If it repeats for one kind of request (for example sampled requests), keep the incident and the worker's log for the operator: it is a bug to fix, not a setting."]),
         .runtimeError: .init(code: "runtime_error", title: "The model runtime hit an internal error",
             explanation: "A rank's runtime raised an error of its own while loading or serving, not a link or memory failure.",
             steps: ["Retry once.", "If it repeats, keep the incident and the worker's log for the operator: it is a bug to fix, not a setting."]),

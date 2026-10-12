@@ -175,6 +175,11 @@ func classifierChecks() {
         ("There is no Stream(cpu, 2) in current thread", [], .runtimeError),
         ("launcher terminated with -15", [], .workerCrashed),
         ("topology change refused while a request is being served", [], .modelBusy),
+        // A request that failed on the pair names its cause (S24): the pair's own line, or the worker's tail.
+        ("The serving session stopped without being asked to (session quarantined); rank 0 ended: its owner exited with status 0",
+         ["request 1c3269d9 failed on the pair: Rank 0 reported failure: runtimeError"], .requestFailed),
+        ("The serving session stopped without being asked to (session quarantined)",
+         ["darkbloom-worker-fail-v1 rank=1 event=failed:runtimeError\ndarkbloom-worker-tail-v1 Speculative window produced non-finite logits"], .requestFailed),
     ]
     for (index, item) in cases.enumerated() {
         let result = ClusterFailureClassifier.classify(.init(error: item.0, diagnostics: item.1))

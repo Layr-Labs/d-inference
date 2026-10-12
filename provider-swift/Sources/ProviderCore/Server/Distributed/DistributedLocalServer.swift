@@ -107,7 +107,8 @@ public actor DistributedLocalServer {
     func recordCleanupUnresolved(_ target: DistributedLocalServerGeneration) {
         guard let observability else { return }
         observability.recordFailure(.cleanupUnresolved, source: "leader",
-            error: "Distributed cleanup is unresolved (session \(target.session.status.rawValue)); ownership cannot be resolved yet",
+            error: "Distributed cleanup is unresolved (session \(target.session.status.rawValue)); ownership cannot be resolved yet"
+                + (target.session.httpStopDetail.map { "; " + $0 } ?? ""),
             facts: target.session.httpObservabilityFacts, severity: .warn)
     }
 

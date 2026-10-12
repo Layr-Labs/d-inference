@@ -729,4 +729,16 @@ Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33
 - **The second Mac changed on 2026-10-11 17:15 PDT**: the M5 Max (128 GB) was replaced by an M5 Ultra. Nothing in the
   placement code names a chip (every figure comes from the detected profile and the measured or assumed speeds), so
   the pair re-plans from the new Mac's profile; the hardware results above are the M3 Ultra + M5 Max pair's.
+- **The M3 Ultra + M5 Ultra pair, model-free (2026-10-12 02:05Z)**: both Macs' plan tools, given both Macs' idle
+  profiles (M5 Ultra: 256 GiB, 80 GPU cores, 240 GiB GPU working set, 5.3 GiB wired), printed byte-equal plans for every
+  layout; they are a second golden set (`Tests/PlacementChecks/Golden/pairs/m3ultra-m5ultra/`). With memory alone (no
+  speed records) the planner splits evenly: 9B cut 16, 27B 32, Gemma 4 15, GPT-OSS 12, Nemotron 27, the A3B rows 20,
+  Bonsai 32, all pipeline, and MiMo cut 14 with the M5 Ultra holding 34 of 48 layers (the opposite of the M5 Max pair,
+  cut 41). The M5 Ultra holds every family alone, MiMo included; the M3 Ultra cannot hold MiMo alone. No hardware run
+  of the new pair is recorded here yet.
+- **Memory a running program holds wired**: while another account's model server held 222.9 GiB of the M5 Ultra wired,
+  the plan said "cannot fit on this Mac whatever is freed". The fit tiers count wired memory as not freeable, which is
+  right for the system's own share; when more than a quarter of a Mac's memory is wired the plan now names that share
+  on the device line and says stopping the program gives it back, in each answer within the Mac's memory and in a
+  refusal.
 - MTP per family: `handoff/MTP-PAIR.md`.

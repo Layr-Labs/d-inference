@@ -254,9 +254,19 @@ private final class LiveContext: @unchecked Sendable {
             throw ClusterSetupFailure("no RDMA port is active on this Mac: check the cable (step 2)")
         }
         return ClusterSetupMemberFacts(memberID: pairing.localMemberID, linkAddress: selection.local.address.dottedDecimal,
-            user: NSUserName(), ownerExecutable: settings.darkbloomExecutable.path, workerExecutable: worker,
+            user: NSUserName(), ownerExecutable: Self.ownerExecutable(settings.darkbloomExecutable), workerExecutable: worker,
             modelDirectory: modelDirectory, runtimeBinarySHA256: ClusterConfigurationCodec.sha256(workerData),
             jacclDevice: device, linkSecretFile: pairing.secretFile)
+    }
+
+    /// The installed owner a setup names: this executable. DEBUG builds only:
+    /// a harness that runs each Mac in a task-owned home names its wrapper
+    /// (which sets that home) with `DARKBLOOM_DEBUG_OWNER_EXECUTABLE`.
+    static func ownerExecutable(_ executable: URL) -> String {
+        #if DEBUG
+        if let wrapper = ProcessInfo.processInfo.environment["DARKBLOOM_DEBUG_OWNER_EXECUTABLE"], wrapper.hasPrefix("/") { return wrapper }
+        #endif
+        return executable.path
     }
 
     /// Starts answering the other Mac's wizard once this Mac has paired; a

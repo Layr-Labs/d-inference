@@ -715,4 +715,18 @@ Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33
 - **With measured speeds** (the timed solo runs of the A3B rows on each Mac, as `ClusterSpeedMeasurement` files),
   the planner moves the A3B rows from an even pipeline split to cut 12 and `phase_split_mtp_v1`: the faster M5 Max
   holds every layer and decodes alone with the head.
+- **Measured speeds for every MoE row** (M5 Max pair, 2026-10-11, 4,096-token prompt, 64 outputs, prefix cache off,
+  prefill `one_chunk_lookahead_v1`, all four lanes). Given each Mac's timed solo run, the planner moved every row
+  towards the M5 Max: Nemotron cut 20 phase split, GPT-OSS cut 10 pipeline, Gemma 4 QAT cut 9 pipeline, the A3B rows
+  cut 12 phase split with MTP. At those plans the pair's first token beat both Macs alone on every row (GPT-OSS
+  1.10-1.14 s against 1.17 s on the M5 Max and 2.38 s on the M3 Ultra; Gemma QAT 0.83-0.86 s against 1.04 and 2.30 s;
+  Qwen3.5 / Qwen3.6 35B A3B 0.93-1.04 s against 1.20-1.29 and 2.20-2.29 s); decode beat both on the A3B rows (MTP on
+  the decoding M5 Max: 132-142 and 143-158 tok/s against 86-87 alone without a head) and lay between the two Macs for
+  GPT-OSS and Gemma (pipeline decode crosses the cable once per token). Nemotron at cut 20 passed against a Mac A
+  staged reference at that cut (first difference at token 16, an exact tie), first token 1.13 s, decode 96.7 tok/s.
+  The recorded runs of GPT-OSS, Gemma and the A3B rows at these cuts and Nemotron's timed repeat were stopped by a
+  three-minute loss of the M5 Max's Thunderbolt RDMA address and then by the replacement of that Mac.
+- **The second Mac changed on 2026-10-11 17:15 PDT**: the M5 Max (128 GB) was replaced by an M5 Ultra. Nothing in the
+  placement code names a chip (every figure comes from the detected profile and the measured or assumed speeds), so
+  the pair re-plans from the new Mac's profile; the hardware results above are the M3 Ultra + M5 Max pair's.
 - MTP per family: `handoff/MTP-PAIR.md`.

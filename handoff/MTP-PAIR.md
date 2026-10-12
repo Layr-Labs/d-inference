@@ -118,3 +118,9 @@ the extra accepted draft; depth 3 is therefore the A3B rows' default (`QwenMTPTe
 declared (the product's way), both rows then ran depth 3 on the pair: 114.4 tok/s (Qwen3.5, `divergedAtNearTie` at
 10, as the plain pair) and 121.3 tok/s (Qwen3.6, tokens equal). Why five rows
 cost so much more than four in the routed-expert matmul is an MLX kernel question for the optimisation phase.
+
+At the planner's speed-informed plan (cut 12: rank 1 holds every layer but the first twelve and decodes alone with the
+head; same request, depth 3, prefix cache off) the A3B rows ran 125.5 and 137.2 tok/s with serial prefill, each passing
+against a Mac A staged phase-split reference at cut 12 (first difference at a near tie), and 131.6-141.6 and
+142.5-157.9 tok/s with prefill `one_chunk_lookahead_v1` (timed, three requests in one session; first token 0.93-1.04 s
+against 1.20-1.29 s for the M5 Max alone). These are M3 Ultra + M5 Max figures; the M5 Max has since been replaced.

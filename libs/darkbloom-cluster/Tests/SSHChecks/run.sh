@@ -14,7 +14,7 @@ for task_module in DarkbloomClusterProtocol DarkbloomClusterProcess DarkbloomClu
     -I "$task_build" -L "$task_build" "${task_links[@]}" -Xlinker -rpath -Xlinker "$task_build" \
     "$task_root/Sources/$task_module"/*.swift -o "$task_build/lib$task_module.dylib"
 done
-for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests RetirementShutdownTests DiagnosticFailureWorker LateDiagnosticOwner OwnerDiagnosticDrainTests; do
+for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests OwnerWriterWakeTests RetirementShutdownTests DiagnosticFailureWorker LateDiagnosticOwner OwnerDiagnosticDrainTests; do
   task_source="$task_root/Tests/SSHChecks/$task_name.swift"
   if [[ "$task_name" == FakeClusterWorker ]]; then task_source="$task_root/Tests/ProcessChecks/$task_name.swift"; fi
   task_sources=("$task_root/Tests/ProcessChecks/FixtureIdentity.swift" "$task_source")
@@ -25,6 +25,7 @@ for task_name in FakeClusterWorker FakeOwner RemoteOwnerTests RetirementShutdown
     -Xlinker -rpath -Xlinker "$task_build" "${task_sources[@]}" -o "$task_build/$task_name"
 done
 "$task_build/RemoteOwnerTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
+"$task_build/OwnerWriterWakeTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker"
 mkdir "$task_build/retirement-checks"
 "$task_build/RetirementShutdownTests" "$task_build/FakeOwner" "$task_build/FakeClusterWorker" "$task_build/retirement-checks" corrected
 mkdir "$task_build/diagnostic-checks"

@@ -47,9 +47,14 @@ struct Logout: AsyncParsableCommand {
     }
 
     private static func localProviderIdentities() -> [ProcessIdentity] {
-        [DaemonStateFile.read()?.processIdentity,
-         LaunchAgent.launchSnapshot()?.process,
-         ProcessLifecycle.existingPID().flatMap { ProcessIdentity.read(pid: $0) }].compactMap { $0 }
+        providerIdentities(state: DaemonStateFile.read(), launchProcess: LaunchAgent.launchSnapshot()?.process)
+    }
+
+    static func providerIdentities(state: DaemonState?, launchProcess: ProcessIdentity?) -> [ProcessIdentity] {
+        let recorded = state.flatMap { state in
+            state.processIdentity.flatMap { $0.pid == state.pid ? $0 : nil }
+        }
+        return [recorded, launchProcess].compactMap { $0 }
     }
 
     static func requireExited(_ identities: [ProcessIdentity]) throws {

@@ -28,6 +28,22 @@ import Testing
         try Logout.requireExited([.init(pid: live.pid, startTimeMicros: live.startTimeMicros + 1)])
     }
 
+    @Test func reusedPIDCannotBecomeAnUnrelatedProvider() throws {
+        let current = try #require(ProcessIdentity.current())
+        let old = ProcessIdentity(pid: current.pid, startTimeMicros: current.startTimeMicros + 1)
+        var state = DaemonState(pid: old.pid, processIdentity: old,
+            version: "test", writtenAt: 0, startedAt: 0)
+        let identities = Logout.providerIdentities(state: state, launchProcess: nil)
+        #expect(identities == [old])
+        try Logout.requireExited(identities)
+        #expect(Logout.providerIdentities(state: nil, launchProcess: nil).isEmpty)
+        state.pid += 1
+        #expect(Logout.providerIdentities(state: state, launchProcess: nil).isEmpty)
+        #expect(throws: ValidationError.self) {
+            try Logout.requireExited(Logout.providerIdentities(state: nil, launchProcess: current))
+        }
+    }
+
     @Test func revocationUsesSavedIssuerWithoutRunningProvider() async {
         let confirmed = await Logout.revokeSavedToken("synthetic-token",
             issuer: { token in

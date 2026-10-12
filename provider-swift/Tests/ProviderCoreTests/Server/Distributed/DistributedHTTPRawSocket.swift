@@ -13,6 +13,14 @@ final class HTTPRawSocket: @unchecked Sendable {
         let fd = lock.withLock { let value = descriptor; descriptor = -1; return value }
         if fd >= 0 { Darwin.close(fd) }
     }
+    /// An aborting client: the close resets the connection (no orderly FIN).
+    func reset() {
+        let fd = lock.withLock { let value = descriptor; descriptor = -1; return value }
+        guard fd >= 0 else { return }
+        var linger = Darwin.linger(l_onoff: 1, l_linger: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<Darwin.linger>.size))
+        Darwin.close(fd)
+    }
     func halfCloseWrite() throws {
         let fd = lock.withLock { descriptor }
         guard Darwin.shutdown(fd, SHUT_WR) == 0 else { throw Failure.write }

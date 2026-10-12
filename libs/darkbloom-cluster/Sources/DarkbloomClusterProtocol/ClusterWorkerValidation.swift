@@ -43,6 +43,7 @@ enum ClusterWorkerValidation {
             && value.stopTokenIDs.allSatisfy({ (0..<ClusterWorkerLimits.vocabularySize).contains($0) })
             && value.deadlineUptimeNanoseconds > 0 && value.deadlineUptimeNanoseconds <= UInt64(Int64.max)
             && (1...ClusterWorkerLimits.capacityBytes).contains(value.capacityLimitBytes), "Invalid worker reservation")
+        if let sampling = value.sampling { try ClusterWorkerSamplingCodec.validate(sampling) }
     }
     static func command(_ frame: ClusterWorkerCommandFrame) throws {
         try workerRequire(frame.sequence < UInt64(Int64.max), "Invalid command sequence")

@@ -86,6 +86,14 @@ final class DistributedHTTPResponse: @unchecked Sendable {
         return result.0
     }
 
+    /// The engine committed the request's first token. That meets the first
+    /// content budget, as the engine's own first-token deadline is met: the
+    /// first tokens of a tool call or of hidden reasoning are generated but
+    /// not yet a visible frame, and must not be cancelled for it.
+    func firstTokenCommitted(at now: ContinuousClock.Instant = ContinuousClock.now) {
+        _ = contentAccepted(at: now)
+    }
+
     var deadlineExpired: Bool { lock.withLock { expired } }
     var selectedDeadline: ContinuousClock.Instant? { lock.withLock { deadline } }
     var contentMissingAtTerminal: Bool { lock.withLock { deadline != nil && !acceptedContent } }

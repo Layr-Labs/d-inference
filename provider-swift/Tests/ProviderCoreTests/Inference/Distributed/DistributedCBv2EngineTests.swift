@@ -147,27 +147,91 @@ struct DistributedCBv2EngineTests {
         }
     }
 
-    @Test func unsupportedRequestsNeverReserve() async throws {
+    /// Every refusal names its rule (a 4xx with that reason at the client)
+    /// and never reaches the owner.
+    @Test func unsupportedRequestsAreRefusedWithTheirReasonAndNeverReserve() async throws {
         let owner = DistributedTestOwner()
         let engine = try distributedTestEngine(owner)
-        var requests: [CBv2Request] = []
-        var request = distributedTestRequest(); request.sampling.temperature = 1; requests.append(request)
-        request = distributedTestRequest(); request.sampling.temperature = .nan; requests.append(request)
-        request = distributedTestRequest(); request.sampling.topLogprobs = 1; requests.append(request)
-        request = distributedTestRequest(); request.sampling.logitBias = [1: 1]; requests.append(request)
-        request = distributedTestRequest(); request.sampling.seed = 1; requests.append(request)
-        request = distributedTestRequest(); request.priority = 1; requests.append(request)
-        request = distributedTestRequest(); request.promptTokens = []; requests.append(request)
-        request = distributedTestRequest(); request.promptTokens = [100]; requests.append(request)
-        request = distributedTestRequest(); request.promptTokens = Array(repeating: 1, count: 8193); requests.append(request)
-        request = distributedTestRequest(); request.maxTokens = 129; requests.append(request)
-        request = distributedTestRequest(); request.maxTokens = Int.max; requests.append(request)
-        request = distributedTestRequest(); request.stopStrings = [""]; requests.append(request)
-        for invalid in requests {
-            #expect(throws: DistributedEngineError.self) { try engine.submit(invalid) }
+        var cases: [(CBv2Request, DistributedRequestRefusal)] = []
+        var request = distributedTestRequest(); request.sampling.temperature = .nan; cases.append((request, .invalidSampling))
+        request = distributedTestRequest(); request.sampling.logitBias = [1: .infinity]; cases.append((request, .invalidSampling))
+        request = distributedTestRequest(); request.sampling.topLogprobs = 1; cases.append((request, .logprobsUnsupported))
+        request = distributedTestRequest(); request.priority = 1; cases.append((request, .priorityUnsupported))
+        request = distributedTestRequest(); request.promptTokens = []; cases.append((request, .emptyPrompt))
+        request = distributedTestRequest(); request.promptTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
+        request = distributedTestRequest(); request.stopTokens = [100]; cases.append((request, .tokenOutsideVocabulary))
+        request = distributedTestRequest(); request.promptTokens = Array(repeating: 1, count: 8193); cases.append((request, .promptTooLong))
+        request = distributedTestRequest(); request.maxTokens = 0; cases.append((request, .invalidMaxTokens))
+        request = distributedTestRequest(); request.maxTokens = 129; cases.append((request, .outputTooLong))
+        request = distributedTestRequest(); request.maxTokens = Int.max; cases.append((request, .outputTooLong))
+        request = distributedTestRequest(); request.stopStrings = [""]; cases.append((request, .invalidStopSequences))
+        for (invalid, reason) in cases {
+            #expect(throws: DistributedEngineError.refused(reason)) { try engine.submit(invalid) }
         }
         #expect(owner.reserveCount == 0)
         await engine.shutdown()
+    }
+
+    /// Sampling is served: the owner receives the request's values, with an
+    /// omitted seed resolved to the engine's own fallback (as the product's
+    /// engine keys unseeded rows), and a seeded request keeps its seed.
+    @Test func sampledRequestsReachTheOwnerWithAResolvedSeed() async throws {
+        let owner = DistributedTestOwner()
+        let engine = try distributedTestEngine(owner)
+        for seed in [nil, UInt64(42)] {
+            var request = distributedTestRequest(UInt64(seed ?? 7), maxTokens: 1)
+            request.sampling = .init(temperature: 0.7, topP: 0.9, topK: 20, repetitionPenalty: 1.1,
+                presencePenalty: 0.5, seed: seed, logitBias: [5: -100, 1000: 3])
+            let stream = try engine.submit(request)
+            owner.last.send(.token(4)); owner.last.acknowledge()
+            _ = await distributedCollect(stream)
+            let reserved = try #require(owner.reservedRequests.last)
+            #expect(reserved.sampling.seed == (seed ?? engine.fallbackSeed))
+            let wire = try #require(DistributedSampling.wire(for: reserved, vocabularySize: 100))
+            #expect(wire.temperature == 0.7 && wire.topP == 0.9 && wire.topK == 20 && wire.stream == reserved.id.raw)
+            #expect(wire.seed == (seed ?? engine.fallbackSeed) && wire.repetitionPenalty == 1.1 && wire.presencePenalty == 0.5)
+            // Bias for a token outside the vocabulary has no effect and is dropped.
+            #expect(wire.logitBias == [.init(tokenID: 5, bias: -100)])
+        }
+        // Greedy text with no transform carries no sampling at all.
+        #expect(DistributedSampling.wire(for: distributedTestRequest(), vocabularySize: 100) == nil)
+        var greedyBias = distributedTestRequest(); greedyBias.sampling.logitBias = [3: 5]
+        #expect(DistributedSampling.wire(for: greedyBias, vocabularySize: 100)?.isStochastic == false)
+        var wideTopK = distributedTestRequest(); wideTopK.sampling.temperature = 1; wideTopK.sampling.topK = 500
+        #expect(DistributedSampling.wire(for: wideTopK, vocabularySize: 100)?.topK == 0)
+        await engine.shutdown()
+    }
+
+    @Test func refusalsBecomeClientErrorsWithTheirReason() throws {
+        let profile = try distributedTestProfile()
+        for refusal in DistributedRequestRefusal.allCases {
+            let message = EngineV2Translation.admissionErrorMessage(
+                for: DistributedEngineError.refused(refusal), distributedProfile: profile)
+            let typed = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
+            guard case .distributedRequestRefused(let parsed, let text) = typed else {
+                Issue.record("\(refusal) did not parse: \(message)"); continue
+            }
+            #expect(parsed == refusal && text == refusal.message(profile))
+            #expect(ProviderLoop.mapInferenceErrorToStatus(typed) == 400)
+            let failure = ProviderLoop.sanitizedInferenceFailure(from: typed, phase: .generation)
+            // Over this pair's context: the coordinator may route it to a node
+            // with more room (the product's own `request_exceeds_context`
+            // classification); every other refusal is the client's.
+            #expect(failure.code == (refusal.exceedsContext ? .capacity : .invalidRequest))
+            #expect(failure.errorReason == (refusal.exceedsContext ? .requestExceedsContext : .clientError))
+        }
+        #expect(DistributedRequestRefusal.outputTooLong.message(profile).contains("128"))
+        let unavailable = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+            EngineV2Translation.admissionErrorMessage(for: DistributedEngineError.unavailable))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(unavailable) == 503)
+        let busy = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
+            EngineV2Translation.admissionErrorMessage(for: CBv2KVError.capacityExhausted(needed: 1, available: 0)))
+        #expect(ProviderLoop.mapInferenceErrorToStatus(busy) == 429)
+        // An omitted max_tokens: the product's default, cut to the pair's context.
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 30_000, contextLimit: 32_768) == 2768)
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 100, contextLimit: 32_768) == 4096)
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 40_000, contextLimit: 32_768) == 1)
+        #expect(EngineV2Translation.defaultOutputTokens(4096, promptTokens: 30_000, contextLimit: nil) == 4096)
     }
 
     @Test func customProfileAndBudgetAreEnforcedWithoutGeometryAssumptions() async throws {

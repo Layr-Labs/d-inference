@@ -38,7 +38,8 @@ extension DistributedLocalServer {
             owner: session, expectedIdentity: session.expectedIdentity,
             publicModelID: session.model.publicModelID, profile: session.profile,
             tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
-            firstTokenBudgetPolicy: firstTokenBudgetPolicy, residentPrefixEvidence: evidence)
+            firstTokenBudgetPolicy: firstTokenBudgetPolicy, residentPrefixEvidence: evidence,
+            modelDirectory: session.model.directory)
     }
 
     func prepareAndBind(_ target: DistributedLocalServerGeneration, timeout: Duration) async throws {

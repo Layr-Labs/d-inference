@@ -20,9 +20,15 @@ enum DistributedHTTPEventStream {
         guard frame.hasPrefix("data: "), frame.hasSuffix("\n\n"),
               let object = try JSONSerialization.jsonObject(with: Data(frame.dropFirst(6).dropLast(2).utf8)) as? [String: Any],
               let choices = object["choices"] as? [[String: Any]] else { throw Failure.malformedFrame }
+        // The product's rule for visible assistant output: content, reasoning
+        // content or tool calls (`ProviderLoop.hasVisibleStreamOutput`).
         return choices.contains { choice in
-            guard let delta = choice["delta"] as? [String: Any], let content = delta["content"] as? String else { return false }
-            return !content.isEmpty
+            guard let delta = choice["delta"] as? [String: Any] else { return false }
+            for key in ["content", "reasoning_content", "reasoning"] {
+                if let text = delta[key] as? String, !text.isEmpty { return true }
+            }
+            if let calls = delta["tool_calls"] as? [Any], !calls.isEmpty { return true }
+            return false
         }
     }
 

@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 import MLXLMCommon
 
@@ -46,7 +47,6 @@ public struct DistributedResidentIdentity: Sendable, Equatable {
 }
 
 /// Model-specific limits; the shared lifecycle does not assume a Qwen geometry.
-/// Only greedy text generation without speculative decoding is supported today.
 public struct DistributedResidentExecutionProfile: Sendable {
     public let id: String
     public let vocabularySize: Int
@@ -177,7 +177,9 @@ public protocol DistributedDeadlineExecutionOwner: DistributedResidentExecutionO
 
 public enum DistributedEngineError: Error, Sendable, Equatable {
     case invalidConfiguration(String)
-    case unsupportedRequest(String)
+    /// A request this pair can never serve as asked. Deterministic for the
+    /// request and the loaded model: the client is told why with a 4xx.
+    case refused(DistributedRequestRefusal)
     case unavailable
     case shuttingDown
     /// This request alone was refused before it started, for capacity: it is
@@ -185,4 +187,115 @@ public enum DistributedEngineError: Error, Sendable, Equatable {
     /// gate refused its reservation (and the other rank gave its back). The
     /// owner keeps serving; the client gets a retryable capacity status.
     case refusedForCapacity(requestedContextTokens: Int, servingContextTokens: Int, reason: String)
+}
+
+/// Why a request was refused before it reached the pair. A closed set: the
+/// text names the rule and the model's own limits, never request content, so
+/// it may be returned to the client as is.
+public enum DistributedRequestRefusal: String, Sendable, Equatable, CaseIterable {
+    case emptyPrompt = "empty_prompt"
+    case promptTooLong = "prompt_too_long"
+    case invalidMaxTokens = "invalid_max_tokens"
+    case outputTooLong = "output_too_long"
+    case contextTooLong = "context_too_long"
+    case tokenOutsideVocabulary = "token_outside_vocabulary"
+    case logprobsUnsupported = "logprobs_unsupported"
+    case constrainedDecodingUnsupported = "constrained_decoding_unsupported"
+    case mediaUnsupported = "media_unsupported"
+    case priorityUnsupported = "priority_unsupported"
+    case invalidStopSequences = "invalid_stop_sequences"
+    case invalidSampling = "invalid_sampling"
+    case tooManyLogitBiasEntries = "too_many_logit_bias_entries"
+
+    /// The prompt or output does not fit the model's limits on the pair:
+    /// the coordinator classifies these as exceeding context.
+    public var exceedsContext: Bool {
+        [.promptTooLong, .outputTooLong, .contextTooLong].contains(self)
+    }
+
+    /// The client-facing text. With the profile it names the model's limits.
+    public func message(_ profile: DistributedResidentExecutionProfile?) -> String {
+        func limit(_ value: Int?) -> String { value.map { " of \($0) tokens" } ?? "" }
+        switch self {
+        case .emptyPrompt: return "The prompt is empty."
+        case .promptTooLong:
+            return "The prompt is longer than this model's limit\(limit(profile?.maxPromptTokens)) on this cluster."
+        case .invalidMaxTokens: return "max_tokens must be at least 1."
+        case .outputTooLong:
+            return "max_tokens is above this model's output limit\(limit(profile?.maxOutputTokens)) on this cluster."
+        case .contextTooLong:
+            return "The prompt plus max_tokens is above this model's context\(limit(profile?.maxContextTokens)) on this cluster."
+        case .tokenOutsideVocabulary: return "A token is outside this model's vocabulary."
+        case .logprobsUnsupported: return "logprobs are not supported on this cluster."
+        case .constrainedDecodingUnsupported: return "Constrained decoding is not supported for this model on this cluster."
+        case .mediaUnsupported: return "Media input is not supported on this cluster."
+        case .priorityUnsupported: return "Request priority is not supported on this cluster."
+        case .invalidStopSequences: return "Stop sequences must be at most 16, each non-empty and at most 1,024 bytes."
+        case .invalidSampling: return "A sampling parameter is not a finite number."
+        case .tooManyLogitBiasEntries:
+            return "logit_bias has more than \(ClusterWorkerSampling.maximumLogitBiasEntries) entries."
+        }
+    }
+}
+
+extension DistributedResidentExecutionProfile {
+    /// The first rule a request breaks on this pair, or nil when the pair can
+    /// serve it. The engine refuses with it before any reservation; the owner
+    /// checks it again before anything reaches a worker.
+    func refusal(for request: CBv2Request) -> DistributedRequestRefusal? {
+        let p = request.sampling
+        if request.multimodal != nil || request.positionState != nil { return .mediaUnsupported }
+        if request.tokenConstraint != nil { return .constrainedDecodingUnsupported }
+        if p.topLogprobs != 0 { return .logprobsUnsupported }
+        if request.priority != 0 { return .priorityUnsupported }
+        if request.promptTokens.isEmpty { return .emptyPrompt }
+        if request.promptTokens.count > maxPromptTokens { return .promptTooLong }
+        if request.maxTokens <= 0 { return .invalidMaxTokens }
+        if request.maxTokens > maxOutputTokens { return .outputTooLong }
+        let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)
+        if total.overflow || total.partialValue > maxContextTokens { return .contextTooLong }
+        if !request.promptTokens.allSatisfy({ 0 <= $0 && $0 < vocabularySize })
+            || !request.stopTokens.allSatisfy({ 0 <= $0 && $0 < vocabularySize }) {
+            return .tokenOutsideVocabulary
+        }
+        if request.stopStrings.count > 16 || !request.stopStrings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 }) {
+            return .invalidStopSequences
+        }
+        let values = [p.temperature, p.topP, p.minP, p.repetitionPenalty, p.frequencyPenalty, p.presencePenalty]
+        if !values.allSatisfy(\.isFinite) || !p.logitBias.values.allSatisfy(\.isFinite) { return .invalidSampling }
+        if DistributedSampling.logitBias(p.logitBias, vocabularySize: vocabularySize).count
+            > ClusterWorkerSampling.maximumLogitBiasEntries {
+            return .tooManyLogitBiasEntries
+        }
+        return nil
+    }
+}
+
+/// The worker's view of a request's sampling, resolved as the single-Mac
+/// product resolves it.
+enum DistributedSampling {
+    /// Entries for tokens outside the vocabulary have no effect in the
+    /// product's sampler and are dropped here; the rest ascend by token.
+    static func logitBias(_ bias: [Int: Float], vocabularySize: Int) -> [ClusterWorkerSampling.LogitBias] {
+        bias.filter { 0 <= $0.key && $0.key < vocabularySize }.sorted { $0.key < $1.key }
+            .map { .init(tokenID: $0.key, bias: $0.value) }
+    }
+
+    /// Nil for greedy text with no transform: the reservation then carries no
+    /// sampling and the worker selects the argmax as it always has. Otherwise
+    /// the request's values; its seed must already be resolved (the engine
+    /// gives an omitted seed its own fallback, as the product's engine does),
+    /// and the stream is the request's product identity.
+    static func wire(for request: CBv2Request, vocabularySize: Int) -> ClusterWorkerSampling? {
+        let p = request.sampling
+        let value = ClusterWorkerSampling(temperature: p.temperature, topP: p.topP,
+            // The product applies top-k only below the vocabulary.
+            topK: p.topK > 0 && p.topK < vocabularySize ? p.topK : 0, minP: p.minP,
+            repetitionPenalty: p.repetitionPenalty,
+            repetitionContextSize: min(max(0, p.repetitionContextSize), ClusterWorkerLimits.contextTokens),
+            frequencyPenalty: p.frequencyPenalty, presencePenalty: p.presencePenalty,
+            seed: p.seed ?? 0, stream: request.id.raw,
+            logitBias: logitBias(p.logitBias, vocabularySize: vocabularySize))
+        return value.isGreedyNoOp ? nil : value
+    }
 }

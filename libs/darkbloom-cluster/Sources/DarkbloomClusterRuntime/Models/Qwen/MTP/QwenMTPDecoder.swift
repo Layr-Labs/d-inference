@@ -14,7 +14,11 @@ import MLXLMCommon
 /// target's own greedy token at each column is kept, followed by the target's
 /// token at the first mismatch (or the bonus column). So every emitted token is
 /// the target's argmax at its own column, as in the product's exact acceptance
-/// for greedy rows. Both stages then keep that many positions (recurrent state
+/// for greedy rows. A sampled request compares with the product's keyed target
+/// sample at each column instead (target-prefix acceptance), so every emitted
+/// token is the draw the ordinary path makes at that output index; one whose
+/// transforms depend on its history decodes plainly, as the product gates it.
+/// Both stages then keep that many positions (recurrent state
 /// selected at the kept position, attention rows rolled back by the rest) and
 /// the head keeps only trusted history, exactly as the product's finalize does.
 ///
@@ -141,7 +145,10 @@ final class QwenMTPDecoder {
               lastToken: Int, offset: Int, remaining: Int, check: () throws -> Void) throws -> Emitted {
         guard !released, remaining >= 1 else { throw ProbeError("Speculative decode stepped past its request") }
         let depth = terms.depth
-        guard let carry, carry.token == lastToken, remaining >= depth else {
+        // A sampled request whose transforms depend on its history (logit
+        // bias, penalties) is never speculated, as in the product.
+        let verifiable = request.sampler?.admitsSpeculativeVerification ?? true
+        guard verifiable, let carry, carry.token == lastToken, remaining >= depth else {
             // The product's own rule: no carry or too few tokens left, one plain step.
             self.carry = nil
             statistics.plainSteps += 1
@@ -169,7 +176,10 @@ final class QwenMTPDecoder {
             let residual = w0.outputs[0]
             let w1 = try consumer.beginWindow(tokens: window, offset: offset, residual: residual)
             let logits = w1.outputs[0], targetHidden = w1.outputs[1]
-            let targets = argMax(logits, axis: -1).asType(.int32)
+            // Greedy: the target's argmax per column. Sampled: the product's
+            // target-prefix pre-sampling, each column a keyed target sample at
+            // its own output index; acceptance below is the same walk.
+            let targets = request.sampler?.verify(logits)?.asType(.int32) ?? argMax(logits, axis: -1).asType(.int32)
             let finite = all(isFinite(logits))
             try checked()
             let built = DispatchTime.now().uptimeNanoseconds
@@ -193,6 +203,7 @@ final class QwenMTPDecoder {
             var emitted = min(accepted + 1, remaining)
             if let stop = targetIDs[..<emitted].firstIndex(where: stopTokens.contains) { emitted = stop + 1 }
             let tokens = Array(targetIDs[..<emitted])
+            request.sampler?.commitRound(tokens)
             var digests: [String] = []
             for index in 0..<emitted {
                 digests.append(sha256(residual[0..., index ..< (index + 1), 0...].asData().data))

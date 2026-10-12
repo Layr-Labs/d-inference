@@ -160,15 +160,20 @@ public enum ClusterWorkerCodec {
         return try (r.uuid("membershipEpoch"), r.uint("sequence"), r.optionalUUID("requestID"))
     }
     private static func reservation(_ r: ClusterWorkerReservation) -> [String: Any] {
-        ["profileID": r.profileID, "promptTokenIDs": r.promptTokenIDs, "stopTokenIDs": r.stopTokenIDs,
+        var value: [String: Any] = ["profileID": r.profileID, "promptTokenIDs": r.promptTokenIDs, "stopTokenIDs": r.stopTokenIDs,
          "outputCount": r.outputCount, "chunkSize": r.chunkSize,
          "deadlineUptimeNanoseconds": NSNumber(value: r.deadlineUptimeNanoseconds), "capacityLimitBytes": r.capacityLimitBytes]
+        // Greedy text has no field at all, so its bytes are unchanged.
+        if let sampling = r.sampling { value["sampling"] = ClusterWorkerSamplingCodec.encode(sampling) }
+        return value
     }
     private static func reservation(_ object: [String: Any]) throws -> ClusterWorkerReservation {
         var r = WorkerObject(object)
+        let sampling = r.values["sampling"] == nil ? nil : try ClusterWorkerSamplingCodec.decode(r.object("sampling"))
         let value = try ClusterWorkerReservation(profileID: r.string("profileID"), promptTokenIDs: r.ints("promptTokenIDs"),
             stopTokenIDs: r.ints("stopTokenIDs"), outputCount: r.int("outputCount"), chunkSize: r.int("chunkSize"),
-            deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"))
+            deadlineUptimeNanoseconds: r.uint("deadlineUptimeNanoseconds"), capacityLimitBytes: r.int("capacityLimitBytes"),
+            sampling: sampling)
         try r.finish(); return value
     }
     private static func ready(_ r: ClusterWorkerReady) -> [String: Any] {

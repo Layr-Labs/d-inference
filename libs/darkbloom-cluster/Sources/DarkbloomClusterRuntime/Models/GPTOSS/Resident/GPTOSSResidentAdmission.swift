@@ -58,7 +58,8 @@ struct GPTOSSResidentAdmission {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
-            chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs))
+            chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
+            sampling: value.sampling)
     }
 
     /// Rank, local path and local uptime are intentionally absent. Everything

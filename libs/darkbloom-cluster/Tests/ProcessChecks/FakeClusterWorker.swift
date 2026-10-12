@@ -68,7 +68,7 @@ import DarkbloomClusterSecurity
         if behavior == "never-ready" { while true { pause() } }
         if behavior == "slow-exit" { signal(SIGTERM) { _ in _exit(99) } }
         var session = try ClusterWorkerSession(identity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan)
-        var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0
+        var sequence: UInt64 = 0, requestID: UUID?, reservation: ClusterWorkerReservation?, selected = 0, reservationCount = 0
         var reservations = 0
         // "context-A" or "context-A-B": readiness says it serves A context
         // tokens, every keep-warm answer says B (a rank re-deriving its
@@ -105,7 +105,12 @@ import DarkbloomClusterSecurity
                 try session.accept(command, now: DispatchTime.now().uptimeNanoseconds)
                 switch command.command {
                 case .reserve(let value):
-                    requestID = command.requestID; reservation = value; selected = 0
+                    requestID = command.requestID; reservation = value; selected = 0; reservationCount += 1
+                    // The owner must hand both ranks the request's sampling (the
+                    // selecting rank draws with it): from this reservation on, each
+                    // must carry the test's resolved seed.
+                    if let raw = ProcessInfo.processInfo.environment["TEST_SAMPLED_FROM_RESERVATION"], let first = Int(raw),
+                       reservationCount >= first, value.sampling?.seed != 42 || value.sampling?.topK != 20 { exit(67) }
                     if let raw = ProcessInfo.processInfo.environment["TEST_MAX_DEADLINE"], let maximum = UInt64(raw),
                        value.deadlineUptimeNanoseconds > maximum { exit(65) }
                     if let raw = ProcessInfo.processInfo.environment["TEST_MIN_REMAINING"], let minimum = UInt64(raw),

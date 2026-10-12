@@ -65,13 +65,15 @@ enum EngineV2Translation {
         multimodal: CBv2MultimodalInput? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         samplingDefaults: EngineV2SamplingDefaults = .legacy,
-        prefixCheckpointTargetTokens: Int? = nil
+        prefixCheckpointTargetTokens: Int? = nil,
+        defaultMaxTokensContextLimit: Int? = nil
     ) -> CBv2Request {
         CBv2Request(
             id: id,
             promptTokens: promptTokens,
             sampling: samplingParams(from: request, defaults: samplingDefaults),
-            maxTokens: request.max_tokens ?? defaultMaxTokens,
+            maxTokens: request.max_tokens ?? defaultOutputTokens(
+                defaultMaxTokens, promptTokens: promptTokens.count, contextLimit: defaultMaxTokensContextLimit),
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
             priority: 0,
@@ -81,6 +83,15 @@ enum EngineV2Translation {
             tokenConstraint: tokenConstraint,
             prefixCheckpointTargetTokens: cacheEnabled ? prefixCheckpointTargetTokens : nil
         )
+    }
+
+    /// The output allowance of a request that omits `max_tokens`: the default,
+    /// or on a cluster pair (`contextLimit`) the default cut to the context
+    /// left after the prompt, at least 1. An explicit `max_tokens` is never
+    /// changed; one that does not fit is refused with the pair's reason.
+    static func defaultOutputTokens(_ value: Int, promptTokens: Int, contextLimit: Int?) -> Int {
+        guard let contextLimit else { return value }
+        return max(1, min(value, contextLimit - promptTokens))
     }
 
     /// Per-request sampling translation. An omitted knob takes the
@@ -248,7 +259,45 @@ enum EngineV2Translation {
     /// double as its loud signal.
     static let multimodalRejectedPrefix = "multimodal_rejected"
 
+    /// Canonical marker for a cluster pair's refusal of a request it can
+    /// never serve as asked: `distributed_request_refused: <code>: <text>`.
+    /// `fromSchedulerMessage` restores the typed refusal (400 with its text).
+    static let distributedRefusalPrefix = "distributed_request_refused: "
+    /// The pair is not serving at the moment (lost a peer, starting,
+    /// stopping): retry later, 503.
+    static let distributedUnavailableMessage = "distributed_session_unavailable"
+
+    static func distributedRefusalMessage(_ refusal: DistributedRequestRefusal,
+                                          profile: DistributedResidentExecutionProfile?) -> String {
+        distributedRefusalPrefix + refusal.rawValue + ": " + refusal.message(profile)
+    }
+
+    static func distributedRefusal(fromMessage message: String) -> (refusal: DistributedRequestRefusal, message: String)? {
+        guard message.hasPrefix(distributedRefusalPrefix) else { return nil }
+        let rest = message.dropFirst(distributedRefusalPrefix.count)
+        guard let separator = rest.range(of: ": "),
+              let refusal = DistributedRequestRefusal(rawValue: String(rest[..<separator.lowerBound])) else { return nil }
+        return (refusal, String(rest[separator.upperBound...]))
+    }
+
     static func admissionErrorMessage(for error: Error) -> String {
+        admissionErrorMessage(for: error, distributedProfile: nil)
+    }
+
+    static func admissionErrorMessage(for error: Error, distributedProfile: DistributedResidentExecutionProfile?) -> String {
+        if let distributed = error as? DistributedEngineError {
+            switch distributed {
+            case .refused(let refusal):
+                return distributedRefusalMessage(refusal, profile: distributedProfile)
+            case .unavailable:
+                return distributedUnavailableMessage
+            case .shuttingDown:
+                // Same posture as the bridge's own shutdown refusal.
+                return "request queue full: engine is shutting down"
+            case .invalidConfiguration:
+                break
+            }
+        }
         if let mmError = error as? CBv2MultimodalError {
             switch mmError {
             case .unsupportedModel(let detail):

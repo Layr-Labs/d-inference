@@ -4,6 +4,7 @@ import Foundation
 public struct CBv2RequestID: Hashable, Sendable { public let raw: UInt64; public init(_ raw: UInt64) { self.raw = raw } }
 public struct CBv2SamplingParams: Sendable {
     public var temperature: Float = 1, topP: Float = 1, minP: Float = 0, repetitionPenalty: Float = 1
+    public var repetitionContextSize = 64
     public var frequencyPenalty: Float = 0, presencePenalty: Float = 0
     public var topK = 0, topLogprobs = 0
     public var seed: UInt64?

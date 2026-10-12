@@ -1,4 +1,5 @@
 import CryptoKit
+import DarkbloomClusterProtocol
 import Foundation
 
 public struct QualificationError: Error, CustomStringConvertible, Equatable, Sendable {
@@ -58,6 +59,29 @@ public struct QualificationPromptSource: Codable, Equatable, Sendable {
 
 /// One greedy request, read by both the single-host reference and the pair
 /// driver. The stage cut is not part of it: the same request runs at any cut.
+/// A sampled qualification request: the decoding rank draws each token with
+/// the single-Mac product's sampler, keyed on (seed, stream, output index), so
+/// the same request reproduces its tokens. Absent for greedy text, which is
+/// every request written before this field (their bytes are unchanged).
+public struct QualificationSampling: Codable, Equatable, Sendable {
+    public var temperature: Float
+    public var topP: Float
+    public var topK: Int
+    public var minP: Float
+    public var seed: UInt64
+    public var stream: UInt64
+    public init(temperature: Float, topP: Float = 1, topK: Int = 0, minP: Float = 0, seed: UInt64, stream: UInt64 = 1) {
+        self.temperature = temperature; self.topP = topP; self.topK = topK; self.minP = minP
+        self.seed = seed; self.stream = stream
+    }
+    /// The reservation's sampling: no penalties or bias, so speculative
+    /// decoding verifies it (target-prefix acceptance).
+    public var wire: ClusterWorkerSampling {
+        .init(temperature: temperature, topP: topP, topK: topK, minP: minP, repetitionPenalty: 1,
+              repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: seed, stream: stream, logitBias: [])
+    }
+}
+
 public struct QualificationRequest: Codable, Equatable, Sendable {
     public static let currentSchema = "darkbloom_cluster_qualification_request_v1"
     public static let modelID = "registered_qwen35_9b"
@@ -154,10 +178,12 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public var promptTokenIDs: [Int]
     public var promptTokenIDsSHA256: String
     public var promptSource: QualificationPromptSource
+    /// Nil (and absent from the file) for greedy text.
+    public var sampling: QualificationSampling?
 
     public init(requestID: UUID, promptTokenIDs: [Int], chunkSize: Int, outputCount: Int,
                 stopTokenIDs: [Int], promptSource: QualificationPromptSource,
-                modelID: String = QualificationRequest.modelID) throws {
+                modelID: String = QualificationRequest.modelID, sampling: QualificationSampling? = nil) throws {
         schema = Self.currentSchema; self.requestID = requestID.uuidString.lowercased()
         guard let registered = Self.registeredModel(modelID) else {
             throw QualificationError("Request: \(modelID) is not a registered model")
@@ -165,7 +191,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
         self.modelID = registered.modelID; profileID = registered.profileID
         self.chunkSize = chunkSize; self.outputCount = outputCount; self.stopTokenIDs = stopTokenIDs
         self.promptTokenIDs = promptTokenIDs; promptTokenIDsSHA256 = QualificationHash.tokenIDs(promptTokenIDs)
-        self.promptSource = promptSource
+        self.promptSource = promptSource; self.sampling = sampling
         try validate()
     }
 
@@ -187,6 +213,12 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
             && stopTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "stop IDs must be sorted, unique and in the vocabulary")
         try require(promptTokenIDsSHA256 == QualificationHash.tokenIDs(promptTokenIDs), "prompt hash differs from the prompt")
         try require(["chatText", "rawText", "synthetic", "tokenIDs"].contains(promptSource.kind), "unknown prompt source")
+        if let sampling {
+            let wire = sampling.wire
+            try require([wire.temperature, wire.topP, wire.minP].allSatisfy(\.isFinite) && wire.isStochastic
+                && (0..<vocabulary).contains(wire.topK) && (0...1).contains(wire.topP) && (0...1).contains(wire.minP),
+                "sampling needs a finite temperature of at least 1e-5, top-p and min-p in 0...1 and top-k inside the vocabulary")
+        }
     }
 
     public static func read(_ url: URL) throws -> Self {

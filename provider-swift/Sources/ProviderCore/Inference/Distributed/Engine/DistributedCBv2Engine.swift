@@ -18,6 +18,8 @@ public final class DistributedCBv2Engine: CBv2Engine, @unchecked Sendable {
     var invalidated = false
     var stopping = false
     var shutdownTask: Task<Void, Never>?
+    /// The seed of every sampled request that names none (see `resolvingSeed`).
+    let fallbackSeed = UInt64.random(in: .min ... .max)
     /// Receives a cleanly finished request's receipt and the prompt
     /// frontiers both peers now hold; the bridge turns them into resident
     /// prefix evidence for routing. Set once, before serving.

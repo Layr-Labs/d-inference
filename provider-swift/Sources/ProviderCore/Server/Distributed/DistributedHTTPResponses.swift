@@ -1,30 +1,40 @@
 import Foundation
 
-/// One active streaming response for the one-request installed pipeline. The
-/// response hold is separate from the model acquisition and native ownership.
+/// The streaming responses of one installed pipeline: the one being generated
+/// and those queued behind it (`DistributedRequestQueue.maximumWaiting`). Each
+/// response hold is separate from the model acquisition and native ownership;
+/// the pipeline still runs one request at a time.
 final class DistributedHTTPResponses: @unchecked Sendable {
     let generationID: UUID
+    /// At most this many responses at once: one running and the queue behind it.
+    let limit: Int
     private let lock = NSLock()
-    private var active: (UUID, DistributedHTTPResponse)?
+    private var active: [UUID: DistributedHTTPResponse] = [:]
     private var accepting = true
     private var deliveryDeadline: ContinuousClock.Instant?
 
-    init(generationID: UUID = UUID()) { self.generationID = generationID }
+    init(generationID: UUID = UUID(), limit: Int = DistributedRequestQueue.maximumWaiting + 1) {
+        self.generationID = generationID; self.limit = max(1, limit)
+    }
 
     func begin() throws -> DistributedHTTPResponse {
         try lock.withLock {
-            guard accepting, active == nil else {
+            guard accepting else {
                 throw MultiModelBatchSchedulerEngineError.requestRejected("Distributed response is unavailable")
+            }
+            // Retryable: the queue frees as requests finish (429, not 503).
+            guard active.count < limit else {
+                throw MultiModelBatchSchedulerEngineError.queueFull(DistributedRequestQueue.fullMessage)
             }
             let id = UUID()
             let response = DistributedHTTPResponse(generationID: generationID) { [weak self] in self?.complete(id) }
-            active = (id, response)
+            active[id] = response
             return response
         }
     }
 
     private func complete(_ id: UUID) {
-        lock.withLock { if active?.0 == id { active = nil } }
+        lock.withLock { _ = active.removeValue(forKey: id) }
     }
 
     func closeAdmissions() { lock.withLock { accepting = false } }
@@ -38,12 +48,13 @@ final class DistributedHTTPResponses: @unchecked Sendable {
         }
     }
 
-    var hasActiveResponse: Bool { lock.withLock { active != nil } }
+    var hasActiveResponse: Bool { lock.withLock { !active.isEmpty } }
+    var activeResponseCount: Int { lock.withLock { active.count } }
 
     func waitForDelivery() async {
         while true {
             let waiting = lock.withLock {
-                active != nil && deliveryDeadline.map { ContinuousClock.now < $0 } == true
+                !active.isEmpty && deliveryDeadline.map { ContinuousClock.now < $0 } == true
             }
             guard waiting else { return }
             do { try await Task.sleep(for: .milliseconds(5)) }
@@ -54,12 +65,12 @@ final class DistributedHTTPResponses: @unchecked Sendable {
     /// Called only after the actual HTTP service task (and its child handlers)
     /// has returned. A discarded/unstarted body is then no longer deliverable.
     func listenerStopped() {
-        let response = lock.withLock { active?.1 }
-        response?.finish()
+        let responses = lock.withLock { Array(active.values) }
+        for response in responses { response.finish() }
     }
 
     func abort() {
-        let response = lock.withLock { active?.1 }
-        response?.disconnect()
+        let responses = lock.withLock { Array(active.values) }
+        for response in responses { response.disconnect() }
     }
 }

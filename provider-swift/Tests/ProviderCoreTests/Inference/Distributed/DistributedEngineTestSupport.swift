@@ -79,9 +79,12 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
     var leasesAcceptCleanStop = false
     private var invalidation: (@Sendable () -> Void)?
     private var leases: [DistributedTestLease] = []
+    private var requests: [CBv2Request] = []
     private var shutdowns = 0
 
     var last: DistributedTestLease { lock.withLock { leases.last! } }
+    /// Every request the owner reserved, in order, as the engine passed it.
+    var reservedRequests: [CBv2Request] { lock.withLock { requests } }
     var reserveCount: Int { lock.withLock { leases.count } }
     var shutdownCount: Int { lock.withLock { shutdowns } }
 
@@ -115,7 +118,7 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
         let lease = DistributedTestLease(identity: returnedIdentity, requestID: request.id)
         lease.throwOnStart = throwOnStart
         lease.acceptsCleanStop = leasesAcceptCleanStop
-        lock.withLock { leases.append(lease) }
+        lock.withLock { leases.append(lease); requests.append(request) }
         onReserve?()
         return lease
     }

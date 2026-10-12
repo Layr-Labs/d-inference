@@ -234,7 +234,8 @@ extension EngineV2Bridge {
             samplingDefaults: samplingDefaults,
             // The same coordinator hint that gates the write also tells the
             // engine which fork boundary is worth staging.
-            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens
+            prefixCheckpointTargetTokens: donationDemand?.repeatedPrefixTokens,
+            defaultMaxTokensContextLimit: defaultMaxTokensContextLimit
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
@@ -905,15 +906,17 @@ extension EngineV2Bridge {
             // A refused distributed admission has no native terminal for the
             // HTTP writer to report. Throw the mapped error before response
             // headers instead of returning a stream that can only abort.
+            let distributedProfile = (ownedEngine as? DistributedCBv2Engine)?.profile
             if distributed != nil, httpResponse != nil, !retirementTransfer.isClaimed {
                 throw MultiModelBatchSchedulerEngineError.fromSchedulerMessage(
-                    EngineV2Translation.admissionErrorMessage(for: error))
+                    EngineV2Translation.admissionErrorMessage(for: error, distributedProfile: distributedProfile))
             }
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
             // error (429/503) exactly as the legacy engine's rejections.
-            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(for: error)))
+            continuation.yield(.error(EngineV2Translation.admissionErrorMessage(
+                for: error, distributedProfile: distributedProfile)))
             continuation.finish()
             return stream
         }

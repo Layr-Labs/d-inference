@@ -102,6 +102,9 @@ extension EngineV2Bridge {
                     sawFirstToken = true
                     recordFirstToken(
                         id: id, emissionTokens: tokens.count, profileNow: lastDeltaAt)
+                    // A distributed response's first-content budget is met by
+                    // the first committed token, visible yet or not.
+                    httpResponse?.firstTokenCommitted()
                 }
                 recordProgress(id: id, newTokens: tokens.count)
                 if trackStopTokens {

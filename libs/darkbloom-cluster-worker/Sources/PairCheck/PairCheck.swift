@@ -21,6 +21,8 @@ import Foundation
               (--model-dir /ABS/MODEL (--user-text-file FILE | --raw-text-file FILE) [--prompt-tokens N]
                | --synthetic-tokens N [--seed N] | --token-ids-file FILE)
               [--stop-token-ids A,B] [--request-id UUID] [--model-id REGISTERED_MODEL_ID (default: the tokenizer's model)]
+              [--temperature F [--top-p F] [--top-k N] [--min-p F] --sampling-seed N [--sampling-stream N]
+               (a sampled request: the decoding rank draws with the product's sampler, keyed on seed, stream and index)]
           darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
               --remote-ssh DESTINATION [--ssh-option Key=Value]...
               --local-worker /ABS/WORKER --remote-worker /ABS/WORKER
@@ -102,7 +104,8 @@ import Foundation
     static func request(_ arguments: [String]) async throws {
         let fields = try parse(arguments, allowed: ["--output", "--chunk-size", "--output-count", "--model-dir",
             "--user-text-file", "--raw-text-file", "--prompt-tokens", "--synthetic-tokens", "--seed",
-            "--token-ids-file", "--stop-token-ids", "--request-id", "--model-id"])
+            "--token-ids-file", "--stop-token-ids", "--request-id", "--model-id",
+            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream"])
         guard let output = fields["--output"]?.first, let chunk = try integer(fields, "--chunk-size"),
               let count = try integer(fields, "--output-count") else { throw Failure(usage) }
         let stops = try (fields["--stop-token-ids"]?.first ?? "").split(separator: ",").map { text -> Int in
@@ -161,10 +164,29 @@ import Foundation
         guard tokenizerModelID == nil || tokenizerModelID == modelID else {
             throw Failure("--model-id is \(modelID) but the tokenizer in --model-dir belongs to \(tokenizerModelID!)")
         }
+        func float(_ name: String) throws -> Float? {
+            guard let text = fields[name]?.first else { return nil }
+            guard let value = Float(text), value.isFinite else { throw Failure("\(name) must be a finite number") }
+            return value
+        }
+        func unsigned(_ name: String) throws -> UInt64? {
+            guard let text = fields[name]?.first else { return nil }
+            guard let value = UInt64(text) else { throw Failure("\(name) must be a non-negative integer") }
+            return value
+        }
+        var sampling: QualificationSampling?
+        if let temperature = try float("--temperature") {
+            guard let seed = try unsigned("--sampling-seed") else { throw Failure("A sampled request needs --sampling-seed") }
+            sampling = .init(temperature: temperature, topP: try float("--top-p") ?? 1, topK: try integer(fields, "--top-k") ?? 0,
+                minP: try float("--min-p") ?? 0, seed: seed, stream: try unsigned("--sampling-stream") ?? 1)
+        } else if ["--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream"].contains(where: { fields[$0] != nil }) {
+            throw Failure("Sampling options need --temperature")
+        }
         let value = try QualificationRequest(requestID: id, promptTokenIDs: tokens, chunkSize: chunk,
-            outputCount: count, stopTokenIDs: stops, promptSource: source, modelID: modelID)
+            outputCount: count, stopTokenIDs: stops, promptSource: source, modelID: modelID, sampling: sampling)
         try QualificationFiles.writeNew(value.encoded(), to: URL(fileURLWithPath: output))
-        print("request \(value.requestID) for \(value.modelID): \(tokens.count) prompt tokens, chunk \(chunk), \(count) outputs, prompt SHA-256 \(value.promptTokenIDsSHA256)")
+        print("request \(value.requestID) for \(value.modelID): \(tokens.count) prompt tokens, chunk \(chunk), \(count) outputs, prompt SHA-256 \(value.promptTokenIDsSHA256)"
+            + (sampling.map { " sampled (temperature \($0.temperature), top-p \($0.topP), top-k \($0.topK), seed \($0.seed))" } ?? ""))
     }
 
     static func run(_ arguments: [String]) async throws {
@@ -383,6 +405,8 @@ import Foundation
             return value
         }
         let request = try QualificationRequest.read(URL(fileURLWithPath: try required("--request")))
+        // The solo service selects argmax tokens; a sampled request has no solo oracle.
+        guard request.sampling == nil else { throw Failure("solo runs greedy requests only; this request is sampled") }
         let reportURL = URL(fileURLWithPath: try required("--report"))
         guard !FileManager.default.fileExists(atPath: reportURL.path) else {
             throw Failure("Report \(reportURL.lastPathComponent) already exists; a report is never overwritten")

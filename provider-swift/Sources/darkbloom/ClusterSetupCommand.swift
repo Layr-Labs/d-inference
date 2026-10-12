@@ -98,7 +98,8 @@ extension Cluster {
                 case .fix(let device):
                     // Blocks while the person at the screen answers the macOS prompt; a dry run asks nothing.
                     let result = await Task.detached { ClusterLinkRepair.fix(device: device, mode: mode, dryRun: dryRun) }.value
-                    manualCommands = result.manualCommands
+                    // One short line where the commands went into an owner-only script.
+                    manualCommands = result.manualScript.map { ["sudo sh \($0)"] } ?? result.manualCommands
                     step = flow.repaired(result)
                 case .finish(let exitCode):
                     // A dry run also ends with status 0, so readiness is what was observed, not the status.

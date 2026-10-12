@@ -70,7 +70,10 @@ extension Cluster {
             // where no prompt could be, as commands for an administrator, on
             // standard error and never in JSON. The message that announces
             // them goes out first, also on a shared pipe.
-            if !result.manualCommands.isEmpty {
+            if let script = result.manualScript {
+                fflush(stdout)
+                printError("sudo sh \(script)")
+            } else if !result.manualCommands.isEmpty {
                 fflush(stdout)
                 for command in result.manualCommands { printError(command) }
             }

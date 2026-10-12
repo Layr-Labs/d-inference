@@ -9,6 +9,8 @@ extension ClusterLinkRepairResult {
         switch outcome {
         case .dryRun:
             return "Dry run: nothing was changed. With your approval in the macOS prompt, these commands would run as an administrator, in this order."
+        case .alreadyReady where !adopted.isEmpty:
+            return "The link is already ready and \(adopted.joined(separator: ", ")) is already isolated as link setup v2 leaves it; no network setting was changed, and Darkbloom recorded that setup so `darkbloom cluster link --remove` can restore the earlier one."
         case .alreadyReady:
             return "The link is already ready; nothing was changed."
         case .alreadyAbsent where isolated == true:
@@ -55,6 +57,8 @@ extension ClusterLinkRepairResult {
             return "Darkbloom could not read or update its owner-only record of the addresses it adds (~/.darkbloom/cluster-device/link-alias.json); nothing was changed."
         case .approvalDeclined:
             return "The macOS prompt was cancelled; nothing was changed."
+        case .approvalUnavailable where manualScript != nil:
+            return "macOS could not show its approval prompt here (as in an SSH session without a desktop), so nothing was changed; run this one line once as an administrator on this Mac: sudo sh \(manualScript!) (the same commands the prompt would run; `darkbloom cluster link --remove` undoes them)."
         case .approvalUnavailable:
             return "macOS did not grant approval: its prompt could not be shown here, as in an SSH session without a desktop, or it was not answered in time or was refused; nothing was changed. An administrator can run the commands printed on standard error instead."
         case .commandFailed where isolated == true:

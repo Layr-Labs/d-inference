@@ -82,6 +82,9 @@ public enum ClusterLinkRepair {
         var requestIsolationApproval: (ClusterLinkIsolationRequest) -> ClusterLinkApprovalResult = { _ in .unavailable }
         var loadIsolationRecord: () throws -> ClusterLinkIsolationRecord = { ClusterLinkIsolationRecord() }
         var updateIsolationRecord: ((inout ClusterLinkIsolationRecord) -> Void) throws -> Void = { _ in }
+        /// Writes an owner-only script of the commands an approval would run
+        /// (name, body) and returns the path to show; nil when not written.
+        var writeManualScript: (String, String) -> String? = { _, _ in nil }
     }
 
     /// The GID follows the address within moments. This many probes, one
@@ -124,7 +127,11 @@ public enum ClusterLinkRepair {
         case .stop(let outcome):
             // A stop about a named port says which port it is about.
             let named = report.devices.first { $0.device == requested }
-            return .init(operation: .fix, outcome: outcome, device: named?.device, interface: named?.interface)
+            // A port isolated by hand with the same commands (from `--dry-run`, or a script an
+            // administrator ran) is adopted: recorded now, so `--remove` can restore it.
+            let adopted = outcome == .alreadyReady && !dryRun && environment.readsIsolation
+                ? adoptIsolatedPorts(report: report, record: isolationRecord, run: run, in: environment) : []
+            return .init(operation: .fix, outcome: outcome, device: named?.device, interface: named?.interface, adopted: adopted)
         case .choose(let candidates): return .init(operation: .fix, outcome: .ambiguousPorts, candidates: candidates)
         case .act(let plannedDevice, let plannedInterface): (device, interface) = (plannedDevice, plannedInterface)
         }
@@ -304,6 +311,7 @@ public enum ClusterLinkRepair {
             machineIdentifier: ClusterLinkMachineIdentity.hardwareUUID, loadRecord: store.load, updateRecord: store.update,
             pause: { usleep(verificationIntervalMicroseconds) }, readsIsolation: true,
             requestIsolationApproval: { ClusterLinkApproval.request(isolation: $0) },
-            loadIsolationRecord: isolationStore.load, updateIsolationRecord: isolationStore.update)
+            loadIsolationRecord: isolationStore.load, updateIsolationRecord: isolationStore.update,
+            writeManualScript: { isolationStore.writeScript(name: $0, body: $1) })
     }
 }

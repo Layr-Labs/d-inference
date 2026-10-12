@@ -78,18 +78,14 @@ final class CBv2StageKVHost {
               [.float16, .bfloat16, .float32].contains(dtype), types.allSatisfy({ $0 == dtype }) else {
             throw ProbeError("Stage KV host requires known, uniform native attention KV dtypes")
         }
-        var perRequest = 0
         for kind in kinds {
             guard case .full = kind.attention, kind.sharesKVWithLayer == nil, kind.kvHeads > 0, kind.headDim > 0,
                   kind.valueHeadDim == kind.headDim else {
                 throw ProbeError("Stage KV host supports full-attention layers without KV sharing only")
             }
-            // Page-rounded, as the pool reserves it.
-            let tokens = (maximumTokensPerRequest + CBv2PagedDefaults.pageSize - 1)
-                / CBv2PagedDefaults.pageSize * CBv2PagedDefaults.pageSize
-            perRequest = try QwenLongPrefillCheckedBytes.sum([perRequest,
-                QwenLongPrefillCheckedBytes.product([tokens, kind.kvHeads, kind.headDim, dtype.size, 2])])
         }
+        let perRequest = try Self.pageRoundedRequestBytes(kvShapes: kinds.map { ($0.kvHeads, $0.headDim) },
+            maximumTokens: maximumTokensPerRequest, dtypeSize: dtype.size)
         let capacity = try QwenLongPrefillCheckedBytes.sum([
             QwenLongPrefillCheckedBytes.product([perRequest, lanes]), Self.segmentBytes])
         var storageForModelLayer: [Int: Int] = [:]
@@ -166,6 +162,20 @@ final class CBv2StageKVHost {
 }
 
 extension CBv2StageKVHost {
+    /// One request's keys and values in this stage's attention layers at
+    /// `maximumTokens`, page-rounded as the pool reserves them. The resident
+    /// allowance charges more than this plus one segment for every request
+    /// (`CBv2StageKVAllowanceTests`).
+    static func pageRoundedRequestBytes(kvShapes: [(kvHeads: Int, headDim: Int)], maximumTokens: Int,
+                                        dtypeSize: Int) throws -> Int {
+        guard maximumTokens > 0, dtypeSize > 0 else { throw ProbeError("Stage KV request bytes need a positive length") }
+        let page = CBv2PagedDefaults.pageSize
+        let tokens = (maximumTokens + page - 1) / page * page
+        return try QwenLongPrefillCheckedBytes.sum(try kvShapes.map {
+            try QwenLongPrefillCheckedBytes.product([tokens, $0.kvHeads, $0.headDim, dtypeSize, 2])
+        })
+    }
+
     /// True for the stage models whose request geometry takes a host.
     static func supports(_ model: any LanguageModel) -> Bool {
         (model is Qwen35TextModel || model is Qwen35Model) && !(model is any LayerStageFrameForwarding)

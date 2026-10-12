@@ -13,6 +13,7 @@ public enum NativeServeQualification {
             throw NativeServeQualificationInputs.Failure.optInRequired
         }
         let inputs = try NativeServeQualificationInputs(coordinatorURL: coordinatorURL, path: directory)
+        let workerQualification = try NativeWorkerServeQualification.selected()
         umask(0o077)
         setenv("TMPDIR", inputs.directory.path, 1)
         guard let binaryHash = selfBinaryHash(), let process = ProcessIdentity.current() else {
@@ -61,7 +62,8 @@ public enum NativeServeQualification {
             coordinatorURL: inputs.coordinatorURL, hardware: hardware, models: [model], config: config,
             authToken: inputs.token, runtimeCapabilities: capabilities),
             attestationSigner: SecureEnclaveIdentity(), beforeModelLoad: { _ in loads.increment() })
-        await loop.prepareNativeQualification(inputs: inputs, stateDirectory: stateDirectory, apple: apple)
+        await loop.prepareNativeQualification(inputs: inputs, stateDirectory: stateDirectory, apple: apple,
+            workerQualification: workerQualification)
         await ProviderTermination.shared.install { await loop.drainAndShutdown(timeoutSeconds: 20) }
         try await NativeServeRunLifetime.run(serve: { try await loop.run() }, observe: {
             do {
@@ -69,6 +71,7 @@ public enum NativeServeQualification {
                 var sequence: UInt64 = 0
                 while !Task.isCancelled {
                     sequence += 1
+                    try await loop.armNativeWorkerQualificationIfRequested(inputs)
                     try await loop.writeNativeQualificationObservation(to: inputs.directory, process: process,
                         loads: loads.value, sequence: sequence)
                     if inputs.finished() || ContinuousClock.now >= deadline {
@@ -112,7 +115,8 @@ final class NativeServeKeyStorage: ShadowKeyStorage, @unchecked Sendable {
 }
 
 private extension ProviderLoop {
-    func prepareNativeQualification(inputs: NativeServeQualificationInputs, stateDirectory: URL, apple: AppleAppAttestService) {
+    func prepareNativeQualification(inputs: NativeServeQualificationInputs, stateDirectory: URL, apple: AppleAppAttestService,
+                                    workerQualification: NativeWorkerServeQualification?) {
         daemonStateFileOverride = stateDirectory.appendingPathComponent("provider-state.json")
         loadedModelsFileOverride = stateDirectory.appendingPathComponent("loaded-models.json")
         serveUsesHostServices = false
@@ -122,8 +126,11 @@ private extension ProviderLoop {
             resolver: SpecDecResolver(storeRoot: stateDirectory.appendingPathComponent("spec-dec"),
                                       cdnBaseURL: inputs.coordinatorURL.replacingOccurrences(of: "ws://", with: "http://")),
             catalog: SpecDecCatalogLookup(coordinatorURL: inputs.coordinatorURL))
-        appAttestShadowClient = AppAttestShadowClient(scope: inputs.coordinatorURL,
-            service: apple, storage: NativeServeKeyStorage())
+        nativeWorkerQualification = workerQualification
+        if !usesAppAttestWorker {
+            appAttestShadowClient = AppAttestShadowClient(scope: inputs.coordinatorURL,
+                service: apple, storage: NativeServeKeyStorage())
+        }
     }
 
     func writeNativeQualificationObservation(to directory: URL, process: ProcessIdentity, loads: Int, sequence: UInt64) throws {
@@ -131,7 +138,7 @@ private extension ProviderLoop {
             ["model_instance": nativeDigest(Data("\(process.startTimeMicros):\(slot.modelContainer.identity)".utf8)),
              "engine_instance": nativeDigest(Data(slot.engineBundle.instanceID.uuidString.utf8))]
         }
-        let observation: [String: Any] = [
+        var observation: [String: Any] = [
             "pid": process.pid, "process_start_micros": process.startTimeMicros,
             "sequence": sequence, "captured_at_ns": UInt64(Date().timeIntervalSince1970 * 1_000_000_000),
             "uptime_ns": UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000),
@@ -139,6 +146,9 @@ private extension ProviderLoop {
             "load_count": loads, "loaded_models": modelSlots.count,
             "inflight": lifecycleRemaining, "slots": slots,
         ]
+        if let nativeWorkerQualification {
+            observation["worker_fault"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(nativeWorkerQualification.snapshot))
+        }
         try OwnerOnlyFile.write(JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys]),
                                 to: directory.appendingPathComponent("observation.json"))
     }

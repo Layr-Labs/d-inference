@@ -199,6 +199,7 @@ public actor ProviderLoop {
     internal var appAttestShadowClient: AppAttestShadowClient?
     internal let usesAppAttestWorker = AppAttestWorkerSelection.qualificationCandidateEnabled
     internal var appAttestWorkerClient: (any AppAttestWorkerExchangeClient)?
+    internal var nativeWorkerQualification: NativeWorkerServeQualification?
     internal var appAttestWorkerRetirement: Task<Bool, Never>?
     internal enum AppAttestWorkerStopReason { case update, shutdown }
     internal var appAttestWorkerStopReason: AppAttestWorkerStopReason?

@@ -46,6 +46,7 @@ extension ProviderLoop {
         guard let client = appAttestWorkerClient else { return }
         let generation = appAttestShadowGeneration
         let retirement = appAttestWorkerRetirement
+        let qualification = nativeWorkerQualification
         let probe = AppAttestProcessProbe(pushHistory: apnsPushHistory)
         let runtime = AppAttestRuntimeContext.current()
         let os = ProcessInfo.processInfo.operatingSystemVersion
@@ -68,6 +69,8 @@ extension ProviderLoop {
             var local: AppAttestLocalStatus?
             do {
                 let result = try await client.respond(to: request, status: status)
+                qualification?.recordReply(action: result.payload.action, result: result.payload.result,
+                    workerPID: result.runtimeDiagnostics?.processID)
                 response = result.payload
                 local = result.localStatus
             } catch {

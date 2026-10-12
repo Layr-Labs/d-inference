@@ -68,6 +68,12 @@ final class NativeServeQualificationInputs: @unchecked Sendable {
         (try? Self.read("done", from: descriptor, maximum: 1)) == "1"
     }
 
+    /// A fixed one-shot request from this diagnostic's private owner. No
+    /// endpoint, key, hash, challenge or process identifier is accepted.
+    func workerFaultRequested() -> Bool {
+        (try? Self.read("arm-worker-callback", from: descriptor, maximum: 1)) == "1"
+    }
+
     private static func read(_ name: String, from directory: Int32, maximum: Int) throws -> String {
         let fd = openat(directory, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw Failure.invalidInput }

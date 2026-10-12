@@ -85,4 +85,34 @@ if [[ "$actual_sha" != "$metallib_sha" ]]; then
   echo 'Copied metallib pin differs' >&2
   exit 1
 fi
+# The paged KV backend compiles `pagedattention.metal` at runtime and looks for
+# it beside the executable or at the root of a resource bundle there. This
+# build writes macOS-layout bundles (`Contents/Resources`), where the lookup
+# never finds it, so a paged stage would refuse to load. Place the one source
+# beside the binary, as the metallib is; never two different copies.
+shopt -s nullglob
+paged_sources=("$binary_dir"/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal
+  "$binary_dir"/mlx-swift-lm_MLXLMCommon.bundle/Contents/Resources/pagedattention.metal)
+shopt -u nullglob
+if [[ ${#paged_sources[@]} == 0 || ! -s "${paged_sources[0]}" ]]; then
+  echo 'Built MLXLMCommon bundle carries no paged-attention source' >&2
+  exit 1
+fi
+paged_sha="$(shasum -a 256 "${paged_sources[0]}" | cut -d ' ' -f 1)"
+for source in "${paged_sources[@]}"; do
+  if [[ "$(shasum -a 256 "$source" | cut -d ' ' -f 1)" != "$paged_sha" ]]; then
+    echo 'Built bundles carry two different paged-attention sources' >&2
+    exit 1
+  fi
+done
+destination_paged="$binary_dir/pagedattention.metal"
+if [[ -L "$destination_paged" || ( -e "$destination_paged" && ! -f "$destination_paged" ) ]]; then
+  echo 'Refusing a linked or nonregular paged-attention destination' >&2
+  exit 1
+fi
+cp -f "${paged_sources[0]}" "$destination_paged"
+if [[ "$(shasum -a 256 "$destination_paged" | cut -d ' ' -f 1)" != "$paged_sha" ]]; then
+  echo 'Copied paged-attention source differs' >&2
+  exit 1
+fi
 printf '%s\n' "$binary"

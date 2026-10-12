@@ -301,10 +301,67 @@ import Foundation
         let unknown = try ClusterPlacementFlow.leaderUnderGrant(requested: "b", members: [(id: "a", chip: "Check chip"), (id: "b", chip: "Check chip")],
             runtimeModelID: "registered_qwen35_9b", publicModelID: "p")
         require("a chip name with no class decides nothing at plan time", unknown.leader == "b" && unknown.note == nil)
+        syntheticQualificationRecords()
         guard failures.isEmpty else {
             for failure in failures { FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8)) }
             exit(1)
         }
         print("placement setup checks passed: \(passed)")
+    }
+
+    /// Grants come from qualification records only, for any chips and any
+    /// number of ranks: synthetic records for Macs this bench never had.
+    static func syntheticQualificationRecords() {
+        func record(_ model: String, _ chips: [String], cuts: [Int], mode: String = "pipeline_v1", verdicts: [String] = ["divergedAtNearTie"],
+                    transport: String = "jaccl") -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: model, artifactSHA256: hash("a"), ranks: chips.enumerated().map { .init(rank: $0.offset, chip: $0.element, operatingSystem: "27.0") },
+                cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", promptTokens: 4096, outputTokens: 128, transport: transport,
+                pairReportSHA256: hash("b"), pairReportCreatedUTC: "2026-10-12T00:00:00Z",
+                comparisons: verdicts.map { .init(referenceChip: chips.last, verdict: $0, firstDivergenceIndex: 7, gapInULPs: $0 == "diverged" ? 9 : 1,
+                                                  nearTieThresholdULPs: 4, allowed: ["cut"]) }, producer: "check")
+        }
+        func cls(_ name: String) -> ClusterChipClass? { ClusterChipClass(chipName: name) }
+        let m2Max = cls("Apple M2 Max"), m4Pro = cls("Apple M4 Pro"), m3Ultra = cls("Apple M3 Ultra")
+        let m1Ultra = cls("Apple M1 Ultra"), m2Ultra = cls("Apple M2 Ultra"), m4Max = cls("Apple M4 Max")
+        let decisions = ClusterPairServingDecisions(records: [
+            record("registered_dense", ["Apple M2 Max", "Apple M2 Max"], cuts: [16]),
+            record("registered_dense", ["Apple M4 Pro", "Apple M3 Ultra"], cuts: [12], mode: "phase_split_v1", verdicts: ["exact", "tokensEqualLogitsDiffer"]),
+            record("registered_wide", ["Apple M1 Ultra", "Apple M2 Ultra", "Apple M4 Max"], cuts: [10, 20]),
+            record("registered_split", ["Apple M2 Max", "Apple M2 Max"], cuts: [16]),
+            record("registered_split", ["Apple M2 Max", "Apple M2 Max"], cuts: [8], verdicts: ["divergedAtNearTie", "diverged"]),
+            record("registered_unsure", ["Apple M2 Max", "Apple M2 Max"], cuts: [16], verdicts: ["incomparable"]),
+            // Never used: both ranks on one Mac, a chip with no class, cuts out of order.
+            record("registered_loopback", ["Apple M2 Max", "Apple M2 Max"], cuts: [16], transport: "local-socket-test"),
+            record("registered_virtual", ["Apple M1 (Virtual)", "Apple M2 Max"], cuts: [16]),
+            record("registered_wide", ["Apple M1 Ultra", "Apple M2 Ultra", "Apple M4 Max"], cuts: [20, 10]),
+        ])
+        func allows(_ classes: [ClusterChipClass?], _ model: String) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", decisions: decisions)) != nil
+        }
+        func shipped(_ classes: [ClusterChipClass?], _ model: String) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p")) != nil
+        }
+        require("two 64 GB M2 Max Macs are granted as their record ran", allows([m2Max, m2Max], "registered_dense"))
+        require("an M4 Pro leading an M3 Ultra is granted, and that order only", allows([m4Pro, m3Ultra], "registered_dense")
+            && !allows([m3Ultra, m4Pro], "registered_dense") && !allows([m3Ultra, m2Max], "registered_dense"))
+        require("three ranks: each class reaches the role its record ran it in", allows([m1Ultra, m2Ultra, m4Max], "registered_wide")
+            && allows([m2Ultra, m1Ultra, m4Max], "registered_wide") && !allows([m1Ultra, m4Max, m2Ultra], "registered_wide")
+            // A grant restricts roles, not the number of ranks (cuts and modes are the coordinator's parity qualification).
+            && allows([m1Ultra, m4Max], "registered_wide") && !allows([m4Max, m1Ultra], "registered_wide"))
+        let wide = try? ClusterPairServingGrants.grant(runtimeModelID: "registered_wide", publicModelID: "p", decisions: decisions)
+        require("a three-rank grant lists its classes per role", wide?.pipelineRankChipClasses == [m1Ultra!, m2Ultra!] && wide?.decodingRankChipClasses == [m4Max!]
+            && wide?.qualifications.count == 1 && wide?.evidence.contains("1 passing cross-cable qualification record") == true)
+        let split = decisions.withheld["registered_split"] ?? ""
+        require("one cut that diverged withholds the model at every cut", !allows([m2Max, m2Max], "registered_split")
+            && split.contains("diverged at cut 8") && split.contains("9.0 ulp") && split.contains("Apple M2 Max"))
+        refuses("an undecided model is refused as having no grant", because: "has no grant") {
+            try ClusterPairServingGrants.requirePlacement([m2Max, m2Max], runtimeModelID: "registered_unsure", publicModelID: "p", decisions: decisions)
+        }
+        require("loopback runs, classless chips and malformed cuts are never used", decisions.ignored == 3
+            && !allows([m2Max, m2Max], "registered_loopback") && !allows([m2Max, m2Max], "registered_virtual"))
+        require("the records this build ships all decode and are all used", !ClusterPairServingGrants.records.isEmpty
+            && ClusterPairServingGrants.decisions.ignored == 0 && ClusterPairServingGrants.records.allSatisfy(\.isConsistent))
+        require("the shipped records grant the 9B with the M3 Ultra leading, from records only",
+            shipped([m3Ultra, cls("Apple M5 Ultra")], "registered_qwen35_9b") && !shipped([cls("Apple M5 Ultra"), m3Ultra], "registered_qwen35_9b"))
     }
 }

@@ -305,12 +305,12 @@ final class PairQualificationRecordTests: XCTestCase {
     }
     private func pairData(chips: [String?] = ["Apple M3 Ultra", "Apple M5 Max"], tokens: [Int] = Constructed.tokens,
                           outcome: String = "completed", agree: Bool = true, transport: String? = "jaccl",
-                          mode: String? = "phase_split_v1") throws -> Data {
+                          mode: String? = "phase_split_v1", finalRow: Bool = true) throws -> Data {
         var ranks = (0..<chips.count).map { PairRankReport(role: "rank \($0)", rank: $0) }
         for (index, chip) in chips.enumerated() { ranks[index].chip = chip; ranks[index].operatingSystem = "27.\(index)" }
         let request = try Constructed.request()
         return try QualificationReportFiles.encode(PairReport(outcome: outcome, failure: nil, identity: try Constructed.identity(cut: 12),
-            evidence: Constructed.pair(tokens: tokens), ranks: ranks.reversed(), workerHashesIdentical: true, metallibHashesIdentical: true,
+            evidence: Constructed.pair(tokens: tokens, row: finalRow ? Constructed.row : nil), ranks: ranks.reversed(), workerHashesIdentical: true, metallibHashesIdentical: true,
             recording: true, ranksAgreeOnTokens: agree, bothExitsObserved: true, noWorkerProcessLeft: true,
             progressTimeoutMilliseconds: nil, timing: .init(note: "constructed"), promptSource: request.promptSource,
             decodedOutput: nil, generationMode: mode, workerTransport: transport))
@@ -334,10 +334,8 @@ final class PairQualificationRecordTests: XCTestCase {
         let line = try record.encodedLine()
         XCTAssertFalse(line.contains("\n"))
         XCTAssertEqual(try ClusterPairQualificationRecordShim.decode(line + "\n\n" + line), [record, record])
-        // Without the cut allowance the reference's own cut makes the comparison incomparable, which fails.
-        let strict = try PairQualificationRecords.make(pairReport: pair, references: [try referenceData()], comparator: .init())
-        XCTAssertEqual(strict.comparisons.map(\.verdict), ["incomparable"])
-        XCTAssertFalse(strict.passed); XCTAssertTrue(strict.isConsistent)
+        // Without the cut allowance the reference's own cut makes it another request's reference: refused, not recorded.
+        XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: pair, references: [try referenceData()], comparator: .init()))
     }
 
     func testAFailingComparisonIsARecordThatFails() throws {
@@ -360,7 +358,8 @@ final class PairQualificationRecordTests: XCTestCase {
                               ("ranks disagree", try pairData(agree: false)),
                               ("did not complete", try pairData(outcome: "failed")),
                               ("a rank without a chip", try pairData(chips: ["Apple M3 Ultra", nil])),
-                              ("an unknown mode", try pairData(mode: "tensor_parallel_v9"))] {
+                              ("an unknown mode", try pairData(mode: "tensor_parallel_v9")),
+                              ("a timing run without a final row", try pairData(finalRow: false))] {
             XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: pair, references: [reference], comparator: allowCut), label)
         }
         XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: try pairData(), references: [], comparator: allowCut))

@@ -99,6 +99,17 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
 
     public var mode: ClusterGenerationMode? { ClusterGenerationMode(rawValue: generationMode) }
 
+    /// What the record says about its placement. `passed`: every comparison
+    /// passes the near-tie rule. `diverged`: some comparison chose another
+    /// token where the reference had no near tie, which withholds the model.
+    /// `inconclusive`: no comparison diverged, but some could not be decided
+    /// (`incomparable`): it qualifies nothing and withholds nothing.
+    public enum Outcome: String, Sendable { case passed, diverged, inconclusive }
+    public var outcome: Outcome {
+        if passesNearTieRule { return .passed }
+        return comparisons.contains { $0.verdict == "diverged" } ? .diverged : .inconclusive
+    }
+
     /// Whether the record is one a grant may rest on, pass or fail: the schema,
     /// two or more ranks in order on two Macs' transport, one cut fewer than
     /// the ranks (positive, ascending), a known mode, and `passed` equal to

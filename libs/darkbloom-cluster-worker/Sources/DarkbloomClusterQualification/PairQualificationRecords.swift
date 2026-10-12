@@ -8,8 +8,9 @@ import Foundation
 ///
 /// It refuses what cannot qualify a pair: a run that did not complete, ranks
 /// that disagree on the tokens, both ranks on one Mac (`local-socket-test`), a
-/// rank with no chip name, a reference that is a pair report, or no reference
-/// at all. A comparison that fails the near-tie rule does not refuse: it is a
+/// rank with no chip name, a reference that is a pair report or another
+/// request (identity differences beyond the allowances), or no reference at
+/// all. A comparison that fails the near-tie rule does not refuse: it is a
 /// record too, and it withholds the model.
 public enum PairQualificationRecords {
     public static let producer = "darkbloom-cluster-pair-check record"
@@ -26,7 +27,16 @@ public enum PairQualificationRecords {
         guard pair.outcome == "completed", let identity = pair.identity, let evidence = pair.evidence else {
             throw QualificationError("The pair report records outcome '\(pair.outcome)' and has no evidence to qualify")
         }
-        guard pair.ranksAgreeOnTokens == true else { throw QualificationError("The pair report's ranks do not agree on the tokens") }
+        // A recorded run compares rank 0's stream with each rank's history; any
+        // run's evidence is joined from both ranks only when their executions
+        // are identical (`PairEvidence.join`). Either way a completed report
+        // with evidence has ranks that agree, unless it says they do not.
+        // A run without `--evidence final-row` (a timed run) cannot tell exact
+        // from tokensEqualLogitsDiffer: it measured, it did not qualify.
+        guard evidence.finalLogits != nil else {
+            throw QualificationError("The pair report has no final row (a timing run, not a qualification run)")
+        }
+        guard pair.ranksAgreeOnTokens != false else { throw QualificationError("The pair report's ranks do not agree on the tokens") }
         // Reports written before the transport field existed ran over JACCL; the
         // loopback test transport was added with the field.
         let transport = pair.workerTransport ?? ClusterPairQualificationRecord.crossCableTransport
@@ -57,6 +67,12 @@ public enum PairQualificationRecords {
             let compared = try comparator.compare(
                 reference: .init(label: "single-host reference", identity: reference.identity, evidence: reference.evidence),
                 candidate: candidate)
+            // A reference of another request, artifact or numerical policy says
+            // nothing about this run: it is the operator's mistake, not a verdict.
+            guard compared.identityMatches else {
+                throw QualificationError("A reference is not the same request as the pair (differs in "
+                    + compared.identityDifferences.joined(separator: ", ") + ")")
+            }
             return .init(referenceChip: reference.host.chip, verdict: compared.verdict.rawValue,
                 firstDivergenceIndex: compared.tokens.firstDivergenceIndex, gapInULPs: compared.divergence?.gapInULPs,
                 nearTieThresholdULPs: comparator.nearTieULPs, allowed: allowed)

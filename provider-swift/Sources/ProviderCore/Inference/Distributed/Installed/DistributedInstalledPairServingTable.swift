@@ -85,7 +85,7 @@ enum DistributedInstalledPairServingTable {
         cleanStopWaitNanoseconds: 10_000_000_000))
 
     /// Registered Qwen3.8 27B, granted on mixed chips (owner decision D4,
-    /// `ClusterPairServingGrants.qwen38_27b`). Derived from single-Mac
+    /// derived from its qualification records, `ClusterPairServingGrants`). Derived from single-Mac
     /// measurements, then checked against the pair's own: across the cable
     /// the pair has run this model since 2026-10-09 (pipeline, phase split,
     /// MTP, prefix reuse, prompts to 30,720 tokens) inside these budgets.
@@ -111,7 +111,7 @@ enum DistributedInstalledPairServingTable {
         cleanStopWaitNanoseconds: 20_000_000_000))
 
     /// Registered Qwen3.5 35B A3B (20.9 GB), granted in the order its
-    /// cross-cable checks ran (`ClusterPairServingGrants.qwen35_35b_a3b`).
+    /// cross-cable checks ran (its qualification records, `ClusterPairServingGrants`).
     /// Every figure is the pair's own, across the cable, 2026-10-09 to 10-11.
     ///
     /// - Startup, 150 s. Both ranks were ready in 18.0 to 25.8 s as a pipeline
@@ -143,7 +143,7 @@ enum DistributedInstalledPairServingTable {
     static let qwen36A3B = Row(runtimeModelID: "registered_qwen36_35b_a3b", budgets: qwen35A3B.budgets)
 
     /// Registered Ternary Bonsai 2 27B (8.6 GB), granted in the order its
-    /// cross-cable checks ran (`ClusterPairServingGrants.bonsai_2_27b`).
+    /// cross-cable checks ran (its qualification records, `ClusterPairServingGrants`).
     ///
     /// - Startup, 90 s. Both ranks were ready in 7.4 to 9.4 s as a pipeline
     ///   and in 11.5 to 11.8 s under phase split; 90 s is seven times that.
@@ -166,7 +166,7 @@ enum DistributedInstalledPairServingTable {
         cleanStopWaitNanoseconds: 30_000_000_000))
 
     /// Registered Nemotron 3.5 Lightning (19.1 GB), granted in the order its
-    /// cross-cable checks ran (`ClusterPairServingGrants.nemotron35_lightning`).
+    /// cross-cable checks ran (its qualification records, `ClusterPairServingGrants`).
     ///
     /// - Startup, 120 s. Both ranks were ready in 14.9 to 16.8 s as a pipeline
     ///   and in 19.7 s under phase split; 120 s is six times that.

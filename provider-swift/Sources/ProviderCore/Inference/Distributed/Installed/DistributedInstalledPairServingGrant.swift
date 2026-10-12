@@ -47,10 +47,6 @@ public struct ClusterChipClass: Hashable, Comparable, Sendable, CustomStringConv
         return ClusterChipClass(chipName: String(decoding: buffer.prefix(while: { $0 != 0 }), as: UTF8.self))
     }
 
-    public static let appleM3Ultra = ClusterChipClass(chipName: "Apple M3 Ultra")!
-    public static let appleM5Max = ClusterChipClass(chipName: "Apple M5 Max")!
-    public static let appleM5Ultra = ClusterChipClass(chipName: "Apple M5 Ultra")!
-
     public var description: String { rawValue }
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
@@ -75,9 +71,11 @@ public enum ClusterPairServingRole: String, Sendable, CaseIterable {
 
 /// One placement a cross-cable check ran and passed under the near-tie rule:
 /// each rank's chip class in rank order, the layer cuts and the generation
-/// mode. It has the shape of the coordinator's parity qualification record
-/// (one class per rank in rank order, `cuts`, `mode`), with chip classes where
-/// that record names each rank's registered numerics class.
+/// mode, read from a qualification record the runner wrote
+/// (`ClusterPairQualificationRecord`). It has the shape of the coordinator's
+/// parity qualification record (one class per rank in rank order, `cuts`,
+/// `mode`), with chip classes where that record names each rank's registered
+/// numerics class.
 ///
 /// A grant's role classes come from its qualifications only: a class reaches
 /// a role when a passed check ran it in that role. The cut and the mode are
@@ -155,7 +153,8 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         let policy = " That is a policy decision about this model, not a fault in the setup, and no cluster setting changes it."
         switch reason {
         case .noGrant:
-            return model + " has no grant to be served by a pair in this darkbloom. A pair serves a model only under a grant that lists the chip classes each rank may run on." + policy
+            return model + " has no grant to be served by a pair in this darkbloom: no cross-cable qualification record of it has passed. "
+                + "A pair serves a model only under a grant derived from the records of passing runs, which list the chip classes each rank may run on." + policy
         case .withheld(let why):
             return model + " is not granted pair serving: \(why)." + policy
         case .placementShape(let rank, let rankCount):
@@ -176,100 +175,133 @@ extension ClusterPairServingRole {
     var words: String { self == .decodingRank ? "decoding rank" : "pipeline-only rank" }
 }
 
-/// The grants this darkbloom carries: one decision for every model the
-/// runtime registers, granted with chip classes per role or withheld with the
-/// reason. Owner decision D4 (2026-10-09, accepted with "all models" on
-/// 2026-10-09 22:20 PDT): a model whose cross-cable check passed is granted on
-/// the classes and roles that check ran; the check passes when its tokens
-/// equal the single-Mac reference or first differ at a near tie
-/// (`acceptedCrossClassVerdicts`). Single-Mac serving requirements
-/// (`ModelRuntimeRequirements`) are separate and unchanged.
+/// The pair-serving decisions a set of qualification records gives, one per
+/// registered model that has a record (owner decision D4, accepted with "all
+/// models" on 2026-10-09; "universal mechanisms", 2026-10-11): nothing here
+/// names a model, a chip or an order. A model is
+///
+/// - withheld when any of its records diverged (a token other than the
+///   reference's where the reference had no near tie), at any cut, mode or
+///   order: a grant admits a model at every cut the planner may choose, so one
+///   cut that diverged withholds it even where another passed;
+/// - otherwise granted on the placements of its passing records: a class
+///   reaches a role when a passing run ran it in that role;
+/// - and otherwise (no record, or only inconclusive ones) undecided, which
+///   refuses it as having no grant.
+///
+/// A record is used only when it is consistent (`isConsistent`: the runner's
+/// rule re-derived, two Macs' transport, ranks and cuts in order) and every
+/// rank's chip has a class; any other record is counted in `ignored`.
+public struct ClusterPairServingDecisions: Sendable, Equatable {
+    public let granted: [ClusterPairServingGrant]
+    public let withheld: [String: String]
+    public let ignored: Int
+
+    public init(records: [ClusterPairQualificationRecord]) {
+        var passed: [String: [ClusterPairServingQualification]] = [:], passedRecords: [String: Int] = [:]
+        var diverged: [String: [(ClusterPairQualificationRecord, [ClusterChipClass])]] = [:]
+        var ignored = 0
+        for record in records {
+            let classes = record.ranks.compactMap { ClusterChipClass(chipName: $0.chip) }
+            guard record.isConsistent, classes.count == record.ranks.count, let mode = record.mode else { ignored += 1; continue }
+            switch record.outcome {
+            case .passed:
+                passed[record.runtimeModelID, default: []].append(.init(chipClasses: classes, cuts: record.cuts, mode: mode))
+                passedRecords[record.runtimeModelID, default: 0] += 1
+            case .diverged:
+                diverged[record.runtimeModelID, default: []].append((record, classes))
+            case .inconclusive:
+                break
+            }
+        }
+        self.ignored = ignored
+        withheld = diverged.mapValues { Self.withholding($0) }
+        granted = passed.keys.sorted().compactMap { model -> ClusterPairServingGrant? in
+            guard diverged[model] == nil, let runs = passed[model] else { return nil }
+            var unique: [ClusterPairServingQualification] = []
+            for run in runs where !unique.contains(run) { unique.append(run) }
+            unique.sort { Self.order($0.cuts, $0.mode.rawValue, $0.chipClasses) < Self.order($1.cuts, $1.mode.rawValue, $1.chipClasses) }
+            return ClusterPairServingGrant(runtimeModelID: model, qualifications: unique,
+                evidence: Self.evidence(records: passedRecords[model] ?? 0, placements: unique))
+        }
+    }
+
+    /// A sort key: cuts (numerically), then mode, then classes.
+    static func order(_ cuts: [Int], _ mode: String, _ classes: [ClusterChipClass]) -> String {
+        cuts.map { String(repeating: "0", count: max(0, 8 - String($0).count)) + String($0) }.joined(separator: ",")
+            + "|" + mode + "|" + classes.map(\.rawValue).joined(separator: ",")
+    }
+
+    static func placementWords(_ classes: [ClusterChipClass]) -> String {
+        classes.enumerated().map { "\($0.element.rawValue) rank \($0.offset)" }.joined(separator: ", ")
+    }
+
+    static func evidence(records: Int, placements: [ClusterPairServingQualification]) -> String {
+        let orders = Set(placements.map { placementWords($0.chipClasses) }).sorted()
+        let cuts = Set(placements.flatMap(\.cuts)).sorted().map(String.init).joined(separator: ", ")
+        let modes = Set(placements.map(\.mode.rawValue)).sorted().joined(separator: ", ")
+        return "\(records) passing cross-cable qualification record\(records == 1 ? "" : "s") (near-tie rule against single-Mac references): "
+            + orders.joined(separator: "; ") + "; cuts \(cuts); modes \(modes)"
+    }
+
+    /// Why a model whose records diverged is withheld: the first divergence
+    /// (lowest cut, then mode) in full, and every cut that diverged.
+    static func withholding(_ runs: [(ClusterPairQualificationRecord, [ClusterChipClass])]) -> String {
+        let ordered = runs.sorted { order($0.0.cuts, $0.0.generationMode, $0.1) < order($1.0.cuts, $1.0.generationMode, $1.1) }
+        let cuts = Array(Set(ordered.flatMap { $0.0.cuts })).sorted().map(String.init)
+        let cutWords = cuts.count == 1 ? "cut \(cuts[0])" : "cuts " + cuts.dropLast().joined(separator: ", ") + " and " + cuts.last!
+        guard let (record, classes) = ordered.first, let failure = record.firstFailure else {
+            return "its cross-cable check diverged at \(cutWords)"
+        }
+        var detail = "its cross-cable check diverged at \(cutWords) (first: \(placementWords(classes)), cut \(record.cuts.map(String.init).joined(separator: ",")), "
+            + "\(record.generationMode), \(record.promptTokens)-token request"
+        if let index = failure.firstDivergenceIndex { detail += ", output \(index)" }
+        if let gap = failure.gapInULPs {
+            detail += String(format: ", %.1f ulp from the reference's choice against a near-tie threshold of %.1f", gap, failure.nearTieThresholdULPs)
+        }
+        if let chip = failure.referenceChip { detail += ", against the single-Mac reference recorded on an \(chip)" }
+        return detail + ")"
+    }
+}
+
+/// The grants this darkbloom carries, derived from the qualification records
+/// it ships (`ClusterPairQualificationRecordsBundled`, written by
+/// `darkbloom-cluster-pair-check record` from cross-cable runs and their
+/// single-Mac references): the near-tie rule decides each record
+/// (`acceptedCrossClassVerdicts`), `ClusterPairServingDecisions` decides each
+/// model. Single-Mac serving requirements (`ModelRuntimeRequirements`) are
+/// separate and unchanged. Adding a chip, an order or a model is adding the
+/// runner's record of a passing run, not editing a table.
 public enum ClusterPairServingGrants {
     /// The comparator verdicts a cross-cable check may have and pass.
     /// `diverged` and `incomparable` fail it.
-    public static let acceptedCrossClassVerdicts = ["exact", "tokensEqualLogitsDiffer", "divergedAtNearTie"]
+    public static let acceptedCrossClassVerdicts = ClusterPairQualificationRecord.acceptedVerdicts
 
-    private static let m3Ultra = ClusterChipClass.appleM3Ultra, m5Max = ClusterChipClass.appleM5Max
-    private static let m5Ultra = ClusterChipClass.appleM5Ultra
-    /// M3 Ultra rank 0, M5 Ultra rank 1 (the decoding rank), checked since
-    /// 2026-10-12 for the 9B and the 27B at the product's plan.
-    private static let m3UltraLeadsM5Ultra = [m3Ultra, m5Ultra]
-    /// The order every family's checks ran in: M3 Ultra rank 0, M5 Max rank 1
-    /// (the decoding rank).
-    private static let m3UltraLeads = [m3Ultra, m5Max]
-    /// The mirrored order, checked for the 27B only.
-    private static let m5MaxLeads = [m5Max, m3Ultra]
+    /// The records this build ships. A bundle that does not decode gives no
+    /// records, so every model is refused (a check guards the bundle).
+    public static let records: [ClusterPairQualificationRecord] =
+        (try? ClusterPairQualificationRecord.decodeLines(ClusterPairQualificationRecordsBundled.jsonLines)) ?? []
 
-    /// The passed checks of one order at one cut, one per mode.
-    private static func passed(_ chipClasses: [ClusterChipClass], cut: Int, _ modes: ClusterGenerationMode...) -> [ClusterPairServingQualification] {
-        modes.map { .init(chipClasses: chipClasses, cuts: [cut], mode: $0) }
-    }
+    public static let decisions = ClusterPairServingDecisions(records: records)
 
-    public static let qwen35_9b = ClusterPairServingGrant(runtimeModelID: "registered_qwen35_9b",
-        qualifications: passed(m3UltraLeads, cut: 4, .pipeline, .phaseSplit, .phaseSplitMTP)
-            + passed(m3UltraLeadsM5Ultra, cut: 16, .phaseSplitMTP),
-        evidence: "M3 Ultra rank 0 and M5 Max rank 1 at cut 4 across the cable: pipeline and phase split with prompts of 5,120 to 30,720 tokens, "
-            + "phase split with MTP; every comparison against both Macs' references a near tie or tokens equal; "
-            + "M3 Ultra rank 0 and M5 Ultra rank 1 (2026-10-12, cut 16, phase split with MTP): tokens equal Mac A's reference, "
-            + "a near tie against the M5 Ultra's (evidence universal-20261010/m5ultra/hw/9b/)")
-    /// Both orders ran: the M3 Ultra decodes in the mirrored one.
-    public static let qwen38_27b = ClusterPairServingGrant(runtimeModelID: "registered_qwen38_27b",
-        qualifications: passed(m3UltraLeads, cut: 16, .pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP)
-            + passed(m5MaxLeads, cut: 48, .pipeline, .pipelineCompactDecode, .phaseSplit)
-            + passed(m3UltraLeadsM5Ultra, cut: 32, .phaseSplitMTP),
-        evidence: "M3 Ultra rank 0 and M5 Max rank 1 (cut 16): pipeline, compact decode, phase split, phase split with MTP, "
-            + "prefix reuse and prompts to 30,720 tokens; M5 Max rank 0 and M3 Ultra rank 1 (cut 48): pipeline, compact decode "
-            + "and phase split; every comparison against both Macs' references a near tie (0 to 1 ulp) or tokens equal; "
-            + "M3 Ultra rank 0 and M5 Ultra rank 1 (2026-10-12, cut 32, phase split with MTP): tokens equal both Macs' references "
-            + "(evidence universal-20261010/m5ultra/hw/27b/)")
-    public static let qwen35_35b_a3b = ClusterPairServingGrant(runtimeModelID: "registered_qwen35_35b_a3b",
-        qualifications: passed(m3UltraLeads, cut: 12, .pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP)
-            + passed(m3UltraLeads, cut: 20, .pipeline, .phaseSplit, .phaseSplitMTP),
-        evidence: "cuts 12 and 20, pipeline, compact decode, phase split and phase split with MTP: a near tie (0 ulp) broken the way "
-            + "the M5 Max alone breaks it, or tokens equal; 5,120 tokens equal")
-    public static let qwen36_35b_a3b = ClusterPairServingGrant(runtimeModelID: "registered_qwen36_35b_a3b",
-        qualifications: passed(m3UltraLeads, cut: 12, .pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP)
-            + passed(m3UltraLeads, cut: 20, .pipeline, .phaseSplit, .phaseSplitMTP),
-        evidence: "cuts 12 and 20, text only, pipeline, compact decode, phase split and phase split with MTP: tokens equal the M3 Ultra's "
-            + "reference or first differ at a near tie (0 to 1 ulp)")
-    public static let bonsai_2_27b = ClusterPairServingGrant(runtimeModelID: "registered_ternary_bonsai_2_27b",
-        qualifications: passed(m3UltraLeads, cut: 24, .pipeline, .pipelineCompactDecode, .phaseSplit)
-            + passed(m3UltraLeads, cut: 32, .pipeline),
-        evidence: "cut 24, 8,192 prompt tokens, pipeline (serial and lookahead), compact decode and phase split: all 128 tokens equal; "
-            + "cut 32, 4,096 prompt tokens, pipeline: tokens equal")
-    public static let nemotron35_lightning = ClusterPairServingGrant(runtimeModelID: "registered_nemotron35_lightning",
-        qualifications: passed(m3UltraLeads, cut: 25, .pipeline, .pipelineCompactDecode, .phaseSplit)
-            + passed(m3UltraLeads, cut: 27, .pipeline) + passed(m3UltraLeads, cut: 20, .phaseSplit),
-        evidence: "cut 25, short prompt, pipeline, compact decode and phase split: tokens equal, or a near tie (4.0 ulp against the "
-            + "M5 Max's reference, the comparator's threshold); cut 27 pipeline and cut 20 phase split at 4,096 tokens: tokens equal or a near tie")
-
-    public static let granted: [ClusterPairServingGrant] = [qwen35_9b, qwen38_27b, qwen35_35b_a3b, qwen36_35b_a3b,
-                                                             bonsai_2_27b, nemotron35_lightning]
-
-    /// Registered models whose cross-cable checks have not all passed, and
-    /// why. A grant admits a model at every cut the planner may choose, so a
-    /// model with a cut that diverged stays withheld even where another cut
-    /// passed.
-    public static let withheld: [String: String] = [
-        "registered_gpt_oss_20b": "its cross-cable check diverged at cuts 8 and 10 (output 1 of the 4,096-token request, reference margin 0.82, not a near tie), although cut 12 gave the reference's tokens",
-        "registered_mimo_v26_flash_mopd": "its 4,096-token cross-cable request departs from the reference at output 50 and the departure is not classified (the reference recorded no logits there), although the short request gave the reference's tokens",
-        "registered_gemma4_26b_qat_4bit": "its cross-cable check diverged at cut 12 (token 7 of the 31-token request, margin 0.30, not a near tie), although cuts 15 and 18 passed",
-        "registered_gemma4_26b_8bit": "its cross-cable check diverged at cut 12 (tokens 21 and 20 of the 4,096- and 5,120-token requests, margins of 0.25 and more, not near ties)",
-        "registered_gemma4_26b": "no cross-cable check has run on this artifact",
-    ]
+    public static var granted: [ClusterPairServingGrant] { decisions.granted }
+    /// Registered models whose records diverged, and why.
+    public static var withheld: [String: String] { decisions.withheld }
 
     /// The grant for a model a pair may serve; a refusal for every other model.
-    public static func grant(runtimeModelID: String, publicModelID: String) throws -> ClusterPairServingGrant {
-        if let grant = granted.first(where: { $0.runtimeModelID == runtimeModelID }) { return grant }
+    public static func grant(runtimeModelID: String, publicModelID: String,
+                             decisions: ClusterPairServingDecisions = decisions) throws -> ClusterPairServingGrant {
+        if let grant = decisions.granted.first(where: { $0.runtimeModelID == runtimeModelID }) { return grant }
         throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-            reason: withheld[runtimeModelID].map { .withheld($0) } ?? .noGrant)
+            reason: decisions.withheld[runtimeModelID].map { .withheld($0) } ?? .noGrant)
     }
 
     /// One rank of a placement, checked on the Mac that runs it with that
     /// Mac's own chip class. Every rank checked this way is the whole placement.
     public static func requireRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass?,
-                                   runtimeModelID: String, publicModelID: String) throws {
-        let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
+                                   runtimeModelID: String, publicModelID: String,
+                                   decisions: ClusterPairServingDecisions = decisions) throws {
+        let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, decisions: decisions)
         func refuse(_ reason: ClusterPairServingRefusal.Reason) -> ClusterPairServingRefusal {
             .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: reason)
         }
@@ -284,14 +316,15 @@ public enum ClusterPairServingGrants {
     }
 
     /// A whole placement: each rank's chip class in rank order.
-    public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String) throws {
+    public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String,
+                                        decisions: ClusterPairServingDecisions = decisions) throws {
         guard rankClasses.count >= 2 else {
             throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
                 reason: .placementShape(rank: 0, rankCount: rankClasses.count))
         }
         for (rank, chipClass) in rankClasses.enumerated() {
             try requireRank(rank, of: rankClasses.count, chipClass: chipClass,
-                            runtimeModelID: runtimeModelID, publicModelID: publicModelID)
+                            runtimeModelID: runtimeModelID, publicModelID: publicModelID, decisions: decisions)
         }
     }
 }

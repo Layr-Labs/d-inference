@@ -1,6 +1,6 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 Run each Mac of a coordinator-paired cluster as an ordinary background
 service, the way a solo `darkbloom start` runs: it starts at login, waits for
@@ -12,6 +12,11 @@ together with the other member, and asks for macOS permissions once.
 - A saved coordinator-paired setup on each Mac
   ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)).
   `darkbloom start --cluster-member` must already work in the foreground.
+- The cluster link set up once on each Mac (step 2 of `darkbloom cluster`,
+  or `darkbloom cluster link --fix`): one administrator approval gives the
+  Thunderbolt port Darkbloom's own link service with its own IPv4 address,
+  which RDMA needs. macOS keeps that service across reboots and updates, so it
+  is not asked again; `darkbloom cluster link` reports `ready` when it is done.
 - The signed, notarized Darkbloom release installed by the installer
   ([installation](installation.md)). A locally built binary works, but macOS
   treats every new ad-hoc build as a new program and asks again (see
@@ -55,7 +60,7 @@ together with the other member, and asks for macOS permissions once.
 
 | Situation | Behaviour |
 |---|---|
-| Boot, port not ready | Waits for this Mac's cluster port before the member registers (rechecks every 5 s; RDMA off or absent: every 60 s with the fix in the log) |
+| Boot, port not ready | Waits for this Mac's cluster port before the member registers: port active, its own IPv4 address, and the IPv4-mapped GID that RDMA needs published (rechecks every 5 s; RDMA off or absent: every 60 s with the fix in the log) |
 | Coordinator unreachable at boot or restarting | The member keeps reconnecting; this is not counted as a failure |
 | Member exits or is killed (anything the supervisor did not ask for, a clean exit included) | Restarts it after 15 s, doubling to 300 s; a run of 120 s or more resets the wait |
 | Three runs in a row each shorter than 120 s | Stops restarting and parks, holding no memory, until `darkbloom restart` |
@@ -73,12 +78,14 @@ is `provider-swift/Sources/darkbloom/ClusterMemberSupervisor.swift`.
 
 ## Permissions asked once
 
-macOS decides two permissions per program identity. A release meets both with
-no change to any system setting:
+One administrator approval sets up the cluster link per Mac; macOS then decides
+two permissions per program identity, which a release meets with no further
+system setting:
 
 | Permission | Why the member needs it | What makes it once |
 |---|---|---|
 | Local Network privacy | The follower dials the leader over the Thunderbolt link (a local network address). A member started by hand in a shell runs under that shell's approval (or a remote-login exemption on a bench rig), which is why it works there while the same binary started by launchd is refused (`Local network prohibited`) until Darkbloom itself is approved. | The LaunchAgent runs the executable inside `Darkbloom.app` (the recorded path is the resolved one, not the `~/.darkbloom/bin` symlink); the app carries `CFBundleIdentifier` `io.darkbloom.provider` and `NSLocalNetworkUsageDescription`, and is Developer-ID signed, notarized and stapled. The approval follows that signed identity, so updates keep it. The owner and worker processes the member starts inherit it. No configuration profile can pre-approve Local Network, so one click per Mac is the minimum. |
+| Cluster link setup (administrator approval) | RDMA over Thunderbolt needs an IPv4 address on the cable port itself (JACCL refuses a port without an IPv4-mapped GID); macOS leaves the port in the Thunderbolt Bridge with none. | Done once per Mac from step 2 of `darkbloom cluster` (or `darkbloom cluster link --fix`): one macOS administrator approval adds Darkbloom's own link service to the port. macOS keeps the service through reboots and updates; the supervisor only waits for it at boot and never changes it. |
 | Application firewall (when on) | A rank that listens: by default only the leader (rank 0) listens; a follower only dials out. | With **Automatically allow downloaded signed software** on (the macOS default), any Developer-ID-signed program may accept connections without an alert. The release signs the main executable and, when shipped in `Contents/Helpers`, the cluster worker and placement tool under their own identifiers. An ad-hoc build is not covered and raises one alert per new build. |
 
 The release workflow (`.github/workflows/release-swift.yml`) writes the usage

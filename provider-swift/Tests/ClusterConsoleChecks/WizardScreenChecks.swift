@@ -240,6 +240,12 @@ extension ClusterConsoleCheck {
             expect(layout?.admittedCuts.contains(option?.plan?.cut ?? -1) == true,
                 "\(reading.model.modelID)'s cut \(option?.plan?.cut ?? -1) is one its layout admits")
             expect(described.contains(option?.plan?.mode ?? "-"), "\(reading.model.modelID)'s mode is one its worker described")
+            // MTP on by default: a family whose worker runs the speculative head is planned with it, the
+            // M5 (the Mac that prefers the head) decoding.
+            if described.contains("phase_split_mtp_v1") {
+                expect(option?.plan?.mode == "phase_split_mtp_v1" && option?.plan?.ranks.last?.memberID == "mac-b",
+                    "\(reading.model.modelID) is planned with the speculative head on the decoding M5: \(option?.plan?.mode ?? "-")")
+            }
         }
         let mimo = options.first { $0.model.modelID == "mimo-v2.6-flash-mopd" }?.plan?.ranks ?? []
         let layers = { (member: String) in mimo.first { $0.memberID == member }.map { $0.endLayer - $0.firstLayer } ?? 0 }

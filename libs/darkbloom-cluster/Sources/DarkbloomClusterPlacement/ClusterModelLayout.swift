@@ -82,6 +82,15 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     public let egress: Part
     /// What no range loads (vision, MTP, audio).
     public let excluded: Part
+    /// Of `excluded`, the model's own speculative (MTP) head: what the
+    /// decoding rank of `phase_split_mtp_v1` loads beside its stages. Nil when
+    /// the artifact ships none, or in a layout written before it was derived.
+    public fileprivate(set) var speculativeHead: Part? = nil
+    /// The decode speed-up the model's resident row credits its speculative
+    /// head with (the smallest speed-up the pair measured with the head over
+    /// the same phase split without it), where a decoding Mac is credited at
+    /// all (`ClusterSpeculativeCredit`). Nil: the head is never credited.
+    public fileprivate(set) var speculativeDecodeFactor: Double? = nil
     /// Stage-0 layer counts the installed runtime admits for this model.
     public let admittedCuts: [Int]
     /// Stage-0 layer counts the family's stage plan could cut at. A superset
@@ -156,6 +165,16 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
               boundaryBytesPerToken > 0, requestChargeEveryRankBytes >= 0,
               (requestChargeEveryRankBytesPerToken ?? 0) >= 0 else {
             throw ClusterPlacementError("Model layout is malformed")
+        }
+        // The head is part of what no range loads, and its credit is a speed-up.
+        guard speculativeHead.map({ head in
+                  head.tensorCount > 0 && head.storedBytes > 0 && head.loadedBytes > 0
+                      && head.largestTensorBytes <= head.loadedBytes && head.requestWorkBytes >= 0
+                      && head.storedBytes <= excluded.storedBytes && head.tensorCount <= excluded.tensorCount
+              }) ?? true,
+              speculativeDecodeFactor.map({ $0.isFinite && $0 >= 1 && $0 <= 8 }) ?? true,
+              speculativeDecodeFactor == nil || generationModes.contains(.phaseSplitMTP) else {
+            throw ClusterPlacementError("Model layout's speculative head is malformed")
         }
     }
 
@@ -308,6 +327,12 @@ public protocol ClusterPlacementFamily {
     /// True for a tensor both the first and the last range load (a tied
     /// embedding: read on the way in and again as the output projection).
     func loadsAtBothEnds(storedTensor name: String) -> Bool
+    /// True for a tensor of the model's own speculative (MTP) head: no range
+    /// loads it; the decoding rank of `phase_split_mtp_v1` loads it beside
+    /// its stages.
+    func isSpeculativeHead(storedTensor name: String) -> Bool
+    /// See `ClusterModelLayout.speculativeDecodeFactor`.
+    var speculativeDecodeFactor: Double? { get }
     /// Relative compute cost of a layer. 1 for every layer unless the family
     /// has measured its kinds apart.
     func layerCost(_ layer: Int) -> Double
@@ -323,6 +348,8 @@ extension ClusterPlacementFamily {
     public func loadedBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { storedBytes }
     public func requestWorkBytes(ofStoredTensor name: String, storedBytes: Int) -> Int { 0 }
     public func loadsAtBothEnds(storedTensor name: String) -> Bool { false }
+    public func isSpeculativeHead(storedTensor name: String) -> Bool { false }
+    public var speculativeDecodeFactor: Double? { nil }
     public func layerCost(_ layer: Int) -> Double { 1 }
     public func prefillTransient(layer: Int) -> ClusterPlacementLayerTransient { .none }
 }
@@ -342,6 +369,7 @@ public enum ClusterModelLayoutBuilder {
         }
         var layers = [ClusterModelLayout.Part](repeating: .init(), count: count)
         var ingress = ClusterModelLayout.Part(), egress = ClusterModelLayout.Part(), excluded = ClusterModelLayout.Part()
+        var head = ClusterModelLayout.Part()
         for tensor in tensors {
             guard tensor.byteCount > 0 else { throw ClusterPlacementError("Tensor \(tensor.name) has no bytes") }
             let stages = try cuts.map { try family.stage(ofStoredTensor: tensor.name, cut: $0) }
@@ -362,6 +390,9 @@ public enum ClusterModelLayoutBuilder {
                     throw ClusterPlacementError("Tensor \(tensor.name) names a layer but no stage loads it")
                 }
                 excluded.add(stored: tensor.byteCount, loaded: tensor.byteCount, work: 0)
+                if family.isSpeculativeHead(storedTensor: tensor.name) {
+                    head.add(stored: tensor.byteCount, loaded: loaded, work: 0)
+                }
                 continue
             }
             guard stages.allSatisfy({ $0 == 0 || $0 == 1 }) else {
@@ -408,6 +439,11 @@ public enum ClusterModelLayoutBuilder {
             requestChargeEveryRankBytes: family.requestChargeEveryRankBytes,
             requestChargeEveryRankBytesPerToken: family.requestChargeEveryRankBytesPerToken)
         try value.validate()
-        return value
+        // The head no range loads, and the speed-up the family's row credits it with.
+        var built = value
+        built.speculativeHead = head.tensorCount > 0 ? head : nil
+        built.speculativeDecodeFactor = family.speculativeDecodeFactor
+        try built.validate()
+        return built
     }
 }

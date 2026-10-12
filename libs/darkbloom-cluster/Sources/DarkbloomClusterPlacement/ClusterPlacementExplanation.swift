@@ -103,10 +103,13 @@ public enum ClusterPlacementExplanation {
 
     public static func speed(_ label: String, _ speed: ClusterDeviceSpeed) -> String {
         let unit = speed.absolute ? " tok/s" : " (relative)"
+        func head(_ rates: ClusterSpeedRates) -> String {
+            rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? ""
+        }
         var text = "\(label): prefill \(rate(speed.rested.prefillTokensPerSecond))\(unit) and decode "
-            + "\(rate(speed.rested.decodeTokensPerSecond))\(unit) rested"
+            + "\(rate(speed.rested.decodeTokensPerSecond))\(unit)\(head(speed.rested)) rested"
         if let sustained = speed.sustained {
-            text += "; \(rate(sustained.prefillTokensPerSecond)) and \(rate(sustained.decodeTokensPerSecond)) sustained"
+            text += "; \(rate(sustained.prefillTokensPerSecond)) and \(rate(sustained.decodeTokensPerSecond))\(head(sustained)) sustained"
         } else {
             text += "; no sustained figure"
         }
@@ -249,6 +252,46 @@ public enum ClusterPlacementExplanation {
         return lines
     }
 
+    /// Why the decoding Mac of a phase split runs the model's speculative head
+    /// or not (`ClusterSpeculativeCredit`); nil for a model without one.
+    static func speculation(_ chosen: ClusterPlacementCandidate, devices: [ClusterPlacementDevice],
+                            layout: ClusterModelLayout, regime: ClusterPlacementPolicy.Regime) -> String? {
+        guard layout.generationModes.contains(.phaseSplitMTP),
+              let decoder = devices.first(where: { $0.label == chosen.ranks.last?.device }) else { return nil }
+        let rates = (regime == .sustained ? decoder.speed.sustained : nil) ?? decoder.speed.rested
+        let value = ClusterSpeculativeCredit.rate(rates, device: decoder, layout: layout)
+        let prefers = ClusterSpeculativeCredit.prefersHead(rates, device: decoder, layout: layout)
+        if chosen.mode.usesSpeculativeHead, prefers, value == nil {
+            return "It decodes with the model's speculative (MTP) head, as one Mac does by default on \(decoder.label)'s GPU generation; "
+                + "the model's row names no measured speed-up, so the times above are those of plain decode."
+        }
+        if chosen.mode.usesSpeculativeHead, prefers, let value {
+            switch value.basis {
+            case .measured:
+                return "It decodes with the model's speculative (MTP) head, as one Mac does by default: \(decoder.label) measured "
+                    + "\(rate(value.tokensPerSecond)) tok/s with it against \(rate(rates.decodeTokensPerSecond)) without."
+            case .rowFactor:
+                return "It decodes with the model's speculative (MTP) head, as one Mac does by default, credited with "
+                    + "\(number(layout.speculativeDecodeFactor ?? 1, 2))x its plain decode (the smallest speed-up the pair measured with the head) "
+                    + "because \(decoder.label)'s GPU is of the first generation with matrix accelerators (Apple M\(ClusterSpeculativeCredit.firstAcceleratedGeneration)) or a later one."
+            }
+        }
+        if prefers {
+            return "The model's speculative (MTP) head is preferred on \(decoder.label), but no placement with it was allowed or fits "
+                + "as comfortably, so it decodes without it."
+        }
+        let why: String
+        if let value {
+            why = "it measured \(rate(value.tokensPerSecond)) tok/s with the head, no faster than \(rate(rates.decodeTokensPerSecond)) without it"
+        } else if layout.speculativeDecodeFactor == nil {
+            why = "the model's row credits the head with no measured speed-up"
+        } else {
+            why = "its GPU is of a generation before Apple M\(ClusterSpeculativeCredit.firstAcceleratedGeneration), where the head was measured slower than plain decode"
+        }
+        return "The model's speculative (MTP) head is not credited on \(decoder.label) (\(why)), so it decodes without it: "
+            + "plain greedy decode is the reference itself."
+    }
+
     static func reasons(_ result: ClusterPlacementResult, chosen: ClusterPlacementCandidate,
                         devices: [ClusterPlacementDevice], layout: ClusterModelLayout) -> [String] {
         var lines: [String] = []
@@ -269,6 +312,7 @@ public enum ClusterPlacementExplanation {
         }
         if chosen.mode.isPhaseSplit {
             lines.append("The last rank holds every layer and decodes alone after the first token, because that is faster than passing each token through both.")
+            if let line = speculation(chosen, devices: devices, layout: layout, regime: regime) { lines.append(line) }
         }
         if let other = result.chosenForOtherRegime, other.cuts != chosen.cuts || other.ranks.map(\.device) != chosen.ranks.map(\.device) || other.mode != chosen.mode {
             let name = regime == .sustained ? "rested" : "sustained"

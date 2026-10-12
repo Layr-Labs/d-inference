@@ -37,7 +37,8 @@ public struct ClusterPlacementHoldings: Codable, Equatable, Sendable {
 
     /// Bytes of weights each contiguous range holds once loaded, in rank
     /// order. A tensor is held in whole pages, so each counts one page of
-    /// rounding, as the load gate and the planner count it.
+    /// rounding, as the load gate and the planner count it. The decoding rank
+    /// of a speculative phase split holds the model's head too.
     public static func weightsBytes(layout: ClusterModelLayout, boundaries: [Int], mode: ClusterGenerationMode,
                                     pageSizeBytes: Int) -> [Int] {
         let edges = [0] + boundaries + [layout.layerCount]
@@ -45,7 +46,9 @@ public struct ClusterPlacementHoldings: Codable, Equatable, Sendable {
         return ranges.indices.map { index in
             let last = index == ranges.count - 1
             let loads = [ranges[index]] + (mode.isPhaseSplit && last ? Array(ranges[..<index]) : [])
-            return loads.reduce(0) { $0 + $1.loadedBytes + $1.tensorCount * pageSizeBytes }
+            let head = mode.usesSpeculativeHead && last
+                ? layout.speculativeHead.map { $0.loadedBytes + $0.tensorCount * pageSizeBytes } ?? 0 : 0
+            return loads.reduce(head) { $0 + $1.loadedBytes + $1.tensorCount * pageSizeBytes }
         }
     }
 

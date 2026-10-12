@@ -1,8 +1,8 @@
 {
  "Qwen3.5-9B-2026-09-03-r1": {
   "cut": 16,
-  "mode": "pipeline_v1",
-  "planSHA256": "d0cadbe6c95998b25116cfc3c9b8925335d9c45239329fe0c66c1d5606641baf",
+  "mode": "phase_split_mtp_v1",
+  "planSHA256": "32da528fe4dd61df17c24eb50b75738318323ecd387b4f6b47f48205baf64795",
   "ranks": [
    {
     "device": "mac-a",
@@ -21,8 +21,8 @@
  },
  "Qwen3.8-27B-4bit-mtp-2026-09-03-r1": {
   "cut": 32,
-  "mode": "pipeline_v1",
-  "planSHA256": "fd3e7e67963315986ab655810491cea3468fa891cb3e7bfd367f2d52ccb9e811",
+  "mode": "phase_split_mtp_v1",
+  "planSHA256": "8b5d2b4c288b90ed2e7636236c329f6f93576af501da325ac730186f836e1eec",
   "ranks": [
    {
     "device": "mac-a",
@@ -161,8 +161,8 @@
  },
  "qwen3.5-35b-a3b-2026-08-25-r1": {
   "cut": 20,
-  "mode": "pipeline_v1",
-  "planSHA256": "cb1ca54108d4373fd258b20f0a5db32e5833fab62b76bbec047bf41965a37382",
+  "mode": "phase_split_mtp_v1",
+  "planSHA256": "a00132c0b3e53bbf260754dc340966b67bfc0ad1715a0daaaba3d6e08cf54fc9",
   "ranks": [
    {
     "device": "mac-a",
@@ -181,8 +181,8 @@
  },
  "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1": {
   "cut": 20,
-  "mode": "pipeline_v1",
-  "planSHA256": "809384d1ea3937fe8534a966f9780d44f58f76f6d1e213e4f12302197c60a0b5",
+  "mode": "phase_split_mtp_v1",
+  "planSHA256": "f9465a255796921ae5ed5cee7061fca6cf289c59521e5909f3822cad1ac1f871",
   "ranks": [
    {
     "device": "mac-a",

@@ -21,6 +21,11 @@ struct QwenResidentModelDefinition {
     /// contract its ranks are started under. Both follow from the row.
     let adapter: ClusterRuntimeAdapter
     let arithmetic: QwenResidentArithmeticPolicy
+    /// The decode speed-up a placement planner credits the model's own
+    /// speculative head with (`ClusterModelLayout.speculativeDecodeFactor`):
+    /// the smallest speed-up the pair measured with the head over the same
+    /// phase split without it. Nil for a row without `phase_split_mtp_v1`.
+    let speculativeDecodeFactor: Double?
 
     init(model: QwenRegisteredDenseModel) throws {
         guard let specification = QwenDenseRegisteredSpecification.all.first(where: { $0.model == model }) else {
@@ -111,6 +116,19 @@ struct QwenResidentModelDefinition {
               supportedCuts.allSatisfy(structural.contains) else {
             throw QwenDenseProfileError("Resident cuts differ from the registered layer geometry")
         }
+        // Measured on the pair (M3 Ultra rank 0, M5 Max decoding), all four
+        // lanes, median of requests 2 to 4, 128 tokens; the smallest of each
+        // model's measured speed-ups, so a plan never counts on more: the 9B
+        // at 1,024 tokens (115.4 against 79.9 tok/s; 1.59x at 5,120), the 27B
+        // at 5,120 (42.4 against 27.1; 1.70x at 1,024), the Qwen3.6 35B A3B at
+        // 4,096 with depth 3 (105.8 against 73.3; the Qwen3.5 row 1.64x).
+        let measuredSpeculativeSpeedup: Double? = switch model {
+        case .qwen35NineB: 1.44
+        case .qwen38TwentySevenB: 1.56
+        case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B: 1.44
+        case .ternaryBonsai2TwentySevenB, .nemotron35Lightning: nil
+        }
+        speculativeDecodeFactor = supportedGenerationModes.contains(.phaseSplitMTP) ? measuredSpeculativeSpeedup : nil
         self.specification = specification
     }
 

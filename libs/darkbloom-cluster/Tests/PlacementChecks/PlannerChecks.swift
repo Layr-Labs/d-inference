@@ -186,10 +186,12 @@ func checkRule(_ name: String, _ devices: [ClusterPlacementDevice], _ layout: Cl
     if let chosen = result.chosen {
         checks.require("\(name): the chosen placement is in the best tier that exists", chosen.tier == possible.map(\.tier).min())
         checks.require("\(name): the chosen placement is one of the enumerated ones", all.contains(chosen))
-        // MTP on by default: a chosen phase split carries the model's head
-        // whenever the layout lists the speculative phase split.
-        checks.require("\(name): a chosen phase split runs the speculative head when the model ships one",
-            !chosen.mode.isPhaseSplit || chosen.mode.usesSpeculativeHead == layout.generationModes.contains(.phaseSplitMTP))
+        // MTP on by default where it pays: a chosen phase split runs the
+        // model's head exactly when its decoding Mac prefers the head.
+        let decoder = devices.first { $0.label == chosen.ranks.last?.device }
+        checks.require("\(name): a chosen phase split runs the speculative head exactly when the decoding Mac prefers it",
+            !chosen.mode.isPhaseSplit || chosen.mode.usesSpeculativeHead
+                == (decoder.map { ClusterSpeculativeCredit.prefersHead($0.speed.rested, device: $0, layout: layout) } ?? false))
     }
     checks.require("\(name): the planner considered every placement", result.candidatesConsidered == all.count)
     checks.require("\(name): planning twice gives the same answer", try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy) == result)

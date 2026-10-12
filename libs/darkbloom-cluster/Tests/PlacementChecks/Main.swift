@@ -34,6 +34,7 @@ import Foundation
             let layouts = try checkRegisteredLayouts(inputs, checks)
             try checkDeviceMixes(layouts.nine, layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)
+            try checkSpeculativeCredit(inputs, checks)
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
             try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)

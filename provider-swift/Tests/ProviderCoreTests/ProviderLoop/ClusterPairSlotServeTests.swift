@@ -30,6 +30,8 @@ private struct PairServeFixture {
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         await loop.setServeUsesHostServicesForTesting(false)
         await loop.setDaemonStateFileForTesting(directory.appendingPathComponent("state.json"))
+        // The production warmup canary (S18) runs before admission opens.
+        await loop.setClusterPairWarmupForTesting(timeoutSeconds: 30)
         return .init(mock: mock, loop: loop, directory: directory)
     }
 
@@ -94,13 +96,15 @@ struct ClusterPairSlotServeTests {
             #expect(text.contains("t5") && text.contains("t6") && text.contains("t7"), "stream: \(text)")
             let complete = try #require(done.inferenceComplete.first { $0.requestId == "pair-1" })
             #expect(complete.usage.completionTokens == 3)
-            #expect(owner.reserveCount == 1)
+            // The warmup canary's reservation, then this request's.
+            #expect(await fixture.loop.clusterPairWarmup?.succeeded == true)
+            #expect(owner.reserveCount == 2)
 
             // Another model is not this member's: refused, never reserved.
             try await fixture.push("other-model", publicKey: publicKey, consumer: .generate(), model: "fixture/other")
             let other = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(5)) {
                 $0.inferenceErrors.contains { $0.requestId == "other-model" } }?.inferenceErrors.first { $0.requestId == "other-model" })
-            #expect(other.statusCode == 503 && owner.reserveCount == 1)
+            #expect(other.statusCode == 503 && owner.reserveCount == 2)
 
             // A lost rank retires the slot: draining with no slot again.
             owner.losePeer()
@@ -111,7 +115,7 @@ struct ClusterPairSlotServeTests {
             let after = try #require(try await fixture.mock.waitForSnapshot(timeout: .seconds(5)) {
                 $0.inferenceErrors.contains { $0.requestId == "after-loss" } }?.inferenceErrors.first { $0.requestId == "after-loss" })
             #expect(after.statusCode == 503 && after.failureCode == .modelUnavailable)
-            #expect(owner.shutdownCount == 1 && owner.reserveCount == 1)
+            #expect(owner.shutdownCount == 1 && owner.reserveCount == 2)
         } catch { await fixture.cleanUp(task); throw error }
         await fixture.cleanUp(task)
     }

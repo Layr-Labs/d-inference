@@ -35,6 +35,9 @@ extension ProviderLoop {
         return !["0", "false", "no", "off"].contains(value)
     }
 
+    /// nil turns the canary off for this loop; otherwise its deadline.
+    func setClusterPairWarmupForTesting(timeoutSeconds: Double?) { clusterPairWarmupTimeoutSeconds = timeoutSeconds }
+
     /// One greedy request of at most eight tokens through the pair's bridge.
     static func runClusterPairWarmup(bridge: EngineV2Bridge, modelID: String,
                                      timeoutSeconds: Double = clusterWarmupTimeoutSeconds) async -> ClusterPairWarmupResult {

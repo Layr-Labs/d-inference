@@ -205,8 +205,9 @@ extension ProviderLoop {
         guard clusterPairSlot === handle else { return id }
         // Warmup canary (S18): one throwaway generation before admission
         // opens; a pair that cannot generate is retired, not served.
-        if Self.clusterWarmupEnabled() {
-            let warmup = await Self.runClusterPairWarmup(bridge: bridge, modelID: specification.publicModelID)
+        if let timeout = clusterPairWarmupTimeoutSeconds {
+            let warmup = await Self.runClusterPairWarmup(bridge: bridge, modelID: specification.publicModelID,
+                                                         timeoutSeconds: timeout)
             clusterPairWarmup = warmup
             logger.info("Cluster pair warmup canary \(warmup.description)")
             guard clusterPairSlot === handle else { return id }

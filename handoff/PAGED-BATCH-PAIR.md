@@ -9,7 +9,7 @@
 
 | Item | Status |
 |---|---|
-| Paged KV (the product's `PagedKVBackend`) in every Qwen 3.5 stage, on by default | Built; ran on the M3 Ultra + M5 Ultra pair (9B, 27B): lossless under the pass rule; one-request decode 6-12 % slower than contiguous (finding below) |
+| Paged KV (the product's `PagedKVBackend`) in every Qwen 3.5 stage, on by default | Built; ran on the M3 Ultra + M5 Ultra pair (9B, 27B): lossless under the pass rule; one-request decode 3 % (27B) / 10 % (9B) slower than contiguous after a partial fix (finding below) |
 | Continuous batching on the pair (`DARKBLOOM_CLUSTER_BATCH_LANES=2...8`, pipeline mode) | Built; ran on the pair: 9B 201 tok/s and 27B 64.5 tok/s aggregate at 8 concurrent, rows near-tie lossless |
 | Owner side (`ClusterWorkerPair(lanes:)`, event routing by request) | Built; model-free checks pass |
 | Provider (`DistributedCBv2Engine` serves as many requests as the pair's lanes; installed owner passes the lanes) | Built; engine unit test |
@@ -150,13 +150,32 @@ ulp of the reference's top-1):
   depthwise conv and the gated delta step are batch-invariant; only the
   quantized projections change between one row and a batch.
 
-FINDING: the one-request worker with paged KV decodes 6-12 % slower than
+FINDING: the one-request worker with paged KV decoded 6-12 % slower than
 contiguous (9B 72-76 vs 83-84 tok/s, 27B 32-34 vs 35-36), while the batch
 loop's paged decode of the same request alone is as fast as contiguous. First
-token is unchanged. Suspect (source read, not yet measured): the
-one-request state validation after every step snapshots each attention row,
-which on the paged backend builds a page gather per layer per token; the
-batch loop's row validation does not.
+token is unchanged. Suspect: the one-request state validation after every
+step snapshots each attention row, which on the paged backend builds a page
+gather per layer per token; the batch loop's row validation does not.
+
+Partial fix, measured on the pair (`bddd83f46`: one-token paged decode steps
+check each row's frontier and binding only; views still checked at adoption,
+after prefill frames and speculative windows). Same eight requests, same
+pair, prefix cache off; tokens equal the earlier paged run exactly for all
+16 rows (validation-only change, so the near-tie verdicts above carry over):
+
+| Decode, mean of 8 (range per request) | 9B | 27B |
+|---|---|---|
+| Paged, before | 74.7 tok/s | 33.4 tok/s |
+| Paged, with the fix | 75.4 tok/s (+0.9 %, -1.1..+3.0 %) | 34.5 tok/s (+3.2 %, +1.4..+7.0 %; largest at 2048 prompt) |
+| Contiguous | 83.8 tok/s | 35.5 tok/s |
+| Paged with the fix vs contiguous | -10.1 % (-11.5..-8.5 %) | -3.0 % (-3.4..-2.6 %) |
+
+So the page-gather snapshot was part of the 27B gap and almost none of the
+9B gap. The remaining gap is elsewhere in the one-request path (the batch
+loop alone is as fast as contiguous). Not measured yet; next suspects by
+source read: the per-layer `positionOffsets.asArray` frontier read (one
+host sync per attention layer per token) and the per-step row rebind
+(`bank.layerCaches(rowStates:)`) before the check.
 
 ## Not built
 

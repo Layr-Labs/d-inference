@@ -32,8 +32,11 @@ public protocol ClusterWorkerEndpoint: AnyObject, Sendable {
     /// The same, naming the cause (bounded fixed text, never prompt or token
     /// text) for the record a remote owner keeps of this fence (S24).
     func requestNativeCleanup(reason: String)
-    /// Both waits finish only when nativeCleanupObserved is justified. A remote
-    /// connection loss must retain unresolved ownership instead of returning.
+    /// Both waits finish when nativeCleanupObserved is justified, or when no
+    /// proof can arrive any more (the owner process or its transport is gone,
+    /// or the owner's last possible proof is past): then they return with
+    /// nativeCleanupObserved still false, and ownership stays unresolved. A
+    /// return is never cleanup proof by itself.
     func waitForNativeCleanup()
     func waitUntilNativeCleanup() async
 }

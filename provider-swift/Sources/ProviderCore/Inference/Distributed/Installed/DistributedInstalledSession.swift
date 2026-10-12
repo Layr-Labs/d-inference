@@ -469,7 +469,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
                 released = false
                 missing.append("rank \(endpoint.rank): no release proof"
                     + (values.3 ? " within \(unrequestedStopAllowanceNanoseconds / 1_000_000_000) s of the stop" : "")
-                    + ((endpoint as? ClusterLinkWorkerEndpoint).map { " (\($0.diagnosticSummary))" } ?? ""))
+                    + ((endpoint as? ClusterLinkWorkerEndpoint).map { " (\($0.diagnosticSummary))" } ?? "")
+                    + ((endpoint as? ClusterRemoteWorkerEndpoint)?.unresolvedReason.map { " (\($0))" } ?? ""))
             }
         }
         lock.withLock { stopDetailText = missing.isEmpty ? nil : missing.joined(separator: "; ") }

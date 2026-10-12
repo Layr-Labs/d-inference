@@ -31,6 +31,10 @@ together with the other member, and asks for macOS permissions once.
    the provider LaunchAgent (`io.darkbloom.provider`) and arms the watchdog
    (`io.darkbloom.watchdog`). launchd runs `darkbloom start --cluster-member
    --supervise`, the supervisor, which runs the member.
+   The command ends with a **Permissions** line: either macOS will ask once,
+   or the reasons it will not (an ad-hoc build, an executable outside
+   `Darkbloom.app`, a release without the Local Network usage string).
+   Run it at the Mac, not over SSH, so you are there when macOS asks.
 2. The first time the member reaches the link, macOS shows
    **"Darkbloom" would like to find and connect to devices on your local
    network**. Click **Allow** on each Mac where it appears. This is the only
@@ -43,7 +47,8 @@ together with the other member, and asks for macOS permissions once.
 - `darkbloom status` on each Mac prints a line such as
   `cluster member supervisor: running; member pid 1234 up 310 s; runs 1, quick failures 0/3, guard teardowns 0/6`.
 - `~/.darkbloom/provider.log` shows `cluster-member supervisor:` lines: the
-  link wait, each member start, and the reason and wait of every restart.
+  permissions verdict (`permissions: asked once (...)`), the link wait, each
+  member start, and the reason and wait of every restart.
 - The coordinator lists the pair as serving.
 
 ## What the supervisor does
@@ -81,6 +86,23 @@ string, checks it after signing, and signs the cluster helpers with
 `provider-swift/entitlements-cluster-worker.plist` when the unsigned artifact
 carries them.
 
+Which processes open sockets on the link decides what needs the approvals:
+
+- The provider process (`Darkbloom.app/Contents/MacOS/darkbloom`): the
+  leader's link listener, the follower's dial, the coordinator connection.
+- The cluster worker, only with the direct JACCL bootstrap: rank 0's worker
+  listens on the JACCL coordinator port and rank 1's worker dials it. With the
+  bootstrap carried over the authenticated link channel, the worker opens no
+  socket at all (its RDMA traffic is not a socket). Either way the worker is
+  started by the member, so it inherits the member's Local Network approval.
+
+The release does not yet ship `darkbloom-cluster-worker` and the placement
+tool inside `Darkbloom.app/Contents/Helpers` (the signing step is ready for
+them; the build step that produces them is not). Until it does, a setup points
+at a worker outside the bundle, which is not Developer-ID signed: on a Mac
+whose rank listens with the firewall on, it can raise a firewall alert per
+build when the worker opens the JACCL coordinator socket.
+
 ## Owner steps not automated
 
 These need the owner at the Mac or an owner decision; Darkbloom changes no
@@ -100,7 +122,16 @@ system setting:
 4. Reboot test, after the first approval: reboot both Macs, log in, and check
    that `darkbloom status` shows the supervisor running and the pair serving
    with no alert on either Mac.
-5. Check the installed identity on each Mac:
+5. Release engineering (not a setting): build `darkbloom-cluster-worker`
+   and `darkbloom-cluster-plan` (with `mlx-cluster-worker.metallib`) in the
+   release build and stage them into `Contents/Helpers` of the unsigned
+   artifact; the signing step then signs them under their own identifiers.
+   Default the setup's worker path to that location.
+6. Release check, once per Mac with someone at the screen: install the signed
+   release, `darkbloom start --cluster-member --always-on`, answer the one
+   Local Network alert, then reboot, restart the member 20 times and update to
+   a second signed build: no further alert.
+7. Check the installed identity on each Mac:
    `codesign -dv --verbose=2 ~/.darkbloom/Darkbloom.app` (authority
    `Developer ID Application`), `spctl -a -vv ~/.darkbloom/Darkbloom.app`
    (accepted, notarized) and
@@ -114,3 +145,4 @@ system setting:
 | Supervisor `waitingForLink` | `darkbloom cluster link` | Connect the cable, or follow the printed fix |
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
+| Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |

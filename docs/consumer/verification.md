@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-12
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -11,6 +11,11 @@ remain visible and can link successive public sessions.
 [App Attest shadow measurements](../reference/app-attest-shadow.md) do not authorize serving. When separately enabled and qualified, the [App Attest serving path](../reference/provider-authorization.md) appears as `app_attest_authorized` and an exclusive Unix-seconds `authorization_expires_at` deadline in the public listing. The existing `trust_level`, MDM and MDA fields still describe legacy evidence; they are not rewritten to represent App Attest. The listing has its existing short cache window and is diagnostic, not a reusable serving credential.
 
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
+
+Trusted release CI registers the exact official build. Registration is not
+Apple proof or proof of per-request computation: the coordinator still verifies
+live Apple evidence and matching code/runtime hashes. Tests and notarization
+do not establish runtime Apple functionality or change the verification badge.
 
 The provider's [connection-control reader](../architecture/security/attestation.md#provider-connection-control)
 keeps suspended model work from delaying App Attest and status handling. It
@@ -55,6 +60,13 @@ evidence; see [shared-device cleanup](../architecture/account-erasure.md#shared-
 Autopilot earnings-floor qualification is a separate historical check: a new
 authorization does not qualify a declaration received before that grant. See
 the [reward policy](../reference/pricing-model.md#autopilot-rewards).
+
+The provider's [endpoint-resumption candidate](../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+proves continued custody of a process key on a fresh connection. It is not a new
+Apple proof or a consumer-verifiable serving credential, and does not extend
+proof validity. Continue to read the coordinator's current verdict and the
+request's dispatch snapshot; provider support alone does not establish that
+the matching platform implementation is deployed.
 
 ## Read verification in chat and network stats
 

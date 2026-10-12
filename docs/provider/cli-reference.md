@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-12
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -41,6 +41,16 @@ limits and verification. These checks do not certify disk firmware.
 
 ## Global options
 
+The hidden `--native-serve-qualification-v1 <ws-url> <private-directory>` entry
+is an explicitly enabled physical diagnostic, not an installed-service command.
+`NativeServeQualificationCommand` in
+`provider-swift/Sources/darkbloom/NativeServeQualificationCommand.swift` runs a
+separate AppKit host without `Start`, APNs registration or daemon replacement.
+It requires `DARKBLOOM_NATIVE_SERVE_QUALIFICATION=1`, a signed release app,
+literal `127.0.0.1` WebSocket transport and owner-only inputs. See
+[native serving qualification](../developer/test.md#native-serving-qualification)
+for isolation, evidence and untested-scope limits.
+
 Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
 warning to stderr before command parsing or AppKit hosting, including help,
 version and background commands. `MacOSUpgradeNotice.emit` in
@@ -80,7 +90,7 @@ Subcommands declared by `Darkbloom.configuration.subcommands`:
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
 | `login` | Link the machine to an account (RFC 8628 device code) | ✓ | `LoginCommand.swift` (`Login`) |
-| `logout` | Delete the device token | | `LogoutCommand.swift` (`Logout`) |
+| `logout` | Stop the provider, revoke its current saved token, then remove the local credential | ✓ | `LogoutCommand.swift` (`Logout`) |
 | `benchmark` | Inference benchmarks and harnesses | ✓ | `BenchmarkCommand.swift` (`Benchmark`) |
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
@@ -423,7 +433,42 @@ SDK validation does not change coordinator normalization or model numerics
 `login` takes `--config` only and runs `performDeviceCodeLogin`
 (`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`): `POST
 /v1/device/code`, print URL and code, poll `POST /v1/device/token`, write
-`~/.darkbloom/auth_token`. `logout` takes no flags and deletes that file.
+`~/.darkbloom/auth_token`. It also records the successful token response's issuer
+in owner-only `auth_token.issuer.json`, bound to a hash of that token. The provider
+token is not a consumer API key. A failed save removes newly written credential
+files so login can be retried instead of leaving a partial local login.
+
+`logout` uses `Logout.run` in `provider-swift/Sources/darkbloom/LogoutCommand.swift`
+and `ProviderLogout.perform` in `provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`:
+
+| Flag | Type | Default | Effect / source |
+|---|---|---|---|
+| `--config <path>` | path | Global config default | Accepted for CLI compatibility; never overrides the saved token's issuer (`Logout.configOptions`) |
+| `--timeout <seconds>` | integer, 0-3600 | `600` | Wait for accepted work and the coordinator drain acknowledgement (`ServiceDrain.swift`, `DrainOptions`) |
+| `--force` | flag | `false` | Explicitly permit interruption of unfinished work; process exit must still be confirmed (`DrainOptions`, `Logout.requireExited`) |
+
+The command disables watchdog/login recovery, drains and stops the provider,
+and confirms exit before deleting credentials. It holds the lifecycle/update
+lease and, after confirmed exit, the single-instance lock through revocation
+and deletion. A missing token file does not skip shutdown. Unconfirmed exit,
+lock failure or a normal drain timeout refuses logout without removing the
+credential; a published drain remains closed with recovery disabled.
+
+After shutdown, it sends the current saved token **itself**, not its hash, as
+`Authorization: Bearer <token>` to `POST /v1/device/revoke` at its recorded issuer.
+Changed configuration or a different running provider cannot retarget that
+credential. Legacy credentials without matching issuer metadata are removed
+locally with remote revocation explicitly unconfirmed; no URL is guessed.
+Unreadable or malformed configuration does not prevent local logout.
+`ProviderLogout.revokeToken` uses a ten-second request/resource
+timeout, follows no redirects, and confirms remote revocation only for HTTP
+`204`. Offline errors, cancellation, unsupported endpoints and every other status
+leave remote invalidation unconfirmed but still permit local deletion. Output
+distinguishes confirmed revocation, local-only logout with a warning, and no
+saved credential. Tokens and response bodies are not logged. This requires a
+matching platform endpoint; local completion does not establish remote support.
+The request URL keeps the original coordinator's host and port while changing
+only the WebSocket scheme and endpoint path; path text cannot become an authority.
 
 ### `darkbloom benchmark`
 
@@ -1272,7 +1317,9 @@ darkbloom login
 
 ## `darkbloom logout`
 
-Unlink this machine from its Darkbloom account.
+Stop the provider and remove its saved account credential. See the
+[logout flags and confirmation rules](#darkbloom-login--darkbloom-logout);
+local completion is not confirmation of remote invalidation.
 
 ```bash
 darkbloom logout

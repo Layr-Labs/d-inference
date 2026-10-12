@@ -2,6 +2,77 @@
 
 > Last updated: 2026-10-12
 
+## Provider endpoint resumption and logout
+
+Stage C's synthetic tests require neither real Apple calls nor credentials:
+
+| Coverage | Suites / sources |
+|---|---|
+| Exact shared Go vector, authenticated bytes, reflection, malformed fields, time bounds and protocol negotiation | `provider-swift/Tests/ProviderCoreTests/Crypto/AppAttestResumeTests.swift`; fixture `provider-swift/Tests/ProviderCoreTests/Fixtures/app-attest-resumption-v1.json` |
+| Real loopback WebSocket reconnect, fresh socket nonce, stale callback rejection, one response per socket and unchanged model state | `provider-swift/Tests/ProviderCoreTests/Coordinator/AppAttestResumeTransportTests.swift` |
+| Stop-before-revoke/delete, missing token, stop/deletion failures, exact HTTP 204 and redirect/offline refusal | `provider-swift/Tests/ProviderCoreTests/Auth/ProviderLogoutTests.swift` |
+| Logout flags, real current-process identity refusal and accurate completion messages | `provider-swift/Tests/DarkbloomCLITests/LogoutCommandTests.swift` |
+
+After `swift build --build-tests` and source-matched metallib staging, run
+`swift test --skip-build --no-parallel --filter 'AppAttestResume|ProviderLogout|LogoutCommand'`
+from `provider-swift/`. Keep test state paths isolated as in
+`scripts/run-provider-tests.sh`; these tests must never stop an operator process.
+The existing coordinator and serve-loop App Attest suites remain regression
+coverage. These transport tests do not establish native Apple qualification or
+end-to-end platform authorization.
+
+## Native serving qualification
+
+`NativeServeQualificationTests` checks literal-loopback refusal, owner-only
+descriptor inputs, failed-observer lifetime ownership and bounded in-memory App Attest key-ID/budget storage without
+Apple calls or model allocation. Build the isolated provider test product and run
+`swift test --skip-build --filter NativeServeQualificationTests` after normal
+source-matched metallib staging.
+
+The physical harness lives in the platform repository's `nativequalification`
+test package (`TestSignedProviderLoopLoadedEngineResumption`). It requires a
+separately built, final-signed SDK 27 `Darkbloom.app` under `.build`, explicit
+Apple/GPU execution approval and exclusive use of the GPU. The harness validates
+the exact signed artifact, registers its scoped LaunchServices entry and restores
+the prior registration after reaping its captured child process. No installed
+provider should be stopped or replaced.
+
+The diagnostic inputs are an existing canonical `0700` directory containing a
+`0600` `auth-token` (64 lowercase hexadecimal characters), a `0600` `model-id`
+and a private `models` HuggingFace cache directory. Model snapshot bytes may be
+read-only links to an existing local checkpoint. The runner creates a fresh
+`state` child, uses a real ephemeral Secure Enclave signer and Apple's real
+App Attest service, and retains key identifiers/budgets only in process memory.
+It does not read installed auth/config, use persistent signing keys, register
+APNs, install profiles, start launch agents or run updates. Normal `ProviderLoop`
+hardening, signed registration, encrypted inference, engine construction,
+memory admission and disconnect cleanup remain in use.
+
+The platform harness seeds only its private account/token, exact release/runtime
+approval and actual local model catalog. Initial Apple enrollment and assertion
+must pass the full coordinator router and verifier. It then checks encrypted
+inference before and after a 125-second transport break following a
+request-specific encrypted chunk and a fresh live-request observation, unchanged process,
+endpoint and model/engine identities, unchanged load and Apple assertion
+counters, the old request's disconnect terminal and reservation release, and fresh capacity. A `0600` one-byte `done`
+file requests graceful shutdown; the diagnostic also has a 900-second limit.
+Passive `observation.json` contains only process identity, endpoint/instance
+hashes, counts and sequence/time stamps, never request content, keys or proofs.
+The harness rejects stale snapshots and records transport cut, reopening and
+reconnection separately. If observation or drain fails, the CLI terminates its
+owned diagnostic process with failure rather than claiming graceful completion
+or waiting indefinitely for an uncancellable native task.
+Serving-loop completion before the observer sees the completion marker also
+fails. Only successful observation followed by acknowledged shutdown and normal
+serving teardown can complete the diagnostic (`NativeServeRunLifetime.run`).
+
+This is a target-only loaded-engine/resumption gate, not MTP, SSD persistence,
+APNs, daemon installation, worker recovery or fleet-rollout qualification.
+Compilation and opt-in skips do not constitute a successful physical run.
+The [October 11 native result](../reports/2026-10-11-native-serving-resumption-qualification.md)
+records a full pass for the exact signed Stage C candidate and platform source,
+including the earlier fixture failures and the unchanged production boundaries.
+
 ## App Attest provider dispatch
 
 `ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
@@ -881,7 +952,7 @@ exercises enrollment over real local HTTP with a linked test token and P-256
 signer. The fixture verifies the canonical token-bound signature rather than
 accepting anonymous profile downloads; no production credentials are used.
 
-Build qualification regressions run in `coordinator/tests/store/postgres/app_attest_builds_test.go`, `coordinator/tests/appattest/service/authorization/build_qualifications_test.go`, `coordinator/tests/api/releases/contracts/app_attest_builds_test.go`, and `coordinator/tests/api/releases/contracts/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+Build-registry regressions belong in the platform repository; the retained coordinator tests here describe its earlier snapshot. Use the [platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/developer/test.md) for current scoped registration, identity/audit persistence and publish/revoke races. `python3 scripts/test-provider-release-publication.py` tests immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not prove runtime Apple functionality. Hardware smoke is optional, not a per-release gate; actual serving still requires live Apple proof and receipt verification.
 
 ### MiMo encoded audio release regression
 
@@ -4659,6 +4730,15 @@ already installed. It uses a fake `brew` in a temporary directory, makes no
 download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
+
+`python3 scripts/test-provider-release-publication.py` and
+`python3 scripts/test-provider-release-pipeline.py` cover exact artifact
+registration, retry-safe publication and workflow wiring. Source checks must
+reject unverified/lightweight production tags and off-master sources before
+secret-bearing jobs; dev/manual/recovery runs require trusted `master`.
+Publication retries preserve the original signed bytes and producing attempt.
+These tests do not prove runtime Apple functionality. Optional hardware smoke
+is not a per-release prerequisite; live serving still verifies Apple evidence.
 
 `python3 scripts/test-provider-release-resume.py` covers signed-tag/source/run
 identity, failed or missing prerequisite jobs, expired/ambiguous artifacts,

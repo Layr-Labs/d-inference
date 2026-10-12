@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-12
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -31,6 +31,61 @@ An over-limit attempt uses the existing `cancel` frame; no provider wire field
 or failure-code vocabulary changes. The internal `response_limit` cause has
 `json:"-"` and cannot be claimed by provider JSON. See the
 [API limits](api-contracts.md#limits-and-validation).
+
+## App Attest endpoint resumption candidate
+
+This provider-side Stage C addition is separate from Apple App Attest protocol
+3 and legacy APNs `code_attestation_resume_challenge`. It requires a matching
+implementation in [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform),
+which owns backend authorization, revocation and retained-proof policy. Provider
+support alone does not establish deployed backend support or native qualification.
+
+| Surface | Fields / presence | Provider source |
+|---|---|---|
+| Registration | `app_attest_resume_protocol: 1` and `app_attest_resume_nonce`: canonical base64 of 32 fresh random bytes, paired and omitted when no responder is installed | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`); `ProviderProtocolCodec.encodeRegisterPreservingRawAttestation` in `provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift` |
+| Coordinator to provider | `{"type":"app_attest_resume","payload":{"protocol":1,"action":"challenge","id":"...","encrypted_challenge":{"ephemeral_public_key":"...","ciphertext":"..."}}}` | `provider-swift/Sources/ProviderCore/Protocol/AppAttestResume.swift` (`AppAttestResumeChallenge`) |
+| Provider to coordinator | `{"type":"app_attest_resume","payload":{"protocol":1,"action":"response","id":"...","ciphertext":"..."}}` | Same file, `AppAttestResumeResponse`; `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+AppAttestResume.swift` (`answerAppAttestResume`) |
+
+Both directions use NaCl Box: the challenge is sealed to the existing process
+X25519 endpoint and the response is sealed back to the challenge sender's
+ephemeral public key. `ciphertext` is canonical base64 of nonce-prefixed Box
+bytes, at least 40 decoded bytes. `id` and `ephemeral_public_key` each decode to
+32 bytes. These are not bearer grants.
+
+`AppAttestResumeWire` strictly limits each accepted envelope and decrypted
+request to 4 KiB (`maximumBytes = 4096`), accepts only the specified members and
+rejects duplicates, unknown members, trailing data and non-integer numbers.
+`ProviderProtocolCodec` identifies the top-level resume type with a bounded-allocation
+byte scan and applies the wire validator before full Codable decoding in both directions;
+the live responder validates its encoded response before exact-socket submission.
+Both codec `Data` decode APIs reject UTF-16/32 JSON before Foundation can transcode
+it past the UTF-8 scan. Ordinary UTF-8 inference frames retain their existing limits.
+
+The decrypted request has exactly these fields, checked by
+`NodeKeyPair.appAttestResumeResponse` in
+`provider-swift/Sources/ProviderCore/Crypto/AppAttestResumeCustody.swift`:
+
+| Field(s) | Required binding / form |
+|---|---|
+| `domain` | `darkbloom.app-attest.endpoint-resume.request.v1` |
+| `id`, `instance`, `client_nonce`, `record`, `endpoint`, `challenge` | Canonical base64 of 32 bytes each; `id` equals the outer ID, `endpoint` equals this process's key, `client_nonce` equals this socket's registration nonce |
+| `account`, `identity` | 64 lowercase hexadecimal characters each; opaque coordinator bindings, not locally granted identity |
+| `connection` | Nonempty string, at most 64 UTF-8 bytes |
+| `issued_at`, `expires_at` | Integer Unix milliseconds; `issued_at > 0`, `expires_at > issued_at`, span at most `30_000`; accept only while `issued_at <= now < expires_at` |
+
+The response plaintext is UTF-8
+`darkbloom.app-attest.endpoint-resume.response.v1`, one NUL byte, then the raw
+SHA-256 digest of the **exact decrypted request bytes**, not re-encoded JSON.
+The provider does not independently validate the coordinator's record/account
+policy; the backend must validate those bindings and current authorization.
+
+`CoordinatorClient.connectAndRun` creates a fresh nonce for every `NWConnection`
+and clears it on teardown. `answerAppAttestResume` answers at most once on that
+registered socket, synchronously without Apple work, and never routes a reply
+onto a replacement socket. `ProviderLoop.run` installs a closure over its fixed
+process key. This changes neither the existing `app_attest_shadow` event/reply
+path nor the responsive model-work split. Resume does not grant local trust,
+refresh an Apple proof, reset the assertion cadence, or extend proof validity.
 
 ## Provider lifecycle drain
 

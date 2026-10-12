@@ -17,6 +17,14 @@ The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the
 operator's live status or recovery evidence (`scripts/run-provider-tests.sh`).
 
+The [native serving qualification](test.md#native-serving-qualification) entry
+is compiled into the ordinary provider CLI but refuses without explicit opt-in
+and a verified release app. Build it in a separate worktree/output directory
+with source-matched MLX dependencies and metallib; sign the final app before
+the platform harness records its binary/CodeDirectory hashes. Do not replace
+the installed app, reuse a debug test binary or run a model while another
+qualification suite owns the GPU.
+
 The Autopilot E2E harness creates canonical inventory records and persists live
 desired mode only for its running, authenticated, suite-owned provider handles
 before starting control (`e2e/testbed/autopilot_cohort.go`,
@@ -246,7 +254,13 @@ The provider email operator command builds separately with
 `go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
 part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
-Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
+Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` retains the final signed bundle and metadata, stages an immutable digest path, then registers the exact official build through the existing scoped `POST /v1/releases`. Deploy the platform persistence change first. No per-release hardware qualification or manual approval is required. A staging or publication retry reuses the original signed artifact without rebuilding or re-signing. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes and never replaces completed mismatched bytes. See [official-build registration](../operations/app-attest-build-qualification.md).
+
+Secret-bearing release jobs accept only verified signed annotated production
+tags in reviewed `master` ancestry, or trusted `master` for dev/manual/recovery
+runs. They use existing repository-scoped secrets without environment approval
+attachments; shared GitHub settings are unchanged. These checks assume trusted
+repository writers. CI establishes official identity, not runtime Apple success.
 
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
@@ -371,6 +385,8 @@ The Metal helper retains its exact source/toolchain contract.
 to execute successfully. A successful component download alone is insufficient:
 it clears stale lookup state, waits a bounded interval for registration, and uses
 Apple's explicit component export/import path if registration remains incomplete.
+The specific transient Metal asset-catalog download failure is retried at most
+three times within the existing setup deadline; other errors still fail immediately.
 It never switches to an older Xcode or silently accepts an unavailable compiler.
 
 The helper's `snapshot-mtimes` and `restore-mtimes` commands retain timestamps for
@@ -459,7 +475,7 @@ The provider consumes the local packages through immutable Git submodule pins:
 | `libs/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | `gather_mm` / `gather_qmm` row-tile backport |
 | `libs/mlx-swift/Source/Cmlx/mlx` | `cb77239be31b1df7f5db895226af55c39fc4f093` | Same merged MLX source used by Cmlx and the provider metallib |
 | `libs/mlx-swift` | `6923a80f624f5c91fbf456efe4e00e9698a72961` | [PR #34](https://github.com/Layr-Labs/mlx-swift/pull/34): merged nested MLX row-tile backport and regenerated kernel sources; retains [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28) exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `33333d25c14880986beb4cf4317eea01ec43e3f4` | [PR #298](https://github.com/Layr-Labs/mlx-swift-lm/pull/298): native inference with quantized checkpoints, retained optional live-packed KV and native-block capacity projection; includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
+| `libs/mlx-swift-lm` | `53d9647029b19e7e62ad4644598e35ae41e0cc18` | [PR #298](https://github.com/Layr-Labs/mlx-swift-lm/pull/298): native inference with quantized checkpoints, retained optional live-packed KV and native-block capacity projection; includes [PR #289](https://github.com/Layr-Labs/mlx-swift-lm/pull/289) bounded demanded checkpoint capture, retention and continuation, [PR #290](https://github.com/Layr-Labs/mlx-swift-lm/pull/290) native cancellation retirement, and [PR #165](https://github.com/Layr-Labs/mlx-swift-lm/pull/165) typical MTP acceptance |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest pins the same Swift revision shown above; the nested-test

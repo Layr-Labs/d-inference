@@ -196,10 +196,14 @@ extension ProviderLoop {
         }
         // 4. Create coordinator client and start connection
         publishModelAutopilotSnapshot()
+        let fixedKey = keyPair
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
-            state: state
+            state: state,
+            appAttestResumeResponder: { challenge, nonce in
+                try fixedKey.appAttestResumeResponse(to: challenge, clientNonce: nonce)
+            }
         )
         coordinatorClient = coordinator
         // Seed the client with the current map: a model loaded before the

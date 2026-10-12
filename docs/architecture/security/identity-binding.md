@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-10-06
+> Last updated: 2026-10-11
 
 How the coordinator binds a provider's process encryption key, account and
 verification credentials. Legacy MDM/APNs evidence and App Attest credentials
@@ -91,6 +91,24 @@ The request's verification snapshot records that coordinator decision at dispatc
 it is not a new Apple signature over the inference input, output or computation.
 See `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`).
 
+### Same-process endpoint resumption
+
+`ProviderLoop.run` in `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`
+captures its existing `NodeKeyPair` in the coordinator client's synchronous
+responder. The private key stays in process memory; it is not serialized into
+configuration, persisted, regenerated on reconnect or given to an Apple worker.
+The [protocol-1 transcript](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+binds the encrypted challenge to that endpoint and a fresh nonce for the actual
+socket. `CoordinatorClient.answerAppAttestResume` checks current connection
+identity and registration, answers once, and writes directly to that socket
+without suspending or using the reconnecting outbound router.
+
+This is custody evidence only. A new process cannot answer for the old endpoint,
+and a stale socket/nonce cannot answer on a replacement connection. No local
+trust is created and no Apple proof lifetime is extended. Backend retained-proof,
+account, revocation and current authorization checks remain platform-owned;
+provider support does not imply that counterpart is deployed.
+
 ### Stable identity for coordinator state
 
 Reconnects, reputation, fault ejection, and stored trust must follow the
@@ -115,6 +133,17 @@ RFC 8628-style flow implemented in `coordinator/api/access/device/handlers.go` a
 | 4 | Token = the provider token whose shape is under [api-contracts](../../reference/api-contracts.md#device-code-flow-3); the store keeps `ProviderToken{TokenHash, AccountID, Label: "device-" + user_code, Active}`; the CLI writes the token to `~/.darkbloom/auth_token` with mode `0600` | `HandleDeviceToken`; `AuthTokenStore` |
 | 5 | The daemon sends it as `register.auth_token` (binding B6) | `coordinator/api/provider/` |
 | Logging | `device code created {user_code, expires_in}`, `provider token issued {account_id, user_code}`, `device approved {user_code, account_id}` at `Info` — never the `device_code` or the token | `coordinator/api/access/device/handlers.go` |
+
+Provider logout closes the process side of B6 before deleting the saved token.
+`Logout.run` holds the lifecycle/update lease and, after confirmed exit, the
+single-instance lock through revocation and deletion. A missing token file does
+not skip shutdown. `ProviderLogout.perform` revokes only the current saved token;
+local deletion alone cannot invalidate a copy held elsewhere. The
+[CLI contract](../../provider/cli-reference.md#darkbloom-login--darkbloom-logout)
+defines the raw-bearer `POST /v1/device/revoke`, exact confirmation and offline
+warning. Sources: `provider-swift/Sources/darkbloom/LogoutCommand.swift` and
+`provider-swift/Sources/ProviderCore/Auth/ProviderLogout.swift`. Backend token
+revocation policy and persistence remain platform-owned.
 
 ### Consumer identity: Privy JWT verification
 

@@ -52,7 +52,7 @@ then-current eligible membership; dev startup does not establish a cutoff.
 
 | Setting | Default / bounds | Consumer |
 |---|---|---|
-| `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom start/stop/restart/update/logout --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
 | `darkbloom switch --timeout` | `600` seconds; 0–3600; `0` means no waiting for unfinished work, with a 30-second barrier allowance when already settled; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift` (`drainForModelSwitch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
@@ -66,6 +66,29 @@ for recovery and explicit force semantics. Existing loaded launchd jobs must be
 restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
+
+## Provider endpoint resumption and logout
+
+The separate physical diagnostic uses `DARKBLOOM_NATIVE_SERVE_QUALIFICATION`:
+only exact `1` enables it; unset and every other value refuse before any proof
+or model work. `NativeServeQualification.run` in
+`provider-swift/Sources/ProviderCore/Diagnostics/NativeServeQualification.swift`
+accepts no caller-provided signing key, binary hash, hardware or privacy claims.
+It uses normal serving safeguards with private state, target-only contiguous
+inference, no SSD prefix cache and no updater. This opt-in is not forwarded to
+launchd and does not enable production coordinator resumption. See
+[native serving qualification](../developer/test.md#native-serving-qualification).
+
+| Setting | Behavior | Consumer |
+|---|---|---|
+| Endpoint-resumption capability | No new environment variable or config key. Normal serving installs a fixed process-key responder; registration advertises protocol 1 and a fresh nonce per socket. No responder means both fields are omitted. | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`) |
+| `darkbloom logout --config` | Accepted for CLI compatibility, not used to retarget revocation. Logout uses issuer metadata bound to the saved token; missing metadata means local-only logout with a warning. Config parsing cannot block logout. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout.run`, `revokeSavedToken`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore.issuer`) |
+
+The [wire contract](protocol-messages.md#app-attest-endpoint-resumption-candidate)
+does not create local trust or change proof validity. The
+[logout contract](../provider/cli-reference.md#darkbloom-login--darkbloom-logout)
+defines stop-before-delete, force handling and remote confirmation. No worker
+mode or update configuration changes are part of this addition.
 
 ## Provider model selection
 
@@ -160,9 +183,9 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/app/store.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*`, release registration and state export. |
+| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/app/store.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*` and state export, not scoped release registration. |
 | `EIGENINFERENCE_ADMIN_EMAILS` | comma-separated emails | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `ParseCommaList`) | Privy accounts with these emails get admin on console-facing admin routes. |
-| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/release_handlers.go` | Bearer token accepted (constant-time) for release registration in addition to the admin key. |
+| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/release_handlers.go` | Existing scoped bearer token for `POST /v1/releases`. The updated platform also records exact official-build identity after artifact verification; it grants no admin access and requires no additional authority configuration. |
 | `EIGENINFERENCE_PRIVY_APP_ID` | string | unset (Privy auth off) | `coordinator/auth/config.go` (`ReadConfig`) | Enables Privy JWT verification; also the expected JWT audience. |
 | `EIGENINFERENCE_PRIVY_APP_SECRET` | secret | unset | `coordinator/auth/config.go` (`ReadConfig`) | Basic-auth credential for Privy REST calls. |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | PEM ES256 public key | unset; required when the app id is set (`Check`) | `coordinator/auth/config.go` (`ReadConfig`) | Key that Privy access tokens are verified against. |

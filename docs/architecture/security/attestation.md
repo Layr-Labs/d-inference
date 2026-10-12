@@ -1,11 +1,17 @@
 # Provider attestation
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-12
 
 The evidence checks behind legacy MDM/APNs verification and qualified App
 Attest authorization. The [provider trust overview](provider-trust.md) owns the
 shared decision model and threat boundaries; this page details the checks,
 legacy levels and flags, refresh behavior, and routing gates.
+
+Centralized authorization is owned by `Layr-Labs/darkbloom-platform`, not this
+repository's retained coordinator snapshot. The [platform-backed authorization
+reference](../../reference/provider-authorization.md#controls) supersedes that
+snapshot's receipt-required basic grants and freshness/renewal timings. This
+documents the platform contract, not a deployment or provider-side policy change.
 
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`InferenceHandoff.Authorize`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
@@ -60,6 +66,15 @@ coordinator still verifies fresh evidence and enforces expiry and revocation.
 Synchronous actor occupation, system suspension, Apple service availability and
 transport failure remain separate availability limits.
 
+The separate [endpoint-resumption candidate](../../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)
+answers directly in `CoordinatorClient` using the fixed process key and a fresh
+socket nonce. It does no Apple work and creates no local authorization. The
+existing responsive `app_attest_shadow` and `trust_status` handling above is
+unchanged. Only a matching platform implementation can use the custody response
+with retained evidence; it must preserve original proof deadlines and current
+authorization/revocation checks. Provider support alone is not deployment or
+native qualification evidence.
+
 ## Presentation and dispatch history
 
 `coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`) evaluates the
@@ -90,11 +105,11 @@ not change identity association, trust, authorization or attestation freshness.
 
 ## Context
 
-Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
+Generic client-reported Apple API failures (`apple_error`) use bounded exchange recovery under the platform policy below. They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes applicable qualification, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
 
 Closed client diagnostics separate local availability failures and synthetic callback/proof failures from native DeviceCheck errors. `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`) bounds them before archival; `coordinator/appattest/service/observation.go` (`observeWithClientDiagnostics`) emits them only as evidence about a failed exchange. They do not enter `clientDataHash`, the verifier, or `EvaluateAuthorization`, so reporting a reason cannot grant serving.
 
-A verified first App Attest assertion may have no **verified** risk receipt yet: the initial `ATTEST` receipt can require renewal, or a verified receipt can lack a risk metric. With receipt renewal configured and no first serving record, the coordinator requests a fresh assertion after one minute, five minutes, then at the normal ten-minute cadence while the independent receipt worker renews evidence. An unverified receipt or another assertion does not itself create a grant. The [serving authorization policy](../../reference/provider-authorization.md) still requires a verified current risk receipt and complete metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
+The [updated platform authorization contract](https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md) separates `EvaluateAuthorization` for basic serving from `EvaluateReceiptMonitoring`. Missing recurring receipt/risk evidence alone neither blocks otherwise qualified basic serving nor adds assertions; it withholds reward/MDM-removal readiness under the stricter receipt and decision-freshness checks. First authorization still requires a fresh cryptographically verified, durably accepted assertion, qualified build, non-revoked credential, bound identity and successful current administrative reads. Only an established exact identity may retain last-known policy within the [original proof and administrative ceilings](../../reference/provider-authorization.md#controls). Failed reads, status delivery, receipt monitoring and renewal/retry attempts cannot extend those ceilings. These are the linked platform revision's semantics, not a claim that every deployed coordinator has adopted them; provider protocol fields are unchanged.
 
 Providers are adversarial ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). The legacy blob authenticates provider-supplied data with its embedded

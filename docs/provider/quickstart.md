@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-10-01
+> Last updated: 2026-10-12
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -196,40 +196,18 @@ private_only = false         # true = serve only your own self-route traffic
   interactively; change it later with `darkbloom idle keep-loaded` /
   `darkbloom idle unload-after <minutes>`.
 - `backend.max_model_slots` — maximum resident models at once (default 3).
-- `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
-  engine slot (default **4**, clamped to `[1, 8]`). 4 is the knee of the
-  measured contiguous curve — aggregate throughput is flat from B=4 to B=8 and
-  collapses below it, while per-request decode is aggregate/B and so improves
-  as the batch shrinks, which is what a time-to-first-token deadline is scored
-  on. An explicit value is always honoured; 8 stays available both box-wide
-  and per-model, which is what a box running `engine_v2_kv_backend = "paged"`
-  wants. A leftover top-level `config_version` line from an older release is
-  ignored.
-- `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` remains the default. The candidate selects paged only for the
-  [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); every
-  other ID, including unlisted Qwen, GPT-OSS and Gemma, stays contiguous.
-  **The candidate rollout is not yet validated**; see the retained failures
-  and remaining gates in the
-  [Qwen-first rollout decision](../design/qwen-first-paged-ssd-rollout.md).
-  Use `"contiguous"` to pin that backend, or `"paged"` to require paged
-  construction. Per-model `engine_v2_kv_backend_by_model` entries override
-  the global setting (`EngineV2KVBackendPolicy.parseSelection`,
-  `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`).
-  Under `"auto"`, paged preflight/construction failures fall back to
-  contiguous; the version-bound crash-loop guard also forces automatic
-  selections contiguous. Explicit `"paged"` construction failures instead
-  **refuse the load (503)**. Capability/span-mask vetoes and
-  `DARKBLOOM_CBV2_PAGED_KV=0` can still force contiguous even for explicit
-  paged; the kill switch is forwarded to launchd and never turns paging on.
-  Check `darkbloom status` and `darkbloom doctor` for the actual backend and
-  fallback reason rather than assuming `"auto"` proves paged service.
-  SSD prefix reuse stays enabled by default for eligible checkpoints,
-  including complete Qwen checkpoints on contiguous; resident retention
-  remains off unless explicitly enabled with `DARKBLOOM_PREFIX_CACHE_MEMORY=1`.
-  Paging rollback does not itself disable SSD reuse; `DARKBLOOM_PREFIX_CACHE=0`
-  disables local reuse independently
-  ([prefix-cache policy](../architecture/prefix-cache.md#kv-layouts)).
+- `backend.engine_v2_max_concurrent` configures the per-engine request cap.
+  Automatic limits and explicit per-model overrides follow the
+  [concurrency settings](./cli-reference.md#providertoml-keys-read-by-the-cli)
+  and their runtime qualification, architecture and memory bounds.
+- `backend.engine_v2_kv_backend` configures the serving layout. Follow the
+  [backend and precision settings](./cli-reference.md#providertoml-keys-read-by-the-cli)
+  for allowed values, per-model precedence and precision-dependent fallback
+  or refusal. Check `darkbloom status` and `darkbloom doctor` for the actual
+  backend and reason rather than assuming `"auto"` proves paged service.
+  Checkpoint eligibility and defaults are separate; see the
+  [per-family reuse gates](../reference/ssd-kv-cache.md#per-family-reuse-capability)
+  and [cache controls](../reference/configuration.md#ssd-prefix-cache).
   A paged model starts with empty segmented storage under
   its admitted KV grant. Pages are reserved and allocated as requests need
   them; changing the grant does not preallocate or free live backing. See

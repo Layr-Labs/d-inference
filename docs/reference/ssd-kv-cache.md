@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-12
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -363,14 +363,15 @@ unsupported types return no complete checkpoint capability
 
 Capability constants: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift`
 (`CBv2ModelCapabilities`); the per-family switch is in
-`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`). An explicit `paged` selection is refused when the
-model lacks the required capability (reason `model_capability`); the kill switch
-can separately degrade it to contiguous.
-Eligible recurrent targets use segmented paging with a per-layer native type
-table measured from the loaded target. Complete restoration supports both
-native target storage layouts. Model-scoped automatic selection is defined by
-`EngineV2KVBackendPolicy.preferredBackend`; it does not replace the loaded
-capability or checkpoint-identity gates.
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`). Resolved paged execution requires the model's
+paged capability. Selection, kill-switch effects and refusal or fallback depend
+on live precision; see the
+[backend and precision controls](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+When native recurrent targets use segmented paging, their per-layer native type
+table is measured from the loaded target. Complete restoration supports both
+native target storage layouts. For native live precision, model-scoped automatic
+selection is defined by `EngineV2KVBackendPolicy.preferredBackend`; it does not
+replace the loaded capability or checkpoint-identity gates.
 
 ## Status and outcome vocabularies
 

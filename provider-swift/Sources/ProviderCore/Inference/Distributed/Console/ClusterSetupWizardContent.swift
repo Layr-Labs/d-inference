@@ -312,7 +312,8 @@ enum ClusterSetupContent {
         let g = b.glyphs
         guard let pair = state.pair else {
             if let error = state.snapshot?.pairError {
-                b.verdict(g.blocked, "The pair description given to this wizard cannot be read: \(error)", .bad, from: .wired("pair.saved"))
+                b.verdict(g.blocked, state.linkPaired ? "Paired, but step 4 cannot plan from this Mac yet: \(error)"
+                    : "The pair description given to this wizard cannot be read: \(error)", .bad, from: .wired("pair.saved"))
             } else {
                 b.verdict(g.waiting, "This Mac does not know the other Mac yet.", .warning, from: .wired("pair.saved"))
             }
@@ -331,8 +332,34 @@ enum ClusterSetupContent {
         b.heading("Pair")
         let role = pair.leads.map { $0 ? "this Mac leads" : "this Mac follows" } ?? "who leads comes from the plan in step 4"
         b.fact("Cluster", "\(pair.clusterID) \u{B7} this Mac: \(pair.localMemberID) \u{B7} the other Mac: \(pair.peerMemberID)", from: .wired("pair.saved"))
-        b.fact("From", sourceWords(pair.source) + " \u{B7} " + role, from: .wired("pair.saved"))
+        // Paired over the link (S17): the other Mac is reached over the paired link, never SSH, and no host-key code applies.
+        let overLink = state.linkPaired && (pair.source == .description || state.savedSetup?.overLink == true)
+        b.fact("From", (overLink && pair.source == .description ? "the pairing over the link" : sourceWords(pair.source)) + " \u{B7} " + role,
+            from: .wired("pair.saved"))
         b.blank()
+
+        if pair.canReachPeer, overLink {
+            b.heading("The other Mac")
+            switch state.peer {
+            case .unknown:
+                b.text("Not reached yet.", .dim, from: .wired("pair.verify"))
+                b.action("p", "Reach it over the paired link", from: .wired("pair.verify"))
+            case .reaching(let since):
+                b.text("\(g.spin(state.now)) Reaching it over the paired link\u{2026} \(seconds(state.now, since))", .accent, from: .wired("pair.verify"))
+            case .failed(let reason):
+                b.verdict(g.blocked, "Could not reach the other Mac over the paired link: \(reason)", .bad, from: .wired("pair.verify"))
+                b.text("Open `darkbloom cluster` on the other Mac too: its open wizard answers over the cable. No address and no SSH are needed.", indent: 6, from: .frame)
+                b.action("p", "Try again", from: .wired("pair.verify"))
+            case .reached(let report, let seconds, _):
+                b.verdict(g.done, String(format: "Answered over the paired link in %.2f s, authenticated by the pairing's key.", seconds), .good, from: .wired("pair.verify"))
+                b.fact("Other Mac", peerWords(report), from: .wired("peer.report"))
+            }
+            b.blank()
+            linkPairing(state, &b)
+            b.blank()
+            b.action("enter", "Next: model and plan (paired over the link)", from: .frame)
+            return
+        }
 
         if pair.canReachPeer {
             b.heading("The other Mac")
@@ -492,7 +519,8 @@ enum ClusterSetupContent {
             return
         }
         guard state.mayPlan else {
-            b.verdict(g.waiting, state.pair == nil ? "Pair first: step 3." : "Waiting for the leader to send this Mac its setup. Run `darkbloom cluster` on the leader; press r here to look again.", .warning, from: .wired("pair.inbox"))
+            b.verdict(g.waiting, state.pair == nil ? (state.linkPaired && state.snapshot?.pairError != nil
+                ? "Paired, but this Mac cannot plan yet: \(state.snapshot?.pairError ?? "")" : "Pair first: step 3.") : "Waiting for the leader to send this Mac its setup. Run `darkbloom cluster` on the leader; press r here to look again.", .warning, from: .wired("pair.inbox"))
             return
         }
         guard state.peerReport != nil else {

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 import DarkbloomClusterPlacement
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
@@ -265,7 +266,12 @@ private final class LiveContext: @unchecked Sendable {
         guard stat(path, &info) == 0 else { throw ClusterSetupFailure("this Mac's cluster worker cannot be read") }
         let key = "\(path)|\(info.st_size)|\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)|\(info.st_ino)"
         if let cached = lock.withLock({ workerDigest }), cached.key == key { return cached.digest }
-        let digest = ClusterConfigurationCodec.sha256(try ClusterConfigurationFiles.read(URL(fileURLWithPath: path), maximum: 1 << 30))
+        // A worker is tens of megabytes: hashed in chunks, not read through the setup files' small bound.
+        guard let handle = FileHandle(forReadingAtPath: path) else { throw ClusterSetupFailure("this Mac's cluster worker cannot be read") }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         lock.withLock { workerDigest = (key, digest) }
         return digest
     }

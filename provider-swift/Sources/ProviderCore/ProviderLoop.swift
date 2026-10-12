@@ -625,11 +625,11 @@ public actor ProviderLoop {
     /// the daemon state so status can distinguish warmup from request loading.
     internal var startupPreloadPendingModels: [String] = []
 
-    /// Test seam: overrides the loaded-models persistence file
+    /// Per-loop persistence location for embedded/qualification hosts and tests
     /// (default: `LoadedModelsStore.path()`).
     internal var loadedModelsFileOverride: URL?
 
-    /// Test seam: overrides the daemon-state file `writeDaemonState()`
+    /// Per-loop location for the daemon-state file `writeDaemonState()`
     /// persists to (default: `DaemonStateFile.path()`). Per-loop, unlike the
     /// process-global `DARKBLOOM_STATE_FILE` env var — two suites mutating
     /// that env concurrently can route one another's writes into each
@@ -637,10 +637,10 @@ public actor ProviderLoop {
     /// `.serialized` only orders tests WITHIN a suite).
     internal var daemonStateFileOverride: URL?
 
-    /// Test seam: false keeps `run()` away from state this Mac shares with a
+    /// Embedded qualification hosts and tests keep `run()` away from state shared with a
     /// real provider: the OOM marker and scan watermark in `~/.darkbloom`,
     /// the whole SSD prefix-cache root, and the process-wide APNs bridge
-    /// (its startup token wait is 10 seconds). Always true in production.
+    /// (its startup token wait is 10 seconds). Normal serving enables these services.
     internal var serveUsesHostServices = true
 
     /// APNs code-identity push receipt/reply history beside the state file.

@@ -125,6 +125,10 @@ not permission to serve or a fresh Apple proof. The matching platform support
 must be present and must recheck retained evidence and current policy. A process
 restart loses that key; this is not cross-process continuity. Continue to use the
 coordinator verdict, not local response generation, as authorization evidence.
+The [isolated native qualification](../reports/2026-10-11-native-serving-resumption-qualification.md)
+passed with real Apple verification and encrypted inference across a 125-second
+break on one exact signed candidate. It does not enable production resumption
+or establish cross-process or worker-recovery continuity.
 
 `darkbloom logout` stops the provider before removing its saved credential and
 attempts token revocation. If remote revocation is unconfirmed, its output says

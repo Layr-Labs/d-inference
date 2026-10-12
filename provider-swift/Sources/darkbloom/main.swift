@@ -17,6 +17,9 @@ let rawArgs = Array(CommandLine.arguments.dropFirst())
 if rawArgs.first == AppAttestWorkerHost.argument {
     await AppAttestWorkerCommand.runIfRequested(rawArgs)
 }
+if rawArgs.first == NativeServeQualificationCommand.argument {
+    NativeServeQualificationCommand.runHosted(rawArgs)
+}
 if AppAttestQualificationCommand.requestsAppKitHost(rawArgs) {
     AppAttestQualificationCommand.runHosted(rawArgs)
 }

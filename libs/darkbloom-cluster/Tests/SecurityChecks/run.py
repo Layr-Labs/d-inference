@@ -64,7 +64,7 @@ def main():
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     runtime = sorted(RUNTIME.glob('*.swift'))
     bootstrap = sorted(BOOTSTRAP.glob('*.swift'))
-    if len(runtime) != 14 or len(bootstrap) != 6:
+    if len(runtime) != 17 or len(bootstrap) != 6:
         raise ValueError('Update the CPU check source closure when changing the record module')
     groups = [('codec', sorted((HERE / 'Codec').glob('*.swift')), [str(HERE / 'Codec/vectors.json')]),
               ('adapter', sorted((HERE / 'Adapter').glob('*.swift')), []),

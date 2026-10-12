@@ -182,6 +182,10 @@ public enum ClusterPlacementExplanation {
             lines.append("    " + prediction(chosen.prediction(other), result.basis, prompt: result.promptTokens, outputs: result.outputTokens))
             lines.append("Why")
             lines += reasons(result, chosen: chosen, devices: devices, layout: layout).map { "  " + $0 }
+            if let excluded = result.unqualifiedPossible, excluded > 0 {
+                lines.append("  \(excluded) other placement\(excluded == 1 ? "" : "s") that fit\(excluded == 1 ? "s" : "") were left out: "
+                    + "no passed cross-cable check covers \(excluded == 1 ? "its" : "their") shape (each rank's chip, the cut, the mode).")
+            }
             lines.append("What this rests on")
             if result.basis.source.isEstimate {
                 lines.append("  The speeds are ESTIMATES (weakest source: \(result.basis.source.rawValue)). A probe on each Mac replaces them.")
@@ -194,6 +198,14 @@ public enum ClusterPlacementExplanation {
             lines.append("  Link and framing costs: " + link.provenance + ".")
             lines.append("  This is a plan, not an admission. The load gate on each Mac decides when it loads, on what that Mac has then; "
                 + "the plan and the gate use one rule, so a rank that fits here is refused there only if its memory has changed.")
+        } else if let excluded = result.unqualifiedPossible, excluded > 0 {
+            lines.append("Refused: no placement these Macs can hold is qualified for this model")
+            lines.append("  \(excluded) placement\(excluded == 1 ? "" : "s") would fit, but no passed cross-cable check covers \(excluded == 1 ? "its" : "their") shape "
+                + "(each rank's chip, the cut, the mode). This model's checks diverged at some shape, so a pair serves it only at shapes "
+                + "that passed; a qualification run on these chips at a shape that fits adds one.")
+            for a in result.alone where a.fit.possible {
+                lines.append("  \(a.device) alone needs \(gibText(a.needBytes, roundUp: true)): \(fitText(a.fit, need: a.needBytes, device: a.device, devices)). That is the ordinary single-Mac path, not a cluster session.")
+            }
         } else if let refusal = result.refusal {
             lines.append("Refused: no division of this model between these Macs is possible, and no Mac holds it alone")
             lines.append("  The model holds \(gibText(refusal.modelLoadedBytes)) when loaded, and each rank needs its load and request headroom on top of its share.")

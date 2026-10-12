@@ -34,6 +34,7 @@ import Foundation
             let layouts = try checkRegisteredLayouts(inputs, checks)
             try checkDeviceMixes(layouts.nine, layouts.twentySeven, checks)
             try checkRequestedContext(layouts.twentySeven, checks)
+            try checkQualifiedShapes(layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)
             try checkSpeculativeCredit(inputs, checks)
             try checkBudgets(layouts.twentySeven, checks)

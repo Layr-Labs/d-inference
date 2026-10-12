@@ -442,6 +442,8 @@ jobs:
               <string>APPL</string>
               <key>LSMinimumSystemVersion</key>
               <string>14.0</string>
+              <key>NSLocalNetworkUsageDescription</key>
+              <string>Darkbloom connects to the other Macs of your cluster over the Thunderbolt link to serve models together.</string>
           </dict>
           </plist>
           PLIST
@@ -496,6 +498,29 @@ jobs:
           codesign --force --options runtime --timestamp \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
+          # Cluster helpers (S18): the worker a member launches for its rank
+          # and the placement tool beside it. Developer ID + hardened runtime
+          # under their own identifiers and network-only entitlements, so the
+          # application firewall's "allow signed software" covers a rank that
+          # listens, without a per-build prompt. Workers inherit the app's
+          # Local Network approval as its responsible process. Signed only
+          # when the unsigned artifact carries them.
+          for helper in darkbloom-cluster-worker darkbloom-cluster-plan; do
+            [ -f "$APP/Contents/Helpers/$helper" ] || continue
+            codesign --force --options runtime --timestamp \
+              --identifier "io.darkbloom.$helper" \
+              --entitlements provider-swift/entitlements-cluster-worker.plist \
+              --keychain "$KEYCHAIN_PATH" \
+              --sign "$DEVELOPER_ID" "$APP/Contents/Helpers/$helper"
+            codesign --verify --strict --verbose=2 \
+              "-R=anchor apple generic and identifier \"io.darkbloom.$helper\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" \
+              "$APP/Contents/Helpers/$helper"
+          done
+          if [ -f "$APP/Contents/Helpers/mlx-cluster-worker.metallib" ]; then
+            codesign --force --options runtime --timestamp \
+              --keychain "$KEYCHAIN_PATH" \
+              --sign "$DEVELOPER_ID" "$APP/Contents/Helpers/mlx-cluster-worker.metallib"
+          fi
           # darkbloom-enclave only uses ephemeral SE keys (no keychain).
           # It gets its own entitlements without keychain-access-groups and
           # application-identifier so AMFI doesn't require a provisioning
@@ -519,6 +544,10 @@ jobs:
 
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
+          # Local Network privacy (macOS 15+): the alert names the app and
+          # shows this text once; the approval follows the bundle identifier
+          # and team, so updates and reboots keep it (S18).
+          /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist" >/dev/null
 
           # Packaged post-sign smoke: the release-candidate evaluator must be
           # exposed by the exact signed main executable. This checks command

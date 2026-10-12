@@ -63,6 +63,8 @@ def stage(arguments):
         "CFBundleName": "Darkbloom", "CFBundleVersion": arguments.version,
         "CFBundleShortVersionString": arguments.version,
         "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "14.0",
+        "NSLocalNetworkUsageDescription": "Darkbloom connects to the other Macs of your cluster over the "
+                                          "Thunderbolt link to serve models together.",
     }
     with (app / "Contents/Info.plist").open("wb") as output:
         plistlib.dump(info, output)

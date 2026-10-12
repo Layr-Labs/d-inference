@@ -77,7 +77,12 @@ extension Start {
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        // Heartbeats for a supervisor (S18) and the launchd watchdog.
+        let heartbeat = ClusterMemberHeartbeat()
+        heartbeat.startEarly()
+        defer { heartbeat.stop() }
         let (loop, prepared) = try await makeClusterMemberLoopAndPreparation(reference: factory.reference)
+        heartbeat.attach(loop: loop)
         // A setup saved for coordinator pairing over the link serves the
         // pair's committed starts (S10): the leader hosts the link listener
         // and publishes the pair slot, the follower serves its rank over it.
@@ -93,13 +98,39 @@ extension Start {
         let task = Task { try await loop.run() }
         signals.attach { task.cancel() }
         do {
-            try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
+            // A foreground command fails fast so the operator sees why. A
+            // supervised member keeps reconnecting like a solo provider: a
+            // coordinator still unreachable at boot (network not up yet) or
+            // restarting is not a crash, and must not spend the restart budget.
+            let wait: Duration = heartbeat.isSupervised ? .seconds(365 * 86_400) : .seconds(30)
+            try await loop.waitForClusterMemberRegistration(until: .now.advanced(by: wait))
             print("darkbloom \(ProviderCore.version) (registered cluster member; solo inference disabled)")
             try await withTaskCancellationHandler { try await task.value }
                 onCancel: { task.cancel() }
         } catch {
-            task.cancel(); _ = try? await task.value
+            task.cancel()
+            // Bounded: a loop that does not finish after its cancellation must
+            // not keep this process (and its SIGTERM) waiting forever (S09
+            // finding 3); the process exits and its supervisor decides.
+            await Self.awaitFinished(task, atMostSeconds: 30)
             throw error
         }
     }
+
+    /// Waits for `task` to finish, at most `seconds`; never cancels or kills it.
+    static func awaitFinished(_ task: Task<Void, Error>, atMostSeconds seconds: Double) async {
+        let finished = ClusterMemberFlag()
+        Task.detached { _ = try? await task.value; finished.set() }
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(seconds * 1000)))
+        while !finished.value, ContinuousClock.now < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+}
+
+final class ClusterMemberFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raised = false
+    var value: Bool { lock.withLock { raised } }
+    func set() { lock.withLock { raised = true } }
 }

@@ -61,6 +61,8 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
     /// When set, every request waits for one signal before its first token.
     var hold: DispatchSemaphore?
     var leasesAcceptCleanStop = true
+    /// The first this many reservations fail (the warmup canary is the first).
+    var failFirstReservations = 0
 
     init(model: String = clusterPairFixtureModel) {
         identity = .init(membershipEpoch: UUID(), modelID: model,
@@ -86,6 +88,7 @@ final class ScriptedPairOwner: DistributedResidentExecutionOwner, @unchecked Sen
                  profileID: String, capacityLimit: Int) throws -> any DistributedResidentRequestLease {
         try lock.withLock {
             guard available, identity == self.identity, profileID == self.profileID else { throw DistributedEngineError.unavailable }
+            if failFirstReservations > 0 { failFirstReservations -= 1; throw DistributedEngineError.unavailable }
             let lease = ScriptedPairLease(identity: identity, requestID: request.id, hold: hold,
                 acceptsCleanStop: leasesAcceptCleanStop)
             leases.append(lease)
@@ -108,8 +111,10 @@ func clusterPairSpecification(_ owner: ScriptedPairOwner, model: String = cluste
 }
 
 /// A member loop with no coordinator, the way `run()` prepares it.
+/// The warmup canary (S18) is off unless `warmupTimeoutSeconds` is given, so
+/// these tests count only their own reservations.
 func clusterPairMemberLoop(models: [String] = [clusterPairFixtureModel], role: ProviderExecutionRole = .clusterMember,
-                           modelType: String = "qwen3_5") async throws -> ProviderLoop {
+                           modelType: String = "qwen3_5", warmupTimeoutSeconds: Double? = nil) async throws -> ProviderLoop {
     let hardware = HardwareInfo(machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
         memoryGb: 64, memoryAvailableGb: 64, cpuCores: .init(total: 16, performance: 12, efficiency: 4),
         gpuCores: 40, memoryBandwidthGbs: 546)
@@ -125,6 +130,7 @@ func clusterPairMemberLoop(models: [String] = [clusterPairFixtureModel], role: P
     await loop.setDaemonStateFileForTesting(FileManager.default.temporaryDirectory
         .appendingPathComponent("cluster-pair-slot-\(UUID().uuidString).json"))
     if role == .clusterMember { try await loop.prepareClusterMemberControlForTesting() }
+    await loop.setClusterPairWarmupForTesting(timeoutSeconds: warmupTimeoutSeconds)
     return loop
 }
 
@@ -166,6 +172,66 @@ struct ClusterPairSlotTests {
         #expect(await loop.clusterPairSlotServes(clusterPairFixtureModel))
         #expect(!(await loop.clusterPairSlotServes("other/model")))
         #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
+    /// S18 warmup canary: one throwaway generation through the pair before
+    /// admission opens (the owner's m3_warmup.py).
+    @Test func theWarmupCanaryGeneratesOnceBeforeAdmissionOpens() async throws {
+        let loop = try await clusterPairMemberLoop(warmupTimeoutSeconds: 30)
+        let owner = ScriptedPairOwner()
+        try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        let warmup = try #require(await loop.clusterPairWarmup)
+        #expect(warmup.succeeded && warmup.tokens > 0 && warmup.tokens <= ProviderLoop.clusterWarmupMaxTokens, "\(warmup)")
+        #expect(owner.reserveCount == 1, "the canary is the only request so far")
+        #expect(await clusterPairWait { owner.lastLease?.releaseCount == 1 })
+        let snapshot = await loop.clusterPairSlotSnapshot
+        #expect(snapshot.model == clusterPairFixtureModel && !snapshot.refusing)
+        #expect(await loop.retireClusterPairSlot(reason: "test"))
+    }
+
+    @Test func aFailedWarmupRetiresTheSlotWithoutOpeningAdmission() async throws {
+        let loop = try await clusterPairMemberLoop(warmupTimeoutSeconds: 30)
+        let owner = ScriptedPairOwner()
+        owner.failFirstReservations = 1
+        let id = try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        let warmup = try #require(await loop.clusterPairWarmup)
+        #expect(!warmup.succeeded, "\(warmup)")
+        #expect(await clusterPairWait { await loop.clusterPairSlotSnapshot.id == nil })
+        let snapshot = await loop.clusterPairSlotSnapshot
+        #expect(snapshot.slots.isEmpty && snapshot.refusing)
+        #expect(await clusterPairWait { owner.shutdownCount == 1 })
+        #expect(!(await loop.retireClusterPairSlot(id, reason: "late")))
+        // The next formation warms up and serves.
+        let next = ScriptedPairOwner()
+        let nextID = try await loop.publishClusterPairSlot(clusterPairSpecification(next), owner: next)
+        #expect(await loop.clusterPairWarmup?.succeeded == true)
+        let reopened = await loop.clusterPairSlotSnapshot
+        #expect(reopened.id == nextID && !reopened.refusing)
+        #expect(await loop.retireClusterPairSlot(nextID, reason: "test"))
+    }
+
+    @Test func aWarmupThatNeverGeneratesTimesOutAndRetiresTheSlot() async throws {
+        let loop = try await clusterPairMemberLoop(warmupTimeoutSeconds: 1)
+        let owner = ScriptedPairOwner()
+        let hold = DispatchSemaphore(value: 0)
+        owner.hold = hold
+        // The canary gives up at its deadline and cancels its request; the
+        // slot then retires, which waits for that request to retire before
+        // the owner shuts down (a wedged pair's cancel lands only at the
+        // engine's safety deadline). Release the held request once the canary
+        // has given up, as the cancel finally landing would.
+        let release = Task {
+            _ = await clusterPairWait(.seconds(30)) { await loop.clusterPairWarmup != nil }
+            hold.signal()
+        }
+        try await loop.publishClusterPairSlot(clusterPairSpecification(owner), owner: owner)
+        await release.value
+        let warmup = try #require(await loop.clusterPairWarmup)
+        #expect(!warmup.succeeded && (warmup.detail ?? "").contains("timed out"), "\(warmup)")
+        #expect(warmup.seconds < 10, "the canary's own deadline bounds it: \(warmup)")
+        #expect(await clusterPairWait { await loop.clusterPairSlotSnapshot.id == nil })
+        #expect(await loop.state.refusingNewWork)
+        #expect(await clusterPairWait { owner.shutdownCount == 1 })
     }
 
     @Test func aSecondPublicationIsRefusedAndAnUnreadyOwnerStaysWithTheCaller() async throws {

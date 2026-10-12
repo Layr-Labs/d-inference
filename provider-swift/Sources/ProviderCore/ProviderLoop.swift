@@ -606,6 +606,15 @@ public actor ProviderLoop {
     internal var clusterPairSlot: ClusterPairSlotHandle?
     /// Keeps the member's published capacity current while a pair slot exists.
     internal var clusterPairCapacityTask: Task<Void, Never>?
+    /// The last pair formation's warmup canary (S18), for the member heartbeat.
+    internal var clusterPairWarmup: ClusterPairWarmupResult?
+    /// The warmup canary's deadline; nil when the canary is off
+    /// (`DARKBLOOM_CLUSTER_WARMUP=0`). Tests set it per loop.
+    internal var clusterPairWarmupTimeoutSeconds: Double? =
+        ProviderLoop.clusterWarmupEnabled() ? ProviderLoop.clusterWarmupTimeoutSeconds : nil
+    /// When the pair slot's engine was first seen wedged ("crashed"), for the
+    /// supervisor's liveness guard (S18).
+    internal var clusterPairWedgedSince: ContinuousClock.Instant?
     /// The leader's serving context for committed starts (S10), and the one
     /// start it serves: its epoch, whether the session asked it to stop, and
     /// whether the pair is still forming.

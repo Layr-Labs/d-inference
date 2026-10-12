@@ -195,6 +195,19 @@ extension ProviderLoop {
         // A loss or stop during the registration hop retires this slot; do
         // not reopen admission over it.
         guard clusterPairSlot === handle else { return id }
+        // Warmup canary (S18): one throwaway generation before admission
+        // opens; a pair that cannot generate is retired, not served.
+        if let timeout = clusterPairWarmupTimeoutSeconds {
+            let warmup = await Self.runClusterPairWarmup(bridge: bridge, modelID: specification.publicModelID,
+                                                         timeoutSeconds: timeout)
+            clusterPairWarmup = warmup
+            logger.info("Cluster pair warmup canary \(warmup.description)")
+            guard clusterPairSlot === handle else { return id }
+            guard warmup.succeeded else {
+                await retireClusterPairSlot(id, reason: "warmup canary failed: \(warmup.detail ?? "no detail")")
+                return id
+            }
+        }
         refreshClusterMemberAdmission()
         syncWarmModelState()
         startClusterPairCapacityRefresh()

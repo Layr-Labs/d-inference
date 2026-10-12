@@ -364,6 +364,11 @@ enum EngineV2Translation {
             return "token_budget_exhausted: request requires \(requested) context tokens "
                 + "but only \(serving) available on this cluster pair now (\(reason))"
         }
+        // A pair engine's refusal names its reason (e.g. which admission rule
+        // refused), which `localizedDescription` hides as "error 1".
+        if let engineError = error as? DistributedEngineError {
+            return "engine_v2 submit failed: \(engineError)"
+        }
         // Unknown throw: do NOT claim capacity exhaustion (which would be
         // retried) — surface as a generic generation failure (500).
         return "engine_v2 submit failed: \(error.localizedDescription)"

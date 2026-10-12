@@ -203,7 +203,7 @@ import DarkbloomClusterProtocol
         // Without its mirrored-order checks the 27B would be granted the order the others have, and no more.
         let normalOrderOnly = ClusterPairServingGrant(runtimeModelID: q27.runtimeModelID,
             qualifications: q27.qualifications.filter { $0.chipClasses.first == .appleM3Ultra }, evidence: "")
-        #expect(normalOrderOnly.decodingRankChipClasses == [.appleM5Max] && normalOrderOnly.pipelineRankChipClasses == [.appleM3Ultra])
+        #expect(normalOrderOnly.decodingRankChipClasses == [.appleM5Max, .appleM5Ultra] && normalOrderOnly.pipelineRankChipClasses == [.appleM3Ultra])
         #expect(ClusterPairServingGrant(runtimeModelID: q27.runtimeModelID, qualifications: [], evidence: "").chipClasses.isEmpty)
         // The coordinator's shape rules for a placement.
         #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra], cuts: [], mode: .pipeline).isWellFormed)

@@ -188,7 +188,9 @@ struct DistributedHTTPCompletionTests {
             let (data, reply) = try await client.value
             #expect((reply as? HTTPURLResponse)?.statusCode == 500) // prefill_stall
             #expect(try jsonObject(data)["error"] != nil)
-            #expect(lease.releaseCount == 1)
+            // The release follows the acknowledged retirement on the engine's
+            // queue; the HTTP error can reach the client first.
+            #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
         }
     }
 

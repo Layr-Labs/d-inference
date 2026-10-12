@@ -78,14 +78,20 @@ exchange) and the hybrid hand-off. The plan's coverage of a checkpoint is
 checked model-free by `libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh [MODEL_DIR...]`.
 
 ```sh
-# Both ranks: the same build (the first agreement's length is not fixed across builds) and the same
-# arguments; rank 0 is the JACCL listener. Arithmetic environment as for the worker,
+# Both ranks: the same arguments; rank 0 is the JACCL listener. The first exchange is a versioned
+# launch digest of fixed width, so a rank of another build or launch is refused (builds before
+# 808b33f47 used a variable-length first agreement: never mix them with newer ones). Arithmetic environment as for the worker,
 # plus MLX_METAL_FAST_SYNCH=1 (the lazy all-sum is slow without it).
 env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 MLX_METAL_FAST_SYNCH=1 \
   JACCL_RANK=0 JACCL_IBV_DEVICES=/ABS/matrix.json JACCL_COORDINATOR=ADDRESS:PORT \
   darkbloom-cluster-tp-check run --mode tp --backend jaccl --model-dir /ABS/MODEL --request REQUEST.json --report rank0.json
 darkbloom-cluster-tp-check run --mode full --model-dir /ABS/MODEL --request REQUEST.json --report full.json --record-top 8
 darkbloom-cluster-tp-check compare --reference full.json --candidate rank0.json
+# Two ranks on ONE Mac (correctness only, never a timing): --backend socket, MLX_RANK=0|1 and
+# MLX_HOSTFILE=[["127.0.0.1:PORT0"],["127.0.0.1:PORT1"]]; rank 0 listens on PORT0. Each all-sum is
+# evaluated, exchanged whole over one loopback TCP connection (framed and length-checked) and summed
+# rank 0 + rank 1 on the CPU, which equals JACCL's two-value sum. --backend ring uses MLX's ring where
+# the build has it.
 ```
 
 Measured on the M3 Ultra + M5 Max pair (registered 27B, greedy): tokens pass
@@ -95,7 +101,7 @@ alone (34-36 tok/s). One rank's shard without any collective decodes at
 25 ms/token against 30 ms for the whole model: batch-1 decode has a per-token
 floor that splitting the weights does not divide, and 129 all-sums per token
 cost more than the 5 ms saved. The local ring is not compiled into this MLX
-build, so the one-Mac two-rank step needs a socket reduction first.
+build; the one-Mac two-rank step uses `--backend socket` instead.
 
 Where the floor is (M5 Max, same session): the host spends 6-13 ms of thread
 CPU per 24-30 ms step (graph construction 2-4 ms) and then waits for the GPU,

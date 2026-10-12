@@ -200,6 +200,15 @@ check(ClusterMemberLinkGate.decide(machine: .noActivePort, device: .noActivePort
       == .wait(.noActivePort), "no active port waits")
 check(ClusterMemberLinkGate.decide(machine: .ready, device: .portBridgedWithoutAddress, probeFailingForSeconds: 0)
       == .wait(.portBridgedWithoutAddress), "the saved device's verdict decides, not another port's")
+// Link setup v2: RDMA needs an IPv4-mapped GID on the port itself. A port still without its own
+// address, or whose GID macOS has not published yet, is waited for (one-time setup or late boot),
+// never started into a JACCL "No IPv4-mapped GID" failure.
+check(ClusterMemberLinkGate.decide(machine: .ready, device: .portWithoutIPv4Address, probeFailingForSeconds: 0)
+      == .wait(.portWithoutIPv4Address), "a port without its own IPv4 address waits for link setup")
+check(ClusterMemberLinkGate.decide(machine: .ready, device: .gidNotPublished, probeFailingForSeconds: 0)
+      == .wait(.gidNotPublished), "a port whose IPv4-mapped GID is not published yet waits")
+check(ClusterMemberLinkGate.decide(machine: .gidNotPublished, device: .ready, probeFailingForSeconds: 0) == .ready,
+      "another port's missing GID does not hold the saved device")
 check(ClusterMemberLinkGate.decide(machine: .ready, device: nil, probeFailingForSeconds: 0) == .wait(.probeFailed),
       "a device this Mac does not list waits like a failed reading")
 check(ClusterMemberLinkGate.decide(machine: .rdmaDisabled, device: nil, probeFailingForSeconds: 0) == .blocked(.rdmaDisabled),

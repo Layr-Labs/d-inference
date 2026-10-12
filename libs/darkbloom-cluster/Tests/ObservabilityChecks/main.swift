@@ -196,6 +196,19 @@ func classifierChecks() {
                   "peer_timeout", "model_stage_incomplete", "plan_changed", "version_mismatch", "address_unresolved",
                   "worker_runtime_unverified", "unknown_failure"]
     check(stable.allSatisfy { ClusterGuidance.guidance(code: $0) != nil }, "B-stable the oMLX guidance codes are kept")
+    // Owner gates: no SSH set-up and no network settings in anything a user is told to do.
+    let allGuidance = ClusterFailureReason.allCases.map { ClusterGuidance.guidance(for: $0) }
+        + stable.compactMap { ClusterGuidance.guidance(code: $0) }
+    let forbidden = ["ssh-copy-id", "ssh-keygen", "ssh-keyscan", "authorized_keys", "public key", "known_hosts", "--fix", "sudo",
+                     "ipv4 address", "static", "network settings >", "internet sharing", "10.0.0."]
+    for g in allGuidance {
+        let text = ([g.title, g.explanation] + g.steps + [g.command ?? ""]).joined(separator: " ").lowercased()
+        let hit = forbidden.filter { text.contains($0) }
+        check(hit.isEmpty, "B-gate \(g.code) asks for no SSH set-up or network setting\(hit.isEmpty ? "" : ": \(hit)")")
+    }
+    for g in ["host_key_unknown", "host_identity_changed", "no_matching_host_key", "login_rejected"].compactMap({ ClusterGuidance.guidance(code: $0) }) {
+        check(g.steps.first?.contains("darkbloom cluster setup") == true, "B-gate \(g.code) leads with the SSH-free pairing")
+    }
 }
 
 // MARK: C. Pair telemetry

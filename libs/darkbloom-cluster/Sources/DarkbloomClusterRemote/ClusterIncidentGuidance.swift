@@ -228,21 +228,22 @@ extension ClusterGuidance {
                 "If it repeats, run `darkbloom cluster doctor` on both Macs and compare what it reports."],
         command: "darkbloom cluster doctor")
 
+    /// SSH only exists in the developer test harness: the product pairs with `darkbloom cluster setup` and never asks a
+    /// user for SSH, so every SSH guidance leads with the product path.
+    static let devHarness = ["Production pairs need no SSH: run `darkbloom cluster setup` on both Macs and confirm the six-digit code."]
     static let ssh: [String: ClusterGuidance] = [
         "host_key_unknown": .init(code: "host_key_unknown", title: "The other Mac isn't trusted yet",
             explanation: "SSH stopped before login because this Mac has not recorded the other Mac's host key.",
-            steps: ["Run the cluster setup again and confirm the other Mac's fingerprint.",
-                    "Production pairs need no SSH: pair the Macs with the pairing code instead."]),
+            steps: devHarness + ["Run the cluster setup again and confirm the other Mac's fingerprint."]),
         "host_identity_changed": .init(code: "host_identity_changed", title: "The other Mac's saved identity changed",
             explanation: "SSH refused the connection because this address now presents a different key.",
-            steps: ["Confirm the address still belongs to the expected Mac.",
-                    "After verifying its fingerprint on that Mac, remove only the stale entry and pair again."]),
+            steps: devHarness + ["Confirm the address still belongs to the expected Mac, then pair again."]),
         "no_matching_host_key": .init(code: "no_matching_host_key", title: "The Macs could not agree on an SSH host key",
             explanation: "The other Mac is reachable, but its SSH server offered no host-key algorithm this Mac accepts.",
-            steps: ["Update both Macs to a current macOS release and pair again."]),
+            steps: devHarness + ["Update both Macs to a current macOS release and pair again."]),
         "login_rejected": .init(code: "login_rejected", title: "The other Mac rejected the login",
             explanation: "SSH connected but the other Mac would not accept this Mac's key.",
-            steps: ["Check the user name in the saved setup.", "Install the setup's public key on the other Mac and retry."]),
+            steps: devHarness + ["Check the user name in the developer harness's saved setup."]),
     ]
 
     static let table: [ClusterFailureReason: ClusterGuidance] = [
@@ -275,8 +276,9 @@ extension ClusterGuidance {
         .sshTrust: ssh["login_rejected"]!,
         .addressUnusable: .init(code: "address_unresolved", title: "A cluster address cannot be used",
             explanation: "An address in the setup could not be parsed or is not on the link interface.",
-            steps: ["Run `darkbloom cluster link --fix` on both Macs to restore the link addresses.",
-                    "Use the Thunderbolt IPv4 address, not a name or a link-local IPv6 address."], command: "darkbloom cluster link"),
+            steps: ["Run `darkbloom cluster link` on both Macs: the cable must be up and the link ready.",
+                    "Run `darkbloom cluster setup` again on both Macs; it uses the addresses macOS gives the cable by itself, so no network settings are needed."],
+            command: "darkbloom cluster link"),
         .peerUnreachable: .init(code: "peer_unreachable", title: "Can't reach the other Mac",
             explanation: "The address resolved but nothing answered on the link.",
             steps: ["Check the other Mac is awake: a sleeping Mac drops the link.",

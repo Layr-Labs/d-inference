@@ -22,9 +22,11 @@ acceptance; use the current coordinator verdict when diagnosing expiry. See
 A signed version is [registered as an official build](../reference/provider-authorization.md#durable-build-qualification)
 by trusted release CI before publication. Its durable identity survives
 coordinator restarts. No per-release hardware qualification or manual approval
-is required. Runtime serving still requires actual Apple proof and receipt
+is required. Runtime serving still requires actual Apple enrollment/assertion
 verification matching the official code/runtime hashes; registration and
 notarization cannot substitute for those checks or undo permanent revocation.
+Recurring receipt readiness is a separate [platform-owned reward/MDM-removal
+requirement](../reference/provider-authorization.md#controls), not a basic-serving gate.
 Missing official identity keeps serving pending, not a reason to delete
 credentials or replace an employer profile.
 

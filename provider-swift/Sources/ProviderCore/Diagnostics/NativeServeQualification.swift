@@ -64,27 +64,22 @@ public enum NativeServeQualification {
         await loop.prepareNativeQualification(inputs: inputs, stateDirectory: stateDirectory, apple: apple)
         await ProviderTermination.shared.install { await loop.drainAndShutdown(timeoutSeconds: 20) }
         try await NativeServeRunLifetime.run(serve: { try await loop.run() }, observe: {
-            do {
-                let deadline = ContinuousClock.now + .seconds(900)
-                var sequence: UInt64 = 0
-                while !Task.isCancelled {
-                    sequence += 1
-                    try await loop.writeNativeQualificationObservation(to: inputs.directory, process: process,
-                        loads: loads.value, sequence: sequence)
-                    if inputs.finished() || ContinuousClock.now >= deadline {
-                        guard await loop.drainAndShutdown(timeoutSeconds: 20) else {
-                            throw NativeServeQualificationInputs.Failure.shutdownIncomplete
-                        }
-                        if !inputs.finished() { throw NativeServeQualificationInputs.Failure.deadlineExceeded }
-                        return
-                    }
-                    try await Task.sleep(for: .milliseconds(250))
+            let deadline = ContinuousClock.now + .seconds(900)
+            var sequence: UInt64 = 0
+            while true {
+                try Task.checkCancellation()
+                sequence += 1
+                try await loop.writeNativeQualificationObservation(to: inputs.directory, process: process,
+                    loads: loads.value, sequence: sequence)
+                if inputs.finished() { return }
+                if ContinuousClock.now >= deadline {
+                    throw NativeServeQualificationInputs.Failure.deadlineExceeded
                 }
-            } catch is CancellationError {
-                return
-            } catch {
-                _ = await loop.drainAndShutdown(timeoutSeconds: 20)
-                throw error
+                try await Task.sleep(for: .milliseconds(250))
+            }
+        }, shutdown: {
+            guard await loop.drainAndShutdown(timeoutSeconds: 20) else {
+                throw NativeServeQualificationInputs.Failure.shutdownIncomplete
             }
         })
     }

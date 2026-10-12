@@ -62,6 +62,9 @@ The harness rejects stale snapshots and records transport cut, reopening and
 reconnection separately. If observation or drain fails, the CLI terminates its
 owned diagnostic process with failure rather than claiming graceful completion
 or waiting indefinitely for an uncancellable native task.
+Serving-loop completion before the observer sees the completion marker also
+fails. Only successful observation followed by acknowledged shutdown and normal
+serving teardown can complete the diagnostic (`NativeServeRunLifetime.run`).
 
 This is a target-only loaded-engine/resumption gate, not MTP, SSD persistence,
 APNs, daemon installation, worker recovery or fleet-rollout qualification.

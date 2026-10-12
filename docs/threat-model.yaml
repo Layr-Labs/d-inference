@@ -1,5 +1,13 @@
 version: "1.1"
 created: "2026-05-14"
+# Advisory documentation drift reviewed 2026-10-12: receipt/policy language in
+# TB-011, T-054, T-057 and related comments aligned with darkbloom-platform's
+# EvaluateAuthorization/EvaluateReceiptMonitoring, checked against local source:
+# https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md
+# Centralized authorization is platform-owned; retained coordinator/ files here
+# predate that policy split and are not canonical. This corrects documentation,
+# not security controls, and does not re-verify historical entries or claim deployment.
+# T-053's binding, revocation and final-writer boundaries remain unchanged.
 # Provider endpoint-resumption scope 2026-10-11: protocol 1 proves custody of the
 # fixed process X25519 key on one registered socket, with a fresh socket nonce,
 # strict bounded transcript and direct origin-bound reply. It grants no local
@@ -85,9 +93,9 @@ created: "2026-05-14"
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
 # connection/endpoint/policy-bound permission is checked at every final dispatch.
-# Receipt/revocation polling has a 30s ceiling from query start, and failed reads
-# never extend it; local admin revocation fences before acknowledgement. Shared
-# machine settlement prevents duplicate base floors while preserving old ledger
+# Current basic-policy and stricter receipt-decision ceilings are in TB-011;
+# failed reads never extend them. Local admin revocation fences before acknowledgement.
+# Shared machine settlement prevents duplicate base floors while preserving old ledger
 # records. App Attest still does not certify physical uniqueness or RAM, prove
 # computation correctness, or move inference into the Secure Enclave. Final
 # signed-artifact and physical SIP/boot-security transition validation concerns
@@ -103,9 +111,10 @@ created: "2026-05-14"
 # must uniquely bind to the official full 32-byte hash across all durable rows,
 # including revocations; client-reported hashes cannot supply Apple evidence.
 # Publication retains the revocation row-lock fence; stale cached authorization
-# cannot outlive a 30s snapshot or local qualification-generation change.
+# cannot outlive the basic-policy ceiling or a local qualification denial.
 # Revocation tombstones override legacy env mappings and survive restarts.
-# Runtime Apple proof and receipt verification remain mandatory. CI tests and
+# Runtime Apple proof remains mandatory; recurring verified receipt readiness is
+# separate for rewards/MDM removal and cannot extend basic permission. CI tests and
 # notarization do not prove runtime Apple functionality; hardware smoke is
 # optional, not a per-release gate. Manual approval is compatibility/recovery.
 # Verification presentation added 2026-09-20 (base 76a8f03d): public method
@@ -131,10 +140,11 @@ created: "2026-05-14"
 # keys. Busy, timeout, cancellation and crash-before-return remain uncertain
 # and keep the one-hour key cooldown; no accepted key rotates
 # merely because a later assertion reports a generic Apple failure.
-# First-grant recovery may reassert after 1m/5m/10m while an initial receipt is
-# unverified or lacks a risk metric. Receipt renewal remains independent;
-# every serving grant still needs a fresh verified risk receipt, new assertion,
-# qualified build, nonrevoked key and current connection binding.
+# First authorization needs a fresh verified, durably accepted assertion,
+# qualified build, nonrevoked key and current connection binding. Missing recurring
+# receipt/risk evidence alone neither blocks basic serving nor adds assertions.
+# First-proof policy retries and normal renewal are distinct; see TB-011 and the
+# pinned platform contract. Neither retries nor receipt renewal extend proof age.
 # Authenticated macOS attestation CDhash extensions without ED are parsed only
 # after chain/nonce/exact-ACL verification; the follow-up also accepts only a
 # fully signed, measured Developer ID assertion with the same ED-clear shape.
@@ -147,9 +157,9 @@ methodology: STRIDE
 # Apple API recovery reviewed 2026-09-21: generic apple_error is an unknown
 # exchange outcome retried with bounded backoff. Retry does not authorize,
 # extend an existing grant, erase credentials, or weaken verified denial gates.
-# Initial App Attest risk-receipt recovery reviewed 2026-09-22: bounded fresh
-# assertion retries run while a verified enrollment receipt lacks its risk
-# metric. Missing evidence never becomes an authorization or extends a lease.
+# The receipt-driven assertion retries described in the 2026-09-22 review are
+# superseded by the pinned platform policy. Missing recurring receipt/risk evidence
+# is unknown for rewards/MDM removal, not a basic-serving denial or a zero risk count.
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
   platform. Covers production only. Dev environment, nation-state adversaries, and
@@ -1130,14 +1140,30 @@ trust_boundaries:
       EvaluateAuthorization evaluates the serving policy. Names containing shadow
       remain in the shared protocol; only an explicit serving policy grants permission.
 
-      Serving requires verified current binding, protocol3 hardware/verification-key
+      Basic serving requires verified current binding, protocol3 hardware/verification-key
       match, complete private archive, production rollout/build eligibility, approved
-      code measurement, a nonrevoked credential and verified fresh risk receipt.
-      AssertionFreshness is 15 minutes; receipt expiry and renewal deadlines can shorten
-      it. A worker refreshes durable readiness every 5 seconds; revocation and build
-      qualification snapshots impose a 30-second ceiling measured from read start.
-      Failed reads cannot extend that ceiling. Local credential revocation fences
-      matching current/retained presenters immediately after durable success, including
+      code measurement and a nonrevoked credential, not recurring risk-receipt readiness.
+      AssertionFreshness = 15 * time.Minute bounds the original accepted proof;
+      AdministrativePolicyFreshness = 5 * time.Minute bounds qualification/catalog
+      and revocation snapshots from successful read starts. Initial/new identities
+      require successful current reads, not a stale positive cache. Only an established
+      exact identity can retain last-known policy within those original bounds.
+      Basic refresh uses RefreshInterval = time.Minute with RefreshJitter = 6 * time.Second
+      in either direction. Normal assertion renewal is anchored to proof age 7-7.5
+      minutes (RenewalInterval = 7*time.Minute + 30*time.Second with up to 30 seconds
+      of early jitter), not the ten-minute first-proof retry cap.
+
+      EvaluateReceiptMonitoring separately requires a verified unexpired receipt,
+      a present risk metric, configured renewal and a current ReceiptRenewAt + 24 * time.Hour
+      deadline for base rewards, captured Autopilot reward qualification and MDM removal.
+      ReceiptDecisionFreshness = 30 * time.Second still bounds those decisions from
+      successful administrative read starts; MonitoringInterval = 5 * time.Second
+      maintains them independently. Missing/overdue evidence remains unknown, not
+      zero risk or proof of physical uniqueness. Failed monitoring reads cannot
+      extend readiness. Failed reads, status delivery,
+      receipt renewal and monitoring success cannot extend basic policy or proof age.
+      Local credential revocation fences matching current/retained presenters
+      immediately after durable success, including
       their legacy fallback. Expiry or unavailable evidence alone does not invalidate
       independently valid legacy authorization. Policy and qualification generation
       changes invalidate stale grants. For existing deployments, full Apple code
@@ -1163,12 +1189,12 @@ trust_boundaries:
       Removal guidance needs a fresh current coordinator decision and exact local
       Darkbloom profile identification, followed by the user's action. Other MDM
       profiles and the application's embedded signing profile are not removal targets.
-      Code: coordinator/appattest/authorization.go (EvaluateAuthorization),
-      coordinator/appattest/service/authorization_identity.go (updateServingAuthorization),
-      coordinator/appattest/service/authorizer.go (refresh, applyDetailed),
-      coordinator/registry/app_attest_authorization.go,
-      coordinator/registry/inference_authorization.go (authorizeInferenceHandoff).
-      Canonical explanation: docs/architecture/security/provider-trust.md.
+      Canonical serving/receipt contract and code map (platform-owned):
+      https://github.com/Layr-Labs/darkbloom-platform/blob/20b821646acfbf0968d1c30239cb583eeb0fa2bc/docs/reference/provider-authorization.md
+      (EvaluateAuthorization, EvaluateReceiptMonitoring, Controller.Refresh,
+      Controller.RefreshMonitoring, RenewalDelay, authorizeInferenceHandoff).
+      The retained coordinator/ copy here is not that policy's source of truth.
+      Shared threat boundaries: docs/architecture/security/provider-trust.md.
     current_limitations:
       - "Neither attestation path proves each inference used the requested model or
         returned a correct result; inference runs in the provider process/GPU, not SE."
@@ -3412,8 +3438,9 @@ threats:
           Trusted CI registers the exact official build through the existing scoped
           platform release API after artifact verification. CI and repository writers
           are trusted for identity; tests and notarization are not runtime Apple proof.
-          Optional hardware smoke is not a per-release prerequisite. Real Apple proof,
-          receipt verification and permanent revocation remain enforced at runtime.
+          Optional hardware smoke is not a per-release prerequisite. Runtime Apple
+          proof and permanent revocation remain enforced; recurring receipt readiness
+          separately gates rewards/MDM removal, not otherwise valid basic serving.
         status: accepted
     open_findings: []
     severity: critical
@@ -3509,9 +3536,11 @@ threats:
     stride: Denial_of_Service
     title: Apple recovery or premature MDM removal strands a provider without authorization
     description: >
-      Enrollment/assertion errors, receipt/archive failures or unqualified builds can
-      leave App-Attest-only providers pending. Removing a working profile too early
-      can remove their independently valid legacy path.
+      Enrollment/assertion errors, missing required accepted-proof evidence, expired
+      policy or unqualified builds can leave App-Attest-only providers pending.
+      Recurring receipt/risk failures alone withhold rewards/MDM-removal readiness,
+      not an otherwise valid basic grant. Removing a working profile too early can
+      remove an independently valid legacy path.
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-015, A-016]
     affected_files:
@@ -3524,7 +3553,8 @@ threats:
       - description: >
           Bounded persisted enrollment recovery and receipt renewal never grant trust.
           macOS27+ onboarding waits for App Attest without silently installing MDM;
-          existing profiles remain. Removal is a separate opt-in with fresh readiness,
+          existing profiles remain. Removal is a separate opt-in requiring current
+          serving authorization plus the stricter receipt/decision readiness in TB-011,
           exact profile targeting and explicit local user action.
         status: implemented
       - description: Apple availability and a future loss of authorization after removal remain operational risks.

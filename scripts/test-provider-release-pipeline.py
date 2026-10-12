@@ -39,10 +39,10 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
                           '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
 
-    def test_publication_requires_both_lanes_and_production_approval(self):
+    def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+        self.assertNotRegex(content, r'(?m)^    environment:')
         self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertNotIn('continue-on-error:', RELEASE)
         self.assertNotIn('continue-on-error:', ACTION)
@@ -67,9 +67,14 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('needs: [resolve-env, build-and-release]', stage)
         self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
         for content in [stage, publish]:
-            self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+            self.assertNotRegex(content, r'(?m)^    environment:')
             self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
-            self.assertIn('gh run download "$GITHUB_RUN_ID"', content)
+            self.assertIn('provider-release-publication.py download', content)
+            self.assertIn('PUBLICATION_ARTIFACT_ID', content)
+            self.assertIn('PUBLICATION_ARTIFACT_DIGEST', content)
+            self.assertIn('--run-id "$RELEASE_SIGNING_RUN_ID"', content)
+            self.assertIn('RELEASE_PAYLOAD_SHA256:', content)
+            self.assertIn('RELEASE_PROVENANCE_SHA256:', content)
             self.assertNotIn('GITHUB_RUN_ATTEMPT', content)
             self.assertNotIn('notarytool', content)
             self.assertNotIn('APPLE_', content)
@@ -77,6 +82,30 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertIn("needs.resolve-env.outputs.publish == 'true'", content)
             self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertIn('cancel-in-progress: false', publish)
+
+    def test_source_policy_runs_from_master_before_candidate_code(self):
+        resolver = job(RELEASE, 'resolve-env')
+        self.assertNotIn('secrets.', resolver)
+        self.assertIn('contents: read', resolver)
+        self.assertIn('actions: read', resolver)
+        self.assertLess(resolver.index('ref: master'), resolver.index('provider-release-resume.py verify-source'))
+        self.assertLess(resolver.index('provider-release-resume.py verify-source'),
+                        resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'))
+        self.assertLess(resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'),
+                        resolver.index('./scripts/resolve-provider-release.sh'))
+        self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
+        for name in ['build-provider', 'qualify-sdk', 'build-and-release',
+                     'stage-release', 'publish-release', 'validate-older-macos']:
+            content = job(RELEASE, name)
+            self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
+            self.assertIn('resolve-env', content.split('steps:', 1)[0])
+            self.assertNotRegex(content, r'(?m)^    environment:')
+
+    def test_no_separate_hardware_or_receipt_authority(self):
+        for forbidden in ['qualify-release:', 'validate-signed-macos26:', 'validate-signed-macos27:',
+                          'PLATFORM_QUALIFICATION', 'RELEASE_QUALIFICATION',
+                          'provider-release-qualification', '/v1/releases/qualify', '/v1/admin/app-attest/builds']:
+            self.assertNotIn(forbidden, RELEASE)
 
     def test_artifact_handoff_is_same_run_and_source_bound(self):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')

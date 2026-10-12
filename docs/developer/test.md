@@ -1,6 +1,33 @@
 # Test
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-12
+
+## App Attest provider dispatch
+
+`ServeLoopAppAttestTests` runs the actual provider loop, WebSocket client and
+App Attest client against a loopback coordinator. It holds a model-load wait
+and an Apple callback to check responsive challenge/status handling, reconnect
+invalidation, absence of overlapping proof operations and key reuse. Apple and
+model work are local fixtures; these tests never contact Apple or a live
+coordinator. Build and stage the source-matched Metal library through
+`make provider-test`, or use its build/staging steps before a focused
+`swift test --skip-build --no-parallel --filter ServeLoopAppAttestTests`.
+
+`ServeLoopAppAttestInteropTests` is an opt-in peer for the platform repository's
+`TestSwiftProviderAppAttestInterop`. Set `DARKBLOOM_SWIFT_INTEROP_PACKAGE` to this
+built `provider-swift` directory when running that Go test. The driver starts
+both processes on loopback and injects proof/grant loss, reconnects and
+revocation. It seeds prior enrollment, receipt and qualified runtime facts;
+software callbacks produce signatures for the real verifier. It does not
+qualify a signed release on Apple hardware or test initial Apple enrollment.
+
+## Changelog fragments
+
+Run `python3 scripts/test-changelog.py` and `make changelog-check` from the root.
+The tests use temporary files to verify independent fragments, deterministic
+and selected release rendering, Markdown preservation, invalid inputs,
+duplicate versions and read-only behavior. CI's Release Integrity job runs both;
+ordinary PRs never regenerate the shared release history.
 
 ## Autopilot rewards
 
@@ -854,7 +881,7 @@ exercises enrollment over real local HTTP with a linked test token and P-256
 signer. The fixture verifies the canonical token-bound signature rather than
 accepting anonymous profile downloads; no production credentials are used.
 
-Build qualification regressions run in `coordinator/tests/store/postgres/app_attest_builds_test.go`, `coordinator/tests/appattest/service/authorization/build_qualifications_test.go`, `coordinator/tests/api/releases/contracts/app_attest_builds_test.go`, and `coordinator/tests/api/releases/contracts/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+Build-registry regressions belong in the platform repository; the retained coordinator tests here describe its earlier snapshot. Use the [platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/developer/test.md) for current scoped registration, identity/audit persistence and publish/revoke races. `python3 scripts/test-provider-release-publication.py` tests immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not prove runtime Apple functionality. Hardware smoke is optional, not a per-release gate; actual serving still requires live Apple proof and receipt verification.
 
 ### MiMo encoded audio release regression
 
@@ -4466,6 +4493,15 @@ already installed. It uses a fake `brew` in a temporary directory, makes no
 download, and runs in the "Release Integrity" CI job.
 
 ### Retained unsigned release recovery checks
+
+`python3 scripts/test-provider-release-publication.py` and
+`python3 scripts/test-provider-release-pipeline.py` cover exact artifact
+registration, retry-safe publication and workflow wiring. Source checks must
+reject unverified/lightweight production tags and off-master sources before
+secret-bearing jobs; dev/manual/recovery runs require trusted `master`.
+Publication retries preserve the original signed bytes and producing attempt.
+These tests do not prove runtime Apple functionality. Optional hardware smoke
+is not a per-release prerequisite; live serving still verifies Apple evidence.
 
 `python3 scripts/test-provider-release-resume.py` covers signed-tag/source/run
 identity, failed or missing prerequisite jobs, expired/ambiguous artifacts,

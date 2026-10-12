@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-12
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -160,9 +160,9 @@ not the coordinator server. See [provider email campaigns](../operations/provide
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/app/store.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*`, release registration and state export. |
+| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/app/store.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*` and state export, not scoped release registration. |
 | `EIGENINFERENCE_ADMIN_EMAILS` | comma-separated emails | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `ParseCommaList`) | Privy accounts with these emails get admin on console-facing admin routes. |
-| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/release_handlers.go` | Bearer token accepted (constant-time) for release registration in addition to the admin key. |
+| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/release_handlers.go` | Existing scoped bearer token for `POST /v1/releases`. The updated platform also records exact official-build identity after artifact verification; it grants no admin access and requires no additional authority configuration. |
 | `EIGENINFERENCE_PRIVY_APP_ID` | string | unset (Privy auth off) | `coordinator/auth/config.go` (`ReadConfig`) | Enables Privy JWT verification; also the expected JWT audience. |
 | `EIGENINFERENCE_PRIVY_APP_SECRET` | secret | unset | `coordinator/auth/config.go` (`ReadConfig`) | Basic-auth credential for Privy REST calls. |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | PEM ES256 public key | unset; required when the app id is set (`Check`) | `coordinator/auth/config.go` (`ReadConfig`) | Key that Privy access tokens are verified against. |

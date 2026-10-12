@@ -96,6 +96,29 @@ struct AppAttestLocalDiagnosisTests {
         #expect(check(after, "app attest key")?.level == .pass)
     }
 
+    @Test func localGenerationDeadlineDoesNotPromiseCoordinatorRetry() {
+        let now = 100_000.0
+        var snapshot = status(key: .init(recordPresent: false, attested: false,
+                                        generationBlockedUntil: now + 27 * 60))
+        snapshot.lastAppleFailure = AppAttestLastAppleFailure(
+            observedAt: now - 32 * 60, action: .attestation, result: "apple_invalid_key",
+            nativeErrorChain: [.init(domain: .devicecheck, code: 3)])
+        let during = AppAttestLocalDiagnosis.evaluate(snapshot, daemonRunning: true,
+                                                      macOSMajorVersion: 27, now: now)
+        let key = check(during, "app attest key")
+        #expect(key?.level == .warn)
+        #expect(key?.message.contains("27m") == true)
+        #expect(key?.message.contains("local key-generation") == true)
+        #expect(key?.message.contains("coordinator may retry later") == true)
+        #expect(key?.message.contains("Apple key-generation cooldown") == false)
+        #expect(key?.fix?.contains("Do not delete Keychain items") == true)
+
+        let after = AppAttestLocalDiagnosis.evaluate(snapshot, daemonRunning: true,
+                                                     macOSMajorVersion: 27, now: now + 27 * 60 + 1)
+        #expect(check(after, "app attest key")?.message.contains("27m") == false)
+        #expect(check(after, "last apple failure")?.level == .warn)
+    }
+
     @Test func missingDaemonOrObservationWarnsWithoutGuessing() {
         let stopped = AppAttestLocalDiagnosis.evaluate(status(), daemonRunning: false, macOSMajorVersion: 27, now: 100)
         #expect(stopped.count == 1 && stopped[0].level == .warn && stopped[0].fix?.contains("darkbloom start") == true)

@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-12
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -18,7 +18,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [telemetry-archive.md](telemetry-archive.md) | Capture and verify bounded Parquet snapshots |
 | [telemetry-backfill.md](telemetry-backfill.md) | Run resumable, finite copy-only backfills |
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
-| [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
+| [app-attest-build-qualification.md](app-attest-build-qualification.md) | Automatically register official builds, retry immutable publication, and revoke unsafe builds |
 | [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
 | [`schema-migration.md`](schema-migration.md) | Back up, check for long queries, apply and verify goose migrations; the first goose cut-over; rollback rules |

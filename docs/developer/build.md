@@ -1,6 +1,12 @@
 # Build
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-12
+
+Changelog checks use Python's standard library, with no package installation.
+Run `make changelog-check` to validate pending fragments and
+`make changelog-preview` to print them. Neither command edits `CHANGELOG.md`;
+only an authorized release-preparation change updates published history. See
+[contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
 
 Stack maintenance uses Python 3, Git, authenticated `gh`, and a configured commit
 signer; it requires no product build. Follow [Maintain a pull-request stack](pull-requests.md)
@@ -240,7 +246,13 @@ The provider email operator command builds separately with
 `go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
 part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
-Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
+Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` retains the final signed bundle and metadata, stages an immutable digest path, then registers the exact official build through the existing scoped `POST /v1/releases`. Deploy the platform persistence change first. No per-release hardware qualification or manual approval is required. A staging or publication retry reuses the original signed artifact without rebuilding or re-signing. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes and never replaces completed mismatched bytes. See [official-build registration](../operations/app-attest-build-qualification.md).
+
+Secret-bearing release jobs accept only verified signed annotated production
+tags in reviewed `master` ancestry, or trusted `master` for dev/manual/recovery
+runs. They use existing repository-scoped secrets without environment approval
+attachments; shared GitHub settings are unchanged. These checks assume trusted
+repository writers. CI establishes official identity, not runtime Apple success.
 
 The revision publisher accepts optional per-version HF repo, commit and path-prefix flags. It runs the SwiftPM `darkbloom-publish` executable to hash
 artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
@@ -1074,6 +1086,11 @@ ls console-ui/.next
 | `docker build` fails at `file … statically linked` | sidecar not statically linked (musl target missing) | the Dockerfile adds the target itself; check Docker platform is `linux/amd64` |
 
 ## App Attest release qualification
+
+For local provider dispatch and Swift/Go recovery checks, build the test targets
+and stage the source-matched Metal library using `make provider-test`. The
+[App Attest provider dispatch tests](test.md#app-attest-provider-dispatch) use
+loopback and software callbacks; they do not qualify the signed release.
 
 Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
 

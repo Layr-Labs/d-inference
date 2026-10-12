@@ -1,12 +1,15 @@
 # Roll out MDM-optional providers
 
-> Last updated: 2026-09-22
+> Last updated: 2026-10-12
 
 Enable the independent App Attest serving path and, separately, allow providers to remove Darkbloom enrollment. This runbook does not authorize a production change. The [authorization reference](../reference/provider-authorization.md) owns exact controls and deadlines.
 
 ## When to use
 
-Use after the coexistence release has produced retained evidence and the final signed provider artifact has passed qualification. Company-managed Macs keep employer management and must meet the same app/runtime/security requirements.
+Use for activation of the coexistence policy, not as a per-release publication
+checklist. Company-managed Macs keep employer management and must meet the same
+app/runtime/security requirements. The activation tests below validate this
+policy transition; ordinary releases use automatic official-build registration.
 
 ## Prerequisites
 
@@ -21,7 +24,7 @@ Use after the coexistence release has produced retained evidence and the final s
 ## Steps
 
 1. Deploy reviewed coordinator code with serving/removal disabled, following the [coordinator deploy runbook](coordinator-deploy.md). Preserve the configured drain and immutable rollback state.
-2. Stage, qualify and publish the exact signed provider using the [build qualification runbook](app-attest-build-qualification.md). Approval is durable and refreshes without a hotswap. Do not approve hashes solely to eliminate an unknown policy verdict.
+2. Stage, register and publish the exact signed provider using the [official-build runbook](app-attest-build-qualification.md). CI records durable identity without a per-release hardware or manual approval gate. Registration never replaces actual runtime Apple proof, receipt verification or revocation checks.
 3. Coordinate publication of the macOS 27 onboarding installer/provider/UI with App Attest serving activation for the intended new-provider cohort. The installer and `darkbloom enroll` skip new MDM enrollment on macOS 27+ even if serving is disabled: those users remain pending, with no automatic MDM fallback. Enable App Attest serving for the chosen account cohort, leaving removal disabled. Verify actual MDM-free serving, full policy decisions, receipt refresh, runtime/capability/model checks and base-reward continuity.
 4. Test expiry, admin revocation, interrupted database refresh, queue backlog, cold dispatch and reconnect during traffic. Check that new handoffs stop, cleanup/accounting completes, and existing delivered requests have an explicit outcome.
 5. Enable removal for the qualified cohort. A provider runs `darkbloom unenroll` in the foreground of an interactive terminal and selects the macOS 27+ App Attest option (or uses `--keep-serving` directly); retain all credential, authentication and machine-history data. If `sudo` is needed to read device profiles, verify its prompt hides typed input and a denied or background prompt withholds removal guidance. Verify reconnection and normal serving after removing only Darkbloom enrollment in System Settings.

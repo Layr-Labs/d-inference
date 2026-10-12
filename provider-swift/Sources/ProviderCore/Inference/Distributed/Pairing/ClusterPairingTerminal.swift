@@ -21,6 +21,7 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
     private var savedMode: termios?
     private var readerWake: [Int32] = [-1, -1]
     private var peerAnswered: Bool?
+    private var shownCode: String?
 
     public init(input: Int32 = STDIN_FILENO, write: @escaping @Sendable (String) -> Void = { text in
         FileHandle.standardOutput.write(Data(text.utf8))
@@ -74,15 +75,16 @@ public final class ClusterPairingTerminal: @unchecked Sendable {
         say("")
         write("Do both screens show \(Self.spaced(code))? Type y or n: ")
         let shownAt = DispatchTime.now().uptimeNanoseconds
-        lock.withLock { pending = respond }
+        lock.withLock { pending = respond; shownCode = code }
         startReading(shownAt: shownAt)
     }
 
     private func peerDecided(_ accepted: Bool) {
-        let waiting: Bool = lock.withLock { peerAnswered = accepted; return pending != nil }
+        let (waiting, code): (Bool, String?) = lock.withLock { peerAnswered = accepted; return (pending != nil, shownCode) }
         if accepted {
             say(waiting ? "\r\nThe other Mac confirmed the code." : "The other Mac confirmed the code.")
-            if waiting { write("Do both screens show the same code? Type y or n: ") }
+            // The question is asked again with the code, so the person still compares digits, not a promise.
+            if waiting { write("Do both screens show \(code.map(Self.spaced) ?? "the same code")? Type y or n: ") }
         } else {
             let respond: (@Sendable (Bool) -> Void)? = lock.withLock { defer { pending = nil }; return pending }
             stopReading()

@@ -120,6 +120,15 @@ extension PairingCheck {
         pair.listener.type("y")
         expect(pair.listener.wait(for: "Confirmed here. Waiting for the other Mac", seconds: 5), "the listener waits for the other Mac")
         expect(pair.connector.wait(for: "The other Mac confirmed the code.", seconds: 5), "the connector is told the listener confirmed")
+        let question = "Do both screens show \(connectorCode ?? "?")? Type y or n: "
+        let reasked: () -> Bool = {
+            let text = pair.connector.text
+            guard let told = text.range(of: "The other Mac confirmed the code.") else { return false }
+            return text[told.upperBound...].contains(question)
+        }
+        let askEnd = Date().addingTimeInterval(5)
+        while Date() < askEnd && !reasked() { Thread.sleep(forTimeInterval: 0.02) }
+        expect(reasked(), "the connector is asked again with the code itself, not just \"the same code\"")
         pair.connector.type("y")
         let listenerStatus = reap(pair.listenerPID, seconds: 20), connectorStatus = reap(pair.connectorPID, seconds: 20)
         expectEqual(listenerStatus, 0, "listener exits 0"); expectEqual(connectorStatus, 0, "connector exits 0")

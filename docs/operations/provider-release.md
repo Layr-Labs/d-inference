@@ -40,6 +40,14 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
+### 0.9.20 candidate
+
+`ProviderCore.version` is prepared as `0.9.20`; no tag or release is published
+by this version bump. The retained coordinator copy still declares `0.9.19`.
+Before merging or publishing, resolve the legacy cross-repository parity check
+in `scripts/check-release-version.sh` under the repository ownership policy.
+Centralized coordinator changes belong in `Layr-Labs/darkbloom-platform`.
+
 ### Published 0.9.19
 
 `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)

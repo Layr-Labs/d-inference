@@ -93,4 +93,30 @@ struct ClusterMemberSupervisionTests {
         #expect(first == second)
         #expect(ClusterMemberUpdateSlot.decide(now: first, slot: first, busy: false) == .check)
     }
+    /// Permissions asked once: only a Developer-ID-signed executable inside
+    /// Darkbloom.app with the Local Network usage string qualifies.
+    @Test func permissionIdentityNamesWhatStopsAskedOnce() {
+        let exe = "/Users/u/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom"
+        let plist: [String: Any] = ["CFBundleIdentifier": "io.darkbloom.provider",
+                                    "NSLocalNetworkUsageDescription": "Darkbloom connects to your other Macs."]
+        let release = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0x10000,
+            leafCertificateSummary: "Developer ID Application: Example (T1)", teamIdentifier: "T1", infoPlist: plist)
+        #expect(release.verdict == .askedOnce && release.problems.isEmpty)
+        let oldRelease = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: 0x10000,
+            leafCertificateSummary: "Developer ID Application: Example (T1)", teamIdentifier: "T1",
+            infoPlist: ["CFBundleIdentifier": "io.darkbloom.provider"])
+        #expect(oldRelease.verdict == .perBuild && oldRelease.problems.first?.contains("NSLocalNetworkUsageDescription") == true)
+        let build = ClusterMemberPermissionIdentity.classify(executablePath: "/w/.build/debug/darkbloom", signatureReadable: true,
+            flags: 0x20002, leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: nil)
+        #expect(build.signing == .adHoc && build.bundlePath == nil && build.problems.count == 2)
+        #expect(build.summary.hasPrefix("permissions: not asked once"))
+    }
+
+    /// The live probe reads this test process's own executable: a SwiftPM
+    /// test runner is never a Developer-ID app.
+    @Test func permissionIdentityProbesARealExecutable() {
+        let probe = ClusterMemberPermissionIdentity.current(executablePath: CommandLine.arguments[0])
+        #expect(probe.verdict == .perBuild)
+        #expect(probe.signing != .developerID)
+    }
 }

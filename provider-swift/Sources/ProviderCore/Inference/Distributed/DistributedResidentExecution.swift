@@ -193,6 +193,13 @@ public protocol DistributedResidentExecutionOwner: AnyObject, Sendable {
     ) throws -> any DistributedResidentRequestLease
     /// Release resident models only after all request leases are retired/released.
     func shutdown() async
+    /// Requests the owner serves at once (the pair's batch lanes). One for
+    /// every owner that serves one request at a time.
+    var concurrentRequests: Int { get }
+}
+
+extension DistributedResidentExecutionOwner {
+    public var concurrentRequests: Int { 1 }
 }
 
 /// Optional capability for owners whose admission performs bounded IO. Legacy

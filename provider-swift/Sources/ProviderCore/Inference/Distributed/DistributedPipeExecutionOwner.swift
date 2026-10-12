@@ -77,6 +77,8 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native)
     }
     public func shutdown() async { await pair.shutdown() }
+    /// The pair's batch lanes (continuous batching on the pair).
+    public var concurrentRequests: Int { pair.lanes }
 }
 
 private final class DistributedPipeRequestLease: DistributedResidentRequestLease, @unchecked Sendable {

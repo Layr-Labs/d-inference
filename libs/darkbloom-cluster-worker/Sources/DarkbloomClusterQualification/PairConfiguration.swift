@@ -119,6 +119,17 @@ public struct PairConfiguration: Sendable {
     /// before asking either rank (the product's behaviour). Off to qualify a
     /// rank's own gate refusal at reservation (`--serving-context-check off`).
     public var servingContextCheck = true
+    /// Continuous batching: both workers serve this many requests at once
+    /// (`DARKBLOOM_CLUSTER_BATCH_LANES`); one is the one-request owner.
+    public var batchLanes = 1
+    /// Both workers' stage KV storage (`DARKBLOOM_CLUSTER_KV_BACKEND`); nil
+    /// leaves the default (paged).
+    public var kvBackend: String?
+    /// Request files of the batching phase, after the repetitions: each runs
+    /// alone first (`batchSolo`), then each wave starts its first N together.
+    public var batchRequests: [QualificationRequest] = []
+    public var batchWaves: [Int] = []
+    public var batchSolo = true
     public var totalRequests: Int { repetitions + followRequests.count }
     /// `jaccl`, or `local-socket-test`: both ranks on this Mac over a 127.0.0.1
     /// socket. That is a correctness run of the two-rank runtime, never an
@@ -271,6 +282,13 @@ public struct PairConfiguration: Sendable {
         try require(followRequests.count <= Self.maximumRepetitions, "at most 8 follow-up requests")
         try require(followRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
             "follow-up requests must name the same model and profile")
+        try require((1...8).contains(batchLanes), "batch lanes are 1...8")
+        try require(batchRequests.isEmpty || (!recording && generationMode == Self.pipelineMode),
+            "batch requests run with --evidence none in the pipeline mode")
+        try require(batchRequests.count <= 8 && batchWaves.allSatisfy { (1...batchLanes).contains($0) && $0 <= batchRequests.count },
+            "at most 8 batch requests; each wave is 1...lanes and at most the request count")
+        try require(batchRequests.allSatisfy { $0.modelID == request.modelID && $0.profileID == request.profileID },
+            "batch requests must name the same model and profile")
         try require([Self.jacclTransport, Self.localSocketTransport].contains(workerTransport), "unknown worker transport")
         try require(workerTransport == Self.jacclTransport || coordinator.hasPrefix("127.0.0.1:"),
             "local-socket-test runs both ranks on this Mac and needs a 127.0.0.1 coordinator")
@@ -417,6 +435,8 @@ public struct PairConfiguration: Sendable {
         }
         if let memoryGateMode { environment.append((Self.memoryGateEnvironment, memoryGateMode)) }
         if prefixCacheOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_CACHE", "off")) }
+        if batchLanes > 1 { environment.append(("DARKBLOOM_CLUSTER_BATCH_LANES", String(batchLanes))) }
+        if let kvBackend { environment.append(("DARKBLOOM_CLUSTER_KV_BACKEND", kvBackend)) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
         if mimoStepEvidence { environment.append((Self.mimoStepEvidenceEnvironment, "on")) }
         if stageResidency {

@@ -74,6 +74,27 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26: nil
         }
     }
+    var batchLanes: Int {
+        if case .qwenDense(let runtime) = owner { return runtime.batch.lanes }
+        return 1
+    }
+    func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+        guard case .qwenDense(let runtime) = owner else { throw WorkerFailure.invalid("This family serves one request at a time") }
+        return try runtime.reserveLane(requestID: id, request: value)
+    }
+    func startLane(_ id: UUID) throws {
+        guard case .qwenDense(let runtime) = owner else { throw WorkerFailure.invalid("This family serves one request at a time") }
+        try runtime.startLane(requestID: id)
+    }
+    func cancelLane(_ id: UUID) { if case .qwenDense(let runtime) = owner { runtime.cancelLane(requestID: id) } }
+    var hasStartedLanes: Bool {
+        if case .qwenDense(let runtime) = owner { return runtime.hasStartedLanes }
+        return false
+    }
+    func serveBatch(host: QwenBatchServingHost) throws {
+        guard case .qwenDense(let runtime) = owner else { throw WorkerFailure.invalid("This family serves one request at a time") }
+        try runtime.serveBatch(host: host)
+    }
     func cancel(_ id: UUID) {
         switch owner {
         case .qwenDense(let runtime): runtime.cancel(requestID: id)

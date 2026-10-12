@@ -48,9 +48,15 @@ final class WorkerCoordinator: @unchecked Sendable {
     private let readerDone = DispatchGroup()
     private var readerStarted = false
     private var session: ClusterWorkerSession?
+    /// With batch lanes (continuous batching) every request has its own
+    /// ordering here instead of in `session`; exactly one of the two is set.
+    private var laneSession: ClusterWorkerLaneSession?
     private var eventSequence: UInt64 = 0
     private var actions: [ClusterWorkerCommandFrame] = []
     private var decision: ClusterWorkerTokenDecision?
+    /// Batch lanes: rank 0's decisions, by request, until the loop takes them.
+    private var laneDecisions: [UUID: ClusterWorkerTokenDecision] = [:]
+    private static let laneActionBound = 64
     private var failure: Error?
     private var stopped = false
     private var shutdownReceived = false
@@ -112,17 +118,40 @@ final class WorkerCoordinator: @unchecked Sendable {
         }
         do {
             guard let value = runtime.readiness else { throw WorkerFailure.invalid("Native owner did not establish bilateral readiness") }
-            let fresh = try ClusterWorkerSession(identity: value.identity, rank: value.rank, profile: value.profile,
-                executionPlanSHA256: value.executionPlanSHA256)
+            let lanes = runtime.batchLanes
+            let fresh = lanes > 1 ? nil : try ClusterWorkerSession(identity: value.identity, rank: value.rank,
+                profile: value.profile, executionPlanSHA256: value.executionPlanSHA256)
+            let freshLanes = lanes > 1 ? try ClusterWorkerLaneSession(identity: value.identity, rank: value.rank,
+                profile: value.profile, executionPlanSHA256: value.executionPlanSHA256, lanes: lanes) : nil
             condition.lock()
             if let failure { condition.unlock(); throw failure }
             guard membershipEpoch == nil || membershipEpoch == value.identity.membershipEpoch else {
                 condition.unlock(); throw WorkerFailure.invalid("Native readiness epoch differs from the configured epoch")
             }
-            ready = value; session = fresh
+            ready = value; session = fresh; laneSession = freshLanes
             condition.unlock()
             try publish(.ready(value), requestID: nil)
             startReading()
+            if lanes > 1 {
+                // Continuous batching: control is applied as it arrives, and
+                // the batch loop runs while any started lane waits for it.
+                while true {
+                    guard let command = try nextAction() else {
+                        keepWarmPulseIfIdle(runtime)
+                        continue
+                    }
+                    if try applyLaneCommand(command, runtime: runtime) {
+                        modelReleased = true
+                        return
+                    }
+                    while runtime.hasStartedLanes {
+                        try runtime.serveBatch(host: LaneHost(coordinator: self, runtime: runtime))
+                        condition.lock(); keepWarmArmed = true; condition.unlock()
+                        if runtime.readiness == nil { try publish(.unavailable(.runtimeError), requestID: nil) }
+                    }
+                    condition.lock(); lastActivity = DispatchTime.now().uptimeNanoseconds; condition.unlock()
+                }
+            }
             while true {
                 guard let command = try nextAction() else {
                     keepWarmPulseIfIdle(runtime)
@@ -198,9 +227,8 @@ final class WorkerCoordinator: @unchecked Sendable {
             // Includes a JACCL guard error: release first, and bound the local
             // cleanup below by the dead-man.
             exitHooks.begin("worker-failure")
-            let id = activeRequest()
-            if let id {
-                runtime.cancel(id)
+            for id in activeRequests() {
+                runtime.cancel(id); runtime.cancelLane(id)
                 // A protocol/pipe failure may make this publication impossible.
                 // Never invent retired merely because native start threw.
                 try? publish(.failed(.runtimeError), requestID: id)
@@ -219,7 +247,8 @@ final class WorkerCoordinator: @unchecked Sendable {
         let now = DispatchTime.now().uptimeNanoseconds
         condition.lock()
         let due = keepWarmEnabled && keepWarmArmed && actions.isEmpty && failure == nil && !stopped
-            && session?.activeRequestID == nil && now >= keepWarmBackoffUntil
+            && session?.activeRequestID == nil && (laneSession?.activeRequestIDs.isEmpty ?? true)
+            && now >= keepWarmBackoffUntil
             && now - lastActivity >= keepWarmTiming.intervalNanoseconds
         condition.unlock()
         guard due else { return }
@@ -242,10 +271,17 @@ final class WorkerCoordinator: @unchecked Sendable {
     private func publish(_ event: ClusterWorkerEvent, requestID: UUID?) throws {
         condition.lock(); defer { condition.unlock() }
         if let failure { throw failure }
-        guard var proposed = session, let ready else { throw WorkerFailure.invalid("Event before readiness") }
+        guard let ready, session != nil || laneSession != nil else { throw WorkerFailure.invalid("Event before readiness") }
         let frame = ClusterWorkerEventFrame(membershipEpoch: ready.identity.membershipEpoch,
             sequence: eventSequence, requestID: requestID, event: event)
         do {
+            if var proposed = laneSession {
+                try proposed.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
+                try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: nil)
+                laneSession = proposed; eventSequence += 1
+                return
+            }
+            var proposed = session!
             try proposed.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
             try pipes.write(ClusterWorkerCodec.encode(frame), requestDeadline: requestDeadline)
             session = proposed; eventSequence += 1
@@ -296,6 +332,10 @@ final class WorkerCoordinator: @unchecked Sendable {
                     }
                     guard !stopped else { throw WorkerFailure.invalid("Control after worker stop") }
                     guard case .command(let frame) = line else { continue }
+                    if laneSession != nil {
+                        try acceptLaneCommandLocked(frame)
+                        continue
+                    }
                     guard session != nil else { throw WorkerFailure.invalid("Input or EOF arrived before worker readiness") }
                     try session!.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
                     switch frame.command {
@@ -344,15 +384,133 @@ final class WorkerCoordinator: @unchecked Sendable {
         return value
     }
 
-    private func activeRequest() -> UUID? {
-        condition.lock(); defer { condition.unlock() }; return session?.activeRequestID
+    private func activeRequests() -> [UUID] {
+        condition.lock(); defer { condition.unlock() }
+        return laneSession?.activeRequestIDs ?? session?.activeRequestID.map { [$0] } ?? []
     }
 
     private func fail(_ error: Error) {
         condition.lock()
         failure = failure ?? error
-        let id = session?.activeRequestID
+        let ids = laneSession?.activeRequestIDs ?? session?.activeRequestID.map { [$0] } ?? []
         condition.broadcast(); condition.unlock()
-        if let id { runtime?.cancel(id) }
+        for id in ids { runtime?.cancel(id); runtime?.cancelLane(id) }
+    }
+
+    // MARK: Batch lanes (continuous batching)
+
+    /// Called with the condition lock held, from the reader. Decisions are
+    /// kept by request; every other command queues for the executor.
+    private func acceptLaneCommandLocked(_ frame: ClusterWorkerCommandFrame) throws {
+        try laneSession!.accept(frame, now: DispatchTime.now().uptimeNanoseconds)
+        switch frame.command {
+        case .tokenDecision(_, let value):
+            laneDecisions[frame.requestID!] = value
+        case .cancel:
+            // Only the facade's locked flag; the loop's next check ends it.
+            runtime?.cancel(frame.requestID!); runtime?.cancelLane(frame.requestID!)
+            guard actions.count < Self.laneActionBound else { throw WorkerFailure.invalid("Worker action queue exceeded its bound") }
+            actions.append(frame)
+        case .shutdown:
+            shutdownReceived = true
+            guard actions.isEmpty else { throw WorkerFailure.invalid("Shutdown overlaps a pending action") }
+            actions.append(frame)
+        default:
+            guard actions.count < Self.laneActionBound else { throw WorkerFailure.invalid("Worker action queue exceeded its bound") }
+            actions.append(frame)
+        }
+    }
+
+    /// One queued command on the executor. True after the model was released
+    /// by an acknowledged shutdown.
+    private func applyLaneCommand(_ command: ClusterWorkerCommandFrame, runtime: any WorkerRuntime) throws -> Bool {
+        switch command.command {
+        case .reserve(let value):
+            do {
+                let bytes = try runtime.reserveLane(command.requestID!, value)
+                try publish(.admitted(reservedBytes: bytes), requestID: command.requestID)
+            } catch {
+                let available = runtime.readiness != nil
+                try publish(.refused(available ? .capacity : .unavailable), requestID: command.requestID)
+                if !available { throw error }
+            }
+        case .start:
+            try runtime.startLane(command.requestID!)
+        case .keepWarm(let ordinal):
+            let elapsed = try runtime.dataPlanePing()
+            try publish(.keptWarm(ordinal: ordinal, microseconds: Int(min(elapsed / 1_000, UInt64(Int32.max)))), requestID: nil)
+        case .shutdown:
+            condition.lock(); keepWarmArmed = false; condition.unlock()
+            try runtime.shutdown()
+            try publish(.shutdownComplete, requestID: nil)
+            return true
+        case .cancel:
+            throw WorkerFailure.invalid("Request cancelled")
+        case .tokenDecision:
+            throw WorkerFailure.invalid("Token decision escaped its callback credit")
+        }
+        return false
+    }
+
+    /// Every queued command, without waiting (between batch steps).
+    fileprivate func serviceLaneControl(runtime: any WorkerRuntime) throws {
+        while true {
+            condition.lock()
+            if let failure { condition.unlock(); throw failure }
+            let next = actions.isEmpty ? nil : actions.removeFirst()
+            condition.unlock()
+            guard let next else { return }
+            guard case .shutdown = next.command else {
+                if try applyLaneCommand(next, runtime: runtime) { return }
+                continue
+            }
+            throw WorkerFailure.invalid("Shutdown arrived while batch lanes run")
+        }
+    }
+
+    fileprivate func awaitLaneDecisions(_ ids: [UUID]) throws -> [UUID: Bool] {
+        condition.lock(); defer { condition.unlock() }
+        while failure == nil && !ids.allSatisfy({ laneDecisions[$0] != nil }) {
+            // A cancellation ends the wait: the loop's next check fails it.
+            if actions.contains(where: { if case .cancel = $0.command { return true }; return false }) {
+                throw WorkerFailure.invalid("Token decision interrupted by cancellation")
+            }
+            condition.wait()
+        }
+        if let failure { throw failure }
+        var result: [UUID: Bool] = [:]
+        for id in ids { result[id] = laneDecisions.removeValue(forKey: id)! == .proceed }
+        return result
+    }
+
+    fileprivate func publishLaneToken(_ id: UUID, ordinal: Int, token: Int, committed: Int) throws {
+        try publish(.committedToken(ordinal: ordinal, tokenID: token, committedTokens: committed), requestID: id)
+    }
+
+    fileprivate func publishLanePromptCache(_ id: UUID, reused: Int, stored: [Int]) throws {
+        try publish(.promptCache(reusedTokens: reused, storedFrontiers: stored), requestID: id)
+    }
+
+    fileprivate func publishLaneFinished(_ id: UUID, reason: ClusterWorkerFinishReason) throws {
+        try publish(.finished(reason), requestID: id)
+        try publish(.retired(.clean), requestID: id)
+    }
+}
+
+/// The batch loop's view of the worker: control, publication and decisions.
+private final class LaneHost: QwenBatchServingHost {
+    private let coordinator: WorkerCoordinator
+    private let runtime: any WorkerRuntime
+    init(coordinator: WorkerCoordinator, runtime: any WorkerRuntime) { self.coordinator = coordinator; self.runtime = runtime }
+    func serviceControl() throws { try coordinator.serviceLaneControl(runtime: runtime) }
+    func publishToken(requestID: UUID, ordinal: Int, tokenID: Int, committedTokens: Int) throws {
+        try coordinator.publishLaneToken(requestID, ordinal: ordinal, token: tokenID, committed: committedTokens)
+    }
+    func awaitDecisions(_ requestIDs: [UUID]) throws -> [UUID: Bool] { try coordinator.awaitLaneDecisions(requestIDs) }
+    func publishFinished(requestID: UUID, reason: ClusterWorkerFinishReason) throws {
+        try coordinator.publishLaneFinished(requestID, reason: reason)
+    }
+    func publishPromptCache(requestID: UUID, reusedTokens: Int, storedFrontiers: [Int]) throws {
+        try coordinator.publishLanePromptCache(requestID, reused: reusedTokens, stored: storedFrontiers)
     }
 }

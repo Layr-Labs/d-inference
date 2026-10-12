@@ -13,6 +13,9 @@ struct LoadedQwenLayerStage {
     let receipt: QwenLayerStageLoadReceipt
     let activationDType: DType
     let vocabularySize: Int
+    /// The stage's shared KV storage once its owner installed it; every copy
+    /// of this stage sees the same box.
+    let kvHost = CBv2StageKVHostBox()
 
     var configurationData: Data { plan.stages[stageIndex].constructionConfiguration }
     var layerCount: Int { plan.stages[stageIndex].layers.count }

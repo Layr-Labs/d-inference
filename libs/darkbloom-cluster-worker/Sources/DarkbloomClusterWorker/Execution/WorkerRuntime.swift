@@ -1,4 +1,5 @@
 import DarkbloomClusterProtocol
+import DarkbloomClusterRuntime
 import Foundation
 
 /// Native methods belong to one executor. Only cancel is called by the control
@@ -28,6 +29,16 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// The last started request's own measurements (hand-off, MTP), when any.
     /// Read after `start` returns, on the same executor.
     var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { get }
+    /// Requests served at once (continuous batching); one for every runtime
+    /// that does not batch. Fixed at load and agreed with the peer.
+    var batchLanes: Int { get }
+    /// Lane reservation, start and cancellation for a batching runtime. The
+    /// batch loop serves started lanes until none is left on rank 0's side.
+    func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int
+    func startLane(_ id: UUID) throws
+    func cancelLane(_ id: UUID)
+    var hasStartedLanes: Bool { get }
+    func serveBatch(host: QwenBatchServingHost) throws
 }
 
 extension WorkerRuntime {
@@ -37,4 +48,14 @@ extension WorkerRuntime {
     }
     func refreshServingContext() -> Int? { nil }
     var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { nil }
+    var batchLanes: Int { 1 }
+    func reserveLane(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
+        throw WorkerFailure.invalid("This runtime serves one request at a time")
+    }
+    func startLane(_ id: UUID) throws { throw WorkerFailure.invalid("This runtime serves one request at a time") }
+    func cancelLane(_ id: UUID) {}
+    var hasStartedLanes: Bool { false }
+    func serveBatch(host: QwenBatchServingHost) throws {
+        throw WorkerFailure.invalid("This runtime serves one request at a time")
+    }
 }

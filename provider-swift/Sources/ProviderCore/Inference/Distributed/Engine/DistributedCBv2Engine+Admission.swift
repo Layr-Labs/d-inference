@@ -42,7 +42,7 @@ extension DistributedCBv2Engine {
             detokenizer: detokenizers.makeDetokenizer(stopStrings: request.stopStrings),
             absoluteDeadline: deadlineContext.generationDeadline, firstTokenDeadline: deadline,
             admissionStartedAt: admissionStartedAt, reservedAt: clock.now())
-        active = state
+        actives[state.generation] = state
         observe(state, phase: .reserved)
         cancellation?.arm { [weak self, weak state] in
             guard let self, let state else { return }
@@ -50,7 +50,7 @@ extension DistributedCBv2Engine {
         }
         continuation.onTermination = { [weak self, generation = state.generation] _ in
             self?.onQueue {
-                guard self?.active?.generation == generation else { return }
+                guard self?.actives[generation] != nil else { return }
                 self?.stop(state, reason: .cancelled)
             }
         }
@@ -104,7 +104,9 @@ extension DistributedCBv2Engine {
         // A request the pair can never serve is refused for what it is, even
         // while another request runs.
         if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
-        guard active == nil else { throw CBv2KVError.capacityExhausted(needed: 1, available: 0) }
+        guard actives.count < max(1, owner.concurrentRequests) else {
+            throw CBv2KVError.capacityExhausted(needed: 1, available: 0)
+        }
         guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
         // Within the profile but longer than what the owner serves now (a
         // rank's live admissible memory): refused up front, retryably.

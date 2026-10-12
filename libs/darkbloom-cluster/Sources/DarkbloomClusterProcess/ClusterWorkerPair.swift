@@ -79,8 +79,16 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// gate refusal at reservation.
     public let refusesAboveServingContext: Bool
     let workers: [any ClusterWorkerEndpoint]
+    /// Requests served at once (continuous batching). One keeps the earlier
+    /// one-request-at-a-time pair exactly; more need workers launched with as
+    /// many batch lanes, and route each worker's events by request.
+    public let lanes: Int
+    private let routers: [ClusterWorkerEventRouter]
     private let lock = NSLock()
     private var active: ClusterWorkerRequest?
+    /// With lanes: every reserved or running request, and its release.
+    private var laneActive: [UUID: (request: ClusterWorkerRequest, released: WorkerCompletion)] = [:]
+    private var hasAnyActive: Bool { active != nil || !laneActive.isEmpty }
     private var invalid = false
     private var stopping = false
     private var draining = false
@@ -116,7 +124,7 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     }
     public var readiness: ClusterWorkerPairReadiness? {
         lock.withLock {
-            guard !invalid && !stopping && (!draining || active != nil),
+            guard !invalid && !stopping && (!draining || hasAnyActive),
                   let a = workers[0].readiness, let b = workers[1].readiness else { return nil }
             let sum = a.requestCapacityBytes.addingReportingOverflow(b.requestCapacityBytes)
             guard !sum.overflow, sum.partialValue <= ClusterWorkerLimits.capacityBytes else { return nil }
@@ -146,11 +154,14 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// default in the product); a caller that names nothing gets none.
     public init(workers: [any ClusterWorkerEndpoint], startupDeadline: UInt64,
                 timing: ClusterWorkerPairTiming = .standard,
-                keepWarm: ClusterWorkerKeepWarmPolicy = .off, refusesAboveServingContext: Bool = true) throws {
+                keepWarm: ClusterWorkerKeepWarmPolicy = .off, refusesAboveServingContext: Bool = true, lanes: Int = 1) throws {
         self.refusesAboveServingContext = refusesAboveServingContext
         guard timing.isWithinLimits else {
             throw ClusterWorkerOwnerError.invalid("Pair waits must be between one nanosecond and one minute")
         }
+        guard (1...8).contains(lanes) else { throw ClusterWorkerOwnerError.invalid("A pair serves 1...8 lanes") }
+        self.lanes = lanes
+        routers = workers.map { ClusterWorkerEventRouter(endpoint: $0) }
         guard workers.count == 2, workers[0] !== workers[1], workers.map(\.rank) == [0, 1],
               workers[0].expectedIdentity == workers[1].expectedIdentity,
               workers[0].expectedProfile == workers[1].expectedProfile,
@@ -185,7 +196,7 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// request is reserved or running. A failure invalidates the pair.
     private func keepWarmTick() {
         let ordinal = lock.withLock { () -> Int? in
-            guard !invalid, !stopping, !draining, active == nil, !warming,
+            guard !invalid, !stopping, !draining, !hasAnyActive, !warming,
                   workers[0].readiness != nil, workers[1].readiness != nil,
                   keepWarmOrdinal + 1 < ClusterWorkerLimits.keepWarmOrdinals else { return nil }
             warming = true; keepWarmOrdinal += 1; return keepWarmOrdinal
@@ -268,11 +279,20 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     }
 
     func invalidate() {
-        let values = lock.withLock { () -> (ClusterWorkerRequest?, (@Sendable () -> Void)?) in
-            if invalid { return (nil, nil) }; invalid = true; return (active, notificationLocked())
+        let values = lock.withLock { () -> ([ClusterWorkerRequest], (@Sendable () -> Void)?) in
+            if invalid { return ([], nil) }; invalid = true
+            return ((active.map { [$0] } ?? []) + laneActive.values.map(\.request), notificationLocked())
         }
-        values.0?.cancel(reason: .peerFailure)
+        values.0.forEach { $0.cancel(reason: .peerFailure) }
         if let notify = values.1 { notifications.async(execute: notify) }
+    }
+
+    /// The next event of `requestID` from one rank. With one lane this is the
+    /// worker's own stream, as it always was; with lanes it is routed.
+    func receive(rank: Int, requestID: UUID?, until deadline: UInt64,
+                 cancelled: () -> Bool = { false }) throws -> ClusterWorkerEventFrame {
+        if lanes == 1 { return try workers[rank].receiveWorkerEvent(until: deadline, cancelled: cancelled) }
+        return try routers[rank].receive(for: requestID, until: deadline, cancelled: cancelled)
     }
 
     /// Performs CPU/resource admission only. The exclusive worker does not run
@@ -289,7 +309,8 @@ public final class ClusterWorkerPair: @unchecked Sendable {
         awaitKeepWarmIdle(until: min(admissionDeadline ?? UInt64.max,
             DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds))
         let lease = try lock.withLock { () -> ClusterWorkerRequest in
-            guard !invalid && !stopping && !draining && active == nil, !warming, !requestIDs.contains(requestID),
+            guard !invalid && !stopping && !draining, lanes == 1 ? active == nil : laneActive.count < lanes,
+                  !warming, !requestIDs.contains(requestID),
                   reservation.profileID == profile.id,
                   reservation.promptTokenIDs.count <= profile.maximumPromptTokens,
                   reservation.outputCount <= profile.maximumOutputTokens,
@@ -311,7 +332,9 @@ public final class ClusterWorkerPair: @unchecked Sendable {
                 throw ClusterWorkerOwnerError.refused(.capacity)
             }
             let value = ClusterWorkerRequest(owner: self, requestID: requestID, reservation: reservation)
-            active = value; activeReleased = WorkerCompletion(); admittedCount += 1
+            if lanes == 1 { active = value; activeReleased = WorkerCompletion() }
+            else { laneActive[requestID] = (value, WorkerCompletion()) }
+            admittedCount += 1
             requestIDs.insert(requestID); requestOrder.append(requestID)
             if requestOrder.count > ClusterWorkerLimits.requestReplayWindow { requestIDs.remove(requestOrder.removeFirst()) }
             return value
@@ -341,6 +364,10 @@ public final class ClusterWorkerPair: @unchecked Sendable {
 
     func release(_ lease: ClusterWorkerRequest) {
         let completion = lock.withLock { () -> WorkerCompletion? in
+            if lanes > 1 {
+                guard let entry = laneActive[lease.requestID], entry.request === lease else { return nil }
+                laneActive[lease.requestID] = nil; return entry.released
+            }
             guard active === lease else { return nil }
             active = nil; let value = activeReleased; activeReleased = nil; return value
         }
@@ -351,9 +378,11 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     /// long a particular prompt or output will take.
     public var admissionState: ClusterWorkerPairAdmissionState {
         lock.withLock {
-            .init(requestsServed: admittedCount, hasActiveRequest: active != nil, isDraining: draining || stopping,
+            .init(requestsServed: admittedCount, hasActiveRequest: lanes == 1 ? active != nil : laneActive.count >= lanes,
+                isDraining: draining || stopping,
                 isValid: !invalid && !stopping && !draining, keepWarmExchanges: keepWarmExchanges,
-                lastKeepWarmMicroseconds: lastKeepWarmMicroseconds)
+                lastKeepWarmMicroseconds: lastKeepWarmMicroseconds,
+                activeRequests: lanes == 1 ? (active == nil ? 0 : 1) : laneActive.count, lanes: lanes)
         }
     }
 
@@ -362,26 +391,32 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     public func stopAcceptingRequests() { lock.withLock { draining = true } }
 
     public func drainAndShutdown() async {
-        let completion = lock.withLock { draining = true; return activeReleased }
-        if let completion { await completion.value() }
+        let completions = lock.withLock { () -> [WorkerCompletion] in
+            draining = true; return (activeReleased.map { [$0] } ?? []) + laneActive.values.map(\.released)
+        }
+        for completion in completions { await completion.value() }
         await shutdown()
     }
 
     public func shutdown() async {
-        let first = lock.withLock { () -> (Bool, ClusterWorkerRequest?) in
-            if stopping { return (false, nil) }; stopping = true; return (true, active)
+        let first = lock.withLock { () -> (Bool, [ClusterWorkerRequest]) in
+            if stopping { return (false, []) }; stopping = true
+            return (true, (active.map { [$0] } ?? []) + laneActive.values.map(\.request))
         }
         guard first.0 else { await shutdownFinished.value(); return }
         lock.withLock { keepWarmTimer?.cancel(); keepWarmTimer = nil }
         awaitKeepWarmIdle(until: DispatchTime.now().uptimeNanoseconds + keepWarm.answerNanoseconds)
-        if let lease = first.1 {
-            // A request that is still running is first asked to stop at its
-            // next committed token, which leaves both ranks retired and able
-            // to answer the shutdown below. Cancelling ends the ranks instead,
-            // and is what remains for a request that does not get there in time.
-            if timing.cleanStopWaitNanoseconds > 0, lease.isRunning, lease.requestCleanStop() {
-                _ = await lease.waitUntilRetired(until: DispatchTime.now().uptimeNanoseconds + timing.cleanStopWaitNanoseconds)
+        // A request that is still running is first asked to stop at its next
+        // committed token, which leaves both ranks retired and able to answer
+        // the shutdown below. Cancelling ends the ranks instead, and is what
+        // remains for a request that does not get there in time.
+        if timing.cleanStopWaitNanoseconds > 0 {
+            let limit = DispatchTime.now().uptimeNanoseconds + timing.cleanStopWaitNanoseconds
+            for lease in first.1 where lease.isRunning && lease.requestCleanStop() {
+                _ = await lease.waitUntilRetired(until: limit)
             }
+        }
+        for lease in first.1 {
             lease.cancel(reason: .callerCancelled); await lease.waitUntilRetired(); lease.releaseResources()
         }
         let deadline = DispatchTime.now().uptimeNanoseconds + timing.shutdownAcknowledgementNanoseconds

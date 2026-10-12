@@ -48,6 +48,46 @@ struct DistributedCBv2EngineTests {
         await engine.shutdown()
     }
 
+    /// Batch lanes: an owner that serves two requests at once gets two
+    /// concurrent streams, each with its own tokens and terminal; a third is
+    /// refused until one retires, and the slot is reusable after release.
+    @Test func batchLanesServeConcurrentRequestsIndependently() async throws {
+        let owner = DistributedTestOwner()
+        owner.lanes = 2
+        let engine = try distributedTestEngine(owner)
+        let first = try engine.submit(distributedTestRequest(1))
+        let second = try engine.submit(distributedTestRequest(2))
+        #expect(owner.reserveCount == 2)
+        #expect(engine.capacity().activeRequests == 2)
+        #expect(engine.capacity().kvBytesReserved == 128)
+        #expect(throws: CBv2KVError.self) { try engine.submit(distributedTestRequest(3)) }
+        let a = owner.lease(0), b = owner.lease(1)
+        #expect(a.send(.token(4)))
+        #expect(b.send(.token(7)))
+        #expect(!b.send(.token(8)))
+        #expect(!a.send(.token(5)))
+        b.acknowledge()
+        let secondEvents = await distributedCollect(second)
+        #expect(distributedText(secondEvents) == "t7t8")
+        #expect(distributedTerminal(secondEvents)?.0 == .length)
+        #expect(engine.capacity().activeRequests == 1)
+        // The freed lane takes another request while the first still runs.
+        let third = try engine.submit(distributedTestRequest(3))
+        let c = owner.lease(2)
+        a.acknowledge()
+        let firstEvents = await distributedCollect(first)
+        #expect(distributedText(firstEvents) == "t4t5")
+        #expect(c.send(.token(9)))
+        #expect(!c.send(.token(10)))
+        c.acknowledge()
+        let thirdEvents = await distributedCollect(third)
+        #expect(distributedText(thirdEvents) == "t9t10")
+        #expect([a, b, c].allSatisfy { $0.releaseCount == 1 && $0.cancelCount == 0 })
+        #expect(engine.capacity().activeRequests == 0)
+        await engine.shutdown()
+        #expect(owner.shutdownCount == 1)
+    }
+
     /// The peers' prefix report: a receipt is accepted, the reuse is the
     /// usage's hit, and the frontiers both peers hold reach the publication
     /// handler with the receipt. A report never changes the token stream.

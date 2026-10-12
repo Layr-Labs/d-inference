@@ -6,8 +6,14 @@ import MLXLMCommon
 /// Callers must run native work inside MLX.withError and supply its check closure.
 final class CBv2OwnedRequestState {
     let geometry: CBv2RequestGeometry
-    let backend: CBv2ContiguousKVBackend
+    /// The stage host's shared backend and bank when the geometry has a host
+    /// (paged by default); otherwise this request's own contiguous storage.
+    let backend: any CBv2KVBackend
     let bank: CBv2LayerCacheBank
+    var hosted: Bool { geometry.host != nil }
+    /// This request's rows, kept after release only to prove that no cache
+    /// still binds them.
+    private var releasedRows: [CBv2SequenceKV] = []
     let recurrent: CBv2RecurrentRequestState
     private(set) var rows: [CBv2SequenceKV?]
     private var evaluation: CBv2RecurrentStateEvaluation?
@@ -25,7 +31,7 @@ final class CBv2OwnedRequestState {
     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int) throws {
         guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
             promptCount <= 32_768 - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
-        let backend = CBv2ContiguousKVBackend(config: .init(
+        let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
         let rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
             promptLength: promptCount, maxLength: promptCount + outputCount)
@@ -34,14 +40,15 @@ final class CBv2OwnedRequestState {
         catch { backend.release(rows); throw error }
         guard rows.count == geometry.kinds.count,
             rows.allSatisfy({ $0?.absoluteOffset == 0 && $0?.retainedCount == 0 }),
-            geometry.caches.allSatisfy({ $0.rows.isEmpty }),
+            // A host's caches may bind batchmates' rows; never these new ones.
+            geometry.host != nil || geometry.caches.allSatisfy({ $0.rows.isEmpty }),
             recurrent.confirmedStateSnapshot() == nil, recurrent.materializedByteCount == 0,
             !recurrent.isReleased else {
             backend.release(rows); try? recurrent.release()
             throw ProbeError("CBv2 state did not start with exclusive fresh ownership")
         }
         self.geometry = geometry; self.backend = backend
-        self.bank = CBv2LayerCacheBank(caches: geometry.caches)
+        self.bank = geometry.host?.bank ?? CBv2LayerCacheBank(caches: geometry.caches)
         self.recurrent = recurrent; self.rows = rows
         self.maximumTokens = promptCount + outputCount
     }
@@ -80,8 +87,10 @@ final class CBv2OwnedRequestState {
             }
             layers[layer.modelLayerIndex] = .init(conv: pair.conv, ssm: pair.ssm)
         }
-        let backend = CBv2ContiguousKVBackend(config: .init(
+        let backend: any CBv2KVBackend = geometry.host?.backend ?? CBv2ContiguousKVBackend(config: .init(
             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
+        // Full attention only: the backend's own direct plan (paged writes the
+        // arrays into fresh pages; contiguous copies them into its rows).
         let rows = try backend.makeSequenceState(adopting: prefix, layerKinds: geometry.kinds,
             maxLength: promptCount + outputCount)
         let recurrent: CBv2RecurrentRequestState
@@ -89,14 +98,14 @@ final class CBv2OwnedRequestState {
         catch { backend.release(rows); throw error }
         guard rows.count == geometry.kinds.count,
             rows.allSatisfy({ $0?.absoluteOffset == committed && $0?.retainedCount == committed }),
-            geometry.caches.allSatisfy({ $0.rows.isEmpty }),
+            geometry.host != nil || geometry.caches.allSatisfy({ $0.rows.isEmpty }),
             Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? []) == Set(geometry.recurrent.modelLayerIndices),
             !recurrent.isReleased else {
             backend.release(rows); try? recurrent.release()
             throw ProbeError("CBv2 adopted state did not take exclusive ownership at its frontier")
         }
         self.geometry = geometry; self.backend = backend
-        self.bank = CBv2LayerCacheBank(caches: geometry.caches)
+        self.bank = geometry.host?.bank ?? CBv2LayerCacheBank(caches: geometry.caches)
         self.recurrent = recurrent; self.rows = rows
         self.maximumTokens = promptCount + outputCount
         self.committedTokens = committed
@@ -161,7 +170,7 @@ final class CBv2OwnedRequestState {
                     .deliver(to: observer, check: check)
             }
             try validateOutput(output)
-            try validateState(after: committedTokens + tokenCount)
+            try validateState(after: committedTokens + tokenCount, storageViews: tokenCount > 1 || !pagedHost)
             try check()
             try evaluation!.commit()
             evaluation = nil; evaluationWasStaged = false
@@ -295,7 +304,18 @@ final class CBv2OwnedRequestState {
         }
     }
 
-    func validateState(after count: Int) throws {
+    /// A paged host's row snapshot is a page gather per attention layer: built
+    /// after every decode token it costs the one-request worker 6-12 % of its
+    /// decode rate (the batch loop never built it). One-token decode steps on a
+    /// paged host check each row's frontier and binding; the attendable views'
+    /// shape and dtype are checked at adoption, after every prefill frame and
+    /// after every speculative window, as before.
+    var pagedHost: Bool { geometry.host?.kind == .paged }
+
+    func validateState(after count: Int, storageViews: Bool = true) throws {
+        // A host's caches are shared: bind this request's rows (a no-op when
+        // they are bound already) before checking what the caches hold.
+        if hosted { _ = bank.layerCaches(rowStates: [rows]) }
         for (index, optionalRow) in rows.enumerated() {
             let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
             guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
@@ -305,6 +325,7 @@ final class CBv2OwnedRequestState {
                 geometry.caches[index].positionOffsets.asArray(Int32.self) == [Int32(count)] else {
                 throw ProbeError("CBv2 KV ownership or device token frontier differs")
             }
+            guard storageViews else { continue }
             let snapshot = row.snapshot()
             let shape = [1, kind.kvHeads, retained, kind.headDim]
             guard snapshot.offset == count, snapshot.keys.shape == shape, snapshot.values.shape == shape,
@@ -320,7 +341,8 @@ final class CBv2OwnedRequestState {
                 throw ProbeError("CBv2 conv/SSM shape or dtype differs from its local contract")
             }
         }
-        guard backend.bytesInUse <= geometry.kvCapacityBytes else {
+        // A host's pool holds every lane; its own reservations bound it.
+        guard hosted || backend.bytesInUse <= geometry.kvCapacityBytes else {
             throw ProbeError("CBv2 KV capacity exceeded the admitted geometry")
         }
     }
@@ -337,11 +359,19 @@ final class CBv2OwnedRequestState {
         }
         evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil
         bank.releaseBoundRows()
+        releasedRows = rows.compactMap { $0 }
         backend.release(rows); rows.removeAll()
         do { try recurrent.release() } catch { cleanupError = cleanupError ?? error }
         isClosed = true
-        guard backend.bytesInUse == 0, backend.bytesReserved == 0,
-            geometry.caches.allSatisfy({ $0.rows.isEmpty }), recurrent.isReleased else {
+        // A host's pool may still hold other lanes: this request's own rows
+        // must be unbound everywhere; its own storage alone must be empty.
+        let unbound = geometry.caches.allSatisfy { cache in
+            !cache.rows.contains { row in releasedRows.contains { $0 === row } }
+        }
+        let empty = hosted ? unbound : backend.bytesInUse == 0 && backend.bytesReserved == 0
+            && geometry.caches.allSatisfy({ $0.rows.isEmpty })
+        releasedRows.removeAll()
+        guard empty, recurrent.isReleased else {
             isFailed = true
             throw cleanupError ?? ProbeError("CBv2 state retained ownership after retirement")
         }
@@ -349,4 +379,93 @@ final class CBv2OwnedRequestState {
     }
 
     deinit { try? retire(failed: true) }
+}
+
+extension CBv2OwnedRequestState {
+    /// One frame of `tokenCount` tokens for several requests of the same
+    /// hosted stage at once (continuous batching): every request's rows are
+    /// bound to the host's caches in the order given, every request binds its
+    /// own recurrent evaluation, and one forward computes all of them. Each
+    /// row attends only its own KV (both backends dispatch attention per row);
+    /// the shared projections round two or more rows differently from one
+    /// (MLX `qmv_wide`), identically for every batch size from two up.
+    ///
+    /// Any failure marks every request failed; the caller retires them all.
+    static func runBatch(_ states: [CBv2OwnedRequestState], tokenCount: Int, check: () throws -> Void,
+                         forward: ([any CBv2AttendingLayerCache], [CBv2RecurrentStateEvaluation]) throws -> MLXArray,
+                         validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
+        guard let host = states.first?.geometry.host, states.count <= host.lanes,
+              states.allSatisfy({ $0.geometry.host === host }),
+              Set(states.map { ObjectIdentifier($0) }).count == states.count else {
+            states.forEach { $0.isFailed = true }
+            throw ProbeError("A batched frame needs distinct requests of one stage KV host, within its lanes")
+        }
+        do {
+            for state in states {
+                try state.requireOpen()
+                guard tokenCount > 0, tokenCount <= state.maximumTokens - state.committedTokens else {
+                    throw ProbeError("CBv2 batched advance exceeds a request's admitted capacity")
+                }
+            }
+            let caches = host.bank.layerCaches(rowStates: states.map(\.rows))
+            for state in states {
+                state.evaluation = try state.recurrent.bind(); state.evaluationWasStaged = false
+            }
+            let output = try forward(caches, states.map { $0.evaluation! })
+            var roots: [MLXArray] = []
+            for state in states {
+                roots += try state.evaluation!.evaluate(); state.evaluationWasStaged = true
+            }
+            let cacheRoots = caches.flatMap { ($0 as! any KVCache).innerState() }
+            eval([output] + roots + cacheRoots)
+            try check()
+            try validateOutput(output)
+            let frontiers = states.map { Int32($0.committedTokens + tokenCount) }
+            for (index, cache) in caches.enumerated() {
+                guard cache.rows.count == states.count, cache.positionOffsets.shape == [states.count],
+                      cache.positionOffsets.dtype == .int32, cache.positionOffsets.asArray(Int32.self) == frontiers,
+                      host.owns(cache, at: index) else {
+                    throw ProbeError("CBv2 batched KV binding or device token frontiers differ")
+                }
+            }
+            for (lane, state) in states.enumerated() {
+                try state.validateBatchRow(lane: lane, after: state.committedTokens + tokenCount)
+            }
+            try check()
+            for state in states {
+                try state.evaluation!.commit()
+                state.evaluation = nil; state.evaluationWasStaged = false
+                state.committedTokens += tokenCount
+                guard Set(state.recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
+                    == Set(state.geometry.recurrent.modelLayerIndices) else {
+                    throw ProbeError("CBv2 batched recurrent generation did not commit every local layer")
+                }
+            }
+            return output
+        } catch {
+            states.forEach { $0.isFailed = true }
+            throw error
+        }
+    }
+
+    /// One request's rows after a batched frame: each at the new frontier and
+    /// bound at its own lane of every cache.
+    private func validateBatchRow(lane: Int, after count: Int) throws {
+        for (index, optionalRow) in rows.enumerated() {
+            let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
+            let cache = geometry.caches[index]
+            guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
+                  cache.rows.indices.contains(lane), cache.rows[lane] === row else {
+                throw ProbeError("CBv2 batched KV ownership or token frontier differs")
+            }
+        }
+        for layer in geometry.recurrent.layers {
+            guard let state = recurrent.state(modelLayerIndex: layer.modelLayerIndex),
+                let conv = state.conv, let ssm = state.ssm,
+                conv.shape == layer.convShape, conv.dtype == layer.convDType,
+                ssm.shape == layer.ssmShape, ssm.dtype == layer.ssmDType else {
+                throw ProbeError("CBv2 batched conv/SSM shape or dtype differs from its local contract")
+            }
+        }
+    }
 }

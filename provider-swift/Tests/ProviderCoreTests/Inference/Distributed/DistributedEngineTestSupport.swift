@@ -82,9 +82,13 @@ final class DistributedTestOwner: DistributedResidentExecutionOwner, @unchecked 
     private var requests: [CBv2Request] = []
     private var shutdowns = 0
 
+    /// Batch lanes the fabricated owner claims (one by default).
+    var lanes = 1
+    var concurrentRequests: Int { lock.withLock { lanes } }
     var last: DistributedTestLease { lock.withLock { leases.last! } }
     /// Every request the owner reserved, in order, as the engine passed it.
     var reservedRequests: [CBv2Request] { lock.withLock { requests } }
+    func lease(_ index: Int) -> DistributedTestLease { lock.withLock { leases[index] } }
     var reserveCount: Int { lock.withLock { leases.count } }
     var shutdownCount: Int { lock.withLock { shutdowns } }
 

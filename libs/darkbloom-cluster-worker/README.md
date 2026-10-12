@@ -38,8 +38,11 @@ bash libs/darkbloom-cluster-worker/build-native-worker.sh \
 
 The script builds with explicit Swift and C++ 26.2 targets, then refuses the
 result unless the binary contains the JACCL group implementation and its Mach-O
-minimum is exactly macOS 26.2. It copies the verified metallib beside the binary
-and prints the binary path. `DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS` sets the job
+minimum is exactly macOS 26.2. It copies the verified metallib beside the binary,
+and beside it `pagedattention.metal` (the paged KV backend's runtime kernel
+source, which the lookup cannot find inside this build's `Contents/Resources`
+bundle layout; a paged stage refuses to load without it), and prints the binary
+path. `DARKBLOOM_CLUSTER_WORKER_BUILD_JOBS` sets the job
 count (default 2). See the [provider build procedure](../../docs/developer/build.md)
 for toolchain and submodule setup.
 
@@ -239,8 +242,8 @@ directory is removed at the end, once no worker is left there, unless
 `--keep-run-files yes`. The driver itself, like the reference, ends at a hard
 deadline kept by a thread; a worker's own last resort is the same.
 
-The second Mac needs the worker and `mlx.metallib` in one directory (the driver
-hashes both) and the artifact. Copy `mlx-swift-lm_MLXLMCommon.bundle` and
+The second Mac needs the worker, `mlx.metallib` and `pagedattention.metal` in
+one directory (the driver hashes the first two) and the artifact. Copy `mlx-swift-lm_MLXLMCommon.bundle` and
 `mlx-swift_Cmlx.bundle` from the build output beside them as well: on the build
 Mac the reference runs from a directory holding only the binary and
 `mlx.metallib`, but there a missing bundle can still be found in the build

@@ -3,7 +3,7 @@ import MLXLMCommon
 
 extension DistributedCBv2Engine {
     func receive(_ event: DistributedResidentEvent, state: DistributedRequestState) -> Bool {
-        guard active === state else { return false }
+        guard isActive(state) else { return false }
         // The prefix report arrives after the last token, when the request
         // may already have its terminal; it only feeds usage and receipts.
         if case .promptCache(let reused, let stored) = event {
@@ -95,7 +95,7 @@ extension DistributedCBv2Engine {
     /// - every failure: the lease is cancelled, which is the owner's failure
     ///   path, and the consumer is told at once.
     func stop(_ state: DistributedRequestState, reason: CBv2FinishReason, leaseFinishing: Bool = false) {
-        guard active === state else { return }
+        guard isActive(state) else { return }
         // A later peer loss must not preserve an earlier successful terminal.
         // Otherwise retain the first failure/cancellation as the primary cause.
         var changed = false
@@ -155,7 +155,7 @@ extension DistributedCBv2Engine {
     }
 
     func checkDeadline(_ state: DistributedRequestState) {
-        guard active === state else { return }
+        guard isActive(state) else { return }
         let now = clock.now()
         guard state.terminal == nil else {
             // A clean stop that has not come by the request's own deadline is
@@ -199,7 +199,7 @@ extension DistributedCBv2Engine {
     }
 
     func retire(_ state: DistributedRequestState) {
-        guard active === state else { return }
+        guard isActive(state) else { return }
         _ = readyCapacity()
         if state.terminal == nil {
             stop(state, reason: .error("distributed owner retired without a terminal event"))
@@ -219,7 +219,7 @@ extension DistributedCBv2Engine {
            !state.storedPromptFrontiers.isEmpty {
             residentPrefixPublication?(receipt, state.storedPromptFrontiers)
         }
-        active = nil
+        actives[state.generation] = nil
         state.continuation.onTermination = nil
         if !state.terminalPublished {
             state.continuation.yield(.finished(reason: reason, usage: usage))

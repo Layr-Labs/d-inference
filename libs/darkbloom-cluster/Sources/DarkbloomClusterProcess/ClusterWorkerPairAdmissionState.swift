@@ -11,12 +11,19 @@ public struct ClusterWorkerPairAdmissionState: Sendable, Equatable {
     /// Keep-warm exchanges completed and the last one's duration (tier 2).
     public let keepWarmExchanges: Int
     public let lastKeepWarmMicroseconds: Int?
+    /// Requests reserved or running now, and how many the pair serves at once
+    /// (continuous batching). With one lane `hasActiveRequest` is exactly
+    /// `activeRequests == 1`; with more it means every lane is taken.
+    public let activeRequests: Int
+    public let lanes: Int
 
     public init(requestsServed: Int, hasActiveRequest: Bool, isDraining: Bool, isValid: Bool,
-                keepWarmExchanges: Int = 0, lastKeepWarmMicroseconds: Int? = nil) {
+                keepWarmExchanges: Int = 0, lastKeepWarmMicroseconds: Int? = nil,
+                activeRequests: Int? = nil, lanes: Int = 1) {
         self.requestsServed = requestsServed; self.hasActiveRequest = hasActiveRequest
         self.isDraining = isDraining; self.isValid = isValid
         self.keepWarmExchanges = keepWarmExchanges; self.lastKeepWarmMicroseconds = lastKeepWarmMicroseconds
+        self.activeRequests = activeRequests ?? (hasActiveRequest ? 1 : 0); self.lanes = lanes
     }
 
     /// Whether a request could be reserved now. The actual reserve revalidates.

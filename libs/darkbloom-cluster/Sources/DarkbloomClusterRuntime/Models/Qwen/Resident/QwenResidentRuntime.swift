@@ -21,7 +21,7 @@ public final class QwenResidentRuntime {
     public let generationMode: QwenResidentGenerationMode
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
-    private let lifecycle: QwenLayerStageResidentLifecycle
+    let lifecycle: QwenLayerStageResidentLifecycle
     private var stage: (any LayerStageResidentStage)?
     private weak var model: Module?
     /// Phase split, rank 1 only: the producer stage this rank also holds, so
@@ -48,6 +48,15 @@ public final class QwenResidentRuntime {
     /// holds while idle and empty. Anything above it while idle (the prefix
     /// cache) gives way to a request, so the serving context counts it.
     private let activeLoadedBytes: Int
+    /// Continuous batching terms, agreed with the peer at load.
+    public let batch: QwenBatchSettings
+    /// Batch lanes this rank holds (empty with one lane).
+    let laneBook = QwenBatchLaneBook()
+    /// True while the batch loop runs on the executor: lane reservations and
+    /// starts it applies between steps then run inside its exclusive hold.
+    var batchServing = false
+    /// The KV storage the stage's requests use, for whoever launched the worker.
+    public var kvBackend: String { stage?.loaded.kvHost.host?.kind.rawValue ?? "contiguous" }
 
     init(admission: any LayerStageResidentAdmission, control: QwenResidentControl, collective: Collective,
          stage: any LayerStageResidentStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
@@ -55,8 +64,9 @@ public final class QwenResidentRuntime {
          speculativeHead: QwenMTPHead? = nil, speculativeTerms: QwenMTPTerms? = nil,
          qualificationFault: QwenPhaseSplitFault? = nil,
          prefixCache: QwenStagePrefixCache = .fromEnvironment(),
-         servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0, prefixBudgetBytes: Int? = nil) {
-        self.prefixCache = prefixCache
+         servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0, prefixBudgetBytes: Int? = nil,
+         batch: QwenBatchSettings = .single) {
+        self.prefixCache = prefixCache; self.batch = batch
         if let prefixBudgetBytes { prefixCache.setBudget(prefixBudgetBytes) }
         self.servingContextTokens = servingContextTokens; self.activeLoadedBytes = activeLoadedBytes
         self.admission = admission; self.control = control; self.collective = collective
@@ -130,6 +140,17 @@ public final class QwenResidentRuntime {
         guard control.available else { throw ProbeError("Keep-warm needs an idle resident owner") }
         return try ClusterKeepWarm.dataPlanePing(collective: collective, check: { try control.check() })
     }
+
+    /// The executor's exclusive hold. Inside the batch loop, control it applies
+    /// between steps runs in the loop's own hold.
+    func withExclusiveOperation<T>(_ body: () throws -> T) throws -> T {
+        if batchServing { return try body() }
+        guard operation.try() else { throw ProbeError("Resident native operation is already active") }
+        defer { operation.unlock() }
+        return try body()
+    }
+
+    var stageForBatch: (any LayerStageResidentStage)? { stage }
 
     public var readiness: ClusterWorkerReady? {
         guard control.available, (try? control.check()) != nil else { return nil }
@@ -492,8 +513,13 @@ public final class QwenResidentRuntime {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     // Every rank sweeps its cache before its model goes.
-                    prefixCache.sweep()
+                    prefixCache.sweep(); laneBook.clear()
+                    // The stages' KV pools go with them; one still holding a
+                    // request's pages is a failed release.
+                    let drained = CBv2StageKVHost.uninstall(from: stage?.loaded)
+                        && CBv2StageKVHost.uninstall(from: producerStage?.loaded)
                     reservation = nil; phaseSplitAllowance = nil; speculativeHead = nil; stage = nil; producerStage = nil
+                    guard drained else { throw ProbeError("A stage KV pool still held request pages at release") }
                     guard model == nil, producerModel == nil else { throw ProbeError("Resident model remains retained") }
                     Memory.clearCache(); try error.check()
                     if generationMode.isPhaseSplit {

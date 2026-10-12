@@ -344,7 +344,7 @@ public struct PairDriver: Sendable {
         do {
             pair = try ClusterWorkerPair(workers: endpoints,
                 startupDeadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000,
-                keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck)
+                keepWarm: c.keepWarm ? .standard : .off, refusesAboveServingContext: c.servingContextCheck, lanes: c.batchLanes)
         } catch { return finish("failed", "the pair could not be formed after both ranks reported ready: \(error)") }
         timing.startupSeconds = Double(DispatchTime.now().uptimeNanoseconds - begun) / 1e9
         timing.servingContextAtReady = endpoints.map { $0.readiness?.servingContextTokens }
@@ -489,6 +489,51 @@ public struct PairDriver: Sendable {
         timing.servingContextAtEnd = pair.servingContextTokens
         let lastLease = finalLease
 
+        // 6b. Continuous batching: each batch request alone, then the waves.
+        if !c.batchRequests.isEmpty {
+            let limit = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            while !finalLease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
+            guard finalLease.isRetired else { return finish("failed", "the last repetition did not retire before the batch phase") }
+            finalLease.releaseResources()
+            var batch = PairBatchTiming(lanes: c.batchLanes, kvBackend: c.kvBackend ?? "paged", solo: [], waves: [],
+                note: "Driver clock per request from its own start command; a wave's requests are started together "
+                    + "from separate threads. Solo rows are each request file run alone in the same loaded session.")
+            if c.batchSolo {
+                for index in c.batchRequests.indices {
+                    let rows = runBatchWave(pair: pair, indices: [index], log: announce)
+                    batch.solo.append(contentsOf: rows.requests)
+                    if let failure = rows.requests.compactMap(\.failure).first {
+                        timing.batch = batch
+                        return finish("failed", "batch solo request \(index) failed: \(failure)")
+                    }
+                }
+            }
+            for size in c.batchWaves {
+                var wave = runBatchWave(pair: pair, indices: Array(0..<size), log: announce)
+                if c.batchSolo {
+                    for row in wave.requests.indices {
+                        let request = wave.requests[row]
+                        guard let solo = batch.solo.first(where: { $0.promptIndex == request.promptIndex }) else { continue }
+                        wave.requests[row].matchesSolo = request.selectedTokenIDs == solo.selectedTokenIDs
+                        wave.requests[row].firstDifferenceIndex = zip(request.selectedTokenIDs, solo.selectedTokenIDs)
+                            .enumerated().first(where: { $0.element.0 != $0.element.1 })?.offset
+                            ?? (request.selectedTokenIDs.count == solo.selectedTokenIDs.count ? nil
+                                : min(request.selectedTokenIDs.count, solo.selectedTokenIDs.count))
+                    }
+                    wave.allMatchSolo = wave.requests.allSatisfy { $0.matchesSolo == true }
+                }
+                batch.waves.append(wave)
+                log("pair-check: wave of \(size): \(wave.totalTokens) tokens in \(String(format: "%.2f", wave.wallSeconds)) s"
+                    + " (\(String(format: "%.1f", wave.aggregateTokensPerSecond)) tok/s aggregate)"
+                    + (wave.allMatchSolo.map { $0 ? ", tokens equal solo" : ", tokens DIFFER from solo" } ?? ""))
+                if let failure = wave.requests.compactMap(\.failure).first {
+                    timing.batch = batch
+                    return finish("failed", "batch wave of \(size) failed: \(failure)")
+                }
+            }
+            timing.batch = batch
+        }
+
         // 7. Clean shutdown: command, acknowledgement, process exit.
         let shutdownStarted = DispatchTime.now().uptimeNanoseconds
         Task.detached {
@@ -549,6 +594,78 @@ public struct PairDriver: Sendable {
         return finish(clean ? "completed" : "failed",
             clean ? nil : "the request completed but a worker did not acknowledge shutdown and exit with status 0",
             evidence: evidence, ranksAgree: ranksAgree)
+    }
+
+    /// One wave: the batch requests at `indices`, each reserved and started
+    /// from its own thread at once; returns when every one finished or failed,
+    /// retired and released.
+    func runBatchWave(pair: ClusterWorkerPair, indices: [Int], log: @escaping @Sendable (String) -> Void) -> PairBatchWave {
+        let c = configuration
+        final class Box: @unchecked Sendable {
+            let lock = NSLock(); var rows: [PairBatchRequestTiming] = []
+            func add(_ row: PairBatchRequestTiming) { lock.withLock { rows.append(row) } }
+        }
+        let box = Box(), group = DispatchGroup()
+        let waveStart = DispatchTime.now().uptimeNanoseconds
+        for index in indices {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                let request = c.batchRequests[index]
+                let id = UUID()
+                let started = DispatchTime.now().uptimeNanoseconds
+                let deadline = started + UInt64(c.requestSeconds) * 1_000_000_000
+                func row(_ tokens: [Int], _ finish: String) -> PairBatchRequestTiming {
+                    PairBatchRequestTiming(promptIndex: index, requestID: id.uuidString.lowercased(),
+                        promptTokens: request.promptTokenIDs.count, startOffsetSeconds: Double(started - waveStart) / 1e9,
+                        tokens: tokens, finishReason: finish)
+                }
+                guard let capacity = pair.readiness?.requestCapacityBytes else {
+                    var failed = row([], "none"); failed.failure = "the pair stopped being ready"; box.add(failed); return
+                }
+                let lease: ClusterWorkerRequest
+                do {
+                    lease = try pair.reserve(requestID: id, reservation: .init(profileID: request.profileID,
+                        promptTokenIDs: request.promptTokenIDs, stopTokenIDs: request.stopTokenIDs,
+                        outputCount: request.outputCount, chunkSize: request.chunkSize,
+                        deadlineUptimeNanoseconds: deadline, capacityLimitBytes: capacity))
+                } catch {
+                    var failed = row([], "none"); failed.failure = "reservation failed: \(error)"; box.add(failed); return
+                }
+                let collector = Collector(stopAfter: nil) {}
+                do { try lease.start { collector.record($0) } } catch {
+                    var failed = row([], "none"); failed.failure = "start failed: \(error)"; box.add(failed); return
+                }
+                let concluded = collector.wait(until: deadline + 5_000_000_000)
+                let result = collector.snapshot
+                var value = row(result.tokens, result.finish ?? "none")
+                value.reusedPromptTokens = collector.reused
+                if let first = result.stamps.first, let last = result.stamps.last {
+                    value.firstTokenSeconds = Double(first - started) / 1e9
+                    value.decodeSeconds = Double(last - first) / 1e9
+                    value.decodeTokensPerSecond = result.tokens.count > 1 && last > first
+                        ? Double(result.tokens.count - 1) / (Double(last - first) / 1e9) : nil
+                    value.totalSeconds = Double((result.concluded ?? last) - started) / 1e9
+                }
+                if !concluded || result.finish == nil {
+                    value.failure = result.failure ?? "the request did not finish before its deadline"
+                    lease.cancel(reason: concluded ? .runtimeError : .deadline)
+                }
+                let limit = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+                while !lease.isRetired, DispatchTime.now().uptimeNanoseconds < limit { Thread.sleep(forTimeInterval: 0.002) }
+                if lease.isRetired { lease.releaseResources() } else if value.failure == nil { value.failure = "did not retire" }
+                box.add(value)
+            }
+        }
+        group.wait()
+        let rows = box.rows.sorted { $0.promptIndex < $1.promptIndex }
+        let end = rows.compactMap { row in row.totalSeconds.map { row.startOffsetSeconds + $0 } }.max() ?? 0
+        let tokens = rows.reduce(0) { $0 + $1.tokens }
+        let rates = rows.compactMap(\.decodeTokensPerSecond)
+        return PairBatchWave(concurrency: indices.count, wallSeconds: end, totalTokens: tokens,
+            aggregateTokensPerSecond: end > 0 ? Double(tokens) / end : 0,
+            summedDecodeTokensPerSecond: rates.count == rows.count && !rates.isEmpty ? rates.reduce(0, +) : nil,
+            requests: rows, allMatchSolo: nil)
     }
 
     /// `key=value` lines of an inspection.

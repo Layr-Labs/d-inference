@@ -199,8 +199,10 @@ import Foundation
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
             "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
-            "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check"]
-        let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request"])
+            "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
+            "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--kv-backend"]
+        let fields = try parse(arguments, allowed: names, repeated: ["--ssh-option", "--remote-command-prefix", "--follow-request",
+            "--batch-request", "--batch-wave"])
         func required(_ name: String) throws -> String {
             guard let value = fields[name]?.first else { throw Failure("Missing \(name)\n" + usage) }
             return value
@@ -278,6 +280,23 @@ import Foundation
         if let cache = fields["--prefix-cache"]?.first {
             guard ["on", "off"].contains(cache) else { throw Failure("--prefix-cache takes on or off") }
             configuration.prefixCacheOff = cache == "off"
+        }
+        if let lanes = try integer(fields, "--batch-lanes") {
+            guard (1...8).contains(lanes) else { throw Failure("--batch-lanes takes 1...8") }
+            configuration.batchLanes = lanes
+        }
+        if let backend = fields["--kv-backend"]?.first {
+            guard ["paged", "contiguous"].contains(backend) else { throw Failure("--kv-backend takes paged or contiguous") }
+            configuration.kvBackend = backend
+        }
+        if let batch = fields["--batch-request"] {
+            configuration.batchRequests = try batch.map { try QualificationRequest.read(URL(fileURLWithPath: $0)) }
+            configuration.batchWaves = try (fields["--batch-wave"] ?? []).map {
+                guard let value = Int($0), (1...8).contains(value) else { throw Failure("--batch-wave takes 1...8") }
+                return value
+            }
+            configuration.batchSolo = fields["--batch-solo"]?.first != "no"
+            try configuration.validate()
         }
         if let follow = fields["--follow-request"] {
             configuration.followRequests = try follow.map { try QualificationRequest.read(URL(fileURLWithPath: $0)) }

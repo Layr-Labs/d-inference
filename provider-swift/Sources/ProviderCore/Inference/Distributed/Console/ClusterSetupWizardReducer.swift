@@ -250,6 +250,8 @@ extension ClusterSetupState {
         case .pair:
             if !pairingConfirmed {
                 if pair?.canReachPeer == true, peerReport == nil { return stepKey("p", at: time) }
+                // No pair yet: enter pairs over the link (no SSH host-key code in the user path).
+                if pair == nil { return linkPaired || linkPairing.running ? requestRefresh() : startLinkPairing(connect: nil) }
                 if pairingCode != nil { return askConfirmCode() }
                 return requestRefresh()
             }
@@ -278,7 +280,9 @@ extension ClusterSetupState {
                 return []
             }
             return reachPeer()
-        case (.pair, "y"): return askConfirmCode()
+        case (.pair, "y"):
+            guard pair != nil else { say("Press l on both Macs to pair over the link."); return [] }
+            return askConfirmCode()
         case (.pair, "l"): return startLinkPairing(connect: nil)
         case (.pair, "c"):
             if linkPairing.running { say("The pairing over the link is already running."); return [] }

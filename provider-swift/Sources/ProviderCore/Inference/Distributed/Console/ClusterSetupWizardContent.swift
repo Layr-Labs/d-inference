@@ -317,23 +317,15 @@ enum ClusterSetupContent {
                 b.verdict(g.waiting, "This Mac does not know the other Mac yet.", .warning, from: .wired("pair.saved"))
             }
             b.blank()
-            if let code = state.pairingCode {
-                b.heading("This Mac's pairing code")
-                b.row([.init("      "), .init(" \(code.spaced) ", .selected)], from: .wired("pair.code"))
-                b.text("From this Mac's own SSH host key. When the leader reaches this Mac, its screen shows the code of the Mac it reached: it must be this one.", from: .wired("pair.code"))
-                if let confirmed = state.record.confirmed(code: code.code) {
-                    b.verdict(g.done, "Confirmed \(confirmed.at): the leader's screen showed this code.", .good, from: .wired("pair.confirm"))
-                } else if !state.linkPaired {
-                    b.action("enter", "The leader's screen shows \(code.spaced)", from: .wired("pair.confirm"))
-                }
-                b.blank()
-            }
+            // No SSH in the user path (owner gate 2026-10-11): pairing is the
+            // ceremony over the link; no host-key code, no pair description.
             linkPairing(state, &b)
             b.blank()
             b.heading("What to do")
-            b.text("On the leader: run `darkbloom cluster --pair <description> --capability <record> --capability-sha256 <digest> --member <this Mac's ID>` once; later runs remember it.", from: .frame)
-            b.text("On the follower: nothing to type. The leader's step 4 sends this Mac its setup, and you approve it here. Press r to look again.", from: .frame)
-            b.text("Finding the other Mac by itself is not built yet; the pair is described once.", .dim, from: .frame)
+            b.text("Run `darkbloom cluster` on both Macs and press l on each: they find each other on the cable, both screens show the same six digits, and you type y on each Mac. Nothing else to type.", from: .frame)
+            if state.linkPaired {
+                b.text("Paired: step 4 takes the model and the plan. Press r to look again.", from: .frame)
+            }
             return
         }
         b.heading("Pair")

@@ -85,10 +85,11 @@ final class EndpointBox: @unchecked Sendable {
         try await normalAndDrain(fixture,prepared)
         try await noRequestLimit(fixture,prepared)
         try await failedStart(fixture,prepared)
+        try await followerRefusalNamed(fixture,prepared)
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, bounded IO and 8 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -437,11 +438,14 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{try prepared.requireUnchanged()};try FileManager.default.removeItem(at:fallback)
         try prepared.requireUnchanged()
     }
-    static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false) throws->(DistributedInstalledSession,EndpointBox) {
+    typealias RankOne=@Sendable (DistributedInstalledPlan,ClusterWorkerIdentity,UInt64,(any ClusterOwnerBootstrapExchange)?) throws->any ClusterOwnedWorkerEndpoint
+    static func session(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,behavior:String="normal",failSecond:Bool=false,
+                        rankOne:RankOne?=nil) throws->(DistributedInstalledSession,EndpointBox) {
         let base=f.root.appendingPathComponent("session-"+UUID().uuidString);try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
         let box=EndpointBox()
         let session=try DistributedInstalledSession(prepared:prepared,endpointFactory:{ plan,id,rank,lifetime,relay,_ in
             if failSecond && rank==1 { throw CheckFailure(message:"fabricated second launch refusal") }
+            if rank==1, let rankOne { return try rankOne(plan,id,lifetime,relay) }
             let directory=base.appendingPathComponent("rank-\(rank)");try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
             let ready=base.appendingPathComponent("ready-\(rank).json")
             let frame=ClusterWorkerEventFrame(membershipEpoch:id.membershipEpoch,sequence:0,requestID:nil,
@@ -503,6 +507,48 @@ final class EndpointBox: @unchecked Sendable {
         try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"partial startup lost first endpoint: \(box.snapshot.map { "termination \(String(describing:$0.ownerTermination)) cleanup \($0.nativeCleanupObserved) tail \(String(decoding:$0.diagnosticTail,as:UTF8.self).suffix(600))" })")
         try require(result == .released || result == .quarantined,"partial startup returned live readiness")
         try require(!s.canRotate || box.snapshot[0].ownerDeviceLeaseReleasedObserved,"partial rotate missing release")
+    }
+    /// A follower member that refuses the open (here its setup is for another
+    /// plan) ends the start with its own reason instead of a bare closed
+    /// stream, and the surviving rank is released as at any partial start.
+    /// The follower is the real link server, joined to the leader's link
+    /// endpoint in this process (no socket, no SSH).
+    static func followerRefusalNamed(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
+        final class Loop: ClusterLinkWorkerTransport, @unchecked Sendable {
+            let lock=NSLock(); var target:(@Sendable (Data)->Void)?
+            func send(_ bytes:Data) throws {
+                guard let target=lock.withLock({ self.target }) else { throw CheckFailure(message:"link loop not joined") }
+                target(bytes)
+            }
+        }
+        let toFollower=Loop(),toLeader=Loop(),router=ClusterLinkWorkerRouter()
+        let server=ClusterLinkWorkerServer(transport:toLeader,clusterID:p.plan.configuration.clusterID,rank:1,
+            bootstrapProfile:p.plan.bootstrap.ownerProfile,admit:{ _ in throw ClusterConfigurationError.invalid("The leader opened another plan") })
+        toLeader.lock.withLock { toLeader.target={ router.deliver($0) } }
+        toFollower.lock.withLock { toFollower.target={ server.deliver($0) } }
+        let(s,box)=try session(f,p,rankOne:{ plan,id,lifetime,relay in
+            try ClusterLinkWorkerEndpoint(transport:toFollower,clusterID:plan.configuration.clusterID,expectedIdentity:id,
+                profile:plan.capability.profile,rank:1,executionPlanSHA256:plan.partition.planSHA256,
+                lifetimeDeadlineUptimeNanoseconds:lifetime,bootstrapRelay:relay,router:router)
+        })
+        var named:String?
+        do { try await s.start() }
+        catch let refusal as DistributedInstalledStartRefusal {
+            try require(refusal.rank==1,"the refusal names rank \(refusal.rank)")
+            named=String(describing:refusal)
+        }
+        try require(named?.contains("refused the session") == true && named?.contains("The leader opened another plan") == true,
+            "the start did not carry the follower's reason: \(String(describing:named))")
+        let began=DispatchTime.now().uptimeNanoseconds
+        let result=await s.stop(until:began+10_000_000_000)
+        try require(DispatchTime.now().uptimeNanoseconds-began<5_000_000_000,"a refused follower held the surviving rank")
+        try require(box.snapshot.count==1 && box.snapshot[0].nativeCleanupObserved,"the surviving rank was not cleaned up")
+        try require(result == .released || result == .quarantined,"a refused start returned live readiness")
+        try require(!server.busy && server.served==0,"the refusing follower launched something")
+        // Any other failure is passed through unchanged; the reason prints as plain ASCII.
+        try require(DistributedInstalledSession.startFailure(ClusterWorkerOwnerError.closed,endpoints:[]) as? ClusterWorkerOwnerError == .closed,
+            "a failure without a refusal was rewritten")
+        try require(DistributedInstalledStartRefusal(rank:1,reason:"a\u{1b}[2Jb\u{7f}").reason=="a?[2Jb?","a refusal reason kept control characters")
     }
     /// No fixed lifetime: a session whose owners' leases are renewed outlives
     /// the first lease grant, here a session that serves on past the first

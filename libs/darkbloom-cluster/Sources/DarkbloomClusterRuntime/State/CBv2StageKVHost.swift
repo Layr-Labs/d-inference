@@ -36,9 +36,12 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     /// same value from the same mode and lanes; a named backend always wins.
     ///
     /// Interim (2026-10-12): with the head, paged storage is still slower than
-    /// contiguous on the pair (9B at 30K: column-serial verify windows decode
-    /// at 52 vs 107 tok/s, prefill chunks re-gather all earlier pages: first
-    /// token 10.1 vs 7.1 s). Paged returns for MTP stages once both close.
+    /// contiguous, on the pair and on one Mac alone. 9B at 30K, same binary:
+    /// verify windows (columns batched, each column still reads the whole
+    /// context) decode at 88 vs 107 tok/s on the pair (95 vs 133 on one Mac),
+    /// and prefill chunks re-gather all earlier pages (first token 9.3 vs
+    /// 7.1 s). `batchLanes` > 1 only occurs in pipeline mode, which has no
+    /// head. Paged returns for MTP stages once both gaps close.
     public static func resolved(environment: [String: String], speculative: Bool, batchLanes: Int) throws -> Self {
         if let value = try Self.named(environment) { return value }
         return speculative && batchLanes <= 1 ? .contiguous : .paged

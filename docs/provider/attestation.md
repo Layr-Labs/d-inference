@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 How to check provider verification and retain legacy `hardware` trust where
 eligible. New providers require macOS 27 or later and current qualified App
@@ -83,10 +83,10 @@ The separate [supervised worker candidate](../architecture/security/identity-bin
 is internal, defaults off and is **not ready for production**. It retires the
 worker rather than restarting the inference process; do not enable its
 [qualification flag](../reference/configuration.md#app-attest-worker-qualification)
-as an operator workaround. The [reported native gate](../../scripts/nativequalification/README.md#qualification-status)
-is still failed, with no accepted Apple proof or two-minute engine qualification.
-macOS 27, GUI-session checks and an intact signature do not by themselves resolve
-`is_supported_false` or generic Apple errors.
+as an operator workaround. The [recorded native component passes](../../scripts/nativequalification/README.md#qualification-status)
+apply only to the tested signed artifacts. Loaded-engine continuity and composed
+two-minute resumption remain pending; a rebuilt binary needs fresh qualification.
+macOS 27, GUI-session checks and an intact signature alone are not Apple acceptance.
 
 During a same-process reconnect the provider can answer a fresh, encrypted
 [endpoint-resumption challenge](../reference/protocol-messages.md#app-attest-endpoint-resumption-candidate)

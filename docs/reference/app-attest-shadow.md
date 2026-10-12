@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -206,8 +206,10 @@ provider path**. The internal, default-off
 instead terminates and reaps its owned child before replacement, preserving the
 parent's memory-only endpoint key and existing credential budgets. It does not
 fall back to parent Apple calls or restart inference for a worker stall. The
-[reported native gate](../../scripts/nativequalification/README.md#qualification-status)
-is failed; implementation and transport tests are not Apple qualification.
+[recorded native component passes](../../scripts/nativequalification/README.md#qualification-status)
+apply only to the tested signed artifacts, not later rebuilds. Loaded-engine
+continuity and composed two-minute resumption remain pending; implementation
+and transport tests are not Apple qualification.
 The separate [endpoint-resumption protocol](protocol-messages.md#app-attest-endpoint-resumption-candidate)
 can avoid a new Apple call on same-process reconnect only with its platform
 counterpart. It does not extend the original assertion or proof deadlines.

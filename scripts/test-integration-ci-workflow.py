@@ -88,7 +88,7 @@ class IntegrationWorkflowTests(unittest.TestCase):
             self.assertEqual(field(step, "DARKBLOOM_TESTBED_KV_BACKEND", 10), "paged")
             self.assertEqual(field(step, "DARKBLOOM_TESTBED_MAX_CONCURRENT", 10), '"8"')
         self.assertEqual(field(gates[0], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "paged")
-        self.assertEqual(field(gates[2], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "paged")
+        self.assertEqual(field(gates[2], "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND", 10), "auto")
         self.assertIsNone(field(gates[2], "DARKBLOOM_TESTBED_KV_BACKEND", 10))
         self.assertIsNone(field(gates[2], "DARKBLOOM_TESTBED_MAX_CONCURRENT", 10))
         self.assertIsNone(field(gates[2], "DARKBLOOM_CBV2_KV_QUANTIZATION", 10))

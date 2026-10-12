@@ -101,7 +101,7 @@ func benchmarkControlCacheKey(cfg testbed.SuiteConfig, modelID string) benchmark
 		kvBackend:        testbed.ResolveKVBackend(cfg.KVBackend),
 		expectKVBackend:  expected,
 		maxConcurrent:    cfg.MaxConcurrent,
-		kvPrecision:      envOr(testbed.EnvKVQuantization, "balanced"),
+		kvPrecision:      envOr(testbed.EnvKVQuantization, "native"),
 		automaticPrewarm: cfg.PrewarmAutomaticKVBackend,
 	}
 }
@@ -174,6 +174,9 @@ func TestBenchmarkAutomaticControlPreservesPolicyAndPrecisionIdentity(t *testing
 	control := benchmarkControlSuiteConfig(measured, "model")
 	require.True(t, control.PrewarmAutomaticKVBackend)
 	nativeKey := benchmarkControlCacheKey(control, "model")
+	t.Setenv(testbed.EnvKVQuantization, "")
+	require.Equal(t, nativeKey, benchmarkControlCacheKey(control, "model"),
+		"the provider default must use the native precision control")
 	t.Setenv(testbed.EnvKVQuantization, "balanced")
 	require.NotEqual(t, nativeKey, benchmarkControlCacheKey(control, "model"),
 		"a native control must not satisfy a different precision's benchmark proof")

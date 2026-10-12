@@ -36,7 +36,8 @@ import (
 // to it; the same backend assertion observes the resulting real slot.
 
 // EnvExpectKVBackend declares the KV backend every engine slot in the suite
-// must have actually been BUILT with: "paged" or "contiguous". Empty/unset
+// must have actually been BUILT with: "paged" or "contiguous". "auto" verifies
+// the model-aware automatic policy and a usable concrete slot. Empty/unset
 // disables the assertion. Distinct from DARKBLOOM_TESTBED_KV_BACKEND, which
 // selects what to REQUEST; this one asserts what was CONSTRUCTED, so a lane
 // can pin the request, the expectation, or both.
@@ -50,8 +51,8 @@ const kvExpectationTimeout = 5 * time.Minute
 
 // ResolveExpectedKVBackend returns the backend the suite must have built:
 // the explicit value when set, else DARKBLOOM_TESTBED_EXPECT_KV_BACKEND,
-// else "" (assertion disabled). A value that is neither "paged" nor
-// "contiguous" is a hard error, not a silent no-op: a typo in this knob
+// else "" (assertion disabled). Only "auto", "paged" and "contiguous" are
+// accepted: a typo in this knob must not silently disable the assertion
 // would otherwise disarm the exact assertion the lane exists to make
 // (the same lesson as ResolveMaxConcurrent).
 func ResolveExpectedKVBackend(explicit string) (string, error) {
@@ -62,13 +63,13 @@ func ResolveExpectedKVBackend(explicit string) (string, error) {
 		source = "env " + EnvExpectKVBackend
 	}
 	switch raw {
-	case "", KVBackendPaged, KVBackendContiguous:
+	case "", KVBackendAuto, KVBackendPaged, KVBackendContiguous:
 		return raw, nil
 	default:
 		return "", fmt.Errorf(
-			"%s=%q is not an assertable KV backend (want %q or %q); "+
+			"%s=%q is not an assertable KV backend (want %q, %q or %q); "+
 				"refusing to run with a disarmed backend assertion",
-			source, raw, KVBackendPaged, KVBackendContiguous)
+			source, raw, KVBackendAuto, KVBackendPaged, KVBackendContiguous)
 	}
 }
 
@@ -80,12 +81,12 @@ func (s *Suite) verifyKVBackendExpectation() error {
 	if err != nil {
 		return err
 	}
+	if expected == KVBackendAuto || (expected == "" && s.Config.PrewarmAutomaticKVBackend) {
+		return verifyAutomaticRegistryKVBackends(
+			s.Ctx, s.Coordinator.Registry, os.Getenv(EnvKVQuantization),
+			kvExpectationTimeout, s.Logger, s.Coordinator.Registry.SendLoadModel)
+	}
 	if expected == "" {
-		if s.Config.PrewarmAutomaticKVBackend {
-			return verifyAutomaticRegistryKVBackends(
-				s.Ctx, s.Coordinator.Registry, os.Getenv(EnvKVQuantization),
-				kvExpectationTimeout, s.Logger, s.Coordinator.Registry.SendLoadModel)
-		}
 		return nil
 	}
 	return VerifyRegistryKVBackends(
@@ -258,8 +259,10 @@ type prewarmSlotObservation struct {
 }
 
 func (o prewarmSlotObservation) matchesBackend(expected string) bool {
-	return o.backend == expected ||
-		(expected == nativeAutoBackend && (o.backend == KVBackendPaged || o.backend == KVBackendContiguous))
+	if expected == nativeAutoBackend {
+		return o.backend == KVBackendPaged || o.backend == KVBackendContiguous
+	}
+	return o.backend == expected
 }
 
 func (o prewarmSlotObservation) isReady(expected string) bool {

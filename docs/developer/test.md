@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-12
 
 ## App Attest provider dispatch
 
@@ -3575,8 +3575,8 @@ DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged \
 go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
   -run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$'
 
-# Default posture (no KV overrides; pinned GPT-OSS native auto resolves paged):
-DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged \
+# Default posture (no KV overrides; assert the actual automatic backend policy):
+DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=auto \
 go test ./e2e/ -count=1 -v -timeout 10m -p=1 -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
 
 make e2e-integration     # go test ./e2e/... -run TestIntegration -v   (no posture pins)
@@ -3585,8 +3585,9 @@ make e2e-benchmark       # go test ./e2e/... -run TestBenchmark -v
 
 The default lane leaves backend, both precision controls and concurrency unset
 in the testbed config; only persistent updater/watchdog services are disabled.
-Its pinned GPT-OSS artifact's native automatic policy is paged, so that concrete
-built-backend assertion remains enabled; it is not an all-model paging claim.
+Its automatic-policy assertion still requires each advertised model to report
+a concrete usable backend. Native auto may resolve paged or contiguous; the
+explicit paged lanes continue to require paged without accepting fallback.
 Explicit `contiguous` test controls
 also write `engine_v2_kv_quantization = "native"`; paged and automatic controls
 retain the provider's live precision default. The default smoke refuses
@@ -3671,7 +3672,7 @@ binary that already has `mlx.metallib` beside it.
 | `TESTBED_MODEL_ID` | `e2e/testbed/suite.go` | Per-suite model override |
 | `DARKBLOOM_TESTBED_KV_BACKEND` | `e2e/testbed/config.go` (`ResolveKVBackend`) | `auto` / `paged` / `contiguous` written to the provider TOML as `engine_v2_kv_backend`; unset = provider default |
 | `DARKBLOOM_TESTBED_MAX_CONCURRENT` | `e2e/testbed/config.go` (`ResolveMaxConcurrent`) | `engine_v2_max_concurrent`; unset = the provider default ([`../provider/cli-reference.md`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)); malformed value is a hard error |
-| `DARKBLOOM_TESTBED_EXPECT_KV_BACKEND` | `e2e/testbed/kv_expectation.go` | Pre-warm every slot and fail unless the heartbeat's `kv_backend` equals this |
+| `DARKBLOOM_TESTBED_EXPECT_KV_BACKEND` | `e2e/testbed/kv_expectation.go` | `paged` / `contiguous` require that concrete heartbeat backend; `auto` verifies model-aware automatic policy and usable slots |
 | `DARKBLOOM_CBV2_PAGED_KV` | `e2e/testbed/config.go` | Provider fleet kill switch; CI refuses to run the paged gate when it is set |
 | `DARKBLOOM_PROMPT_SIDECAR_BINARY` | `e2e/exact_cache_routing_test.go` | Path to a built `promptsidecar` for exact-cache routing |
 | `DARKBLOOM_EXACT_CACHE_TEST_MODEL` | `e2e/exact_cache_routing_test.go` | Override the exact-cache fixture (`mlx-community/gemma-4-e2b-it-4bit`) |
@@ -3851,7 +3852,7 @@ intentional skips for irrelevant PRs, rather than requiring unselected macOS job
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — release/script checks and offline provider CI/cache/routing guards · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `scripts/run-coordinator-tests.py --race --coverprofile` over every package except the top-level `e2e` integration package (`coordinator/internal/e2e` and `e2e/testbed/...` run), isolated API/registry shards and runner guards, with `postgres:16` service, `make sqlc-check` + `gofmt` on tracked Go files outside frozen report evidence; job-summary coverage table (statements over `coordinator/...` only, 80% report-only target, no branch counters), merged `coverage.out` and timing evidence kept 14 days · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) job-summary coverage table (lines, regions and functions over `coordinator/promptsidecar/src`, 80% report-only target, no branch counters) · **Provider Unit Tests** (macOS 12-vcpu) — full debug test build with `--enable-code-coverage`, matched Metal, serial/fresh-process provider tests and installer checks, then a job-summary coverage table (lines, regions and functions over Swift code in `provider-swift/Sources`, with product, CLI, benchmark and total rows, 80% report-only target, no branch counters; the SDK and prompt parity lanes are not counted), full report kept 14 days as the `provider-coverage` artifact · **Provider SDK Tests** (independent macOS 12-vcpu) — full nested test build and all required numerical/SDK selectors through checked wrappers · **Provider Prompt Parity** (independent macOS 12-vcpu) — `verify-prompt-parity.sh`, pinned Swift/Go/Rust vectors and sustained sidecar load proof · **Provider Tests** (Linux aggregate) — enforces the component-routing contract above · **Swift Build + Cache** (push only) — release build of `darkbloom` + `darkbloom-fan-helper` · **Console UI Lint & Build** — Node 22, `npm ci`, lint, vitest, and Next.js build |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in, native live/native checkpoint precision and repeat demand) → default-posture smoke (native auto; pinned GPT-OSS expects paged, no precision override); each lane runs with `-coverpkg` over the production `coordinator/...` packages and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 75 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (blocking; explicit SSD opt-in, native live/native checkpoint precision and repeat demand) → default-posture smoke (native auto policy and usable concrete slots, no precision override); each lane runs with `-coverpkg` over the production `coordinator/...` packages and `-test.gocoverdir`, then a job-summary row of e2e statement coverage (report-only), lane data kept 14 days as the `coordinator-e2e-coverage` artifact |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |

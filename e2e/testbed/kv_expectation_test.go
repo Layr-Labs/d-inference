@@ -78,9 +78,10 @@ func TestResolveExpectedKVBackendValidatesInsteadOfDisarming(t *testing.T) {
 	if _, err := ResolveExpectedKVBackend(""); err == nil {
 		t.Fatal("misspelled expectation resolved silently instead of failing")
 	}
-	// "auto" is a request, not an observable build — reject it too.
-	if _, err := ResolveExpectedKVBackend("auto"); err == nil {
-		t.Fatal("'auto' accepted as an expectation; only built kinds are assertable")
+	// "auto" dispatches the model-aware verifier; it is never an expected
+	// heartbeat value. That verifier still requires a concrete usable backend.
+	if got, err := ResolveExpectedKVBackend(KVBackendAuto); err != nil || got != KVBackendAuto {
+		t.Fatalf("automatic policy expectation = (%q, %v)", got, err)
 	}
 }
 

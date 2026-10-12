@@ -309,7 +309,8 @@ type SuiteConfig struct {
 	KVBackend     string
 	MaxConcurrent int
 	// ExpectKVBackend asserts the KV backend every engine slot was actually
-	// BUILT with ("paged" or "contiguous"); the suite pre-warms each slot and
+	// BUILT with ("paged" or "contiguous"), or "auto" to verify automatic policy.
+	// The suite pre-warms each slot and
 	// fails Start when the heartbeat-reported kv_backend differs or never
 	// arrives. "" falls back to DARKBLOOM_TESTBED_EXPECT_KV_BACKEND, and an
 	// unset env leaves the assertion off. Orthogonal to KVBackend: that knob

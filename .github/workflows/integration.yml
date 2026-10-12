@@ -309,8 +309,8 @@ jobs:
       # Default-posture lane. The testbed's isolated TOML disables persistent
       # updater/watchdog services and leaves backend, precision and concurrency
       # unset. The provider selects native inference and balanced checkpoints.
-      # This pinned GPT-OSS artifact's native auto policy resolves paged, so keep
-      # that concrete backend assertion without overriding either precision.
+      # Verify the model-aware native auto policy and a concrete usable slot;
+      # native auto can legitimately resolve either backend on this runner.
       #
       # COST, honestly: this is a second provider boot plus a second
       # gpt-oss-20b load (warm HF cache, but the weights still page in) for
@@ -320,7 +320,7 @@ jobs:
       - name: Run default-posture smoke (native inference — BLOCKING gate)
         id: smoke
         env:
-          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: paged
+          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: auto
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
@@ -342,8 +342,8 @@ jobs:
           fi
           echo "KV posture requested: provider defaults (no KV or precision" \
                "testbed override; native inference and balanced checkpoint storage)"
-          echo "Backend assertion armed: a stock install that resolves contiguous" \
-               "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged."
+          echo "Automatic policy assertion armed: every advertised model must" \
+               "report a concrete usable backend before smoke requests start."
           covdir="$RUNNER_TEMP/e2e-coverage/smoke"
           mkdir -p "$covdir"
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \

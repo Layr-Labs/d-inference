@@ -226,6 +226,46 @@ func TestAutomaticKVPrewarmPreservesExplicitExpectedBackend(t *testing.T) {
 	}
 }
 
+func TestSuiteAutomaticExpectationVerifiesTheResolvedPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		precision string
+		backend   string
+		wantError bool
+	}{
+		{"", KVBackendPaged, false},
+		{"", KVBackendContiguous, false},
+		{"native", KVBackendContiguous, false},
+		{"balanced", KVBackendPaged, false},
+		{"balanced", KVBackendContiguous, true},
+		{"native", "unknown", true},
+		{"native", nativeAutoBackend, true},
+	} {
+		t.Run(tc.precision+"/"+tc.backend, func(t *testing.T) {
+			t.Setenv(EnvKVQuantization, tc.precision)
+			r := registry.New(kvExpectationLogger())
+			registerAutoKVProvider(r, protocol.ModelInfo{ID: "model", ModelType: "gpt_oss", Quantization: "4bit"})
+			backend := tc.backend
+			r.Heartbeat("auto-box", &protocol.HeartbeatMessage{
+				Type: protocol.TypeHeartbeat, Status: "serving",
+				ModelAutopilot: &protocol.ModelAutopilotState{Enabled: true},
+				BackendCapacity: &protocol.BackendCapacity{
+					TotalMemoryGB: 64,
+					Slots: []protocol.BackendSlotCapacity{{
+						Model: "model", State: "idle", KVBackend: &backend,
+						MaxConcurrency: 4, ActiveTokenBudgetMax: 1024,
+					}},
+				},
+			})
+			suite := Suite{Ctx: context.Background(), Logger: kvExpectationLogger(),
+				Coordinator: &Coordinator{Registry: r}, Config: SuiteConfig{ExpectKVBackend: KVBackendAuto}}
+			err := suite.verifyKVBackendExpectation()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("automatic policy verification error = %v, wantError=%t", err, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestProviderStartSpecPreservesKVPrecisionForOwnedHosts(t *testing.T) {
 	for _, precision := range []string{"native", "off", "0", "balanced", "k8v4", "k8v8", "", "balnced"} {
 		t.Run(precision, func(t *testing.T) {

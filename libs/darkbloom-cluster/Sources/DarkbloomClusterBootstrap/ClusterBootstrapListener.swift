@@ -41,6 +41,12 @@ public final class ClusterBootstrapListener: @unchecked Sendable {
         socket.cancel()
         unlink(socketPath)
         socket.refuseQueuedConnections()
+        // The directory too: a process that ends without this object's
+        // deinit (a leader that exits 1 after a rank loss) left it behind,
+        // which the teardown verification found on hardware (orphan matrix,
+        // 2026-10-12); the orphan reaper removes such leftovers, and this
+        // keeps the product from making them.
+        rmdir(directory)
     }
 
     public func accept(processID: Int32, identity: ClusterBootstrapIdentity,

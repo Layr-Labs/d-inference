@@ -742,3 +742,24 @@ Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33
   on the device line and says stopping the program gives it back, in each answer within the Mac's memory and in a
   refusal.
 - MTP per family: `handoff/MTP-PAIR.md`.
+- **MTP credit (merged 2026-10-12 from work/planner-mtp-credit)**: a row with a speculative head is credited its
+  measured speed-up on a decoding Mac that prefers the head (Apple M5 generation or later, or a measured rate with
+  the head), the head's bytes are charged to that rank, and ties go to the head before headroom. On the M3 Ultra +
+  M5 Ultra pair, with no speed records (what a fresh install has: no code writes the wizard's `speed/` folder),
+  `darkbloom cluster plan` saves for every family (Mac A live profile, the M5 Ultra's idle profile):
+
+  | Row | Cut | Mode | Mac A (M3 Ultra) holds | M5 Ultra holds |
+  |---|---|---|---|---|
+  | Qwen3.5 9B | 16 | phase_split_mtp_v1 | 2.35 GiB | 4.83 GiB (every layer + head) |
+  | Qwen3.8 27B | 32 | phase_split_mtp_v1 | 7.06 GiB | 14.34 GiB |
+  | Qwen3.5 / 3.6 35B A3B | 20 | phase_split_mtp_v1 | 9.09 GiB | 18.62 / 19.01 GiB |
+  | Bonsai 2 27B | 32 | pipeline_v1 | 3.58 GiB | 3.58 GiB |
+  | Nemotron 3.5 | 27 | pipeline_v1 | 8.22 GiB | 8.82 GiB |
+  | GPT-OSS 20B | 12 | pipeline_v1 | 5.62 GiB | 5.62 GiB |
+  | Gemma 4 26B (bf16 / 8-bit / QAT 4-bit) | 15 | pipeline_v1 | 12.85 / 12.85 / 6.93 GiB | 12.86 / 12.86 / 6.94 GiB |
+  | MiMo V2.6 | memory-dependent (18 with 131 GiB admissible on Mac A; 14 with 94 GiB) | pipeline_v1 | 56.7 GiB at 18 | 99.1 GiB at 18 |
+
+  These are the cuts a cross-cable qualification of this pair must run (a parity qualification is cut-specific);
+  the speed-informed cuts (9B 4, 27B 4-8, A3B 8, Nemotron 11-13) appear only when speed records are supplied.
+  If the setup wizard is run on the M5 Ultra it leads (rank 0 = the local member), the M3 Ultra decodes and gets no
+  head; that order is slower than the M5 Ultra alone (planning finding F2, owner decision pending).

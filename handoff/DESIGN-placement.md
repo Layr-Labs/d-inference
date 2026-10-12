@@ -798,3 +798,19 @@ Mirrored 27B, continued after the restart (2026-10-09 23:06Z to 2026-10-10 01:33
   account's program, the gate counted no cache and refused every load; it now counts speculative pages as inactive
   file pages in its second bound (`DESIGN-resource-gate-v3.md`, "Speculative pages"). The 32 GiB cap still applies,
   so a load larger than free + 32 GiB (MiMo's M5 Ultra rank) waits until those pages are reclaimed.
+- **The same pair with the product's own prefill schedule (`one_chunk_lookahead_v1`, what every saved setup but
+  MiMo's names) at the index cuts, 2026-10-12** (request totals; the M5 Ultra's speculative head counted where it
+  has one, from its single-process reference):
+
+  | Row (index cut) | Pair | M5 Ultra alone | M3 Ultra alone | Near-tie rule vs both Macs' references |
+  |---|---|---|---|---|
+  | 9B (4, MTP), 5,120 + 128 | 1.74-1.82 s | ~1.82 s with head (2.22 s without) | 6.71-6.80 s | pass |
+  | 27B (8, MTP), 5,120 + 128 | 5.07-5.18 s | ~5.23 s with head (6.30 s without) | 21.5-21.8 s | pass |
+  | Qwen3.5 A3B (4, MTP), 4,096 + 64 | 1.19-1.35 s | ~1.31 s with head (1.55 s without) | 3.36-3.44 s | pass |
+  | Bonsai (8, phase split), 4,096 + 64 | 4.54-4.58 s | 4.71-4.73 s (no head) | 17.6 s | pass |
+  | Gemma 4 QAT4 (5, pipeline) | 1.53-1.60 s | 1.37-1.43 s | 3.37 s | pass |
+  | GPT-OSS (4, pipeline) | 1.47-1.57 s | 1.30-1.37 s | 3.20-3.27 s | **fails at cut 4** (serial too); passes at 12 |
+
+  So with the index a fresh install's pair is faster than the M5 Ultra alone for the dense, A3B and Bonsai rows,
+  and the pipeline-only rows trail it by 10-15 %. GPT-OSS diverges at cut 4 on this pair (gap 0.59 at its second
+  token, both Macs' references agreeing); a grant for it can only name cuts that passed.

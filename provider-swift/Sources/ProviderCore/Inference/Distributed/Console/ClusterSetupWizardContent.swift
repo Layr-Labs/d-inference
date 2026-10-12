@@ -735,6 +735,34 @@ enum ClusterSetupContent {
             b.verdict(g.waiting, "There is no saved setup to serve yet: step 4.", .warning, from: .wired("pair.saved"))
             return
         }
+        if !saved.isLeader, saved.overLink == true {
+            // Reached over the paired link: this Mac serves its own rank (`darkbloom cluster link-follower`).
+            switch state.session {
+            case .none, .ended:
+                if case .ended(let description, let clean) = state.session {
+                    b.verdict(clean ? g.done : g.blocked, "Following \(description).", clean ? .good : .bad, from: .wired("session.process"))
+                    if !clean, !state.sessionOutput.isEmpty {
+                        b.heading("Its last output")
+                        for line in state.sessionOutput.suffix(6) { b.text(line, .dim, indent: 4, from: .wired("session.process")) }
+                    }
+                    b.blank()
+                }
+                b.fact("Model", "\(saved.publicModelID) \u{B7} this Mac holds rank \(saved.localRank)", from: .wired("pair.saved"))
+                b.fact("Left wired", leftWired(local.memoryGuard), local.memoryGuard.decision == .refused ? .bad : .normal, from: .wired("session.cleanup"))
+                b.action("s", "Start following: this Mac serves its rank to the leader over the paired link", enabled: local.memoryGuard.decision != .refused,
+                    from: .wired("session.start"))
+            case .launching:
+                b.text("\(g.spin(state.now)) Starting `darkbloom cluster link-follower`\u{2026}", .accent, from: .wired("session.process"))
+            case .running(let pid, _):
+                b.text("\(g.spin(state.now)) Following (process \(pid)): the leader opens this Mac's rank over the paired link when it starts serving.",
+                    .accent, from: .wired("session.process"))
+                for line in state.sessionOutput.suffix(4) { b.text(line, .dim, indent: 4, from: .wired("session.process")) }
+                b.action("x", "Stop following", from: .wired("session.stop"))
+            case .stopping(let pid):
+                b.text("\(g.spin(state.now)) Stopping process \(pid)\u{2026}", .accent, from: .wired("session.process"))
+            }
+            return
+        }
         guard saved.isLeader else {
             b.verdict(g.done, "This Mac follows: the leader starts and stops serving and reaches this Mac itself.", .good, from: .wired("pair.saved"))
             b.fact("Device", local.journal == .ownershipUnproven ? "in use by a session (journal not empty)" : "idle (journal empty)", from: .wired("journal.state"))

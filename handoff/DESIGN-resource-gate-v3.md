@@ -760,3 +760,39 @@ Still to decide:
    compression staying near zero while the reusable count falls by what the
    load took; and the same on a Mac where reusable pages share the inactive
    queue with idle application memory, which is where it is likely to fail.
+
+## Speculative pages in the second bound (2026-10-11)
+
+The rule above left speculative pages out of the inactive side of the second
+bound while counting them in `file-backed`. On the M5 Ultra (256 GiB) after
+model staging and hash passes the cache was almost all read-ahead:
+
+| Counter (16 KiB pages) | Pages | GiB |
+|---|---:|---:|
+| free | 137,184 | 2.1 |
+| active | 1,293,762 | 19.7 |
+| inactive | 2,674,989 | 40.8 |
+| speculative | 12,208,574 | 186.3 |
+| file-backed | 15,252,103 | 232.7 |
+| compressor / swap-outs | 0 / 0 | |
+
+`memory_pressure` reported 97 % free. The gate refused every 9B stage there:
+`Selected-stage loading needs 6.00 GiB of admissible memory and has 1.48 GiB:
+1.48 GiB free plus 0.00 GiB of file cache counted (... 140.68 GiB above the
+92.21 GiB reserve, 0.00 GiB before half of the cache is active ...; 232.90 GiB
+file-backed)`, so a coordinator-formed pair could never start.
+
+Speculative pages are file-backed, are the first pages the pageout scan takes
+(the aged speculative queue comes before the inactive queue), and the kernel's
+own inactive target weighs `inactive + speculative` against half of
+`active + inactive + speculative`. The second bound is now
+
+```
+before = max(0, 2 × (inactive file-backed + speculative) − file-backed)
+```
+
+which equals the old bound on a Mac without read-ahead. On the M5 Ultra state
+above it is 221 GiB, so the reserve bound (140.7 GiB) decides and 32 GiB (the
+cap) is counted. The compression guard is unchanged: a load that compresses
+more than 512 MiB stops counting cache whatever this bound says. Unit test:
+`speculativePagesCountWithTheInactiveFilePagesInTheSecondBound`.

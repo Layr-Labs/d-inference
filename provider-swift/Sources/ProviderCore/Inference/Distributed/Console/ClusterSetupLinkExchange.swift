@@ -194,6 +194,23 @@ public enum ClusterSetupLinkExchange {
 
     // MARK: - Asking (the Mac that plans)
 
+    static let requestLockName = "darkbloom-cluster-exchange.lock"
+
+    /// One request at a time from this user to the paired Mac. Its listener keeps one live session per edge and a
+    /// newer session supersedes the older, whose answer then goes to the newer one and is lost: two processes on
+    /// this Mac asking at once (the onboarding and the leader's cluster service) would take each other's answers
+    /// away. Each request waits for the one under way (its own time and 30 s more) and then has the edge alone.
+    static func oneAtATime<Value>(seconds: Double, _ request: () throws -> Value) throws -> Value {
+        let held: ClusterConsoleInstanceLock
+        do {
+            held = try ClusterConsoleInstanceLock.acquire(directory: ClusterConsoleInstanceLock.userTemporaryDirectory(),
+                fileName: requestLockName, waitSeconds: seconds + 30)
+        } catch is ClusterConsoleInstanceLock.Held {
+            throw ClusterSetupFailure("another request to the other Mac did not finish within \(Int(seconds + 30)) s")
+        }
+        return try withExtendedLifetime(held) { try request() }
+    }
+
     /// One connected session to the other Mac's exchange, found on the cable.
     final class Session: @unchecked Sendable {
         let client: ClusterLinkControlClient
@@ -248,6 +265,11 @@ public enum ClusterSetupLinkExchange {
     public static func ask(pairing: Pairing, selection: ClusterLinkInterfaceSelection, seconds: Double,
                            port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly)
         throws -> (answer: ClusterSetupLinkAnswer, peerAddress: ClusterLinkIPv4Address) {
+        try oneAtATime(seconds: seconds) { try askNow(pairing: pairing, selection: selection, seconds: seconds, port: port, policy: policy) }
+    }
+
+    private static func askNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, seconds: Double, port: UInt16,
+                               policy: ClusterLinkInterfacePolicy) throws -> (answer: ClusterSetupLinkAnswer, peerAddress: ClusterLinkIPv4Address) {
         let found = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8))
         guard let peer = found.first else {
             throw ClusterSetupFailure("the other Mac's wizard did not answer on the cable: open `darkbloom cluster` on the other Mac too")
@@ -274,6 +296,14 @@ public enum ClusterSetupLinkExchange {
     public static func command(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
                                body: Data, seconds: Double, port: UInt16 = ClusterSetupLinkExchange.port,
                                policy: ClusterLinkInterfacePolicy = .thunderboltOnly) throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
+        try oneAtATime(seconds: seconds) {
+            try commandNow(pairing: pairing, selection: selection, peerAddress: peerAddress, body: body, seconds: seconds, port: port, policy: policy)
+        }
+    }
+
+    private static func commandNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                                   body: Data, seconds: Double, port: UInt16,
+                                   policy: ClusterLinkInterfacePolicy) throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
         var address = peerAddress
         if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8)).first?.address }
         guard let address else {
@@ -291,6 +321,13 @@ public enum ClusterSetupLinkExchange {
     public static func deliver(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
                                delivery: Data, seconds: Double, port: UInt16 = ClusterSetupLinkExchange.port,
                                policy: ClusterLinkInterfacePolicy = .thunderboltOnly) throws -> String {
+        try oneAtATime(seconds: seconds) {
+            try deliverNow(pairing: pairing, selection: selection, peerAddress: peerAddress, delivery: delivery, seconds: seconds, port: port, policy: policy)
+        }
+    }
+
+    private static func deliverNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                                   delivery: Data, seconds: Double, port: UInt16, policy: ClusterLinkInterfacePolicy) throws -> String {
         var address = peerAddress
         if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8)).first?.address }
         guard let address else {

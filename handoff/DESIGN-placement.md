@@ -508,6 +508,34 @@ Typed on purpose, and listed so that nobody mistakes them for detection:
   requested order the grant excludes, and says so in the plan
   (`ClusterPlacementFlow.leaderUnderGrant`). Each Mac still checks its own
   rank with its own chip before it serves.
+- Qualified shapes (2026-10-12). Every cross-cable check on record, passed
+  and failed, has the parity qualification's shape: each rank's chip class
+  in rank order, the cuts, the mode (`ClusterPairQualificationRecords`,
+  `ClusterPairServingGrants.records`). One universal rule: a model with a
+  failed check on record, at any shape and on any chips, is planned and
+  started only at shapes a check passed in. The planner takes the rule as
+  `ClusterPlacementPolicy.admitsShape` and leaves other candidates out
+  before ranking, counts the possible placements it left out
+  (`unqualifiedPossible`) and refuses in its own words, never as a memory
+  refusal; a rank start of such a model checks its cuts and mode with its
+  own class. A model with no failed check keeps its grant by role and class.
+  Why: GPT-OSS 20B's single-Mac references on an M3 Ultra and on an M5 chip
+  already differ beyond a near tie on two of four requests, and every pair
+  with the M3 Ultra leading an M5 diverged at output 1 of the 4,096-token
+  request at cuts 4, 8 and 10 while cut 12 gave the reference's tokens on
+  both pairs. The hand-off is bit-exact (the receiver checks the payload
+  digest; rank 0's state equals the M3 Ultra reference's), so the departure
+  is the composition of two chips' arithmetic, not a defect in the cut: no
+  code change in the pair makes those cuts equal, and only a check can say
+  which shapes do. On the M3 Ultra + M5 Ultra pair the first two outputs
+  diverge at cuts 4, 8 and 10 and match at 11, 12 and 16: the departure
+  needs layer 10 computed on the M5 from the M3 Ultra's residual, in the
+  first decode step (the prompt's row stays between the two references).
+  There the pair's row sits 0.21-0.22 (mean |difference|) from both
+  references, three times their own distance (0.07), the signature of a
+  discrete choice such as an expert route flipped by a near tie rather than
+  of rounding; at cut 11 and above it sits 0.005-0.012 from the M3 Ultra's. Gemma 4 QAT (diverged at cut 12, passed at 15 and 18)
+  fits the same records once its checks are entered.
 - The session envelope (16 requests, 300 s).
 
 ## Wiring, in order

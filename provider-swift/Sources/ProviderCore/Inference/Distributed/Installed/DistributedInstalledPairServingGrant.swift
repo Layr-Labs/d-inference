@@ -321,10 +321,13 @@ public enum ClusterPairServingGrants {
     /// entry is enough to restrict the model's shapes (`ClusterPairQualificationRecords`).
     public static let failedChecks: [String: [ClusterPairServingQualification]] = [
         // M3 Ultra rank 0: with an M5 Max decoding at cuts 8 and 10 (2026-10-09/10, pipeline serial and lookahead,
-        // compact decode); with an M5 Ultra decoding at cut 4 (2026-10-12, serial and lookahead).
+        // compact decode); with an M5 Ultra decoding at cut 4 (2026-10-12, serial and lookahead, the 4,096-token
+        // request) and at cuts 8 and 10 (2026-10-12, the same request's first two outputs). Every cut that leaves
+        // layer 10 to the M5 departs at output 1; cuts 11, 12 and 16 do not.
         "registered_gpt_oss_20b": failed(m3UltraLeads, cut: 8, .pipeline, .pipelineCompactDecode)
             + failed(m3UltraLeads, cut: 10, .pipeline, .pipelineCompactDecode)
-            + failed(m3UltraLeadsM5Ultra, cut: 4, .pipeline),
+            + failed(m3UltraLeadsM5Ultra, cut: 4, .pipeline) + failed(m3UltraLeadsM5Ultra, cut: 8, .pipeline)
+            + failed(m3UltraLeadsM5Ultra, cut: 10, .pipeline),
     ]
 
     /// The passed checks of a withheld model, kept on record so that its plan

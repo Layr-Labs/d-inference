@@ -1,0 +1,222 @@
+{
+ "Qwen3.5-9B-2026-09-03-r1": {
+  "cut": 16,
+  "mode": "pipeline_v1",
+  "planSHA256": "d0cadbe6c95998b25116cfc3c9b8925335d9c45239329fe0c66c1d5606641baf",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 16,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 32,
+    "firstLayer": 16,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen35_9b"
+ },
+ "Qwen3.8-27B-4bit-mtp-2026-09-03-r1": {
+  "cut": 32,
+  "mode": "pipeline_v1",
+  "planSHA256": "fd3e7e67963315986ab655810491cea3468fa891cb3e7bfd367f2d52ccb9e811",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 32,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 64,
+    "firstLayer": 32,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen38_27b"
+ },
+ "gemma-4-26b": {
+  "cut": 15,
+  "mode": "pipeline_v1",
+  "planSHA256": "38cfd0bd6d4bc26548ba5c14e4a55fa3acb6273279a15f82c62545f50091b771",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 15,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 30,
+    "firstLayer": 15,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gemma4_26b"
+ },
+ "gemma-4-26b-8bit": {
+  "cut": 15,
+  "mode": "pipeline_v1",
+  "planSHA256": "7fbc5af12c91f9850e363a8c2ef7b494f6dbf2e9f7c73f8299d61df042746ed9",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 15,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 30,
+    "firstLayer": 15,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gemma4_26b_8bit"
+ },
+ "gemma-4-26b-qat-4bit": {
+  "cut": 15,
+  "mode": "pipeline_v1",
+  "planSHA256": "05336f3e21ad84acc42b845967f802197e7587307e21f58d745c8bbc999a7eeb",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 15,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 30,
+    "firstLayer": 15,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gemma4_26b_qat_4bit"
+ },
+ "gpt-oss-20b-2026-05-25-r1": {
+  "cut": 12,
+  "mode": "pipeline_v1",
+  "planSHA256": "e5637330d84486860dfaeef5b9e6f5e31842b785bfb17af067db5373cb9f2c74",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 12,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 24,
+    "firstLayer": 12,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_gpt_oss_20b"
+ },
+ "mimo-v2.6-flash-mopd-2026-09-28-r1": {
+  "cut": 14,
+  "mode": "pipeline_v1",
+  "planSHA256": "cd1de9e5babe0c44e0add91be2df2588b8798c5b8b6b13731280f8c45ce6eb04",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 14,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 48,
+    "firstLayer": 14,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_mimo_v26_flash_mopd"
+ },
+ "nvidia-nemotron-3.5-lightning-2026-09-30-r1": {
+  "cut": 27,
+  "mode": "pipeline_v1",
+  "planSHA256": "f4ab3e4a2ba1e3b9583fd906db996bb8f1a887b575a1a8bca90a8cd455e5912a",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 27,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 52,
+    "firstLayer": 27,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_nemotron35_lightning"
+ },
+ "qwen3.5-35b-a3b-2026-08-25-r1": {
+  "cut": 20,
+  "mode": "pipeline_v1",
+  "planSHA256": "cb1ca54108d4373fd258b20f0a5db32e5833fab62b76bbec047bf41965a37382",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 20,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 40,
+    "firstLayer": 20,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen35_35b_a3b"
+ },
+ "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1": {
+  "cut": 20,
+  "mode": "pipeline_v1",
+  "planSHA256": "809384d1ea3937fe8534a966f9780d44f58f76f6d1e213e4f12302197c60a0b5",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 20,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 40,
+    "firstLayer": 20,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_qwen36_35b_a3b"
+ },
+ "ternary-bonsai-2-27b-2026-09-17-r1": {
+  "cut": 32,
+  "mode": "pipeline_v1",
+  "planSHA256": "aa5660e08f79352709b193b7de678ee25db0544d2d5772c96dcd299a1a31ebfe",
+  "ranks": [
+   {
+    "device": "mac-a",
+    "endLayer": 32,
+    "firstLayer": 0,
+    "fit": "now"
+   },
+   {
+    "device": "mac-b",
+    "endLayer": 64,
+    "firstLayer": 32,
+    "fit": "now"
+   }
+  ],
+  "runtimeModelID": "registered_ternary_bonsai_2_27b"
+ }
+}

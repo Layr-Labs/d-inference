@@ -210,6 +210,15 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
     /// owner can do in a session reaches this.
     public var afterRestartBytes: Int { min(physicalMemoryBytes, pageableBytes + compressorBytes) }
 
+    /// More memory is wired than macOS keeps wired on a Mac at rest (a
+    /// quarter of physical memory, several times what the system itself
+    /// wires): a running program holds it, a loaded model or another model
+    /// server. The answers below count no wired memory as freeable, which is
+    /// right for the system's own share; this share comes back when that
+    /// program stops, so the plan's words say so instead of "whatever is
+    /// freed".
+    public var wiredLooksHeldByAProgram: Bool { wiredBytes > physicalMemoryBytes / 4 }
+
     /// Which answer a requirement gets on this Mac.
     public func fit(_ requiredBytes: Int) -> ClusterPlacementFit {
         if admits(requiredBytes) { return .now }

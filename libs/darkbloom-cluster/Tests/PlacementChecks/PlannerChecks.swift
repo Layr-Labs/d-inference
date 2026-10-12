@@ -328,6 +328,30 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
             busy[0].profile.memory.countedFileCacheBytes == 0 && (busyResult.chosen?.tier ?? 0) >= 1)
     }
 
+    // Memory wired by a running program (another account's model server held 222.9 GiB of
+    // a 256 GiB Mac on 2026-10-11): the words must not say freeing cannot help.
+    do {
+        let busy = SyntheticMac(physicalGiB: 256, freeGiB: 7, inactiveCacheGiB: 10, wiredGiB: 222)
+        let devices = [try SyntheticMac(physicalGiB: 256, freeGiB: 87, inactiveCacheGiB: 60, wiredGiB: 10).device("a"), try busy.device("b")]
+        checks.require("wired memory: a quarter of physical memory or less is the system's; more is a running program's",
+            !devices[0].profile.memory.wiredLooksHeldByAProgram && devices[1].profile.memory.wiredLooksHeldByAProgram)
+        let result = try checkRule("256 GiB Mac with 222 GiB wired beside an ordinary 256 GiB Mac, surveyed 173 GB model", devices, mimo, checks)
+        let text = ClusterPlacementExplanation.describe(result, devices: devices, layout: mimo).joined(separator: "\n")
+        let lines = text.split(separator: "\n")
+        checks.require("wired by a program: the busy Mac's answer says stopping the program frees it, never 'whatever is freed'",
+            lines.contains { $0.contains("b: needs") && $0.contains("of all the memory that is not wired") && $0.contains("stopping that program gives it back") }
+                && !text.contains("whatever is freed"))
+        checks.require("wired by a program: the device line names it for the busy Mac only",
+            lines.filter { $0.contains("wired is far more than macOS keeps wired at rest") }.count == 1)
+        checks.require("wired by a program: the ordinary Mac's answer keeps its usual words",
+            lines.contains { $0.contains("a: needs") && !$0.contains("running program") })
+        let both = [try busy.device("a"), try SyntheticMac(physicalGiB: 256, freeGiB: 4, inactiveCacheGiB: 4, wiredGiB: 230).device("b")]
+        let refused = try checkRule("two Macs whose memory a program holds wired, surveyed 173 GB model", both, mimo, checks)
+        let refusedText = ClusterPlacementExplanation.describe(refused, devices: both, layout: mimo).joined(separator: "\n")
+        checks.require("wired by a program on both: refused, and the refusal says stopping the program changes the answer",
+            refused.chosen == nil && refusedText.contains("stopping that program changes the answer") && !refusedText.contains("whatever is freed"))
+    }
+
     // Nothing passes the gate now: the plan asks one Mac for memory rather than two.
     do {
         // The large Mac admits 87 GiB and the small one 44: no cut of the 173 GB model fits both now.

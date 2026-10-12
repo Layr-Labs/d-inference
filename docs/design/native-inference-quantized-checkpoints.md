@@ -1,8 +1,8 @@
 # Native inference and quantized checkpoints
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-11
 
-Status: **In progress** - 2026-10-09 - independent checkpoint precision is being implemented in the provider and SDK; integration, qualification and review remain required.
+Status: **Implemented** - 2026-10-11 - independent checkpoint precision and native restoration are implemented and covered by [isolated qualification](../reports/2026-10-11-native-inference-checkpoint-storage.md); no release or deployment is implied.
 
 Keep native attention execution as the provider default while compressing
 eligible encrypted SSD checkpoints independently. Restore those checkpoints

@@ -69,6 +69,16 @@ time; they are not network control endpoints or serving credentials.
 
 ## Provider endpoint resumption and logout
 
+The separate physical diagnostic uses `DARKBLOOM_NATIVE_SERVE_QUALIFICATION`:
+only exact `1` enables it; unset and every other value refuse before any proof
+or model work. `NativeServeQualification.run` in
+`provider-swift/Sources/ProviderCore/Diagnostics/NativeServeQualification.swift`
+accepts no caller-provided signing key, binary hash, hardware or privacy claims.
+It uses normal serving safeguards with private state, target-only contiguous
+inference, no SSD prefix cache and no updater. This opt-in is not forwarded to
+launchd and does not enable production coordinator resumption. See
+[native serving qualification](../developer/test.md#native-serving-qualification).
+
 | Setting | Behavior | Consumer |
 |---|---|---|
 | Endpoint-resumption capability | No new environment variable or config key. Normal serving installs a fixed process-key responder; registration advertises protocol 1 and a fresh nonce per socket. No responder means both fields are omitted. | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`) |

@@ -41,6 +41,16 @@ limits and verification. These checks do not certify disk firmware.
 
 ## Global options
 
+The hidden `--native-serve-qualification-v1 <ws-url> <private-directory>` entry
+is an explicitly enabled physical diagnostic, not an installed-service command.
+`NativeServeQualificationCommand` in
+`provider-swift/Sources/darkbloom/NativeServeQualificationCommand.swift` runs a
+separate AppKit host without `Start`, APNs registration or daemon replacement.
+It requires `DARKBLOOM_NATIVE_SERVE_QUALIFICATION=1`, a signed release app,
+literal `127.0.0.1` WebSocket transport and owner-only inputs. See
+[native serving qualification](../developer/test.md#native-serving-qualification)
+for isolation, evidence and untested-scope limits.
+
 Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
 warning to stderr before command parsing or AppKit hosting, including help,
 version and background commands. `MacOSUpgradeNotice.emit` in

@@ -11,7 +11,7 @@ private final class Received: @unchecked Sendable {
     private var retired = false
     func accept(_ event: DistributedResidentEvent) -> Bool {
         lock.withLock {
-            switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value; case .promptCache: break }
+            switch event { case .token(let id): tokens.append(id); case .finished(let value): finished = value; case .promptCache, .telemetry: break }
             return true
         }
     }

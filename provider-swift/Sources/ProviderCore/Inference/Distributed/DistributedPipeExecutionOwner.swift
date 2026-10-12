@@ -112,6 +112,7 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
                 return emit(.finished(reason == .length ? .length : .stop))
             case .failed(let message): return emit(.finished(.error(message)))
             case .promptCache(let reused, let stored): return emit(.promptCache(reused: reused, stored: stored))
+            case .telemetry(let rank0, let rank1): return emit(.telemetry(.init(rank0: rank0, rank1: rank1)))
             }
         }
     }

@@ -1,5 +1,6 @@
 import DarkbloomClusterProtocol
 import Foundation
+import DarkbloomClusterProtocol
 import MLXLMCommon
 
 /// Experimental identity reported by an owner after both peer loads finish.
@@ -100,6 +101,36 @@ public enum DistributedResidentEvent: Sendable {
     /// caches and both now hold `stored` prompt frontiers. Once, before the
     /// finish, only when either is not empty.
     case promptCache(reused: Int, stored: [Int])
+    /// What the ranks measured of the request (hand-off, MTP acceptance).
+    /// Once, before the finish, only when either rank sent any.
+    case telemetry(DistributedRankTelemetry)
+}
+
+/// Both ranks' own measurements of one request (PROD-PLAN S24). Values only.
+public struct DistributedRankTelemetry: Sendable, Equatable {
+    /// The slower rank's hand-off wall time, in milliseconds.
+    public let handoffMilliseconds: Double?
+    public let handoffBytes: Int?
+    /// The decoding rank's MTP drafts and acceptances, summed over the ranks that drafted.
+    public let mtpDrafted: Int?
+    public let mtpAccepted: Int?
+
+    public init(handoffMilliseconds: Double?, handoffBytes: Int?, mtpDrafted: Int?, mtpAccepted: Int?) {
+        self.handoffMilliseconds = handoffMilliseconds; self.handoffBytes = handoffBytes
+        self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted
+    }
+
+    /// Merges what each rank sent: the longer hand-off (both ranks wait for it),
+    /// the larger byte count, and the MTP counts of whichever ranks drafted.
+    public init(rank0: ClusterWorkerRequestTelemetry?, rank1: ClusterWorkerRequestTelemetry?) {
+        let ranks = [rank0, rank1].compactMap { $0 }
+        let handoff = ranks.compactMap(\.handoffNanoseconds).max()
+        handoffMilliseconds = handoff.map { (Double($0) / 1e4).rounded() / 100 }
+        handoffBytes = ranks.compactMap(\.handoffBytes).max()
+        let drafted = ranks.compactMap(\.mtpDrafted), accepted = ranks.compactMap(\.mtpAccepted)
+        mtpDrafted = drafted.isEmpty ? nil : drafted.reduce(0, +)
+        mtpAccepted = accepted.isEmpty ? nil : accepted.reduce(0, +)
+    }
 }
 
 /// A single request's resource ownership, including both peers' request state.

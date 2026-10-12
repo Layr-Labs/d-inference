@@ -14,6 +14,8 @@ extension ClusterDiagnosticsReport {
         saved = other.saved; live = other.live; deviceJournal = other.deviceJournal
         self.checks = checks
         localLinkInspectionPerformed = other.localLinkInspectionPerformed
+        // Incident and follower text was redacted when it was recorded.
+        observability = other.observability
     }
 }
 

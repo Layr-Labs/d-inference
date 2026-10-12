@@ -7,6 +7,9 @@ public enum ClusterWorkerRequestEvent: Sendable {
     /// both now hold `stored` frontiers of this prompt. Delivered once, just
     /// before `finished`, only when either is not empty.
     case promptCache(reused: Int, stored: [Int])
+    /// What each rank measured of the request (hand-off, MTP acceptance).
+    /// Delivered once, just before `finished`, only when either rank sent any.
+    case telemetry(rank0: ClusterWorkerRequestTelemetry?, rank1: ClusterWorkerRequestTelemetry?)
 }
 
 public struct ClusterWorkerPairReadiness: Sendable {

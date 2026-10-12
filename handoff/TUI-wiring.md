@@ -125,7 +125,7 @@ its key agreement instead, and the setup is delivered the same way it is now
 | `session.join` | Join | `darkbloom start --cluster-member` | exists, not wired (C10: a member in this build declines every preparation, so joining cannot reach a serving pair) |
 | `session.leave` | Leave | — | none (C13) |
 | `session.drain` | Drain | `DistributedLocalServer.drain` | exists, not wired (C13: no verb or control reaches a running leader) |
-| `session.follower` | Follower live status | — | none (C13) |
+| `session.follower` | Follower live status: state, model, free and wired memory, thermal state, requests, its newest incidents, and how old the mirror is | The follower member publishes `ClusterLinkStatusMirror` every 2 s on the link control channel (`ClusterFollowerStatusReporter`); the leader's `ClusterFollowerStatusMonitor` keeps the newest per rank, records an incident when it reports a failure or goes silent, and writes `~/.darkbloom/cluster/follower-status.json`, read through `ClusterDiagnostics.status` | wired |
 
 ## Hosting, observability, export
 
@@ -136,7 +136,8 @@ its key agreement instead, and the setup is delivered the same way it is now
 | `host.coordinator` | Coordinator-formed pair serving | Member registration and control | exists, not wired (C10: declines every preparation) |
 | `host.ownerViews` | Coordinator's view of this account's pairs | `GET /v1/me/cluster-pairs`, `GET /v1/me/providers` | exists, not wired (Privy session only; the provider holds a device token and has no client) |
 | `host.request` | A client request through the serving API | `POST /v1/chat/completions` (streamed) on the local listener with the local token: the wizard's test prompt (`t`) and its check's 8 tokens. The console has no key for it | wired |
-| `observe.requests` | Request speed and first-token time | `DistributedRequestObservation` | exists, not wired (logged only; nothing reads it back) |
+| `observe.requests` | Per-request pair telemetry: mode, cut, first token, decode rate, hand-off, MTP acceptance, cached tokens, and their medians | `~/.darkbloom/cluster/pair-telemetry.json`, written by the leader's `DistributedPairTelemetryContext` from `DistributedRequestObservation` and the ranks' `requestTelemetry` events, read through `ClusterDiagnostics.status` (`ClusterObservabilitySnapshot`) | wired |
+| `observe.incidents` | Open incidents with reason, guidance and what to do | `~/.darkbloom/cluster/incidents.json` (`ClusterIncidentLog`, the durable log every launch and serving failure is recorded in), read through `ClusterDiagnostics.status`; `darkbloom cluster incidents` lists and dismisses | wired |
 
 ## Persisted intent
 

@@ -31,14 +31,19 @@ public struct ClusterPairServingContext: Sendable {
     /// Throws when the pair cannot form; the session keeps its endpoint's
     /// cleanup either way.
     public let makeOwner: @Sendable (NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner
+    /// The plan's identifiers, mode and cut (S24): each start's pair
+    /// telemetry and incidents name them. Nil records nothing.
+    public let observabilityFacts: DistributedSessionFacts?
 
     public init(publicModelID: String, modelType: String?, tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
                 profile: DistributedResidentExecutionProfile, firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
                 residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil, artifactBytes: Int = 0,
+                observabilityFacts: DistributedSessionFacts? = nil,
                 makeOwner: @escaping @Sendable (NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner) {
         self.publicModelID = publicModelID; self.modelType = modelType; self.tokenizer = tokenizer
         self.eosTokenIDs = eosTokenIDs; self.profile = profile; self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
-        self.residentPrefixEvidence = residentPrefixEvidence; self.artifactBytes = artifactBytes; self.makeOwner = makeOwner
+        self.residentPrefixEvidence = residentPrefixEvidence; self.artifactBytes = artifactBytes
+        self.observabilityFacts = observabilityFacts; self.makeOwner = makeOwner
     }
 
     /// The production owner: `ClusterWorkerPair` over the session's endpoint
@@ -129,7 +134,11 @@ extension ProviderLoop: NativePairMemberServingHost {
         defer { clusterPairServingForming = false }
         let owner: any DistributedResidentExecutionOwner
         do { owner = try await Task.detached { try context.makeOwner(start) }.value }
-        catch { endClusterPairServing(epoch); throw error }
+        catch {
+            // S24: a pair that could not form is a launch failure with a reason.
+            recordClusterPairIncident(.activationLaunchFailed, error: error, context: context, start: start)
+            endClusterPairServing(epoch); throw error
+        }
         // A stop that arrived while the pair formed wins: nothing publishes.
         guard clusterPairServingEpoch == epoch, !clusterPairServingStopped else {
             await owner.shutdown(); endClusterPairServing(epoch)
@@ -139,10 +148,15 @@ extension ProviderLoop: NativePairMemberServingHost {
         let identity = DistributedResidentIdentity(membershipEpoch: epoch, modelID: wire.modelID,
             artifactSHA256: wire.artifactSHA256, configurationSHA256: wire.configurationSHA256,
             peers: wire.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) })
+        let telemetry = context.observabilityFacts.map { facts in
+            DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
+                log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()))
+        }
         let specification = ClusterPairSlotSpecification(publicModelID: context.publicModelID,
             modelType: context.modelType, tokenizer: context.tokenizer, eosTokenIDs: context.eosTokenIDs,
             expectedIdentity: identity, profile: context.profile, firstTokenBudgetPolicy: context.firstTokenBudgetPolicy,
-            residentPrefixEvidence: context.residentPrefixEvidence, artifactBytes: context.artifactBytes)
+            residentPrefixEvidence: context.residentPrefixEvidence, artifactBytes: context.artifactBytes,
+            pairTelemetry: telemetry)
         do { try await publishClusterPairSlot(specification, owner: owner) }
         catch { await owner.shutdown(); endClusterPairServing(epoch); throw error }
         clusterPairServingForming = false
@@ -159,6 +173,19 @@ extension ProviderLoop: NativePairMemberServingHost {
             await retireClusterPairSlot(handle.id, reason: "committed start ended")
         }
         endClusterPairServing(epoch)
+    }
+
+    /// One incident about a committed start this leader serves (S24), with
+    /// the session endpoint's owner diagnostics when it has them.
+    func recordClusterPairIncident(_ stateCode: ClusterIncidentStateCode, error: Error,
+                                   context: ClusterPairServingContext, start: NativePairMemberServingStart) {
+        guard let base = context.observabilityFacts else { return }
+        let diagnostics = (start.endpoint as? ClusterRemoteWorkerEndpoint).map { [DistributedSessionFacts.tail($0.diagnosticTail)] } ?? []
+        let facts = DistributedSessionFacts(clusterID: base.clusterID, memberID: base.memberID, modelID: base.modelID,
+            mode: base.mode, cut: base.cut, membershipEpoch: start.membershipEpoch.uuidString.lowercased(),
+            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers)
+        ClusterObservability.current().recordFailure(stateCode, source: "member",
+            error: String(describing: error), facts: facts)
     }
 
     /// Clears the served epoch, once, for this epoch only.

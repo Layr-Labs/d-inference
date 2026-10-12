@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterRemote
 import MLXLMCommon
 
 // The cluster pair as an ordinary provider slot (S09).
@@ -32,15 +33,18 @@ public struct ClusterPairSlotSpecification: Sendable {
     /// The artifact's total weight bytes across both ranks. Diagnostics and
     /// sizing only: no byte of it is resident in this process.
     public let artifactBytes: Int
+    /// Per-request pair telemetry for this slot (S24); nil records nothing.
+    public let pairTelemetry: DistributedPairTelemetryContext?
 
     public init(publicModelID: String, modelType: String?, tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
                 expectedIdentity: DistributedResidentIdentity, profile: DistributedResidentExecutionProfile,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-                residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil, artifactBytes: Int = 0) {
+                residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil, artifactBytes: Int = 0,
+                pairTelemetry: DistributedPairTelemetryContext? = nil) {
         self.publicModelID = publicModelID; self.modelType = modelType; self.tokenizer = tokenizer
         self.eosTokenIDs = eosTokenIDs; self.expectedIdentity = expectedIdentity; self.profile = profile
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy; self.residentPrefixEvidence = residentPrefixEvidence
-        self.artifactBytes = max(0, artifactBytes)
+        self.artifactBytes = max(0, artifactBytes); self.pairTelemetry = pairTelemetry
     }
 }
 
@@ -168,7 +172,7 @@ extension ProviderLoop {
                 publicModelID: specification.publicModelID, profile: specification.profile,
                 tokenizer: specification.tokenizer, eosTokenIDs: specification.eosTokenIDs,
                 modelType: specification.modelType, firstTokenBudgetPolicy: specification.firstTokenBudgetPolicy,
-                residentPrefixEvidence: specification.residentPrefixEvidence)
+                residentPrefixEvidence: specification.residentPrefixEvidence, pairTelemetry: specification.pairTelemetry)
         } catch { throw ClusterPairSlotError.ownerUnavailable }
         guard let bridge = entry.engineV2Bridge else { throw ClusterPairSlotError.ownerUnavailable }
         let profile = specification.profile
@@ -189,7 +193,7 @@ extension ProviderLoop {
         clusterPairSlot = handle
         let id = handle.id
         owner.setSlotInvalidationHandler { [weak self] in
-            Task { await self?.retireClusterPairSlot(id, reason: "pair readiness lost") }
+            Task { await self?.retireClusterPairSlot(id, reason: Self.readinessLostReason) }
         }
         await engineV2Runtime.register(modelId: specification.publicModelID, bridge: bridge)
         // A loss or stop during the registration hop retires this slot; do
@@ -217,6 +221,8 @@ extension ProviderLoop {
         return id
     }
 
+    static let readinessLostReason = "pair readiness lost"
+
     private func requireClusterPairPublication(_ modelID: String) throws {
         guard isClusterMember else { throw ClusterPairSlotError.notServing("solo provider") }
         guard !isShuttingDown, !isDraining, !memberControlRequiresStop else {
@@ -242,6 +248,13 @@ extension ProviderLoop {
         }
         modelsUnloading.insert(modelID)
         logger.info("Cluster pair slot retiring (\(handle.id.uuidString.prefix(8))): \(reason)")
+        if reason == Self.readinessLostReason {
+            // S24: serving ended without being asked to. A planned stop
+            // retires the slot first with its own reason and records nothing.
+            ClusterObservability.current().record(.init(severity: .error, source: "leader", stateCode: .sessionFailed,
+                reason: .peerLost, message: "The pair's readiness was lost while its slot was published (a rank ended or its lease lapsed)",
+                jobID: handle.membershipEpoch.uuidString.lowercased(), modelID: modelID))
+        }
         clusterPairCapacityTask?.cancel()
         clusterPairCapacityTask = nil
         refreshClusterMemberAdmission()

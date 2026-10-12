@@ -34,12 +34,19 @@ extension DistributedLocalServer {
             ResidentPrefixCacheEvidence(modelId: session.model.publicModelID,
                 modelAggregateHash: session.expectedIdentity.artifactSHA256, promptContractID: $0)
         }
+        // Per-request pair telemetry for `cluster status` (S24).
+        let telemetry: DistributedPairTelemetryContext? = observability.flatMap { observability in
+            session.httpObservabilityFacts.map { facts in
+                DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
+                    log: observability.telemetryLog(sessionID: facts.membershipEpoch ?? UUID().uuidString.lowercased()))
+            }
+        }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(
             owner: session, expectedIdentity: session.expectedIdentity,
             publicModelID: session.model.publicModelID, profile: session.profile,
             tokenizer: tokenizer, eosTokenIDs: eos, modelType: session.model.modelType,
             firstTokenBudgetPolicy: firstTokenBudgetPolicy, residentPrefixEvidence: evidence,
-            modelDirectory: session.model.directory)
+            modelDirectory: session.model.directory, pairTelemetry: telemetry)
     }
 
     func prepareAndBind(_ target: DistributedLocalServerGeneration, timeout: Duration) async throws {

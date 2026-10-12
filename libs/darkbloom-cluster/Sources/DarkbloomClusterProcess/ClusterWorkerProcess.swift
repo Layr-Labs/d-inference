@@ -162,6 +162,15 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     private let notifications = DispatchQueue(label: "darkbloom.worker.invalidation")
     private var stderrTail = Data()
     private var stderrBytes = 0
+    /// Bytes written to standard error in the current flood window (S24).
+    private var stderrWindowBytes = 0
+    private var stderrWindowStart: UInt64 = 0
+    /// A worker that writes more than this to standard error within one
+    /// window is flooding it and fails; a long-running worker that writes a
+    /// few lines per request never does. (A bound on the cumulative total
+    /// would end a healthy session with no fixed lifetime.)
+    static let stderrFloodBytes = 1024 * 1024
+    static let stderrFloodWindowNanoseconds: UInt64 = 10_000_000_000
     private let startupDeadline: UInt64
     private var launched = false
     private var terminalValue: ClusterWorkerProcessTermination?
@@ -181,6 +190,8 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
     public var observedExit: Bool { exited.isComplete }
     public var readiness: ClusterWorkerReady? { lock.withLock { fault == nil && fenceAt == nil ? readyValue : nil } }
     public var diagnosticTail: Data { lock.withLock { stderrTail } }
+    /// Every byte the worker wrote to standard error, including what the tail no longer holds.
+    public var diagnosticBytesTotal: Int { lock.withLock { stderrBytes } }
 
     public init(launch: ClusterWorkerLaunch, expectedIdentity: ClusterWorkerIdentity, rank: Int,
                 profile: ClusterWorkerProfile, executionPlanSHA256: String, startupDeadline: UInt64,
@@ -391,9 +402,18 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
                         let data = Data(bytes.prefix(count))
                         if index == 0 { for line in try decoder.append(data) { try publish(ClusterWorkerCodec.decodeEvent(line)) } }
                         else {
+                            // Diagnostics are kept as a bounded rolling tail and counted;
+                            // only a flood (more than 1 MiB within 10 s) fails the worker.
                             try lock.withLock {
-                                guard stderrBytes <= 1024 * 1024 - count else { throw ClusterWorkerOwnerError.invalid("Worker stderr exceeded bound") }
-                                stderrBytes += count; stderrTail.append(data)
+                                let now = DispatchTime.now().uptimeNanoseconds
+                                if now &- stderrWindowStart > Self.stderrFloodWindowNanoseconds {
+                                    stderrWindowStart = now; stderrWindowBytes = 0
+                                }
+                                stderrWindowBytes += count
+                                guard stderrWindowBytes <= Self.stderrFloodBytes else {
+                                    throw ClusterWorkerOwnerError.invalid("Worker stderr flood exceeded its bound")
+                                }
+                                stderrBytes = stderrBytes &+ count; stderrTail.append(data)
                                 if stderrTail.count > 65_536 { stderrTail.removeFirst(stderrTail.count - 65_536) }
                             }
                         }

@@ -14,7 +14,7 @@ public enum ClusterConsoleWiring {
         "pair.saved", "pair.hostkey", "pair.identity", "pair.approval", "pair.approve",
         "model.admitted", "model.saved", "model.ranks", "model.holdings", "model.metadata", "model.files", "model.admission",
         "session.start", "session.stop", "session.process", "session.status", "session.recover",
-        "host.local", "export.diagnostics",
+        "host.local", "export.diagnostics", "observe.requests", "observe.incidents", "session.follower",
     ]
 
     /// Operator intent that is persisted and read back when the screen
@@ -69,16 +69,12 @@ public enum ClusterConsoleWiring {
         .init(id: "session.leave", title: "Leave", exists: false, reason: "No leave command exists."),
         .init(id: "session.drain", title: "Drain", exists: true,
               reason: "The running leader can drain, but no command or control reaches it."),
-        .init(id: "session.follower", title: "Follower live status", exists: false,
-              reason: "A follower exposes no status; the leader reports both ranks."),
         .init(id: "host.coordinator", title: "Serving through the coordinator", exists: true,
               reason: "A member in this build declines every pairing the coordinator offers."),
         .init(id: "host.ownerViews", title: "Coordinator's view of your pairs", exists: true,
               reason: "The coordinator shows it to a signed-in account only; this command holds a device token."),
         .init(id: "host.request", title: "Send a test request", exists: true,
               reason: "The setup wizard (bare `darkbloom cluster`, step 6) sends one; this screen has no key for it."),
-        .init(id: "observe.requests", title: "Request speed", exists: true,
-              reason: "Each request's timing is logged, and nothing reads it back."),
         .init(id: "intent.desired", title: "Restart a session that should be running", exists: false,
               reason: "Nothing records that a session should be running, so this screen never starts one by itself."),
     ]

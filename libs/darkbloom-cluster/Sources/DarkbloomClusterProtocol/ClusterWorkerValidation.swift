@@ -86,6 +86,15 @@ enum ClusterWorkerValidation {
                 && (reused > 0 || !stored.isEmpty)
                 && stored.allSatisfy({ (1..<ClusterWorkerLimits.promptTokens).contains($0) })
                 && zip(stored, stored.dropFirst()).allSatisfy({ $0 < $1 }), "Invalid prompt cache report")
+        case .requestTelemetry(let t):
+            let day: UInt64 = 86_400 * 1_000_000_000
+            try workerRequire(!t.isEmpty
+                && (t.handoffNanoseconds.map { $0 <= day } ?? true)
+                && (t.prefillNanoseconds.map { $0 <= day } ?? true)
+                && (t.handoffBytes.map { (0...ClusterWorkerLimits.capacityBytes).contains($0) } ?? true)
+                && (t.mtpDrafted.map { (0...ClusterWorkerLimits.outputTokens * 16).contains($0) } ?? true)
+                && (t.mtpAccepted.map { accepted in accepted >= 0 && accepted <= (t.mtpDrafted ?? 0) } ?? true),
+                "Invalid request telemetry")
         default: break
         }
     }

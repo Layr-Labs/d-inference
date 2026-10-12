@@ -41,8 +41,6 @@ public enum ClusterSetupWizardWiring {
               reason: "`darkbloom cluster link --remove` does it, after its own macOS prompt."),
         .init(id: "session.percent", title: "Load progress as a percentage", exists: false,
               reason: "A worker reports ready and nothing before it; the screen counts ranks ready instead."),
-        .init(id: "observe.requests", title: "Speed of requests from other clients", exists: true,
-              reason: "The leader logs each request's timing and nothing reads it back; the screen shows its own test prompt's."),
         .init(id: "pair.revoke", title: "Remove a saved setup", exists: false,
               reason: "No command clears the saved cluster reference."),
         .init(id: "model.weights", title: "Verify weight files before a start", exists: false,

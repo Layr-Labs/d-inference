@@ -133,6 +133,37 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             peerVerified: values.1?.readiness.map(\.peerVerified))
     }
 
+    /// Identifiers, mode, cut and owner diagnostics for incidents and telemetry (S24).
+    public var observabilityFacts: DistributedSessionFacts {
+        let values = lock.withLock { (endpoints, observedMembershipEpoch ?? wireIdentity.membershipEpoch) }
+        let ordered = values.0.sorted { $0.rank < $1.rank }
+        let terminations = ordered.compactMap { endpoint -> String? in
+            switch endpoint.ownerTermination {
+            case .launchFailed?: "rank \(endpoint.rank) ended: its owner could not be launched"
+            case .exited(let status)?: "rank \(endpoint.rank) ended: its owner exited with status \(status)"
+            case .signalled(let signal)?: "rank \(endpoint.rank) ended: its owner was terminated by signal \(signal)"
+            case nil: nil
+            }
+        }
+        return .init(clusterID: configuration.clusterID, memberID: configuration.memberID, modelID: model.publicModelID,
+            mode: configuration.selectedGenerationMode.rawValue,
+            cut: DistributedSessionFacts.cut(prepared.plan.partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) }),
+            membershipEpoch: values.1.uuidString.lowercased(),
+            diagnostics: ordered.compactMap(Self.diagnostic).filter { !$0.isEmpty },
+            terminations: terminations, peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user))
+    }
+
+    /// One rank's diagnostics for an incident: an SSH owner's standard-error
+    /// tail, or why a link follower refused the open (the leader's own error
+    /// is then only that the link closed).
+    static func diagnostic(_ endpoint: any ClusterOwnedWorkerEndpoint) -> String? {
+        if let remote = endpoint as? ClusterRemoteWorkerEndpoint { return DistributedSessionFacts.tail(remote.diagnosticTail) }
+        if let link = endpoint as? ClusterLinkWorkerEndpoint, let reason = link.refusalReason {
+            return "rank \(endpoint.rank) follower refused the open: \(reason.isEmpty ? "no reason given" : String(reason.prefix(512)))"
+        }
+        return nil
+    }
+
     /// Longest a stop can legitimately take. A request that is still running
     /// is first given the selected model's clean-stop wait to end at a token.
     /// If it is cancelled instead, a rank still inside a collective when its

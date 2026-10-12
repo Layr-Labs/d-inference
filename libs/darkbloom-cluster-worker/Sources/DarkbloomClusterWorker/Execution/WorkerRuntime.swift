@@ -25,6 +25,9 @@ protocol WorkerRuntime: AnyObject, Sendable {
     /// Re-derives, while idle, the longest context this rank's host memory
     /// gate admits now; nil when it does not derive one or cannot now.
     func refreshServingContext() -> Int?
+    /// The last started request's own measurements (hand-off, MTP), when any.
+    /// Read after `start` returns, on the same executor.
+    var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { get }
 }
 
 extension WorkerRuntime {
@@ -33,4 +36,5 @@ extension WorkerRuntime {
         throw WorkerFailure.invalid("This runtime cannot give back a reservation")
     }
     func refreshServingContext() -> Int? { nil }
+    var lastRequestTelemetry: ClusterWorkerRequestTelemetry? { nil }
 }

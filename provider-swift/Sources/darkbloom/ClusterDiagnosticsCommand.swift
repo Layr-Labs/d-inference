@@ -67,5 +67,6 @@ private func printDiagnostics(_ report: ClusterDiagnosticsReport, json: Bool, ho
         if live.quarantined { print("Quarantined: retained ownership is unresolved.") }
     } else { print("Live leader: not observed; saved configuration is not readiness.") }
     print("Device journal: \(report.deviceJournal.rawValue) (no availability or orphan proof)")
+    for line in report.observabilityLines { print(line) }
     for check in report.checks { print("[\(check.outcome.rawValue)] \(check.name): \(check.detail)") }
 }

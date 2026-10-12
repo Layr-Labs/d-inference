@@ -16,6 +16,9 @@ private final class Captured: @unchecked Sendable {
     func append(_ value: ClusterWorkerRequestEvent) { lock.withLock { values.append(value) } }
     var tokens: [Int] { lock.withLock { values.compactMap { if case .token(let id) = $0 { return id }; return nil } } }
     var clean: Bool { lock.withLock { values.contains { if case .finished = $0 { return true }; return false } } }
+    var telemetry: (ClusterWorkerRequestTelemetry?, ClusterWorkerRequestTelemetry?)? {
+        lock.withLock { values.lazy.compactMap { if case .telemetry(let a, let b) = $0 { return (a, b) }; return nil }.first }
+    }
 }
 private struct Harness: Sendable {
     let workers: [ClusterWorkerProcess]
@@ -60,7 +63,8 @@ private struct Harness: Sendable {
         try progress("processLifetime"); try await processLifetime(executable)
         try progress("blockedFailureCallback"); try await blockedFailureCallback(executable)
         try progress("slowInvalidation"); try await slowInvalidation(executable)
-        print("{\"passed\":true,\"groups\":10,\"actualOwnedChildIO\":true,\"modelExecution\":false}")
+        try progress("telemetryAndDiagnostics"); try await telemetryAndDiagnostics(executable)
+        print("{\"passed\":true,\"groups\":11,\"actualOwnedChildIO\":true,\"modelExecution\":false}")
     }
     static func progress(_ group: String) throws {
         try FileHandle.standardOutput.write(contentsOf: Data(("{\"testing\":\"\(group)\"}\n").utf8))
@@ -117,6 +121,33 @@ private struct Harness: Sendable {
             if mode == "stderr" { try require(h.workers[0].diagnosticTail.count <= 65_536, "Bounded stderr tail") }
             try await h.finish()
         }
+    }
+    /// S24: each rank's request telemetry reaches the owner's callback once,
+    /// before the finish; a worker that writes more than 1 MiB of diagnostics
+    /// slowly over a long session is not failed for it (only a flood is).
+    static func telemetryAndDiagnostics(_ executable: URL) async throws {
+        let h = try Harness(executable, behaviors: ["telemetry", "telemetry"])
+        do {
+            defer { for worker in h.workers { worker.fence() } }
+            let lease = try h.pair.reserve(requestID: UUID(), reservation: h.reservation())
+            let captured = Captured(); try lease.start { captured.append($0); return true }
+            try await h.awaitRetirement(lease); lease.releaseResources()
+            let telemetry = captured.telemetry
+            try require(captured.clean && captured.tokens == [9, 10], "Telemetry request finished cleanly")
+            try require(telemetry?.0?.handoffNanoseconds == 70_000_000 && telemetry?.1?.handoffNanoseconds == 81_000_000
+                && telemetry?.1?.mtpAccepted == 8 && telemetry?.1?.mtpDrafted == 10, "Both ranks' telemetry reached the callback")
+            try await h.finish()
+        }
+        let c = try Harness(executable, behaviors: ["chatty", "normal"], lifetimeSeconds: 40)
+        defer { for worker in c.workers { worker.fence() } }
+        let lease = try c.pair.reserve(requestID: UUID(), reservation: c.reservation(seconds: 30))
+        let captured = Captured(); try lease.start { captured.append($0); return true }
+        try progress("telemetryAndDiagnostics:chatty")
+        try await c.awaitRetirement(lease, seconds: 25); lease.releaseResources()
+        try require(captured.clean && c.pair.readiness != nil, "Slow diagnostics past 1 MiB do not fail the worker")
+        try require(c.workers[0].diagnosticBytesTotal > 1_048_576 && c.workers[0].diagnosticTail.count <= 65_536,
+            "Every diagnostic byte is counted; the tail stays bounded")
+        try await c.finish()
     }
     static func blockedCallback(_ executable: URL) async throws {
         let h = try Harness(executable); defer { for worker in h.workers { worker.fence() } }

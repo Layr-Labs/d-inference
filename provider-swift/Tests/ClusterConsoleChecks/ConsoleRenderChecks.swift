@@ -71,7 +71,9 @@ extension ClusterConsoleCheck {
         scrolling.drew(first)
         _ = scrolling.handle(.key(.end), at: time)
         let last = ClusterConsoleRenderer.frame(scrolling)
-        expect(last.text.contains("Press ? for the reasons."), "the end of the body is reachable")
+        // The last sentence may wrap; read the frame's lines as one text.
+        let flowing = last.lines.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        expect(flowing.contains("Press ? for the reasons."), "the end of the body is reachable")
         let total = first.maximumScroll + first.bodyRows
         expect(last.lines[0].text.hasSuffix("lines \(first.maximumScroll + 1)-\(total) of \(total)"), "the header says where the body is: \(last.lines[0].text)")
         expect(first.lines[0].text.hasSuffix("lines 1-\(first.bodyRows) of \(total)") && first.lines[0].text.count == 60, "and it stays visible in a narrow window")

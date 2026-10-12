@@ -9,13 +9,13 @@ import Logging
 /// Link edge refusals and connections on the member path (no payload).
 let clusterLinkMemberLog = Logger(label: "darkbloom.cluster-link")
 #else
-/// The plain-swiftc check runners build this file without swift-log: the
-/// same calls, discarded.
+/// The model-free check runners compile this directory with plain swiftc,
+/// without swift-log: there the link edge lines are dropped.
+let clusterLinkMemberLog = ClusterLinkMemberLogStandIn()
 struct ClusterLinkMemberLogStandIn: Sendable {
     func info(_ message: @autoclosure () -> String) {}
     func warning(_ message: @autoclosure () -> String) {}
 }
-let clusterLinkMemberLog = ClusterLinkMemberLogStandIn()
 #endif
 
 /// The follower rank over the link control channel (PROD-PLAN S08), for a
@@ -73,14 +73,19 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
     let router = ClusterLinkWorkerRouter()
     private let host = ClusterLinkControlHost()
     let peer: ClusterLinkControlPeer
+    /// The follower's mirrored status (S24): board, file and incidents.
+    let followerStatus: ClusterFollowerStatusMonitor
 
-    init(configuration: ClusterConfiguration) throws {
+    init(configuration: ClusterConfiguration, observability: ClusterObservability = .current()) throws {
         guard configuration.role == .leader, let link = configuration.linkControl else {
             throw ClusterConfigurationError.invalid("Only a link control leader hosts the follower's edge")
         }
         let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration, peerAddress: nil)
         let local = configuration.peers[configuration.localRank]
         let router = self.router
+        let monitor = ClusterFollowerStatusMonitor(observability: observability, clusterID: configuration.clusterID,
+                                                   modelID: configuration.publicModelID)
+        followerStatus = monitor
         let address = try DistributedInstalledLinkEdge.leaderAddress(configuration)
         let listener = try host.start(.init(interface: try DistributedInstalledLinkEdge.interface(device: local.jacclDevice,
             reaching: address), localAddress: address, port: UInt16(link.port),
@@ -91,12 +96,14 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
             case .refused(_, let reason): clusterLinkMemberLog.warning("link edge: refused a connection (\(reason))")
             default: break
             }
+            monitor.handle(event)
             router.handle(event)
         }
         guard let peer = listener.peer(for: edge.edgeID) else {
             host.stop(); throw ClusterConfigurationError.invalid("The link control listener has no peer for its edge")
         }
         self.peer = peer
+        monitor.start()
     }
 
     /// The follower member must be connected before its rank is opened; a
@@ -118,6 +125,7 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
 
     /// After every endpoint's proofs: delivers what is queued, then closes.
     func stop() {
+        followerStatus.stop()
         _ = try? peer.waitUntilAcknowledged(timeout: .seconds(2))
         host.stop()
     }
@@ -153,11 +161,13 @@ public enum DistributedInstalledLinkFollower {
             var connectFailure: String? { lock.withLock { client }?.lastConnectFailure }
         }
         let box = Box()
+        // S24: this member's status, mirrored to the leader over the edge.
+        let reporter = ClusterFollowerStatusReporter(observability: .current(), modelID: plan.configuration.publicModelID)
         let client = try ClusterLinkControlClient(configuration: .init(
             interface: try DistributedInstalledLinkEdge.interface(device: plan.localPeer.jacclDevice, reaching: leader),
             port: UInt16(plan.configuration.linkControl!.port), policy: .thunderboltOnly, edge: edge)) { event, _ in
             switch event {
-            case .connected: events(.connected)
+            case .connected: events(.connected); reporter.note(.idle)
             case .disconnected: events(.disconnected)
             case .refused(_, let reason):
                 let detail = reason == .connectFailed ? box.connectFailure.map { " (\($0))" } ?? "" : ""
@@ -183,17 +193,26 @@ public enum DistributedInstalledLinkFollower {
                 }
             }, report: { report in
                 switch report {
-                case .opened: events(.opened)
-                case .refused(let reason): events(.refused(reason))
-                case .fenced(_, let reason): events(.fenced(reason))
+                case .opened: events(.opened); reporter.note(.serving, "serving the leader's session")
+                case .refused(let reason):
+                    events(.refused(reason)); reporter.note(.idle, "refused a session: \(reason)")
+                    reporter.recordIncident(.memberStartFailed, error: reason)
+                case .fenced(_, let reason):
+                    events(.fenced(reason)); reporter.note(.failed, "session fenced: \(reason)")
+                    reporter.recordIncident(.peerLost, error: "the leader's session was fenced: \(reason)")
                 case .cleanup: events(.cleanup)
-                case .released(_, let cleanly): events(.released(cleanly))
+                case .released(_, let cleanly):
+                    events(.released(cleanly)); reporter.note(.idle, cleanly ? "released cleanly" : "released without its owner's proof")
+                    if !cleanly { reporter.recordIncident(.cleanupUnresolved, error: "the session was released without its owner's proof; ownership cannot be resolved yet", severity: .warn) }
                 }
             })
         box.lock.withLock { box.server = server }
         client.start()
+        reporter.start(peer: client.peer, epoch: plan.configuration.linkControl!.linkEpochUUID,
+                       rank: UInt16(plan.configuration.localRank))
         events(.ready)
         stop.wait()
+        reporter.stop()
         server.stop()
         let idle = server.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds
             + ClusterLinkWorkerEndpoint.retirementAllowanceNanoseconds)

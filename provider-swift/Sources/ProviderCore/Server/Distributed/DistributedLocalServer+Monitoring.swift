@@ -13,7 +13,9 @@ extension DistributedLocalServer {
                 guard generation === target else { return }
                 if [.starting, .serving].contains(phase),
                    target.session.status != .ready || target.session.httpSessionInvalid {
-                    failed = true; beginTeardown(drainUntil: nil); return
+                    failed = true
+                    if phase == .serving { recordSessionFailure(target) }
+                    beginTeardown(drainUntil: nil); return
                 }
                 if ![.starting, .serving].contains(phase),
                    [.quarantined, .released].contains(target.session.status) {

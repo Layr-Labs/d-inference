@@ -40,6 +40,10 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
 
     private let client: ClusterLinkControlClient
     private let box = ServerBox()
+    /// This member's status, mirrored to the leader over the edge (S24).
+    private let reporter: ClusterFollowerStatusReporter
+    private let linkEpoch: UUID
+    private let rank: UInt16
     private let lock = NSLock()
     private var pending: [UUID: NativePairMemberServingStart] = [:]
     private var servedEpoch: UUID?
@@ -58,12 +62,14 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
         let leader = try DistributedInstalledLinkEdge.leaderAddress(configuration)
         let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration, peerAddress: leader)
         let box = self.box
+        let reporter = ClusterFollowerStatusReporter(observability: .current(), modelID: configuration.publicModelID)
+        self.reporter = reporter; linkEpoch = link.linkEpochUUID; rank = UInt16(configuration.localRank)
         client = try ClusterLinkControlClient(configuration: .init(
             interface: try DistributedInstalledLinkEdge.interface(device: configuration.peers[configuration.localRank].jacclDevice,
                 reaching: leader),
             port: UInt16(link.port), policy: .thunderboltOnly, edge: edge)) { event, _ in
             switch event {
-            case .connected: events(.connected)
+            case .connected: events(.connected); reporter.note(.idle)
             case .disconnected: events(.disconnected)
             case .refused(_, let reason): events(.refused("link edge: \(reason)"))
             default: break
@@ -77,22 +83,32 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
                 return try self.admit(open)
             }, report: { report in
                 switch report {
-                case .opened: events(.opened)
-                case .refused(let reason): events(.refused(reason))
-                case .fenced(_, let reason): events(.fenced(reason))
+                case .opened: events(.opened); reporter.note(.serving, "serving the leader's session")
+                case .refused(let reason):
+                    events(.refused(reason)); reporter.note(.idle, "refused a session: \(reason)")
+                    reporter.recordIncident(.memberStartFailed, error: reason)
+                case .fenced(_, let reason):
+                    events(.fenced(reason)); reporter.note(.failed, "session fenced: \(reason)")
+                    reporter.recordIncident(.peerLost, error: "the leader's session was fenced: \(reason)")
                 case .cleanup: events(.cleanup)
-                case .released(_, let cleanly): events(.released(cleanly))
+                case .released(_, let cleanly):
+                    events(.released(cleanly)); reporter.note(.idle, cleanly ? "released cleanly" : "released without its owner's proof")
+                    if !cleanly { reporter.recordIncident(.cleanupUnresolved, error: "the session was released without its owner's proof; ownership cannot be resolved yet", severity: .warn) }
                 }
             })
         box.lock.withLock { box.server = server }
     }
 
-    func start() { client.start() }
+    func start() {
+        client.start()
+        reporter.start(peer: client.peer, epoch: linkEpoch, rank: rank)
+    }
 
     /// Fences what runs and refuses new opens, waits (bounded) for the owner
     /// the leader was served to release, then closes the edge.
     func stop() {
         let server = lock.withLock { () -> ClusterLinkWorkerServer? in stopped = true; pending.removeAll(); return box.value }
+        reporter.stop()
         server?.stop()
         _ = server?.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds + ClusterLinkWorkerEndpoint.retirementAllowanceNanoseconds)
         _ = try? client.peer.waitUntilAcknowledged(timeout: .seconds(2))

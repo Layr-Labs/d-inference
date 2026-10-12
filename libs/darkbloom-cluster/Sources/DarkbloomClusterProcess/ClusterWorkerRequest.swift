@@ -199,6 +199,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             var count = 0, last: Int?, cleanStop = false
             var finish: ClusterWorkerFinishReason?
             var cacheReport: (reused: Int, stored: [Int])?
+            var telemetry: ClusterWorkerRequestTelemetry?
             while finish == nil {
                 let value = try event(0)
                 switch value {
@@ -225,6 +226,9 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                         throw ClusterWorkerOwnerError.invalid("Unexpected prompt cache report")
                     }
                     cacheReport = (reused, stored)
+                case .requestTelemetry(let value):
+                    guard count > 0, telemetry == nil else { throw ClusterWorkerOwnerError.invalid("Unexpected request telemetry") }
+                    telemetry = value
                 case .finished(let reason):
                     guard count > 0, let last else { throw ClusterWorkerOwnerError.invalid("Finish precedes committed token") }
                     let expected: ClusterWorkerFinishReason? = reservation.stopTokenIDs.contains(last) ? .eos
@@ -241,6 +245,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             // both hold is what both stored.
             var next = try event(1), peerReport: (reused: Int, stored: [Int])?
             if case .promptCache(let reused, let stored) = next { peerReport = (reused, stored); next = try event(1) }
+            var peerTelemetry: ClusterWorkerRequestTelemetry?
+            if case .requestTelemetry(let value) = next { peerTelemetry = value; next = try event(1) }
             guard (cacheReport?.reused ?? 0) == (peerReport?.reused ?? 0) else {
                 throw ClusterWorkerOwnerError.invalid("Ranks reused different prompt prefixes")
             }
@@ -254,6 +260,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             if (cacheReport?.reused ?? 0) > 0 || !bothStored.isEmpty {
                 _ = emit?(.promptCache(reused: cacheReport?.reused ?? 0, stored: bothStored))
             }
+            if telemetry != nil || peerTelemetry != nil { _ = emit?(.telemetry(rank0: telemetry, rank1: peerTelemetry)) }
             _ = emit?(.finished(finish!))
             retired.complete()
         } catch {

@@ -157,6 +157,9 @@ final class WorkerCoordinator: @unchecked Sendable {
                         try publish(.promptCache(reusedTokens: cache.reused,
                             storedFrontiers: Array(cache.stored.sorted().suffix(32))), requestID: id)
                     }
+                    if let telemetry = runtime.lastRequestTelemetry, !telemetry.isEmpty {
+                        try publish(.requestTelemetry(telemetry), requestID: id)
+                    }
                     try publish(.finished(reason), requestID: id)
                     try publish(.retired(.clean), requestID: id)
                     condition.lock(); keepWarmArmed = true; condition.unlock()

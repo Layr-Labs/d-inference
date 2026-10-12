@@ -280,6 +280,7 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
                 if tokenEvents == 0 { eventLog.append("committedToken") }
                 tokenEvents += 1
             case .promptCache(let reused, let stored): eventLog.append("promptCache:\(reused):\(stored.count)")
+            case .requestTelemetry(let t): eventLog.append(Self.telemetryLine(t))
             case .finished(let reason): eventLog.append("finished:\(reason.rawValue)")
             case .retired(let outcome): eventLog.append("retired:\(outcome.rawValue)")
             case .failed(let reason): eventLog.append("failed:\(reason.rawValue)")
@@ -294,6 +295,14 @@ public final class PairWorkerEndpoint: ClusterWorkerEndpoint, @unchecked Sendabl
         }
         arrivals.signal()
         if let notify { notifications.async(execute: notify) }
+    }
+
+    /// The rank's request telemetry as one event-log line, so a pair-check report carries the hand-off,
+    /// MTP and prefill figures the product records per request ("-" where the rank reported none).
+    static func telemetryLine(_ t: ClusterWorkerRequestTelemetry) -> String {
+        func show<V>(_ value: V?) -> String { value.map { "\($0)" } ?? "-" }
+        return "requestTelemetry:handoffNs=\(show(t.handoffNanoseconds)):handoffBytes=\(show(t.handoffBytes))"
+            + ":mtpAccepted=\(show(t.mtpAccepted)):mtpDrafted=\(show(t.mtpDrafted)):prefillNs=\(show(t.prefillNanoseconds))"
     }
 
     private func fail(_ error: ClusterWorkerOwnerError) {

@@ -13,6 +13,8 @@ public actor DistributedLocalServer {
     let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     let tokenizerLoader: @Sendable (URL) async throws -> TokenizerHandle
     let discovery: DistributedLocalDiscovery?
+    /// Incident log and pair telemetry (S24); nil records nothing (tests).
+    let observability: ClusterObservability?
     let responseRouter = DistributedHTTPResponseRouter()
     var phase: DistributedLocalServerPhase = .prepared
     var boundPort: UInt16?
@@ -34,24 +36,26 @@ public actor DistributedLocalServer {
 
     public init(session: DistributedInstalledSession, config: LocalInferenceHTTPConfig,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
-                publishDiscovery: Bool = true) {
+                publishDiscovery: Bool = true, observability: ClusterObservability? = .current()) {
         generation = .init(session: session); binding = .init(session)
         self.config = config
         defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         tokenizerLoader = { TokenizerHandle(try await LocalTokenizerLoader().load(from: $0)) }
         discovery = publishDiscovery ? .local : nil
+        self.observability = observability
     }
 
     init(session: any DistributedLocalServerSession, config: LocalInferenceHTTPConfig,
          firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
          tokenizerLoader: @escaping @Sendable (URL) async throws -> TokenizerHandle,
-         discovery: DistributedLocalDiscovery? = nil) {
+         discovery: DistributedLocalDiscovery? = nil, observability: ClusterObservability? = nil) {
         generation = .init(session: session); binding = .init(session)
         self.config = config
         defaultMaxTokens = min(DistributedEngineFactory.defaultOutputTokens, session.profile.maxOutputTokens)
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.tokenizerLoader = tokenizerLoader; self.discovery = discovery
+        self.observability = observability
     }
 
     public var status: DistributedLocalServerStatus {
@@ -75,8 +79,42 @@ public actor DistributedLocalServer {
             try await withTaskCancellationHandler { try await task.value; try Task.checkCancellation() }
                 onCancel: { Task { await self.beginTeardown(drainUntil: nil) } }
         } catch {
-            failed = true; beginTeardown(drainUntil: nil); throw error
+            failed = true
+            recordLaunchFailure(error, target: target)
+            beginTeardown(drainUntil: nil); throw error
         }
+    }
+
+    /// Every launch failure becomes one incident with a classified reason (S24).
+    func recordLaunchFailure(_ error: Error, target: DistributedLocalServerGeneration) {
+        guard let observability else { return }
+        let interrupted = error is CancellationError || (error as? DistributedLocalServerError) == .startupInterrupted
+        observability.recordFailure(interrupted ? .activationRejected : .activationLaunchFailed, source: "leader",
+            error: Self.describe(error), facts: target.session.httpObservabilityFacts, severity: interrupted ? .warn : .error)
+    }
+
+    /// A serving session that ended without being asked to (S24).
+    func recordSessionFailure(_ target: DistributedLocalServerGeneration) {
+        guard let observability else { return }
+        let facts = target.session.httpObservabilityFacts
+        let lost = !(facts?.terminations.isEmpty ?? true)
+        observability.recordFailure(lost ? .peerLost : .sessionFailed, source: "leader",
+            error: "The serving session stopped without being asked to (session \(target.session.status.rawValue))"
+                + (facts?.terminations.first.map { "; " + $0 } ?? ""), facts: facts)
+    }
+
+    /// A stop that could not prove every owner released its device (S24).
+    func recordCleanupUnresolved(_ target: DistributedLocalServerGeneration) {
+        guard let observability else { return }
+        observability.recordFailure(.cleanupUnresolved, source: "leader",
+            error: "Distributed cleanup is unresolved (session \(target.session.status.rawValue)); ownership cannot be resolved yet",
+            facts: target.session.httpObservabilityFacts, severity: .warn)
+    }
+
+    static func describe(_ error: Error) -> String {
+        let text = String(describing: error)
+        let type = String(describing: Swift.type(of: error))
+        return text.contains(type) ? text : "\(type): \(text)"
     }
 
     func listenerExited() {

@@ -212,6 +212,28 @@ public enum ClusterWorkerCommand: Equatable, Sendable {
     case keepWarm(ordinal: Int)
 }
 
+/// What one rank measured of a request it served (PROD-PLAN S24): sizes,
+/// durations and counts only. Every field is optional; a rank sends what it
+/// measured and nothing when it measured nothing.
+public struct ClusterWorkerRequestTelemetry: Equatable, Sendable {
+    /// This rank's wall time for the phase-split hand-off (export or receive to acknowledgement).
+    public let handoffNanoseconds: UInt64?
+    public let handoffBytes: Int?
+    /// Draft tokens this rank's MTP head proposed and the target accepted.
+    public let mtpDrafted: Int?
+    public let mtpAccepted: Int?
+    /// This rank's time from the start of the request to its first committed (or relayed) token.
+    public let prefillNanoseconds: UInt64?
+    public init(handoffNanoseconds: UInt64? = nil, handoffBytes: Int? = nil, mtpDrafted: Int? = nil,
+                mtpAccepted: Int? = nil, prefillNanoseconds: UInt64? = nil) {
+        self.handoffNanoseconds = handoffNanoseconds; self.handoffBytes = handoffBytes
+        self.mtpDrafted = mtpDrafted; self.mtpAccepted = mtpAccepted; self.prefillNanoseconds = prefillNanoseconds
+    }
+    public var isEmpty: Bool {
+        handoffNanoseconds == nil && handoffBytes == nil && mtpDrafted == nil && mtpAccepted == nil && prefillNanoseconds == nil
+    }
+}
+
 public enum ClusterWorkerEvent: Equatable, Sendable {
     case ready(ClusterWorkerReady)
     case admitted(reservedBytes: Int)
@@ -223,6 +245,9 @@ public enum ClusterWorkerEvent: Equatable, Sendable {
     /// at most 32). Sent once, just before `finished`, only when either is
     /// not empty.
     case promptCache(reusedTokens: Int, storedFrontiers: [Int])
+    /// This rank's measurements of the running request. Sent at most once,
+    /// after `promptCache` and just before `finished`, only when not empty.
+    case requestTelemetry(ClusterWorkerRequestTelemetry)
     case finished(ClusterWorkerFinishReason)
     case failed(ClusterWorkerCancellationReason)
     /// Local state retirement only. No claim of peer retirement or process fencing.

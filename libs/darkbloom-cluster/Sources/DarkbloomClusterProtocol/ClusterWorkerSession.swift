@@ -26,6 +26,7 @@ public struct ClusterWorkerSession: Sendable {
     private var lastDecision: ClusterWorkerTokenDecision?
     private var finishReason: ClusterWorkerFinishReason?
     private var reusedTokens: Int?
+    private var telemetrySent = false
     private var cancellation: ClusterWorkerCancellationReason?
     private var nativeFailure = false
     public private(set) var protocolFailed = false
@@ -56,7 +57,7 @@ public struct ClusterWorkerSession: Sendable {
                 try workerRequire(!seen.contains(id), "Request ID replay")
                 remember(id); requestID = id; request = value; phase = .reserving
                 tokenCount = 0; lastToken = nil; lastDecision = nil; finishReason = nil; cancellation = nil; nativeFailure = false
-                reusedTokens = nil
+                reusedTokens = nil; telemetrySent = false
             case .start:
                 try current(frame.requestID); try workerRequire(phase == .reserved, "Request is not admitted")
                 try workerRequire(locallyAvailable, "Readiness was invalidated")
@@ -114,10 +115,16 @@ public struct ClusterWorkerSession: Sendable {
                 try current(frame.requestID); try deadline(now)
                 // Once, before finish; every count leaves one prompt token to compute.
                 let prompt = request!.promptTokenIDs.count
-                try workerRequire(phase == .running && reusedTokens == nil && reused < prompt
+                try workerRequire(phase == .running && reusedTokens == nil && !telemetrySent && reused < prompt
                     && stored.allSatisfy({ $0 < prompt })
                     && (rank == 1 || (tokenCount > 0 && lastDecision != nil)), "Prompt cache report is out of order")
                 reusedTokens = reused
+            case .requestTelemetry:
+                try current(frame.requestID); try deadline(now)
+                // Once, before finish, after any prompt cache report.
+                try workerRequire(phase == .running && !telemetrySent
+                    && (rank == 1 || (tokenCount > 0 && lastDecision != nil)), "Request telemetry is out of order")
+                telemetrySent = true
             case .finished(let reason):
                 try current(frame.requestID); try deadline(now)
                 // Only rank 0 owns the provider callback. Rank 1 reports the actual

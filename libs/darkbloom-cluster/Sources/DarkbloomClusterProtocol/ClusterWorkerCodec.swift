@@ -81,6 +81,8 @@ public enum ClusterWorkerCodec {
             value["tokenID"] = token; value["committedTokens"] = committed
         case .promptCache(let reused, let stored):
             value["kind"] = "promptCache"; value["reusedTokens"] = reused; value["storedFrontiers"] = stored
+        case .requestTelemetry(let t):
+            value["kind"] = "requestTelemetry"; value["telemetry"] = telemetry(t)
         case .finished(let reason): value["kind"] = "finished"; value["reason"] = reason.rawValue
         case .failed(let reason): value["kind"] = "failed"; value["reason"] = reason.rawValue
         case .retired(let outcome): value["kind"] = "retired"; value["outcome"] = outcome.rawValue
@@ -121,6 +123,7 @@ public enum ClusterWorkerCodec {
         case "refused": event = .refused(try r.enumeration("reason"))
         case "committedToken": event = .committedToken(ordinal: try r.int("ordinal"), tokenID: try r.int("tokenID"), committedTokens: try r.int("committedTokens"))
         case "promptCache": event = .promptCache(reusedTokens: try r.int("reusedTokens"), storedFrontiers: try r.ints("storedFrontiers"))
+        case "requestTelemetry": event = .requestTelemetry(try telemetry(r.object("telemetry")))
         case "finished": event = .finished(try r.enumeration("reason"))
         case "failed": event = .failed(try r.enumeration("reason"))
         case "retired": event = .retired(try r.enumeration("outcome"))
@@ -158,6 +161,29 @@ public enum ClusterWorkerCodec {
     private static func header(_ r: inout WorkerObject) throws -> (UUID, UInt64, UUID?) {
         try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
         return try (r.uuid("membershipEpoch"), r.uint("sequence"), r.optionalUUID("requestID"))
+    }
+    private static func telemetry(_ t: ClusterWorkerRequestTelemetry) -> [String: Any] {
+        var result: [String: Any] = [:]
+        if let value = t.handoffNanoseconds { result["handoffNanoseconds"] = NSNumber(value: value) }
+        if let value = t.handoffBytes { result["handoffBytes"] = value }
+        if let value = t.mtpDrafted { result["mtpDrafted"] = value }
+        if let value = t.mtpAccepted { result["mtpAccepted"] = value }
+        if let value = t.prefillNanoseconds { result["prefillNanoseconds"] = NSNumber(value: value) }
+        return result
+    }
+    private static func telemetry(_ object: [String: Any]) throws -> ClusterWorkerRequestTelemetry {
+        var r = WorkerObject(object)
+        func optional<T>(_ key: String, _ read: (inout WorkerObject) throws -> T) throws -> T? {
+            r.values[key] == nil ? nil : try read(&r)
+        }
+        let value = ClusterWorkerRequestTelemetry(
+            handoffNanoseconds: try optional("handoffNanoseconds") { try $0.uint("handoffNanoseconds") },
+            handoffBytes: try optional("handoffBytes") { try $0.int("handoffBytes") },
+            mtpDrafted: try optional("mtpDrafted") { try $0.int("mtpDrafted") },
+            mtpAccepted: try optional("mtpAccepted") { try $0.int("mtpAccepted") },
+            prefillNanoseconds: try optional("prefillNanoseconds") { try $0.uint("prefillNanoseconds") })
+        try r.finish()
+        return value
     }
     private static func reservation(_ r: ClusterWorkerReservation) -> [String: Any] {
         var value: [String: Any] = ["profileID": r.profileID, "promptTokenIDs": r.promptTokenIDs, "stopTokenIDs": r.stopTokenIDs,

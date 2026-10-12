@@ -11,6 +11,8 @@ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
     var httpAdmissionAvailable: Bool { get }
     var httpSessionInvalid: Bool { get }
     var httpCanRotate: Bool { get }
+    /// Identifiers, mode, cut and owner diagnostics for incidents and telemetry (S24).
+    var httpObservabilityFacts: DistributedSessionFacts? { get }
     func validateModelInputs() throws
     func start() async throws
     func stop(until deadline: UInt64) async -> DistributedInstalledSessionStatus
@@ -20,6 +22,7 @@ protocol DistributedLocalServerSession: DistributedDeadlineExecutionOwner {
 extension DistributedLocalServerSession {
     var httpDiagnosticObservation: ClusterSessionObservation? { nil }
     var httpCanRotate: Bool { status == .released }
+    var httpObservabilityFacts: DistributedSessionFacts? { nil }
 }
 
 extension DistributedInstalledSession: DistributedLocalServerSession {
@@ -27,6 +30,7 @@ extension DistributedInstalledSession: DistributedLocalServerSession {
     var httpCanRotate: Bool { canRotate }
     var httpAdmissionAvailable: Bool { status == .ready && admissionState?.canAdmit() == true }
     var httpSessionInvalid: Bool { admissionState?.isValid == false }
+    var httpObservabilityFacts: DistributedSessionFacts? { observabilityFacts }
 }
 
 public enum DistributedLocalServerPhase: String, Sendable {

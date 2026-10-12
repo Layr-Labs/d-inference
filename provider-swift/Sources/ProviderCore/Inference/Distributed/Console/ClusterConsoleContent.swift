@@ -1,3 +1,4 @@
+import DarkbloomClusterRemote
 import Foundation
 
 /// One line of the screen before it is fitted to a width.
@@ -49,6 +50,7 @@ enum ClusterConsoleContent {
             + pairing(snapshot, interactive: true) + [.blank]
             + model(snapshot, status: status) + [.blank]
             + session(status: status, state: state) + [.blank]
+            + observability(status) + [.blank]
             + activity(state) + [.blank]
             + [.heading("Not available in this build"),
                .init(ClusterConsoleWiring.unavailable.map(\.title).joined(separator: "; ") + ". Press ? for the reasons.", .dim, from: .frame)]
@@ -61,6 +63,7 @@ enum ClusterConsoleContent {
             + pairing(snapshot, interactive: false) + [.blank]
             + model(snapshot, status: snapshot.diagnostics) + [.blank]
             + liveSession(snapshot.diagnostics, heading: "Session") + [.blank]
+            + observability(snapshot.diagnostics) + [.blank]
             + [.heading("Not available in this build")]
             + ClusterConsoleWiring.unavailable.map { .init("\($0.title): \($0.reason)", from: .frame) }
         return lines.map { String(repeating: " ", count: $0.indent) + $0.text }
@@ -364,6 +367,52 @@ enum ClusterConsoleContent {
             lines.append(.init(text + ".", member.nativeReady ? .good : .warning, indent: 4, from: source))
         }
         if live.quarantined { lines.append(.init("Quarantined: an owner has not released its device.", .bad, from: source)) }
+        return lines
+    }
+
+    // MARK: - Observability
+
+    /// The incident log, the leader's pair telemetry and the mirrored
+    /// follower status (S24), as `cluster status` prints them.
+    static func observability(_ status: ClusterDiagnosticsReport) -> [ClusterConsoleLine] {
+        var lines = [ClusterConsoleLine.heading("Incidents and requests")]
+        guard let snapshot = status.observability else {
+            lines.append(.init("No incident has been recorded on this Mac.", .good, from: .wired("observe.incidents")))
+            lines.append(.init("No pair request has been recorded by a leader on this Mac.", .dim, from: .wired("observe.requests")))
+            lines.append(.init("No follower status has been mirrored to this Mac over the link.", .dim, from: .wired("session.follower")))
+            return lines
+        }
+        if let incidents = snapshot.incidents {
+            lines.append(.init("Incidents: \(incidents.open) open of \(incidents.total) recorded.", incidents.open == 0 ? .good : .warning,
+                from: .wired("observe.incidents")))
+            for incident in incidents.recent {
+                lines.append(.init("#\(incident.seq) \(incident.stateCode)" + (incident.reasonCode.map { " (\($0))" } ?? "")
+                    + " [\(incident.source)]: \(incident.message)", incident.severity == .error ? .bad : .warning, indent: 4,
+                    from: .wired("observe.incidents")))
+            }
+            for guidance in incidents.guidance {
+                lines.append(.init("\(guidance.title): " + guidance.steps.joined(separator: " "), indent: 4, from: .wired("observe.incidents")))
+            }
+        } else {
+            lines.append(.init("No incident has been recorded on this Mac.", .good, from: .wired("observe.incidents")))
+        }
+        if let telemetry = snapshot.telemetry {
+            for line in ClusterObservabilitySnapshot(incidents: nil, telemetry: telemetry, followers: nil).lines {
+                lines.append(.init(line.trimmingCharacters(in: .whitespaces), line.hasPrefix("  ") ? .normal : .heading,
+                    indent: line.hasPrefix("  ") ? 4 : 2, from: .wired("observe.requests")))
+            }
+        } else {
+            lines.append(.init("No pair request has been recorded by a leader on this Mac.", .dim, from: .wired("observe.requests")))
+        }
+        if let followers = snapshot.followers, !followers.entries.isEmpty {
+            for line in ClusterObservabilitySnapshot(incidents: nil, telemetry: nil, followers: followers).lines {
+                let stale = line.contains("STALE") || line.contains("failed")
+                lines.append(.init(line.trimmingCharacters(in: .whitespaces), stale ? .warning : .normal,
+                    indent: line.hasPrefix("  ") ? 4 : 2, from: .wired("session.follower")))
+            }
+        } else {
+            lines.append(.init("No follower status has been mirrored to this Mac over the link.", .dim, from: .wired("session.follower")))
+        }
         return lines
     }
 

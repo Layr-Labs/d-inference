@@ -47,6 +47,9 @@ build_module InstalledContract "$task_all" \
   "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy.swift" "$task_sources/Coordinator/NativePairMemberServing.swift" \
   "$task_sources/Coordinator/NativePairMemberPolicy+NativeStart.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
+  "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
+  "$task_sources/Inference/Distributed/Console/ClusterDiagnosticRedaction.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \
   "$task_sources/Inference/Distributed/Requests/DistributedFirstTokenBudgetPolicy.swift" \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \

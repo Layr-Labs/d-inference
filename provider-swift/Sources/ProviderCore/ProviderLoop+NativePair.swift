@@ -21,4 +21,10 @@ extension ProviderLoop {
         nativePairMemberControl = NativePairMemberControl(installation: installation, signer: signer)
     }
     public var nativePairMemberStatus: String? { nativePairMemberControl?.status }
+    /// True when the installation's roster names this Mac by a pin other than
+    /// its signing key's, so a start can say it must pair again (S17).
+    public func nativePairRosterNamesAnotherKey(_ installation: NativePairMemberInstallation) -> Bool {
+        guard let roster = installation.roster, let signer else { return false }
+        return ClusterMemberPin.of(sePublicKey: signer.publicKeyBase64) != roster.memberPin
+    }
 }

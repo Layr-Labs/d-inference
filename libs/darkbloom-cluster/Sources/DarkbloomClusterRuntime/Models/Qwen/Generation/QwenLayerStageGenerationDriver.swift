@@ -612,12 +612,22 @@ private func agreeQwenStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: Load
         words: confirmation.words, scope: record.part("confirmation"), check: check))
     let settled = QwenStagePrefixConfirmation.settle(local: confirmation, peer: peerConfirmation)
     if settled.reusedPrefix != choice.reusedPrefix || restoredSession == nil {
+        // Both ranks prefill from zero. A state THIS rank read and adopted
+        // from its SSD is still this rank's valid state at that frontier: it
+        // stays resident (within the budget, giving way as any entry) so the
+        // next offer finds it in memory instead of reading and decrypting the
+        // record again (oMLX U#3327: no duplicate restore work).
+        let ownRestoreHeld = restoredSession != nil
         try restoredSession?.cancel(); restoredSession = nil; tier = nil
+        if ownRestoreHeld, let fromDisk, let cache {
+            cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
+            log("darkbloom-prefix-v1 rank=\(collective.rank) event=restore-kept frontier=\(choice.reusedPrefix) reason=peer_cold")
+        }
     } else if let fromDisk, let cache {
         // Both ranks restored the same frontier from what each holds; a state
         // read from disk becomes resident too, on both ranks alike, so the
         // next repeat is a memory hit (it gives way under pressure as any entry).
-        cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk])
+        cache.insert(scope: scope, tokens: request.promptTokenIDs, states: [fromDisk], sharedBytes: fromDisk.sharedBytes)
     }
     fromDisk = nil; restoredState = nil
     let plannedRequest = try request.planned(reusedPrefix: settled.reusedPrefix, splitFinalToken: settled.splitFinalToken)

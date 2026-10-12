@@ -3,8 +3,10 @@ import Foundation
 
 /// The SSD tier of the native rank's prompt-prefix cache, as this owner
 /// configures it in the rank's environment. On by default, with the prefix
-/// cache: records go under this user's caches
-/// (`~/Library/Caches/darkbloom/cluster-prefix-v1`, beside the product's own
+/// cache, under the product's cache settings (`ClusterPrefixCacheSettings`:
+/// the saved cache directory or this user's caches, the product's prefix
+/// cache gate, disk budget rule, daily write cap and TTL): records go under
+/// `<cache base>/darkbloom/cluster-prefix-v1` (beside the product's own
 /// `kv3` tier, which it never touches) and are encrypted and named with this
 /// Mac's owner key, which outlives every owner process: an owner serves one
 /// session (`cluster worker-owner --stdio`), and the records exist to warm the
@@ -49,16 +51,21 @@ enum DistributedInstalledPrefixSSD {
     /// Last resort: this owner process's key, random, never written.
     static let processKeyHex: String = randomHex()
 
-    static func root(home: URL) -> URL {
-        home.appendingPathComponent("Library/Caches/darkbloom/cluster-prefix-v1", isDirectory: true)
-    }
+    /// The built-in root (no pinned cache volume); `ClusterPrefixCacheSettings.root`.
+    static func root(home: URL) -> URL { ClusterPrefixCacheSettings.defaultRoot(home: home) }
 
     /// The variables to add to the native rank's environment. Empty when the
     /// prefix cache itself is off (the rank then keeps nothing anywhere).
+    /// The root, budget, write cap and TTL come from the product's settings
+    /// (`settings`, installed once per owner by the `cluster worker-owner`
+    /// command from the saved provider configuration and the product's
+    /// switches; the built-in root otherwise); the cluster-only switches
+    /// below are diagnosis overrides.
     static func environment(home: URL, deviceDirectory: URL, ownerEnvironment: [String: String], prefixCacheOff: Bool,
-                            key: OwnerKey? = nil) -> [String: String] {
-        guard !prefixCacheOff else { return [:] }
-        var directory = root(home: home).path
+                            key: OwnerKey? = nil, settings: ClusterPrefixCacheSettings? = nil) -> [String: String] {
+        let product = settings ?? productSettings(home: home)
+        guard !prefixCacheOff, product.prefixCacheEnabled else { return [:] }
+        var directory = product.root.path
         if let value = ownerEnvironment[directoryName], value.hasPrefix("/"), value.utf8.count <= 1024,
            !value.split(separator: "/").contains("..") {
             directory = value
@@ -71,10 +78,24 @@ enum DistributedInstalledPrefixSSD {
         case .hex(let hex): result[keyName] = hex
         case .file(let url): result[keyFileName] = url.path
         }
+        result.merge(product.rankSwitches) { current, _ in current }
         for name in passedThrough {
             if let value = ownerEnvironment[name], value.utf8.count <= 12, value.allSatisfy(\.isNumber) { result[name] = value }
         }
         return result
+    }
+
+    // MARK: the product's settings
+
+    /// Installed once by the `cluster worker-owner` command (and by the setup
+    /// commands that need the root): the product's caching surface resolved
+    /// for this Mac. Without it the built-in root with the rank's defaults.
+    static func installProductSettings(_ value: ClusterPrefixCacheSettings?) {
+        state.withLock { $0.product = value }
+    }
+
+    static func productSettings(home: URL) -> ClusterPrefixCacheSettings {
+        state.withLock { $0.product } ?? .builtIn(home: home)
     }
 
     // MARK: the owner key
@@ -143,6 +164,7 @@ enum DistributedInstalledPrefixSSD {
     private struct State {
         var source: (@Sendable () -> Data?)?
         var resolved: [String: OwnerKey] = [:]
+        var product: ClusterPrefixCacheSettings?
     }
     private static let state = DistributedInstalledPrefixSSDState(State())
 

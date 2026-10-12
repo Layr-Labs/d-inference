@@ -41,6 +41,22 @@ private func states(committed: Int, frontiers: [Int], seed: Int) -> [QwenStagePr
     }
 }
 
+
+/// The decoding rank's speculative history at `frontier` (hidden `[1, f-1, 4]`
+/// bf16, tokens `[1, f-1]` int32, last `[1, 1, 4]`), values from `seed`.
+private func history(frontier: Int, seed: Int) -> QwenMTPPrefixHistory {
+    let hidden = (MLXArray(0..<((frontier - 1) * 4)).asType(.float32) * 0.125 + Float(seed)).reshaped([1, frontier - 1, 4]).asType(.bfloat16)
+    let tokens = MLXArray((1..<frontier).map { Int32($0 + seed) }).reshaped([1, frontier - 1])
+    let last = (MLXArray(0..<4).asType(.float32) - Float(seed)).reshaped([1, 1, 4]).asType(.bfloat16)
+    eval(hidden, tokens, last)
+    return .init(frontier: frontier, hidden: hidden, tokens: tokens, last: last)
+}
+
+private func sameHistory(_ a: QwenMTPPrefixHistory?, _ b: QwenMTPPrefixHistory?) -> Bool {
+    guard let a, let b else { return a == nil && b == nil }
+    return a.frontier == b.frontier && equal(a.hidden, b.hidden) && equal(a.tokens, b.tokens) && equal(a.last, b.last)
+}
+
 private func equal(_ a: MLXArray, _ b: MLXArray) -> Bool {
     a.shape == b.shape && a.dtype == b.dtype && MLX.arrayEqual(a, b).item(Bool.self)
 }
@@ -311,5 +327,112 @@ struct PrefixDiskTierTests {
         #expect(throws: ProbeError.self) {
             _ = try QwenPhaseSplitFault.admit(environment: ["DARKBLOOM_CLUSTER_QUALIFICATION_FAULT": "prefix_ssd_restore_fail=2"])
         }
+    }
+
+    // MARK: full caching (work/cluster-full-caching)
+
+    @Test func aRecordCarriesTheSpeculativeHistoryAtTheFrontiersThatHaveOne() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(200..<240), scope = "scope|chunk=8"
+        var captured = states(committed: 39, frontiers: [16, 32], seed: 6)
+        // The decoding rank keeps the head's history at N-1 and at the grid frontier 32, not at 16.
+        for index in captured.indices where [39, 32].contains(captured[index].committedTokens) {
+            captured[index].speculativeHistory = history(frontier: captured[index].committedTokens, seed: captured[index].committedTokens)
+        }
+        do {
+            let tier = try openTier(configuration(root))
+            tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+            #expect(tier.drain(timeoutSeconds: 20) && tier.stats.persisted == 1)
+            tier.close()
+        }
+        let tier = try openTier(configuration(root))
+        #expect(tier.frontiers(scope: scope, tokens: tokens, maximumFrontier: 39) == [39, 32, 16])
+        for frontier in [39, 32, 16] {
+            let restored = try #require(try tier.restore(scope: scope, tokens: tokens, frontier: frontier, check: {}))
+            let original = captured.first { $0.committedTokens == frontier }!
+            #expect(same(restored, original))
+            #expect(sameHistory(restored.speculativeHistory, original.speculativeHistory))
+            #expect((restored.speculativeHistory == nil) == (frontier == 16))
+        }
+        // A history that does not describe its frontier is refused before anything is written.
+        var wrong = states(committed: 39, frontiers: [], seed: 7)
+        wrong[0].speculativeHistory = history(frontier: 20, seed: 1)
+        let other = Array(300..<340)
+        tier.persist(scope: scope, tokens: other, states: wrong, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        #expect(tier.frontiers(scope: scope, tokens: other, maximumFrontier: 39).isEmpty && tier.stats.droppedPersists == 1)
+        tier.close()
+    }
+
+    @Test func closeFinishesQueuedWritesAndExtendsItsBoundOnlyOnProgress() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tier = try openTier(configuration(root) { $0.maximumQueuedJobs = 4 })
+        let prompts = (0..<3).map { p in Array((p * 1000)..<(p * 1000 + 40)) }
+        for (seed, prompt) in prompts.enumerated() {
+            tier.persist(scope: "s", tokens: prompt, states: states(committed: 39, frontiers: [16], seed: seed), blockTokens: block)
+        }
+        // No drain first: the teardown itself must let the queued records land.
+        tier.close()
+        #expect(tier.recordCount == 3 && tier.stats.persisted == 3 && tier.stats.closeDrained && !tier.stats.closeExtended)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).filter { $0.hasPrefix(".") }.isEmpty)
+        // After close nothing more is accepted.
+        tier.persist(scope: "s", tokens: Array(5000..<5040), states: states(committed: 39, frontiers: [], seed: 9), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 3 && tier.stats.droppedPersists == 1)
+        // The rule: one extension when a record completed since the close began; none when nothing did.
+        let began: TimeInterval = 1_000
+        #expect(QwenStagePrefixDiskTier.teardownExtends(drained: false, lastCompletedWrite: began + 12, closeBegan: began, boundSeconds: 20))
+        #expect(QwenStagePrefixDiskTier.teardownExtends(drained: false, lastCompletedWrite: began, closeBegan: began, boundSeconds: 20))
+        #expect(!QwenStagePrefixDiskTier.teardownExtends(drained: false, lastCompletedWrite: began - 1, closeBegan: began, boundSeconds: 20))
+        #expect(!QwenStagePrefixDiskTier.teardownExtends(drained: false, lastCompletedWrite: nil, closeBegan: began, boundSeconds: 20))
+        #expect(!QwenStagePrefixDiskTier.teardownExtends(drained: true, lastCompletedWrite: began + 12, closeBegan: began, boundSeconds: 20))
+        #expect(!QwenStagePrefixDiskTier.teardownExtends(drained: false, lastCompletedWrite: began + 12, closeBegan: began, boundSeconds: 0))
+    }
+
+    @Test func onlyPromptFrontiersAreOfferedOrPersisted() throws {
+        // The accepted timeline only (oMLX mtp-terminal-commit): a frontier at
+        // or past the prompt (generated tokens) is never offered, and a state
+        // deeper than the prompt is never written.
+        let atPrompt = QwenStagePrefixOffer(enabled: true, frontiers: [100, 64])
+        #expect(QwenStagePrefixOffer(words: atPrompt.words, promptCount: 100) == .init(enabled: false, frontiers: []))
+        #expect(QwenStagePrefixOffer(words: atPrompt.words, promptCount: 101) == atPrompt)
+        #expect(QwenStagePrefixChoice.choose(local: atPrompt, peer: atPrompt, promptCount: 100) == .init(reusedPrefix: 64, splitFinalToken: true))
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tier = try openTier(configuration(root))
+        let tokens = Array(0..<40)
+        tier.persist(scope: "s", tokens: tokens, states: states(committed: 41, frontiers: [], seed: 1), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 0 && tier.stats.persisted == 0)
+        tier.close()
+    }
+
+    @Test func aPromotedDiskRestoreIsChargedToTheResidentBudgetInFull() throws {
+        // F1 accounting: a state read from the SSD tier and promoted to the
+        // resident tier counts its attention copy, recurrent state and
+        // speculative history, exactly as a captured prompt does, and gives
+        // way under the budget as any entry.
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(0..<40), scope = "s"
+        var captured = states(committed: 39, frontiers: [], seed: 3)
+        captured[0].speculativeHistory = history(frontier: 39, seed: 2)
+        let tier = try openTier(configuration(root))
+        tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20))
+        let restored = try #require(try tier.restore(scope: scope, tokens: tokens, frontier: 39, check: {}))
+        let expected = restored.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            + restored.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
+            + history(frontier: 39, seed: 2).hidden.nbytes + history(frontier: 39, seed: 2).tokens.nbytes + history(frontier: 39, seed: 2).last.nbytes
+        #expect(restored.sharedBytes + restored.ownBytes == expected)
+        let resident = QwenStagePrefixCache(enabled: true)
+        resident.setBudget(expected * 2)
+        resident.insert(scope: scope, tokens: tokens, states: [restored], sharedBytes: restored.sharedBytes)
+        #expect(resident.bytesInUse == expected && resident.count == 1)
+        #expect(resident.state(scope: scope, tokens: tokens, frontier: 39)?.speculativeHistory != nil)
+        // Under a budget below the promoted state, it is evicted like any entry (never over budget).
+        resident.setBudget(expected - 1)
+        #expect(resident.bytesInUse == 0 && resident.count == 0)
+        tier.close()
     }
 }

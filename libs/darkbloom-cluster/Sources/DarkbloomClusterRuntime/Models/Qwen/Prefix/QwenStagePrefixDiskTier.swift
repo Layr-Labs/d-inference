@@ -63,6 +63,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         public var droppedPersists = 0
         public var evictions = 0
         public var expirations = 0
+        /// Teardown: whether `close` waited past its bound once because a
+        /// write had just completed (progress), and whether it ended drained.
+        public var closeExtended = false
+        public var closeDrained = true
     }
 
     public let configuration: QwenStagePrefixDiskConfiguration
@@ -87,6 +91,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     private var cancelled = false
     private var writeWindowStart: TimeInterval = 0
     private var writeWindowBytes = 0
+    /// When the writer last finished a record (progress, for `close`).
+    private var lastCompletedWrite: TimeInterval?
     private var statistics = Statistics()
     var now: () -> TimeInterval = { Date().timeIntervalSince1970 }
 
@@ -220,6 +226,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
                 stallMilliseconds: fault?.restoreStallMilliseconds, check: guarded)
             let bytes = state.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
                 + state.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
+                + (state.speculativeHistory.map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes } ?? 0)
             touch(name: name)
             lock.withLock { statistics.restores += 1; statistics.restoredBytes += bytes }
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore frontier=\(frontier) bytes=\(bytes)"
@@ -292,6 +299,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let name = keys.fileName(recordKey: recordKey)
         let estimate = chosen.reduce(0) { total, state in
             total + state.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
+                + (state.speculativeHistory.map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes } ?? 0)
         } + deepest.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
         enum Decision { case touch, drop(String), write }
         let decision: Decision = lock.withLock {
@@ -372,6 +380,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
                 }
                 statistics.persisted += 1; statistics.persistedBytes += bytes
                 writeWindowBytes += bytes
+                lastCompletedWrite = written
             }
             saveWriteWindow()
             evictOverLimits(protecting: name)
@@ -393,15 +402,36 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     }
 
     /// Before the model is released: finish what was queued (bounded), then
-    /// refuse new work. A write still running when the bound passes stops at
-    /// its next unit and leaves only a temporary file, deleted at next load.
+    /// refuse new work. As oMLX's engine teardown (`a58afee1`): the bound is
+    /// extended ONCE, by itself, when the writer completed a record within the
+    /// bound (it is making progress; a queued record is what a restarted pair
+    /// restores), never when it is stuck. A write still running when the
+    /// final bound passes stops at its next unit and leaves only a temporary
+    /// file, deleted at next load.
     func close(timeoutSeconds: Double = 20) {
-        let drained = drain(timeoutSeconds: timeoutSeconds)
-        lock.withLock { cancelled = true }
+        var drained = drain(timeoutSeconds: timeoutSeconds)
+        var extended = false
+        if Self.teardownExtends(drained: drained, lastCompletedWrite: lock.withLock { lastCompletedWrite },
+                                closeBegan: now() - timeoutSeconds, boundSeconds: timeoutSeconds) {
+            extended = true
+            log("darkbloom-prefix-ssd-v1 rank=\(rank) event=close-extended bound_s=\(Int(timeoutSeconds)) queued=\(lock.withLock { queuedJobs })")
+            drained = drain(timeoutSeconds: timeoutSeconds)
+        }
+        lock.withLock { cancelled = true; statistics.closeExtended = extended; statistics.closeDrained = drained }
         if !drained { _ = drain(timeoutSeconds: 5) }
         // This rank no longer uses the plan directory.
         lock.withLock { if inUse >= 0 { Darwin.close(inUse); inUse = -1 } }
-        log("darkbloom-prefix-ssd-v1 rank=\(rank) event=close drained=\(drained) records=\(recordCount)")
+        log("darkbloom-prefix-ssd-v1 rank=\(rank) event=close drained=\(drained) extended=\(extended) records=\(recordCount)")
+    }
+
+    /// The teardown rule, pure: one extension of `boundSeconds` when the
+    /// first bound passed without draining and a record completed since the
+    /// close began (progress within the bound); none when nothing completed
+    /// (a stuck disk must not hold the model release).
+    static func teardownExtends(drained: Bool, lastCompletedWrite: TimeInterval?, closeBegan: TimeInterval,
+                                boundSeconds: Double) -> Bool {
+        guard !drained, boundSeconds > 0, let last = lastCompletedWrite else { return false }
+        return last >= closeBegan
     }
 
     /// Deletes every record of this rank (diagnosis and tests).

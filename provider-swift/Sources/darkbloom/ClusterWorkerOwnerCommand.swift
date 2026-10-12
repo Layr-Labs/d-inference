@@ -19,8 +19,12 @@ extension Cluster {
             let reference = try ClusterConfigurationStore.installedReference(
                 providerConfiguration: ConfigManager.defaultConfigPath())
             // The rank's prefix-cache SSD key, from the product's key hierarchy
-            // when this build holds it (records then survive every restart).
+            // when this build holds it (records then survive every restart),
+            // and the product's cache settings (the same saved settings and
+            // switches the single-Mac tier reads) for the rank's root and budgets.
             ClusterPrefixSSDKeyMaterial.installAsOwnerKeySource()
+            ClusterPrefixCacheSettings.installProduct(
+                providerConfiguration: try ConfigManager.defaultConfigPath())
             try DistributedInstalledOwner.serve(reference: reference)
         }
     }

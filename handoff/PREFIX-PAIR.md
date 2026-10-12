@@ -204,6 +204,51 @@ the tier (harness ready; Mac B was being replaced when this was written); the
 KEK-derived key needs the signed build to be exercised (unsigned builds use the
 key file).
 
+## Full caching on the cluster path (work/cluster-full-caching, 2026-10-12)
+
+Built on integration round 3 with the SSD tier merged, against the owner's
+oMLX caching as the reference (`omlx/cluster/prompt_snapshot_cache.py`,
+`omlx/cache/paged_ssd_cache.py`, the teardown, reclaim and MTP-timeline
+commits; the mechanism-by-mechanism map is in
+`evidence/full-caching-20261012/STATUS.md`, "Architecture").
+
+- The record format (`QwenStagePrefixDiskRecord`) gained an optional
+  `history` section: the decoding rank's speculative head history at each
+  kept frontier (three whole units: hidden `[1, f-1, H]`, tokens `[1, f-1]`,
+  last `[1, 1, H]`), restored into `QwenStagePrefixState.speculativeHistory`,
+  so a restore from the SSD drafts from the whole prompt as a resident hit
+  does (PERF-BACKLOG 13; oMLX `51df0333`). Records without the section
+  still restore (nil history).
+- Teardown (`QwenStagePrefixDiskTier.close`) finishes queued records within
+  its bound and extends the bound once, by itself, when a record completed
+  since the close began (progress), never when the writer is stuck (oMLX
+  `a58afee1`). `Statistics.closeExtended` / `closeDrained` report it.
+- A disk restore this rank adopted but the peer could not confirm stays
+  resident (within the budget) so the next offer is a memory hit instead of a
+  second read and decryption (oMLX U#3327, `event=restore-kept`). Every
+  promoted restore now charges its attention copy and history to the
+  resident budget (`QwenStagePrefixState.sharedBytes`); before, only the
+  recurrent bytes were counted.
+- Only prompt frontiers (`1..<promptCount`) are offered or written: no
+  drafted or generated timeline can reach a record (oMLX
+  mtp-terminal-commit), asserted by tests.
+- Settings: the pair reads the PRODUCT's caching surface
+  (`ClusterPrefixCacheSettings.product`: `darkbloom cache set` directory and
+  daily write cap, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_DISK_GB`
+  else half the free space, the 1,800 s TTL ceiling), installed once by
+  `cluster worker-owner`; the rank's root is
+  `<cache base>/darkbloom/cluster-prefix-v1`, beside the single-Mac `kv3`
+  tier; the key derives from the same Secure Enclave-rooted KEK. The
+  `DARKBLOOM_CLUSTER_PREFIX_*` variables remain diagnosis overrides.
+  `darkbloom cache status` shows the cluster tier (plans, records, bytes;
+  `--json` per plan and rank). `darkbloom cluster pair --forget` reclaims this
+  Mac's records (never a plan a live rank holds). `ClusterCacheSettingsSync`
+  is the versioned settings subset the leader sends members; its transport is
+  the onboarding track's control channel.
+- Sliding-window stages (Gemma 4, GPT-OSS) still refuse capture; the ring
+  snapshot design (one window unit per kept frontier, as oMLX stores the full
+  rotating state per boundary) is written up in the STATUS, not built.
+
 ## Not built
 
 **Paged KV in the stages.** The product's `PagedKVBackend` implements the same

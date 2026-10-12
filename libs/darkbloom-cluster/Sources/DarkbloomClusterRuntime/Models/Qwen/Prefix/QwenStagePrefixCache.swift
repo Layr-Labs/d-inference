@@ -24,6 +24,16 @@ struct QwenStagePrefixState {
     /// speculative history are views of its prompt's one copy, counted once
     /// per prompt (`QwenStagePrefixCache.insert(sharedBytes:)`).
     var ownBytes: Int { recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes } }
+
+    /// The storage this state views besides its own: its attention copy and
+    /// speculative history. A state read from the SSD tier owns these alone
+    /// (nothing else views them), so a promotion into the resident tier
+    /// charges them as the prompt's shared bytes (the F1 budget counts every
+    /// resident byte once, captured or restored).
+    var sharedBytes: Int {
+        attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            + (speculativeHistory.map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes } ?? 0)
+    }
 }
 
 /// What one capture of a loaded stage costs, measured from its first

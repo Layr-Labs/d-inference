@@ -60,11 +60,20 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
     let frontiers: [Frontier]
     let attention: [Attention]
     let recurrent: [Recurrent]
+    /// The decoding rank's speculative (MTP) head history at a kept frontier
+    /// (PERF-BACKLOG 13; oMLX `51df0333`: the drafter's state travels with the
+    /// snapshot): three whole units per frontier, kinds `hidden` (`[1, f-1, H]`),
+    /// `tokens` (`[1, f-1]`, int32) and `last` (`[1, 1, H]`). Absent in records
+    /// written before this section existed and on the non-decoding rank.
+    var history: [Recurrent]? = nil
     let createdUnixSeconds: Double
+
+    var historyEntries: [Recurrent] { history ?? [] }
 
     /// Bytes of every sealed unit after the header.
     var dataBytes: Int {
         attention.reduce(0) { $0 + $1.units.reduce(0) { $0 + $1.length } } + recurrent.reduce(0) { $0 + $1.unit.length }
+            + historyEntries.reduce(0) { $0 + $1.unit.length }
     }
 }
 
@@ -102,12 +111,18 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     let attention: [Source]
     /// Per recurrent entry, its source.
     let recurrent: [Source]
+    /// Per history entry, its source.
+    let history: [Source]
 
-    init(header: QwenStagePrefixDiskHeader, fileName: String, attention: [Source], recurrent: [Source]) {
+    init(header: QwenStagePrefixDiskHeader, fileName: String, attention: [Source], recurrent: [Source], history: [Source] = []) {
         self.header = header; self.fileName = fileName; self.attention = attention; self.recurrent = recurrent
+        self.history = history
     }
 
-    var hostBytes: Int { attention.reduce(0) { $0 + $1.data.count } + recurrent.reduce(0) { $0 + $1.data.count } }
+    var hostBytes: Int {
+        attention.reduce(0) { $0 + $1.data.count } + recurrent.reduce(0) { $0 + $1.data.count }
+            + history.reduce(0) { $0 + $1.data.count }
+    }
 
     /// Prepares a record of `states` (one prompt's captured frontiers, the
     /// deepest carrying the whole attention copy). Runs on the serving thread:
@@ -119,7 +134,8 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
               frontiers.allSatisfy({ $0.state.committedTokens == committed || $0.state.committedTokens % blockTokens == 0 }) else {
             throw ProbeError("Prefix record frontiers are off the block grid")
         }
-        eval(deepest.attention.values.flatMap { [$0.keys, $0.values] } + frontiers.flatMap { $0.state.recurrent.values.flatMap { [$0.conv, $0.ssm] } })
+        eval(deepest.attention.values.flatMap { [$0.keys, $0.values] } + frontiers.flatMap { $0.state.recurrent.values.flatMap { [$0.conv, $0.ssm] } }
+            + frontiers.flatMap { $0.state.speculativeHistory.map { [$0.hidden, $0.tokens, $0.last] } ?? [] })
         var index = 0, offset = 0
         func unit(_ plain: Int) -> QwenStagePrefixDiskHeader.Unit {
             defer { index += 1; offset += plain + QwenStagePrefixDiskFormat.tagBytes }
@@ -158,11 +174,33 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
                 }
             }
         }
-        let header = QwenStagePrefixDiskHeader(version: QwenStagePrefixDiskHeader.version, scope: scope, recordKey: recordKey,
+        // The speculative head's history at each kept frontier that has one
+        // (the decoding rank of a speculative pair), after the recurrent units.
+        var history: [QwenStagePrefixDiskHeader.Recurrent] = [], historySources: [Source] = []
+        for (state, _) in frontiers.sorted(by: { $0.state.committedTokens < $1.state.committedTokens }) {
+            guard let kept = state.speculativeHistory else { continue }
+            guard kept.frontier == state.committedTokens, kept.hidden.ndim == 3, kept.tokens.ndim == 2, kept.last.ndim == 3,
+                  kept.hidden.dim(1) == kept.frontier - 1, kept.tokens.dim(1) == kept.frontier - 1, kept.last.dim(1) == 1 else {
+                throw ProbeError("Prefix record speculative history does not describe its frontier")
+            }
+            for (kind, array) in [("hidden", kept.hidden), ("tokens", kept.tokens), ("last", kept.last)] {
+                guard let dtype = QwenStagePrefixDiskFormat.name(array.dtype) else {
+                    throw ProbeError("Prefix record history dtype is not storable")
+                }
+                let data = array.asData(access: .noCopyIfContiguous)
+                guard data.data.count == array.nbytes else { throw ProbeError("Prefix record history bytes differ") }
+                history.append(.init(frontier: state.committedTokens, layer: 0, kind: kind, dtype: dtype,
+                    shape: array.shape, unit: unit(array.nbytes)))
+                historySources.append(.init(array: array, data: data.data))
+            }
+        }
+        var header = QwenStagePrefixDiskHeader(version: QwenStagePrefixDiskHeader.version, scope: scope, recordKey: recordKey,
             committedTokens: committed, blockTokens: blockTokens,
             frontiers: frontiers.map { .init(tokens: $0.state.committedTokens, key: $0.key) }.sorted { $0.tokens < $1.tokens },
             attention: attention, recurrent: recurrent, createdUnixSeconds: Date().timeIntervalSince1970)
-        return .init(header: header, fileName: fileName, attention: attentionSources, recurrent: recurrentSources)
+        if !history.isEmpty { header.history = history }
+        return .init(header: header, fileName: fileName, attention: attentionSources, recurrent: recurrentSources,
+            history: historySources)
     }
 
     /// The plaintext of one attention unit: all heads of rows
@@ -228,6 +266,7 @@ enum QwenStagePrefixDiskIO {
             for (block, unit) in item.units.enumerated() { try seal(job.attentionPlaintext(entry: entry, block: block), unit) }
         }
         for (entry, item) in job.header.recurrent.enumerated() { try seal(job.recurrent[entry].data, item.unit) }
+        for (entry, item) in job.header.historyEntries.enumerated() { try seal(job.history[entry].data, item.unit) }
         closed = true
         guard close(fd) == 0 else { throw ProbeError("Prefix record close failed (errno \(errno))") }
         return dataStart + job.header.dataBytes
@@ -330,8 +369,27 @@ enum QwenStagePrefixDiskIO {
             } else { throw ProbeError("Prefix record recurrent entries are not paired") }
         }
         guard convs.isEmpty else { throw ProbeError("Prefix record recurrent entries are not paired") }
-        eval(attention.values.flatMap { [$0.keys, $0.values] } + recurrent.values.flatMap { [$0.conv, $0.ssm] })
-        return QwenStagePrefixState(committedTokens: frontier, attention: attention, recurrent: recurrent)
+        var historyArrays: [String: MLXArray] = [:]
+        for (slot, item) in work.historyItems.enumerated() {
+            guard let plain = work.historyPlain(slot), let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype] else {
+                throw ProbeError("Prefix record history unit missing")
+            }
+            historyArrays[item.kind] = MLXArray(plain, item.shape, dtype: dtype)
+        }
+        var history: QwenMTPPrefixHistory?
+        if !historyArrays.isEmpty {
+            guard let hidden = historyArrays["hidden"], let tokens = historyArrays["tokens"], let last = historyArrays["last"],
+                  historyArrays.count == 3 else { throw ProbeError("Prefix record history entries are not a triple") }
+            guard let view = QwenMTPPrefixHistory.view(hidden: hidden, tokens: tokens, last: last, prompt: frontier, frontier: frontier) else {
+                throw ProbeError("Prefix record history does not describe its frontier")
+            }
+            history = view
+        }
+        eval(attention.values.flatMap { [$0.keys, $0.values] } + recurrent.values.flatMap { [$0.conv, $0.ssm] }
+            + (history.map { [$0.hidden, $0.tokens, $0.last] } ?? []))
+        var state = QwenStagePrefixState(committedTokens: frontier, attention: attention, recurrent: recurrent)
+        state.speculativeHistory = history
+        return state
     }
 
     static func openUnit(_ fd: Int32, _ unit: QwenStagePrefixDiskHeader.Unit, dataStart: Int,
@@ -383,11 +441,13 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
     let targets: [Target]
     let attentionWork: [(entry: Int, block: Int)]
     let recurrentItems: [QwenStagePrefixDiskHeader.Recurrent]
+    let historyItems: [QwenStagePrefixDiskHeader.Recurrent]
     private let lock = NSLock()
     private var plains: [Data?]
+    private var historyPlains: [Data?]
     private var firstError: Error?
 
-    var total: Int { attentionWork.count + recurrentItems.count }
+    var total: Int { attentionWork.count + recurrentItems.count + historyItems.count }
 
     init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int) throws {
         let header = opened.header, b = header.blockTokens
@@ -409,6 +469,8 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
         attentionWork = header.attention.indices.flatMap { entry in (0..<blocks).map { (entry: entry, block: $0) } }
         recurrentItems = header.recurrent.filter { $0.frontier == frontier }
         plains = Array(repeating: nil, count: recurrentItems.count)
+        historyItems = header.historyEntries.filter { $0.frontier == frontier }
+        historyPlains = Array(repeating: nil, count: historyItems.count)
         guard !recurrentItems.isEmpty || header.recurrent.isEmpty else {
             throw ProbeError("Prefix record lacks the frontier's recurrent state")
         }
@@ -417,6 +479,7 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
     deinit { for target in targets { target.pointer.deallocate() } }
 
     func recurrentPlain(_ slot: Int) -> Data? { lock.withLock { plains[slot] } }
+    func historyPlain(_ slot: Int) -> Data? { lock.withLock { historyPlains[slot] } }
 
     func requireNoError() throws {
         if let error = lock.withLock({ firstError }) { throw error }
@@ -439,7 +502,7 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                             .copyMemory(from: source.baseAddress!.advanced(by: head * run), byteCount: run)
                     }
                 }
-            } else {
+            } else if index < attentionWork.count + recurrentItems.count {
                 let slot = index - attentionWork.count
                 let item = recurrentItems[slot]
                 guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype],
@@ -448,6 +511,15 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                 }
                 let plain = try QwenStagePrefixDiskIO.openUnit(fd, item.unit, dataStart: dataStart, key: key)
                 lock.withLock { plains[slot] = plain }
+            } else {
+                let slot = index - attentionWork.count - recurrentItems.count
+                let item = historyItems[slot]
+                guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype],
+                      item.unit.length == item.shape.reduce(1, *) * dtype.size + QwenStagePrefixDiskFormat.tagBytes else {
+                    throw ProbeError("Prefix record history unit size differs")
+                }
+                let plain = try QwenStagePrefixDiskIO.openUnit(fd, item.unit, dataStart: dataStart, key: key)
+                lock.withLock { historyPlains[slot] = plain }
             }
         } catch {
             lock.withLock { if firstError == nil { firstError = error } }

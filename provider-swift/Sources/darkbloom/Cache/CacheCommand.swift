@@ -62,7 +62,8 @@ struct Cache: ParsableCommand {
                 print("Cache directory: \(status.directory)")
                 print("Daily write limit: \(describeCacheWriteLimit(loaded.config.cache))")
                 print("Storage check: \(status.storageCheck)")
-                print("Payload encryption: AES-256-GCM; keys stay in the Mac's Keychain/Secure Enclave.")
+                print(status.cluster.line)
+                print("Payload encryption: AES-256-GCM; keys stay in the Mac's Keychain/Secure Enclave (the cluster tier derives its key from the same).")
                 print("These are saved settings; a running provider uses its startup settings until restarted.")
             }
         }

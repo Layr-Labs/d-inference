@@ -319,7 +319,7 @@ public enum ClusterOnboardingDriver {
     /// A member: it is never asked anything; it says where to continue.
     static func member(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         let leader = resume.peerName ?? "the leading Mac"
-        console.say("This Mac is a member of the cluster \(leader) leads.")
+        console.say("This Mac is a member of the cluster led by \(leader).")
         switch operations.ensureService() {
         case .success(let line): console.say(line)
         case .failure(let failure):

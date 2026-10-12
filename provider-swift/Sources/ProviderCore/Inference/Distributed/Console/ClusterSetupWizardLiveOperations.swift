@@ -516,7 +516,7 @@ final class LiveContext: @unchecked Sendable {
             } catch {
                 capability = .failure(ClusterSetupFailure(toolError(executable: worker, arguments: describe, fallback: error)))
             }
-            let manifest = (try? ClusterConfigurationFiles.read(directory.appendingPathComponent("manifest.json"), maximum: 1024 * 1024)) ?? Data()
+            let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
             return .init(model: model, layout: layout, capability: capability, tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest))
         }
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,

@@ -146,7 +146,11 @@ private final class OnboardingLive: @unchecked Sendable {
                 defer { pendingAnswer = nil }
                 return pendingAnswer
             }
-            events(.code(code, peer: ClusterPairingTerminal.describe(peer)))
+            let posture = peer.posture
+            let security = [posture.sipEnabled ? "SIP on" : "SIP OFF", posture.secureBootEnabled ? "Secure Boot full" : "Secure Boot reduced",
+                            posture.authenticatedRootEnabled ? "sealed system volume" : "system volume NOT sealed"].joined(separator: ", ")
+            events(.code(code, peer: [peer.name, "\(posture.hardwareModel), macOS \(posture.osVersion); \(security)",
+                                      "Secure Enclave key pin \(peer.pin.prefix(16))…"]))
             if let early { answer(early) }
         }, peerDecided: { events(.peerDecided($0)) })
         let result = ClusterLinkPairing.run(options: options, participant: participant, hooks: ClusterPairingProvider.hooks,
@@ -374,10 +378,10 @@ private final class OnboardingLive: @unchecked Sendable {
 enum ClusterOnboardingWords {
     static func mode(_ raw: String) -> String {
         switch raw {
-        case "pipeline": return "pipeline"
-        case "compactDecode": return "compact decode"
-        case "phaseSplit": return "prompt split, one Mac decodes"
-        case "phaseSplitMTP": return "prompt split, one Mac decodes with MTP"
+        case "pipeline_v1": return "pipeline (each Mac runs its layers of every token)"
+        case "pipeline_compact_decode_v1": return "pipeline with compact decode"
+        case "phase_split_v1": return "prompt split, then one Mac decodes"
+        case "phase_split_mtp_v1": return "prompt split, then one Mac decodes with MTP"
         default: return raw
         }
     }

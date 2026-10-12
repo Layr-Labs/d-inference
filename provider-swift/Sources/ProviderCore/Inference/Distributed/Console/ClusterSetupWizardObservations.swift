@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CryptoKit
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
@@ -161,12 +162,25 @@ enum ClusterSetupModelFolders {
         var models = [ClusterSetupLocalModel]()
         for name in names.prefix(maximumFolders * 4) where !name.hasPrefix(".") {
             let manifest = parent.appendingPathComponent(name).appendingPathComponent("manifest.json")
-            guard let data = try? ClusterConfigurationFiles.read(manifest, maximum: 1024 * 1024),
-                  let model = parse(manifest: data, folder: name) else { continue }
+            guard let data = readManifest(manifest), let model = parse(manifest: data, folder: name) else { continue }
             models.append(model)
             if models.count == maximumFolders { break }
         }
         return models
+    }
+
+    /// A model folder's manifest: a regular file (no symbolic link) of at most 1 MiB. Unlike setup and trust
+    /// files it may be hard-linked (a model copied with links, a deduplicating copy): it names the model and
+    /// its digests, and the worker verifies the weights against them before anything is served.
+    static func readManifest(_ url: URL) -> Data? {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0, info.st_size <= 1 << 20 else { return nil }
+        var data = Data(count: Int(info.st_size))
+        let count = data.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+        return count == Int(info.st_size) ? data : nil
     }
 
     static func parse(manifest data: Data, folder: String) -> ClusterSetupLocalModel? {

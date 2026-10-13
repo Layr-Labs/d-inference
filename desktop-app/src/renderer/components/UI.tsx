@@ -103,6 +103,9 @@ export function Modal({
     const previous = document.activeElement as HTMLElement | null;
     const element = ref.current!;
     element.querySelector<HTMLButtonElement>('button')?.focus();
+    // Sign-in and other dialogs replace their content as an operation advances. When the focused
+    // control disappears, focus would fall to the page behind the dialog, so keys are handled at
+    // the document and focus returns to the dialog itself.
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -111,12 +114,15 @@ export function Modal({
       if (event.key !== 'Tab') return;
       const controls = [
         ...element.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex="0"]',
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex="0"]',
         ),
       ];
       const first = controls[0],
         last = controls.at(-1);
-      if (event.shiftKey && document.activeElement === first) {
+      if (!element.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last?.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -124,9 +130,14 @@ export function Modal({
         first?.focus();
       }
     };
-    element.addEventListener('keydown', keydown);
+    const keep = new MutationObserver(() => {
+      if (!element.contains(document.activeElement)) element.focus();
+    });
+    keep.observe(element, { childList: true, subtree: true });
+    document.addEventListener('keydown', keydown);
     return () => {
-      element.removeEventListener('keydown', keydown);
+      keep.disconnect();
+      document.removeEventListener('keydown', keydown);
       previous?.focus();
     };
   }, [onClose]);
@@ -137,6 +148,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
         className="modal"
         onClick={(event) => event.stopPropagation()}
       >

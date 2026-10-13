@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop dialog keyboard focus
+
+- Keep keyboard focus inside desktop dialogs when their content changes, such as sign-in moving from "Continue in browser" to approval or cancellation. Escape still closes the dialog, Tab no longer reaches the page behind it, and expandable details are reachable with Tab.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

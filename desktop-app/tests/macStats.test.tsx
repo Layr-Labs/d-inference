@@ -105,3 +105,46 @@ it('builds traffic from settlement metadata including input without inventing ca
   expect(tokenBars(points).reduce((sum, bar) => sum + bar.total, 0)).toBe(26000);
   expect(points.every((point) => point.cached === undefined)).toBe(true);
 });
+
+// This session's local history (DesktopRequestHistory.swift) reports completion time only.
+const completedHistory = () =>
+  parseRequestHistory({
+    observed_at: 4000,
+    records: [
+      {
+        id: 'local-2',
+        completed_at: 3700,
+        model: 'actual-model',
+        input_tokens: 900,
+        output_tokens: 90,
+        outcome: 'completed',
+        earnings_micro_usd: null,
+      },
+      {
+        id: 'local-1',
+        completed_at: 100,
+        model: 'actual-model',
+        input_tokens: 1200,
+        output_tokens: 120,
+        outcome: 'completed',
+        earnings_micro_usd: null,
+      },
+    ],
+  });
+
+it('builds traffic from completion-only session history', () => {
+  const points = recordedTraffic(completedHistory().records);
+  expect(points.map((point) => [point.at, point.requests, point.tokens])).toEqual([
+    [0, 1, 120],
+    [1800, 0, 0],
+    [3600, 1, 90],
+  ]);
+});
+
+it('charts this session’s completed requests instead of hiding the traffic chart', () => {
+  mocks.history = completedHistory();
+  const state = poolSnapshot();
+  state.activity = { ...state.activity, samples: [] };
+  render(<MacPerformance backend={backendWith(state)} />);
+  expect(screen.getByText('Completed requests · 30-minute intervals')).toBeVisible();
+});

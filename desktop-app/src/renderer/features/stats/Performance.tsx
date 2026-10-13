@@ -74,7 +74,11 @@ export function MacPerformance({ backend }: { backend: BackendState }) {
           metric={metric}
           onMetric={setMetric}
           scope={
-            settled ? 'Settled requests · 30-minute intervals' : 'Observed intervals · this session'
+            !settled
+              ? 'Observed intervals · this session'
+              : history.records.every((record) => record.settled_at !== undefined)
+                ? 'Settled requests · 30-minute intervals'
+                : 'Completed requests · 30-minute intervals'
           }
         />
       )}

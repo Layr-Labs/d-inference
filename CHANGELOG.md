@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop Stats completed-request traffic
+
+- Show This Mac's Stats traffic chart while the provider is serving. This session's local request history reports completion times only, which the chart ignored, so it produced no points and disappeared. The chart is now labeled Completed requests for local history and Settled requests for ledger history.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

@@ -57,6 +57,26 @@ public enum ClusterWorkerCodec {
         return value
     }
 
+    /// The prefix-SSD key line: after the data-plane credential (first when
+    /// there is none), outside the request sequence. Base64 key.
+    public static func encode(_ value: ClusterWorkerPrefixSSDKey) throws -> Data {
+        try encoded(["version": ClusterWorkerLimits.version, "kind": "prefixSSDKey",
+            "membershipEpoch": value.membershipEpoch.uuidString.lowercased(), "rank": value.rank,
+            "key": value.key.base64EncodedString()], maximum: 4096)
+    }
+
+    public static func decodePrefixSSDKey(_ data: Data) throws -> ClusterWorkerPrefixSSDKey {
+        var r = try reader(data, maximum: 4096)
+        try workerRequire(try r.int("version") == ClusterWorkerLimits.version, "Unsupported worker protocol version")
+        try workerRequire(try r.string("kind") == "prefixSSDKey", "Expected the prefix-SSD key line")
+        guard let key = Data(base64Encoded: try r.string("key")) else {
+            throw ClusterWorkerProtocolError.invalid("Expected base64: key")
+        }
+        let value = try ClusterWorkerPrefixSSDKey(membershipEpoch: r.uuid("membershipEpoch"), rank: r.int("rank"), key: key)
+        try r.finish()
+        return value
+    }
+
     /// One control-pipe line: a lease renewal or a sequenced command.
     public static func decodeControl(_ data: Data) throws -> ClusterWorkerControlLine {
         var r = try reader(data, maximum: ClusterWorkerLimits.commandBytes)

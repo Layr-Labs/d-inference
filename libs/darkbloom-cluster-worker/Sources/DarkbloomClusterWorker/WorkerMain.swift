@@ -23,6 +23,9 @@ import Foundation
             // Before anything native: a qualification switch in the environment
             // of a worker that was not started with the test flag ends it here.
             let environment = ProcessInfo.processInfo.environment
+            // The prefix-SSD key comes only on the input: a launcher that put it
+            // (or its file) in the environment is refused here, by name.
+            try WorkerPrefixSSDKey.refuseEnvironmentKey(environment)
             let qualification = try WorkerQualificationGate.admit(
                 permitted: configuration.qualificationSwitchesPermitted, environment: environment)
             let stageResidency = try qualification.stageResidencyRequested(environment: environment)
@@ -63,6 +66,12 @@ import Foundation
                     until: min(configuration.lease.uptimeNanoseconds, configuration.startupDeadlineUptimeNanoseconds ?? UInt64.max),
                     epoch: configuration.load.identity.membershipEpoch, rank: configuration.load.rank)
                 : nil
+            // Then this rank's prefix-SSD key, when the owner announced it.
+            let prefixSSDKey = configuration.prefixSSDKeyOnInput
+                ? try WorkerPrefixSSDKey.read(descriptor: STDIN_FILENO,
+                    until: min(configuration.lease.uptimeNanoseconds, configuration.startupDeadlineUptimeNanoseconds ?? UInt64.max),
+                    epoch: configuration.load.identity.membershipEpoch, rank: configuration.load.rank)
+                : nil
             let pipes = try WorkerPipes(input: STDIN_FILENO, output: STDOUT_FILENO, lease: configuration.lease)
             try pipes.check()
             // The control reader runs from here, through the load, so the
@@ -94,10 +103,10 @@ import Foundation
                 runtime = try configuration.evidenceDirectory.map {
                     try RecordingWorkerRuntime(configuration.load, attachment: attachment, evidenceDirectory: $0,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
-                        qualification: qualification, dataPlane: dataPlane)
+                        qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
                 } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
-                        qualification: qualification, dataPlane: dataPlane)
+                        qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
             }
             // Qualification only: a standing wired limit for the loaded stage.
             // Every exit below resets it to zero.

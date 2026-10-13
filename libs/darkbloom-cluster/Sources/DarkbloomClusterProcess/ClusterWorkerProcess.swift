@@ -106,9 +106,12 @@ public struct ClusterWorkerLaunch: Sendable {
     public let executable: URL
     public let arguments: [String]
     public let environment: [String: String]
-    /// Written to the child's input before anything else (S16: the worker's
-    /// data-plane credential line). Never an argument or a variable.
+    /// Written to the child's input before anything else: the worker's secret
+    /// lines (S16: its data-plane credential; then its prefix-SSD key), at most
+    /// `maximumInitialLines`, each LF-terminated and at most 4,096 bytes. Never
+    /// an argument or a variable.
     public let initialInput: Data?
+    public static let maximumInitialLines = 2
     public init(executable: URL, arguments: [String], environment: [String: String], initialInput: Data? = nil) {
         self.executable = executable; self.arguments = arguments; self.environment = environment
         self.initialInput = initialInput
@@ -226,7 +229,9 @@ public final class ClusterWorkerProcess: @unchecked Sendable {
             throw ClusterWorkerOwnerError.invalid("Cannot suppress pipe SIGPIPE")
         }
         if let line = launch.initialInput {
-            guard !line.isEmpty, line.count <= 4096, line.last == 10, !line.dropLast().contains(10) else {
+            let lines = line.split(separator: 10, omittingEmptySubsequences: false).dropLast()
+            guard !line.isEmpty, line.last == 10, (1...ClusterWorkerLaunch.maximumInitialLines).contains(lines.count),
+                  lines.allSatisfy({ !$0.isEmpty && $0.count < 4096 }) else {
                 throw ClusterWorkerOwnerError.invalid("Invalid initial worker input")
             }
             // First on the command stream; the pump writes it before any renewal or command.

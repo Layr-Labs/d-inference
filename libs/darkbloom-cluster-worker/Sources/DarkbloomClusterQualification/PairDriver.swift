@@ -86,6 +86,19 @@ public struct PairDriver: Sendable {
         }
     }
 
+    /// A key file's 32 bytes: raw, or 64 hex characters with surrounding whitespace.
+    static func prefixSSDKey(_ bytes: Data) -> Data? {
+        if bytes.count == 32 { return bytes }
+        let text = Array(String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+        guard text.count == 64 else { return nil }
+        var key = Data(capacity: 32)
+        for index in stride(from: 0, to: 64, by: 2) {
+            guard let byte = UInt8(String(decoding: text[index..<index + 2], as: UTF8.self), radix: 16) else { return nil }
+            key.append(byte)
+        }
+        return key
+    }
+
     /// S16: the two ranks' last data-plane status lines agree when each
     /// direction's sealed records, bytes and send generation equal the peer's
     /// opened records, bytes and receive generation. Nil unless both ranks
@@ -302,7 +315,16 @@ public struct PairDriver: Sendable {
             // S16: two member identities for this run, each rank pinning the
             // other's; a worker gets only its own per-epoch credential, as the
             // first line of its input (over the transport for the second Mac).
-            let lines = try c.dataPlane == ClusterWorkerDataPlane.encrypted ? Self.dataPlaneLines(c) : [nil, nil]
+            var lines = try c.dataPlane == ClusterWorkerDataPlane.encrypted ? Self.dataPlaneLines(c) : [nil, nil]
+            // Each side's prefix-SSD key, read on that side, follows as the next input line.
+            for rank in 0...1 {
+                guard let script = c.prefixSSDKeyScript(rank) else { continue }
+                guard let key = Self.prefixSSDKey(try helper(rank, script, seconds: 30)) else {
+                    throw QualificationError("\(ranks[rank].role): the prefix SSD key file holds no 32-byte key")
+                }
+                lines[rank] = (lines[rank] ?? Data()) + (try ClusterWorkerCodec.encode(ClusterWorkerPrefixSSDKey(
+                    membershipEpoch: c.membershipEpoch, rank: rank, key: key)))
+            }
             endpoints = try (0...1).map { rank in
                 try PairWorkerEndpoint(command: c.command(rank, script: c.launchScript(rank,
                         artifactSHA256: capability.artifactSHA256, configurationSHA256: capability.configurationSHA256,

@@ -139,6 +139,9 @@ public struct PairConfiguration: Sendable {
     public var batchSolo = true
     /// The prompt-prefix SSD tier of each side's worker: that Mac's own root
     /// directory and key file (a file only its user can read). Nil: no tier.
+    /// The driver reads the key on that side (`prefixSSDKeyScript`) and sends
+    /// it as a line of the worker's input; the worker's environment carries
+    /// only the directory.
     public var localPrefixSSD: PairPrefixSSD?
     public var remotePrefixSSD: PairPrefixSSD?
     /// Diagnosis: both workers keep nothing on disk and delete what they kept.
@@ -430,6 +433,22 @@ public struct PairConfiguration: Sendable {
             + " --manifest \(Self.quoted(side.modelDirectory + "/manifest.json")) --expected-executable-sha256 \(workerSHA256)"
     }
 
+    /// This rank's prefix-SSD tier, if the run gives it one.
+    func prefixSSD(_ rank: Int) -> PairPrefixSSD? { rank == localRank ? localPrefixSSD : remotePrefixSSD }
+
+    /// Prints this rank's prefix-SSD key file, on the Mac that holds it, after
+    /// checking that it is a regular file this user owns and nobody else can
+    /// read. The driver sends the key on the worker's input.
+    func prefixSSDKeyScript(_ rank: Int) -> String? {
+        guard let ssd = prefixSSD(rank) else { return nil }
+        return """
+        F=\(Self.quoted(ssd.keyFile))
+        [ -f "$F" ] && [ ! -L "$F" ] && [ -O "$F" ] || { echo "the prefix SSD key file is not a regular file of this user" >&2; exit 65; }
+        case "$(/usr/bin/stat -f %Lp "$F")" in ?00) ;; *) echo "the prefix SSD key file is readable by others" >&2; exit 65 ;; esac
+        exec /usr/bin/head -c 129 "$F"
+        """
+    }
+
     func evidenceScript(_ rank: Int) -> String {
         "exec /usr/bin/head -c \(PairEvidence.maximumBytes + 1) \(Self.quoted(evidencePath(rank)))"
     }
@@ -460,7 +479,6 @@ public struct PairConfiguration: Sendable {
         if let kvBackend { environment.append(("DARKBLOOM_CLUSTER_KV_BACKEND", kvBackend)) }
         if let ssd = rank == localRank ? localPrefixSSD : remotePrefixSSD {
             environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_DIR", ssd.directory))
-            environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE", ssd.keyFile))
         }
         if prefixSSDOff { environment.append(("DARKBLOOM_CLUSTER_PREFIX_SSD", "off")) }
         if withoutStageResidency { environment.append((Self.mimoStageResidencyEnvironment, "off")) }
@@ -485,6 +503,8 @@ public struct PairConfiguration: Sendable {
         if !keepWarm { arguments += ["--keep-warm", "off"] }
         // The credential itself is the first line of the worker's input.
         if dataPlane == ClusterWorkerDataPlane.encrypted { arguments += ["--data-plane", ClusterWorkerDataPlaneTrust.argument] }
+        // The prefix-SSD key is the next line of the worker's input (never a variable).
+        if prefixSSD(rank) != nil { arguments += ["--prefix-ssd-key", ClusterWorkerPrefixSSDKey.argument] }
         if workerTransport != Self.jacclTransport || faultValue != nil || memoryGateMode != nil || withoutStageResidency
             || mimoStepEvidence || stageResidency || tamperValue != nil || rekeyRecords != nil {
             arguments += [Self.qualificationSwitchesArgument, "yes"]

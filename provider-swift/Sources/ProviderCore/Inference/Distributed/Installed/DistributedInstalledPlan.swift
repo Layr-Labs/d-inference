@@ -109,14 +109,11 @@ struct DistributedInstalledPlan: Sendable {
     func nativeEnvironment(matrix: URL,
                            ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var environment = baseNativeEnvironment(matrix: matrix)
-        // Diagnosis only: this owner's worker keeps no prompt prefixes and asks
-        // its peer for none, so the pair prefills every request from zero.
-        // The product's prefix-cache gate (`DARKBLOOM_PREFIX_CACHE`, resolved
-        // into the installed settings) turns the pair's cache off the same way.
-        let prefixCacheOff = ownerEnvironment[Self.prefixCacheSwitch]?.lowercased() == "off"
-            || !DistributedInstalledPrefixSSD.productSettings(home: paths.homeDirectory).prefixCacheEnabled
+        let prefixCacheOff = prefixCacheOff(ownerEnvironment)
         if prefixCacheOff { environment[Self.prefixCacheSwitch] = "off" }
-        // The prefix cache's SSD tier (on with the cache; see the type).
+        // The prefix cache's SSD tier (on with the cache; see the type). Its
+        // directory and budgets only: the key goes on the worker's input
+        // (`nativePrefixSSDKey`), never into this environment.
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
             prefixCacheOff: prefixCacheOff)) { current, _ in current }
@@ -134,6 +131,23 @@ struct DistributedInstalledPlan: Sendable {
         // each yielding to a value the operator pinned in this owner's own
         // environment.
         return ClusterWorkerEnvironmentGuards.apply(to: environment, ownerEnvironment: ownerEnvironment)
+    }
+    /// The key of the native rank's prefix-SSD tier, which the owner sends as
+    /// a bound line of the worker's input (`--prefix-ssd-key`); nil when the
+    /// tier is off (the prefix cache off, the product's gate, or the diagnosis
+    /// switch), and then the worker is started without the argument.
+    func nativePrefixSSDKey(ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> Data? {
+        DistributedInstalledPrefixSSD.key(home: paths.homeDirectory, deviceDirectory: paths.deviceDirectory,
+            ownerEnvironment: ownerEnvironment, prefixCacheOff: prefixCacheOff(ownerEnvironment))
+    }
+
+    /// Diagnosis only: this owner's worker keeps no prompt prefixes and asks
+    /// its peer for none, so the pair prefills every request from zero. The
+    /// product's prefix-cache gate (`DARKBLOOM_PREFIX_CACHE`, resolved into the
+    /// installed settings) turns the pair's cache off the same way.
+    private func prefixCacheOff(_ ownerEnvironment: [String: String]) -> Bool {
+        ownerEnvironment[Self.prefixCacheSwitch]?.lowercased() == "off"
+            || !DistributedInstalledPrefixSSD.productSettings(home: paths.homeDirectory).prefixCacheEnabled
     }
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"
@@ -162,8 +176,11 @@ struct DistributedInstalledPlan: Sendable {
     /// `startupDeadline` is passed only to a worker that knows the argument.
     /// `dataPlane`: the owner received this worker's credential line (S16);
     /// the worker then keys its data plane and expects that line first.
+    /// `prefixSSDKey`: the owner sends the rank's prefix-SSD key as the next
+    /// line; the argument names the scheme, never the key.
     func nativeArguments(binding: ClusterOwnerBinding, deadline: UInt64, startupDeadline: UInt64?,
-                         attachment: ClusterOwnerBootstrapAttachment?, dataPlane: Bool = false) throws -> [String] {
+                         attachment: ClusterOwnerBootstrapAttachment?, dataPlane: Bool = false,
+                         prefixSSDKey: Bool = false) throws -> [String] {
         guard binding.identity == identity(epoch: binding.identity.membershipEpoch),
               binding.rank == configuration.localRank, binding.profile == capability.profile,
               binding.executionPlanSHA256 == partition.planSHA256,
@@ -189,6 +206,7 @@ struct DistributedInstalledPlan: Sendable {
             + (try DistributedInstalledGenerationSelection.workerArguments(configuration: configuration, capability: capability))
             + (startupDeadline.map { [DistributedInstalledWorkerFeatures.startupDeadlineArgument, String($0)] } ?? [])
             + (dataPlane ? ["--data-plane", ClusterWorkerDataPlaneTrust.argument] : [])
+            + (prefixSSDKey ? ["--prefix-ssd-key", ClusterWorkerPrefixSSDKey.argument] : [])
             + (attachment?.workerArguments ?? [])
     }
 }

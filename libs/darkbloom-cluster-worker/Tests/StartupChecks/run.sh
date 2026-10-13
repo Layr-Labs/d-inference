@@ -34,7 +34,7 @@ check() {
       --membership-epoch aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --model-id registered_qwen35_9b \
       --artifact-sha256 "$(sha 1)" --configuration-sha256 "$(sha 2)" \
       --peer0-id one --peer0-build-sha256 "$(sha 3)" --peer1-id two --peer1-build-sha256 "$(sha 4)" \
-      --deadline-uptime-nanoseconds "$deadline" "$@" </dev/null 2>&1 >/dev/null )"
+      --deadline-uptime-nanoseconds "$deadline" "$@" <"${CHECK_INPUT:-/dev/null}" 2>&1 >/dev/null )"
   code=$?
   set -e
   if [[ "$code" != "$status" ]]; then echo "FAILED $name: exit $code, expected $status: $out" >&2; exit 1; fi
@@ -126,4 +126,35 @@ check orphan-guard-decides-before-the-model 1 "darkbloom-orphan-wired-v1 role=wo
 # load), so with no usable input it may claim the exit before the load fails.
 check a-failed-worker-takes-the-forced-exit 1 "darkbloom-forced-exit-v1 status=1 reason=" "" --
 check the-forced-exit-resets-the-wired-limit 1 "phase=released wired_limit_before=0 wired_limit=0" "" --
+# Round-4 finding 1: the prompt-prefix SSD key reaches a worker only on its input
+# (`--prefix-ssd-key` names the scheme, never the key). A key, or a key file, in
+# the environment is refused by name before anything else, so a launcher that
+# still puts it there fails loudly instead of the key sitting in the process's
+# environment, which any process of the same user can read for its whole life.
+ssdscheme=darkbloom/prefix-ssd-key/input-line/v1
+ssdepoch=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+ssdkey="$(printf '%064d' 0 | tr 0 a)"
+ssdline() { # EPOCH RANK BASE64KEY
+  printf '{"version":1,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":%s,"key":"%s"}\n' "$1" "$2" "$3"
+}
+ssdkey32="$(head -c 32 /dev/zero | tr '\0' 'k' | base64)"
+ssdline "$ssdepoch" 0 "$ssdkey32" > "$work/ssd-good"
+ssdline "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee" 0 "$ssdkey32" > "$work/ssd-other-epoch"
+ssdline "$ssdepoch" 1 "$ssdkey32" > "$work/ssd-other-rank"
+ssdline "$ssdepoch" 0 "$(head -c 16 /dev/zero | base64)" > "$work/ssd-short-key"
+printf '{"version":1,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":0,"key":"%s","extra":1}\n' "$ssdepoch" "$ssdkey32" > "$work/ssd-extra-field"
+check prefix-ssd-key-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is never read from the environment" "$ssdkey" \
+  "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY=$ssdkey" "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR=$work/ssd" --
+check prefix-ssd-key-file-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE is never read from the environment" "" \
+  "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE=$work/key" "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR=$work/ssd" --
+check prefix-ssd-key-in-the-environment-is-refused-with-its-line-too 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is never read from the environment" "$ssdkey" \
+  "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY=$ssdkey" -- --prefix-ssd-key "$ssdscheme"
+check prefix-ssd-key-argument-takes-only-its-scheme 1 "--prefix-ssd-key takes only $ssdscheme" "" -- --prefix-ssd-key yes
+# (/dev/null: macOS poll reports the device invalid, so the read stops before any byte: "failed before")
+check prefix-ssd-key-line-must-arrive 1 "before the prefix-SSD key" "" -- --prefix-ssd-key "$ssdscheme"
+CHECK_INPUT="$work/ssd-other-epoch" check prefix-ssd-key-of-another-epoch-is-refused 1 "prefix-SSD key belongs to another epoch or rank" "$ssdkey32" -- --prefix-ssd-key "$ssdscheme"
+CHECK_INPUT="$work/ssd-other-rank" check prefix-ssd-key-of-another-rank-is-refused 1 "prefix-SSD key belongs to another epoch or rank" "$ssdkey32" -- --prefix-ssd-key "$ssdscheme"
+CHECK_INPUT="$work/ssd-short-key" check prefix-ssd-key-of-another-length-is-refused 1 "Invalid prefix-SSD key" "" -- --prefix-ssd-key "$ssdscheme"
+CHECK_INPUT="$work/ssd-extra-field" check prefix-ssd-key-line-with-an-unknown-field-is-refused 1 "Unknown" "$ssdkey32" -- --prefix-ssd-key "$ssdscheme"
+CHECK_INPUT="$work/ssd-good" check prefix-ssd-key-on-the-input-reaches-the-model 1 "" "prefix-SSD" -- --prefix-ssd-key "$ssdscheme"
 printf '{"passed":true,"cases":%d,"modelOrGPUExecution":false}\n' "$passed"

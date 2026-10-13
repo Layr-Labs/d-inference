@@ -21,14 +21,15 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
          attachment: WorkerOwnerAttachment? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
          qualification: QwenResidentQualificationSwitches = .refused,
-         dataPlane: ClusterDataPlaneCredential? = nil) throws {
+         dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil) throws {
         // With the owner's attachment, the exchange it installed creates the
         // JACCL group (no coordinator socket); a load that did not use it stops.
         self.attachment = attachment
         switch family {
         case .qwenDense:
             owner = .qwenDense(try .load(configuration, generationMode: generationMode,
-                speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane))
+                speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane,
+                prefixSSDKey: prefixSSDKey))
         case .mimoV26:
             guard speculativeTerms == nil else { throw WorkerFailure.invalid("MiMo has no speculative decoding on a pair") }
             owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification,

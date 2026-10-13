@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import Darwin
 
@@ -19,6 +20,9 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
     /// S16: the worker keys its data plane (`--data-plane encrypted_v1` and a
     /// credential line); detected from the domain its pinned exchange signs.
     var acceptsDataPlane = false
+    /// The worker takes its prefix-SSD key as a line of its input
+    /// (`--prefix-ssd-key`); detected from the scheme name it compares.
+    var acceptsPrefixSSDKeyInput = false
 
     /// `executable` was just hashed against its pin; the caller re-checks that
     /// it did not change after this read.
@@ -44,10 +48,19 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
             return needle.withUnsafeBytes { memmem(mapped, count, $0.baseAddress, $0.count) != nil }
         }
         let result = Self(hasProgressGuard: contains(progressGuardMarker), acceptsStartupDeadline: contains(startupDeadlineArgument),
-            acceptsDataPlane: contains(ClusterDataPlaneLaunch.workerMarker))
+            acceptsDataPlane: contains(ClusterDataPlaneLaunch.workerMarker),
+            acceptsPrefixSSDKeyInput: contains(ClusterWorkerPrefixSSDKey.argument))
         try executable.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)
         return result
+    }
+
+    /// With the prefix-SSD tier on, the worker must take its key on its input.
+    /// An older worker read it from its environment, where every process of
+    /// the same user can read it: it is refused, never given the key there.
+    func requirePrefixSSDKeyInput(tierOn: Bool) throws {
+        guard tierOn, !acceptsPrefixSSDKeyInput else { return }
+        throw ClusterConfigurationError.invalid("Installed worker cannot take the prefix-SSD key on its input (--prefix-ssd-key); an older worker would need it in its environment, which this owner never does. Install a worker built with it, or turn the SSD tier off (DARKBLOOM_CLUSTER_PREFIX_SSD=off).")
     }
 
     func requireProgressGuard() throws {

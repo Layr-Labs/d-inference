@@ -25,11 +25,17 @@ extension QwenResidentRuntime {
     /// other's hello against the identity it pins, and every later transfer
     /// (agreements, residuals, hand-off, tokens, relays, prefix plan, keep-warm)
     /// is an authenticated, encrypted record. Nil keeps the plaintext path.
+    ///
+    /// `prefixSSDKey`: the 32-byte key of this rank's prompt-prefix SSD tier,
+    /// as the worker received it on its input (never from the environment).
+    /// Nil leaves the tier off; the directory and budgets still come from the
+    /// environment (`QwenStagePrefixDiskConfiguration`).
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
                             speculativeTerms requestedTerms: QwenMTPTerms? = nil,
                             qualification: QwenResidentQualificationSwitches = .refused,
-                            dataPlane credential: ClusterDataPlaneCredential? = nil) throws -> QwenResidentRuntime {
+                            dataPlane credential: ClusterDataPlaneCredential? = nil,
+                            prefixSSDKey: Data? = nil) throws -> QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
         // Graph-shaping terms both ranks bind into the load agreement: the
@@ -291,7 +297,7 @@ extension QwenResidentRuntime {
             let prefixCache = QwenStagePrefixCache.fromEnvironment(launchEnvironment)
             if prefixCache.enabled, let loadedStage = stage {
                 prefixCache.disk = QwenStagePrefixDiskTier.open(
-                    configuration: .fromEnvironment(launchEnvironment),
+                    configuration: .fromEnvironment(launchEnvironment, key: prefixSSDKey),
                     planScope: QwenStagePrefixDiskTier.planScope(planFingerprint: admission.plan.fingerprint,
                         artifactAggregateSHA256: loadedStage.loaded.receipt.verifiedAggregateSHA256,
                         storageCommitmentSHA256: loadedStage.loaded.receipt.storageCommitmentSHA256,

@@ -9,6 +9,7 @@ import MLXLMCommon
 
 struct CheckFailure: Error { let message:String }
 func require(_ value:Bool,_ message:String) throws { if !value { throw CheckFailure(message:message) } }
+func require<T>(_ value:T?,_ message:String) throws->T { guard let value else { throw CheckFailure(message:message) }; return value }
 func rejected(line:Int = #line,_ body:() throws->Void) throws {
     do { try body() } catch is CheckFailure { throw CheckFailure(message:"assertion inside refusal at line \(line)") } catch { return }
     throw CheckFailure(message:"expected refusal at line \(line)")
@@ -71,6 +72,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
+        try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)
@@ -92,6 +94,62 @@ final class EndpointBox: @unchecked Sendable {
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
         print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
+    }
+    /// Round-4 finding 1: the prefix-SSD key never reaches a native rank's environment, which any process of
+    /// the same user can read for the rank's whole life. A real child is started with exactly the environment
+    /// the owner gives a native rank and prints it: neither key variable nor the key's bytes may appear.
+    static func prefixSSDKeyNeverInChildEnvironment(_ prepared:DistributedInstalledPreparation) throws {
+        let derived=Data((0..<32).map { UInt8(0xA0 ^ $0) })
+        DistributedInstalledPrefixSSD.installDurableKeySource { derived }
+        defer { DistributedInstalledPrefixSSD.installDurableKeySource { nil } }
+        let hex=derived.map { String(format:"%02x",$0) }.joined()
+        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        let child=Process();child.executableURL=URL(fileURLWithPath:"/usr/bin/env");child.arguments=[];child.environment=environment
+        let out=Pipe();child.standardOutput=out;try child.run()
+        let printed=String(decoding:out.fileHandleForReading.readDataToEndOfFile(),as:UTF8.self);child.waitUntilExit()
+        try require(child.terminationStatus==0 && printed.contains("JACCL_RANK=") && printed.contains("DARKBLOOM_CLUSTER_PREFIX_SSD_DIR="),
+            "the child did not print the rank's environment")
+        try require(!printed.contains("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") && !printed.lowercased().contains(hex)
+            && !printed.contains(derived.base64EncodedString()),"the prefix-SSD key reached a native rank's environment")
+        // The whole launch the owner builds: the key is in neither the arguments nor the environment; it is the
+        // input's second line, after the data-plane credential, bound to this epoch and rank.
+        let plan=prepared.plan
+        let binding=try plan.binding(epoch:UUID(),lease:UUID(),incarnation:UUID())
+        let epoch=binding.identity.membershipEpoch,deadline=DispatchTime.now().uptimeNanoseconds+100_000_000_000
+        let starts=try DistributedInstalledNativeStart.starts(plan:plan,epoch:epoch)
+        let attachment=try ClusterOwnerBootstrapAttachment(profile:.nativeKeyPreludeMesh2,deadline:DispatchTime.now().uptimeNanoseconds+1_000_000_000,
+            nativeStart:starts[plan.configuration.localRank])
+        defer{attachment.cancel()}
+        let trust=try ClusterDataPlaneLaunch.sessionCredentialLines(epoch:epoch)[plan.configuration.localRank]
+        let sent=try require(plan.nativePrefixSSDKey(ownerEnvironment:[:]),"the tier is on, yet no key is sent")
+        try require(sent==derived,"the key sent is not the owner's derived key")
+        let launch=try DistributedInstalledOwner.nativeLaunch(prepared:prepared,binding:binding,deadline:deadline,startupDeadline:nil,
+            attachment:attachment,dataPlaneTrust:trust,prefixSSDKey:sent,ownerEnvironment:[:])
+        let joined=launch.arguments.joined(separator:" ")
+        try require(Array(launch.arguments.suffix(12).prefix(4))==["--data-plane","encrypted_v1","--prefix-ssd-key",
+            ClusterWorkerPrefixSSDKey.argument],"the launch does not announce the key on the input: \(launch.arguments)")
+        try require(!joined.lowercased().contains(hex) && !joined.contains(derived.base64EncodedString())
+            && !launch.environment.keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") })
+            && !launch.environment.values.contains(where:{ $0.lowercased().contains(hex) }),"the key reached the arguments or the environment")
+        let lines=try require(launch.initialInput,"no initial input").split(separator:10,omittingEmptySubsequences:false)
+        try require(lines.count==3 && lines[2].isEmpty && Data(lines[0])+Data([10])==trust,"the credential is not the input's first line")
+        let line=try ClusterWorkerCodec.decodePrefixSSDKey(Data(lines[1])+Data([10]))
+        try require(line.key==derived && line.membershipEpoch==epoch && line.rank==binding.rank,"the input's key line is not bound to this epoch and rank")
+        try require(!String(describing:line).lowercased().contains(hex) && !String(reflecting:line).contains(derived.base64EncodedString()),
+            "the key line's description shows the key")
+        // The owner's worker process accepts the two lines; a third line, or an oversized one, is refused.
+        func process(_ input:Data?) throws {
+            _ = try ClusterWorkerProcess(launch:.init(executable:launch.executable,arguments:launch.arguments,environment:launch.environment,
+                initialInput:input),expectedIdentity:binding.identity,rank:binding.rank,profile:binding.profile,
+                executionPlanSHA256:binding.executionPlanSHA256,startupDeadline:deadline,initialLeaseDeadline:deadline)
+        }
+        try process(launch.initialInput)
+        try rejected{try process(launch.initialInput!+launch.initialInput!)}
+        try rejected{try process(Data(repeating:65,count:4096)+Data([10]))}
+        // Tier off: no key, no argument, the credential alone.
+        let plain=try DistributedInstalledOwner.nativeLaunch(prepared:prepared,binding:binding,deadline:deadline,startupDeadline:nil,
+            attachment:attachment,dataPlaneTrust:trust,prefixSSDKey:nil,ownerEnvironment:[:])
+        try require(!plain.arguments.contains("--prefix-ssd-key") && plain.initialInput==trust,"a launch without the tier carries a key")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)
@@ -152,22 +210,23 @@ final class EndpointBox: @unchecked Sendable {
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
         let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
-        try require(environment.count==14 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
+        try require(environment.count==13 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
             && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512","native environment widened")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
-        // without the product's key source, an owner-only key file made once and never replaced.
+        // without the product's key source, an owner-only key file made once and never replaced. The rank gets the
+        // directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).
         let keyFile=prepared.plan.paths.deviceDirectory.appendingPathComponent("prefix-ssd-v1.key")
+        let sentKey=prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])
         try require(environment["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==prepared.plan.paths.homeDirectory
             .appendingPathComponent("Library/Caches/darkbloom/cluster-prefix-v1",isDirectory:true).path
-            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path
-            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==nil,"prefix SSD tier not configured")
+            && !environment.keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") }),"prefix SSD tier not configured")
         var keyInfo=stat()
         let keyText=try Data(contentsOf:keyFile)
         try require(lstat(keyFile.path,&keyInfo)==0 && keyInfo.st_mode & S_IFMT==S_IFREG && keyInfo.st_mode & 0o077==0
             && keyInfo.st_uid==getuid() && keyText.count==65 && DistributedInstalledPrefixSSD.isKeyText(keyText),
             "prefix SSD key file is not an owner-only 64-hex key")
-        let again=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
-        try require(again["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path,"one owner, one SSD key")
+        try require(sentKey != nil && sentKey==DistributedInstalledPrefixSSD.decodeKeyText(keyText),"the rank's key is not the key file's")
+        try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])==sentKey,"one owner, one SSD key")
         // A later owner process (nothing cached) reads the same file, never a new key.
         let device=prepared.plan.paths.deviceDirectory
         let laterFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:device),laterText=try Data(contentsOf:keyFile)
@@ -180,27 +239,34 @@ final class EndpointBox: @unchecked Sendable {
         try Data("not a key\n".utf8).write(to:bad);chmod(bad.path,0o600)
         let badFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:otherDevice),badText=try Data(contentsOf:bad)
         try require(badFile==nil && badText==Data("not a key\n".utf8),"an unusable key file must be left alone")
-        // The product's key source, when installed and loading, wins: a hex key in the environment, no file.
+        // The product's key source, when installed and loading, wins: its bytes go to the rank's input, no file.
         let derived=Data((0..<32).map { UInt8($0) })
-        try require(DistributedInstalledPrefixSSD.environment(home:prepared.plan.paths.homeDirectory,deviceDirectory:otherDevice,
-            ownerEnvironment:[:],prefixCacheOff:false,key:.hex(derived.map { String(format:"%02x",$0) }.joined()))[
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==derived.map { String(format:"%02x",$0) }.joined(),"derived SSD key not passed")
         DistributedInstalledPrefixSSD.installDurableKeySource { derived }
-        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
-            == .hex(derived.map { String(format:"%02x",$0) }.joined()),"product key source not preferred")
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice) == .derived(derived)
+            && DistributedInstalledPrefixSSD.key(home:prepared.plan.paths.homeDirectory,deviceDirectory:otherDevice,
+                ownerEnvironment:[:],prefixCacheOff:false)==derived,"product key source not preferred")
+        try require(!DistributedInstalledPrefixSSD.environment(home:prepared.plan.paths.homeDirectory,deviceDirectory:otherDevice,
+            ownerEnvironment:[:],prefixCacheOff:false).keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") }),
+            "the derived SSD key must not be in the environment")
+        try require(!String(describing:DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)).contains("0001020304"),
+            "an owner key's description must redact it")
         DistributedInstalledPrefixSSD.installDurableKeySource { nil }
-        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:device) == .file(keyFile),
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:device) == .file(keyFile,sentKey!),
             "an unavailable product key must fall back to the key file")
         try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
-            == .hex(DistributedInstalledPrefixSSD.processKeyHex),"no usable key file: this owner's own key")
+            == .process(DistributedInstalledPrefixSSD.processKey),"no usable key file: this owner's own key")
         let ssdOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD":"off"])
-        try require(ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD"]=="off" && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==nil
-            && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==nil
+        try require(ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD"]=="off"
+            && !ssdOff.keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") })
             && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"] != nil,"prefix SSD off switch not passed")
+        try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD":"off"])==nil,
+            "the SSD tier switched off must send no key")
         let cacheOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4"])
         try require(cacheOff.count==13 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
             "prefix cache off must not configure the SSD tier")
+        try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off"])==nil,
+            "prefix cache off must send no SSD key")
         let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
         try require(tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="4" && tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]==nil,
@@ -219,7 +285,9 @@ final class EndpointBox: @unchecked Sendable {
         let aligned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
         try require(aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==product.root.path
             && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="40" && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_WRITE_GB_PER_DAY"]=="120"
-            && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]=="900" && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path,
+            && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]=="900"
+            && !aligned.keys.contains(where:{ $0.hasPrefix("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") })
+            && prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])==sentKey,
             "rank environment does not follow the product's cache settings")
         // An unlimited daily cap is 0; a budget below one GiB is one; a TTL above the ceiling is the ceiling; a diagnosis
         // override in the owner's environment still wins.
@@ -233,7 +301,7 @@ final class EndpointBox: @unchecked Sendable {
         DistributedInstalledPrefixSSD.installProductSettings(product)
         let gated=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
         try require(gated["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && gated["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil
-            && gated["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==nil,"the product's prefix cache gate must turn the pair's cache off")
+            && prepared.plan.nativePrefixSSDKey(ownerEnvironment:[:])==nil,"the product's prefix cache gate must turn the pair's cache off")
         // The leader's sync: the member keeps its own root, takes the leader's gate, cap, budget and TTL; an unknown
         // version or an out-of-range value is refused and the member keeps its own.
         product.prefixCacheEnabled=true;product.byteBudget=nil;product.dailyWriteBytes=nil;product.ttlSeconds=nil
@@ -341,7 +409,8 @@ final class EndpointBox: @unchecked Sendable {
     /// A pin names whatever binary was installed. The installed path also
     /// requires that binary to carry the collective progress guard.
     static func progressGuardIsRequired(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation,unguarded:URL) throws {
-        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true),"guarded worker features were not read from its bytes")
+        try require(prepared.validation.workerFeatures == .init(hasProgressGuard:true,acceptsStartupDeadline:true,acceptsPrefixSSDKeyInput:true),
+            "guarded worker features were not read from its bytes")
         let bare=try InstalledFixture.make(root:f.root.appendingPathComponent("unguarded"),probe:unguarded,owner:f.owner,worker:f.worker)
         var refusal=""
         do { _ = try bare.prepare() } catch { refusal=String(describing:error) }
@@ -349,6 +418,13 @@ final class EndpointBox: @unchecked Sendable {
         // The same refusal reaches `cluster doctor` and the owner, which share this validation.
         try rejected{_ = try DistributedInstalledValidation.validate(reference:bare.reference,paths:bare.paths,deadline:DispatchTime.now().uptimeNanoseconds+5_000_000_000)}
         try rejected{try DistributedInstalledWorkerFeatures(hasProgressGuard:false,acceptsStartupDeadline:true).requireProgressGuard()}
+        // A worker that cannot take the prefix-SSD key on its input is refused while the tier is on (never given
+        // the key in its environment instead), and accepted with the tier off.
+        let older=DistributedInstalledWorkerFeatures(hasProgressGuard:true,acceptsStartupDeadline:true)
+        let named=try Self.refusal{try older.requirePrefixSSDKeyInput(tierOn:true)}
+        try require(named.contains("cannot take the prefix-SSD key on its input"),"an older worker was not refused by name: \(named)")
+        try older.requirePrefixSSDKeyInput(tierOn:false)
+        try prepared.validation.workerFeatures.requirePrefixSSDKeyInput(tierOn:true)
     }
     /// The owner refuses while this Mac's ordinary provider holds its instance lock.
     static func ordinaryProviderExclusion(_ f:InstalledFixture) throws {
@@ -558,7 +634,7 @@ final class EndpointBox: @unchecked Sendable {
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
             // Plus exactly MLX's two command-buffer guards every rank gets (orphan port #5) and the prefix SSD tier's two.
-            try require(environment.count==14+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+            try require(environment.count==13+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
                 && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512"
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")

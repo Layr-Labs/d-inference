@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
 import DarkbloomClusterSecurity
 
@@ -74,6 +75,10 @@ public enum DistributedInstalledOwner {
         let plan = prepared.plan, features = prepared.validation.workerFeatures
         try prepared.requireUnchanged()
         try features.requireProgressGuard()
+        // The prefix-SSD tier's key goes to the rank only on its input; a
+        // worker that cannot take it there is refused before anything starts.
+        let prefixSSDKey = plan.nativePrefixSSDKey()
+        try features.requirePrefixSSDKeyInput(tierOn: prefixSSDKey != nil)
         try ClusterWorkerOwnerService.serveKeyed(input: input, output: output,
             clusterID: plan.configuration.clusterID, leaseDirectory: plan.paths.deviceDirectory,
             bootstrapProfile: plan.bootstrap.ownerProfile,
@@ -101,18 +106,16 @@ public enum DistributedInstalledOwner {
                 guard dataPlaneTrust == nil || features.acceptsDataPlane else {
                     throw ClusterConfigurationError.invalid("The installed worker does not key its data plane; install a worker built with it")
                 }
+                try features.requirePrefixSSDKeyInput(tierOn: prefixSSDKey != nil)
                 try beforeNativeLaunch()
                 // The worker has no fixed lifetime: `deadline` is its first
                 // rank-lease grant, which its supervisor renews while this
                 // owner holds the leader's lease. Loading is bounded by the
                 // startup allowance, which may outlast the first grant.
                 let startup = DispatchTime.now().uptimeNanoseconds + plan.budgets.startupAllowanceNanoseconds
-                return try ClusterWorkerProcess(launch: .init(
-                    executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
-                    arguments: plan.nativeArguments(binding: binding, deadline: deadline,
-                        startupDeadline: features.acceptsStartupDeadline ? startup : nil, attachment: attachment,
-                        dataPlane: dataPlaneTrust != nil),
-                    environment: plan.nativeEnvironment(matrix: prepared.matrixURL), initialInput: dataPlaneTrust),
+                return try ClusterWorkerProcess(launch: nativeLaunch(prepared: prepared, binding: binding,
+                        deadline: deadline, startupDeadline: features.acceptsStartupDeadline ? startup : nil,
+                        attachment: attachment, dataPlaneTrust: dataPlaneTrust, prefixSSDKey: prefixSSDKey),
                     expectedIdentity: binding.identity, rank: binding.rank, profile: binding.profile,
                     executionPlanSHA256: binding.executionPlanSHA256,
                     startupDeadline: startup, initialLeaseDeadline: deadline,
@@ -123,5 +126,25 @@ public enum DistributedInstalledOwner {
                     retirement: .sized(plannedBytes: UInt64(max(0, prepared.manifest.totalSizeBytes)),
                         childEndsItselfAtStartupDeadline: features.acceptsStartupDeadline))
             })
+    }
+
+    /// The native rank's launch: arguments, the fixed environment (never a
+    /// secret) and its input's first lines, the data-plane credential (S16)
+    /// and then the prefix-SSD key bound to this epoch and rank.
+    static func nativeLaunch(prepared: DistributedInstalledPreparation, binding: ClusterOwnerBinding, deadline: UInt64,
+                             startupDeadline: UInt64?, attachment: ClusterOwnerBootstrapAttachment?, dataPlaneTrust: Data?,
+                             prefixSSDKey: Data?, ownerEnvironment: [String: String] = ProcessInfo.processInfo.environment)
+        throws -> ClusterWorkerLaunch {
+        let plan = prepared.plan
+        var input = dataPlaneTrust ?? Data()
+        if let prefixSSDKey {
+            input.append(try ClusterWorkerCodec.encode(ClusterWorkerPrefixSSDKey(
+                membershipEpoch: binding.identity.membershipEpoch, rank: binding.rank, key: prefixSSDKey)))
+        }
+        return .init(executable: URL(fileURLWithPath: plan.localPeer.workerExecutable),
+            arguments: try plan.nativeArguments(binding: binding, deadline: deadline, startupDeadline: startupDeadline,
+                attachment: attachment, dataPlane: dataPlaneTrust != nil, prefixSSDKey: prefixSSDKey != nil),
+            environment: plan.nativeEnvironment(matrix: prepared.matrixURL, ownerEnvironment: ownerEnvironment),
+            initialInput: input.isEmpty ? nil : input)
     }
 }

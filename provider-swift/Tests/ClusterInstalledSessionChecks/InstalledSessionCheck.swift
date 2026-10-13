@@ -152,7 +152,9 @@ final class EndpointBox: @unchecked Sendable {
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
         let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-        try require(environment.count==10 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
+        // Ten base entries plus exactly MLX's two command-buffer guards (orphan port #5), nothing else.
+        try require(environment.count==12 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
+            && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512","native environment widened")
         try require(environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","installed plan did not set the collective progress limit")
         let local=try ClusterLocalOwnerConfiguration(installedDarkbloom:f.owner).launch()
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")
@@ -424,7 +426,9 @@ final class EndpointBox: @unchecked Sendable {
                 generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-            try require(environment.count==10+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+            // Plus exactly MLX's two command-buffer guards every rank gets (orphan port #5).
+            try require(environment.count==12+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+                && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512"
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
             try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")

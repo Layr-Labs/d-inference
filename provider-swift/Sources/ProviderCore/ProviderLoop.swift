@@ -597,6 +597,8 @@ public actor ProviderLoop {
     /// Set when the member's accepted connection ended or trust was lost; the
     /// event dispatcher consumes and stops instead of serving.
     internal var memberControlRequiresStop = false
+    /// Why the member stopped (the first latched reason); nil while serving.
+    public internal(set) var memberStopReason: String?
     /// Startup member-registration wait state (single waiter).
     internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
     internal var memberRegistrationTimer: Task<Void, Never>?

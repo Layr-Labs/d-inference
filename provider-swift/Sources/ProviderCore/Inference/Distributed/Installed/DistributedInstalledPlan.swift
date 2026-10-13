@@ -124,7 +124,10 @@ struct DistributedInstalledPlan: Sendable {
         if let value = ownerEnvironment[Self.kvBackendSwitch]?.lowercased(), ["paged", "contiguous"].contains(value) {
             environment[Self.kvBackendSwitch] = value
         }
-        return environment
+        // The owner's rank-environment guards (Metal command-buffer bounds),
+        // each yielding to a value the operator pinned in this owner's own
+        // environment.
+        return ClusterWorkerEnvironmentGuards.apply(to: environment, ownerEnvironment: ownerEnvironment)
     }
     static let prefixCacheSwitch = "DARKBLOOM_CLUSTER_PREFIX_CACHE"
     static let batchLanesSwitch = "DARKBLOOM_CLUSTER_BATCH_LANES"

@@ -39,6 +39,9 @@ extension Start {
         let memberTask = Task { try await member.run() }
         let memberExit = Task {
             let result = await memberTask.result
+            // A control loop that ended on its own says why before the stop
+            // fails a request in flight (otherwise it looks like a pair failure).
+            if let reason = await member.memberStopReason { printError("Distributed serving stops: \(reason).") }
             // A terminal control loop cannot leave this leader advertised.
             _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance)
             return result
@@ -92,5 +95,7 @@ extension Start {
         }
         if status.failed { throw DistributedStartRuntimeError.sessionFailed }
         if case .failure(let error) = memberResult, !(error is CancellationError) { throw error }
+        // A stop nobody asked for is never a clean exit: a supervisor restarts it.
+        if await member.memberStopReason != nil { throw DistributedStartRuntimeError.memberControlEnded }
     }
 }

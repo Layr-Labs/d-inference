@@ -29,10 +29,13 @@ extension ProviderLoop {
             memberConnectionID = UUID()
             finishMemberRegistrationWait(nil)
             writeDaemonState()
-        case .disconnected, .runtimeOutdated:
+        case .disconnected:
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
-            memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
+            latchMemberControlStop(Self.memberStopReasonDisconnected)
+        case .runtimeOutdated:
+            memberConnectionID = nil
+            latchMemberControlStop(Self.memberStopReasonRuntimeOutdated)
         case .inferenceRequest(let id, _, _, _, _, _, _, _, _, _, _, _, _, _):
             // A leader serving its pair slot handles the request like any
             // provider; the handler checks the requested model. Every other
@@ -55,11 +58,32 @@ extension ProviderLoop {
         case .trustStatus(_, let status, _, _):
             if status == "untrusted" || status == "offline" {
                 memberConnectionID = nil
-                memberControlRequiresStop = loopConfig.clusterMemberStopsOnDisconnect && memberHadAcceptedConnection
+                latchMemberControlStop(Self.memberStopReasonTrust(status))
             }
         default: break
         }
         return false
+    }
+
+    static let memberStopReasonDisconnected =
+        "the coordinator control connection ended; a cluster member keeps no grant or key across it, so serving stops (restart this member once the coordinator is reachable)"
+    static let memberStopReasonRuntimeOutdated =
+        "the coordinator reported this member's runtime as outdated; serving stops until it is updated"
+    static func memberStopReasonTrust(_ status: String) -> String {
+        "the coordinator marked this member \(status == "offline" ? "offline" : "untrusted"); serving stops"
+    }
+
+    /// The accepted control connection ended or lost trust: the loop stops
+    /// instead of reconnecting under a new nonce (only when configured to,
+    /// and only after a connection was accepted). The first reason is kept
+    /// and stated, so a member that stops on its own says why (a leader then
+    /// fails its request in flight and exits; without the reason that stop
+    /// looked like a pair failure).
+    internal func latchMemberControlStop(_ reason: String) {
+        guard loopConfig.clusterMemberStopsOnDisconnect, memberHadAcceptedConnection, !memberControlRequiresStop else { return }
+        memberControlRequiresStop = true
+        memberStopReason = reason
+        logger.warning("cluster member stops: \(reason)")
     }
 
     internal func rejectClusterMemberInference(_ id: String, send: SendHandle) {

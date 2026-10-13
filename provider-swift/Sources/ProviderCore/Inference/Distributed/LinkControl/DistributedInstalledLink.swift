@@ -70,7 +70,7 @@ enum DistributedInstalledLinkEdge {
 
 /// The leader's side, owned by one installed session.
 final class DistributedInstalledLinkLeader: @unchecked Sendable {
-    let router = ClusterLinkWorkerRouter()
+    let router: ClusterLinkWorkerRouter
     private let host = ClusterLinkControlHost()
     let peer: ClusterLinkControlPeer
     /// The follower's mirrored status (S24): board, file and incidents.
@@ -82,7 +82,13 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
         }
         let edge = try DistributedInstalledLinkEdge.edge(configuration: configuration, peerAddress: nil)
         let local = configuration.peers[configuration.localRank]
-        let router = self.router
+        // A follower whose link closed or went silent and did not resume in
+        // the edge's own re-dial time is lost: its sessions fail at once with
+        // this reason instead of waiting for proofs that cannot arrive.
+        let router = ClusterLinkWorkerRouter(limits: edge.limits, lost: { reason in
+            clusterLinkMemberLog.warning("link edge: follower lost: \(reason)")
+        })
+        self.router = router
         let monitor = ClusterFollowerStatusMonitor(observability: observability, clusterID: configuration.clusterID,
                                                    modelID: configuration.publicModelID)
         followerStatus = monitor
@@ -180,7 +186,7 @@ public enum DistributedInstalledLinkFollower {
         let owner = try ClusterLocalOwnerConfiguration(installedDarkbloom: URL(fileURLWithPath: plan.localPeer.ownerExecutable))
         let server = ClusterLinkWorkerServer(transport: ClusterLinkPeerWorkerTransport(peer: client.peer),
             clusterID: plan.configuration.clusterID, rank: plan.configuration.localRank,
-            bootstrapProfile: plan.bootstrap.ownerProfile, admit: { open in
+            bootstrapProfile: plan.bootstrap.ownerProfile, linkLimits: edge.limits, admit: { open in
                 guard open.executionPlanSHA256 == plan.partition.planSHA256 else {
                     throw ClusterConfigurationError.invalid("The leader opened another plan")
                 }

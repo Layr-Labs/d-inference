@@ -353,7 +353,7 @@ do {
     // The label: scoped to the install, stable, and recognizable as ours.
     let app = Plan.label(executablePath: "/Applications/Darkbloom.app/Contents/MacOS/darkbloom")
     check(app == Plan.label(executablePath: "/Applications/Darkbloom.app/Contents/Helpers/darkbloom"), "one label per install")
-    check(app != Plan.label(executablePath: "/Users/x/Applications/Darkbloom.app/Contents/MacOS/darkbloom"), "another install, another label")
+    check(app != Plan.label(executablePath: "/Volumes/Other/Applications/Darkbloom.app/Contents/MacOS/darkbloom"), "another install, another label")
     check(app != Plan.label(executablePath: "/w/.build/debug/darkbloom"), "a development build never shares the release job")
     check(app.hasPrefix(Plan.labelPrefix) && app.count == Plan.labelPrefix.count + 12, "label shape: \(app)")
     check(Plan.isAgentFileName(app + ".plist"), "our file name")

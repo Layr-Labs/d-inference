@@ -397,6 +397,10 @@ make compilation incremental; every restored build still runs its build and
 qualification commands. Only unsigned build directories are cached, never signing
 keys or notarized bundles.
 
+The offline cache test fixture disables automatic maintenance only inside its
+disposable Git repositories. This keeps fixture cleanup synchronous; release
+checkouts and their Git configuration are unchanged. See the [test guide](test.md).
+
 See the [release cache procedure](../operations/provider-release.md#prepare-and-check-release-caches)
 for first-run costs and rerun behavior.
 
@@ -984,6 +988,14 @@ configure runtime integrations. A production build needs no credentials.
 The hosting root is `landing`, with the Next.js preset; its API routes
 require a server runtime rather than a static export. See the
 [marketing README](../../landing/README.md) for deployment handoff.
+
+`npm run build` explicitly applies the version-pinned Next.js header patch
+before compiling. `npm ci --ignore-scripts` is supported: the patch does not
+depend on install lifecycle hooks. The page templates preserve `Vary: Accept`
+for HTML/Markdown negotiation. The [landing README](../../landing/README.md)
+records the upstream issue and patch removal condition. Turbopack's root is
+the landing directory; install dependencies there rather than sharing a
+`node_modules` symlink across worktrees.
 
 ### 9. Coordinator container image
 

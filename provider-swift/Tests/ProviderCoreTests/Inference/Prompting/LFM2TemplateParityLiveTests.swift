@@ -75,6 +75,31 @@ final class LFM2TemplateParityLiveTests: XCTestCase {
             tokenizer: tokenizer, modelType: "lfm2_moe"))
     }
 
+    /// LFM2.5 has no thinking switch: disable controls are accepted but never
+    /// change the prompt, which still opens `<think>` (reasoning stays on and
+    /// is reported in the reasoning field, never promised off).
+    func testThinkingDisableControlsDoNotChangeThePrompt() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let modelPath = environment["LFM2_TEMPLATE_MODEL_DIR"],
+              let referencePath = environment["LFM2_TEMPLATE_REFERENCE_DIR"]
+        else { throw XCTSkip("set LFM2_TEMPLATE_MODEL_DIR and LFM2_TEMPLATE_REFERENCE_DIR") }
+        let tokenizer = try await LocalTokenizerLoader().load(
+            from: URL(fileURLWithPath: modelPath, isDirectory: true))
+        let expected = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(
+            fileURLWithPath: referencePath).appendingPathComponent("sys_user.ids.json"))) as? [NSNumber]).map(\.intValue)
+        let base = try XCTUnwrap(LFM2TemplateCorpus.bodies().first { $0.0 == "sys_user" }?.1)
+        let controls: [[String: Any]] = [
+            ["enable_thinking": false], ["reasoning": ["enabled": false]], ["reasoning_effort": "none"],
+            ["chat_template_kwargs": ["enable_thinking": false]], ["reasoning": ["effort": "high"]],
+        ]
+        for control in controls {
+            let body = base.merging(control) { _, new in new }
+            let tokens = try ProviderPromptContractPipeline.tokenizeProviderBody(
+                JSONSerialization.data(withJSONObject: body), tokenizer: tokenizer, modelType: "lfm2_moe")
+            XCTAssertEqual(tokens, expected, "\(control)")
+        }
+    }
+
     /// Real-tokenizer streaming: token-by-token detokenization (UTF-8
     /// holdback) feeding the LFM reasoning router never emits a replacement
     /// character or a marker, and `</think>`/tool tags are single tokens.

@@ -400,6 +400,54 @@ import Foundation
             _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
                 localProfile: m3, peerProfile: try chip(slowTwo[1], "Apple M4 Max"), layout: layout, leader: "mac-one")
         }
+        // Request limits are derived, not typed: the chunk from the model's qualification records and its limits,
+        // the deadline from the chosen placement's predicted time for the longest request it admits.
+        let planned = try ClusterPlacementPlanner.plan(devices: slowTwo, layout: layout, policy: ClusterPlacementPolicy())
+        let slowerPair = [try device("mac-one", physicalGiB: 128, freeGiB: 100, prefill: 1350, decode: 40),
+                          try device("mac-two", physicalGiB: 256, freeGiB: 200, prefill: 500, decode: 31)]
+        let plannedSlower = try ClusterPlacementPlanner.plan(devices: slowerPair, layout: layout, policy: ClusterPlacementPolicy())
+        if let fast = planned.chosen, let slow = plannedSlower.chosen {
+            let a = ClusterPlacementRequestLimits.requestTimeoutSeconds(result: planned, chosen: fast, maximumPromptTokens: 8192, maximumOutputTokens: 128)
+            let b = ClusterPlacementRequestLimits.requestTimeoutSeconds(result: plannedSlower, chosen: slow, maximumPromptTokens: 32_768, maximumOutputTokens: 4096)
+            let long = ClusterPlacementRequestLimits.requestTimeoutSeconds(result: planned, chosen: fast, maximumPromptTokens: 32_768, maximumOutputTokens: 4096)
+            require("a request deadline follows the predicted time of the longest request: within the codec's bounds, longer on slower Macs and for longer requests",
+                a.seconds == 60 && long.seconds > a.seconds && b.seconds > long.seconds && b.seconds <= 3600 && a.basis.contains("8192 prompt tokens"))
+        } else { require("the request-limit fixtures plan", false) }
+        let relativeDevices = slowTwo.map { d in
+            ClusterPlacementDevice(label: d.label, profile: d.profile, speed: .init(source: .transferredByDeviceIndex, absolute: false,
+                rested: d.speed.rested, sustained: nil, explanation: "relative"))
+        }
+        let relative = try ClusterPlacementPlanner.plan(devices: relativeDevices, layout: layout, policy: ClusterPlacementPolicy())
+        if let chosenRelative = relative.chosen {
+            require("a plan from relative speeds only never ends a request by a guess",
+                ClusterPlacementRequestLimits.requestTimeoutSeconds(result: relative, chosen: chosenRelative, maximumPromptTokens: 8192, maximumOutputTokens: 128).seconds == 3600)
+        }
+        func run(_ model: String, chunk: Int, _ outcome: [String] = ["divergedAtNearTie"]) -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: model, artifactSHA256: hash("a"), ranks: [.init(rank: 0, chip: "Apple M2 Max", operatingSystem: nil), .init(rank: 1, chip: "Apple M2 Max", operatingSystem: nil)],
+                cuts: [8], generationMode: "pipeline_v1", prefillSchedule: "serial_v1", chunkTokens: chunk, promptTokens: 64, outputTokens: 8, transport: "jaccl",
+                pairReportSHA256: hash("b"), pairReportCreatedUTC: "t", comparisons: outcome.map { .init(referenceChip: nil, verdict: $0, firstDivergenceIndex: nil,
+                gapInULPs: nil, nearTieThresholdULPs: 4, allowed: []) }, producer: "check")
+        }
+        let chunkRecords = [run("m", chunk: 256), run("m", chunk: 256), run("m", chunk: 512), run("m", chunk: 128, ["diverged"]), run("m", chunk: 4096)]
+        require("the prefill chunk is the one the model's passing qualification runs used, within its limits",
+            ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "m", layoutMaximum: 2048, capabilityMaximum: 1024, records: chunkRecords).tokens == 256
+            && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "other", layoutMaximum: 2048, capabilityMaximum: 1024, records: chunkRecords).tokens == 1024
+            && ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: "registered_qwen35_9b", layoutMaximum: 512, capabilityMaximum: 512).tokens == 512)
+        // The guided flow asks for derived limits (zero) and gets setups that carry them.
+        let derivedObject = descriptionObject.merging(["chunkTokens": 0, "requestTimeoutSeconds": 0]) { $1 }
+        let derivedDescription = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: derivedObject))
+        let derived = try ClusterPlacementFlow.decide(description: derivedDescription, capability: capability, localMemberID: "mac-one",
+            localProfile: m3, peerProfile: m5, layout: layout)
+        if let derivedSetup = derived.setup {
+            let leader = try decoded(derivedSetup, derivedSetup.leaderID)
+            require("a derived setup carries the qualified chunk and a derived deadline, and says why",
+                derivedDescription.derivesRequestLimits && !description.derivesRequestLimits && leader.chunkTokens == 512
+                && (60...3600).contains(leader.requestTimeoutSeconds) && derived.lines.contains("Request limits"))
+        } else { require("the derived-limits fixture plans", false) }
+        let stated = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: m3, peerProfile: m5, layout: layout)
+        require("a description that states its limits keeps them", try stated.setup.map { try decoded($0, $0.leaderID).requestTimeoutSeconds } == 300
+            && !stated.lines.contains("Request limits"))
         // Pure decisions of the rule itself. The 27B is granted on both chips for both ranks: no order is ruled out.
         let pair = [(id: "a", chip: "Apple M3 Ultra"), (id: "b", chip: "Apple M5 Max")]
         let free = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: pair, runtimeModelID: "registered_qwen38_27b", publicModelID: "p")
@@ -415,10 +463,67 @@ import Foundation
         let unknown = try ClusterPlacementFlow.leaderUnderGrant(requested: "b", members: [(id: "a", chip: "Check chip"), (id: "b", chip: "Check chip")],
             runtimeModelID: "registered_qwen35_9b", publicModelID: "p")
         require("a chip name with no class decides nothing at plan time", unknown.leader == "b" && unknown.note == nil)
+        syntheticQualificationRecords()
         guard failures.isEmpty else {
             for failure in failures { FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8)) }
             exit(1)
         }
         print("placement setup checks passed: \(passed)")
+    }
+
+    /// Grants come from qualification records only, for any chips and any
+    /// number of ranks: synthetic records for Macs this bench never had.
+    static func syntheticQualificationRecords() {
+        func record(_ model: String, _ chips: [String], cuts: [Int], mode: String = "pipeline_v1", verdicts: [String] = ["divergedAtNearTie"],
+                    transport: String = "jaccl") -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: model, artifactSHA256: hash("a"), ranks: chips.enumerated().map { .init(rank: $0.offset, chip: $0.element, operatingSystem: "27.0") },
+                cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", chunkTokens: 512, promptTokens: 4096, outputTokens: 128, transport: transport,
+                pairReportSHA256: hash("b"), pairReportCreatedUTC: "2026-10-12T00:00:00Z",
+                comparisons: verdicts.map { .init(referenceChip: chips.last, verdict: $0, firstDivergenceIndex: 7, gapInULPs: $0 == "diverged" ? 9 : 1,
+                                                  nearTieThresholdULPs: 4, allowed: ["cut"]) }, producer: "check")
+        }
+        func cls(_ name: String) -> ClusterChipClass? { ClusterChipClass(chipName: name) }
+        let m2Max = cls("Apple M2 Max"), m4Pro = cls("Apple M4 Pro"), m3Ultra = cls("Apple M3 Ultra")
+        let m1Ultra = cls("Apple M1 Ultra"), m2Ultra = cls("Apple M2 Ultra"), m4Max = cls("Apple M4 Max")
+        let decisions = ClusterPairServingDecisions(records: [
+            record("registered_dense", ["Apple M2 Max", "Apple M2 Max"], cuts: [16]),
+            record("registered_dense", ["Apple M4 Pro", "Apple M3 Ultra"], cuts: [12], mode: "phase_split_v1", verdicts: ["exact", "tokensEqualLogitsDiffer"]),
+            record("registered_wide", ["Apple M1 Ultra", "Apple M2 Ultra", "Apple M4 Max"], cuts: [10, 20]),
+            record("registered_split", ["Apple M2 Max", "Apple M2 Max"], cuts: [16]),
+            record("registered_split", ["Apple M2 Max", "Apple M2 Max"], cuts: [8], verdicts: ["divergedAtNearTie", "diverged"]),
+            record("registered_unsure", ["Apple M2 Max", "Apple M2 Max"], cuts: [16], verdicts: ["incomparable"]),
+            // Never used: both ranks on one Mac, a chip with no class, cuts out of order.
+            record("registered_loopback", ["Apple M2 Max", "Apple M2 Max"], cuts: [16], transport: "local-socket-test"),
+            record("registered_virtual", ["Apple M1 (Virtual)", "Apple M2 Max"], cuts: [16]),
+            record("registered_wide", ["Apple M1 Ultra", "Apple M2 Ultra", "Apple M4 Max"], cuts: [20, 10]),
+        ])
+        func allows(_ classes: [ClusterChipClass?], _ model: String) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", decisions: decisions)) != nil
+        }
+        func shipped(_ classes: [ClusterChipClass?], _ model: String) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p")) != nil
+        }
+        require("two 64 GB M2 Max Macs are granted as their record ran", allows([m2Max, m2Max], "registered_dense"))
+        require("an M4 Pro leading an M3 Ultra is granted, and that order only", allows([m4Pro, m3Ultra], "registered_dense")
+            && !allows([m3Ultra, m4Pro], "registered_dense") && !allows([m3Ultra, m2Max], "registered_dense"))
+        require("three ranks: each class reaches the role its record ran it in", allows([m1Ultra, m2Ultra, m4Max], "registered_wide")
+            && allows([m2Ultra, m1Ultra, m4Max], "registered_wide") && !allows([m1Ultra, m4Max, m2Ultra], "registered_wide")
+            // A grant restricts roles, not the number of ranks (cuts and modes are the coordinator's parity qualification).
+            && allows([m1Ultra, m4Max], "registered_wide") && !allows([m4Max, m1Ultra], "registered_wide"))
+        let wide = try? ClusterPairServingGrants.grant(runtimeModelID: "registered_wide", publicModelID: "p", decisions: decisions)
+        require("a three-rank grant lists its classes per role", wide?.pipelineRankChipClasses == [m1Ultra!, m2Ultra!] && wide?.decodingRankChipClasses == [m4Max!]
+            && wide?.qualifications.count == 1 && wide?.evidence.contains("1 passing cross-cable qualification record") == true)
+        let split = decisions.withheld["registered_split"] ?? ""
+        require("one cut that diverged withholds the model at every cut", !allows([m2Max, m2Max], "registered_split")
+            && split.contains("diverged at cut 8") && split.contains("9.0 ulp") && split.contains("Apple M2 Max"))
+        refuses("an undecided model is refused as having no grant", because: "has no grant") {
+            try ClusterPairServingGrants.requirePlacement([m2Max, m2Max], runtimeModelID: "registered_unsure", publicModelID: "p", decisions: decisions)
+        }
+        require("loopback runs, classless chips and malformed cuts are never used", decisions.ignored == 3
+            && !allows([m2Max, m2Max], "registered_loopback") && !allows([m2Max, m2Max], "registered_virtual"))
+        require("the records this build ships all decode and are all used", !ClusterPairServingGrants.records.isEmpty
+            && ClusterPairServingGrants.decisions.ignored == 0 && ClusterPairServingGrants.records.allSatisfy(\.isConsistent))
+        require("the shipped records grant the 9B with the M3 Ultra leading, from records only",
+            shipped([m3Ultra, cls("Apple M5 Ultra")], "registered_qwen35_9b") && !shipped([cls("Apple M5 Ultra"), m3Ultra], "registered_qwen35_9b"))
     }
 }

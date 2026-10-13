@@ -8,6 +8,8 @@ import Foundation
 //   run      run that request on rank 0 (this Mac) and rank 1 (the second Mac)
 //   solo     run that request on one Mac alone, timed on this driver's clock
 //   compare  compare a reference report with a pair report (or two reports)
+//   record   the qualification record of a pair report against its references
+//            (what a provider's pair-serving grant rests on)
 
 @main enum PairCheck {
     struct Failure: Error, CustomStringConvertible {
@@ -64,6 +66,9 @@ import Foundation
               [--near-tie-ulps N] [--allow-cut-difference yes] [--allow-schedule-difference yes]
               [--allow-profile-difference yes (profiles that differ only in their limits)]
               [--json yes] [--require VERDICT[,VERDICT]] [--model-dir /ABS/MODEL]
+          darkbloom-cluster-pair-check record --pair PAIR-REPORT.json --reference REPORT.json [--reference REPORT.json]...
+              --output NEW-RECORD.jsonl [--near-tie-ulps N] [--allow-cut-difference yes]
+              [--allow-schedule-difference yes] [--allow-profile-difference yes]
         """
 
     /// `--name value` pairs; names in `repeated` may occur more than once.
@@ -88,6 +93,7 @@ import Foundation
             case "run": try await run(Array(arguments.dropFirst()))
             case "solo": try solo(Array(arguments.dropFirst()))
             case "compare": try await compare(Array(arguments.dropFirst()))
+            case "record": try record(Array(arguments.dropFirst()))
             default: throw Failure(usage)
             }
         } catch {
@@ -509,6 +515,36 @@ import Foundation
             }
         }
         Darwin.exit(required.isEmpty || required.contains(comparison.verdict) ? 0 : 3)
+    }
+}
+
+extension PairCheck {
+    /// Writes one qualification record (one JSON line) for a completed
+    /// cross-cable pair report against every reference given, and prints
+    /// whether it passes the near-tie rule. Exit 0 when it was written, pass
+    /// or fail; a failing record withholds the model as surely as a passing
+    /// one grants it.
+    static func record(_ arguments: [String]) throws {
+        let fields = try parse(arguments, allowed: ["--pair", "--reference", "--output", "--near-tie-ulps",
+            "--allow-cut-difference", "--allow-schedule-difference", "--allow-profile-difference"], repeated: ["--reference"])
+        guard let pairPath = fields["--pair"]?.first, let output = fields["--output"]?.first,
+              let referencePaths = fields["--reference"], !referencePaths.isEmpty else { throw Failure(usage) }
+        let threshold = try fields["--near-tie-ulps"]?.first.map { text -> Float in
+            guard let value = Float(text), value >= 0, value.isFinite else { throw Failure("--near-tie-ulps must be a non-negative number") }
+            return value
+        } ?? 4
+        let comparator = QualificationComparator(nearTieULPs: threshold,
+            allowCutDifference: fields["--allow-cut-difference"]?.first == "yes",
+            allowScheduleDifference: fields["--allow-schedule-difference"]?.first == "yes",
+            allowProfileDifference: fields["--allow-profile-difference"]?.first == "yes")
+        let record = try PairQualificationRecords.make(
+            pairReport: QualificationFiles.read(URL(fileURLWithPath: pairPath), maximumBytes: QualificationReportFiles.maximumBytes),
+            references: referencePaths.map { try QualificationFiles.read(URL(fileURLWithPath: $0), maximumBytes: QualificationReportFiles.maximumBytes) },
+            comparator: comparator)
+        try QualificationFiles.writeNew(Data((try record.encodedLine() + "\n").utf8), to: URL(fileURLWithPath: output))
+        let chips = record.ranks.map(\.chip).joined(separator: " + ")
+        print("\(record.runtimeModelID) on \(chips), cut \(record.cuts.map(String.init).joined(separator: ",")), \(record.generationMode): "
+            + record.comparisons.map(\.verdict).joined(separator: ", ") + (record.passed ? " -> passes the near-tie rule" : " -> FAILS the near-tie rule"))
     }
 }
 

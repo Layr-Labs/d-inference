@@ -329,7 +329,7 @@ final class EndpointBox: @unchecked Sendable {
             && big.stopMarginNanoseconds>nine.stopMarginNanoseconds && big.admissionWaitNanoseconds==nine.admissionWaitNanoseconds,"27B release and admission waits")
         // Every model with a pair-serving grant has exactly one row, in the grants' order; a model
         // whose grant is withheld has none, so neither half alone can open it.
-        try require(Table.rows.map(\.runtimeModelID)==ClusterPairServingGrants.granted.map(\.runtimeModelID),"the table's rows and the granted models differ")
+        try require(Set(Table.rows.map(\.runtimeModelID))==Set(ClusterPairServingGrants.granted.map(\.runtimeModelID)),"the table's rows and the granted models differ")
         for model in ClusterPairServingGrants.withheld.keys {
             let none=try refusal{_ = try Table.servingBudgets(runtimeModelID:model,publicModelID:"p")}
             try require(none.contains("no row for the registered model \(model)"),"a withheld model has a row: \(model)")
@@ -382,7 +382,7 @@ final class EndpointBox: @unchecked Sendable {
                 generationMode:mode,advertisedModes:allModes,registered:model)
             let prepared=try big.prepare()
             try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
-            try require(prepared.plan.grant==ClusterPairServingGrants.qwen38_27b,"the 27B was prepared under another model's grant")
+            try require(prepared.plan.grant==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"),"the 27B was prepared under another model's grant")
             // The fixture is the leader: rank 0 of two, the pipeline-only rank.
             for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
             for chip in ["Apple M4 Max","Apple M5 Pro","Apple M1 (Virtual)"] {
@@ -393,14 +393,14 @@ final class EndpointBox: @unchecked Sendable {
         }
         // The 9B was checked with the M3 Ultra leading only: an M5 Max cannot run its rank 0.
         let nine=try f.prepare()
-        try require(nine.plan.grant==ClusterPairServingGrants.qwen35_9b,"the 9B was prepared under another model's grant")
+        try require(nine.plan.grant==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen35_9b",publicModelID:"p"),"the 9B was prepared under another model's grant")
         try nine.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
         let led=try refusal{try nine.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
         try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains("apple_m5_max"),"9B led by the M5 Max: \(led)")
         // Budgets and grant are keyed on the runtime's model, whatever the public name.
         let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
         try require(renamed==Table.qwen38.budgets,"renamed 27B budgets differ")
-        try require(try ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")==ClusterPairServingGrants.qwen38_27b,
+        try require(try ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"),
             "renamed 27B grant differs")
         let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
@@ -689,4 +689,11 @@ final class EndpointBox: @unchecked Sendable {
             }
         }
     }
+}
+
+/// Synthetic chip classes for the checks: the classes these fixtures run as.
+/// Product code names no chip; a class comes from the chip's own name.
+extension ClusterChipClass {
+    static let appleM3Ultra = ClusterChipClass(chipName: "Apple M3 Ultra")!
+    static let appleM5Max = ClusterChipClass(chipName: "Apple M5 Max")!
 }

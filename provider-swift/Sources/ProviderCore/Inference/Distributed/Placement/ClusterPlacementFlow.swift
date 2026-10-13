@@ -100,7 +100,18 @@ public enum ClusterPlacementFlow {
         }
         var setup: ClusterPlacementSetup?
         if let chosen = result.chosen {
-            let value = try ClusterPlacementSetup.synthesize(description: description, capability: capability, chosen: chosen)
+            var described = description
+            if description.derivesRequestLimits {
+                let chunk = ClusterPlacementRequestLimits.chunkTokens(runtimeModelID: capability.runtimeModelID,
+                    layoutMaximum: layout.maximumChunkTokens, capabilityMaximum: capability.profile.maximumChunkTokens)
+                let deadline = ClusterPlacementRequestLimits.requestTimeoutSeconds(result: result, chosen: chosen,
+                    maximumPromptTokens: capability.profile.maximumPromptTokens, maximumOutputTokens: capability.profile.maximumOutputTokens)
+                described = description.withRequestLimits(chunkTokens: chunk.tokens, requestTimeoutSeconds: deadline.seconds)
+                lines.append("Request limits")
+                lines.append("  Prefill chunk " + chunk.basis + ".")
+                lines.append("  Request deadline " + deadline.basis + ".")
+            }
+            let value = try ClusterPlacementSetup.synthesize(description: described, capability: capability, chosen: chosen)
             lines.append("What happens next")
             lines += value.narration(localMemberID: localMemberID).map { "  " + $0 }
             setup = value

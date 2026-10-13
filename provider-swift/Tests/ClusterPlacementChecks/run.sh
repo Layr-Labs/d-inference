@@ -28,8 +28,10 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$task_provider/Sources/ProviderCore/Config/ClusterRuntimeApproval.swift" "$task_provider/Sources/ProviderCore/Protocol/ClusterRosterRegistration.swift" \
   "$task_provider/Tests/ClusterInstalledSessionChecks/AttestationSignerStandIn.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairServingGrant.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Installed/DistributedInstalledPairQualificationRecords.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementRequestLimits.swift" \
   "$task_provider/Tests/ClusterPlacementChecks/PlacementSetupCheck.swift" -o "$task_build/setup-check"
 # PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries
 # there, for `setup-check flow ...` (see PlacementSetupCheck.swift); run it

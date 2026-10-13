@@ -67,6 +67,22 @@ public struct ClusterPairDescription: Codable, Sendable, Equatable {
         return value
     }
 
+    /// Whether the planner derives the request limits (`chunkTokens` and
+    /// `requestTimeoutSeconds` of zero, as the guided flow writes): from the
+    /// model's qualification records and the chosen placement's predicted
+    /// speed (`ClusterPlacementRequestLimits`). A description that states
+    /// them (a developer harness) keeps its values.
+    public var derivesRequestLimits: Bool { chunkTokens <= 0 || requestTimeoutSeconds <= 0 }
+
+    /// The same description with the request limits given.
+    func withRequestLimits(chunkTokens: Int, requestTimeoutSeconds: Int) -> ClusterPairDescription {
+        var value = ClusterPairDescription(schema: schema, clusterID: clusterID, publicModelID: publicModelID, capabilitySHA256: capabilitySHA256,
+            chunkTokens: chunkTokens, requestTimeoutSeconds: requestTimeoutSeconds, coordinatorPort: coordinatorPort, members: members,
+            tokenizerFiles: tokenizerFiles)
+        value.linkControl = linkControl
+        return value
+    }
+
     /// Every member is reached the same one way: SSH trust on each (developer
     /// harness), or the link control channel with each member's secret file.
     func requireOneRoute() throws {

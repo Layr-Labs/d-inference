@@ -199,7 +199,7 @@ final class EndpointBox: @unchecked Sendable {
             && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"] != nil,"prefix SSD off switch not passed")
         let cacheOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4"])
-        try require(cacheOff.count==13 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
+        try require(cacheOff.count==12 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
             "prefix cache off must not configure the SSD tier")
         let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])

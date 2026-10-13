@@ -9,6 +9,7 @@ import { Updates } from './features/Updates';
 import { isMachineRoute, type MachineSelection } from './features/machines/navigation';
 import { Notice, OperationFeed } from './components/UI';
 import { Onboarding } from './components/Onboarding';
+import { Startup } from './components/Startup';
 import { onboardingScenario } from './previewEligibility';
 import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
@@ -45,7 +46,11 @@ export default function App() {
     return (
       <>
         <div className="drag-region" />
-        <Onboarding backend={backend} done={finishOnboarding} />
+        {onboarding ? (
+          <Onboarding backend={backend} done={finishOnboarding} />
+        ) : (
+          <Startup backend={backend} />
+        )}
         <OperationFeed backend={backend} />
       </>
     );

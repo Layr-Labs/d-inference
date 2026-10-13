@@ -226,10 +226,19 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
             "The leader was not told how the follower's owner ended: \(second.followerReport ?? "nothing") / \(second.diagnosticSummary)")
         try require(second.followerReport?.contains("\u{1b}") == false, "A control character crossed the link")
         try require(second.diagnosticSummary.contains("the follower said: " + named), "The leader's summary omits it: \(second.diagnosticSummary)")
+        // No proof can follow the follower's release report: the leader's
+        // waits end with it (not at the proof ceiling, 15 s + allowance here),
+        // claiming nothing.
+        let ended = DispatchSemaphore(value: 0), waitStarted = now()
+        DispatchQueue.global().async { second.waitForNativeCleanup(); ended.signal() }
+        try require(ended.wait(timeout: .now() + 10) == .success,
+            "The leader's wait outlived the follower's release report: \(second.diagnosticSummary)")
+        try require(!second.nativeCleanupObserved, "A cleanup proof was claimed for an owner that never gave one")
+        let waited = Double(now() - waitStarted) / 1e9
         _ = second.waitForOwnerReleased(deadline: now() + 10_000_000_000)
         let status = try harness.finish()
         try require(status == 0, "Follower exit \(status)")
-        print("PASS a follower owner that refuses its launch is named on both Macs: \(named)")
+        print(String(format: "PASS a follower owner that refuses its launch is named on both Macs and the leader's waits end with the follower's release (%.1f s): ", waited) + named)
     }
 
     static func codec() throws {

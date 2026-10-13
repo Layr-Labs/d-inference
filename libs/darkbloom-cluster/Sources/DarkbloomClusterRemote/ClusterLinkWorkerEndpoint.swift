@@ -570,6 +570,12 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     guard accepted, !released else { throw ClusterLinkWorkerError.invalid("Repeated release") }
                     released = true; releasedCleanly = (wire.releasedCleanly ?? false) && cleanup
                     terminationValue = wire.ownerTermination; endOwner = true
+                    // The follower's session ends with its release report: no
+                    // cleanup proof can follow it, so every wait on this
+                    // endpoint ends now, claiming nothing (cleanup stays
+                    // unobserved, ownership unresolved; the follower's journal
+                    // keeps the record for `cluster recover`).
+                    if !cleanup { complete = true }
                 default: throw ClusterLinkWorkerError.invalid("Leader message from the follower")
                 }
             }

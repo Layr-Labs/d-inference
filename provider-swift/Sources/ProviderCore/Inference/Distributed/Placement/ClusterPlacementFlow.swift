@@ -92,7 +92,7 @@ public enum ClusterPlacementFlow {
             indices: profiles.compactMap { $0.1.speedIndex })
         var devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
         // Requests this pair served are measurements too: the next plan starts from them.
-        let members = Set(profiles.map(\.0))
+        let members = Set(profiles.map { $0.0 })
         let ours = served.filter { $0.setup.modelID == description.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
         var servedLines: [String] = []
         if !ours.isEmpty {

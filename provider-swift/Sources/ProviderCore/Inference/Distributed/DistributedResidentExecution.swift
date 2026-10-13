@@ -166,6 +166,8 @@ public protocol DistributedResidentRequestLease: AnyObject, Sendable {
     func waitUntilRetired() async
     /// Called exactly once after waitUntilRetired, never on a timeout alone.
     func releaseResources()
+    /// Which way this request was routed, when the owner routes requests.
+    var route: DistributedRequestRouteNote? { get }
 }
 
 public extension DistributedResidentRequestLease {

@@ -26,6 +26,8 @@ public struct ClusterRequestRoute: Codable, Equatable, Sendable {
     public let aloneBasis: Basis?
     /// In plain words.
     public let reason: String
+    /// The pair serves this request to be measured near its length once (`Setup.measuresPair`).
+    public var measuring = false
 
     /// `pair` or `alone:<member>`, as telemetry and status print it.
     public var label: String { member.map { "alone:" + $0 } ?? "pair" }
@@ -68,12 +70,21 @@ public enum ClusterRequestRouter {
         /// on a small margin. The member alone serves meanwhile, which measures
         /// it there.
         public let unmeasuredMargin: Double
+        /// Whether the pair is measured once near a prompt length where the
+        /// member alone was measured and the pair is still predicted faster
+        /// beyond the tie tolerance (one request per factor-of-two band of
+        /// prompt lengths per serving router): without it a pair that is
+        /// faster only by less than `unmeasuredMargin` is never measured, and
+        /// so never used. False keeps every request on the member alone
+        /// until the pair is predicted faster by the larger margin.
+        public let measuresPair: Bool
         public init(devices: [ClusterPlacementDevice], cuts: [Int], mode: ClusterGenerationMode, schedule: ClusterPrefillSchedule,
                     layout: ClusterModelLayout, link: ClusterLinkCosts = .unmeasured,
-                    regime: ClusterPlacementPolicy.Regime = .rested, tieTolerance: Double = 0.03, unmeasuredMargin: Double = 0.25) {
+                    regime: ClusterPlacementPolicy.Regime = .rested, tieTolerance: Double = 0.03, unmeasuredMargin: Double = 0.25,
+                    measuresPair: Bool = true) {
             self.devices = devices; self.cuts = cuts; self.mode = mode; self.schedule = schedule; self.layout = layout
             self.link = link; self.regime = regime; self.tieTolerance = tieTolerance
-            self.unmeasuredMargin = max(tieTolerance, unmeasuredMargin)
+            self.unmeasuredMargin = max(tieTolerance, unmeasuredMargin); self.measuresPair = measuresPair
         }
 
         /// The members holding every layer under this placement: the last
@@ -127,8 +138,10 @@ public enum ClusterRequestRouter {
                      firstToken: first, basis: correction == nil || borrowed ? .predicted : .served)
     }
 
+    /// `measuring`: prompt lengths a serving router already sent to the pair
+    /// to measure it, whose records have not arrived yet.
     public static func decide(_ setup: Setup, promptTokens: Int, outputTokens: Int,
-                              served: [ClusterServedSample] = []) throws -> ClusterRequestRoute {
+                              served: [ClusterServedSample] = [], measuring: [Int] = []) throws -> ClusterRequestRoute {
         guard promptTokens >= 1, outputTokens >= 1 else { throw ClusterPlacementError("A routed request has a prompt and an output") }
         var policy = ClusterPlacementPolicy()
         policy.regime = setup.regime
@@ -184,11 +197,19 @@ public enum ClusterRequestRouter {
         let gain = best.priced.seconds / pair.seconds - 1
         // Both routes measured near this length: the tie tolerance decides. Otherwise the larger margin.
         func near(_ s: ClusterServedSample) -> Bool { abs(log(Double(s.promptTokens) / Double(promptTokens))) <= log(2.0) }
-        let measured = samples.contains { $0.route == .pair && near($0) }
-            && samples.contains { $0.route == .alone && $0.member == best.device.label && near($0) }
+        let pairNear = samples.contains { $0.route == .pair && near($0) }
+        let aloneNear = samples.contains { $0.route == .alone && $0.member == best.device.label && near($0) }
+        let measured = pairNear && aloneNear
         if gain > (measured ? setup.tieTolerance : setup.unmeasuredMargin) {
             return make(.pair, String(format: "the pair is predicted %.0f%% faster than %@ alone", gain * 100, best.device.label)
                 + (measured ? ", both measured near this length" : ""))
+        }
+        let beingMeasured = measuring.contains { abs(log(Double($0) / Double(promptTokens))) <= log(2.0) }
+        if gain > setup.tieTolerance, setup.measuresPair, aloneNear, !pairNear, !beingMeasured {
+            var value = make(.pair, String(format: "measuring the pair once near this length: %@ alone was measured here and the pair "
+                + "is still predicted %.0f%% faster", best.device.label, gain * 100))
+            value.measuring = true
+            return value
         }
         if gain > setup.tieTolerance {
             return make(.alone, String(format: "the pair is predicted %.0f%% faster, but the two were not both measured near this length; "
@@ -237,6 +258,12 @@ public final class ClusterRequestRouting: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [ClusterServedSample] = []
     private var readAt = -Double.infinity
+    /// Prompt lengths sent to the pair to measure it, and those sent since the last refresh (whose records may
+    /// not have arrived). A session's first request on a route is not a speed record (it warms that path), so a
+    /// band is measured at most twice, at most once per refresh.
+    private var measuredAttempts: [Int] = []
+    private var measuringNow: [Int] = []
+    public static let measuringAttemptsPerBand = 2
 
     public init(setup: ClusterRequestRouter.Setup, refreshSeconds: Double = 30,
                 clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
@@ -246,12 +273,18 @@ public final class ClusterRequestRouting: @unchecked Sendable {
 
     public func route(promptTokens: Int, maximumOutputTokens: Int) -> ClusterRequestRoute? {
         let now = clock()
-        let current: [ClusterServedSample] = lock.withLock {
-            if now - readAt >= refreshSeconds { samples = served(); readAt = now }
-            return samples
+        return lock.withLock {
+            if now - readAt >= refreshSeconds { samples = served(); readAt = now; measuringNow = [] }
+            let outputs = ClusterRequestRouter.expectedOutputTokens(maximum: maximumOutputTokens, served: samples)
+            func band(_ a: Int, _ b: Int) -> Bool { abs(log(Double(a) / Double(b))) <= log(2.0) }
+            let exhausted = measuredAttempts.filter { length in
+                measuredAttempts.filter { band($0, length) }.count >= Self.measuringAttemptsPerBand
+            }
+            let decided = try? ClusterRequestRouter.decide(setup, promptTokens: promptTokens, outputTokens: outputs,
+                served: samples, measuring: measuringNow + exhausted)
+            if let decided, decided.measuring { measuredAttempts.append(promptTokens); measuringNow.append(promptTokens) }
+            return decided
         }
-        let outputs = ClusterRequestRouter.expectedOutputTokens(maximum: maximumOutputTokens, served: current)
-        return try? ClusterRequestRouter.decide(setup, promptTokens: promptTokens, outputTokens: outputs, served: current)
     }
 }
 

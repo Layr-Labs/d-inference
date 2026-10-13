@@ -93,6 +93,31 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     checks.require("M3 Ultra + M5 Ultra: measured near that length as predicted, the long prompt goes to the pair",
         longMeasured.path == .pair && longMeasured.pairBasis == .served && longMeasured.aloneBasis == .served
             && longMeasured.reason.contains("both measured"))
+    // Measured alone near the length and still predicted slower than the pair: the pair is measured there once.
+    let aloneOnly = [measuredLong[1]]
+    let probe = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128, served: aloneOnly)
+    let pending = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128, served: aloneOnly, measuring: [23_000])
+    let strict = ClusterRequestRouter.Setup(devices: pair.setup.devices, cuts: pair.setup.cuts, mode: pair.setup.mode,
+        schedule: pair.setup.schedule, layout: nine, measuresPair: false)
+    let strictRoute = try ClusterRequestRouter.decide(strict, promptTokens: 24_576, outputTokens: 128, served: aloneOnly)
+    checks.require("the member alone measured near a length where the pair is still predicted faster: the pair is measured there once, then not again until its record arrives",
+        probe.path == .pair && probe.measuring && pending.path == .alone && !pending.measuring && strictRoute.path == .alone)
+    final class Once: @unchecked Sendable { var samples: [ClusterServedSample] = [] }
+    let once = Once(); once.samples = aloneOnly
+    final class Clock: @unchecked Sendable { var now = 0.0 }
+    let tick = Clock()
+    let measuringRouter = ClusterRequestRouting(setup: pair.setup, refreshSeconds: 30, clock: { tick.now }) { once.samples }
+    let firstLong = measuringRouter.route(promptTokens: 24_576, maximumOutputTokens: 128)
+    let secondLong = measuringRouter.route(promptTokens: 20_000, maximumOutputTokens: 128)
+    tick.now = 31   // refreshed, no pair record arrived (a warming request is not one): measured once more
+    let retryLong = measuringRouter.route(promptTokens: 24_576, maximumOutputTokens: 128)
+    tick.now = 62
+    let exhaustedLong = measuringRouter.route(promptTokens: 24_576, maximumOutputTokens: 128)
+    once.samples = measuredLong; tick.now = 93
+    let thirdLong = measuringRouter.route(promptTokens: 24_576, maximumOutputTokens: 128)
+    checks.require("a serving router measures the pair at most once per refresh and twice per length band, then decides from both records",
+        firstLong?.measuring == true && secondLong?.path == .alone && retryLong?.measuring == true && exhaustedLong?.path == .alone
+            && thirdLong?.path == .pair && thirdLong?.measuring == false)
     checks.require("measurements far from the prompt length do not count as measured near it",
         try ClusterRequestRouter.decide(pair.setup, promptTokens: 4 * chunk, outputTokens: 128, served: measuredLong).path == .alone)
     // Predictions trusted (margin = tolerance), the planner's crossover and corrections as before.
@@ -191,7 +216,7 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     // Index-only speeds are relative units; a served route is in seconds. With only one route served,
     // the other takes its scale, so the decision stays the planner's ratio (units never decide).
     let relativeSetup = ClusterRequestRouter.Setup(devices: [r3, r5], cuts: pair.setup.cuts, mode: pair.setup.mode,
-        schedule: pair.setup.schedule, layout: nine)
+        schedule: pair.setup.schedule, layout: nine, measuresPair: false)
     for prompt in [chunk, 16 * chunk] {
         let predictedRoute = try ClusterRequestRouter.decide(relativeSetup, promptTokens: prompt, outputTokens: 128)
         var alonePolicy = ClusterPlacementPolicy(); alonePolicy.promptTokens = prompt; alonePolicy.outputTokens = 128

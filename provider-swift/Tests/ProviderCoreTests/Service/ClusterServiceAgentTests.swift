@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import ProviderCore
+import DarkbloomClusterSecurity
 
 /// The cluster service login agent (review finding 12) against a stateful
 /// stand-in for launchd: install, idempotent re-install, restart of a parked
@@ -200,5 +201,22 @@ struct ClusterServiceAgentTests {
             }
             #expect(launchd.uptime >= Double(ClusterServiceAgentPlan.exitTimeOutSeconds), "it waited the whole allowance")
         }
+    }
+
+    /// `cluster pair --forget` removes the agent only when this Mac holds no
+    /// pairing any more; a store it cannot read is never taken for "unpaired".
+    @Test func onlyAnEmptyOrAbsentPairingStoreCountsAsUnpaired() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("unpaired-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ClusterPairingStore(directory: root.appendingPathComponent("cluster-pairing"))
+        #expect(ClusterService.holdsNoPairing(store: store), "nothing was ever paired here")
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        #expect(ClusterService.holdsNoPairing(store: store), "an empty store")
+        try Data("{}".utf8).write(to: store.recordsFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.recordsFile.path)
+        #expect(!ClusterService.holdsNoPairing(store: store), "a malformed store is not unpaired")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.recordsFile.path)
+        #expect(!ClusterService.holdsNoPairing(store: store), "a store refused for its mode is not unpaired")
     }
 }

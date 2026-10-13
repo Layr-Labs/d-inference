@@ -11,7 +11,7 @@ extension Cluster {
         static let configuration = CommandConfiguration(commandName: "service",
             abstract: "Run this Mac's cluster service (started by `darkbloom cluster`).", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
-        @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
+        @Option(help: "Absolute path of this Mac's cluster worker, when it is not the installed one (Darkbloom.app/Contents/Helpers).")
         var worker: String?
 
         func validate() throws {

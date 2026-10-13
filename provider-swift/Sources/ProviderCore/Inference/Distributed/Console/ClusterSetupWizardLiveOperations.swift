@@ -24,8 +24,9 @@ extension ClusterSetupOperations {
         /// What a follower whose setup reaches it over the link runs to serve
         /// its rank (`darkbloom cluster link-follower`).
         public var followerSessionArguments: [String] = []
-        /// This Mac's worker for the guided flow; nil takes the one installed
-        /// beside this executable (`worker/darkbloom-cluster-worker`).
+        /// This Mac's worker for the guided flow; nil takes the installed one
+        /// (`ClusterBundledHelpers`: `Darkbloom.app/Contents/Helpers` in a
+        /// release, `worker/` beside a development build).
         public var workerExecutable: String?
         /// The folder holding this Mac's model folders, given once; nil takes the one remembered.
         public var modelsDirectory: String?
@@ -200,7 +201,10 @@ final class LiveContext: @unchecked Sendable {
 
     /// The cable's interface and this Mac's address on it, as pairing picks them
     /// (Darkbloom's own 10.219 service address once link setup v2 ran).
-    func linkSelection() throws -> ClusterLinkInterfaceSelection {
+    func linkSelection() throws -> ClusterLinkInterfaceSelection { try Self.defaultLinkSelection() }
+
+    /// The cable's interface on this Mac, admitted for the paired link.
+    static func defaultLinkSelection() throws -> ClusterLinkInterfaceSelection {
         let interface: String
         do { interface = try ClusterPairCommandLine.resolveInterface(ClusterPairCommandRequest(), peer: nil) } catch {
             throw ClusterSetupFailure("the cable carries no IPv4 address on this Mac: \(error). Run the link step (f) first.")
@@ -239,9 +243,9 @@ final class LiveContext: @unchecked Sendable {
     func localFacts(pairing: ClusterSetupLinkExchange.Pairing, selection: ClusterLinkInterfaceSelection) throws -> ClusterSetupMemberFacts {
         let worker = settings.workerExecutable
             ?? savedConfiguration().configuration.map { $0.peers[$0.localRank].workerExecutable }
-            ?? settings.darkbloomExecutable.deletingLastPathComponent().appendingPathComponent("worker/darkbloom-cluster-worker").path
+            ?? ClusterBundledHelpers.defaultWorker(darkbloomExecutable: settings.darkbloomExecutable).path
         guard FileManager.default.isExecutableFile(atPath: worker) else {
-            throw ClusterSetupFailure("this Mac's cluster worker is not installed beside darkbloom (expected worker/darkbloom-cluster-worker); reinstall Darkbloom")
+            throw ClusterSetupFailure(ClusterBundledHelpers.missingWorkerReason(darkbloomExecutable: settings.darkbloomExecutable))
         }
         guard let models = modelsDirectory() else {
             throw ClusterSetupFailure("this Mac does not know where its models are: open `darkbloom cluster --model-dir <folder>` once")

@@ -45,7 +45,7 @@ extension Cluster {
         var member: String?
         @Option(name: .customLong("model-dir"), help: "Absolute path of the folder holding this Mac's model folders (once; the wizard remembers it).")
         var modelDir: String?
-        @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
+        @Option(help: "Absolute path of this Mac's cluster worker, when it is not the installed one (Darkbloom.app/Contents/Helpers).")
         var worker: String?
         @Flag(help: "Open the six-step setup wizard instead of the leader-first onboarding.")
         var wizard = false

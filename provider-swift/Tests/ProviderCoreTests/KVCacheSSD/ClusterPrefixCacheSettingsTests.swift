@@ -71,4 +71,18 @@ struct ClusterPrefixCacheSettingsTests {
         let text = String(decoding: try ClusterCacheSettingsSync(leader: leader).encoded(), as: UTF8.self)
         #expect(text == #"{"daily_write_gb":7,"disk_budget_gb":3,"prefix_cache_enabled":false,"ttl_seconds":300,"version":1}"#)
     }
+
+    @Test func theOrphanSweepHandsTheReaperTheTiersStagingRoots() {
+        let home = URL(fileURLWithPath: "/tmp/home-\(UUID().uuidString)", isDirectory: true)
+        let builtIn = ClusterPrefixCacheSettings.defaultRoot(home: home).appendingPathComponent("staging", isDirectory: true)
+        // No configuration: the built-in root's staging only.
+        #expect(ClusterOrphanSweep.cacheStagingRoots(home: home, providerConfiguration: nil) == [builtIn])
+        // A configuration file that does not exist reads as the defaults: the saved-settings root first, then
+        // the built-in one (each once).
+        let absent = home.appendingPathComponent("absent/provider.toml")
+        let roots = ClusterOrphanSweep.cacheStagingRoots(home: home, providerConfiguration: absent)
+        #expect(roots.last == builtIn && (1...2).contains(roots.count) && Set(roots.map(\.path)).count == roots.count)
+        #expect(roots.allSatisfy { $0.lastPathComponent == "staging" })
+        #expect(ClusterPrefixCacheSettings.stagingRoot(root: URL(fileURLWithPath: "/r", isDirectory: true)).path == "/r/staging")
+    }
 }

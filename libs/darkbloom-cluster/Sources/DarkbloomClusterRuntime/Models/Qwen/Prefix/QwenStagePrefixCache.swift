@@ -84,9 +84,15 @@ struct QwenStagePrefixCaptureCost: Equatable {
 /// the frontiers they hold and reuse only one both hold
 /// (`QwenStagePrefixAgreement`).
 ///
-/// Eviction is least-recently-used, by entry count and within a byte budget
+/// Retention is by budget, as the single-Mac prefix cache's: a byte budget
 /// (`budgetBytes`, derived by the runtime from the rank's admissible memory
-/// beside its serving context). Bytes are counted as held: each frontier's
+/// beside its serving context) and a prompt count (`promptLimit`, as the SSD
+/// tier's record limit), with a frontier count only as a safety bound. Under
+/// pressure the grid frontiers of prompts other than the most recently used
+/// go first (least recently used first), then whole prompts: the resident
+/// tier keeps as many prompts as the budget holds (every exact repeat hits)
+/// and the SSD tier keeps their grid (finding F4: a frontier-count limit of
+/// 32 held only the last two 8K prompts, so 4 rotating documents missed). Bytes are counted as held: each frontier's
 /// compact recurrent state, plus its prompt's one attention copy and history
 /// once, freed with the prompt's last entry. Entries are inserted only after
 /// a request retired cleanly on both ranks; a request's own capture is
@@ -99,7 +105,11 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// One entry is one frontier of one prompt: its recurrent state (about
     /// 110 MB on the 27B's larger stage, compact) and a view of its prompt's
     /// attention copy, which is shared by every frontier of that prompt.
-    public static let defaultEntryLimit = 32
+    public static let defaultEntryLimit = 1024
+    /// Prompts kept at most (the SSD tier's record limit); bytes bound first.
+    public static let defaultPromptLimit = 64
+    /// Frontiers one request captures at most (its split frontier and grid).
+    public static let defaultFrontiersPerPrompt = 32
     /// The budget never exceeds this, however much memory the Mac has.
     public static let maximumBudgetBytes = 8 << 30
     /// Grid frontiers kept besides `promptCount - 1`: multiples of this many
@@ -114,6 +124,8 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     /// no split, so the pair runs exactly as it did before the cache existed.
     public let enabled: Bool
     public let entryLimit: Int
+    public let promptLimit: Int
+    public let frontiersPerPrompt: Int
     public let strideTokens: Int
 
     private struct Entry {
@@ -125,7 +137,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         let prompt: UInt64
     }
     /// One inserted prompt's shared storage and how many entries view it.
-    private struct Prompt { let sharedBytes: Int; var entries: Int }
+    private struct Prompt { let sharedBytes: Int; var entries: Int; let deepest: Int }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var prompts: [UInt64: Prompt] = [:]
@@ -138,9 +150,12 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
 
     public init(enabled: Bool = true, entryLimit: Int = QwenStagePrefixCache.defaultEntryLimit,
                 strideTokens: Int = QwenStagePrefixCache.defaultStrideTokens,
-                budgetBytes: Int = QwenStagePrefixCache.maximumBudgetBytes) {
+                budgetBytes: Int = QwenStagePrefixCache.maximumBudgetBytes,
+                promptLimit: Int = QwenStagePrefixCache.defaultPromptLimit, frontiersPerPrompt: Int? = nil) {
         self.enabled = enabled
         self.entryLimit = max(1, min(entryLimit, 1024))
+        self.promptLimit = max(1, min(promptLimit, 1024))
+        self.frontiersPerPrompt = max(1, min(frontiersPerPrompt ?? Self.defaultFrontiersPerPrompt, self.entryLimit))
         self.strideTokens = max(1, strideTokens)
         budget = max(0, budgetBytes)
     }
@@ -189,7 +204,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
             let step = stride(chunkSize: chunkSize)
             // Grid frontiers after the held prefix, below the split frontier.
             let grid = (promptCount - 2) / step - max(0, heldFrontier) / step
-            let frontiers = min(entryLimit, grid + 1)
+            let frontiers = min(frontiersPerPrompt, grid + 1)
             return min(budget, measured.bytes(deepest: promptCount - 1, frontiers: frontiers))
         }
     }
@@ -309,11 +324,28 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     private func evictLocked(reserving: Int) {
-        while entries.count > entryLimit || (held > 0 && held > budget - min(budget, reserving)),
-              let oldest = entries.values.min(by: { $0.lastUse < $1.lastUse }) {
-            remove(oldest); evictions += 1
+        while entries.count > entryLimit || prompts.count > promptLimit
+                || (held > 0 && held > budget - min(budget, reserving)),
+              let victim = victimLocked() {
+            remove(victim); evictions += 1
         }
     }
+
+    /// The next entry to evict: the least recently used grid frontier of a
+    /// prompt other than the most recently used one; when there is none, the
+    /// least recently used entry. A prompt's deepest frontier (what an exact
+    /// repeat needs) outlives the grid of every other prompt.
+    private func victimLocked() -> Entry? {
+        guard let newest = entries.values.max(by: { $0.lastUse < $1.lastUse }) else { return nil }
+        func thinnable(_ entry: Entry) -> Bool {
+            entry.prompt != newest.prompt && entry.state.committedTokens < (prompts[entry.prompt]?.deepest ?? 0)
+        }
+        return entries.values.filter(thinnable).min(by: { $0.lastUse < $1.lastUse })
+            ?? entries.values.min(by: { $0.lastUse < $1.lastUse })
+    }
+
+    /// Prompts held now (for tests and diagnostics).
+    public var promptCount: Int { lock.withLock { prompts.count } }
 
     /// From the worker's environment. `DARKBLOOM_CLUSTER_PREFIX_CACHE=off`
     /// turns it off for diagnosis; anything else (or nothing) leaves it on.
@@ -377,7 +409,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         guard enabled else { return }
         lock.withLock {
             let prompt = nextPrompt; nextPrompt += 1
-            var added = 0
+            var added = 0, deepest = 0
             for state in states.sorted(by: { $0.committedTokens < $1.committedTokens }) {
                 guard state.committedTokens > 0, state.committedTokens <= tokens.count else { continue }
                 let key = Self.key(scope: scope, tokens: tokens[0..<state.committedTokens])
@@ -385,9 +417,12 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
                 clock += 1
                 let own = state.ownBytes
                 entries[key] = Entry(key: key, scope: scope, state: state, lastUse: clock, ownBytes: own, prompt: prompt)
-                held += own; added += 1
+                held += own; added += 1; deepest = max(deepest, state.committedTokens)
             }
-            if added > 0 { prompts[prompt] = Prompt(sharedBytes: max(0, sharedBytes), entries: added); held += max(0, sharedBytes) }
+            if added > 0 {
+                prompts[prompt] = Prompt(sharedBytes: max(0, sharedBytes), entries: added, deepest: deepest)
+                held += max(0, sharedBytes)
+            }
             evictLocked(reserving: 0)
         }
     }
@@ -396,7 +431,7 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     @discardableResult
     func evictLeastRecentlyUsed() -> Bool {
         lock.withLock {
-            guard let oldest = entries.values.min(by: { $0.lastUse < $1.lastUse }) else { return false }
+            guard let oldest = victimLocked() else { return false }
             remove(oldest); evictions += 1
             return true
         }

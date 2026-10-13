@@ -38,6 +38,15 @@ struct QwenStagePrefixDiskFault: Equatable {
 /// a frontier one rank no longer holds is simply not chosen). Records expire
 /// after the sliding TTL (30 minutes maximum, as the product's SSD tier).
 /// Writes stop below the free-space floor and the daily write cap.
+///
+/// Staging: a record is written to `<root>/staging/<membership epoch>/` and
+/// renamed into its rank directory when complete (same volume). The staging
+/// root is what the orphan reaper sweeps (`ClusterOrphanReaper.sweep`
+/// `stagingRoots`): a directory named by an epoch that is no longer live is
+/// a dead session's half-written records and goes, never a live session's.
+/// Every completed record also stamps `ProcessForcedExit.noteProgress()`, so
+/// the forced-exit dead-man extends its bound once for a writer that is
+/// demonstrably finishing records and never for one that is stuck.
 public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     struct Record {
         let name: String
@@ -75,6 +84,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     let planDirectory: URL
     let directory: URL
     let rank: Int
+    /// `<root>/staging/<epoch>` for this session's half-written records; nil
+    /// without an epoch (tests): temporary files then sit in the rank directory.
+    let stagingDirectory: URL?
     var fault: QwenStagePrefixDiskFault?
     private let lock = NSLock()
     private var records: [String: Record] = [:]
@@ -102,6 +114,15 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// Grid frontiers one record keeps at most, besides the prompt's N-1.
     static let maximumGridFrontiers = 8
 
+    /// The reaper's staging root under a tier root.
+    public static let stagingDirectoryName = "staging"
+    public static func stagingRoot(root: URL) -> URL { root.appendingPathComponent(stagingDirectoryName, isDirectory: true) }
+    /// A membership epoch as a staging directory name: a lowercase UUID.
+    static func stagingName(epoch: String?) -> String? {
+        guard let epoch, let uuid = UUID(uuidString: epoch), uuid.uuidString.lowercased() == epoch else { return nil }
+        return epoch
+    }
+
     static func planDirectoryName(scope: String) -> String { "v1-" + String(sha256(Data(scope.utf8)).prefix(24)) }
     static func isPlanDirectoryName(_ name: String) -> Bool {
         name.count == 27 && name.hasPrefix("v1-") && name.dropFirst(3).allSatisfy { $0.isHexDigit && !$0.isUppercase }
@@ -120,7 +141,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// Opens this rank's tier, or nil when it is off. Either way, directories
     /// of other plans under the root (all of them when off) are deleted first.
     static func open(configuration: QwenStagePrefixDiskConfiguration, planScope: String, rank: Int,
-                     fault: QwenStagePrefixDiskFault? = nil) -> QwenStagePrefixDiskTier? {
+                     stagingEpoch: String? = nil, fault: QwenStagePrefixDiskFault? = nil) -> QwenStagePrefixDiskTier? {
         switch configuration.mode {
         case .off(let sweepRoot, let reason):
             var swept = 0
@@ -130,7 +151,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         case .on(let root, let key):
             do {
                 return try QwenStagePrefixDiskTier(configuration: configuration, root: root, key: key,
-                    planScope: planScope, rank: rank, fault: fault)
+                    planScope: planScope, rank: rank, stagingEpoch: stagingEpoch, fault: fault)
             } catch {
                 log("darkbloom-prefix-ssd-v1 rank=\(rank) event=unavailable error=\(qwenPrefixLogWord(error))")
                 return nil
@@ -139,13 +160,16 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     }
 
     init(configuration: QwenStagePrefixDiskConfiguration, root: URL, key: Data, planScope: String, rank: Int,
-         fault: QwenStagePrefixDiskFault? = nil) throws {
+         stagingEpoch: String? = nil, fault: QwenStagePrefixDiskFault? = nil) throws {
         guard (0...63).contains(rank) else { throw ProbeError("Prefix SSD rank is out of range") }
         self.configuration = configuration; self.keys = QwenStagePrefixDiskKeys(master: key)
         self.root = root; self.rank = rank; self.fault = fault
         let planName = Self.planDirectoryName(scope: planScope)
         planDirectory = root.appendingPathComponent(planName, isDirectory: true)
         directory = planDirectory.appendingPathComponent("rank\(rank)", isDirectory: true)
+        stagingDirectory = Self.stagingName(epoch: stagingEpoch).map {
+            Self.stagingRoot(root: root).appendingPathComponent($0, isDirectory: true)
+        }
         let start = DispatchTime.now().uptimeNanoseconds
         try Self.makePrivateDirectory(root)
         let sweptPlans = Self.sweepPlans(root: root, keeping: planName)
@@ -364,7 +388,19 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         if let free = Self.freeBytes(directory), free < configuration.minimumFreeBytes + expected {
             abandon("low_disk"); return
         }
-        let temporary = directory.appendingPathComponent(".\(name).\(getpid()).tmp")
+        // Staged under this session's epoch (recreated if the reaper or a
+        // reclaim removed it while idle), else beside the record.
+        var stage = directory
+        if let stagingDirectory {
+            do {
+                try Self.makePrivateDirectory(Self.stagingRoot(root: root))
+                try Self.makePrivateDirectory(stagingDirectory)
+                stage = stagingDirectory
+            } catch {
+                abandon("staging_unavailable"); return
+            }
+        }
+        let temporary = stage.appendingPathComponent(".\(name).\(getpid()).tmp")
         unlink(temporary.path)
         do {
             let bytes = try QwenStagePrefixDiskIO.write(job: job, keys: keys, to: temporary,
@@ -373,6 +409,8 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             guard rename(temporary.path, final.path) == 0 else { throw ProbeError("Prefix record rename failed (errno \(errno))") }
             let written = now()
             Self.setModificationTime(final.path, written)
+            // A durable write completed: the forced-exit dead-man may extend once.
+            ProcessForcedExit.noteProgress()
             lock.withLock {
                 if var record = records[name] {
                     record.written = true; record.bytes = bytes; record.lastUseTime = written; records[name] = record
@@ -419,8 +457,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         }
         lock.withLock { cancelled = true; statistics.closeExtended = extended; statistics.closeDrained = drained }
         if !drained { _ = drain(timeoutSeconds: 5) }
-        // This rank no longer uses the plan directory.
+        // This rank no longer uses the plan directory, nor its staging.
         lock.withLock { if inUse >= 0 { Darwin.close(inUse); inUse = -1 } }
+        if let stagingDirectory { Self.removeStaging(stagingDirectory) }
         log("darkbloom-prefix-ssd-v1 rank=\(rank) event=close drained=\(drained) extended=\(extended) records=\(recordCount)")
     }
 
@@ -585,6 +624,16 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             if (try? FileManager.default.removeItem(at: plan)) != nil { removed += 1 }
         }
         return removed
+    }
+
+    /// Removes this session's staging directory: only the temporary files the
+    /// writer makes, then the directory (left when anything else is in it).
+    static func removeStaging(_ directory: URL) {
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        where name.hasPrefix(".") && name.hasSuffix(".tmp") {
+            unlink(directory.appendingPathComponent(name).path)
+        }
+        rmdir(directory.path)
     }
 
     deinit { if inUse >= 0 { Darwin.close(inUse) } }

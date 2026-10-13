@@ -46,6 +46,12 @@ public struct ClusterPrefixCacheSettings: Equatable, Sendable {
     }
 
     /// The built-in root for `home` (no pinned cache volume).
+    /// The rank writes a record under `<root>/staging/<membership epoch>/` and
+    /// renames it into place (the runtime's `QwenStagePrefixDiskTier`
+    /// `stagingDirectoryName`); the orphan reaper sweeps dead epochs there.
+    public static let stagingDirectoryName = "staging"
+    public static func stagingRoot(root: URL) -> URL { root.appendingPathComponent(stagingDirectoryName, isDirectory: true) }
+
     public static func defaultRoot(home: URL) -> URL {
         root(cacheBase: home.appendingPathComponent("Library/Caches", isDirectory: true))
     }
@@ -240,6 +246,12 @@ public enum ClusterPrefixSSDReclaim {
             }
             do { try fileManager.removeItem(at: plan); report.removedPlans += 1 }
             catch { report.problems.append("\(name): \(error.localizedDescription)") }
+        }
+        // No rank is live here: nothing is being staged, so the staging root goes too.
+        let staging = ClusterPrefixCacheSettings.stagingRoot(root: root)
+        if report.keptLive == 0, fileManager.fileExists(atPath: staging.path) {
+            do { try fileManager.removeItem(at: staging) }
+            catch { report.problems.append("staging: \(error.localizedDescription)") }
         }
         if report.keptLive == 0, ((try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []).isEmpty,
            (try? fileManager.removeItem(at: root)) != nil {

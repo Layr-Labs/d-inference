@@ -11,11 +11,33 @@ import DarkbloomClusterRemote
 public enum ClusterOrphanSweep {
     /// Everything of a dead session is ended and removed; `liveEpochs` are
     /// sessions this process still holds (none for the commands).
-    public static func reap(liveEpochs: Set<String> = [], waitForContract: Bool = true) throws -> ClusterOrphanReaper.Report {
+    /// The pair's SSD-tier staging directories (half-written prompt-prefix
+    /// records, one directory per membership epoch) are swept with the rest:
+    /// a dead session's go, a live session's (`liveEpochs`) never.
+    public static func reap(liveEpochs: Set<String> = [], waitForContract: Bool = true,
+                            stagingRoots: [URL]? = nil) throws -> ClusterOrphanReaper.Report {
         let paths = try ClusterUserPaths()
         var limits = ClusterOrphanReaper.Limits()
         if !waitForContract { limits.contractGraceNanoseconds = 0 }
-        return ClusterOrphanReaper.sweep(liveEpochs: liveEpochs, deviceDirectory: paths.deviceDirectory, limits: limits)
+        return ClusterOrphanReaper.sweep(liveEpochs: liveEpochs, deviceDirectory: paths.deviceDirectory,
+                                         stagingRoots: stagingRoots ?? cacheStagingRoots(), limits: limits)
+    }
+
+    /// The staging roots of the pair's SSD tier on this Mac: under the root the
+    /// saved cache settings choose (`darkbloom cache set --directory`) and
+    /// under the built-in one, once each. Never fails: an unreadable
+    /// configuration leaves the built-in root.
+    public static func cacheStagingRoots(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                         providerConfiguration: URL? = try? ConfigManager.defaultConfigPath()) -> [URL] {
+        var roots: [URL] = []
+        if let providerConfiguration,
+           let settings = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: providerConfiguration) {
+            roots.append(settings.root)
+        }
+        roots.append(ClusterPrefixCacheSettings.defaultRoot(home: home))
+        var seen = Set<String>()
+        return roots.map { ClusterPrefixCacheSettings.stagingRoot(root: $0) }
+            .filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 
     /// One line for a member or supervisor log; nil when there was nothing

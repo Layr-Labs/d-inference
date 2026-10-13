@@ -390,6 +390,37 @@ struct PrefixDiskTierTests {
         #expect(!QwenStagePrefixDiskTier.teardownExtends(drained: false, lastCompletedWrite: began + 12, closeBegan: began, boundSeconds: 0))
     }
 
+    @Test func recordsAreStagedUnderTheSessionEpochAndEachCompletedWriteStampsProgress() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let epoch = UUID().uuidString.lowercased()
+        let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan-a", rank: 0,
+            stagingEpoch: epoch))
+        let staging = QwenStagePrefixDiskTier.stagingRoot(root: root).appendingPathComponent(epoch, isDirectory: true)
+        #expect(tier.stagingDirectory == staging)
+        let before = ProcessForcedExit.lastProgressUptimeNanoseconds
+        tier.persist(scope: "s", tokens: Array(0..<40), states: states(committed: 39, frontiers: [16], seed: 3), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 1)
+        // The completed record stamped the dead-man's progress word.
+        #expect(ProcessForcedExit.lastProgressUptimeNanoseconds > before)
+        // Nothing half-written stays: not in the rank directory, not in the staging directory.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).filter { $0.hasPrefix(".") }.isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: staging.path).isEmpty)
+        // A staging directory the reaper removed while idle is recreated by the next write.
+        try FileManager.default.removeItem(at: staging)
+        tier.persist(scope: "s", tokens: Array(100..<140), states: states(committed: 39, frontiers: [], seed: 4), blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 2)
+        // Close removes this session's staging directory; the records stay.
+        tier.close()
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(FileManager.default.fileExists(atPath: QwenStagePrefixDiskTier.stagingRoot(root: root).path))
+        // Only a lowercase UUID names a staging directory; anything else stages beside the record.
+        #expect(QwenStagePrefixDiskTier.stagingName(epoch: epoch.uppercased()) == nil)
+        #expect(QwenStagePrefixDiskTier.stagingName(epoch: "../x") == nil && QwenStagePrefixDiskTier.stagingName(epoch: nil) == nil)
+        // The staging root is not a plan directory: opening another plan never sweeps it.
+        #expect(!QwenStagePrefixDiskTier.isPlanDirectoryName(QwenStagePrefixDiskTier.stagingDirectoryName))
+    }
+
     @Test func onlyPromptFrontiersAreOfferedOrPersisted() throws {
         // The accepted timeline only (oMLX mtp-terminal-commit): a frontier at
         // or past the prompt (generated tokens) is never offered, and a state

@@ -259,6 +259,15 @@ final class EndpointBox: @unchecked Sendable {
         try Data(repeating:1,count:500).write(to:planA.appendingPathComponent("rank1/"+String(repeating:"1",count:32)+".dbpx"))
         try Data(repeating:1,count:10).write(to:planA.appendingPathComponent("rank1/.tmp.dbpx"))
         try Data(repeating:1,count:7).write(to:planB.appendingPathComponent("rank0/"+String(repeating:"2",count:32)+".dbpx"))
+        // The rank stages records under <root>/staging/<membership epoch>; the reaper removes a dead epoch's only.
+        let stagingRoot=ClusterPrefixCacheSettings.stagingRoot(root:tierRoot)
+        let deadEpoch=UUID().uuidString.lowercased(), liveEpoch=UUID().uuidString.lowercased()
+        for epoch in [deadEpoch,liveEpoch] {
+            try FileManager.default.createDirectory(at:stagingRoot.appendingPathComponent(epoch),withIntermediateDirectories:true)
+        }
+        try Data(repeating:1,count:3).write(to:stagingRoot.appendingPathComponent(deadEpoch+"/.half.1.tmp"))
+        let stale=ClusterOrphanReaper.staleStagingEntries(roots:[stagingRoot],liveEpochs:[liveEpoch],graceSeconds:0)
+        try require(stale.map(\.lastPathComponent)==[deadEpoch],"the reaper must name only the dead epoch's staging directory")
         let inspected=ClusterPrefixSSDInspection.inspect(root:tierRoot)
         try require(inspected.present && inspected.plans==2 && inspected.records==3 && inspected.bytes==1507 && inspected.ranks.count==3
             && inspected.line.hasPrefix("Cluster prefix tier: 2 plans, 3 records, 0.00 GB"),"cluster tier inspection miscounts")
@@ -271,9 +280,11 @@ final class EndpointBox: @unchecked Sendable {
         try require(reclaimed.removedPlans==1 && reclaimed.keptLive==1 && !reclaimed.rootRemoved && reclaimed.problems.isEmpty
             && !FileManager.default.fileExists(atPath:planA.path) && FileManager.default.fileExists(atPath:planB.path)
             && FileManager.default.fileExists(atPath:tierRoot.appendingPathComponent("not-ours").path),"reclaim removed the wrong plans")
+        try require(FileManager.default.fileExists(atPath:stagingRoot.path),"reclaim must keep the staging root while a rank is live")
         close(held)
         let laterReclaim=ClusterPrefixSSDReclaim.reclaim(root:tierRoot)
         try require(laterReclaim.removedPlans==1 && laterReclaim.keptLive==0 && !laterReclaim.rootRemoved,"a released plan must be reclaimed next time")
+        try require(!FileManager.default.fileExists(atPath:stagingRoot.path),"with no live rank the staging root is reclaimed too")
         try require(environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","installed plan did not set the collective progress limit")
         let local=try ClusterLocalOwnerConfiguration(installedDarkbloom:f.owner).launch()
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")

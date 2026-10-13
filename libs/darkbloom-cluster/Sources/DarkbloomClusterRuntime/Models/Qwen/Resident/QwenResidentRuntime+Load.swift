@@ -296,7 +296,9 @@ extension QwenResidentRuntime {
                         storageCommitmentSHA256: loadedStage.loaded.receipt.storageCommitmentSHA256,
                         rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
                         generationMode: mode.rawValue, prefillSchedule: configuration.prefillSchedule.rawValue),
-                    rank: collective.rank, fault: fault?.prefixDisk)
+                    rank: collective.rank,
+                    stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased(),
+                    fault: fault?.prefixDisk)
             }
             let lifecycle = QwenLayerStageResidentLifecycle()
             try control.loaded()

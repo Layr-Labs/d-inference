@@ -39,7 +39,7 @@ struct QwenStagePrefixDiskFault: Equatable {
 /// after the sliding TTL (30 minutes maximum, as the product's SSD tier).
 /// Writes stop below the free-space floor and the daily write cap.
 ///
-/// Staging: a record is written to `<root>/staging/<membership epoch>/` and
+/// Staging: a record is written to `<root>/staging/<membership epoch>/rank<r>/` and
 /// renamed into its rank directory when complete (same volume). The staging
 /// root is what the orphan reaper sweeps (`ClusterOrphanReaper.sweep`
 /// `stagingRoots`): a directory named by an epoch that is no longer live is
@@ -84,7 +84,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     let planDirectory: URL
     let directory: URL
     let rank: Int
-    /// `<root>/staging/<epoch>` for this session's half-written records; nil
+    /// `<root>/staging/<epoch>/rank<r>` for this session's half-written records
+    /// (per rank: two ranks of one session on one Mac share the root and the
+    /// epoch, and one's close must never touch the other's writes); nil
     /// without an epoch (tests): temporary files then sit in the rank directory.
     let stagingDirectory: URL?
     var fault: QwenStagePrefixDiskFault?
@@ -169,6 +171,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         directory = planDirectory.appendingPathComponent("rank\(rank)", isDirectory: true)
         stagingDirectory = Self.stagingName(epoch: stagingEpoch).map {
             Self.stagingRoot(root: root).appendingPathComponent($0, isDirectory: true)
+                .appendingPathComponent("rank\(rank)", isDirectory: true)
         }
         let start = DispatchTime.now().uptimeNanoseconds
         try Self.makePrivateDirectory(root)
@@ -394,6 +397,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         if let stagingDirectory {
             do {
                 try Self.makePrivateDirectory(Self.stagingRoot(root: root))
+                try Self.makePrivateDirectory(stagingDirectory.deletingLastPathComponent())
                 try Self.makePrivateDirectory(stagingDirectory)
                 stage = stagingDirectory
             } catch {
@@ -626,14 +630,16 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         return removed
     }
 
-    /// Removes this session's staging directory: only the temporary files the
-    /// writer makes, then the directory (left when anything else is in it).
+    /// Removes this rank's staging directory: only the temporary files the
+    /// writer makes, then the directory (left when anything else is in it),
+    /// then the epoch directory only when no other rank's is left in it.
     static func removeStaging(_ directory: URL) {
         for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         where name.hasPrefix(".") && name.hasSuffix(".tmp") {
             unlink(directory.appendingPathComponent(name).path)
         }
         rmdir(directory.path)
+        rmdir(directory.deletingLastPathComponent().path)
     }
 
     deinit { if inUse >= 0 { Darwin.close(inUse) } }

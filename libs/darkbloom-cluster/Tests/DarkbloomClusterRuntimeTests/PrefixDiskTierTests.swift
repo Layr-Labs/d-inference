@@ -396,8 +396,14 @@ struct PrefixDiskTierTests {
         let epoch = UUID().uuidString.lowercased()
         let tier = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan-a", rank: 0,
             stagingEpoch: epoch))
-        let staging = QwenStagePrefixDiskTier.stagingRoot(root: root).appendingPathComponent(epoch, isDirectory: true)
+        let epochDirectory = QwenStagePrefixDiskTier.stagingRoot(root: root).appendingPathComponent(epoch, isDirectory: true)
+        let staging = epochDirectory.appendingPathComponent("rank0", isDirectory: true)
         #expect(tier.stagingDirectory == staging)
+        // The other rank of the same session on the same Mac (shared root and epoch) stages beside it.
+        let peer = try #require(QwenStagePrefixDiskTier.open(configuration: configuration(root), planScope: "plan-a", rank: 1,
+            stagingEpoch: epoch))
+        peer.persist(scope: "s", tokens: Array(0..<40), states: states(committed: 39, frontiers: [16], seed: 5), blockTokens: block)
+        #expect(peer.drain(timeoutSeconds: 20) && peer.recordCount == 1)
         let before = ProcessForcedExit.lastProgressUptimeNanoseconds
         tier.persist(scope: "s", tokens: Array(0..<40), states: states(committed: 39, frontiers: [16], seed: 3), blockTokens: block)
         #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 1)
@@ -410,9 +416,13 @@ struct PrefixDiskTierTests {
         try FileManager.default.removeItem(at: staging)
         tier.persist(scope: "s", tokens: Array(100..<140), states: states(committed: 39, frontiers: [], seed: 4), blockTokens: block)
         #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 2)
-        // Close removes this session's staging directory; the records stay.
+        // Close removes this rank's staging directory and never the other rank's (found on real weights: rank 0's
+        // close removed rank 1's in-flight write when both staged in one directory); the records stay.
         tier.close()
         #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(FileManager.default.fileExists(atPath: epochDirectory.appendingPathComponent("rank1").path))
+        peer.close()
+        #expect(!FileManager.default.fileExists(atPath: epochDirectory.path))
         #expect(FileManager.default.fileExists(atPath: QwenStagePrefixDiskTier.stagingRoot(root: root).path))
         // Only a lowercase UUID names a staging directory; anything else stages beside the record.
         #expect(QwenStagePrefixDiskTier.stagingName(epoch: epoch.uppercased()) == nil)

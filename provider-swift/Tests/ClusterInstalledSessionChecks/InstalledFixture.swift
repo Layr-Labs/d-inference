@@ -21,7 +21,7 @@ struct InstalledFixture: Sendable {
                      generationMode: String? = nil, advertisedModes: [ClusterGenerationMode] = [.pipeline],
                      registered: (model: String, profile: String, publicID: String) = ("registered_qwen35_9b",
                         "registered_qwen35_9b_greedy_generation_v1", "fixture/public-model"),
-                     adapter: ClusterRuntimeAdapter = .qwen35Dense) throws -> Self {
+                     adapter: ClusterRuntimeAdapter = .qwen35Dense, standsForRegisteredArtifact: Bool = true) throws -> Self {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let model = root.appendingPathComponent("model", isDirectory: true)
         try FileManager.default.createDirectory(at: model, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -37,6 +37,13 @@ struct InstalledFixture: Sendable {
         var aggregate = SHA256()
         for (_,_,data) in inventory.sorted(by: { $0.0 < $1.0 }) { aggregate.update(data: Data(SHA256.hash(data: data))) }
         let artifact = aggregate.finalize().map { String(format:"%02x",$0) }.joined()
+        // A pair-serving grant rests on records of the installed artifact. The fixture's files are its own, so (in
+        // check builds only) its artifact stands for the registered artifact its model's records ran, unless a case
+        // asks for a capability no record ran.
+        let ran = ClusterPairServingGrants.records.first(where: { $0.runtimeModelID == registered.model })?.artifactSHA256
+        ClusterPairServingGrants.fixtureArtifacts.withLock {
+            $0[ClusterPairServingGrants.fixtureKey(artifact, registered.model)] = standsForRegisteredArtifact ? ran : nil
+        }
         let manifest = try bytes(["schema_version":1,"model_id":registered.publicID,"version":"fixture-v1","r2_prefix":"fixture/prefix",
             "aggregate_sha256":artifact,"total_size_bytes":inventory.reduce(0){$0+$1.2.count},"file_count":inventory.count,
             "created_at":"2026-09-15T00:00:00Z","files":inventory.map { ["path":$0.0,"role":$0.1,"sha256":hash($0.2),"size_bytes":$0.2.count] as [String:Any] }])

@@ -72,12 +72,14 @@ public enum ClusterPlacementFlow {
         // is planned (owner decision D4): the planner then ranks only the order
         // a start would accept.
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
-            runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID)
+            runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID,
+            artifactSHA256: capability.artifactSHA256)
         policy.leader = granted.leader
         // A model with a failed cross-cable check on record is planned only at
         // the shapes a check passed in (each rank's chip class, the cuts, the
         // mode): the universal rule of `ClusterPairQualificationRecords`.
-        let records = ClusterPairServingGrants.records(runtimeModelID: capability.runtimeModelID)
+        let records = ClusterPairServingGrants.records(runtimeModelID: capability.runtimeModelID,
+            artifactSHA256: capability.artifactSHA256)
         if records.restrictsShapes {
             policy.admitsShape = { chips, cuts, mode in
                 records.admits(chipClasses: chips.map { ClusterChipClass(chipName: $0) }, cuts: cuts, mode: mode)
@@ -132,11 +134,13 @@ public enum ClusterPlacementFlow {
     /// whose grant is withheld is still planned, with the refusal in `note`,
     /// since a plan also answers whether the pair could hold it.
     static func leaderUnderGrant(requested: String?, members: [(id: String, chip: String)],
-                                 runtimeModelID: String, publicModelID: String) throws -> (leader: String?, note: String?) {
+                                 runtimeModelID: String, publicModelID: String,
+                                 artifactSHA256: String? = nil) throws -> (leader: String?, note: String?) {
         guard members.count == 2 else { return (requested, nil) }
         let grant: ClusterPairServingGrant
         do {
-            grant = try ClusterPairServingGrants.grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
+            grant = try ClusterPairServingGrants.grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                                                       artifactSHA256: artifactSHA256)
         } catch let refusal as ClusterPairServingRefusal {
             return (requested, refusal.description + " A setup made from this plan is refused when it is started.")
         }

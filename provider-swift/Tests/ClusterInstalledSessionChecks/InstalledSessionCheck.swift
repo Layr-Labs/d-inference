@@ -541,6 +541,13 @@ final class EndpointBox: @unchecked Sendable {
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
         let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
         try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
+        // A grant rests on records of the installed artifact: the 27B's records ran its registered artifact, and an
+        // installed capability with any other artifact (here the fixture's own files) is refused before anything starts.
+        let foreign=try InstalledFixture.make(root:f.root.appendingPathComponent("q27-foreign"),probe:f.probe,owner:f.owner,worker:f.worker,
+            advertisedModes:allModes,registered:model,standsForRegisteredArtifact:false)
+        let other=try refusal{_ = try foreign.prepare()}
+        try require(other.contains("registered_qwen38_27b") && other.contains("artifact") && other.contains(String(foreign.capability.artifactSHA256.prefix(12)))
+            && other.contains("policy decision"),"a capability whose artifact no record ran was not refused: \(other)")
     }
     /// The installed path starts workers for the adapter of every granted
     /// model, each with the rank environment its arithmetic policy requires

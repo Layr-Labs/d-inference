@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Darwin
 import DarkbloomClusterProtocol
 
@@ -191,6 +192,8 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         /// The model's grant restricts shapes, and no passed check ran this
         /// rank's class at this rank with these cuts in this mode.
         case shapeNotQualified(rank: Int, chipClass: ClusterChipClass, cuts: [Int], mode: ClusterGenerationMode, qualified: String)
+        /// The model has records, but none of them ran the installed artifact.
+        case artifactNotQualified(installed: String, qualified: [String])
     }
     public let runtimeModelID: String
     public let publicModelID: String
@@ -216,6 +219,11 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
                 + "rank \(rank) of this placement is that rank and runs on \(chipClass.rawValue). "
                 + "A chip class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not change it. "
                 + "Choose a placement whose ranks run on the listed classes; a class is added only after a cross-cable check on it passes." + policy
+        case .artifactNotQualified(let installed, let qualified):
+            return model + " is installed as artifact \(installed.prefix(12)), and its cross-cable qualification records ran "
+                + (qualified.isEmpty ? "no artifact" : "only " + qualified.map { String($0.prefix(12)) }.joined(separator: ", "))
+                + ". A grant rests on runs of the very artifact a pair serves; another artifact of the same model (another "
+                + "quantization, a re-upload) needs its own passing check." + policy
         case .shapeNotQualified(let rank, let chipClass, let cuts, let mode, let qualified):
             return model + " diverged from its single-Mac reference in a cross-cable check at some placement, so a pair serves it only "
                 + "at placements a check passed in (each rank's chip class, the cut, the mode): \(qualified). "
@@ -258,6 +266,21 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
     /// The shapes of each model's passed and diverged records, de-duplicated.
     let passedShapes: [String: [ClusterPairServingQualification]]
     let failedShapes: [String: [ClusterPairServingQualification]]
+    /// The records these decisions were made from.
+    let records: [ClusterPairQualificationRecord]
+
+    /// The decisions the records of one artifact give: what a pair serving
+    /// that artifact may rest on. A record of the same model run on another
+    /// artifact (another quantization, or a record labelled with the wrong
+    /// model) grants nothing here.
+    public func scoped(toArtifact artifactSHA256: String) -> ClusterPairServingDecisions {
+        .init(records: records.filter { $0.artifactSHA256 == artifactSHA256 })
+    }
+
+    /// The artifacts a model's usable records ran, sorted.
+    public func artifacts(runtimeModelID: String) -> [String] {
+        Set(records.filter { $0.runtimeModelID == runtimeModelID }.map(\.artifactSHA256)).sorted()
+    }
 
     /// A model's records as shapes; a model with no record restricts none.
     public func shapes(runtimeModelID: String) -> ClusterPairQualificationRecords {
@@ -265,6 +288,7 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
     }
 
     public init(records: [ClusterPairQualificationRecord]) {
+        self.records = records
         var passed: [String: [ClusterPairServingQualification]] = [:], passedRecords: [String: Int] = [:]
         var diverged: [String: [(ClusterPairQualificationRecord, [ClusterChipClass])]] = [:]
         var ignored = 0
@@ -364,29 +388,68 @@ public enum ClusterPairServingGrants {
     /// Registered models whose records diverged, and why.
     public static var withheld: [String: String] { decisions.withheld }
 
-    /// Every check of a model on record, passed and failed, in each
-    /// qualification's shape, from the bundled records
-    /// (`ClusterPairServingDecisions.shapes`).
-    public static func records(runtimeModelID: String,
-                               decisions: ClusterPairServingDecisions = decisions) -> ClusterPairQualificationRecords {
-        decisions.shapes(runtimeModelID: runtimeModelID)
+    /// The artifact a record of `runtimeModelID` must have run for an
+    /// installed capability whose artifact is `installed`: the same digest.
+    /// Only a check built from these sources with
+    /// `DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS` (never a product build) can name
+    /// the registered artifact a fixture's own files stand for.
+    static func qualifyingArtifact(for installed: String, runtimeModelID: String) -> String {
+#if DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS
+        return fixtureArtifacts.withLock { $0[fixtureKey(installed, runtimeModelID)] } ?? installed
+#else
+        return installed
+#endif
     }
 
-    /// The grant for a model a pair may serve; a refusal for every other model.
-    public static func grant(runtimeModelID: String, publicModelID: String,
+#if DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS
+    /// Check builds only: (fixture artifact, model) -> the registered artifact it stands for.
+    public static let fixtureArtifacts = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+    public static func fixtureKey(_ installed: String, _ runtimeModelID: String) -> String { runtimeModelID + "|" + installed }
+#endif
+
+    /// `decisions` narrowed to the records of the installed artifact, when one
+    /// is given; nil keeps every record (a plan read from profiles only).
+    static func decisions(_ decisions: ClusterPairServingDecisions, artifactSHA256: String?,
+                          runtimeModelID: String) -> ClusterPairServingDecisions {
+        artifactSHA256.map { decisions.scoped(toArtifact: qualifyingArtifact(for: $0, runtimeModelID: runtimeModelID)) } ?? decisions
+    }
+
+    /// Every check of a model on record, passed and failed, in each
+    /// qualification's shape, from the bundled records
+    /// (`ClusterPairServingDecisions.shapes`), of the installed artifact when
+    /// one is given.
+    public static func records(runtimeModelID: String, artifactSHA256: String? = nil,
+                               decisions: ClusterPairServingDecisions = decisions) -> ClusterPairQualificationRecords {
+        Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID).shapes(runtimeModelID: runtimeModelID)
+    }
+
+    /// The grant for a model a pair may serve; a refusal for every other
+    /// model. With `artifactSHA256` (the installed capability's), only the
+    /// records of that artifact count: a model whose records ran another
+    /// artifact is refused for it.
+    public static func grant(runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
                              decisions: ClusterPairServingDecisions = decisions) throws -> ClusterPairServingGrant {
-        if let grant = decisions.granted.first(where: { $0.runtimeModelID == runtimeModelID }) { return grant }
-        throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-            reason: decisions.withheld[runtimeModelID].map { .withheld($0) } ?? .noGrant)
+        let scoped = Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID)
+        if let grant = scoped.granted.first(where: { $0.runtimeModelID == runtimeModelID }) { return grant }
+        if let why = scoped.withheld[runtimeModelID] {
+            throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .withheld(why))
+        }
+        let ran = decisions.artifacts(runtimeModelID: runtimeModelID)
+        if let artifactSHA256, !ran.isEmpty {
+            throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                reason: .artifactNotQualified(installed: artifactSHA256, qualified: ran))
+        }
+        throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noGrant)
     }
 
     /// One rank of a placement, checked on the Mac that runs it with that
     /// Mac's own chip class. Every rank checked this way is the whole placement.
     public static func requireRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass?,
-                                   runtimeModelID: String, publicModelID: String,
+                                   runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
                                    cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil,
                                    decisions: ClusterPairServingDecisions = decisions) throws {
-        let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, decisions: decisions)
+        let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, artifactSHA256: artifactSHA256,
+                              decisions: decisions)
         func refuse(_ reason: ClusterPairServingRefusal.Reason) -> ClusterPairServingRefusal {
             .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: reason)
         }
@@ -400,7 +463,7 @@ public enum ClusterPairServingGrants {
         }
         // A shape-restricted grant needs the placement's shape: a caller that
         // does not give it is refused rather than admitted at any cut.
-        let checks = records(runtimeModelID: runtimeModelID, decisions: decisions)
+        let checks = records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions)
         if checks.restrictsShapes {
             guard let cuts, let mode, checks.admitsRank(rank, of: rankCount, chipClass: chipClass, cuts: cuts, mode: mode) else {
                 throw refuse(.shapeNotQualified(rank: rank, chipClass: chipClass, cuts: cuts ?? [], mode: mode ?? .pipeline,

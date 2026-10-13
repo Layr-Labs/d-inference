@@ -550,8 +550,18 @@ markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
 call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
 
-Only qualified Nemotron Lightning listings absorb a stray `</think>` already
-in content state, leaving preceding text as content and tool arguments opaque.
+Only qualified Nemotron Lightning listings and LFM2.5 (`lfm2_moe`) absorb a
+stray `</think>` already in content state, leaving preceding text as content
+and tool arguments opaque.
+LFM2.5 is reasoning-only (its generation prompt ends in `<think>`), so
+`ToolChoiceEnforcementPolicy.usesLFM2ReasoningChannels` routes its text through
+`NativeChannelSplitter` seeded in reasoning state: reasoning is split before
+pythonic tool parsing, a call written inside reasoning is never invoked, and
+`<|tool_call_start|>`…`<|tool_call_end|>` frames are opaque to reasoning
+markers. This does not admit forced tool choice: `required`/named still fail
+closed and the tool-constraint capability is not advertised. Thinking-disable
+controls do not change its prompt; reasoning is still returned in the
+reasoning field.
 `ToolChoiceEnforcementPolicy.absorbsStrayThinkClose` gates the behavior by exact
 listing and `nemotron_h` type; `MultiModelBatchSchedulerEngine.makeEventStream`
 passes it through `NativeToolStreamRouter` to the splitter. Other native-channel

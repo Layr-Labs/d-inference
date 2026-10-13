@@ -860,10 +860,10 @@ private final class ServerSession: @unchecked Sendable {
     /// the last line it wrote (bounded, control characters removed): e.g. a
     /// load its memory gate refused. Nil while the owner runs (after waiting
     /// up to `nanoseconds` for it to end) or when its cleanup was proven.
-    static func ownerCause(_ endpoint: ClusterRemoteWorkerEndpoint, waitingUpTo nanoseconds: UInt64) -> String? {
+    static func ownerCause(_ endpoint: ClusterRemoteWorkerEndpoint, waitingUpTo nanoseconds: UInt64, evenWithCleanup: Bool = false) -> String? {
         let until = DispatchTime.now().uptimeNanoseconds + nanoseconds
         while endpoint.ownerTermination == nil && DispatchTime.now().uptimeNanoseconds < until { Thread.sleep(forTimeInterval: 0.01) }
-        guard let termination = endpoint.ownerTermination, !endpoint.nativeCleanupObserved else { return nil }
+        guard let termination = endpoint.ownerTermination, evenWithCleanup || !endpoint.nativeCleanupObserved else { return nil }
         // Its exit is recorded just before its last output is drained (itself
         // bounded at two seconds): wait for that, no longer.
         let drained = DispatchTime.now().uptimeNanoseconds + 2_500_000_000
@@ -872,7 +872,9 @@ private final class ServerSession: @unchecked Sendable {
             .split(whereSeparator: \.isNewline)
             .map { String($0.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) }) }
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .last(where: { !$0.isEmpty })
+            // Bookkeeping records (the forced-exit and orphan-wired lines)
+            // are not the reason; the line before them is.
+            .last(where: { !$0.isEmpty && !$0.contains("darkbloom-forced-exit-v1") && !$0.contains("darkbloom-orphan-wired-v1") })
         return "its owner \(ClusterRemoteWorkerEndpoint.describe(termination))" + (words.map { ": " + String($0.prefix(160)) } ?? "")
     }
 
@@ -894,12 +896,14 @@ private final class ServerSession: @unchecked Sendable {
     /// Relays events, enforces the leader's lease, then reports cleanup and release.
     private func pumpLoop() {
         guard let endpoint = lock.withLock({ self.endpoint }) else { return }
+        var sawReady = false
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
             let (lease, failed) = lock.withLock { (leaderLease, sendFailed) }
             if now >= lease || failed { fence(reason: failed ? "link send failed" : "leader lease expired") }
             do {
                 let event = try endpoint.receiveWorkerEvent(until: now + 100_000_000)
+                if case .ready = event.event { sawReady = true }
                 let payload = try ClusterWorkerCodec.encode(event)
                 send({ $0.worker = payload }, kind: .event)
             } catch ClusterWorkerOwnerError.deadline {
@@ -915,6 +919,13 @@ private final class ServerSession: @unchecked Sendable {
             }
         }
         if endpoint.nativeCleanupObserved {
+            // A worker that ended before it was ever ready (its load refused,
+            // say) left a clean proof but no reason anywhere: say how, in its
+            // owner's words, before the proof (S24).
+            if !sawReady, let cause = Self.ownerCause(endpoint, waitingUpTo: 3_000_000_000, evenWithCleanup: true) {
+                server.emit(.fenced(session: id, reason: "follower worker ended before it was ready: " + cause))
+                send({ $0.detail = Self.bounded("worker ended before it was ready: " + cause, bytes: 250) }, kind: .invalidated)
+            }
             send({ _ in }, kind: .cleanup)
             server.emit(.cleanup(session: id))
         } else if let cause = Self.ownerCause(endpoint, waitingUpTo: 0) {

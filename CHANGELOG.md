@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop earnings while signed out
+
+- Ask a linked Mac to sign in when its Darkbloom account session is signed out or expired, instead of showing "Loading settled earnings…" indefinitely on Earnings, Home's daily earnings chart and the Models earnings order.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

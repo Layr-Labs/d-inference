@@ -12,7 +12,7 @@ export function FleetEarnings({
   backend: BackendState;
   onEarnings: () => void;
 }) {
-  const { data, error } = useInsights(backend.state!);
+  const { data, error, available } = useInsights(backend.state!);
   const week = backend.cloud?.week_micro_usd;
   const complete = backend.cloud?.earnings_complete !== false;
   const since = backend.cloud?.earnings_since
@@ -59,7 +59,13 @@ export function FleetEarnings({
         <EarningsTimeline days={data.days} metric="earnings" partial={!data.history_complete} />
       ) : (
         <p className={styles.emptyChart}>
-          {backend.state!.linked ? (error ? 'Unavailable' : 'Loading…') : 'Account not linked'}
+          {!backend.state!.linked
+            ? 'Account not linked'
+            : !available
+              ? 'Sign in to see earnings'
+              : error
+                ? 'Unavailable'
+                : 'Loading…'}
         </p>
       )}
       {data && error && (

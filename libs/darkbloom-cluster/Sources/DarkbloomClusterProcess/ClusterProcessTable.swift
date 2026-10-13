@@ -75,6 +75,48 @@ public enum ClusterProcessTable {
         return Int32(info.pbi_ppid)
     }
 
+    /// The UNIX-domain socket paths bound by `identifier`'s open descriptors,
+    /// read from the kernel's descriptor table without touching the sockets.
+    /// Empty for a process this user cannot inspect. A path stays listed
+    /// while the descriptor is open, even after a `shutdown`, and leaves the
+    /// list when the descriptor is closed or the process ends.
+    public static func boundUnixSocketPaths(of identifier: Int32) -> [String] {
+        guard identifier > 0 else { return [] }
+        let size = proc_pidinfo(identifier, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return [] }
+        let count = Int(size) / MemoryLayout<proc_fdinfo>.stride + 16
+        var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: count)
+        let filled = descriptors.withUnsafeMutableBytes { proc_pidinfo(identifier, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count)) }
+        guard filled > 0 else { return [] }
+        var paths: [String] = []
+        for entry in descriptors.prefix(Int(filled) / MemoryLayout<proc_fdinfo>.stride) where entry.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let wanted = Int32(MemoryLayout<socket_fdinfo>.stride)
+            guard proc_pidfdinfo(identifier, entry.proc_fd, PROC_PIDFDSOCKETINFO, &info, wanted) == wanted,
+                  info.psi.soi_kind == SOCKINFO_UN else { continue }
+            let path = withUnsafePointer(to: &info.psi.soi_proto.pri_un.unsi_addr.ua_sun.sun_path) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: pointer.pointee)) { String(cString: $0) }
+            }
+            if !path.isEmpty { paths.append(path) }
+        }
+        return paths
+    }
+
+    /// Every UNIX-domain socket path bound by a process this user can
+    /// inspect, with the process holding it.
+    public static func boundUnixSocketPaths() -> [String: Int32] {
+        let capacity = Int(proc_listallpids(nil, 0))
+        guard capacity > 0 else { return [:] }
+        var identifiers = [Int32](repeating: 0, count: capacity + 64)
+        let filled = identifiers.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard filled > 0 else { return [:] }
+        var result: [String: Int32] = [:]
+        for identifier in identifiers.prefix(Int(filled)) where identifier > 0 {
+            for path in boundUnixSocketPaths(of: identifier) where result[path] == nil { result[path] = identifier }
+        }
+        return result
+    }
+
     static func executableName(_ identifier: Int32) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
         guard proc_pidpath(identifier, &buffer, UInt32(buffer.count)) > 0 else { return nil }

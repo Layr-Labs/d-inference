@@ -180,7 +180,14 @@ final class ClusterOrphanReaperTests: XCTestCase {
         let deadFD = bind(dead + "/channel"); close(deadFD) // the file stays, nobody listens
         let liveFD = bind(live + "/channel"); XCTAssertEqual(listen(liveFD, 1), 0)
         defer { close(liveFD) }
-        XCTAssertEqual(ClusterOrphanReaper.staleBootstrapDirectories(under: root.path), [dead, empty])
+        let later = Date().timeIntervalSince1970 + 10
+        XCTAssertEqual(ClusterOrphanReaper.staleBootstrapDirectories(under: root.path, now: later), [dead, empty])
+        // A directory just made is never stale (its listener may not have bound yet).
+        XCTAssertEqual(ClusterOrphanReaper.staleBootstrapDirectories(under: root.path), [])
+        // Nothing connected to the live listener: its pending accept queue is empty (a connect from the
+        // check would have been accepted in place of the child the listener waits for).
+        var pending = pollfd(fd: liveFD, events: Int16(POLLIN), revents: 0)
+        XCTAssertEqual(poll(&pending, 1, 0), 0, "the stale check connected to a live listener")
         XCTAssertFalse(ClusterOrphanReaper.removeBootstrapDirectory(dead), "only the product prefix is ever removed")
     }
 

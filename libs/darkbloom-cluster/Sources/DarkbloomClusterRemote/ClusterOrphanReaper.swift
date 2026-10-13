@@ -26,8 +26,10 @@ import DarkbloomClusterProtocol
 ///   still holds) is never touched either, whatever its parent.
 /// - A stranded device journal is cleared through the existing recovery,
 ///   which first proves nothing it names is running.
-/// - Bootstrap listener directories whose socket no longer answers are
-///   removed; a socket that answers belongs to a live owner.
+/// - Bootstrap listener directories whose socket no process of this user has
+///   bound are removed. The check reads the kernel's descriptor tables and
+///   never connects: a connect would be accepted by a live listener in place
+///   of the child it waits for and fail that launch.
 /// - Cache staging roots (supplied by the caching tier) lose every entry
 ///   named by an epoch that is not live, once it is older than the grace.
 ///
@@ -211,43 +213,33 @@ public enum ClusterOrphanReaper {
         return results
     }
 
-    /// Bootstrap listener directories of this user whose socket no longer
-    /// answers. A connect that is refused or finds no socket proves the owner
-    /// that made it is gone; one that is accepted belongs to a live owner.
-    public static func staleBootstrapDirectories(under root: String = "/private/tmp") -> [String] {
+    /// Bootstrap listener directories of this user whose socket no process
+    /// of this user has bound. The kernel's descriptor tables decide; nothing
+    /// connects: a connect would be accepted by a live listener in place of
+    /// the child it waits for, and the listener (which checks its peer) would
+    /// then fail that launch. A directory younger than `minimumAgeSeconds` is
+    /// never stale: its listener may be between creating it and binding.
+    public static func staleBootstrapDirectories(under root: String = "/private/tmp", minimumAgeSeconds: Double = 2,
+                                                 boundPaths: [String: Int32]? = nil,
+                                                 now: Double = Date().timeIntervalSince1970) -> [String] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: root) else { return [] }
         let prefix = String(bootstrapDirectoryPrefix.split(separator: "/").last!)
+        let bound = boundPaths ?? ClusterProcessTable.boundUnixSocketPaths()
+        // No bound socket at all means the tables could not be read: then
+        // nothing is called stale (a live listener's directory is never removed
+        // on a guess).
+        guard boundPaths != nil || !bound.isEmpty else { return [] }
         var stale: [String] = []
         for name in names.sorted() where name.hasPrefix(prefix) {
             let directory = root + "/" + name
             var information = stat()
             guard lstat(directory, &information) == 0, information.st_mode & S_IFMT == S_IFDIR,
                   information.st_uid == geteuid() else { continue }
-            if !socketAnswers(directory + "/channel") { stale.append(directory) }
+            let created = Double(information.st_ctimespec.tv_sec) + Double(information.st_ctimespec.tv_nsec) / 1e9
+            guard now - created >= minimumAgeSeconds else { continue }
+            if bound[directory + "/channel"] == nil { stale.append(directory) }
         }
         return stale
-    }
-
-    /// True only when a listener accepted the connection.
-    static func socketAnswers(_ path: String) -> Bool {
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let capacity = MemoryLayout.size(ofValue: address.sun_path)
-        guard path.utf8.count < capacity else { return false }
-        withUnsafeMutablePointer(to: &address.sun_path) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: capacity) { base in
-                _ = path.withCString { strncpy(base, $0, capacity - 1) }
-            }
-        }
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { Darwin.close(fd) }
-        var timeout = timeval(tv_sec: 1, tv_usec: 0)
-        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        let connected = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
-        }
-        return connected == 0
     }
 
     /// Removes a stale bootstrap directory (its socket file and the directory

@@ -24,6 +24,11 @@ extension CoordinatorClient {
                   available: config.runtimeCapabilities),
               let membership = try? installation.membership,
               config.clusterMembership == membership else { throw NativePairMemberError.unconfigured }
+        adoptNativePairMember(control)
+    }
+
+    /// Makes `control` this client's member control.
+    internal func adoptNativePairMember(_ control: NativePairMemberControl) {
         nativePairMember = control
     }
 

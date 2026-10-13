@@ -6,10 +6,10 @@ import Testing
 
 // The provider loop loads a tiny synthetic model through the real loader:
 // path lookup in the model cache, weight hash, config and weights, tokenizer,
-// sizing, the real CBv2 engine and slot install. The load-admission budget is
-// scripted (ScriptedProviderMemory). The two measured headroom checks after
-// the load read the real machine; the tiny model leaves that headroom as it
-// was.
+// sizing, the real CBv2 engine and slot install. The KV budget's memory sample
+// is scripted (ScriptedProviderMemory). The load admission and the two
+// measured headroom checks after the load read that sample, so the result
+// does not depend on the free memory of the machine.
 
 extension TinyModelLoadTests {
     @Suite("Provider loop")

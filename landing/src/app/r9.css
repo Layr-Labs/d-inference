@@ -216,7 +216,7 @@
 .grid-map i,
 .grid-map i.is-active {
   border: 0;
-  box-shadow: inset 0 0 0 calc(1px / var(--grid-zoom, 1)) rgba(53, 99, 255, .28);
+  box-shadow: inset 0 0 0 var(--grid-line, 1px) rgba(53, 99, 255, .28);
   transition: background 400ms ease, opacity 400ms ease;
 }
 
@@ -246,8 +246,8 @@
 .grid-map i.is-story-target {
   background: rgb(var(--story-tile-color, 255 255 255) / var(--tile-white, 0));
   box-shadow:
-    inset 0 0 0 calc(1px / var(--grid-zoom, 1)) rgb(var(--story-tile-color, 255 255 255) / var(--tile-white, 0)),
-    inset 0 0 0 calc(1px / var(--grid-zoom, 1)) rgba(53, 99, 255, .28);
+    inset 0 0 0 var(--grid-line, 1px) rgb(var(--story-tile-color, 255 255 255) / var(--tile-white, 0)),
+    inset 0 0 0 var(--grid-line, 1px) rgba(53, 99, 255, .28);
   transition: none;
   z-index: 10;
 }
@@ -399,13 +399,13 @@
 }
 
 .network-sticky[data-exiting="true"] .grid-map i:not(.is-story-target) {
-  opacity: clamp(0, calc((.72 - var(--grid-exit, 0)) * 2.2), 1);
+  opacity: clamp(0, calc((.72 - var(--tile-exit, 0)) * 2.2), 1);
 }
 
 .network-sticky[data-exiting="true"] .grid-map i.is-story-target {
   /* Hand the tile to the untransformed portal before browser resampling can
      soften a tiny DOM cell into a glowing edge at high zoom. */
-  opacity: clamp(0, calc((.48 - var(--grid-exit, 0)) * 50), 1) !important;
+  opacity: clamp(0, calc((.48 - var(--tile-exit, 0)) * 50), 1) !important;
 }
 
 .story-portal {
@@ -785,6 +785,13 @@
 
   .network-route-cta { font-size: 16px; margin-top: 14px; }
 
+  /* Full-width copy over a film that shrinks toward the centre ends up half
+     over black; on phones it leaves before the film has visibly shrunk. */
+  .hero-copy { opacity: clamp(0, calc(1 - var(--hero-exit) * 6), 1); }
+
+  /* iOS zooms the page into any focused field under 16px. */
+  .prompt-form input { font-size: 16px; }
+
   /* Older mobile rules in globals.css transition the shell's transform over
      820ms, which lags the scroll-scrubbed intro scale and the dive math. */
   .grid-world {
@@ -811,7 +818,9 @@
     height: auto;
     left: 19px;
     right: 16px;
-    top: max(42.370892svh, 300px);
+    /* Clear the three-line route headline and its CTA (narrative top +
+       130px copy + 34px CTA) by 32px, so the CTA never sits on the panel. */
+    top: max(42.370892svh, calc(clamp(120px, 19.6svh, 167px) + 196px));
     transform: translate3d(0, calc((1 - var(--chat-reveal, 0)) * 110% + var(--chat-fold, 0) * 110%), 0);
     width: auto;
   }

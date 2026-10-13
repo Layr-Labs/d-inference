@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 
-export async function startSiteServer() {
+export async function startSiteServer({ env = {} } = {}) {
   let origin;
   // Use localhost consistently: Next normalizes loopback IPs in request URLs.
   const server = spawn(process.execPath, [
@@ -18,6 +18,7 @@ export async function startSiteServer() {
       DARKBLOOM_API_KEY: "",
       DARKBLOOM_STORY_WEBHOOK_URL: "",
       DARKBLOOM_STORY_WEBHOOK_TOKEN: "",
+      ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

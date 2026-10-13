@@ -103,7 +103,7 @@ extension CoordinatorClient {
     // ProviderCore; the production gate is tested separately.
     func attachFixtureControl(_ control: NativePairMemberControl) throws -> NativePairMemberConnection {
         guard sessionRegistered, let nonce = memberNegotiation?.nonce, let connection = nwConnection else { throw NativePairMemberError.inactive }
-        nativePairMember = control
+        adoptNativePairMember(control)
         let value = try control.attach(nonce: nonce, connection: connection)
         nativePairConnection = value; return value
     }

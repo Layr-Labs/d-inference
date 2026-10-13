@@ -28,6 +28,8 @@ import Darwin
     static func main() {
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(240); defer { alarm(0) }
         let arguments = CommandLine.arguments
+        // The member side of the cache-control check, run as a second process.
+        if arguments.count > 1, arguments[1] == "--member-cache-child" { memberCacheChild(Array(arguments.dropFirst(2))) }
         guard arguments.count == 7 else {
             print("usage: ClusterConsoleCheck probe owner worker session-stand-in wiring-table adapter-source")
             exit(64)
@@ -73,6 +75,7 @@ import Darwin
             ("wizard: reducer, every step, failure and fix", wizardReducer),
             ("wizard: pairing over the link (S17), reducer and pseudo-terminal", wizardLinkPairing),
             ("wizard: step 4 over the paired link (report, facts, inbox delivery), no SSH", wizardLinkExchange),
+            ("member cache control over the link: settings sync and reclaim on unpair, member in a second process", memberCacheControl),
             ("wizard: ports chosen on the leader, not fixed", wizardPorts),
             ("wizard: screen at every size, in colour and ASCII", wizardScreen),
             ("wizard: what each step says, and the planner on captured readings", wizardContent),

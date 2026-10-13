@@ -79,7 +79,17 @@ the always-on LaunchAgent (S18) is not in this build yet.
 
 `darkbloom cluster link --remove` on each Mac restores the cable port's earlier
 network settings (one approval). `darkbloom cluster pair --forget <pin>` removes
-a pairing.
+a pairing. Run on the leader, it first tells the other Mac over the cable, which
+removes the pair's prompt-cache records (its own single-Mac cache stays) and
+stops its part; each Mac also removes its own pair records when it unpairs.
+
+## Cache settings
+
+The leader's cache choices (`darkbloom cache set`, the prefix cache switch, the
+daily write limit, the TTL and an explicit disk budget) reach the other Mac
+through its cluster service, which applies them to the ranks it starts. Each Mac
+keeps its own cache folder and, without an explicit budget, sizes the pair's
+cache from its own free space.
 
 ## Not yet in this build
 
@@ -90,5 +100,6 @@ a pairing.
   running `darkbloom cluster` once after a restart, and macOS's Local Network
   permission for a service started outside Terminal, come with the signed build.
 - Public serving through Darkbloom is not offered by the onboarding yet.
-- The installer does not yet place cluster model folders or the cluster worker;
-  `--model-dir` and `--worker` say where they are.
+- The installer does not yet place cluster model folders; `--model-dir` says
+  where they are. A release ships the cluster worker inside Darkbloom.app
+  (`Contents/Helpers`); `--worker` names another one (a development build).

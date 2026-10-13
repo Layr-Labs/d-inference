@@ -43,11 +43,41 @@ extension ClusterPrefixCacheSettings {
     /// the setup commands report the configuration problem themselves).
     public static func installProduct(providerConfiguration: URL, environment: [String: String] = ProcessInfo.processInfo.environment) {
         let settings = (try? savedCacheSettings(providerConfiguration: providerConfiguration)) ?? CacheSettings()
-        DistributedInstalledPrefixSSD.installProductSettings(product(cacheSettings: settings, environment: environment))
+        DistributedInstalledPrefixSSD.installProductSettings(
+            withLeaderChoices(product(cacheSettings: settings, environment: environment)))
+    }
+
+    /// On a member: its own settings with the cache settings its leader
+    /// synced over the link applied (`ClusterMemberCacheControl`); on a
+    /// leader, a single Mac, or with nothing synced, its own unchanged.
+    public static func withLeaderChoices(_ own: ClusterPrefixCacheSettings,
+                                         paths: ClusterUserPaths? = try? ClusterUserPaths()) -> ClusterPrefixCacheSettings {
+        guard let paths else { return own }
+        let setup = ClusterSetupPaths(paths: paths)
+        let leadership = try? ClusterSetupStore(paths: setup).readRecord().leadership
+        let followed = leadership?.role == ClusterOnboardingRole.member.rawValue ? leadership?.leaderPin : nil
+        return ClusterMemberCacheControl.effective(own: own, store: .init(directory: setup.directory), followedLeaderPin: followed)
     }
 
     /// The resolved settings for status and reclaim (no installation).
     public static func resolved(providerConfiguration: URL, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> ClusterPrefixCacheSettings {
         product(cacheSettings: try savedCacheSettings(providerConfiguration: providerConfiguration), environment: environment)
+    }
+}
+
+extension ClusterCacheSettingsSync {
+    /// What a leader syncs to its members: its CHOICES only, never a value
+    /// derived from its own disk. The prefix cache gate, the daily write cap
+    /// (saved or switch), the TTL, and a disk budget only when one is set
+    /// explicitly (`DARKBLOOM_PREFIX_CACHE_DISK_GB`): otherwise each member
+    /// keeps the product's rule on its own disk (half its free space).
+    public static func leaderChoices(cacheSettings: CacheSettings,
+                                     environment: [String: String] = ProcessInfo.processInfo.environment) -> ClusterCacheSettingsSync {
+        let budget = environment[PrefixCachePolicy.diskBudgetEnvironmentFlag].flatMap(Double.init)
+            .flatMap { $0 > 0 && $0.isFinite && $0 <= 16_384 ? $0 : nil }
+        return .init(prefixCacheEnabled: PrefixCachePolicy.isGloballyEnabled(environment: environment),
+                     dailyWriteGB: Double(CacheStorage.dailyWriteBytes(settings: cacheSettings, environment: environment)) / 1_000_000_000,
+                     diskBudgetGB: budget,
+                     ttlSeconds: Int(SSDPrefixCachePolicy.ttlSeconds(environment: environment)))
     }
 }

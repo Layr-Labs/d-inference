@@ -91,7 +91,7 @@ system setting:
 |---|---|---|
 | Local Network privacy | The follower dials the leader over the Thunderbolt link (a local network address). A member started by hand in a shell runs under that shell's approval (or a remote-login exemption on a bench rig), which is why it works there while the same binary started by launchd is refused (`Local network prohibited`) until Darkbloom itself is approved. | The LaunchAgent runs the executable inside `Darkbloom.app` (the recorded path is the resolved one, not the `~/.darkbloom/bin` symlink); the app carries `CFBundleIdentifier` `io.darkbloom.provider` and `NSLocalNetworkUsageDescription`, and is Developer-ID signed, notarized and stapled. The approval follows that signed identity, so updates keep it. The owner and worker processes the member starts inherit it. No configuration profile can pre-approve Local Network, so one click per Mac is the minimum. |
 | Cluster link setup (administrator approval) | RDMA over Thunderbolt needs an IPv4 address on the cable port itself (JACCL refuses a port without an IPv4-mapped GID); macOS leaves the port in the Thunderbolt Bridge with none. | Done once per Mac from step 2 of `darkbloom cluster` (or `darkbloom cluster link --fix`): one macOS administrator approval adds Darkbloom's own link service to the port. macOS keeps the service through reboots and updates; the supervisor only waits for it at boot and never changes it. |
-| Application firewall (when on) | A rank that listens: by default only the leader (rank 0) listens; a follower only dials out. | With **Automatically allow downloaded signed software** on (the macOS default), any Developer-ID-signed program may accept connections without an alert. The release signs the main executable and, when shipped in `Contents/Helpers`, the cluster worker and placement tool under their own identifiers. An ad-hoc build is not covered and raises one alert per new build. |
+| Application firewall (when on) | A rank that listens: by default only the leader (rank 0) listens; a follower only dials out. | With **Automatically allow downloaded signed software** on (the macOS default), any Developer-ID-signed program may accept connections without an alert. The release signs the main executable and the cluster worker and placement tool it ships in `Contents/Helpers`, under their own identifiers. An ad-hoc build is not covered and raises one alert per new build. |
 
 The release workflow (`.github/workflows/release-swift.yml`) writes the usage
 string, checks it after signing, and signs the cluster helpers with
@@ -108,12 +108,20 @@ Which processes open sockets on the link decides what needs the approvals:
   socket at all (its RDMA traffic is not a socket). Either way the worker is
   started by the member, so it inherits the member's Local Network approval.
 
-The release does not yet ship `darkbloom-cluster-worker` and the placement
-tool inside `Darkbloom.app/Contents/Helpers` (the signing step is ready for
-them; the build step that produces them is not). Until it does, a setup points
-at a worker outside the bundle, which is not Developer-ID signed: on a Mac
-whose rank listens with the firewall on, it can raise a firewall alert per
-build when the worker opens the JACCL coordinator socket.
+The release ships `darkbloom-cluster-worker` and the placement tool
+`darkbloom-cluster-plan` inside `Darkbloom.app/Contents/Helpers`, with the
+`mlx.metallib` (the same bytes as `Contents/MacOS/mlx.metallib`) and
+`pagedattention.metal` they load beside themselves. The release build makes
+them with `scripts/build-cluster-helpers.sh` (the worker package's native
+build: macOS 26.2, real JACCL, the source-matched metallib), the packaging
+check (`provider-signing-validation.py cluster-helpers`) refuses an app without
+them before and after signing, and `scripts/sign-cluster-helpers.sh` signs
+them under their own Developer ID identifiers. A setup that names no worker
+uses `Contents/Helpers/darkbloom-cluster-worker` of the app `darkbloom` runs
+from (a development build keeps `worker/` beside `darkbloom`). A worker
+outside the bundle is not Developer-ID signed: on a Mac whose rank listens
+with the firewall on, it can raise a firewall alert per build when it opens
+the JACCL coordinator socket.
 
 ## Owner steps not automated
 
@@ -134,11 +142,13 @@ system setting:
 4. Reboot test, after the first approval: reboot both Macs, log in, and check
    that `darkbloom status` shows the supervisor running and the pair serving
    with no alert on either Mac.
-5. Release engineering (not a setting): build `darkbloom-cluster-worker`
-   and `darkbloom-cluster-plan` (with `mlx-cluster-worker.metallib`) in the
-   release build and stage them into `Contents/Helpers` of the unsigned
-   artifact; the signing step then signs them under their own identifiers.
-   Default the setup's worker path to that location.
+5. Signing and notarization (owner identity): the release workflow signs the
+   cluster helpers with `scripts/sign-cluster-helpers.sh` (Developer ID
+   certificate from the release secrets), then the app, and notarizes it. To
+   sign a locally packaged app the same way, run
+   `scripts/sign-cluster-helpers.sh <Darkbloom.app> <keychain> "<Developer ID
+   Application identity>" <team id> provider-swift/entitlements-cluster-worker.plist`
+   before signing the app; no agent holds or uses the identity.
 6. Release check, once per Mac with someone at the screen: install the signed
    release, `darkbloom start --cluster-member --always-on`, answer the one
    Local Network alert, then reboot, restart the member 20 times and update to

@@ -58,6 +58,9 @@ extension Cluster {
             do {
                 if status { print(try ClusterPairCommandLine.status(json: json)); return }
                 if let forget {
+                    // The leader tells its member first, while the pairing still keys the link:
+                    // the member reclaims the pair's prefix-tier records (its single-Mac cache stays).
+                    if let line = ClusterService.tellMemberOfUnpair(peerPin: forget) { print(line) }
                     print(try ClusterPairCommandLine.forget(pin: forget))
                     // No rank of this Mac will open the pair's prefix records
                     // again: reclaim them here (the peer reclaims its own when

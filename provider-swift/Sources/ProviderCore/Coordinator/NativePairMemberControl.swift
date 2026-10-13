@@ -14,12 +14,20 @@ final class NativePairMemberControl: @unchecked Sendable {
     /// What serves a committed start once its owner launched (S10). Weak: the
     /// provider loop that serves holds this control.
     private weak var servingHostReference: (any NativePairMemberServingHost)?
+    private var sessionStatusHandler: (@Sendable (ClusterSessionStatus) -> Void)?
     init(installation: NativePairMemberInstallation, signer: any AttestationSigner) {
         self.installation = installation; self.signer = signer
     }
     var servingHost: (any NativePairMemberServingHost)? {
         get { lock.withLock { servingHostReference } }
         set { lock.withLock { servingHostReference = newValue } }
+    }
+    /// Called with each change of `sessionStatus` while a session runs (its
+    /// owner launched; its worker published readiness): the client sends a
+    /// heartbeat at once (`NativePairSessionStatusWatch`).
+    var sessionStatusChanged: (@Sendable (ClusterSessionStatus) -> Void)? {
+        get { lock.withLock { sessionStatusHandler } }
+        set { lock.withLock { sessionStatusHandler = newValue } }
     }
     var status: String { lock.withLock { session?.status ?? "idle" } }
     /// The heartbeat's `cluster_session` (S16): present only while an owner
@@ -96,6 +104,7 @@ final class NativePairMemberControl: @unchecked Sendable {
                 }
             }
             cancel?.cancel(notify: false); start?.run()
+            if let start { watchSessionStatus(start) }
         } catch { detach(expected); throw NativePairMemberError.binding }
     }
     /// A graceful member stop, while the control connection is still open:
@@ -112,6 +121,16 @@ final class NativePairMemberControl: @unchecked Sendable {
         return await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global().async { done.resume(returning: current.waitUntilFinished(deadline: deadline)) }
         }
+    }
+    /// Reports each change of the started session's report while it is the current one.
+    private func watchSessionStatus(_ value: NativePairMemberSession) {
+        NativePairSessionStatusWatch.start(
+            current: { [weak self] in self?.sessionStatus },
+            live: { [weak self, weak value] in
+                guard let self, let value else { return false }
+                return self.lock.withLock { self.session === value }
+            },
+            changed: { [weak self] status in self?.sessionStatusChanged?(status) })
     }
     private func finished(_ old: NativePairMemberSession, reusable: Bool) {
         lock.withLock {

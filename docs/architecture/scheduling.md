@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-12
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -47,6 +47,14 @@ the smaller of OS availability and the MLX-free view. Required load memory still
 includes weights and activation/minimum-KV headroom (`ModelLoadAdmission` in
 `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`).
 GiB are used despite the configuration's historical `gb` spelling.
+
+The [ordinary catalog picker](../provider/cli-reference.md#darkbloom-start)
+uses the selected serving set's activation floor within the nominal unified cap.
+It checks each load estimate separately, allowing selections whose models must
+take turns. That selection check does not sample live availability or replace the
+configured-reserve, outstanding-load or post-load serviceability gates described
+here (`Start.pickerSelectionFitsBudget` in
+`provider-swift/Sources/darkbloom/Start/StartCommand+Picker.swift`).
 
 The common sampler also feeds runtime KV accounting, post-load serviceability,
 doctor and coordinator capacity. Cold-load capacity may still anticipate eviction

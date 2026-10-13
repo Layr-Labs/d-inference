@@ -28,7 +28,8 @@ extension Start {
         let selection = try await Self.prepareModelSelection(autopilot: enableAutopilot,
             select: {
                 try await selectStartupModels(snapshot: snapshot, config: config,
-                    coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities)
+                    coordinatorURL: coordinatorURL, runtimeCapabilities: runtimeCapabilities,
+                    autopilot: enableAutopilot)
             }, inventory: { selected in
                 try await downloadedAutopilotInventory(snapshot: snapshot, coordinatorURL: coordinatorURL,
                     runtimeCapabilities: runtimeCapabilities, selectedStartupModels: selected)

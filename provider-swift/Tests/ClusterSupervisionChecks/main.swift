@@ -318,6 +318,20 @@ do {
     let unsigned = ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: true, flags: nil,
         leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: release)
     check(unsigned.signing == .unsigned, "no identifier: unsigned")
+
+    // Round 5 (hardware o1, ad-hoc bench build): a login agent's member was refused the link ("may not reach the
+    // local network") and onboarding never served. The onboarding keeps the service in the session for such a build.
+    check(signed.launchdLinkRefusal == nil, "signed release in the app: launchd's member can reach the link")
+    check(development.launchdLinkRefusal == nil, "another certificate (firewall problem only) does not stop the link")
+    check(adHoc.launchdLinkRefusal?.contains("ad-hoc signed; the executable is not inside Darkbloom.app") == true
+          && adHoc.launchdLinkRefusal?.contains("Local Network") == true, "ad-hoc outside a bundle: \(adHoc.launchdLinkRefusal ?? "nil")")
+    check(adHocInApp.launchdLinkRefusal?.hasPrefix("this build is ad-hoc signed:") == true, "ad-hoc in a bundle: refused")
+    check(unsigned.launchdLinkRefusal?.hasPrefix("this build is unsigned:") == true, "unsigned: refused")
+    check(oldRelease.launchdLinkRefusal?.hasPrefix("Darkbloom.app carries no NSLocalNetworkUsageDescription:") == true,
+          "a release without the usage string: refused")
+    check(ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: false, flags: nil,
+        leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: release).launchdLinkRefusal?.contains("could not be read") == true,
+          "an unreadable signature: refused")
     check(ClusterMemberPermissionIdentity.classify(executablePath: exe, signatureReadable: false, flags: nil,
         leafCertificateSummary: nil, teamIdentifier: nil, infoPlist: release).signing == .unknown, "unreadable signature: unknown")
 

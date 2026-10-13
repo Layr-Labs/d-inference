@@ -89,6 +89,33 @@ public struct ClusterMemberPermissionIdentity: Equatable, Sendable {
         return problems
     }
 
+    /// Why a cluster service that launchd starts from this build could not
+    /// reach the other Mac over the cable, nil when it can. macOS keys the
+    /// one-time Local Network approval on a signed app's identity: an ad-hoc,
+    /// unsigned or unreadable build, or one outside a Darkbloom.app that
+    /// carries `NSLocalNetworkUsageDescription`, has no approval to keep, and
+    /// a member launchd starts is refused the link ("may not reach the local
+    /// network"). The firewall-only problem of another certificate does not
+    /// stop the link. The onboarding uses this to keep the service in the
+    /// user's session instead of installing a login agent that cannot serve.
+    public var launchdLinkRefusal: String? {
+        var reasons: [String] = []
+        switch signing {
+        case .adHoc: reasons.append("this build is ad-hoc signed")
+        case .unsigned: reasons.append("this build is unsigned")
+        case .unknown: reasons.append("the code signature of this build could not be read")
+        case .developerID, .otherCertificate: break
+        }
+        if bundlePath == nil {
+            reasons.append("the executable is not inside Darkbloom.app")
+        } else if !hasLocalNetworkUsageDescription {
+            reasons.append("Darkbloom.app carries no NSLocalNetworkUsageDescription")
+        }
+        guard !reasons.isEmpty else { return nil }
+        return reasons.joined(separator: "; ") + ": macOS cannot approve Local Network once for a service launchd starts, "
+            + "so it could not reach the other Mac over the cable"
+    }
+
     /// One line for logs and the install command.
     public var summary: String {
         let who = [bundleIdentifier, teamIdentifier.map { "team \($0)" }, signing.rawValue]

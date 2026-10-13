@@ -191,6 +191,13 @@ private final class OnboardingLive: @unchecked Sendable {
         let executable = settings.service.wizard.darkbloomExecutable
         let arguments = settings.serviceArguments
         let options = Array(arguments.starts(with: ["cluster", "service"]) ? arguments.dropFirst(2) : arguments[...])
+        // A login agent this build's launchd job runs could not reach the other Mac (no one-time Local Network
+        // approval for an ad-hoc build or one outside the signed app): keep the service in this session instead.
+        let identity = ClusterMemberPermissionIdentity.current(executablePath: ClusterService.resolvedExecutable(executable))
+        if let refusal = identity.launchdLinkRefusal {
+            return sessionService(executable: executable, arguments: arguments,
+                                  reason: refusal + "; install the signed Darkbloom release for a service that starts at login")
+        }
         do {
             switch try ClusterService.installAtLogin(executable: executable, serviceOptions: options) {
             case .installed, .replaced:
@@ -202,16 +209,21 @@ private final class OnboardingLive: @unchecked Sendable {
                 return .success("This Mac's cluster service is running (it starts again by itself at login).")
             }
         } catch let agentError {
-            do {
-                let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
-                return .success((started ? "Started this Mac's cluster service for this session" : "This Mac's cluster service is running")
-                    + ", but it could not be set to start at login (\(Self.reason(agentError))): after a restart of this Mac, "
-                    + "run `darkbloom cluster` here again.")
-            } catch let failure as ClusterOnboardingFailure {
-                return .failure(failure)
-            } catch {
-                return .failure(.init("\(error)"))
-            }
+            return sessionService(executable: executable, arguments: arguments, reason: Self.reason(agentError))
+        }
+    }
+
+    /// The service for this session only (no login agent), with the reason it will not start at login.
+    private func sessionService(executable: URL, arguments: [String], reason: String) -> Result<String, ClusterOnboardingFailure> {
+        do {
+            let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
+            return .success((started ? "Started this Mac's cluster service for this session" : "This Mac's cluster service is running")
+                + ", but it could not be set to start at login (\(reason)): after a restart of this Mac, "
+                + "run `darkbloom cluster` here again.")
+        } catch let failure as ClusterOnboardingFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.init("\(error)"))
         }
     }
 

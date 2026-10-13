@@ -66,6 +66,7 @@ struct Status: AsyncParsableCommand {
                                                          from: ClusterSupervisionFiles.statePath()) {
             print(supervisor.summary(now: Date().timeIntervalSince1970))
         }
+        for line in Self.clusterServiceLines() { print(line) }
         printDaemonStatus(config: config, models: snapshot.models)
 
         // Crash-loop KV-backend guard — printed whether or not the daemon is

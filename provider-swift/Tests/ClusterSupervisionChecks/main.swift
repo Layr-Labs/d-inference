@@ -335,5 +335,102 @@ do {
     }
 }
 
+// MARK: - Cluster service login agent (review finding 12)
+
+do {
+    typealias Plan = ClusterServiceAgentPlan
+    // The install root: the outermost app bundle, else the binary's folder.
+    check(Plan.installRoot(executablePath: "/Applications/Darkbloom.app/Contents/MacOS/darkbloom") == "/Applications/Darkbloom.app",
+          "app binary: the bundle is the install")
+    check(Plan.installRoot(executablePath: "/Applications/Darkbloom.app/Contents/Helpers/darkbloom") == "/Applications/Darkbloom.app",
+          "a binary in Contents/Helpers belongs to the same install")
+    check(Plan.installRoot(executablePath: "/A/Darkbloom.app/Contents/Helpers/X.app/Contents/MacOS/x") == "/A/Darkbloom.app",
+          "a nested helper app belongs to the outer install")
+    check(Plan.installRoot(executablePath: "/w/.build/debug/darkbloom") == "/w/.build/debug", "development build: its folder")
+    check(Plan.installRoot(executablePath: "/A/Darkbloom.app/Contents/MacOS/../MacOS/darkbloom") == "/A/Darkbloom.app", "standardized")
+    check(Plan.installRoot(executablePath: "/A/Notes.app.d/darkbloom") == "/A/Notes.app.d", "a folder named like a bundle is not one")
+
+    // The label: scoped to the install, stable, and recognizable as ours.
+    let app = Plan.label(executablePath: "/Applications/Darkbloom.app/Contents/MacOS/darkbloom")
+    check(app == Plan.label(executablePath: "/Applications/Darkbloom.app/Contents/Helpers/darkbloom"), "one label per install")
+    check(app != Plan.label(executablePath: "/Users/x/Applications/Darkbloom.app/Contents/MacOS/darkbloom"), "another install, another label")
+    check(app != Plan.label(executablePath: "/w/.build/debug/darkbloom"), "a development build never shares the release job")
+    check(app.hasPrefix(Plan.labelPrefix) && app.count == Plan.labelPrefix.count + 12, "label shape: \(app)")
+    check(Plan.isAgentFileName(app + ".plist"), "our file name")
+    for other in ["io.darkbloom.provider.plist", "io.darkbloom.cluster-service.plist", Plan.labelPrefix + "ABCDEF012345.plist",
+                  Plan.labelPrefix + "abcdef01234.plist", Plan.labelPrefix + "abcdef012345.plist.bak", app] {
+        check(!Plan.isAgentFileName(other), "not one of ours: \(other)")
+    }
+
+    // What launchd runs (the supervisor) and what the supervisor runs (the service), with the same options.
+    let options = Plan.serviceOptions(config: "/c/provider.toml", worker: nil)
+    check(options == ["--config", "/c/provider.toml"], "only the given options")
+    check(Plan.serviceOptions(config: nil, worker: nil).isEmpty, "the default configuration stays implicit")
+    check(Plan.programArguments(executablePath: "/A/darkbloom", serviceOptions: options)
+          == ["/A/darkbloom", "cluster", "service", "--supervise", "--config", "/c/provider.toml"], "launchd runs the supervisor")
+    check(Plan.childArguments(serviceOptions: options) == ["cluster", "service", "--config", "/c/provider.toml"], "the supervisor runs the service")
+
+    // The job: at login, kept alive only after a crash, throttled by the budget, room for the part to release.
+    let plist = Plan.propertyList(label: app, programArguments: ["/A/darkbloom"], logPath: "/h/.darkbloom/cluster-setup/service.log",
+                                  environment: [:])
+    check(plist["RunAtLoad"] as? Bool == true, "starts at login")
+    check((plist["KeepAlive"] as? [String: Bool]) == ["SuccessfulExit": false], "relaunched only after an unsuccessful exit")
+    check(plist["ThrottleInterval"] as? Int == ClusterMemberRestartBudget.Limits.production.initialBackoffSeconds,
+          "launchd's relaunch throttle is the budget's first backoff")
+    check((plist["ExitTimeOut"] as? Int ?? 0) > Plan.partStopGraceSeconds, "launchd waits longer than the part's own release grace")
+    check(plist["EnvironmentVariables"] == nil, "no environment when nothing passes through")
+    check(plist["StandardOutPath"] as? String == "/h/.darkbloom/cluster-setup/service.log", "the service log")
+    check(plist["UserName"] == nil && plist["GroupName"] == nil, "a per-user agent: no user switch, no privilege")
+
+    // Environment: the allowlist, plus a fixed home only where the host set one.
+    check(Plan.environment(passthrough: ["DARKBLOOM_PREFIX_CACHE": "0"], installing: ["PATH": "/bin", "HOME": "/h"])
+          == ["DARKBLOOM_PREFIX_CACHE": "0"], "nothing but the allowlist")
+    check(Plan.environment(passthrough: [:], installing: ["CFFIXED_USER_HOME": "/redirected"]) == ["CFFIXED_USER_HOME": "/redirected"],
+          "a redirected home follows the service")
+    check(Plan.environment(passthrough: [:], installing: ["CFFIXED_USER_HOME": "relative"]).isEmpty, "only an absolute home")
+
+    // Idempotent install decisions.
+    let a = Data("a".utf8), b = Data("b".utf8)
+    check(Plan.installAction(existing: nil, desired: a, loaded: false, serviceRunning: false) == .writeAndLoad, "first install")
+    check(Plan.installAction(existing: nil, desired: a, loaded: true, serviceRunning: true) == .replace, "loaded without a file: replace")
+    check(Plan.installAction(existing: a, desired: a, loaded: true, serviceRunning: true) == .nothing, "unchanged and running: nothing")
+    check(Plan.installAction(existing: a, desired: a, loaded: true, serviceRunning: false) == .restart, "parked or between runs: restart")
+    check(Plan.installAction(existing: a, desired: a, loaded: false, serviceRunning: false) == .writeAndLoad, "installed, not loaded: load")
+    check(Plan.installAction(existing: b, desired: a, loaded: true, serviceRunning: true) == .replace, "another binary or options: replace")
+    check(Plan.installAction(existing: b, desired: a, loaded: false, serviceRunning: true) == .replace, "changed and not loaded: replace")
+
+    let disabled = """
+    disabled services = {
+        "io.darkbloom.provider" => disabled
+        "\(app)" => enabled
+        "\(Plan.labelPrefix)aaaaaaaaaaaa" => true
+    }
+    """
+    check(!Plan.isDisabled(label: app, printDisabledOutput: disabled), "enabled is not disabled")
+    check(Plan.isDisabled(label: Plan.labelPrefix + "aaaaaaaaaaaa", printDisabledOutput: disabled), "older launchctl: => true")
+    check(Plan.isDisabled(label: "io.darkbloom.provider", printDisabledOutput: disabled), "=> disabled")
+    check(!Plan.isDisabled(label: "io.darkbloom", printDisabledOutput: disabled), "whole label only")
+
+    // `darkbloom status`.
+    let boot = 1_000.0, now = 5_000.0
+    check(Plan.statusLines(agents: [], serviceRunning: false, paired: false, supervisor: nil, now: now, bootTime: boot).isEmpty,
+          "nothing on a Mac outside a cluster")
+    check(Plan.statusLines(agents: [], serviceRunning: false, paired: true, supervisor: nil, now: now, bootTime: boot).first?
+          .contains("not running and not set to start at login") == true, "paired, not installed")
+    check(Plan.statusLines(agents: [], serviceRunning: true, paired: true, supervisor: nil, now: now, bootTime: boot).first?
+          .contains("not set to start at login") == true, "an older detached service")
+    var state = ClusterMemberSupervisorState(supervisorPID: 7, version: "v", bootTime: boot, phase: .running,
+        budget: ClusterMemberRestartBudget(), current: .init(pid: 8, startedAt: now - 30), runs: 2, updatedAt: now)
+    let lines = Plan.statusLines(agents: [(app, true)], serviceRunning: true, paired: true, supervisor: state, now: now, bootTime: boot + 2)
+    check(lines.count == 2 && lines[0] == "Cluster service: running; starts at login (launchd \(app))", "installed and running: \(lines)")
+    check(lines.last?.hasPrefix("  supervisor: running; member pid 8 up 30 s; runs 2") == true, "supervisor line: \(lines)")
+    state.bootTime = boot - 86_400
+    check(Plan.statusLines(agents: [(app, true)], serviceRunning: true, paired: true, supervisor: state, now: now, bootTime: boot).count == 1,
+          "a supervisor record from an earlier boot is not shown")
+    check(Plan.statusLines(agents: [(app, false)], serviceRunning: false, paired: true, supervisor: nil, now: now, bootTime: boot).first?
+          .contains("not loaded now") == true, "installed, not loaded")
+    check(state.summary(now: now).hasPrefix("cluster member supervisor: "), "the member's own summary is unchanged")
+}
+
 print("cluster supervision checks: \(checks - failures)/\(checks) passed")
 exit(failures == 0 ? 0 : 1)

@@ -181,7 +181,7 @@ public final class ClusterService: @unchecked Sendable {
         lock.withLock { stopping = true }
         say("stopping")
         lock.withLock { responder }?.stop()
-        let clean = stopChild(say: say, seconds: 300)
+        let clean = stopChild(say: say, seconds: Double(ClusterServiceAgentPlan.partStopGraceSeconds))
         say(clean ? "stopped" : "stopped with this Mac's part still releasing")
         return clean
     }

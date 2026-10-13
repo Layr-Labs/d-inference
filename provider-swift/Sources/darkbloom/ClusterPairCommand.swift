@@ -59,6 +59,15 @@ extension Cluster {
                 if status { print(try ClusterPairCommandLine.status(json: json)); return }
                 if let forget {
                     print(try ClusterPairCommandLine.forget(pin: forget))
+                    // Unpaired: this Mac's cluster service has nobody to answer, so it no
+                    // longer starts at login (`darkbloom cluster` pairs and installs it again).
+                    if ClusterService.holdsNoPairing() {
+                        do {
+                            if !(try ClusterService.removeFromLogin(executable: URL(fileURLWithPath: Start.currentExecutablePath()))).isEmpty {
+                                print("This Mac's cluster service is stopped and no longer starts at login.")
+                            }
+                        } catch { printError("note: this Mac's cluster service could not be removed from login: \(error)") }
+                    }
                     // No rank of this Mac will open the pair's prefix records
                     // again: reclaim them here (the peer reclaims its own when
                     // it unpairs; a live rank's plan is left alone).

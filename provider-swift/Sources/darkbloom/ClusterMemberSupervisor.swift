@@ -34,6 +34,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
         var recycleGraceSeconds: Double = 300
         /// The original argv, for re-executing after an update.
         var reexecArguments: [String]
+        /// How its log lines start: the member's supervisor, or the cluster service's (login agent).
+        var logName: String = "cluster-member supervisor"
+        /// What the operator runs to start again after the budget is spent.
+        var restartHint: String = "`darkbloom restart` (or `darkbloom stop` then start)"
     }
 
     private let configuration: Configuration
@@ -79,8 +83,9 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
             return 1
         }
         defer { close(lockFD) }
-        log("supervisor \(ProviderCore.version) started: member \(configuration.setup?.role ?? "unknown role") on "
-            + "\(configuration.setup?.linkDevice ?? "no saved device"); budget \(budget.limits.maxQuickFailures) quick failures "
+        let supervised = configuration.setup.map { "member \($0.role) on \($0.linkDevice)" }
+            ?? "`\(configuration.childArguments.prefix(2).joined(separator: " "))`"
+        log("supervisor \(ProviderCore.version) started: \(supervised); budget \(budget.limits.maxQuickFailures) quick failures "
             + "in \(Int(budget.limits.quickFailureWindowSeconds)) s, backoff \(budget.limits.initialBackoffSeconds)-"
             + "\(budget.limits.maxBackoffSeconds) s; heartbeat down \(Int(configuration.guardLimits.downSeconds)) s after "
             + "\(Int(configuration.guardLimits.startGraceSeconds)) s grace")
@@ -122,7 +127,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                     continue
                 case .exhausted(let reason):
                     log("member ended after \(Int(runSeconds)) s (\(detail)); \(reason). Nothing runs until "
-                        + "`darkbloom restart` (or `darkbloom stop` then start); see the provider log")
+                        + "\(configuration.restartHint); see the log")
                     update(phase: .exhausted, detail: reason)
                     while !isStopping { await sleepInterruptibly(seconds: 3600) }
                 }
@@ -401,7 +406,7 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
     }
 
     private func log(_ message: String) {
-        let line = "\(ISO8601DateFormatter().string(from: Date())) cluster-member supervisor: \(message)\n"
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(configuration.logName): \(message)\n"
         FileHandle.standardOutput.write(Data(line.utf8))
     }
 }

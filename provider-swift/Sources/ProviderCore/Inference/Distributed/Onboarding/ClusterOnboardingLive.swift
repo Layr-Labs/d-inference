@@ -184,17 +184,39 @@ private final class OnboardingLive: @unchecked Sendable {
 
     // MARK: - The cluster service
 
+    /// Installs this Mac's cluster service as its login agent (it starts at login and after a restart of
+    /// this Mac, and its supervisor restarts it with backoff), idempotently. Where launchd cannot take the
+    /// job, the service still starts for this session, and the screen says it will not come back by itself.
     func ensureService() -> Result<String, ClusterOnboardingFailure> {
+        let executable = settings.service.wizard.darkbloomExecutable
+        let arguments = settings.serviceArguments
+        let options = Array(arguments.starts(with: ["cluster", "service"]) ? arguments.dropFirst(2) : arguments[...])
         do {
-            let started = try ClusterService.ensureRunning(executable: settings.service.wizard.darkbloomExecutable,
-                arguments: settings.serviceArguments)
-            return .success(started ? "Started this Mac's cluster service: it runs this Mac's part whenever the leader asks."
-                : "This Mac's cluster service is running.")
-        } catch let failure as ClusterOnboardingFailure {
-            return .failure(failure)
-        } catch {
-            return .failure(.init("\(error)"))
+            switch try ClusterService.installAtLogin(executable: executable, serviceOptions: options) {
+            case .installed, .replaced:
+                return .success("Started this Mac's cluster service: it runs this Mac's part whenever the leader asks, "
+                    + "and starts again by itself at login and after a restart of this Mac.")
+            case .restarted:
+                return .success("Restarted this Mac's cluster service (it starts again by itself at login).")
+            case .unchanged:
+                return .success("This Mac's cluster service is running (it starts again by itself at login).")
+            }
+        } catch let agentError {
+            do {
+                let started = try ClusterService.ensureRunning(executable: executable, arguments: arguments)
+                return .success((started ? "Started this Mac's cluster service for this session" : "This Mac's cluster service is running")
+                    + ", but it could not be set to start at login (\(Self.reason(agentError))): after a restart of this Mac, "
+                    + "run `darkbloom cluster` here again.")
+            } catch let failure as ClusterOnboardingFailure {
+                return .failure(failure)
+            } catch {
+                return .failure(.init("\(error)"))
+            }
         }
+    }
+
+    static func reason(_ error: Error) -> String {
+        (error as? ClusterOnboardingFailure)?.lines.joined(separator: " ") ?? "\(error)"
     }
 
     // MARK: - The leader

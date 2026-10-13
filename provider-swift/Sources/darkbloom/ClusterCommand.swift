@@ -7,7 +7,7 @@ struct Cluster: AsyncParsableCommand {
         abstract: "Set up this Mac's cluster link, and manage saved distributed-cluster setup.",
         subcommands: [Setup.self, Console.self, Plan.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self,
                       Report.self, Inbox.self, LinkChannel.self, LinkFollower.self, MemberIdentity.self, Pair.self, Incidents.self,
-                      Service.self, Reap.self, VerifyTeardown.self, CancelAll.self],
+                      Service.self, Stop.self, Reap.self, VerifyTeardown.self, CancelAll.self],
         defaultSubcommand: Setup.self)
 
     struct Configure: AsyncParsableCommand {

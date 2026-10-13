@@ -270,7 +270,10 @@ final class ClusterMemberSupervisor: @unchecked Sendable {
                 }
             }
         }
-        process.waitUntilExit()
+        // The loop above already saw the member end (`isRunning` is false, so its status is final). No blocking
+        // `waitUntilExit()` here: it parks this thread in its own run loop until a termination message arrives, and
+        // on a Swift-concurrency thread that message can go to another thread's run loop, so the supervisor waited
+        // forever after its member ended and never restarted it (sampled stuck in -[NSConcreteTask waitUntilExit]).
         lock.withLock { child = nil }
         let ended = Date().timeIntervalSince1970
         let signal: Int32? = process.terminationReason == .uncaughtSignal ? process.terminationStatus : nil

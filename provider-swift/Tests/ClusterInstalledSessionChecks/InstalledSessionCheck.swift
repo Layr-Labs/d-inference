@@ -91,6 +91,7 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
+        try await stopBoundAfterGracefulThenUnrequested()
         print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
@@ -812,6 +813,39 @@ final class EndpointBox: @unchecked Sendable {
         try require((result == .released || result == .quarantined) && s.readiness()==nil && box.snapshot.allSatisfy(\.nativeCleanupObserved),"the unasked stop did not end both ranks: \(result)")
         try require(notices.count==1,"the stop was announced more than once")
     }
+    /// A graceful stop whose wait is under way when a stop nobody asked for
+    /// arrives: the rest of the wait is bounded by the unrequested-stop
+    /// allowance from that moment (finishStop used to keep the graceful,
+    /// unbounded wait it had started with).
+    static func stopBoundAfterGracefulThenUnrequested() async throws {
+        let ms:UInt64=1_000_000
+        func now()->UInt64 { DispatchTime.now().uptimeNanoseconds }
+        // The pair's shutdown never returns; the stop began gracefully.
+        let bound=DistributedInstalledStopBound(allowanceNanoseconds:300*ms)
+        let began=now()
+        Task { try? await Task.sleep(nanoseconds:200*ms); bound.beginUnrequested() }
+        let shutdown:Bool?=await bound.wait(until:nil) { try? await Task.sleep(nanoseconds:5_000*ms); return true }
+        let took=(now()-began)/ms
+        try require(shutdown==nil && took>=450 && took<2_000,"the shutdown wait after an unrequested stop took \(took) ms (allowance 300 ms from 200 ms)")
+        // A release wait with an owner ceiling far away: cut to the allowance's end too.
+        let release=DistributedInstalledStopBound(allowanceNanoseconds:300*ms)
+        let start=now()
+        Task { try? await Task.sleep(nanoseconds:100*ms); release.beginUnrequested() }
+        let proof:Bool?=await release.wait(until:now()+60_000*ms) { try? await Task.sleep(nanoseconds:5_000*ms); return true }
+        let waited=(now()-start)/ms
+        try require(proof==nil && waited>=350 && waited<2_000,"the release wait after an unrequested stop took \(waited) ms")
+        // Already unrequested before the wait: bounded from the start; a body that ends first is returned.
+        let early=DistributedInstalledStopBound(allowanceNanoseconds:300*ms); early.beginUnrequested()
+        let quick:Bool?=await early.wait(until:nil) { try? await Task.sleep(nanoseconds:20*ms); return true }
+        try require(quick==true,"a body that ends inside the allowance is returned")
+        // Asked-for only: no bound of its own; the caller's deadline still applies.
+        let graceful=DistributedInstalledStopBound(allowanceNanoseconds:300*ms)
+        let g0=now()
+        let late:Bool?=await graceful.wait(until:now()+700*ms) { try? await Task.sleep(nanoseconds:5_000*ms); return true }
+        let gw=(now()-g0)/ms
+        try require(late==nil && gw>=650 && gw<2_000 && graceful.allowanceEnd==nil,"a graceful wait took \(gw) ms (deadline 700 ms)")
+    }
+
     static func missingRelease(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         for behavior in ["drop-release","nonzero-owner"] {
             let(s,box)=try session(f,p,behavior:behavior);try await s.start()

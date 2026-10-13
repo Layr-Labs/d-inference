@@ -84,8 +84,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private var draining = false
     private var stopNoticeHandler: (@Sendable (DistributedInstalledStopNotice) -> Void)?
     private var stopNoticePending = false
-    private var stopRequestedAt: UInt64?
     private var abnormalStop = false
+    /// Bounds the stop's waits once a stop nobody asked for began (see the type).
+    private let stopBound: DistributedInstalledStopBound
     private var stopDetailText: String?
     /// Why an unresolved stop is unresolved (S24): which rank's proof is
     /// missing and what its endpoint knows about it.
@@ -196,6 +197,10 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     /// The same for a stop nobody asked for (a rank was lost, or a request had
     /// to be cancelled): no clean-stop wait precedes it.
     var unrequestedStopAllowanceNanoseconds: UInt64 {
+        Self.unrequestedStopAllowance(prepared)
+    }
+
+    static func unrequestedStopAllowance(_ prepared: DistributedInstalledPreparation) -> UInt64 {
         UInt64(DistributedInstalledPlan.collectiveProgressLimitMilliseconds) * 1_000_000 + prepared.plan.budgets.stopMarginNanoseconds
     }
 
@@ -259,6 +264,10 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             && Set(prepared.plan.identity(epoch: UUID()).peers.map(\.buildSHA256)).count == 1 && peers.count == 2
             && prepared.plan.configuration.linkControl == nil)
         self.prepared = prepared; configuration = prepared.plan.configuration; capability = prepared.plan.capability
+        // A body still running when the bound ends goes on by itself (the
+        // pair's shutdown is idempotent and keeps its own state; the endpoints
+        // keep ownership unresolved).
+        stopBound = .init(allowanceNanoseconds: Self.unrequestedStopAllowance(prepared))
         diagnosticBinding = try ClusterStatusBinding(configuration: configuration, capability: capability)
         model = prepared.model
         wireIdentity = prepared.plan.identity(epoch: UUID())
@@ -430,8 +439,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if abnormal, phase == .ready {
                 if let stopNoticeHandler { notice = stopNoticeHandler } else { stopNoticePending = true }
             }
-            if abnormal { draining = false; abnormalStop = true }
-            if stopRequestedAt == nil { stopRequestedAt = DispatchTime.now().uptimeNanoseconds }
+            if abnormal { draining = false; abnormalStop = true; stopBound.beginUnrequested() }
             phase = abnormal ? .quarantined : (phase == .quarantined ? .quarantined : (draining ? .draining : .stopping))
             if wasPrepared { startup.complete() }
             if stoppingTask == nil { stoppingTask = Task { await self.finishStop() } }
@@ -454,16 +462,16 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     private func finishStop() async {
         await startup.value()
-        let values = lock.withLock { (pair, endpoints, draining, abnormalStop, stopRequestedAt ?? DispatchTime.now().uptimeNanoseconds) }
+        let values = lock.withLock { (pair, endpoints, draining) }
         // After a stop nobody asked for, the ranks have the collective progress
         // limit to leave their exchange and the model's stop margin to give the
         // memory back (`unrequestedStopAllowanceNanoseconds`, derived from the
-        // plan): the whole stop is bounded by that, not by any owner's lease.
-        let allowanceEnd = values.4.addingReportingOverflow(unrequestedStopAllowanceNanoseconds).partialValue
+        // plan), counted from that stop: the rest of the stop is bounded by it,
+        // not by any owner's lease, also when it interrupts a graceful stop
+        // whose waits are already under way (`stopBound`).
         if let pair = values.0 {
-            if values.2 { await pair.drainAndShutdown() }
-            else if values.3 { await Self.bounded(until: allowanceEnd) { await pair.shutdown() } }
-            else { await pair.shutdown() }
+            if values.2 { _ = await stopBound.wait(until: nil) { await pair.drainAndShutdown(); return true } }
+            else { _ = await stopBound.wait(until: nil) { await pair.shutdown(); return true } }
         }
         else {
             for endpoint in values.1 { endpoint.requestNativeCleanup() }
@@ -476,12 +484,13 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             // grant, which the endpoint tracks; a release acknowledgement cannot
             // arrive later than that. After an unrequested stop the allowance
             // above bounds the wait instead.
-            var deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
-            if values.3 { deadline = min(deadline, max(allowanceEnd, DispatchTime.now().uptimeNanoseconds)) }
-            if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) {
+            let ceiling = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
+            let deadline = stopBound.cut(ceiling) ?? ceiling
+            let proved = await stopBound.wait(until: deadline) { await endpoint.waitUntilOwnerReleased(deadline: deadline) } ?? false
+            if !proved {
                 released = false
                 missing.append("rank \(endpoint.rank): no release proof"
-                    + (values.3 ? " within \(unrequestedStopAllowanceNanoseconds / 1_000_000_000) s of the stop" : "")
+                    + (stopBound.isUnrequested ? " within \(unrequestedStopAllowanceNanoseconds / 1_000_000_000) s of the stop" : "")
                     + ((endpoint as? ClusterLinkWorkerEndpoint).map { " (\($0.diagnosticSummary))" } ?? "")
                     + ((endpoint as? ClusterRemoteWorkerEndpoint)?.unresolvedReason.map { " (\($0))" } ?? ""))
             }
@@ -491,15 +500,6 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         lock.withLock { link }?.stop()
         lock.withLock { phase = released ? .released : .quarantined }
         stopped.complete()
-    }
-
-    /// Runs `body` but returns at `deadline` at the latest; a body still
-    /// running then goes on by itself (the pair's shutdown is idempotent and
-    /// keeps its own state; the endpoints keep ownership unresolved).
-    private static func bounded(until deadline: UInt64, _ body: @escaping @Sendable () async -> Void) async {
-        let done = InstalledCompletion()
-        Task { await body(); done.complete() }
-        _ = await done.wait(until: deadline)
     }
 
     func activeOwner(forReservation: Bool = false) throws -> DistributedPipeExecutionOwner {

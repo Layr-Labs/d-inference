@@ -66,9 +66,29 @@ public struct ClusterOnboardingModelChoice: Sendable, Equatable {
     public var lines: [String]
     /// Why it cannot be chosen; nil when it can.
     public var blocker: String?
+    /// What has to move before it can be served (a Mac lacks it); nil when every Mac has it.
+    public var provision: ClusterOnboardingProvisionOffer?
 
-    public init(title: String, lines: [String], blocker: String?) {
-        self.title = title; self.lines = lines; self.blocker = blocker
+    public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil) {
+        self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision
+    }
+}
+
+/// A chosen model some Mac lacks (compared by the catalog manifest's digests): how it gets there. No model is ever
+/// downloaded by hand for clustering: a Mac that has it copies it over the Thunderbolt cable (the default), and when
+/// no Mac has it the leader downloads it from Darkbloom's catalog as single-Mac Darkbloom does, then copies it.
+public struct ClusterOnboardingProvisionOffer: Sendable, Equatable {
+    /// One line per Mac that needs it, with size and time ("Apple M5 Ultra: copy from … over the Thunderbolt cable (6.1 GB, about 3 s)").
+    public var lines: [String]
+    /// The members may take it from the catalog instead of the cable.
+    public var downloadAlternative: Bool
+    /// This Mac lacks it too: it downloads it first and plans from its files afterwards.
+    public var leaderDownloads: Bool
+    /// Why it cannot start (not enough free disk on a Mac), nil when it can.
+    public var blocker: String?
+
+    public init(lines: [String], downloadAlternative: Bool, leaderDownloads: Bool, blocker: String? = nil) {
+        self.lines = lines; self.downloadAlternative = downloadAlternative; self.leaderDownloads = leaderDownloads; self.blocker = blocker
     }
 }
 
@@ -161,6 +181,9 @@ public struct ClusterOnboardingOperations: Sendable {
     /// The cluster as it is now, for a leader that opens `darkbloom cluster` again.
     public var status: @Sendable () -> [String]
     public var stop: @Sendable () -> Result<[String], ClusterOnboardingFailure>
+    /// Puts the chosen model on every Mac that lacks it (choice `index`): copied over the cable from a Mac that has
+    /// it, or from the catalog when `download` (or when no Mac has it); says its progress as it goes.
+    public var provision: @Sendable (_ index: Int, _ download: Bool, _ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -174,11 +197,13 @@ public struct ClusterOnboardingOperations: Sendable {
                 waitReady: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure>,
                 testRequest: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
                 status: @escaping @Sendable () -> [String],
-                stop: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>) {
+                stop: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
+                provision: @escaping @Sendable (Int, Bool, @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
+                    = { _, _, _ in .success([]) }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
-        self.status = status; self.stop = stop
+        self.status = status; self.stop = stop; self.provision = provision
     }
 }
 
@@ -427,6 +452,9 @@ public enum ClusterOnboardingDriver {
         for (number, index) in open.enumerated() {
             console.say("  \(number + 1). \(choices[index].title)")
             for line in choices[index].lines { console.say("       " + line) }
+            if let offer = choices[index].provision {
+                for line in offer.lines { console.say("       needs: " + line) }
+            }
         }
         let blocked = choices.indices.filter { choices[$0].blocker != nil }
         if !blocked.isEmpty {
@@ -445,7 +473,37 @@ public enum ClusterOnboardingDriver {
             if let number = Int(text), (1...open.count).contains(number) { chosen = open[number - 1]; break }
             console.say("Type a number from 1 to \(open.count), or press enter for 1.")
         }
-        let choice = choices[chosen!]
+        var choice = choices[chosen!]
+        if let offer = choice.provision {
+            switch provision(offer, title: choice.title, index: chosen!, operations, console) {
+            case .stopped: return 0
+            case .failed: return 1
+            case .done:
+                // A model this Mac downloaded is planned from its own files now.
+                if offer.leaderDownloads {
+                    console.say("Planning \(choice.title) now that it is on this Mac…")
+                    guard case .success(let again) = operations.planModels(),
+                          let index = again.firstIndex(where: { $0.title == choice.title }) else {
+                        console.say("\(choice.title) could not be planned after the download. Run `darkbloom cluster` here again.")
+                        return 1
+                    }
+                    if let blocker = again[index].blocker {
+                        console.say("\(choice.title) is on this Mac now, but it cannot be served by these Macs: \(blocker)")
+                        return 1
+                    }
+                    choice = again[index]
+                    chosen = index
+                    for line in choice.lines { console.say("  " + line) }
+                    if let more = choice.provision {
+                        switch provision(more, title: choice.title, index: index, operations, console) {
+                        case .stopped: return 0
+                        case .failed: return 1
+                        case .done: break
+                        }
+                    }
+                }
+            }
+        }
         console.say("Options: always on — each Mac's cluster service starts its part again when it ends, and the cluster re-forms by itself (on).")
         console.say("         Public serving through Darkbloom — off (not offered by this build).")
         console.say("Serve \(choice.title) on both Macs? Press y to start, n to stop here.")
@@ -490,6 +548,62 @@ public enum ClusterOnboardingDriver {
         console.say("Done. This Mac leads the cluster: run `darkbloom cluster` here to see it, change the model or stop it.")
         console.say("Nothing else is needed on the other Mac. After a Mac restarts, run `darkbloom cluster` on it once (it asks nothing).")
         return tested ? 0 : 1
+    }
+
+    enum ProvisionOutcome { case done, stopped, failed }
+
+    /// Says what has to move for the chosen model, asks once (enter = the recommended way), and moves it with progress.
+    static func provision(_ offer: ClusterOnboardingProvisionOffer, title: String, index: Int,
+                          _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> ProvisionOutcome {
+        console.say("")
+        console.say(offer.leaderDownloads ? "\(title) is not on these Macs yet. No download by hand is needed:"
+                                          : "\(title) is not on every Mac yet. No download by hand is needed:")
+        for line in offer.lines { console.say("  " + line) }
+        if let blocker = offer.blocker {
+            console.say("It cannot start: \(blocker). Free some space and run `darkbloom cluster` here again.")
+            return .failed
+        }
+        if offer.leaderDownloads {
+            console.say("Press enter to get it, n to stop here.")
+        } else if offer.downloadAlternative {
+            console.say("Press enter to copy it over the Thunderbolt cable (recommended), d to download it from Darkbloom's catalog instead, n to stop here.")
+        } else {
+            console.say("Press enter to copy it over the Thunderbolt cable, n to stop here.")
+        }
+        var download = false
+        answer: while true {
+            guard let key = console.key(milliseconds: 60_000) else {
+                if console.closed { return .stopped }
+                continue
+            }
+            switch key {
+            case "\r", "\n", "c", "C": break answer
+            case "d" where offer.downloadAlternative, "D" where offer.downloadAlternative: download = true; break answer
+            case "n", "N", "q", "Q":
+                console.say("Nothing was copied or downloaded. Run `darkbloom cluster` here again to choose.")
+                return .stopped
+            default: continue
+            }
+        }
+        let progress = ClusterOnboardingMailbox<String>()
+        let finished = ClusterOnboardingMailbox<Result<[String], ClusterOnboardingFailure>>()
+        Thread.detachNewThread { finished.post(operations.provision(index, download) { progress.post($0) }) }
+        var result: Result<[String], ClusterOnboardingFailure>?
+        while result == nil {
+            for line in progress.take() { console.say("  " + line) }
+            if let value = finished.take().first { result = value; break }
+            _ = console.key(milliseconds: 200)
+        }
+        for line in progress.take() { console.say("  " + line) }
+        switch result! {
+        case .success(let lines):
+            for line in lines { console.say("  " + line) }
+            return .done
+        case .failure(let failure):
+            for line in failure.lines { console.say("  " + line) }
+            console.say("Run `darkbloom cluster` here again: a copy or download resumes where it stopped.")
+            return .failed
+        }
     }
 
     static func test(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Bool {

@@ -29,6 +29,12 @@ import Darwin
         noModelOffered()
         servingLineNamesTheMac()
         leaderKeepsMembersInStep()
+        leaderCopiesAMissingModelOverTheCable()
+        leaderChoosesTheCatalogInstead()
+        leaderDownloadsAModelNoMacHas()
+        copyDeclined()
+        copyBlockedByDisk()
+        copyInterrupted()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -92,7 +98,9 @@ import Darwin
 
     static func operations(_ recorder: Recorder, resume: ClusterOnboardingResume = .init(), linkReady: Bool = true,
                            pairEvents: [ClusterOnboardingPairEvent], pairResult: ClusterOnboardingPairResult,
-                           choices: [ClusterOnboardingModelChoice] = choices) -> ClusterOnboardingOperations {
+                           choices: [ClusterOnboardingModelChoice] = choices,
+                           replanned: [ClusterOnboardingModelChoice]? = nil,
+                           provisionResult: Result<[String], ClusterOnboardingFailure> = .success(["Apple M3 Ultra, 256 GB has Qwen3.5-9B now: 12 files verified against the catalog manifest."])) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
         return ClusterOnboardingOperations(
             resume: { resume },
@@ -129,7 +137,11 @@ import Darwin
             },
             ensureService: { recorder.note("ensureService"); return .success("This Mac's cluster service is running.") },
             reachMembers: { say in recorder.note("reachMembers"); say("Apple M3 Ultra, 256 GB answered in 0.4 s."); return .success(leaderHardware) },
-            planModels: { recorder.note("planModels"); return .success(choices) },
+            planModels: {
+                recorder.note("planModels")
+                let again = recorder.all.filter { $0 == "planModels" }.count > 1
+                return .success(again ? (replanned ?? choices) : choices)
+            },
             adopt: { index in recorder.note("adopt \(index)"); return .success(["Saved this Mac's setup.", "Synced Apple M3 Ultra, 256 GB's setup over the cable; it applied it."]) },
             serve: { recorder.note("serve"); return .success(["Started Apple M3 Ultra, 256 GB's part over the cable."]) },
             waitReady: { progress in
@@ -138,7 +150,14 @@ import Darwin
             },
             testRequest: { recorder.note("testRequest"); return .success(["\"Red, Blue, Green\" (6 tokens, first token 0.61 s)"]) },
             status: { recorder.note("status"); return ["Serving Qwen3.5-9B from Apple M3 Ultra, 256 GB at 127.0.0.1:8000 (2 of 2 parts ready)."] },
-            stop: { recorder.note("stop"); return .success(["Both Macs stopped serving."]) })
+            stop: { recorder.note("stop"); return .success(["Both Macs stopped serving."]) },
+            provision: { index, download, progress in
+                recorder.note("provision \(index) \(download ? "download" : "copy")")
+                progress("Copying Qwen3.5-9B to Apple M3 Ultra, 256 GB over the cable: 3.1 of 6.1 GB, 2.40 GB/s, about 1 s left")
+                usleep(30_000)
+                progress("Copied 6.1 GB in 2.6 s (2.35 GB/s); every file matched its manifest digest.")
+                return provisionResult
+            })
     }
 
     /// One driver run on a pseudo-terminal: the keys are typed only once the text before them is on screen.
@@ -357,6 +376,107 @@ import Darwin
             choices: [ClusterOnboardingModelChoice(title: "big", lines: [], blocker: "too large for this pair")]))
         expect(run.finish() == 1, "no model: exit 1")
         expect(run.text.contains("No model can be served by these Macs now; the reasons are above."), "no model: said")
+    }
+
+
+    // MARK: - Provisioning: no manual model downloads
+
+    static let copyOffer = ClusterOnboardingProvisionOffer(
+        lines: ["Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (6.1 GB, about 3 s)"],
+        downloadAlternative: true, leaderDownloads: false)
+    static let copyChoices = [
+        ClusterOnboardingModelChoice(title: "Qwen3.5-9B", lines: ["rank 0: Apple M3 Ultra, 256 GB, layers 0-15"], blocker: nil, provision: copyOffer),
+        ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["rank 0: Apple M3 Ultra, 256 GB, layers 0-31"], blocker: nil)]
+
+    static func leaderCopiesAMissingModelOverTheCable() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: copyChoices))
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "copy: the choice")
+        expect(run.text.contains("       needs: Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (6.1 GB, about 3 s)"),
+            "copy: the list says what the model needs, with size and time")
+        run.type("\r")
+        expect(run.waitFor("Qwen3.5-9B is not on every Mac yet. No download by hand is needed:"), "copy: what is missing, said")
+        expect(run.waitFor("Press enter to copy it over the Thunderbolt cable (recommended), d to download it from Darkbloom's catalog instead, n to stop here."),
+            "copy: the cable is the default")
+        run.type("\r")
+        expect(run.waitFor("  Copying Qwen3.5-9B to Apple M3 Ultra, 256 GB over the cable: 3.1 of 6.1 GB, 2.40 GB/s, about 1 s left"), "copy: progress on the leader")
+        expect(run.waitFor("every file matched its manifest digest."), "copy: verified")
+        expect(run.waitFor("Serve Qwen3.5-9B on both Macs? Press y to start, n to stop here."), "copy: then the start question")
+        run.type("y")
+        expect(run.finish() == 0, "copy: served")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "adopt 0", "serve", "waitReady", "testRequest"],
+            "copy: copied before the setup is synced: \(recorder.all)")
+        expect(run.keys == 3, "copy: enter (model), enter (copy), y (start); got \(run.keys)")
+        expect(!run.text.lowercased().contains("ssh") && !run.text.contains("--model-dir"), "copy: no SSH, no model folder to type")
+        transcript("leader-copies-missing-model", run.text, keys: run.keys)
+    }
+
+    static func leaderChoosesTheCatalogInstead() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: copyChoices))
+        expect(run.waitFor("Choose a model"), "catalog: the choice"); run.type("\r")
+        expect(run.waitFor("d to download it"), "catalog: the alternative is offered"); run.type("d")
+        expect(run.waitFor("Serve Qwen3.5-9B on both Macs?"), "catalog: then the start question"); run.type("n")
+        expect(run.finish() == 0, "catalog: n stops after the download")
+        expect(recorder.all.contains("provision 0 download") && !recorder.all.contains("adopt 0"), "catalog: downloaded, nothing adopted: \(recorder.all)")
+    }
+
+    static func leaderDownloadsAModelNoMacHas() {
+        let recorder = Recorder()
+        let offer = ClusterOnboardingProvisionOffer(lines: ["Apple M5 Ultra, 256 GB (this Mac): download from Darkbloom's catalog (16.3 GB)",
+            "Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (16.3 GB)"],
+            downloadAlternative: false, leaderDownloads: true)
+        let before = [ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["not on these Macs yet: planned once it is on this Mac"], blocker: nil, provision: offer)]
+        let after = [ClusterOnboardingModelChoice(title: "Qwen3.8-27B-4bit-mtp", lines: ["rank 0: Apple M3 Ultra, 256 GB, layers 0-31", "rank 1 (decodes): Apple M5 Ultra, 256 GB (this Mac), layers 32-63"], blocker: nil)]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: before, replanned: after))
+        expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "download: a catalog model is offered"); run.type("\r")
+        expect(run.waitFor("Qwen3.8-27B-4bit-mtp is not on these Macs yet. No download by hand is needed:"), "download: said")
+        expect(run.waitFor("Press enter to get it, n to stop here."), "download: one key"); run.type("\r")
+        expect(run.waitFor("Planning Qwen3.8-27B-4bit-mtp now that it is on this Mac…"), "download: planned after")
+        expect(run.waitFor("  rank 1 (decodes): Apple M5 Ultra, 256 GB (this Mac), layers 32-63"), "download: the plan shown")
+        expect(run.waitFor("Serve Qwen3.8-27B-4bit-mtp on both Macs?"), "download: start question"); run.type("y")
+        expect(run.finish() == 0, "download: served")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "planModels", "adopt 0", "serve", "waitReady", "testRequest"],
+            "download: downloaded, planned again, then adopted: \(recorder.all)")
+        transcript("leader-downloads-model", run.text, keys: run.keys)
+    }
+
+    static func copyDeclined() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: copyChoices))
+        expect(run.waitFor("Choose a model"), "declined copy: choice"); run.type("\r")
+        expect(run.waitFor("n to stop here."), "declined copy: offer"); run.type("n")
+        expect(run.finish() == 0, "declined copy: exit 0")
+        expect(run.text.contains("Nothing was copied or downloaded. Run `darkbloom cluster` here again to choose."), "declined copy: said")
+        expect(!recorder.all.contains { $0.hasPrefix("provision") || $0.hasPrefix("adopt") }, "declined copy: nothing moved or adopted")
+    }
+
+    static func copyBlockedByDisk() {
+        let recorder = Recorder()
+        let blocked = [ClusterOnboardingModelChoice(title: "Qwen3.5-9B", lines: [], blocker: nil, provision: .init(lines: ["Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (6.1 GB) — cannot start: Apple M3 Ultra, 256 GB has 3.0 GB free; the model needs 6.1 GB and 2.1 GB to spare"],
+            downloadAlternative: true, leaderDownloads: false, blocker: "Apple M3 Ultra, 256 GB has 3.0 GB free; the model needs 6.1 GB and 2.1 GB to spare"))]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: blocked))
+        expect(run.waitFor("Choose a model"), "disk: choice"); run.type("\r")
+        expect(run.finish() == 1, "disk: exit 1")
+        expect(run.text.contains("It cannot start: Apple M3 Ultra, 256 GB has 3.0 GB free; the model needs 6.1 GB and 2.1 GB to spare. Free some space and run `darkbloom cluster` here again."),
+            "disk: the free-disk refusal in words")
+        expect(!recorder.all.contains { $0.hasPrefix("provision") }, "disk: nothing started")
+    }
+
+    static func copyInterrupted() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: copyChoices, provisionResult: .failure(.init("The copy to Apple M3 Ultra, 256 GB stopped at 2.0 of 6.1 GB: the cable connection ended."))))
+        expect(run.waitFor("Choose a model"), "interrupted: choice"); run.type("\r")
+        expect(run.waitFor("n to stop here."), "interrupted: offer"); run.type("\r")
+        expect(run.finish() == 1, "interrupted: exit 1")
+        expect(run.text.contains("Run `darkbloom cluster` here again: a copy or download resumes where it stopped."), "interrupted: resumes next time")
+        expect(!recorder.all.contains("adopt 0"), "interrupted: no setup synced for a model a Mac lacks")
     }
 
     /// The exact text and key count of a flow, for the evidence.

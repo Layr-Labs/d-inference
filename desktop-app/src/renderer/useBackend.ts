@@ -34,7 +34,8 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
   const [cooling, setCooling] = useState<CoolingData>();
   const [release, setRelease] = useState<ReleaseData>();
   const [releaseHistory, setReleaseHistory] = useState<ReleaseHistory>();
-  const [leaders, setLeaders] = useState<Leader[]>([]);
+  // Undefined until the first rankings read settles, so loading is not shown as unavailable.
+  const [leaders, setLeaders] = useState<Leader[]>();
   const [leaderError, setLeaderError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);

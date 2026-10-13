@@ -3504,9 +3504,18 @@ make landing                    # standalone install, lint, build and HTTP route
 
 The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
 lint, the production build (including TypeScript checks), and `npm test`.
-The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
-production server to verify pages, legacy redirects, assets and unconfigured
-API responses without production credentials or upstream requests. For a
+The Node suites in `landing/tests/` use `helpers/site-server.mjs`
+(`startSiteServer`) to start isolated production servers. They verify existing
+routes, negotiated HTML/Markdown preferences, real 404s, discovery links,
+canonical/structured metadata, sitemap entries and the public OpenAPI schema.
+`@apidevtools/swagger-parser` validates the served schema. Pricing cases use a
+local HTTP upstream with real responses, including unavailable/malformed data;
+no test needs production credentials or production inference. The representation
+suite checks preserved framework `Vary` tokens as well as `Accept`, including
+alternating HTML/Markdown requests. Preserve that regression across Next upgrades.
+
+Search results and cross-domain discovery require separate read-only inspection
+after an authorized deployment. A passing local suite is not live verification. For a
 migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
 `/docs` redirect, fonts/media, desktop and mobile scrolling, and chat states.
 Verify `/api/network` and `/api/about` against the configured upstreams;

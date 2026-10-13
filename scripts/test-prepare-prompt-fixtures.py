@@ -109,6 +109,13 @@ class PromptFixturesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cached artifact"):
             self.provision("third")
 
+    def test_identifies_public_fixture_client_to_cdn(self):
+        self.write_manifest()
+        opener = Opener(self.body)
+        with patch.object(fixtures.urllib.request, "build_opener", return_value=opener):
+            self.provision()
+        self.assertEqual(opener.addheaders, [("User-Agent", "darkbloom-prompt-fixtures/1")])
+
     def test_rejects_unsafe_paths_digests_aggregates_and_budgets(self):
         for path in ("/absolute", "../escape", "a/../b", "a//b", "a\\b", "a/./b", "a\0b"):
             with self.subTest(path=path), self.assertRaises(ValueError):

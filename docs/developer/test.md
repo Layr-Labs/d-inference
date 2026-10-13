@@ -264,6 +264,12 @@ outputs. Provider tests load them from provider-owned resources or `fixtures/`,
 not from a removed backend tree. Preserve exact bytes, attribution, artifact
 hashes, enum casing and optional-field omission.
 
+`scripts/verify-prompt-parity.sh` uses `scripts/prepare-prompt-fixtures.py` to
+download only the committed manifests' hash-pinned public prompt assets, never
+weights. The downloader identifies itself as `darkbloom-prompt-fixtures/1` to
+the CDN and retains same-origin HTTPS, byte-budget and integrity checks.
+Provisioning failures fail qualification; they must not silently skip vectors.
+
 Public validation means **this implementation matches those fixed expectations**.
 It does not run private Go/Rust implementations, establish current cross-implementation
 parity, prove live routing or certify all models. Platform qualification independently

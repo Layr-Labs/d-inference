@@ -199,6 +199,7 @@ def provision(source, root, destination, cdn_url):
         seen.add(manifest["model_id"])
         manifests.append((raw, manifest, artifacts))
     opener = urllib.request.build_opener(SameOriginRedirect())
+    opener.addheaders = [("User-Agent", "darkbloom-prompt-fixtures/1")]
     for raw, manifest, artifacts in manifests:
         identity = contract_id(artifacts)
         metadata = {

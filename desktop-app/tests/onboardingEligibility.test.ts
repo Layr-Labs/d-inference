@@ -58,9 +58,40 @@ describe('derived eligibility', () => {
     );
   });
 
+  it('passes a fresh install, whose models report only their catalog size', () => {
+    // DesktopSnapshot.swift reports memory_gb only for downloaded models.
+    const fresh = models.map(({ memory_gb: _, ...model }) => ({ ...model, downloaded: false }));
+    const result = evaluateEligibility(snapshot({ models: fresh }));
+    expect(result.verdict).toBe('eligible');
+    expect(byID(result.checks).memory).toEqual({
+      id: 'memory',
+      label: 'Unified memory',
+      ok: true,
+      value: '64 GB',
+    });
+    const tight = evaluateEligibility(
+      snapshot({ machine: { ...snapshot().machine, memory_gb: 4 }, models: fresh }),
+    );
+    expect(byID(tight.checks).memory.detail).toBe(
+      'This Mac has 4 GB of unified memory; the smallest supported model needs 6.1 GB.',
+    );
+  });
+
+  it('does not blame memory when the runtime rejects a model that would fit it', () => {
+    // A 6.1 GB model can exceed an 8 GB Mac's load allowance, which is not reimplemented here.
+    const result = evaluateEligibility(
+      snapshot({
+        machine: { ...eightGBMac().machine },
+        models: models.map((model) => ({ ...model, eligible: false })),
+      }),
+    );
+    expect(result.verdict).toBe('unknown');
+    expect(byID(result.checks).memory.ok).toBeNull();
+  });
+
   it('leaves memory unevaluated when no model reports what it needs', () => {
     const result = evaluateEligibility(
-      snapshot({ models: models.map(({ memory_gb: _, ...model }) => model) }),
+      snapshot({ models: models.map(({ memory_gb: _, ...model }) => ({ ...model, size_gb: 0 })) }),
     );
     expect(result.verdict).toBe('unknown');
     expect(byID(result.checks).memory).toEqual({

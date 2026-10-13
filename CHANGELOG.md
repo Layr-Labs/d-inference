@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop first-launch eligibility on fresh installs
+
+- Confirm eligible Macs during first-launch onboarding on a fresh install. The runtime reports measured memory only for downloaded models, so with nothing downloaded every Mac read "We couldn't confirm everything". Models not yet on the Mac now count by catalog size, as the runtime's own fit check does. Memory is reported as failing only when every reported model needs more than the Mac has.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

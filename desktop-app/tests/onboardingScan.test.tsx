@@ -191,7 +191,7 @@ describe('when the result is not known yet', () => {
   });
 
   it('lets people check again or continue when a requirement can’t be evaluated', async () => {
-    const backend = backendWith(snapshot({ models: models.map(({ memory_gb: _, ...m }) => m) }));
+    const backend = backendWith(snapshot({ models: [] }));
     renderOnboarding(backend);
     elapse(revealMs);
     expect(heading('We couldn’t confirm everything.')).toBeVisible();

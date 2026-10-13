@@ -100,7 +100,7 @@ describe('waitlist form', () => {
   });
 
   it('is offered only to a Mac that failed a check', () => {
-    const unchecked = snapshot({ models: models.map(({ memory_gb: _, ...model }) => model) });
+    const unchecked = snapshot({ models: [] });
     render(<Onboarding backend={backendWith(unchecked)} done={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Start' }));
     fireEvent.click(screen.getByRole('button', { name: /Skip/ }));

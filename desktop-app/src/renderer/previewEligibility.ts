@@ -83,9 +83,9 @@ export function withOnboardingScenario(
       ],
     );
   }
-  // An older runtime on a fresh install: no eligibility report and no downloaded model to
-  // say how much memory a model needs.
-  if (scenario === 'unknown') return freshInstall(snapshot);
+  // A fresh install whose runtime has not loaded the model catalog yet: no eligibility report
+  // and no model to say how much memory it needs.
+  if (scenario === 'unknown') return { ...freshInstall(snapshot), models: [] };
   return snapshot;
 }
 

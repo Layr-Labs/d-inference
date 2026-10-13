@@ -1,4 +1,4 @@
-import type { Snapshot } from '../../../shared/contracts';
+import type { NativeModel, Snapshot } from '../../../shared/contracts';
 import type { Eligibility, EligibilityCheck } from '../../../shared/eligibility';
 import { gigabytes } from '../../models/facts';
 
@@ -23,17 +23,26 @@ function verdictOf({ eligible, checks }: Eligibility): Verdict {
 
 // A runtime that failed to detect its hardware reports zero memory, so both checks stay
 // unevaluated rather than guessed. Memory is compared only with what the snapshot's own
-// models say they need; the provider's load-time admission is not reimplemented here.
+// models say they need; the provider's load-time admission is not reimplemented here. The
+// runtime measures memory only for downloaded models, so a model not yet on this Mac (every
+// model on a fresh install) needs its catalog size, as the runtime's own fit check assumes.
+// Models the runtime accepts set the bar; when it accepts none, memory explains that only if
+// every reported model needs more than this Mac has.
 export function derivedEligibility({ machine, models, observed_at }: Snapshot): Eligibility {
   const detected = machine.memory_gb > 0;
-  const needs = models.flatMap((model) =>
-    model.eligible && model.memory_gb ? [model.memory_gb] : [],
-  );
+  const need = (model: NativeModel) => model.memory_gb || model.size_gb;
+  const sized = models.filter((model) => need(model) > 0);
+  const accepted = sized.filter((model) => model.eligible);
+  const compared = accepted.length
+    ? accepted
+    : sized.every((model) => need(model) > machine.memory_gb)
+      ? sized
+      : [];
   const checks = [
     appleSiliconCheck(detected ? machine.chip : undefined),
     memoryCheck(
       detected ? machine.memory_gb : undefined,
-      needs.length ? Math.min(...needs) : undefined,
+      compared.length ? Math.min(...compared.map(need)) : undefined,
     ),
   ];
   return { eligible: checks.every((check) => check.ok), checked_at: observed_at, checks };

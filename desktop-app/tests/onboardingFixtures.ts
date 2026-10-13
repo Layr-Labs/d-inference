@@ -58,10 +58,12 @@ export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   };
 }
 
+// As the runtime reports it: the only catalog model does not fit, so it is not eligible.
 export const eightGBMac = (base = snapshot()) =>
   snapshot({
     machine: { ...base.machine, name: 'MacBook Air', chip: 'Apple M1', memory_gb: 8 },
     memory: { total_gb: 8 },
+    models: [{ ...models[0], eligible: false, reason: 'Needs 16.4 GB of unified memory' }],
   });
 
 export function backendWith(

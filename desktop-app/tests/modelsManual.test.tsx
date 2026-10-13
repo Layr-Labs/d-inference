@@ -64,3 +64,49 @@ it('falls back to manual selection with a note on a runtime without Autopilot', 
   expect(screen.queryByRole('button', { name: /Pin/ })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: /Apply selection/ })).toBeVisible();
 });
+
+it('drops a chosen model from the selection once it is removed', () => {
+  const state = poolSnapshot({ enabled: false, phase: 'off' });
+  const backend = backendWith(state);
+  const view = render(<Models backend={backend} />);
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select Qwen 3.5 9B' }));
+  const removed = {
+    ...state,
+    models: state.models.map((model) =>
+      model.id === 'qwen-3.5-9b' ? { ...model, downloaded: false } : model,
+    ),
+  };
+  view.rerender(<Models backend={backendWith(removed, { act: backend.act })} />);
+  expect(screen.getByRole('checkbox', { name: 'Select Qwen 3.5 9B' })).not.toBeChecked();
+  fireEvent.click(screen.getByRole('button', { name: /Apply selection/ }));
+  expect(backend.act).toHaveBeenCalledWith({
+    action: 'switch',
+    models: ['gpt-oss-20b', 'gemma-4-26b'],
+  });
+});
+
+it('does not draw unreported memory use as an empty bar', () => {
+  const state = poolSnapshot({ enabled: false, phase: 'off' });
+  const { container } = render(
+    <Models
+      backend={backendWith({ ...state, memory: { ...state.memory, active_gb: undefined } })}
+    />,
+  );
+  expect(container.querySelector('.model-memory .memory-track')).toBeNull();
+});
+
+it('explains an empty Downloaded filter instead of blaming the catalog', () => {
+  const state = poolSnapshot({ enabled: false, phase: 'off' });
+  renderModels({
+    ...state,
+    models: state.models.map((model) => ({
+      ...model,
+      downloaded: false,
+      serving: false,
+      loaded: false,
+    })),
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Downloaded' }));
+  expect(screen.getByText('No downloaded models')).toBeVisible();
+  expect(screen.queryByText(/load the model catalog/)).not.toBeInTheDocument();
+});

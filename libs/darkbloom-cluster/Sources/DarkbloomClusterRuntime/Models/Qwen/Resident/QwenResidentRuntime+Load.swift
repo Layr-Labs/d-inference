@@ -33,9 +33,10 @@ extension QwenResidentRuntime {
         let launchEnvironment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: launchEnvironment)
         // Graph-shaping terms both ranks bind into the load agreement: the
-        // stages' KV storage (paged by default) and the batch lanes.
-        let kvKind = try ClusterStageKVBackendKind.fromEnvironment(launchEnvironment)
+        // stages' KV storage (paged by default; contiguous for one-request MTP stages) and the batch lanes.
         let batch = try QwenBatchSettings.fromEnvironment(launchEnvironment)
+        let kvKind = try ClusterStageKVBackendKind.resolved(environment: launchEnvironment,
+            speculative: mode.usesSpeculativeHead, batchLanes: batch.lanes)
         // JACCL unless the single-Mac qualification socket was permitted and declared.
         var transport = ClusterTransport.jaccl
         // A recording request may be asked to commit this; fixed here, once.

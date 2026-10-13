@@ -170,7 +170,7 @@ final class CBv2OwnedRequestState {
                     .deliver(to: observer, check: check)
             }
             try validateOutput(output)
-            try validateState(after: committedTokens + tokenCount, storageViews: tokenCount > 1 || !pagedHost)
+            try validateState(after: committedTokens + tokenCount, storageViews: !pagedHost)
             try check()
             try evaluation!.commit()
             evaluation = nil; evaluationWasStaged = false
@@ -212,7 +212,9 @@ final class CBv2OwnedRequestState {
             }
             let caches = bank.layerCaches(rowStates: [rows])
             evaluation = try recurrent.bind(); evaluationWasStaged = false
-            let outputs = try forward(caches, evaluation!)
+            let outputs = try Self.buildingWindow(bank: bank, pagedHost: pagedHost) {
+                try forward(caches, evaluation!)
+            }
             let recurrentRoots = try evaluation!.evaluate(); evaluationWasStaged = true
             guard evaluation!.isCaptured else {
                 throw ProbeError("CBv2 speculative window did not capture its recurrent positions")
@@ -224,6 +226,26 @@ final class CBv2OwnedRequestState {
             isFailed = true
             throw error
         }
+    }
+
+    /// Builds a speculative window's forward. On a paged host every layer
+    /// cache attends the `1 + k` window one query column at a time (the
+    /// one-token decode kernel per column), as the single-Mac engine's MTP
+    /// verification round does, with the columns of a one-request window
+    /// dispatched together (`PagedMTPBatchedColumns`: independent decode rows
+    /// of the same kernel, one launch; the cache falls back to one launch
+    /// per column where that is ineligible); otherwise a paged cache serves
+    /// the window as a prompt chunk and re-gathers the request's whole
+    /// history from its pages per attention layer per round, which made MTP
+    /// decode collapse with context (9B at 30K: 25.7 vs 133 tok/s
+    /// contiguous). Contiguous storage keeps the window it always had.
+    static func buildingWindow<R>(bank: CBv2LayerCacheBank, pagedHost: Bool,
+                                  _ forward: () throws -> R) throws -> R {
+        guard pagedHost else { return try forward() }
+        guard bank.supportsMTPRectangularVerification else {
+            throw ProbeError("Paged stage KV cannot serialise a speculative window")
+        }
+        return try bank.withMTPRectangularVerification(batched: true, forward)
     }
 
     /// After the caller evaluated the roots `beginWindow` returned.
@@ -291,7 +313,7 @@ final class CBv2OwnedRequestState {
                 throw ProbeError("CBv2 speculative window was not settled")
             }
             try check()
-            try validateState(after: committedTokens)
+            try validateState(after: committedTokens, storageViews: !pagedHost)
             guard Set(recurrent.confirmedStateSnapshot()?.keys.map { $0 } ?? [])
                 == Set(geometry.recurrent.modelLayerIndices) else {
                 throw ProbeError("CBv2 speculative window did not commit every local layer")
@@ -304,12 +326,14 @@ final class CBv2OwnedRequestState {
         }
     }
 
-    /// A paged host's row snapshot is a page gather per attention layer: built
-    /// after every decode token it costs the one-request worker 6-12 % of its
-    /// decode rate (the batch loop never built it). One-token decode steps on a
-    /// paged host check each row's frontier and binding; the attendable views'
-    /// shape and dtype are checked at adoption, after every prefill frame and
-    /// after every speculative window, as before.
+    /// A paged host's row snapshot is a WHOLE-HISTORY page gather per attention
+    /// layer, and the gather publishes the pool's fence, so the next step's
+    /// writes make the GPU execute it: after every decode token it cost the
+    /// one-request worker 6-12 % of its decode rate, and after every prompt
+    /// chunk and every speculative window it re-read the whole context once per
+    /// layer (O(context) per chunk and per verify round). On a paged host every
+    /// step checks each row's frontier and binding; the attendable views' shape
+    /// and dtype are checked at adoption. Contiguous hosts keep every check.
     var pagedHost: Bool { geometry.host?.kind == .paged }
 
     func validateState(after count: Int, storageViews: Bool = true) throws {

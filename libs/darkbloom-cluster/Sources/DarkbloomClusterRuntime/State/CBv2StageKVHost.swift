@@ -15,12 +15,36 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     /// Paged unless the diagnosis switch names contiguous. Anything else stops
     /// the load by name; it never silently falls back.
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Self {
+        try Self.named(environment) ?? .paged
+    }
+
+    /// The backend the launch named, nil when it named none. Anything but
+    /// paged or contiguous stops the load by name.
+    public static func named(_ environment: [String: String]) throws -> Self? {
         guard let raw = environment[environmentName]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return .paged }
+              !raw.isEmpty else { return nil }
         guard let value = Self(rawValue: raw.lowercased()) else {
             throw ProbeError("Unknown \(environmentName)=\(raw); only paged or contiguous can be declared")
         }
         return value
+    }
+
+    /// A stage's backend when the launch named none, from what the stage
+    /// serves rather than from the model or the Mac: CONTIGUOUS for a stage
+    /// that decodes one request at a time with a speculative (MTP) head, PAGED
+    /// for batch lanes and every stage without a head. Both ranks derive the
+    /// same value from the same mode and lanes; a named backend always wins.
+    ///
+    /// Interim (2026-10-12): with the head, paged storage is still slower than
+    /// contiguous, on the pair and on one Mac alone. 9B at 30K, same binary:
+    /// verify windows (columns batched, each column still reads the whole
+    /// context) decode at 88 vs 107 tok/s on the pair (95 vs 133 on one Mac),
+    /// and prefill chunks re-gather all earlier pages (first token 9.3 vs
+    /// 7.1 s). `batchLanes` > 1 only occurs in pipeline mode, which has no
+    /// head. Paged returns for MTP stages once both gaps close.
+    public static func resolved(environment: [String: String], speculative: Bool, batchLanes: Int) throws -> Self {
+        if let value = try Self.named(environment) { return value }
+        return speculative && batchLanes <= 1 ? .contiguous : .paged
     }
 
     /// Extra load-agreement fields: both ranks must store and attend the same

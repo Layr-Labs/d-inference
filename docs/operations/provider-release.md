@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 Runbook for shipping a new `darkbloom` provider CLI: bump `ProviderCore.version`,
 compile selected changelog fragments, push a `vX.Y.Z` tag, and let
@@ -40,14 +40,22 @@ retry of that old workflow still uses its original source. For an unchanged
 candidate with successful build and SDK qualification, merge the tooling fix
 and use the retained unsigned recovery path below.
 
-### 0.9.20 candidate
+### 0.9.21 candidate
 
-`ProviderCore.version` is prepared as `0.9.20`; no tag or release is published
-by this version bump. Provider packaging and retained-build recovery validate
-the requested tag and binary against that provider source. The retained
-coordinator copy still declares `0.9.19` and is not a provider release input.
-Centralized coordinator changes belong in `Layr-Labs/darkbloom-platform`;
-deploy its matching official-build registration support before publication.
+`ProviderCore.version` is prepared as `0.9.21`. The candidate excludes startup
+health-check timings from throughput learning and enables bounded calibration
+for ordinary autoregressive and native block engines before their first customer
+job. It pins the merged ordinary-request retirement API from
+[mlx-swift-lm #305](https://github.com/Layr-Labs/mlx-swift-lm/pull/305).
+This version bump does not tag, register or publish a release. Packaging validates
+the requested tag and binary against provider-owned source; coordinator
+compatibility and deployment remain in `Layr-Labs/darkbloom-platform`.
+
+### Published 0.9.20
+
+`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
+Its SSD write-budget and release-identity entry remains in the changelog.
+Unrelated unreleased sections are not automatically included in a new release.
 
 ### Published 0.9.19
 
@@ -513,7 +521,7 @@ Coordinator deploys are a separate runbook:
 
 Set the provider's release identity:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.20"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.21"`
 
 Do not edit the retained coordinator copy to prepare a provider release.
 The platform owns coordinator compatibility; the registered release row
@@ -525,8 +533,8 @@ controls install and update discovery.
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.20`) and an optional reported string from a
-built binary (`darkbloom 0.9.20` or `0.9.20`); both must equal the source
+(`check-release-version.sh v0.9.21`) and an optional reported string from a
+built binary (`darkbloom 0.9.21` or `0.9.21`); both must equal the source
 version. The workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push.

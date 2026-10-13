@@ -3,12 +3,20 @@
 Unreleased changes live in [`changelog.d/`](changelog.d/README.md). Ordinary
 pull requests add one fragment; release preparation alone updates this file.
 
-## v0.9.20 — candidate (unpublished)
+## v0.9.21 — candidate (unpublished)
+
+Prepared on 2026-10-13; tagging and publication are separate steps.
+
+### Fixed
+
+- Keep one-token startup health-check timings out of serving throughput estimates, and bootstrap supported loaded models, including ordinary dense and MoE Qwens, with bounded, preemptible measurements so slow first-use samples do not leave warm providers waiting for their first jobs.
+
+## v0.9.20 - 2026-10-12
 
 - Raise the default SSD cache write budget from 750 GB to 4 TB (4,000 decimal GB)
   per rolling day. Saved limits and environment overrides continue to take precedence.
-- Prepare the provider release identity for 0.9.20. Publication remains pending;
-  the unreleased entries and fragments below have not been marked as shipped.
+- Prepare the provider release identity for 0.9.20. The unrelated unreleased
+  entries and fragments below remain separate.
 
 ## Unreleased — responsive provider App Attest handling
 

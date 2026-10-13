@@ -151,26 +151,35 @@ that never back-pressures serving). Code: `QwenStagePrefixDiskTier`,
   product's ceiling; the switch can only shorten it), no writes below 20 GiB
   free or past 750 GB written in a day, and prompts under 1,024 tokens are not
   kept.
-- **Configuration.** The worker reads `DARKBLOOM_CLUSTER_PREFIX_SSD_DIR` and
-  `DARKBLOOM_CLUSTER_PREFIX_SSD_KEY` (or `..._KEY_FILE`, a file only its user
-  can read); without both the tier is off and no prompt state touches the
-  disk. The installed owner sets both for its worker when the prefix cache is
-  on: root `~/Library/Caches/darkbloom/cluster-prefix-v1` (beside the
-  product's `kv3`, which it never touches) and this Mac's owner key, which
-  outlives every owner process (an owner serves one session, and the records
-  exist to warm the next one): derived from the product's Secure
-  Enclave-rooted KEK when the build holds the keychain entitlement (the
-  single-Mac SSD tier's key hierarchy; no new item or permission; passed in
-  the worker's environment, never written), otherwise a random key published
-  once in `~/.darkbloom/cluster-device/prefix-ssd-v1.key` (owner-only, never
-  replaced; the worker reads the file), and only if neither works a key of
-  the owner process (records then last one session). A rank deletes every
-  record a different key wrote.
+- **Configuration.** The worker reads `DARKBLOOM_CLUSTER_PREFIX_SSD_DIR` from
+  its environment and its 32-byte key ONLY from its input: started with
+  `--prefix-ssd-key darkbloom/prefix-ssd-key/input-line/v1` (the scheme, never
+  the key), it reads one `prefixSSDKey` line (epoch- and rank-bound, base64
+  key) right after the S16 data-plane credential, before the control reader
+  starts. Without a directory and a key the tier is off and no prompt state
+  touches the disk. A key in the environment is never used: a worker refuses
+  to start when `DARKBLOOM_CLUSTER_PREFIX_SSD_KEY` or `..._KEY_FILE` is set
+  (an environment is readable by every process of the same user for the
+  process's whole life), and an owner refuses a worker binary that lacks the
+  scheme while the tier is on (no fallback). The installed owner sets the
+  directory and sends the key when the prefix cache is on: root
+  `~/Library/Caches/darkbloom/cluster-prefix-v1` (beside the product's `kv3`,
+  which it never touches) and this Mac's owner key, which outlives every
+  owner process (an owner serves one session, and the records exist to warm
+  the next one): derived from the product's Secure Enclave-rooted KEK when
+  the build holds the keychain entitlement (the single-Mac SSD tier's key
+  hierarchy; no new item or permission; never written), otherwise a random
+  key published once in `~/.darkbloom/cluster-device/prefix-ssd-v1.key`
+  (owner-only, never replaced; the owner reads it), and only if neither works
+  a key of the owner process (records then last one session). A rank deletes
+  every record a different key wrote.
   `DARKBLOOM_CLUSTER_PREFIX_SSD=off` turns it off for diagnosis; budget
   switches `..._MAX_GB`, `..._MAX_RECORDS`, `..._TTL_SECONDS`, `..._STRIDE`,
   `..._MIN_TOKENS`, `..._MAX_WRITE_GB_PER_DAY`, `..._MIN_FREE_GB` pass through.
 - **Qualification.** `darkbloom-cluster-pair-check run` takes
-  `--local/--remote-prefix-ssd-dir` and `--...-prefix-ssd-key-file`,
+  `--local/--remote-prefix-ssd-dir` and `--...-prefix-ssd-key-file` (the
+  driver reads each side's key file there and sends the key on that worker's
+  input),
   `--prefix-ssd off`, and the faults `RANK:prefix_ssd_restore_fail=1` and
   `RANK:prefix_ssd_restore_stall=MILLISECONDS` (qualification flag only). The
   launcher report keeps the `darkbloom-prefix-v1` and

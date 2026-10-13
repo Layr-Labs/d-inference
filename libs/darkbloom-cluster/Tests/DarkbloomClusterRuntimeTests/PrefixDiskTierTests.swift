@@ -93,33 +93,47 @@ struct PrefixDiskTierTests {
     @Test func configurationFailsClosedAndOnlyShortensTheTTL() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let hex = String(repeating: "0f", count: 32)
-        #expect(QwenStagePrefixDiskConfiguration.fromEnvironment([:]).mode == .off(sweepRoot: nil, reason: "no directory"))
-        let noKey = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path])
+        let key = Data(repeating: 0x0f, count: 32)
+        #expect(QwenStagePrefixDiskConfiguration.fromEnvironment([:], key: key).mode == .off(sweepRoot: nil, reason: "no directory"))
+        let noKey = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path], key: nil)
         #expect(!noKey.enabled)
         if case .off(let sweep, _) = noKey.mode { #expect(sweep != nil) }
         let on = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex, "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS": "7200",
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_RECORDS": "3", "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB": "2"])
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS": "7200",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_RECORDS": "3", "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB": "2"], key: key)
         #expect(on.enabled && on.ttlSeconds == 1800 && on.recordLimit == 3 && on.byteBudget == 2 * 1_073_741_824)
         let shorter = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex, "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS": "60"])
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS": "60"], key: key)
         #expect(shorter.ttlSeconds == 60)
         let off = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex, "DARKBLOOM_CLUSTER_PREFIX_SSD": "off"])
+            "DARKBLOOM_CLUSTER_PREFIX_SSD": "off"], key: key)
         #expect(!off.enabled)
-        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": "relative/dir",
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex]).enabled)
-        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
-            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": "abc"]).enabled)
-        // A key file must be private to this user.
+        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": "relative/dir"], key: key).enabled)
+        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path],
+            key: Data(repeating: 1, count: 16)).enabled)
+    }
+
+    /// Round-4 finding 1: the key is never taken from the environment (or a key
+    /// file named there); only the key the worker received on its input counts.
+    @Test func aKeyInTheEnvironmentIsNeverUsed() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hex = String(repeating: "0f", count: 32)
         let keyFile = root.appendingPathComponent("key")
         try Data(hex.utf8).write(to: keyFile)
-        chmod(keyFile.path, 0o644)
-        let environment = ["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path, "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE": keyFile.path]
-        #expect(!QwenStagePrefixDiskConfiguration.fromEnvironment(environment).enabled)
         chmod(keyFile.path, 0o600)
-        #expect(QwenStagePrefixDiskConfiguration.fromEnvironment(environment).enabled)
+        for environment in [["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path, "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex],
+                            ["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path, "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE": keyFile.path]] {
+            let value = QwenStagePrefixDiskConfiguration.fromEnvironment(environment, key: nil)
+            #expect(!value.enabled)
+            if case .off(let sweep, let reason) = value.mode {
+                #expect(sweep?.path == root.standardizedFileURL.path && reason == "no usable key")
+            }
+        }
+        let supplied = Data(repeating: 0xab, count: 32)
+        let input = QwenStagePrefixDiskConfiguration.fromEnvironment(["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR": root.path,
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY": hex], key: supplied)
+        if case .on(_, let key) = input.mode { #expect(key == supplied) } else { Issue.record("the supplied key did not turn the tier on") }
     }
 
     @Test func aRecordSurvivesARestartAndRestoresExactlyAtEachKeptFrontier() throws {

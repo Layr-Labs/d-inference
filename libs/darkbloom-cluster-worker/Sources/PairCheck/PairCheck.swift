@@ -45,7 +45,8 @@ import Foundation
               [--fault RANK:handoff_corrupt_segment=N | RANK:handoff_stall_after_segment=N:MILLISECONDS
                        | RANK:prefix_ssd_restore_fail=1 | RANK:prefix_ssd_restore_stall=MILLISECONDS]
               [--local-prefix-ssd-dir /ABS --local-prefix-ssd-key-file /ABS] (each Mac's prompt-prefix SSD tier:
-              [--remote-prefix-ssd-dir /ABS --remote-prefix-ssd-key-file /ABS]  root and a private 32-byte key file)
+              [--remote-prefix-ssd-dir /ABS --remote-prefix-ssd-key-file /ABS]  root and a private 32-byte key file;
+                                                                     the key reaches the worker on its input)
               [--prefix-ssd off (diagnosis: both workers keep nothing on disk and delete what they kept)]
               [--stop-after-tokens N (the owner stops like a client that hangs up; with --evidence none)]
               [--data-plane encrypted_v1|plaintext (S16; default encrypted_v1: per-run pinned identities, keyed records)]

@@ -121,6 +121,37 @@ public struct ClusterWorkerDataPlaneTrust: Equatable, Sendable {
     public static let argument = "encrypted_v1"
 }
 
+/// The key of one worker's prompt-prefix SSD tier: 32 bytes its owner derived
+/// for this Mac (from the product's Secure Enclave-rooted key, or its owner-only
+/// key file), bound to the worker's epoch and rank. The owner writes it once, as
+/// a line of the worker's control pipe right after the data-plane credential
+/// (first when there is none) and before any other line; the worker announced
+/// by `--prefix-ssd-key` with `argument` reads it there. Like the credential it
+/// never appears on a command line, in the environment or in a log: an
+/// environment is readable by every process of the same user for the
+/// process's whole life. Its descriptions redact the key.
+public struct ClusterWorkerPrefixSSDKey: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public let membershipEpoch: UUID
+    public let rank: Int
+    public let key: Data
+    public init(membershipEpoch: UUID, rank: Int, key: Data) throws {
+        try workerRequire((0...1).contains(rank) && key.count == 32, "Invalid prefix-SSD key")
+        self.membershipEpoch = membershipEpoch; self.rank = rank; self.key = key
+    }
+    /// What `--prefix-ssd-key` names on the worker's command line: the scheme,
+    /// never the key. A worker built with this delivery carries these bytes,
+    /// which is how an owner tells it from one that does not.
+    public static let argument = "darkbloom/prefix-ssd-key/input-line/v1"
+    /// The environment names an older owner put the key (or its file) in. A
+    /// worker refuses to start when either is present, so a mismatched pair of
+    /// binaries fails loudly instead of the key sitting in an environment.
+    public static let retiredEnvironmentNames = ["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY", "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]
+    public var description: String {
+        "ClusterWorkerPrefixSSDKey(epoch: \(membershipEpoch.uuidString.lowercased()), rank: \(rank), key: <redacted>)"
+    }
+    public var debugDescription: String { description }
+}
+
 /// What a ready worker states about its data plane. Both ranks of one keyed
 /// session report the same transcript and edge; an owner compares them.
 public struct ClusterWorkerDataPlane: Equatable, Sendable {

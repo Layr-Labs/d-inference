@@ -37,19 +37,26 @@ struct WorkerConfiguration {
     /// authenticated, encrypted record after a pinned key exchange. Absent: the
     /// plaintext data plane (diagnosis and qualification only).
     let dataPlaneEncrypted: Bool
+    /// `--prefix-ssd-key darkbloom/prefix-ssd-key/input-line/v1`: the key of
+    /// this rank's prompt-prefix SSD tier is the next line of the control pipe
+    /// (after the data-plane credential), bound to this epoch and rank. The
+    /// argument names the scheme only; the key is never an argument or a
+    /// variable. Absent: no key, and the SSD tier stays off.
+    let prefixSSDKeyOnInput: Bool
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
             "--model-id", "--artifact-sha256", "--configuration-sha256", "--peer0-id",
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
-            "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane"]
+            "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane",
+            "--prefix-ssd-key"]
         let bootstrapCounts = [0, WorkerBootstrapConfiguration.names.count, WorkerBootstrapConfiguration.names.count + 1]
         let counts = bootstrapCounts.map { names.count + $0 }.flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
         }
         guard counts.contains(arguments.count) else {
-            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag, optional keep-warm switch, optional data-plane protection and optional complete bootstrap triple with its optional native start")
+            throw WorkerFailure.invalid("Expected twelve worker pairs, optional prefill schedule, optional evidence directory, optional startup deadline, optional generation mode, optional speculative depth, optional qualification-switches flag, optional keep-warm switch, optional data-plane protection, optional prefix-SSD key scheme and optional complete bootstrap triple with its optional native start")
         }
         var fields: [String: String] = [:]
         for index in stride(from: 0, to: arguments.count, by: 2) {
@@ -91,6 +98,11 @@ struct WorkerConfiguration {
         case nil: dataPlaneEncrypted = false
         case ClusterWorkerDataPlaneTrust.argument: dataPlaneEncrypted = true
         default: throw WorkerFailure.invalid("--data-plane takes only \(ClusterWorkerDataPlaneTrust.argument)")
+        }
+        switch fields["--prefix-ssd-key"] {
+        case nil: prefixSSDKeyOnInput = false
+        case ClusterWorkerPrefixSSDKey.argument: prefixSSDKeyOnInput = true
+        default: throw WorkerFailure.invalid("--prefix-ssd-key takes only \(ClusterWorkerPrefixSSDKey.argument)")
         }
         switch fields["--keep-warm"] {
         case nil, "on": keepWarm = true

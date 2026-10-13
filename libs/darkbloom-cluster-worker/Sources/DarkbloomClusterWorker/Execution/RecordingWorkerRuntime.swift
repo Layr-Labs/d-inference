@@ -23,7 +23,7 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
          evidenceDirectory: String, generationMode: ClusterGenerationMode = .pipeline,
          speculativeTerms: QwenMTPTerms? = nil,
          qualification: QwenResidentQualificationSwitches = .refused,
-         dataPlane: ClusterDataPlaneCredential? = nil) throws {
+         dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil) throws {
         self.attachment = attachment
         // Opened before any model work: an unusable directory fails the launch.
         sink = try WorkerEvidenceSink(path: evidenceDirectory)
@@ -32,7 +32,7 @@ final class RecordingWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .oneChunkLookahead: policy = .oneChunkLookahead
         }
         owner = try .load(configuration, generationMode: generationMode, speculativeTerms: speculativeTerms,
-            qualification: qualification, dataPlane: dataPlane)
+            qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
         try JACCLOwnerBootstrap.requireConsumedIfInstalled()
     }
 

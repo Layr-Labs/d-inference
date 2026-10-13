@@ -1,16 +1,18 @@
 import Foundation
 
-/// How the SSD tier of a rank's prompt-prefix cache is configured, from the
-/// worker's environment. The installed owner sets the directory and the key;
+/// How the SSD tier of a rank's prompt-prefix cache is configured: the
+/// directory and budgets from the worker's environment, the key from the
+/// worker's input. The installed owner sets the directory and sends the key;
 /// without both the tier is off (fail closed: no prompt state is ever written
 /// to disk unencrypted).
 ///
 /// - `DARKBLOOM_CLUSTER_PREFIX_SSD_DIR`: the root directory (absolute path).
-/// - `DARKBLOOM_CLUSTER_PREFIX_SSD_KEY`: 64 hex characters, or
-///   `DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE`: a file only this user can read
-///   holding 32 bytes or 64 hex characters. The key encrypts and names every
-///   record; a different key makes every record unreadable, and the rank
-///   deletes them.
+/// - The key: 32 bytes the owner sends as a bound line of the worker's control
+///   pipe (`--prefix-ssd-key`, `ClusterWorkerPrefixSSDKey`), handed to the load
+///   in-process. It is never read from the environment or from a file: an
+///   environment is readable by every process of the same user for the
+///   process's whole life. The key encrypts and names every record; a
+///   different key makes every record unreadable, and the rank deletes them.
 /// - `DARKBLOOM_CLUSTER_PREFIX_SSD=off`: diagnosis; the rank keeps nothing on
 ///   disk and deletes what it kept before under the root.
 /// - Budgets: `..._MAX_RECORDS` (records per rank, 64), `..._MAX_GB` (bytes per
@@ -23,8 +25,6 @@ import Foundation
 /// This file needs nothing but Foundation and the runtime's error type.
 public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
     public static let directoryEnvironmentName = "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"
-    public static let keyEnvironmentName = "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"
-    public static let keyFileEnvironmentName = "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"
     public static let switchEnvironmentName = "DARKBLOOM_CLUSTER_PREFIX_SSD"
     public static let maximumTTLSeconds = 1_800
 
@@ -53,8 +53,9 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
 
     public var enabled: Bool { if case .on = mode { return true }; return false }
 
+    /// `key` is the 32-byte key the worker received on its input, or nil.
     public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment,
-                                       readFile: (URL) throws -> Data = { try Data(contentsOf: $0) }) -> Self {
+                                       key suppliedKey: Data?) -> Self {
         let root = environment[directoryEnvironmentName].flatMap { value -> URL? in
             guard value.hasPrefix("/"), value.utf8.count <= 1024, !value.split(separator: "/").contains("..") else { return nil }
             return URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL
@@ -64,14 +65,7 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
             return Self(mode: .off(sweepRoot: root, reason: "switched off"))
         }
         guard let root else { return Self(mode: .off(sweepRoot: nil, reason: "no directory")) }
-        var key: Data?
-        if let hex = environment[keyEnvironmentName] {
-            key = Self.decodeKey(Data(hex.utf8))
-        } else if let path = environment[keyFileEnvironmentName], path.hasPrefix("/") {
-            let url = URL(fileURLWithPath: path)
-            if Self.isPrivateFile(url), let bytes = try? readFile(url) { key = Self.decodeKey(bytes) }
-        }
-        guard let key else { return Self(mode: .off(sweepRoot: root, reason: "no usable key")) }
+        guard let key = suppliedKey, key.count == 32 else { return Self(mode: .off(sweepRoot: root, reason: "no usable key")) }
         var value = Self(mode: .on(root: root, key: key))
         func integer(_ suffix: String, _ range: ClosedRange<Int>) -> Int? {
             guard let text = environment["DARKBLOOM_CLUSTER_PREFIX_SSD_" + suffix], let number = Int(text),
@@ -89,27 +83,5 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
         }
         if let n = integer("MIN_FREE_GB", 1...16_384) { value.minimumFreeBytes = n * 1_073_741_824 }
         return value
-    }
-
-    /// 32 raw bytes, or 64 hex characters with optional surrounding whitespace.
-    static func decodeKey(_ bytes: Data) -> Data? {
-        if bytes.count == 32 { return bytes }
-        let text = String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.utf8.count == 64 else { return nil }
-        var key = Data(capacity: 32)
-        var index = text.startIndex
-        for _ in 0..<32 {
-            let next = text.index(index, offsetBy: 2)
-            guard let byte = UInt8(text[index..<next], radix: 16) else { return nil }
-            key.append(byte); index = next
-        }
-        return key
-    }
-
-    /// A regular file, not a link, owned by this user, that nobody else can read.
-    static func isPrivateFile(_ url: URL) -> Bool {
-        var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { return false }
-        return (info.st_mode & 0o077) == 0
     }
 }

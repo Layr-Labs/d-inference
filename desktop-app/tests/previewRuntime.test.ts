@@ -63,7 +63,9 @@ it('rejects an unsigned preview backend before executing it or updating it', asy
   const runtime = await fixture(ready);
   const backend = new Backend(true, runtime);
   await backend.connect();
-  expect(backend.current.state).toBe('error');
+  // macOS codesign rejects the unsigned fixture; CI's Linux runner has no codesign (ENOENT, which
+  // reads as a missing runtime). Either way the backend must refuse it without executing it.
+  expect(backend.current.state).toBe(process.platform === 'darwin' ? 'error' : 'missing');
   await expect(readFile(path.join(runtime.directory, 'connection.json'))).rejects.toThrow();
   await expect(backend.install('unused')).rejects.toThrow('Rebuild the local preview');
 });

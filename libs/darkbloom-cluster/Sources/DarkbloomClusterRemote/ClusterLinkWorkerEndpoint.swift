@@ -894,9 +894,11 @@ private final class ServerSession: @unchecked Sendable {
         let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
         let cleanly = endpoint.waitForOwnerReleased(deadline: deadline)
         let termination = endpoint.ownerTermination
-        // An unclean release says why, in the owner's words (its diagnostics
-        // are drained once it has ended), so the leader states the reason.
-        let reason = cleanly ? nil : ClusterLinkWorkerWire.ownerReason(endpoint.diagnosticTail)
+        // The release says how the rank ended, in the owner's words (its
+        // diagnostics are drained once it has ended): a worker that refused
+        // or failed on its own ends cleanly too, and only its owner's last
+        // line names why. The leader states it.
+        let reason = ClusterLinkWorkerWire.ownerReason(endpoint.diagnosticTail)
         send({ $0.releasedCleanly = cleanly; $0.setOwnerTermination(termination); $0.detail = reason }, kind: .released)
         server.emit(.released(session: id, cleanly: cleanly))
         server.ended(self)

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Check, Copy, Play, Terminal } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
-import { Button, Header, Status } from '../components/UI';
+import { Button, Header, Notice, Status } from '../components/UI';
 
 export function Studio({
   backend,
@@ -13,18 +13,30 @@ export function Studio({
 }) {
   const state = backend.state!;
   const [mode, setMode] = useState('combined');
-  const [key, setKey] = useState<string>();
+  const [revealed, setKey] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const [problem, setProblem] = useState('');
   const models = state.models.filter((model) => model.downloaded && model.eligible);
-  const [selected, setSelected] = useState('');
-  const model = selected || models[0]?.id || '';
   const endpoint = state.endpoint;
+  // Default to what the endpoint serves now, so the example works as copied and applying the
+  // serving mode does not switch models unless the user chooses another.
+  const served = endpoint?.models.filter((id) => models.some((model) => model.id === id)) ?? [];
+  const [selected, setSelected] = useState('');
+  const model = selected || served[0] || models[0]?.id || '';
+  const example = served.length && !served.includes(model) ? served[0] : model;
+  // A key belongs to the running endpoint; it is never left on screen after the endpoint stops.
+  const key = endpoint ? revealed : undefined;
   const copy = async (value: string) => {
-    await api?.copy(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
+    try {
+      setProblem('');
+      await api?.copy(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setProblem('Couldn’t copy to the clipboard.');
+    }
   };
-  const curl = `curl ${endpoint?.base_url || 'http://127.0.0.1:8000/v1'}/chat/completions \\\n  -H 'Authorization: Bearer <your-local-api-key>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: 'Hello' }] })}'`;
+  const curl = `curl ${endpoint?.base_url || 'http://127.0.0.1:8000/v1'}/chat/completions \\\n  -H 'Authorization: Bearer <your-local-api-key>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model: example, messages: [{ role: 'user', content: 'Hello' }] })}'`;
   return (
     <>
       <Header
@@ -115,16 +127,22 @@ export function Studio({
           <span>API key</span>
           <code>{key || '••••••••••••••••'}</code>
           <Button
-            disabled={!endpoint}
+            disabled={!endpoint && !key}
             onClick={async () => {
-              if (key) setKey(undefined);
-              else setKey((await api?.read<{ key: string }>('endpoint-key'))?.key);
+              if (key) return setKey(undefined);
+              try {
+                setProblem('');
+                setKey((await api?.read<{ key: string }>('endpoint-key'))?.key);
+              } catch {
+                setProblem('Couldn’t read the API key. Try again.');
+              }
             }}
           >
             {key ? 'Hide' : 'Reveal'}
           </Button>
         </div>
         <small className="muted">Requires an API key. Accessible only on this Mac.</small>
+        {problem && <Notice>{problem}</Notice>}
       </section>
       <section className="section">
         <div className="section-title">

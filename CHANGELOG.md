@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop Studio endpoint model and key
+
+- Default Studio's model to the one the local endpoint serves, so the copied example request targets a served model and Apply serving mode does not switch models unless you choose another. Remove a revealed API key from the screen when the endpoint stops, and report clipboard or key-read failures instead of showing "Copied".
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

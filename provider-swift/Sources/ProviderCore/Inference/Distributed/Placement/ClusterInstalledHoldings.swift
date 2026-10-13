@@ -57,6 +57,14 @@ public enum ClusterInstalledHoldings {
     /// arguments and a bounded output, as the capability probe's child is.
     public static func read(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability,
                             deadline: UInt64) throws -> ClusterPlacementHoldings {
+        let layout = try readLayout(configuration: configuration, deadline: deadline)
+        return try compute(configuration: configuration, capability: capability, layout: layout,
+            localPhysicalMemoryBytes: Int(clamping: ProcessInfo.processInfo.physicalMemory), pageSizeBytes: Int(getpagesize()))
+    }
+
+    /// The model's layout, read through the plan tool installed beside this
+    /// Mac's worker from the saved model directory (same checks as `read`).
+    static func readLayout(configuration: ClusterConfiguration, deadline: UInt64) throws -> ClusterModelLayout {
         let local = configuration.peers[configuration.localRank]
         let tool = URL(fileURLWithPath: local.workerExecutable).deletingLastPathComponent()
             .appendingPathComponent(toolName)
@@ -68,11 +76,9 @@ public enum ClusterInstalledHoldings {
               information.st_mode & 0o100 != 0 else {
             throw ClusterConfigurationError.invalid("\(toolName) beside this Mac's worker is not this user's own executable file")
         }
-        let layout = try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
+        return try ClusterModelLayout.decode(DistributedCapabilityProbe.run(executable: tool,
             arguments: ["layout", "--model-dir", local.modelDirectory, "--json"], deadline: deadline,
             maximumOutputBytes: ClusterModelLayout.maximumEncodedBytes))
-        return try compute(configuration: configuration, capability: capability, layout: layout,
-            localPhysicalMemoryBytes: Int(clamping: ProcessInfo.processInfo.physicalMemory), pageSizeBytes: Int(getpagesize()))
     }
 
     /// The holdings or the reason, never a throw: a status view shows either.

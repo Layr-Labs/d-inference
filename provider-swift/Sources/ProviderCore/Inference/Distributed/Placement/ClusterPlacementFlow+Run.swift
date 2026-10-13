@@ -86,9 +86,16 @@ extension ClusterPlacementFlow {
             try value.validate()
             return value
         }
+        // The profiles this plan read are kept for the serving leader's per-request route,
+        // and the speed records of requests this pair served join the measurements.
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        if let peer = description.members.first(where: { $0.id != inputs.localMemberID }) {
+            ClusterMemberProfiles.record([inputs.localMemberID: localProfile, peer.id: peerProfile], homeDirectory: home)
+        }
         let decided = try decide(description: description, capability: capability, localMemberID: inputs.localMemberID,
             localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
-            promptTokens: inputs.promptTokens, outputTokens: inputs.outputTokens, regime: inputs.regime)
+            promptTokens: inputs.promptTokens, outputTokens: inputs.outputTokens, regime: inputs.regime,
+            served: ClusterServedSpeedHistory.entries(homeDirectory: home))
         var written: [URL] = []
         var lines = decided.lines
         if let setup = decided.setup {

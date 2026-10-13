@@ -20,13 +20,16 @@ public struct DistributedSessionFacts: Sendable, Equatable {
     public let terminations: [String]
     public let peerHosts: [String]
     public let peerUsers: [String]
+    /// The members' setup IDs in rank order: speed records name which Mac held which range.
+    public let ranks: [String]?
 
     public init(clusterID: String, memberID: String, modelID: String, mode: String, cut: String,
                 membershipEpoch: String?, diagnostics: [String], terminations: [String],
-                peerHosts: [String], peerUsers: [String]) {
+                peerHosts: [String], peerUsers: [String], ranks: [String]? = nil) {
         self.clusterID = clusterID; self.memberID = memberID; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.membershipEpoch = membershipEpoch; self.diagnostics = diagnostics
         self.terminations = terminations; self.peerHosts = peerHosts; self.peerUsers = peerUsers
+        self.ranks = ranks
     }
 
     /// `0-16|16-32` from a partition's stages.

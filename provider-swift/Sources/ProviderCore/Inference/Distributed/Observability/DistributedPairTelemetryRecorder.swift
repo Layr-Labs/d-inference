@@ -11,9 +11,11 @@ public struct DistributedPairTelemetryContext: Sendable {
     /// The layers each rank holds, rank 0 first (`0-16|16-32`).
     public let cut: String
     public let log: ClusterPairTelemetryLog
+    /// The members in rank order (their setup IDs): a speed record names which Mac held which range.
+    public let ranks: [String]?
 
-    public init(modelID: String, mode: String, cut: String, log: ClusterPairTelemetryLog) {
-        self.modelID = modelID; self.mode = mode; self.cut = cut; self.log = log
+    public init(modelID: String, mode: String, cut: String, log: ClusterPairTelemetryLog, ranks: [String]? = nil) {
+        self.modelID = modelID; self.mode = mode; self.cut = cut; self.log = log; self.ranks = ranks
     }
 
     /// A record for a retired request; nil for every other phase.
@@ -27,7 +29,8 @@ public struct DistributedPairTelemetryContext: Sendable {
             firstTokenMilliseconds: observation.firstTokenMilliseconds.map { ($0 * 100).rounded() / 100 },
             decodeTokensPerSecond: observation.decodeTokensPerSecond, handoffMilliseconds: rank?.handoffMilliseconds,
             handoffBytes: rank?.handoffBytes, mtpDrafted: rank?.mtpDrafted, mtpAccepted: rank?.mtpAccepted,
-            outcome: observation.outcome ?? "unknown")
+            outcome: observation.outcome ?? "unknown", route: observation.route?.label,
+            routeReason: observation.route?.reason, ranks: ranks)
     }
 
     /// The observer the engine calls: logs every observation, records retired ones.

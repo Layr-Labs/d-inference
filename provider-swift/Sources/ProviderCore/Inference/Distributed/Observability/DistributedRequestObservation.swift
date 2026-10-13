@@ -23,6 +23,8 @@ public struct DistributedRequestObservation: Sendable {
     public let reusedPromptTokens: Int
     /// What the ranks measured (hand-off, MTP), once they reported it.
     public let rankTelemetry: DistributedRankTelemetry?
+    /// Which way the request went and why (`ClusterRequestRouter`); nil when the owner routes nothing.
+    public let route: DistributedRequestRouteNote?
     /// Cumulative observations discarded by this engine's bounded sink before
     /// this delivery. Drop-newest overflow; saturates at UInt64.max.
     public private(set) var droppedObservations: UInt64 = 0
@@ -48,6 +50,7 @@ public struct DistributedRequestObservation: Sendable {
         } else { decodeTokensPerSecond = nil }
         reusedPromptTokens = state.reusedPromptTokens
         rankTelemetry = state.rankTelemetry
+        route = state.lease.route
     }
 
     private static func milliseconds(_ duration: Duration) -> Double {

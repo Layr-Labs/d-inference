@@ -57,7 +57,8 @@ enum ClusterSetupPlanning {
     /// route only this Mac holds.
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
-                       measurements: [ClusterSpeedMeasurement], leader: String?? = .none) -> [Decision] {
+                       measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
+                       served: [ClusterServedSpeedRecords.Entry] = []) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
         let sessionLeader: String? = leader ?? localMemberID
@@ -83,12 +84,13 @@ enum ClusterSetupPlanning {
                 capabilitySHA256: capability.sha256, tokenizerFiles: reading.tokenizerFiles)
             do {
                 var decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
-                    localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: sessionLeader)
+                    localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: sessionLeader,
+                    served: served)
                 // Ports chosen on this Mac hold only when it leads; a plan the other Mac leads names the conventional ones.
                 if let setup = decided.setup, setup.leaderID != localMemberID, pair.ports != ClusterSetupPorts.Choice.conventional {
                     decided = try ClusterPlacementFlow.decide(description: pair.withPorts(.conventional), capability: capability.record,
                         localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
-                        measurements: measurements, leader: sessionLeader)
+                        measurements: measurements, leader: sessionLeader, served: served)
                 }
                 guard let chosen = decided.result.chosen else {
                     return blocked(refusalWords(decided.result, localMemberID: localMemberID))

@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
 
@@ -9,8 +10,12 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
     private let identity: DistributedResidentIdentity
     private let profile: DistributedResidentExecutionProfile
     private let chunkSize: Int
+    /// Per-request route between the pair as placed and the member holding
+    /// the whole model alone (`ClusterRequestRoutingBasis`); nil routes nothing.
+    private let routing: ClusterRequestRouting?
 
-    public init(pair: ClusterWorkerPair, profile: DistributedResidentExecutionProfile, chunkSize: Int) throws {
+    public init(pair: ClusterWorkerPair, profile: DistributedResidentExecutionProfile, chunkSize: Int,
+                routing: ClusterRequestRouting? = nil) throws {
         let wire = pair.profile
         let duration = profile.requestTimeout.components
         let nanoseconds = duration.seconds * 1_000_000_000 + duration.attoseconds / 1_000_000_000
@@ -20,7 +25,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
               nanoseconds > 0, nanoseconds <= Int64(ClusterWorkerLimits.deadlineNanoseconds) else {
             throw DistributedEngineError.invalidConfiguration("worker profile or request deadline differs")
         }
-        self.pair = pair; self.profile = profile; self.chunkSize = chunkSize
+        self.pair = pair; self.profile = profile; self.chunkSize = chunkSize; self.routing = routing
         let id = pair.identity
         identity = .init(membershipEpoch: id.membershipEpoch, modelID: id.modelID,
             artifactSHA256: id.artifactSHA256, configurationSHA256: id.configurationSHA256,
@@ -59,9 +64,15 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         let deadlines = try deadlineContext.localDeadlines(at: ContinuousClock.now,
             uptimeBeforeNow: uptime, maximumRemaining: profile.requestTimeout,
             lifetimeDeadline: .max)
+        // The faster way for this request: the pair is chosen only when it is
+        // predicted faster than the member alone beyond the tie tolerance, so
+        // a strong Mac is never made slower by its pair. Both are qualified.
+        let decided = routing?.route(promptTokens: request.promptTokens.count, maximumOutputTokens: request.maxTokens)
+        let route = decided.map { DistributedRequestRouteNote(label: $0.label, reason: $0.reason) }
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
-            deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling)
+            deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,
+            route: decided?.workerRoute)
         // CBv2 request IDs may be reused after retirement. Each native request
         // gets a fresh UUID; the lease retains its original public CBv2 identity.
         let native: ClusterWorkerRequest
@@ -74,7 +85,7 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
                 requestedContextTokens: request.promptTokens.count + request.maxTokens,
                 servingContextTokens: pair.servingContextTokens, reason: reason.rawValue)
         }
-        return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native)
+        return DistributedPipeRequestLease(identity: identity, requestID: request.id, native: native, route: route)
     }
     public func shutdown() async { await pair.shutdown() }
     /// The pair's batch lanes (continuous batching on the pair).
@@ -94,10 +105,12 @@ private final class DistributedPipeRequestLease: DistributedResidentRequestLease
     let requestID: CBv2RequestID
     private let native: ClusterWorkerRequest
     private let consumerStop = ConsumerStop()
+    let route: DistributedRequestRouteNote?
     var reservedBytes: Int { native.reservedBytes }
     var bytesInUse: Int { native.bytesInUse }
-    init(identity: DistributedResidentIdentity, requestID: CBv2RequestID, native: ClusterWorkerRequest) {
-        self.identity = identity; self.requestID = requestID; self.native = native
+    init(identity: DistributedResidentIdentity, requestID: CBv2RequestID, native: ClusterWorkerRequest,
+         route: DistributedRequestRouteNote? = nil) {
+        self.identity = identity; self.requestID = requestID; self.native = native; self.route = route
     }
     func start(emit: @escaping @Sendable (DistributedResidentEvent) -> Bool) throws {
         try native.start { [consumerStop] event in

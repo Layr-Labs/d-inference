@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterPlacement
 import DarkbloomClusterProcess
 import DarkbloomClusterProtocol
 import DarkbloomClusterRemote
@@ -59,6 +60,7 @@ public struct ClusterPairServingContext: Sendable {
     public static func pairOwner(
         profile: DistributedResidentExecutionProfile, chunkTokens: Int, startupAllowanceNanoseconds: UInt64,
         timing: ClusterWorkerPairTiming = .standard,
+        routing: @escaping @Sendable () -> ClusterRequestRoutingBasis.Outcome? = { nil },
         follower: @escaping @Sendable (NativePairMemberServingStart, ClusterOwnerBootstrapRelay?) throws -> any ClusterWorkerEndpoint
     ) -> @Sendable (NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner {
         { start in
@@ -91,7 +93,7 @@ public struct ClusterPairServingContext: Sendable {
                     + "rank 0 ready \(start.endpoint.readiness != nil) owner \(own?.ownerTermination.map { "\($0)" } ?? "running"); "
                     + "rank 1 ready \(peer.readiness != nil) owner \(link?.ownerTermination.map { "\($0)" } ?? "running")")
             }
-            do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens) }
+            do { return try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: chunkTokens, routing: routing()?.routing) }
             catch { Task { await pair.shutdown() }; throw error }
         }
     }
@@ -150,7 +152,7 @@ extension ProviderLoop: NativePairMemberServingHost {
             peers: wire.peers.map { .init(id: $0.id, buildSHA256: $0.buildSHA256) })
         let telemetry = context.observabilityFacts.map { facts in
             DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
-                log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()))
+                log: ClusterObservability.current().telemetryLog(sessionID: epoch.uuidString.lowercased()), ranks: facts.ranks)
         }
         let specification = ClusterPairSlotSpecification(publicModelID: context.publicModelID,
             modelType: context.modelType, tokenizer: context.tokenizer, eosTokenIDs: context.eosTokenIDs,
@@ -183,7 +185,7 @@ extension ProviderLoop: NativePairMemberServingHost {
         let diagnostics = (start.endpoint as? ClusterRemoteWorkerEndpoint).map { [DistributedSessionFacts.tail($0.diagnosticTail)] } ?? []
         let facts = DistributedSessionFacts(clusterID: base.clusterID, memberID: base.memberID, modelID: base.modelID,
             mode: base.mode, cut: base.cut, membershipEpoch: start.membershipEpoch.uuidString.lowercased(),
-            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers)
+            diagnostics: diagnostics, terminations: [], peerHosts: base.peerHosts, peerUsers: base.peerUsers, ranks: base.ranks)
         ClusterObservability.current().recordFailure(stateCode, source: "member",
             error: String(describing: error), facts: facts)
     }

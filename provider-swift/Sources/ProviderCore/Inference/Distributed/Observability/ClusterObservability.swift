@@ -171,6 +171,7 @@ extension DistributedInstalledPlan {
               mode: configuration.selectedGenerationMode.rawValue,
               cut: DistributedSessionFacts.cut(partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) }),
               membershipEpoch: membershipEpoch?.uuidString.lowercased(), diagnostics: diagnostics, terminations: [],
-              peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user))
+              peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user),
+              ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id))
     }
 }

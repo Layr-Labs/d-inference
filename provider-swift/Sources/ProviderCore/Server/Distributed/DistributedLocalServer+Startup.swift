@@ -38,7 +38,8 @@ extension DistributedLocalServer {
         let telemetry: DistributedPairTelemetryContext? = observability.flatMap { observability in
             session.httpObservabilityFacts.map { facts in
                 DistributedPairTelemetryContext(modelID: facts.modelID, mode: facts.mode, cut: facts.cut,
-                    log: observability.telemetryLog(sessionID: facts.membershipEpoch ?? UUID().uuidString.lowercased()))
+                    log: observability.telemetryLog(sessionID: facts.membershipEpoch ?? UUID().uuidString.lowercased()),
+                    ranks: facts.ranks)
             }
         }
         target.entry = try DistributedEngineFactory.makeRegistryEntry(

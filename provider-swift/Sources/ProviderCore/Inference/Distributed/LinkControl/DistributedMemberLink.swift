@@ -78,7 +78,7 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
         }
         let server = ClusterLinkWorkerServer(transport: ClusterLinkPeerWorkerTransport(peer: client.peer),
             clusterID: configuration.clusterID, rank: configuration.localRank, bootstrapProfile: .mesh2,
-            admit: { [weak self] open in
+            linkLimits: edge.limits, admit: { [weak self] open in
                 guard let self else { throw ClusterConfigurationError.invalid("The follower member is stopping") }
                 return try self.admit(open)
             }, report: { report in

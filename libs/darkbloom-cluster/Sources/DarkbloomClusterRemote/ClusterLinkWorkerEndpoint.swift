@@ -295,6 +295,12 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private var renewalsSent: UInt64 = 0
     private var writerStopped = false
     private var renewalsSuspended = false
+    /// Why the follower was declared lost (its link closed for good or its
+    /// process restarted); nil while it is not.
+    private var loss: String?
+    /// Each wait group is left exactly once: by its proof, or by the loss.
+    private var nativeLeft = false
+    private var ownerLeft = false
     /// Checks only: the leader goes silent on the lease while the link stays up.
     func suspendRenewalsForTesting() { lock.withLock { renewalsSuspended = true } }
 
@@ -308,6 +314,8 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     }
     /// Why the follower refused the open, if it did.
     public var refusalReason: String? { lock.withLock { refusal } }
+    /// Why the follower was declared lost, if it was (`linkLost`).
+    public var lossReason: String? { lock.withLock { loss } }
     public var renewals: UInt64 { lock.withLock { renewalsSent } }
 
     /// Opens the session at once: the follower launches its owner when the
@@ -416,8 +424,26 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     }
 
     /// The follower process restarted or the edge was closed for good: its
-    /// session is gone. Ownership stays unresolved (no proof arrives).
-    public func linkLost() { fail() }
+    /// session is gone. The request in flight fails at once (the endpoint is
+    /// invalid, which the pair observes), and nothing waits any longer for a
+    /// proof that cannot arrive: the cleanup and release waits return now,
+    /// unproven. Ownership stays unresolved on this side (the session is
+    /// quarantined, `nativeCleanupObserved` and the release stay false); the
+    /// follower's Mac ends the rank by its own lease and its own owner, and a
+    /// new open there is refused while that owner holds the device. A proof
+    /// that still arrives (the link came back) is recorded as usual.
+    public func linkLost(reason: String = "the follower member's link was lost") {
+        let leave = lock.withLock { () -> (native: Bool, owner: Bool) in
+            if released { return (false, false) } // Fully proven: nothing is waiting.
+            if loss == nil { loss = reason }
+            let native = !nativeLeft, owner = !ownerLeft
+            nativeLeft = true; ownerLeft = true
+            return (native, owner)
+        }
+        fail()
+        if leave.native { nativeEnded.leave() }
+        if leave.owner { ownerEnded.leave() }
+    }
 
     // MARK: Link
 
@@ -483,7 +509,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     guard !accepted, refusal == nil else { throw ClusterLinkWorkerError.invalid("Refusal after acceptance") }
                     refusal = wire.detail ?? ""
                     cleanup = true; released = true; releasedCleanly = true; terminationValue = .launchFailed
-                    complete = true; endOwner = true; invalidate = true
+                    complete = !nativeLeft; endOwner = !ownerLeft; nativeLeft = true; ownerLeft = true; invalidate = true
                 case .invalidated:
                     guard accepted else { throw ClusterLinkWorkerError.invalid("Invalidation before acceptance") }
                     invalidate = true
@@ -515,11 +541,11 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     bootstrapBusy = true; bootstrapWork = (binding, nextBootstrap, bytes)
                 case .cleanup:
                     guard accepted, !cleanup else { throw ClusterLinkWorkerError.invalid("Repeated cleanup") }
-                    cleanup = true; ready = nil; complete = true; invalidate = true
+                    cleanup = true; ready = nil; complete = !nativeLeft; nativeLeft = true; invalidate = true
                 case .released:
                     guard accepted, !released else { throw ClusterLinkWorkerError.invalid("Repeated release") }
                     released = true; releasedCleanly = (wire.releasedCleanly ?? false) && cleanup
-                    terminationValue = wire.ownerTermination; endOwner = true
+                    terminationValue = wire.ownerTermination; endOwner = !ownerLeft; ownerLeft = true
                 default: throw ClusterLinkWorkerError.invalid("Leader message from the follower")
                 }
             }
@@ -591,14 +617,18 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
     private var current: ServerSession?
     private var sessionsServed: UInt64 = 0
     private var stopped = false
+    /// The leader's link liveness: a link that closed or went silent and did
+    /// not resume in the edge's own re-dial time is a lost leader.
+    fileprivate var liveness: ClusterLinkPeerLiveness!
 
     /// `bootstrapProfile` is this Mac's own selection: an open that names
     /// another is refused (wire bytes alone never enable a profile).
     public init(transport: any ClusterLinkWorkerTransport, clusterID: String, rank: Int = 1,
-                bootstrapProfile: ClusterOwnerBootstrapProfile?, admit: @escaping Admit,
-                report: @escaping @Sendable (Report) -> Void = { _ in }) {
+                bootstrapProfile: ClusterOwnerBootstrapProfile?, linkLimits: ClusterLinkControlLimits = .init(),
+                admit: @escaping Admit, report: @escaping @Sendable (Report) -> Void = { _ in }) {
         self.transport = transport; self.clusterID = clusterID; self.rank = rank
         self.bootstrapProfile = bootstrapProfile; self.admit = admit; self.report = report
+        liveness = ClusterLinkPeerLiveness(limits: linkLimits) { [weak self] _ in self?.leaderLost(reason: "leader link lost") }
     }
 
     /// True while a session's owner is alive or its proofs are in flight.
@@ -617,9 +647,10 @@ public final class ClusterLinkWorkerServer: @unchecked Sendable {
     }
 
     /// The leader's process restarted (or the edge closed for good): its
-    /// session is gone, so the follower fences what it launched for it.
-    public func leaderLost() {
-        queue.async { self.lock.withLock { self.current }?.fence(reason: "leader lost") }
+    /// session is gone, so the follower fences what it launched for it at
+    /// once instead of at the end of the lease it was granted.
+    public func leaderLost(reason: String = "leader lost") {
+        queue.async { self.lock.withLock { self.current }?.fence(reason: reason) }
     }
 
     /// Fences any live session and refuses new opens.
@@ -900,16 +931,31 @@ final class ClusterLinkBootstrapProxy: ClusterOwnerBootstrapExchange, @unchecked
 public final class ClusterLinkWorkerRouter: @unchecked Sendable {
     private let lock = NSLock()
     private var endpoints: [UUID: ClusterLinkWorkerEndpoint] = [:]
-    public init() {}
+    private var liveness: ClusterLinkPeerLiveness?
+    /// `limits` are the edge's own: they bound how long a live follower needs
+    /// to resume its connection (`ClusterLinkPeerLiveness`). `lost` is told
+    /// each stated loss, with its reason (the leader's log).
+    public init(limits: ClusterLinkControlLimits = .init(),
+                schedule: ClusterLinkPeerLiveness.Schedule? = nil,
+                lost: (@Sendable (String) -> Void)? = nil) {
+        observer = lost
+        let observe: @Sendable (String) -> Void = { [weak self] reason in
+            lost?(reason); self?.followerLost(reason: reason)
+        }
+        liveness = schedule.map { ClusterLinkPeerLiveness(limits: limits, schedule: $0, lost: observe) }
+            ?? ClusterLinkPeerLiveness(limits: limits, lost: observe)
+    }
+    private let observer: (@Sendable (String) -> Void)?
     public func register(_ endpoint: ClusterLinkWorkerEndpoint) { lock.withLock { endpoints[endpoint.session] = endpoint } }
     public func unregister(_ endpoint: ClusterLinkWorkerEndpoint) { lock.withLock { endpoints[endpoint.session] = nil } }
     public func deliver(_ bytes: Data) {
         guard let wire = try? ClusterLinkWorkerWire.decode(bytes), !wire.kind.fromLeader else { return }
         lock.withLock { endpoints[wire.session] }?.accept(wire)
     }
-    /// The follower's process restarted: every session it served is gone.
-    public func followerLost() {
-        for endpoint in lock.withLock({ Array(endpoints.values) }) { endpoint.linkLost() }
+    /// The follower's process restarted, or its link closed for good: every
+    /// session it served is gone.
+    public func followerLost(reason: String = "the follower member's process restarted") {
+        for endpoint in lock.withLock({ Array(endpoints.values) }) { endpoint.linkLost(reason: reason) }
     }
 
     /// The link edge's event handler for this router: tagged opaque messages
@@ -917,7 +963,10 @@ public final class ClusterLinkWorkerRouter: @unchecked Sendable {
     public func handle(_ event: ClusterLinkControlEvent) {
         switch event {
         case .opaque(_, _, let tag, let bytes) where tag == ClusterLinkWorkerWire.tag: deliver(bytes)
-        case .peerRestarted: followerLost()
+        case .peerRestarted:
+            let reason = "the follower member's process restarted"
+            observer?(reason); followerLost(reason: reason)
+        case .connected, .disconnected: liveness?.handle(event)
         default: break
         }
     }
@@ -929,6 +978,7 @@ extension ClusterLinkWorkerServer {
         switch event {
         case .opaque(_, _, let tag, let bytes) where tag == ClusterLinkWorkerWire.tag: deliver(bytes)
         case .peerRestarted: leaderLost()
+        case .connected, .disconnected: liveness.handle(event)
         default: break
         }
     }

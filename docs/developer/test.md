@@ -1172,7 +1172,11 @@ python3 scripts/test-provider-signing-validation.py
 ```
 
 The cache tests cover compatibility boundaries and content-checked source
-mtime replay. Metal setup tests simulate delayed registration, explicit import,
+mtime replay. Their disposable repositories disable automatic Git maintenance
+and garbage collection so detached writers cannot race temporary-directory
+cleanup. `FixtureProcessTests` verifies the real commit process through Git's
+Trace2 events even when inherited configuration enables maintenance.
+Metal setup tests simulate delayed registration, explicit import,
 command failure and timeout without installing components. The pipeline checks pin independent build/test dependencies,
 signing approval, same-run source-bound artifact transfer, and checks that still
 run on cache hits. The existing archive tests reject changed inventory, wrong

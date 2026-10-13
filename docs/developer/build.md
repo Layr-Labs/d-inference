@@ -397,6 +397,10 @@ make compilation incremental; every restored build still runs its build and
 qualification commands. Only unsigned build directories are cached, never signing
 keys or notarized bundles.
 
+The offline cache test fixture disables automatic maintenance only inside its
+disposable Git repositories. This keeps fixture cleanup synchronous; release
+checkouts and their Git configuration are unchanged. See the [test guide](test.md).
+
 See the [release cache procedure](../operations/provider-release.md#prepare-and-check-release-caches)
 for first-run costs and rerun behavior.
 

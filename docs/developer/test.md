@@ -60,6 +60,11 @@ preemption and actual retirement without customer traffic or model weights.
 Its partial-bootstrap regression holds the second measured request in engine
 work, interrupts it with a real foreground request, and checks rejection just
 before the retry deadline plus acceptance at the deadline despite fresh rates.
+`ProviderLoopCalibrationTests` runs registration against loopback and exercises
+normal and timed-out startup preloads. It checks eager scheduling after the
+self-test, before the first capacity tick, while retaining a blocked-posture
+case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
+cannot suppress the unfinished bootstrap.
 `ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
 through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
 catalog IDs with both automatic paged selection and explicit contiguous KV.

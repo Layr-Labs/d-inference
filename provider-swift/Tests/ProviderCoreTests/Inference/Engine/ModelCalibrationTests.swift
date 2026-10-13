@@ -53,6 +53,27 @@ struct ModelCalibrationTests {
         await bridge.shutdown()
     }
 
+    @Test("an early serving sample cannot suppress the first bounded bootstrap")
+    func firstBootstrapRunsWithFreshServingRates() async throws {
+        let (bridge, _, _) = try fixture()
+        let stream = await bridge.submitTokenized(promptTokens: Array(repeating: 1, count: 512),
+            request: ChatCompletionRequest(model: "early-job", messages: [], max_tokens: 32),
+            requestId: "early-serving-sample", cacheEnabled: false)
+        for await event in stream {
+            if case .error(let error) = event { Issue.record("early request failed: \(error)") }
+        }
+        await bridge.waitForServingRetirementTest(requestId: "early-serving-sample")
+        let before = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(before.isolatedPrefill != nil && before.decode != nil)
+        let counters = await bridge.calibrationCountersTest()
+        let started = await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)
+        #expect(started)
+        if started { await bridge.waitForCalibrationTest() }
+        #expect(await bridge.calibrationRetryStateTest().0)
+        #expect(await bridge.calibrationCountersTest() == counters)
+        await bridge.shutdown()
+    }
+
     @Test("MiMo calibration retains its wider bootstrap and later maintenance measurements")
     func continuousCalibrationKeepsWideEvidence() async throws {
         let (bridge, engine, budget) = try fixture()
@@ -249,6 +270,10 @@ struct ModelCalibrationTests {
 }
 
 private extension EngineV2Bridge {
+    func waitForServingRetirementTest(requestId: String) async {
+        await pumpTasks[requestId]?.value
+    }
+
     func runContinuousCalibrationTest(budget: GlobalKVCacheBudget) async {
         let task = budget.serviceBudget.idleCalibration.startIfIdle(isIdle: { budget.serviceBudget.isIdle }) {
             await self.runModelCalibration(continuous: true, requireNominalPosture: false)

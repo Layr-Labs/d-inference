@@ -821,7 +821,6 @@ extension ProviderLoop {
             // the default startup preload plan (ProviderLoop+StartupPreload).
             persistLoadedModelSet()
             recordAutopilotLoadTime(model: modelId, milliseconds: Int64(max(0, loadMs.rounded())))
-            await updateAggregateCapacity()
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
             modelsLoading.remove(modelId)
@@ -834,6 +833,12 @@ extension ProviderLoop {
             // (advertise-raises are serialized behind in-flight loads) are
             // re-offered now rather than on their backoff.
             await retryReserveDeferredPrefetches()
+            // Construction is over: this receipt must not make an otherwise
+            // idle engine ineligible for its first calibration. Startup preloads
+            // schedule after their self-tests; ordinary loads schedule here.
+            deviceActivity.finish()
+            if startupPreloadTask == nil { await refreshModelCalibration() }
+            await updateAggregateCapacity()
         } catch {
             // Keep the load gate through cleanup and survivor-grant restoration.
             if let nativeLoad {

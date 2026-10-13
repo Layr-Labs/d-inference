@@ -126,17 +126,21 @@ timing never trains prefill, decode, workload-bucket or delivered-rate estimates
 Work accounting, resource ownership and the health-check result are unchanged;
 overlapping customer requests remain independently measurable.
 
-After slot publication and on capacity ticks, `refreshModelCalibration` asks the
-loaded bridge's `startModelCalibrationIfNeeded` to measure its actual serving
-configuration. Ordinary `EngineV2` autoregressive engines, including dense and
+Completed startup preloads and the pre-registration path schedule calibration
+without waiting for the first capacity tick. Ordinary model loads also schedule
+it after construction releases its device-work receipt. Capacity ticks retry
+when loading, foreground work or device posture initially prevents calibration.
+`refreshModelCalibration` asks the loaded bridge's `startModelCalibrationIfNeeded`
+to measure its actual serving configuration. Ordinary `EngineV2` autoregressive engines, including dense and
 MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 128-token warmup followed by two uncached solo probes
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
-prefill/decode evidence before the first customer job and runs once per loaded
+prefill/decode evidence without requiring a customer job and runs once per loaded
 engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
 An unfinished bootstrap retries when that backoff expires even if its completed
-probes left fresh partial rates. Freshness still gates the first attempt and
-completed native MiMo maintenance. A replaced engine starts a new measurement epoch.
+probes left fresh partial rates. Fresh serving samples from an early request do
+not suppress an unfinished first bootstrap either. Only completed native MiMo
+maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
 
 Transaction-owned native MiMo slots retain the wider bootstrap and periodic
 maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
@@ -159,8 +163,9 @@ populate workload buckets without replacing solo admission rates. Calibration
 produces no served-request/output-token counters; its actual in-flight work stays
 visible until retirement. Fresh evidence is published through existing capacity
 heartbeats. Memory floors, concurrency ceilings and deadline enforcement remain
-unchanged. See `EngineV2Bridge+ModelCalibration.swift`,
-`EnginePerformanceMeasurements.swift`, and `IdleCalibrationCoordinator.swift`.
+unchanged. Scheduling is asynchronous: registration and customer service do not
+wait for the full calibration plan to finish. See the calibration entries in the
+[code map](#code-map) for the enforcing paths and symbols.
 
 ### One request through the engine
 
@@ -1065,6 +1070,9 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Concern | File / symbol |
 |---|---|
 | Bridge submit path | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| Calibration scheduling | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelCalibration.swift` (`refreshModelCalibration`); `provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift` (`finishStartupPreload`); `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`ensureModelLoaded`) |
+| Calibration plan and retry gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift` (`startModelCalibrationIfNeeded`, `runModelCalibration`); `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`startup`, `bootstrap`, `maintenance`) |
+| Calibration evidence and foreground priority | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` (`EnginePerformanceMeasurements`); `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`) |
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |

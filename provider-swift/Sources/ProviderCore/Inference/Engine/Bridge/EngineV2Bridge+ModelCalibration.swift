@@ -9,16 +9,15 @@ extension EngineV2Bridge {
     func startModelCalibrationIfNeeded(requireNominalPosture: Bool = true,
         now: ContinuousClock.Instant = .now) -> Bool {
         let continuous = nativeTransactionID != nil
-        // Partial samples must not postpone a scheduled bootstrap retry.
-        let retryingBootstrap = !modelCalibration.bootstrapCompleted && modelCalibration.nextAttempt != nil
+        // Early serving or partial samples must not suppress an unfinished bootstrap.
+        let unfinishedBootstrap = !modelCalibration.bootstrapCompleted
         guard ownedEngine is EngineV2 || ownedEngine is CBv2NativeBlockEngine,
             canSubmitWithNativeOwner(), !slotPostureClosed,
             continuous || !modelCalibration.bootstrapCompleted,
             !modelCalibration.closed, modelCalibration.task == nil, active.isEmpty, pendingSubmissionIDs.isEmpty,
             modelCalibration.nextAttempt.map({ now >= $0 }) ?? true,
-            (!requireNominalPosture || (!ProcessInfo.processInfo.isLowPowerModeEnabled
-                && ProcessInfo.processInfo.thermalState == .nominal)),
-            retryingBootstrap || performanceMeasurements.freshRate("isolated_prefill", now: now,
+            (!requireNominalPosture || calibrationPosturePermitsWork()),
+            unfinishedBootstrap || performanceMeasurements.freshRate("isolated_prefill", now: now,
                 maximumAge: ModelCalibrationPolicy.refreshAge) == nil
                 || performanceMeasurements.freshRate("decode", now: now,
                     maximumAge: ModelCalibrationPolicy.refreshAge) == nil,
@@ -40,8 +39,7 @@ extension EngineV2Bridge {
         var succeeded = true
         for (index, cell) in cells.enumerated() {
             if Task.isCancelled || modelCalibration.interrupted || !canSubmitWithNativeOwner()
-                || serviceBudget?.isIdle != true || (requireNominalPosture &&
-                    (ProcessInfo.processInfo.isLowPowerModeEnabled || ProcessInfo.processInfo.thermalState != .nominal)) {
+                || serviceBudget?.isIdle != true || (requireNominalPosture && !calibrationPosturePermitsWork()) {
                 succeeded = false; break
             }
             guard cell.width <= effectiveServingConcurrency else { continue }

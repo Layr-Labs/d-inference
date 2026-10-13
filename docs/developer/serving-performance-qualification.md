@@ -17,7 +17,7 @@ is separate work required to introduce a measured prediction-error envelope.
 
 Keep [automatic startup calibration](../architecture/inference.md#model-startup-calibration)
 separate from profile qualification. `ModelCalibrationPolicy.startup` collects
-bounded, uncached solo measurements on the loaded engine before customer work;
+bounded, uncached solo measurements on the loaded engine without requiring customer work;
 `EngineMeasurementPurpose.startupWarmup` excludes the one-token health check
 from throughput learning. These observations refresh ordinary rate estimates,
 but do not qualify a timing envelope, increase concurrency or lower memory

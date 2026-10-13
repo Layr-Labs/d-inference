@@ -16,7 +16,7 @@ the retained artifact rather than rebuilding or re-signing it.
 
 `ProviderCore.version` is prepared as `0.9.21`. This candidate excludes startup
 health-check timings from throughput learning and enables bounded calibration
-for ordinary autoregressive and native block engines before their first customer
+for ordinary autoregressive and native block engines without requiring a customer
 job. It pins the merged ordinary-request retirement API from
 [mlx-swift-lm #305](https://github.com/Layr-Labs/mlx-swift-lm/pull/305).
 Preparation does not tag, register or publish a release.

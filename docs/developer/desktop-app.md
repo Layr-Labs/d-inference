@@ -128,6 +128,9 @@ result is `release/mac-arm64/Darkbloom Preview.app` and a DMG/ZIP in `release/`.
 Verify the app with `codesign --verify --deep --strict` before opening it. This
 command signs the application; notarization still needs electron-builder's
 configured Apple credentials. Check the packaging output for its actual status.
+The preview signer resolves `CSC_NAME` by its certificate fingerprint with
+identity validation enabled, so renewed certificates with identical display
+names do not make `codesign` fail with an ambiguous-identity error.
 
 Re-run the same command after edits. The preview's signer is compiled into the
 main process, and the bundled executable must satisfy that team and the

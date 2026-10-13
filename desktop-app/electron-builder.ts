@@ -1,4 +1,5 @@
 import type { Configuration } from 'electron-builder';
+import { signAsync } from '@electron/osx-sign';
 import { publishConfig, updateFeedEnv } from './src/main/updateFeed';
 
 // The GUI update feed is opt-in at build time (see src/main/updateFeed.ts).
@@ -33,7 +34,21 @@ export function desktopBuildConfig(env: NodeJS.ProcessEnv): Configuration {
       minimumSystemVersion: '14.0',
       extendInfo: { LSUIElement: true },
       icon: 'resources/icon.icns',
-      ...(team ? { signIgnore: ['preview-runtime/'] } : {}),
+      ...(team
+        ? {
+            signIgnore: ['preview-runtime/'],
+            // electron-builder otherwise passes the certificate's display name
+            // with validation disabled. Resolve the exact fingerprint instead;
+            // renewed certificates can legitimately have identical names.
+            sign: async (options) => {
+              await signAsync({
+                ...options,
+                identity: env.CSC_NAME || options.identity,
+                identityValidation: true,
+              });
+            },
+          }
+        : {}),
     },
     publish: team ? null : publishConfig(env[updateFeedEnv]),
   };

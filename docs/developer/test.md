@@ -8,6 +8,8 @@ and signature rejection using isolated executable fixtures. Run
 `npm test -- --maxWorkers=4` in `desktop-app/` to bound UI-test concurrency while
 compiling Swift. Check the signed packaged app separately using the
 [desktop preview procedure](desktop-app.md#signed-local-preview).
+`desktop-app/tests/previewSigning.test.ts` covers propagation of the exact
+certificate fingerprint when electron-builder supplies its display name.
 
 Desktop activity and earnings tests are described in the
 [desktop verification guide](desktop-app.md#verify). `make desktop-api-test`

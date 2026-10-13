@@ -173,8 +173,14 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
     /// none. Crosses the link encrypted, like every worker-wire message.
     static func ownerReason(_ tail: Data) -> String? {
         let text = String(decoding: tail.suffix(4096), as: UTF8.self)
-        guard let line = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
-            .map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { !$0.isEmpty }) else { return nil }
+        let lines = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+            .map({ $0.trimmingCharacters(in: .whitespaces) }).filter { !$0.isEmpty }
+        // The worker's own last word, not the exit echo that follows it: the
+        // forced-exit and force-cancel acknowledgements say only that it ended.
+        let echo = ["darkbloom-forced-exit-v1", "darkbloom-force-cancel-v1"]
+        let prefix = "darkbloom-worker-tail-v1 "
+        guard var line = lines.last(where: { line in !echo.contains(where: { line.contains($0) }) }) ?? lines.last else { return nil }
+        if line.hasPrefix(prefix) { line = String(line.dropFirst(prefix.count)) }
         let ascii = String(String.UnicodeScalarView(line.unicodeScalars.map { (32...126).contains($0.value) ? $0 : "?" }))
         return ascii.isEmpty ? nil : String(ascii.prefix(200))
     }

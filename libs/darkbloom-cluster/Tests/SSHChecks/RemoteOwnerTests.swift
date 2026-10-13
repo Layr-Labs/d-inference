@@ -24,6 +24,7 @@ func directory() throws -> URL {
         try normal(owner, worker)
         try ownerExitIsObservedInEverySession(owner, worker)
         try failure(owner, worker)
+        try ownerDeathEndsTheWaits(owner, worker)
         try transportLoss(owner, worker)
         try ownerEOF(owner, worker)
         try admissionExpiry(owner, worker)
@@ -39,7 +40,7 @@ func directory() throws -> URL {
         try lifetimeExpiryStillReleases(owner, worker)
         try ownerCeilingFollowsTheOwnersClock(owner, worker)
         try recovery(worker)
-        print("remote-owner: 21 CPU groups passed")
+        print("remote-owner: 22 CPU groups passed")
     }
     static func codec() throws {
         let epoch = UUID(), lease = UUID(), inc = UUID(), request = UUID()
@@ -353,6 +354,34 @@ func directory() throws -> URL {
         while !e.nativeCleanupObserved && DispatchTime.now().uptimeNanoseconds < until { Thread.sleep(forTimeInterval: 0.01) }
         try require(e.nativeCleanupObserved, "Cancellation watchdog failed to obtain actual native terminal")
         try require(e.readiness == nil, "Failed owner became ready")
+    }
+    /// An owner killed by a signal while a request runs (the qualifier's F3
+    /// trigger: SIGUSR1 from another process) can never publish its worker's
+    /// cleanup. The leader's waits on it end at once, claiming nothing: no
+    /// cleanup is observed, ownership stays unresolved, the signal is named.
+    static func ownerDeathEndsTheWaits(_ owner: URL, _ worker: String) throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let e = try endpoint(owner, worker, dir, behavior: "normal")
+        _ = try event(e)
+        let id = UUID(), deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
+        try e.sendWorkerCommand(.reserve(.init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2], stopTokenIDs: [],
+            outputCount: 2, chunkSize: 1, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 1024)), requestID: id, deadline: deadline)
+        if case .admitted = try event(e).event {} else { throw OwnerWire.invalid("Expected admission") }
+        try e.sendWorkerCommand(.start, requestID: id, deadline: deadline)
+        if case .committedToken = try event(e).event {} else { throw OwnerWire.invalid("Expected the first token") }
+        guard let pid = e.ownerProcessIdentifier else { throw OwnerWire.invalid("Owner process not running") }
+        let ended = DispatchSemaphore(value: 0)
+        Thread { e.waitForNativeCleanup(); ended.signal() }.start()
+        try require(Darwin.kill(pid, SIGUSR1) == 0, "Could not signal the owner")
+        let began = DispatchTime.now().uptimeNanoseconds
+        try require(ended.wait(timeout: .now() + 10) == .success, "The cleanup wait outlived the owner's death (10 s)")
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e9
+        try require(!e.nativeCleanupObserved && !e.ownerDeviceLeaseReleasedObserved, "A dead owner's cleanup was claimed")
+        try require(e.ownerTermination == .signalled(SIGUSR1), "Owner termination differs: \(String(describing: e.ownerTermination))")
+        try require(e.unresolvedReason?.contains("terminated by signal \(SIGUSR1)") == true, "The cause is not named: \(e.unresolvedReason ?? "none")")
+        try require(!e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000), "A dead owner's release was claimed")
+        try require(e.readiness == nil, "A dead owner stayed ready")
+        print(String(format: "PASS an owner killed by a signal mid-request ends the leader's waits in %.2f s, claiming nothing", elapsed))
     }
     static func transportLoss(_ owner: URL, _ worker: String) throws {
         for behavior in ["transport-exit", "wrong-terminal"] {

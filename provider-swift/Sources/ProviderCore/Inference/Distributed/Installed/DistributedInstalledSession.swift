@@ -84,6 +84,12 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private var draining = false
     private var stopNoticeHandler: (@Sendable (DistributedInstalledStopNotice) -> Void)?
     private var stopNoticePending = false
+    private var stopRequestedAt: UInt64?
+    private var abnormalStop = false
+    private var stopDetailText: String?
+    /// Why an unresolved stop is unresolved (S24): which rank's proof is
+    /// missing and what its endpoint knows about it.
+    public var stopDetail: String? { lock.withLock { stopDetailText } }
 
     public var status: DistributedInstalledSessionStatus { lock.withLock { phase } }
     public var admissionState: ClusterWorkerPairAdmissionState? { lock.withLock { pair }?.admissionState }
@@ -135,7 +141,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     /// Identifiers, mode, cut and owner diagnostics for incidents and telemetry (S24).
     public var observabilityFacts: DistributedSessionFacts {
-        let values = lock.withLock { (endpoints, observedMembershipEpoch ?? wireIdentity.membershipEpoch) }
+        let values = lock.withLock { (endpoints, observedMembershipEpoch ?? wireIdentity.membershipEpoch, pair?.lastRequestFailure, stopDetailText) }
         let ordered = values.0.sorted { $0.rank < $1.rank }
         let terminations = ordered.compactMap { endpoint -> String? in
             let ended: String?
@@ -153,7 +159,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             mode: configuration.selectedGenerationMode.rawValue,
             cut: DistributedSessionFacts.cut(prepared.plan.partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) }),
             membershipEpoch: values.1.uuidString.lowercased(),
-            diagnostics: ordered.compactMap(Self.diagnostic).filter { !$0.isEmpty },
+            // The last request failure comes last: the classifier scans newest first (S24).
+            diagnostics: (ordered.compactMap(Self.diagnostic) + [values.3, values.2].compactMap { $0 }).filter { !$0.isEmpty },
             terminations: terminations, peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user))
     }
 
@@ -165,8 +172,11 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         if let link = endpoint as? ClusterLinkWorkerEndpoint, let reason = link.refusalReason {
             return "rank \(endpoint.rank) follower refused the open: \(reason.isEmpty ? "no reason given" : String(reason.prefix(512)))"
         }
+        // How the follower's own owner or worker ended, in its words (e.g. its
+        // memory gate refused the load), and why it was declared lost, not
+        // only that its endpoint closed.
         if let link = endpoint as? ClusterLinkWorkerEndpoint {
-            let said = link.followerReason.map { "rank \(endpoint.rank) follower said: \($0)" }
+            let said = link.followerReason.map { "rank \(endpoint.rank) follower said: \(String($0.prefix(512)))" }
             let lost = link.lossReason.map { "rank \(endpoint.rank) follower lost: \(String($0.prefix(512)))" }
             let both = [said, lost].compactMap { $0 }
             if !both.isEmpty { return both.joined(separator: "; ") }
@@ -420,7 +430,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if abnormal, phase == .ready {
                 if let stopNoticeHandler { notice = stopNoticeHandler } else { stopNoticePending = true }
             }
-            if abnormal { draining = false }
+            if abnormal { draining = false; abnormalStop = true }
+            if stopRequestedAt == nil { stopRequestedAt = DispatchTime.now().uptimeNanoseconds }
             phase = abnormal ? .quarantined : (phase == .quarantined ? .quarantined : (draining ? .draining : .stopping))
             if wasPrepared { startup.complete() }
             if stoppingTask == nil { stoppingTask = Task { await self.finishStop() } }
@@ -430,7 +441,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         if let notice { let value = stopNotice; notifications.async { notice(value) } }
         result.1?.cancel()
-        for endpoint in result.0 { endpoint.requestNativeCleanup() }
+        // The fence names its cause on the other Mac as well (S24).
+        let cause = lock.withLock { abnormalStop ? "the session stopped: " + (pair?.lastRequestFailure ?? "a rank was lost") : "the session is stopping" }
+        for endpoint in result.0 { endpoint.requestNativeCleanup(reason: cause) }
         // An abnormal stop can interrupt a previously started graceful drain.
         // Pair.shutdown owns cancellation/actual retirement and is idempotent.
         if let pair = lock.withLock({ draining ? nil : self.pair }) {
@@ -441,26 +454,52 @@ public final class DistributedInstalledSession: @unchecked Sendable {
 
     private func finishStop() async {
         await startup.value()
-        let values = lock.withLock { (pair, endpoints, draining) }
+        let values = lock.withLock { (pair, endpoints, draining, abnormalStop, stopRequestedAt ?? DispatchTime.now().uptimeNanoseconds) }
+        // After a stop nobody asked for, the ranks have the collective progress
+        // limit to leave their exchange and the model's stop margin to give the
+        // memory back (`unrequestedStopAllowanceNanoseconds`, derived from the
+        // plan): the whole stop is bounded by that, not by any owner's lease.
+        let allowanceEnd = values.4.addingReportingOverflow(unrequestedStopAllowanceNanoseconds).partialValue
         if let pair = values.0 {
-            if values.2 { await pair.drainAndShutdown() } else { await pair.shutdown() }
+            if values.2 { await pair.drainAndShutdown() }
+            else if values.3 { await Self.bounded(until: allowanceEnd) { await pair.shutdown() } }
+            else { await pair.shutdown() }
         }
         else {
             for endpoint in values.1 { endpoint.requestNativeCleanup() }
             for endpoint in values.1 { await endpoint.waitUntilNativeCleanup() }
         }
         var released = true
+        var missing: [String] = []
         for endpoint in values.1 {
             // Each owner keeps its own retirement ceiling past its last lease
             // grant, which the endpoint tracks; a release acknowledgement cannot
-            // arrive later than that.
-            let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
-            if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) { released = false }
+            // arrive later than that. After an unrequested stop the allowance
+            // above bounds the wait instead.
+            var deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
+            if values.3 { deadline = min(deadline, max(allowanceEnd, DispatchTime.now().uptimeNanoseconds)) }
+            if !(await endpoint.waitUntilOwnerReleased(deadline: deadline)) {
+                released = false
+                missing.append("rank \(endpoint.rank): no release proof"
+                    + (values.3 ? " within \(unrequestedStopAllowanceNanoseconds / 1_000_000_000) s of the stop" : "")
+                    + ((endpoint as? ClusterLinkWorkerEndpoint).map { " (\($0.diagnosticSummary))" } ?? "")
+                    + ((endpoint as? ClusterRemoteWorkerEndpoint)?.unresolvedReason.map { " (\($0))" } ?? ""))
+            }
         }
+        lock.withLock { stopDetailText = missing.isEmpty ? nil : missing.joined(separator: "; ") }
         // The follower's proofs have arrived (or will not): the edge closes.
         lock.withLock { link }?.stop()
         lock.withLock { phase = released ? .released : .quarantined }
         stopped.complete()
+    }
+
+    /// Runs `body` but returns at `deadline` at the latest; a body still
+    /// running then goes on by itself (the pair's shutdown is idempotent and
+    /// keeps its own state; the endpoints keep ownership unresolved).
+    private static func bounded(until deadline: UInt64, _ body: @escaping @Sendable () async -> Void) async {
+        let done = InstalledCompletion()
+        Task { await body(); done.complete() }
+        _ = await done.wait(until: deadline)
     }
 
     func activeOwner(forReservation: Bool = false) throws -> DistributedPipeExecutionOwner {

@@ -116,6 +116,15 @@ public final class ClusterWorkerPair: @unchecked Sendable {
     private var rankServingContext: [Int?] = [nil, nil]
     /// Requests refused before they started (request-scoped), for diagnostics.
     private var refusedCount = 0
+    /// The last request that failed on this pair, for the incident the owner
+    /// records when the pair stops (S24): the request's public prefix and the
+    /// bounded fixed text the owner side derived (never prompt or token text).
+    private var lastFailure: String?
+    public var lastRequestFailure: String? { lock.withLock { lastFailure } }
+    func noteRequestFailure(_ lease: ClusterWorkerRequest, _ cause: String) {
+        let id = lease.requestID.uuidString.lowercased().prefix(8)
+        lock.withLock { lastFailure = "request \(id) failed on the pair: \(cause)" }
+    }
     /// The earliest current rank-lease deadline of the two ranks on THIS Mac's
     /// clock: each owner renews its rank's lease while it keeps the pair, so
     /// this moves forward and is never a lifetime.

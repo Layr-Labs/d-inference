@@ -104,10 +104,12 @@ extension DistributedCBv2Engine {
         // A request the pair can never serve is refused for what it is, even
         // while another request runs.
         if let refusal = profile.refusal(for: request) { throw DistributedEngineError.refused(refusal) }
+        // A pair that can no longer serve says so first, also while its last
+        // request is still retiring (not "busy", which invites a retry).
+        guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
         guard actives.count < max(1, owner.concurrentRequests) else {
             throw CBv2KVError.capacityExhausted(needed: 1, available: 0)
         }
-        guard readyCapacity() != nil else { throw DistributedEngineError.unavailable }
         // Within the profile but longer than what the owner serves now (a
         // rank's live admissible memory): refused up front, retryably.
         let total = request.promptTokens.count.addingReportingOverflow(request.maxTokens)

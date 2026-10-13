@@ -65,6 +65,11 @@ import DarkbloomClusterSecurity
         // Retirement-policy stand-ins. A signalled exit is made visible as 99.
         if behavior == "exit-early" { exit(9) }
         if behavior == "startup-exit" { usleep(300_000); exit(123) }
+        if behavior == "startup-refuse" {
+            // A load its memory gate refuses: its reason on standard error, then status 1, never ready.
+            FileHandle.standardError.write(Data("fake worker: loading needs 6.00 GiB of admissible memory and has 3.51 GiB\n".utf8))
+            usleep(100_000); exit(1)
+        }
         if behavior == "never-ready" { while true { pause() } }
         if behavior == "slow-exit" { signal(SIGTERM) { _ in _exit(99) } }
         var session = try ClusterWorkerSession(identity: fixtureIdentity, rank: rank, profile: fixtureProfile, executionPlanSHA256: fixturePlan)

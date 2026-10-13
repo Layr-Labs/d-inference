@@ -88,10 +88,12 @@ final class LinkHarness: @unchecked Sendable {
     var reports: [String] { lock.withLock { lines } }
     func sawReport(_ prefix: String, seconds: Double) -> Bool { wait(seconds: seconds) { reports.contains { $0.hasPrefix(prefix) } } }
 
-    func linkEndpoint(relay: (any ClusterOwnerBootstrapExchange)?, lifetimeNanoseconds: UInt64 = 15_000_000_000) throws -> ClusterLinkWorkerEndpoint {
+    func linkEndpoint(relay: (any ClusterOwnerBootstrapExchange)?, lifetimeNanoseconds: UInt64 = 15_000_000_000,
+                      retirementAllowanceNanoseconds: UInt64 = ClusterLinkWorkerEndpoint.retirementAllowanceNanoseconds) throws -> ClusterLinkWorkerEndpoint {
         try ClusterLinkWorkerEndpoint(transport: ClusterLinkPeerWorkerTransport(peer: peer), clusterID: "cpu-test",
             expectedIdentity: fixtureIdentity, profile: fixtureProfile, rank: 1, executionPlanSHA256: fixturePlan,
-            lifetimeDeadlineUptimeNanoseconds: now() + lifetimeNanoseconds, bootstrapRelay: relay, router: router)
+            lifetimeDeadlineUptimeNanoseconds: now() + lifetimeNanoseconds, bootstrapRelay: relay,
+            retirementAllowanceNanoseconds: retirementAllowanceNanoseconds, router: router)
     }
 
     /// Closes the follower's standard input and waits for it to end itself.
@@ -137,7 +139,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let follower = URL(fileURLWithPath: CommandLine.arguments[1]), owner = URL(fileURLWithPath: CommandLine.arguments[2])
         let worker = CommandLine.arguments[3]
         var passed = 0
-        try codec(); passed += 1; print("PASS codec: no host uptime crosses, closed fields")
+        try codec(); passed += 1; print("PASS codec: no host uptime crosses, a sampled reservation keeps its sampling, closed fields")
         try served(follower, owner, worker, profile: "prelude"); passed += 1
         try served(follower, owner, worker, profile: "mesh2"); passed += 1
         try served(follower, owner, worker, profile: "none"); passed += 1
@@ -147,7 +149,122 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try followerProcessKilled(follower, owner, worker); passed += 1
         try followerOwnerExitsAtLaunch(follower, owner, worker); passed += 1
         try refusedOpen(follower, owner, worker); passed += 1
+        try fenceNamesItsCause(follower, owner, worker); passed += 1
+        try proofCeilingEndsTheWait(follower, owner, worker); passed += 1
+        try followerOwnerEndNamed(follower, owner, worker); passed += 1
+        try followerWorkerEndedBeforeReadyNamed(follower, owner, worker); passed += 1
         print("link-worker: \(passed) groups passed (two processes over loopback; not a hardware pass)")
+    }
+
+    /// A fence names its cause (S24): the follower's report, and so its
+    /// incident, carries the leader's reason; the proofs still come back over
+    /// the live link and the leader's waits end with them.
+    static func fenceNamesItsCause(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
+        try runRequest(pair)
+        let cause = "request 1c3269d9 failed on the pair: Rank 0 reported failure: runtimeError"
+        second.requestNativeCleanup(reason: cause)
+        try require(harness.sawReport("fenced leader fenced: " + cause, seconds: 10), "The follower was not told why it was fenced: \(harness.reports)")
+        let began = now()
+        try require(second.waitForOwnerReleased(deadline: now() + 15_000_000_000) && second.nativeCleanupObserved,
+            "The follower's proofs did not reach the leader after a fence: \(harness.reports) \(second.diagnosticSummary)")
+        let elapsed = Double(now() - began) / 1e9
+        first.requestNativeCleanup(reason: cause)
+        try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+        try shutdown(pair, seconds: 8)
+        let status = try harness.finish()
+        try require(status == 0 && harness.reports.contains("released true"), "Follower reports differ: \(harness.reports)")
+        print(String(format: "PASS a fence names its cause on the follower; proofs back %.1f s after the fence", elapsed))
+    }
+
+    /// After a fence the leader's waits on the follower end by themselves at
+    /// the follower's proof ceiling (its last lease plus the retirement
+    /// allowance) when no proof can arrive, here with the link down. Nothing
+    /// is claimed: cleanup and release stay unobserved and the endpoint says why.
+    static func proofCeilingEndsTheWait(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil, lifetimeNanoseconds: 3_000_000_000, retirementAllowanceNanoseconds: 1_000_000_000)
+        let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 6_000_000_000)
+        try require(pair.readiness != nil, "Pair not ready")
+        harness.listener.stop()
+        second.requestNativeCleanup(reason: "check: the leader fences with the link down")
+        let began = now()
+        let proven = second.waitForOwnerReleased(deadline: now() + 30_000_000_000)
+        let elapsed = Double(now() - began) / 1e9
+        try require(!proven && !second.nativeCleanupObserved && !second.ownerDeviceLeaseReleasedObserved, "A wait that ended without a proof claimed one")
+        try require(elapsed < 10, String(format: "The wait outlived the follower's proof ceiling: %.1f s", elapsed))
+        try require(second.diagnosticSummary.contains("proof ceiling passed") && second.diagnosticSummary.contains("check: the leader fences"),
+            "The endpoint does not say why: \(second.diagnosticSummary)")
+        first.requestNativeCleanup()
+        try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+        try shutdown(pair, seconds: 8)
+        let status = try harness.finish()
+        try require(status == 0, "Follower exit \(status): \(harness.reports)")
+        print(String(format: "PASS the proof ceiling ends the leader's wait with the link down: %.1f s (grant 3 s, allowance 1 s)", elapsed))
+    }
+
+    /// The follower's owner refuses its launch (its memory gate, say) and
+    /// exits with status 1: the follower's report and the leader's endpoint
+    /// both name how it ended and the owner's own last line (S24), not only
+    /// "follower endpoint closed".
+    static func followerOwnerEndNamed(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "refuse-launch+normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        var started = true
+        do { _ = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 6_000_000_000) } catch { started = false }
+        try require(!started, "A pair formed with a follower whose owner refused its launch")
+        first.requestNativeCleanup()
+        let named = "its owner exited with status 1: fixture owner: the memory gate refused this load"
+        try require(wait(seconds: 10) { harness.reports.contains { $0.contains("fenced follower endpoint closed: " + named) } },
+            "The follower's report does not name its owner's end: \(harness.reports)")
+        try require(wait(seconds: 10) { second.followerReason?.contains(named) == true },
+            "The leader was not told how the follower's owner ended: \(second.followerReason ?? "nothing") / \(second.diagnosticSummary)")
+        try require(second.followerReason?.contains("\u{1b}") == false, "A control character crossed the link")
+        try require(second.diagnosticSummary.contains("the follower said: " + named), "The leader's summary omits it: \(second.diagnosticSummary)")
+        // No proof can follow the follower's release report: the leader's
+        // waits end with it (not at the proof ceiling, 15 s + allowance here),
+        // claiming nothing.
+        let ended = DispatchSemaphore(value: 0), waitStarted = now()
+        DispatchQueue.global().async { second.waitForNativeCleanup(); ended.signal() }
+        try require(ended.wait(timeout: .now() + 10) == .success,
+            "The leader's wait outlived the follower's release report: \(second.diagnosticSummary)")
+        try require(!second.nativeCleanupObserved, "A cleanup proof was claimed for an owner that never gave one")
+        let waited = Double(now() - waitStarted) / 1e9
+        _ = second.waitForOwnerReleased(deadline: now() + 10_000_000_000)
+        let status = try harness.finish()
+        try require(status == 0, "Follower exit \(status)")
+        print(String(format: "PASS a follower owner that refuses its launch is named on both Macs and the leader's waits end with the follower's release (%.1f s): ", waited) + named)
+    }
+
+    /// The follower's worker refuses its load before it is ever ready and its
+    /// owner cleans up properly (a clean proof): the reason still reaches both
+    /// Macs in the worker's own words, not only "closed" (S24).
+    static func followerWorkerEndedBeforeReadyNamed(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "startup-refuse")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        var started = true
+        do { _ = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 6_000_000_000) } catch { started = false }
+        try require(!started, "A pair formed with a follower whose worker refused its load")
+        first.requestNativeCleanup()
+        let named = "loading needs 6.00 GiB of admissible memory and has 3.51 GiB"
+        try require(wait(seconds: 10) { harness.reports.contains { $0.hasPrefix("fenced follower worker ended before it was ready: ") && $0.contains(named) } },
+            "The follower's report does not say why its worker ended: \(harness.reports)")
+        try require(wait(seconds: 10) { second.followerReason?.contains(named) == true },
+            "The leader was not told why the follower's worker ended: \(second.followerReason ?? "nothing")")
+        _ = second.waitForOwnerReleased(deadline: now() + 10_000_000_000)
+        let status = try harness.finish()
+        try require(status == 0, "Follower exit \(status)")
+        print("PASS a follower worker that refuses its load before it is ready is named on both Macs: \(second.followerReason ?? "")")
     }
 
     static func codec() throws {
@@ -166,6 +283,21 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
             && r.promptTokenIDs == [7, 8, 9], "Reservation not rebased on the receiver's clock")
         try rejects { _ = try ClusterLinkWorkerWire.command(reserve, requestID: request, epoch: epoch, session: session, sequence: 3,
             now: 9_500, deliveryDeadline: 9_600) }
+        // A sampled reservation reaches the follower's rank with its sampling:
+        // both ranks get it (the selecting rank draws with it). Dropped on the
+        // link, the follower ran the request greedy and the ranks disagreed at
+        // the first token, which ended the pair (RC blocker: any sampled request).
+        let sampling = ClusterWorkerSampling(temperature: 0.7, topP: 0.9, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: 7, stream: 11,
+            logitBias: [.init(tokenID: 3, bias: -1)])
+        let sampled = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: sampling))
+        let sampledLocal = try ClusterLinkWorkerWire.decode(try ClusterLinkWorkerWire.command(sampled, requestID: request, epoch: epoch,
+            session: session, sequence: 4, now: 8_000, deliveryDeadline: 8_200).encoded()).localCommand(now: 50_000)
+        guard case .reserve(let s) = sampledLocal.command else { throw ClusterOwnerStateError.invalid("Sampled reserve lost") }
+        try require(s.sampling == sampling && s.deadlineUptimeNanoseconds == 51_000,
+            "A sampled reservation lost its sampling on the link: \(String(describing: s.sampling))")
+        try require(r.sampling == nil, "A greedy reservation gained sampling on the link")
         // Closed fields per kind.
         var renew = ClusterLinkWorkerWire(kind: .renew, epoch: epoch, session: session, sequence: 1)
         try rejects { _ = try renew.encoded() }

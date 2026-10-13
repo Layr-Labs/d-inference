@@ -80,6 +80,8 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     private let nativeEnded = DispatchGroup()
     private let ownerEnded = DispatchGroup()
     private var ownerTerminationValue: ClusterWorkerProcessTermination?
+    /// Why this owner's cleanup proof will never arrive (S24), once that is known.
+    private var unresolvedText: String?
     private let notifications = DispatchQueue(label: "darkbloom.remote-owner.invalidation")
     private var handler: (@Sendable () -> Void)?
     private var notified = false
@@ -106,6 +108,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
     /// bounds. Independent of native cleanup, release ACK and transport exit.
     public var diagnosticDrainComplete: Bool { diagnosticCapture.isComplete }
     public var ownerTermination: ClusterWorkerProcessTermination? { lock.withLock { ownerTerminationValue } }
+    /// Set once the owner (or its transport) is gone without its worker's
+    /// cleanup proof: what happened, for the unresolved-cleanup incident.
+    public var unresolvedReason: String? { lock.withLock { unresolvedText } }
+    /// The owner process while it runs (checks only).
+    var ownerProcessIdentifier: Int32? { process.isRunning ? process.processIdentifier : nil }
+    static func describe(_ termination: ClusterWorkerProcessTermination?) -> String {
+        switch termination {
+        case .exited(let status)?: "exited with status \(status)"
+        case .signalled(let signal)?: "was terminated by signal \(signal)"
+        case .launchFailed?: "could not be launched"
+        case nil: "ended"
+        }
+    }
 
     public func waitForOwnerReleased(deadline: UInt64) -> Bool {
         let finished = ownerEnded.wait(timeout: .init(uptimeNanoseconds: deadline)) == .success
@@ -395,6 +410,19 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
             diagnosticCapture.drain(diagnostics.fileHandleForReading.fileDescriptor, until: limit)
             try? input.fileHandleForWriting.close(); try? output.fileHandleForReading.close(); try? diagnostics.fileHandleForReading.close()
             ownerEnded.leave()
+            // The owner, or the transport that carried its records, is gone:
+            // no terminal record can reach this endpoint any more, so every
+            // wait on it ends now. Nothing is claimed: `nativeCleanupObserved`
+            // stays false and ownership stays unresolved (the device journal
+            // keeps the record for `cluster recover`); the cause is named (S24).
+            let unproven = lock.withLock { () -> Bool in
+                guard !cleanup else { return false }
+                if unresolvedText == nil {
+                    unresolvedText = "no cleanup proof: its owner \(Self.describe(ownerTerminationValue)) before it published its worker's cleanup; ownership unresolved"
+                }
+                return true
+            }
+            if unproven { nativeEnded.leave() }
         }
         do {
             while true {

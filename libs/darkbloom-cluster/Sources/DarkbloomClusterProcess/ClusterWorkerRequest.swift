@@ -236,7 +236,11 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                         : count == reservation.outputCount ? .length : cleanStop ? .clientStop : nil
                     guard reason == expected else { throw ClusterWorkerOwnerError.invalid("Worker clean finish differs") }
                     finish = reason
-                default: throw ClusterWorkerOwnerError.invalid("Worker failed or emitted an unexpected request event")
+                case .failed(let reason):
+                    throw ClusterWorkerOwnerError.invalid("Rank 0 reported failure: \(reason.rawValue)")
+                case .unavailable(let reason):
+                    throw ClusterWorkerOwnerError.invalid("Rank 0 became unavailable: \(reason.rawValue)")
+                default: throw ClusterWorkerOwnerError.invalid("Rank 0 emitted an unexpected request event: \(String(describing: value).prefix(80))")
                 }
                 guard DispatchTime.now().uptimeNanoseconds < reservation.deadlineUptimeNanoseconds else { throw ClusterWorkerOwnerError.deadline }
             }
@@ -252,6 +256,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 throw ClusterWorkerOwnerError.invalid("Ranks reused different prompt prefixes")
             }
             let bothStored = Set(cacheReport?.stored ?? []).intersection(peerReport?.stored ?? []).sorted()
+            if case .failed(let reason) = next { throw ClusterWorkerOwnerError.invalid("Rank 1 reported failure: \(reason.rawValue)") }
+            if case .unavailable(let reason) = next { throw ClusterWorkerOwnerError.invalid("Rank 1 became unavailable: \(reason.rawValue)") }
             guard next == .finished(finish!), try event(1) == .retired(.clean) else {
                 throw ClusterWorkerOwnerError.invalid("Rank 1 finish or local retirement differs")
             }
@@ -266,14 +272,34 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             retired.complete()
         } catch {
             if retired.isComplete { return }
+            // The cause is named for the pair's incident and for the fence the
+            // other Mac receives (S24): the owner side's own fixed text or a
+            // rank's reason code, never prompt or token text.
+            let cause = Self.failureText(error)
+            owner.noteRequestFailure(self, cause)
             cancel(reason: .runtimeError) // Own the watchdog before any callback can block.
             let emit = lock.withLock { callback }
-            _ = emit?(.failed("Worker request failed; cleanup is still owned"))
-            cleanup(acknowledged: acknowledged)
+            _ = emit?(.failed("Worker request failed: \(cause); cleanup is still owned"))
+            cleanup(acknowledged: acknowledged, cause: cause)
         }
     }
 
-    private func cleanup(acknowledged original: [Bool]) {
+    /// One bounded line for why a request failed on the owner side.
+    static func failureText(_ error: Error) -> String {
+        let text: String
+        switch error as? ClusterWorkerOwnerError {
+        case .invalid(let message)?: text = message
+        case .deadline?: text = "the request's deadline passed"
+        case .cancelled?: text = "the request was cancelled"
+        case .closed?: text = "a rank's command stream closed"
+        case .unavailable?: text = "a rank is unavailable"
+        case .refused(let reason)?: text = "a rank refused the reservation: \(reason.rawValue)"
+        default: text = String(describing: error)
+        }
+        return String(text.prefix(300))
+    }
+
+    private func cleanup(acknowledged original: [Bool], cause: String = "the request was cancelled before it started") {
         if retired.isComplete { return }
         var acknowledged = original
         let reason = lock.withLock { cancellation ?? .runtimeError }
@@ -284,11 +310,11 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
             // submission can race an unread refusal, so only confirmed admission
             // permits request cancel. All other ranks need actual native cleanup.
             guard submitted[index] == .admitted else {
-                owner.workers[index].requestNativeCleanup()
+                owner.workers[index].requestNativeCleanup(reason: cause)
                 continue
             }
             do { try owner.workers[index].sendWorkerCommand(.cancel(reason), requestID: requestID, deadline: deadline) }
-            catch { owner.workers[index].requestNativeCleanup() }
+            catch { owner.workers[index].requestNativeCleanup(reason: cause) }
         }
         for index in 0..<2 where !acknowledged[index] {
             let worker = owner.workers[index]
@@ -301,7 +327,7 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 } catch { break }
             }
             if !acknowledged[index] {
-                worker.requestNativeCleanup(); worker.waitForNativeCleanup() // No timeout can manufacture this acknowledgment.
+                worker.requestNativeCleanup(reason: cause); worker.waitForNativeCleanup() // No timeout can manufacture this acknowledgment.
                 acknowledged[index] = true
             }
         }

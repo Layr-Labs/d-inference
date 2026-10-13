@@ -132,7 +132,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         case .command:
             required = ["worker", "deliveryRemainingNanoseconds"]; optional = ["remainingNanoseconds"]
         case .renew: required = ["remainingNanoseconds"]; optional = []
-        case .fence, .accepted, .cleanup: required = []; optional = []
+        case .accepted, .cleanup: required = []; optional = []
+        case .fence: required = []; optional = ["detail"]
         case .refused, .invalidated: required = ["detail"]; optional = []
         case .event: required = ["worker"]; optional = []
         case .bootstrapRound: required = ["bootstrapSequence", "bootstrapBytes", "ownerIncarnation", "ownerLease"]; optional = []
@@ -237,7 +238,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
             wire.remainingNanoseconds = min(r.deadlineUptimeNanoseconds - now, ClusterWorkerLimits.deadlineNanoseconds)
             sent = .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: 1,
-                capacityLimitBytes: r.capacityLimitBytes))
+                // The sampling crosses with the reservation: both ranks get it.
+                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling))
         }
         wire.worker = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence,
             requestID: requestID, command: sent))
@@ -262,7 +264,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         guard !deadline.overflow else { throw ClusterLinkWorkerError.invalid("Reservation duration overflow") }
         return (.reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
             outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline.partialValue,
-            capacityLimitBytes: r.capacityLimitBytes)), frame.requestID, end.partialValue)
+            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling)), frame.requestID, end.partialValue)
     }
 }
 
@@ -300,6 +302,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private var releasedCleanly = false
     private var accepted = false
     private var refusal: String?
+    /// What the follower last said about its own endpoint (S24): why it was
+    /// invalidated, or how its owner ended without its worker's cleanup.
+    private var followerDetail: String?
     private var ready: ClusterWorkerReady?
     private var terminationValue: ClusterWorkerProcessTermination?
     private var incoming: [ClusterWorkerEventFrame] = []
@@ -318,12 +323,16 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     /// Why the follower was declared lost (its link closed for good or its
     /// process restarted); nil while it is not.
     private var loss: String?
-    /// The follower's own account of why its rank ended (its owner's last
-    /// diagnostic line), when it sent one.
-    private var followerDetail: String?
-    /// Each wait group is left exactly once: by its proof, or by the loss.
-    private var nativeLeft = false
-    private var ownerLeft = false
+    /// Why this endpoint fenced the follower, as the fence tells it (S24).
+    private var fenceReason: String?
+    private var refusedWires = 0
+    private var lastRefusedWire: String?
+    /// Each wait group is left exactly once: by its proof, by the loss, or
+    /// past the follower's last possible proof.
+    private var nativeEndedLeft = false
+    private var ownerEndedLeft = false
+    private var proofCeilingPassed = false
+    private let retirementAllowance: UInt64
     /// Checks only: the leader goes silent on the lease while the link stays up.
     func suspendRenewalsForTesting() { lock.withLock { renewalsSuspended = true } }
 
@@ -333,14 +342,25 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     public var ownerTermination: ClusterWorkerProcessTermination? { lock.withLock { terminationValue } }
     public var localLifetimeDeadlineUptimeNanoseconds: UInt64 { lock.withLock { leaseDeadline } }
     public var ownerRetirementDeadlineUptimeNanoseconds: UInt64 {
-        lock.withLock { leaseDeadline }.addingReportingOverflow(Self.retirementAllowanceNanoseconds).partialValue
+        lock.withLock { leaseDeadline }.addingReportingOverflow(retirementAllowance).partialValue
+    }
+    /// What this endpoint knows for the incident of an unresolved stop (S24).
+    public var diagnosticSummary: String {
+        lock.withLock {
+            "rank \(rank) link endpoint: fence \(fenceSent ? "sent" : fenceRequested ? "requested" : "not requested")"
+                + (fenceReason.map { " (\($0))" } ?? "") + "; cleanup proof \(cleanup ? "received" : "missing")"
+                + "; release proof \(released ? (releasedCleanly ? "received" : "received without the owner's proof") : "missing")"
+                + "; refused follower messages \(refusedWires)" + (lastRefusedWire.map { " (last: \($0))" } ?? "")
+                + (followerDetail.map { "; the follower said: \($0)" } ?? "")
+                + (proofCeilingPassed ? "; the follower's proof ceiling passed" : "")
+        }
     }
     /// Why the follower refused the open, if it did.
     public var refusalReason: String? { lock.withLock { refusal } }
     /// Why the follower was declared lost, if it was (`linkLost`).
     public var lossReason: String? { lock.withLock { loss } }
-    /// Why the follower's rank ended, in the follower's words (its owner's
-    /// last diagnostic line, plain ASCII, bounded), if it said.
+    /// Why the follower's rank ended, in the follower's words (its owner's or
+    /// worker's last diagnostic line, plain ASCII, bounded), if it said (S24).
     public var followerReason: String? { lock.withLock { followerDetail } }
     public var renewals: UInt64 { lock.withLock { renewalsSent } }
 
@@ -350,6 +370,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     public init(transport: any ClusterLinkWorkerTransport, clusterID: String, expectedIdentity: ClusterWorkerIdentity,
                 profile: ClusterWorkerProfile, rank: Int, executionPlanSHA256: String,
                 lifetimeDeadlineUptimeNanoseconds: UInt64, bootstrapRelay: (any ClusterOwnerBootstrapExchange)?,
+                retirementAllowanceNanoseconds: UInt64 = ClusterLinkWorkerEndpoint.retirementAllowanceNanoseconds,
                 router: ClusterLinkWorkerRouter? = nil) throws {
         let now = DispatchTime.now().uptimeNanoseconds
         guard lifetimeDeadlineUptimeNanoseconds > now,
@@ -368,6 +389,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
         self.transport = transport; self.clusterID = clusterID; self.expectedIdentity = expectedIdentity
         expectedProfile = profile; self.rank = rank; self.executionPlanSHA256 = executionPlanSHA256
         self.bootstrapRelay = bootstrapRelay
+        retirementAllowance = retirementAllowanceNanoseconds
         leaseDeadline = lifetimeDeadlineUptimeNanoseconds
         nextRenewalAt = now + ClusterWorkerLease.renewNanoseconds
         var open = ClusterLinkWorkerWire(kind: .open, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0)
@@ -396,9 +418,10 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private func notificationLocked() -> (@Sendable () -> Void)? {
         guard invalid, !notified, let handler else { return nil }; notified = true; return handler
     }
-    private func fail() {
+    private func fail(reason: String? = nil) {
         let call = lock.withLock { () -> (@Sendable () -> Void)? in
             invalid = true; ready = nil
+            if let reason, fenceReason == nil { fenceReason = String(decoding: Data(reason.utf8.prefix(250)), as: UTF8.self) }
             if !cleanup { fenceRequested = true }
             return notificationLocked()
         }
@@ -432,6 +455,19 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     }
 
     public func requestNativeCleanup() { fail() }
+    public func requestNativeCleanup(reason: String) { fail(reason: reason) }
+    private func leaveNativeEnded() {
+        let leave = lock.withLock { () -> Bool in if nativeEndedLeft { return false }; nativeEndedLeft = true; return true }
+        if leave { nativeEnded.leave() }
+    }
+    private func leaveOwnerEnded() {
+        let leave = lock.withLock { () -> Bool in if ownerEndedLeft { return false }; ownerEndedLeft = true; return true }
+        if leave { ownerEnded.leave() }
+    }
+    /// No proof can arrive any more (the follower's process is gone for good,
+    /// or its last possible proof is past): every wait on this endpoint ends
+    /// now. Nothing is claimed: cleanup and release stay unobserved.
+    func endWaits() { leaveNativeEnded(); leaveOwnerEnded() }
     public func waitForNativeCleanup() { nativeEnded.wait() }
     public func waitUntilNativeCleanup() async {
         await withCheckedContinuation { c in nativeEnded.notify(queue: .global()) { c.resume() } }
@@ -458,17 +494,10 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     /// follower's Mac ends the rank by its own lease and its own owner, and a
     /// new open there is refused while that owner holds the device. A proof
     /// that still arrives (the link came back) is recorded as usual.
-    public func linkLost(reason: String = "the follower member's link was lost") {
-        let leave = lock.withLock { () -> (native: Bool, owner: Bool) in
-            if released { return (false, false) } // Fully proven: nothing is waiting.
-            if loss == nil { loss = reason }
-            let native = !nativeLeft, owner = !ownerLeft
-            nativeLeft = true; ownerLeft = true
-            return (native, owner)
-        }
-        fail()
-        if leave.native { nativeEnded.leave() }
-        if leave.owner { ownerEnded.leave() }
+    public func linkLost(reason: String = "the follower's process restarted or the link closed for good") {
+        lock.withLock { if !released, loss == nil { loss = reason } }
+        fail(reason: reason)
+        endWaits()
     }
 
     // MARK: Link
@@ -481,12 +510,16 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 // A failed endpoint whose fence went out keeps nothing to send
                 // once the follower's last possible proof is past.
                 if invalid && fenceSent && outgoing.isEmpty,
-                   now >= leaseDeadline.addingReportingOverflow(Self.retirementAllowanceNanoseconds).partialValue { return (nil, true) }
+                   now >= leaseDeadline.addingReportingOverflow(retirementAllowance).partialValue {
+                    proofCeilingPassed = true; return (nil, true)
+                }
                 if invalid && !fenceSent && fenceRequested && !cleanup {
                     fenceSent = true
                     // The fence goes before any queued command: nothing more is wanted.
                     outgoing.removeAll(where: { $0.kind == .command }); queuedCommands = 0
-                    outgoing.append(ClusterLinkWorkerWire(kind: .fence, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0))
+                    var fence = ClusterLinkWorkerWire(kind: .fence, epoch: expectedIdentity.membershipEpoch, session: session, sequence: 0)
+                    fence.detail = fenceReason // The follower's incident names the cause (S24).
+                    outgoing.append(fence)
                 }
                 // The rank lease is renewed only while this endpoint keeps the
                 // follower: never once it failed, fenced or saw cleanup.
@@ -508,7 +541,11 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 }
                 return (next, false)
             }
-            if work.1 { return }
+            if work.1 {
+                // Past the follower's last possible proof: the waits end (nothing is claimed).
+                if lock.withLock({ proofCeilingPassed }) { endWaits() }
+                return
+            }
             guard let wire = work.0 else {
                 _ = wake.wait(timeout: .now() + .milliseconds(250))
                 continue
@@ -535,7 +572,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     guard !accepted, refusal == nil else { throw ClusterLinkWorkerError.invalid("Refusal after acceptance") }
                     refusal = wire.detail ?? ""
                     cleanup = true; released = true; releasedCleanly = true; terminationValue = .launchFailed
-                    complete = !nativeLeft; endOwner = !ownerLeft; nativeLeft = true; ownerLeft = true; invalidate = true
+                    complete = true; endOwner = true; invalidate = true
                 case .invalidated:
                     guard accepted else { throw ClusterLinkWorkerError.invalid("Invalidation before acceptance") }
                     if let detail = wire.detail, detail != ClusterLinkWorkerWire.genericInvalidation { followerDetail = detail }
@@ -568,20 +605,21 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     bootstrapBusy = true; bootstrapWork = (binding, nextBootstrap, bytes)
                 case .cleanup:
                     guard accepted, !cleanup else { throw ClusterLinkWorkerError.invalid("Repeated cleanup") }
-                    cleanup = true; ready = nil; complete = !nativeLeft; nativeLeft = true; invalidate = true
+                    cleanup = true; ready = nil; complete = true; invalidate = true
                 case .released:
                     guard accepted, !released else { throw ClusterLinkWorkerError.invalid("Repeated release") }
                     released = true; releasedCleanly = (wire.releasedCleanly ?? false) && cleanup
-                    terminationValue = wire.ownerTermination; endOwner = !ownerLeft; ownerLeft = true
+                    terminationValue = wire.ownerTermination; endOwner = true
                     if let detail = wire.detail { followerDetail = detail }
                     // The follower's last message of the session: no cleanup
                     // proof can follow it. A release without one (its owner
                     // ended without proving its worker's exit, e.g. it exited
-                    // at launch) ends the cleanup wait now, unproven
-                    // (`nativeCleanupObserved` stays false, the session is
-                    // quarantined) instead of holding a stop until its caller's
-                    // deadline.
-                    if !cleanup { complete = !nativeLeft; nativeLeft = true; invalidate = true }
+                    // at launch) ends every wait now, claiming nothing
+                    // (`nativeCleanupObserved` stays false, ownership
+                    // unresolved, the session quarantined; the follower's
+                    // journal keeps the record for `cluster recover`) instead
+                    // of holding a stop until its caller's deadline.
+                    if !cleanup { complete = true; invalidate = true }
                 default: throw ClusterLinkWorkerError.invalid("Leader message from the follower")
                 }
             }
@@ -601,11 +639,14 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     } catch { self.fail() }
                 }
             }
-            if complete { nativeEnded.leave() }
-            if endOwner { ownerEnded.leave() }
+            if complete { leaveNativeEnded() }
+            if endOwner { leaveOwnerEnded() }
             if invalidate { fail() }
             arrivals.signal()
-        } catch { fail() }
+        } catch {
+            lock.withLock { refusedWires += 1; lastRefusedWire = String("\(wire.kind.rawValue): \(error)".prefix(200)) }
+            fail(reason: "a follower message was refused: \(error)")
+        }
     }
 }
 
@@ -840,7 +881,7 @@ private final class ServerSession: @unchecked Sendable {
             guard let ttl = wire.remainingNanoseconds else { return }
             lock.withLock { if !fenced { leaderLease = max(leaderLease, now + ttl) } }
         case .fence:
-            fence(reason: "leader fenced")
+            fence(reason: "leader fenced" + (wire.detail.map { ": " + $0 } ?? ""))
         case .bootstrapReply:
             guard let sequence = wire.bootstrapSequence, let bytes = wire.bootstrapBytes else { return }
             proxy?.deliverReply(sequence: sequence, bytes: bytes)
@@ -864,6 +905,38 @@ private final class ServerSession: @unchecked Sendable {
         endpoint?.requestNativeCleanup()
     }
 
+    /// How this session's owner ended without its worker's cleanup proof, with
+    /// the last line it wrote (bounded, control characters removed): e.g. a
+    /// load its memory gate refused. Nil while the owner runs (after waiting
+    /// up to `nanoseconds` for it to end) or when its cleanup was proven.
+    static func ownerCause(_ endpoint: ClusterRemoteWorkerEndpoint, waitingUpTo nanoseconds: UInt64, evenWithCleanup: Bool = false) -> String? {
+        let until = DispatchTime.now().uptimeNanoseconds + nanoseconds
+        while endpoint.ownerTermination == nil && DispatchTime.now().uptimeNanoseconds < until { Thread.sleep(forTimeInterval: 0.01) }
+        guard let termination = endpoint.ownerTermination, evenWithCleanup || !endpoint.nativeCleanupObserved else { return nil }
+        // Its exit is recorded just before its last output is drained (itself
+        // bounded at two seconds): wait for that, no longer.
+        let drained = DispatchTime.now().uptimeNanoseconds + 2_500_000_000
+        while !endpoint.diagnosticDrainComplete && DispatchTime.now().uptimeNanoseconds < drained { Thread.sleep(forTimeInterval: 0.01) }
+        let words = String(decoding: endpoint.diagnosticTail, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map { String($0.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) }) }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            // Bookkeeping records (the forced-exit and orphan-wired lines)
+            // are not the reason; the line before them is.
+            .last(where: { !$0.isEmpty && !$0.contains("darkbloom-forced-exit-v1") && !$0.contains("darkbloom-orphan-wired-v1") })
+        return "its owner \(ClusterRemoteWorkerEndpoint.describe(termination))" + (words.map { ": " + String($0.prefix(160)) } ?? "")
+    }
+
+    /// At most `bytes` UTF-8 bytes, cut at a character boundary.
+    static func bounded(_ text: String, bytes: Int) -> String {
+        var result = ""
+        for character in text {
+            guard result.utf8.count + String(character).utf8.count <= bytes else { break }
+            result.append(character)
+        }
+        return result
+    }
+
     private func localInvalidated() {
         let (cleanup, endpoint) = lock.withLock { (self.endpoint?.nativeCleanupObserved ?? false, self.endpoint) }
         let reason = endpoint.flatMap { ClusterLinkWorkerWire.ownerReason($0.diagnosticTail) } ?? ClusterLinkWorkerWire.genericInvalidation
@@ -873,12 +946,14 @@ private final class ServerSession: @unchecked Sendable {
     /// Relays events, enforces the leader's lease, then reports cleanup and release.
     private func pumpLoop() {
         guard let endpoint = lock.withLock({ self.endpoint }) else { return }
+        var sawReady = false
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
             let (lease, failed) = lock.withLock { (leaderLease, sendFailed) }
             if now >= lease || failed { fence(reason: failed ? "link send failed" : "leader lease expired") }
             do {
                 let event = try endpoint.receiveWorkerEvent(until: now + 100_000_000)
+                if case .ready = event.event { sawReady = true }
                 let payload = try ClusterWorkerCodec.encode(event)
                 send({ $0.worker = payload }, kind: .event)
             } catch ClusterWorkerOwnerError.deadline {
@@ -894,8 +969,21 @@ private final class ServerSession: @unchecked Sendable {
             }
         }
         if endpoint.nativeCleanupObserved {
+            // A worker that ended before it was ever ready (its load refused,
+            // say) left a clean proof but no reason anywhere: say how, in its
+            // owner's words, before the proof (S24).
+            if !sawReady, let cause = Self.ownerCause(endpoint, waitingUpTo: 3_000_000_000, evenWithCleanup: true) {
+                server.emit(.fenced(session: id, reason: "follower worker ended before it was ready: " + cause))
+                send({ $0.detail = Self.bounded("worker ended before it was ready: " + cause, bytes: 250) }, kind: .invalidated)
+            }
             send({ _ in }, kind: .cleanup)
             server.emit(.cleanup(session: id))
+        } else if let cause = Self.ownerCause(endpoint, waitingUpTo: 0) {
+            // How the owner ended, in its own words (S24): this Mac's report
+            // (once more if the first fence could not say it yet) and the
+            // leader's incident, not only "rank 1 ended".
+            server.emit(.fenced(session: id, reason: "follower endpoint closed: " + cause))
+            send({ $0.detail = Self.bounded(cause, bytes: 250) }, kind: .invalidated)
         }
         let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
         let cleanly = endpoint.waitForOwnerReleased(deadline: deadline)

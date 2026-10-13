@@ -13,6 +13,8 @@ task_target="$(uname -m)-apple-macos14.0"
 task_flags=(-swift-version 6 -warnings-as-errors -target "$task_target")
 task_links=(-I "$task_build" -L "$task_build" -Xlinker -rpath -Xlinker "$task_build")
 
+# The installed contract is built with DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS: a fixture's own files stand for the
+# registered artifact its model's qualification records ran (never in a product build).
 build_module() {
   local task_name="$1"
   shift
@@ -21,7 +23,7 @@ build_module() {
     DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
     DarkbloomClusterSecurity) task_dependencies+=(-lDarkbloomClusterBootstrap) ;;
     DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity) ;;
-    InstalledContract) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
+    InstalledContract) task_dependencies+=(-D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
   esac
   xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
     -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \

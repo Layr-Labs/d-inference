@@ -212,10 +212,13 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     public let capacityLimitBytes: Int
     /// How the decoding rank selects tokens; nil is greedy text, and then the
     /// reservation's bytes are exactly those of a worker without sampling.
+    /// Required at every construction, with no default: a reservation rebuilt
+    /// from another (a hop, a codec, a local copy) that forgot it would
+    /// silently serve a sampled request greedily, the F1 root-cause class.
     public let sampling: ClusterWorkerSampling?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling? = nil) {
+                sampling: ClusterWorkerSampling?) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes

@@ -1,5 +1,8 @@
 import Darwin
 import os
+#if canImport(DarkbloomClusterProtocol)
+import DarkbloomClusterProtocol
+#endif
 
 /// The one way a rank process leaves when it will not finish its normal unwind.
 ///
@@ -30,6 +33,9 @@ import os
 /// stamp once; if a write completed within the last half of the bound, the
 /// deadline moves by one more bound, exactly once, and the next deadline is
 /// final. Progress that stopped, or that never started, gets no extension.
+/// The extension is reported (`phase=extended`) by a notice thread armed with
+/// the dead-man, so the dead-man itself still never writes: a full
+/// diagnostic pipe blocks only the notice.
 /// This is the owner's engine-teardown rule (oMLX `_EngineTeardown`, a58afee1:
 /// the close budget doubles once, only while persistence reports a recently
 /// completed write, and is fatal otherwise).
@@ -48,7 +54,7 @@ import os
 public enum ProcessForcedExit {
     /// Bound on the release and on any unwind that follows a claim, as the
     /// owner's rank-exit dead-man.
-    public static let defaultDeadManNanoseconds: UInt64 = 20_000_000_000
+    public static let defaultDeadManNanoseconds: UInt64 = ClusterForcedExitBounds.deadManNanoseconds
 
     public struct Claim: Equatable, Sendable {
         public let status: Int32
@@ -203,15 +209,58 @@ public enum ProcessForcedExit {
         let bound: UInt64
         let status: Int32
         let progress: UnsafeMutablePointer<UInt64>
+        /// Signalled once per extension; 0 when no notice thread runs.
+        let notice: semaphore_t
+    }
+
+    /// The line the notice thread writes for an extension, prepared before
+    /// the dead-man is armed (the dead-man never formats or allocates).
+    static func extensionNotice(status: Int32, bound: UInt64) -> String {
+        "darkbloom-forced-exit-v1 status=\(status) phase=extended dead_man_ms=\(bound / 1_000_000) "
+            + "extension=1/\(ClusterForcedExitBounds.extensions) reason=durable-write-completed-in-last-half-of-bound"
+    }
+
+    /// A thread that waits for the dead-man's extension signal and then
+    /// writes the prepared notice once. Returns the semaphore to signal, or 0
+    /// when it could not be started (the extension then goes unreported).
+    private static func armExtensionNotice(status: Int32, bound: UInt64) -> semaphore_t {
+        var semaphore: semaphore_t = 0
+        guard semaphore_create(mach_task_self_, &semaphore, SYNC_POLICY_FIFO, 0) == KERN_SUCCESS else { return 0 }
+        var bytes = Array(extensionNotice(status: status, bound: bound).utf8)
+        bytes.append(10)
+        let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: bytes.count)
+        _ = buffer.initialize(from: bytes)
+        struct Notice { let semaphore: semaphore_t; let bytes: UnsafeMutableBufferPointer<UInt8> }
+        let arguments = UnsafeMutablePointer<Notice>.allocate(capacity: 1)
+        arguments.initialize(to: .init(semaphore: semaphore, bytes: buffer))
+        var thread: pthread_t?
+        let created = pthread_create(&thread, nil, { raw in
+            let value = raw.assumingMemoryBound(to: Notice.self).pointee
+            while semaphore_wait(value.semaphore) == KERN_ABORTED {}
+            _ = Darwin.write(STDERR_FILENO, value.bytes.baseAddress, value.bytes.count)
+            return nil
+        }, arguments)
+        guard created == 0, let thread else {
+            arguments.deinitialize(count: 1); arguments.deallocate(); buffer.deallocate()
+            semaphore_destroy(mach_task_self_, semaphore)
+            return 0
+        }
+        pthread_detach(thread)
+        return semaphore
     }
 
     /// The extension rule, pure: with the stamp of the last completed write,
-    /// the deadline just reached and the bound, the new deadline (one bound
-    /// later) or nil when the process must end now. Granted at most once by
-    /// the caller. A write counts only if it completed within the last half
-    /// of the bound before the deadline, and not in the future.
-    static func extendedDeadline(progress: UInt64, deadline: UInt64, bound: UInt64) -> UInt64? {
-        guard progress != 0, progress <= deadline, deadline - progress <= bound / 2 else { return nil }
+    /// the deadline just reached, the bound and the time the dead-man read
+    /// the stamp (`now`, at or after the deadline: its sleep overshoots), the
+    /// new deadline (one bound after the deadline) or nil when the process
+    /// must end now. Granted at most `ClusterForcedExitBounds.extensions`
+    /// times by the caller. A write counts if it completed within the last
+    /// half of the bound before the deadline or after it, and not later than
+    /// the read: a write that lands between the deadline and the dead-man's
+    /// wake-up is the most recent progress there is, not one from the future.
+    static func extendedDeadline(progress: UInt64, deadline: UInt64, bound: UInt64, now: UInt64? = nil) -> UInt64? {
+        let read = max(deadline, now ?? deadline)
+        guard progress != 0, progress <= read, deadline - min(progress, deadline) <= bound / 2 else { return nil }
         let sum = deadline.addingReportingOverflow(bound)
         return sum.overflow ? UInt64.max : sum.partialValue
     }
@@ -219,22 +268,27 @@ public enum ProcessForcedExit {
     private static func armDeadMan(status: Int32, after nanoseconds: UInt64) -> Bool {
         let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let sum = now.addingReportingOverflow(nanoseconds)
+        let notice = armExtensionNotice(status: status, bound: nanoseconds)
         let arguments = UnsafeMutablePointer<DeadMan>.allocate(capacity: 1)
         arguments.initialize(to: .init(deadline: sum.overflow ? UInt64.max : sum.partialValue, bound: nanoseconds,
-                                       status: status, progress: progressStamp))
+                                       status: status, progress: progressStamp, notice: notice))
         var thread: pthread_t?
         let created = pthread_create(&thread, nil, { raw in
             let value = raw.assumingMemoryBound(to: DeadMan.self).pointee
             var deadline = value.deadline
-            var extended = false
+            var extensionsLeft = ClusterForcedExitBounds.extensions
             while true {
                 let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                 if now >= deadline {
                     // No lock, no allocation, no write: one word read, one
-                    // decision, then the end or the single extension.
-                    if !extended, let later = ProcessForcedExit.extendedDeadline(
-                        progress: value.progress.pointee, deadline: deadline, bound: value.bound) {
-                        extended = true; deadline = later; continue
+                    // decision, then the end or the extension (reported by
+                    // the notice thread, which a signal only wakes).
+                    if extensionsLeft > 0, let later = ProcessForcedExit.extendedDeadline(
+                        progress: value.progress.pointee, deadline: deadline, bound: value.bound,
+                        now: clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) {
+                        extensionsLeft -= 1; deadline = later
+                        if value.notice != 0 { semaphore_signal(value.notice) }
+                        continue
                     }
                     Darwin._exit(value.status)
                 }

@@ -93,6 +93,7 @@ final class EndpointBox: @unchecked Sendable {
         try await missingRelease(fixture,prepared)
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
+        try await stopBoundAfterGracefulThenUnrequested()
         print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
     }
     /// Round-4 finding 1: the prefix-SSD key never reaches a native rank's environment, which any process of
@@ -211,7 +212,8 @@ final class EndpointBox: @unchecked Sendable {
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
         let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
         try require(environment.count==13 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
-            && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512","native environment widened")
+            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"]==String(prepared.plan.budgets.stopMarginNanoseconds/1_000_000)
+            && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]==nil,"native environment widened")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
         // without the product's key source, an owner-only key file made once and never replaced. The rank gets the
         // directory in its environment and the key's bytes only on its input (`nativePrefixSSDKey`).
@@ -263,7 +265,7 @@ final class EndpointBox: @unchecked Sendable {
             "the SSD tier switched off must send no key")
         let cacheOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4"])
-        try require(cacheOff.count==13 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
+        try require(cacheOff.count==12 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
             "prefix cache off must not configure the SSD tier")
         try require(prepared.plan.nativePrefixSSDKey(ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off"])==nil,
             "prefix cache off must send no SSD key")
@@ -615,6 +617,13 @@ final class EndpointBox: @unchecked Sendable {
         try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
         let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
         try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
+        // A grant rests on records of the installed artifact: the 27B's records ran its registered artifact, and an
+        // installed capability with any other artifact (here the fixture's own files) is refused before anything starts.
+        let foreign=try InstalledFixture.make(root:f.root.appendingPathComponent("q27-foreign"),probe:f.probe,owner:f.owner,worker:f.worker,
+            advertisedModes:allModes,registered:model,standsForRegisteredArtifact:false)
+        let other=try refusal{_ = try foreign.prepare()}
+        try require(other.contains("registered_qwen38_27b") && other.contains("artifact") && other.contains(String(foreign.capability.artifactSHA256.prefix(12)))
+            && other.contains("policy decision"),"a capability whose artifact no record ran was not refused: \(other)")
     }
     /// The installed path starts workers for the adapter of every granted
     /// model, each with the rank environment its arithmetic policy requires
@@ -633,9 +642,12 @@ final class EndpointBox: @unchecked Sendable {
                 generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-            // Plus exactly MLX's two command-buffer guards every rank gets (orphan port #5) and the prefix SSD tier's two.
-            try require(environment.count==13+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
-                && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512"
+            // Plus exactly MLX's command-buffer operation guard every rank gets (orphan port #5; the megabyte cap is MLX's
+            // own per chip unless an operator pins one) and the prefix SSD tier's two (directory, the plan's stop margin;
+            // the key goes on the rank's input, never its environment).
+            try require(environment.count==13+extra.count+(environment["MLX_MAX_MB_PER_BUFFER"]==nil ? 0 : 1)
+                && extra.allSatisfy{environment[$0.key]==$0.value}
+                && environment["MLX_MAX_OPS_PER_BUFFER"]=="16"
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
             try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")
@@ -886,6 +898,39 @@ final class EndpointBox: @unchecked Sendable {
         try require((result == .released || result == .quarantined) && s.readiness()==nil && box.snapshot.allSatisfy(\.nativeCleanupObserved),"the unasked stop did not end both ranks: \(result)")
         try require(notices.count==1,"the stop was announced more than once")
     }
+    /// A graceful stop whose wait is under way when a stop nobody asked for
+    /// arrives: the rest of the wait is bounded by the unrequested-stop
+    /// allowance from that moment (finishStop used to keep the graceful,
+    /// unbounded wait it had started with).
+    static func stopBoundAfterGracefulThenUnrequested() async throws {
+        let ms:UInt64=1_000_000
+        func now()->UInt64 { DispatchTime.now().uptimeNanoseconds }
+        // The pair's shutdown never returns; the stop began gracefully.
+        let bound=DistributedInstalledStopBound(allowanceNanoseconds:300*ms)
+        let began=now()
+        Task { try? await Task.sleep(nanoseconds:200*ms); bound.beginUnrequested() }
+        let shutdown:Bool?=await bound.wait(until:nil) { try? await Task.sleep(nanoseconds:5_000*ms); return true }
+        let took=(now()-began)/ms
+        try require(shutdown==nil && took>=450 && took<2_000,"the shutdown wait after an unrequested stop took \(took) ms (allowance 300 ms from 200 ms)")
+        // A release wait with an owner ceiling far away: cut to the allowance's end too.
+        let release=DistributedInstalledStopBound(allowanceNanoseconds:300*ms)
+        let start=now()
+        Task { try? await Task.sleep(nanoseconds:100*ms); release.beginUnrequested() }
+        let proof:Bool?=await release.wait(until:now()+60_000*ms) { try? await Task.sleep(nanoseconds:5_000*ms); return true }
+        let waited=(now()-start)/ms
+        try require(proof==nil && waited>=350 && waited<2_000,"the release wait after an unrequested stop took \(waited) ms")
+        // Already unrequested before the wait: bounded from the start; a body that ends first is returned.
+        let early=DistributedInstalledStopBound(allowanceNanoseconds:300*ms); early.beginUnrequested()
+        let quick:Bool?=await early.wait(until:nil) { try? await Task.sleep(nanoseconds:20*ms); return true }
+        try require(quick==true,"a body that ends inside the allowance is returned")
+        // Asked-for only: no bound of its own; the caller's deadline still applies.
+        let graceful=DistributedInstalledStopBound(allowanceNanoseconds:300*ms)
+        let g0=now()
+        let late:Bool?=await graceful.wait(until:now()+700*ms) { try? await Task.sleep(nanoseconds:5_000*ms); return true }
+        let gw=(now()-g0)/ms
+        try require(late==nil && gw>=650 && gw<2_000 && graceful.allowanceEnd==nil,"a graceful wait took \(gw) ms (deadline 700 ms)")
+    }
+
     static func missingRelease(_ f:InstalledFixture,_ p:DistributedInstalledPreparation) async throws {
         for behavior in ["drop-release","nonzero-owner"] {
             let(s,box)=try session(f,p,behavior:behavior);try await s.start()

@@ -66,6 +66,10 @@ struct QwenStagePrefixDiskHeader: Codable, Equatable {
     /// `tokens` (`[1, f-1]`, int32) and `last` (`[1, 1, H]`). Absent in records
     /// written before this section existed and on the non-decoding rank.
     var history: [Recurrent]? = nil
+    /// The rank that wrote the record, sealed with the header: a record
+    /// restores only on that rank (`QwenStagePrefixDiskPolicy.belongs`), not on
+    /// another rank of the same plan that shares a root on one Mac.
+    var rank: Int? = nil
     let createdUnixSeconds: Double
 
     var historyEntries: [Recurrent] { history ?? [] }
@@ -127,7 +131,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
     /// Prepares a record of `states` (one prompt's captured frontiers, the
     /// deepest carrying the whole attention copy). Runs on the serving thread:
     /// it evaluates (normally a no-op) and borrows the arrays' bytes.
-    static func prepare(scope: String, recordKey: String, fileName: String, deepest: QwenStagePrefixState,
+    static func prepare(scope: String, recordKey: String, fileName: String, rank: Int, deepest: QwenStagePrefixState,
                         frontiers: [(state: QwenStagePrefixState, key: String)], blockTokens: Int) throws -> QwenStagePrefixDiskJob {
         let committed = deepest.committedTokens
         guard committed > 0, blockTokens > 0, !frontiers.isEmpty,
@@ -199,6 +203,7 @@ final class QwenStagePrefixDiskJob: @unchecked Sendable {
             frontiers: frontiers.map { .init(tokens: $0.state.committedTokens, key: $0.key) }.sorted { $0.tokens < $1.tokens },
             attention: attention, recurrent: recurrent, createdUnixSeconds: Date().timeIntervalSince1970)
         if !history.isEmpty { header.history = history }
+        header.rank = rank
         return .init(header: header, fileName: fileName, attention: attentionSources, recurrent: recurrentSources,
             history: historySources)
     }
@@ -274,7 +279,7 @@ enum QwenStagePrefixDiskIO {
 
     static func open(url: URL, keys: QwenStagePrefixDiskKeys) throws -> Opened {
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
-        guard fd >= 0 else { throw ProbeError("Prefix record could not be opened (errno \(errno))") }
+        guard fd >= 0 else { throw QwenStagePrefixDiskPolicy.IOFailure("open", code: errno) }
         defer { close(fd) }
         _ = fcntl(fd, F_NOCACHE, 1)
         var info = stat()
@@ -325,7 +330,7 @@ enum QwenStagePrefixDiskIO {
             throw ProbeError("Prefix record does not hold that frontier")
         }
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
-        guard fd >= 0 else { throw ProbeError("Prefix record could not be opened (errno \(errno))") }
+        guard fd >= 0 else { throw QwenStagePrefixDiskPolicy.IOFailure("open", code: errno) }
         defer { close(fd) }
         _ = fcntl(fd, F_NOCACHE, 1)
         let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier)
@@ -418,7 +423,7 @@ enum QwenStagePrefixDiskIO {
             var done = 0
             while done < count {
                 let n = pread(fd, buffer.baseAddress!.advanced(by: done), count - done, off_t(offset + done))
-                if n < 0 { if errno == EINTR { continue }; throw ProbeError("Prefix record read failed (errno \(errno))") }
+                if n < 0 { if errno == EINTR { continue }; throw QwenStagePrefixDiskPolicy.IOFailure("read", code: errno) }
                 if n == 0 { throw ProbeError("Prefix record is shorter than its header says") }
                 done += n
             }

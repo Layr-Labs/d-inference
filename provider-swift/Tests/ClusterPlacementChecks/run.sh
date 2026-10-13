@@ -19,7 +19,9 @@ xcrun swiftc -j 4 "${task_flags[@]}" -emit-library -emit-module -module-name Dar
   -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" "${task_links[@]}" -lDarkbloomClusterProtocol \
   -Xlinker -install_name -Xlinker @rpath/libDarkbloomClusterPlacement.dylib \
   "$task_repo"/libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
-xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
+# DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS: the check's synthetic artifacts stand for the registered artifacts the
+# shipped qualification records ran (never in a product build).
+xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -parse-as-library "${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement \
   "$task_config/ClusterConfigurationFiles.swift" "$task_config/ClusterConfigurationPaths.swift" \
   "$task_config/ClusterConfiguration.swift" "$task_config/ClusterConfigurationCodec.swift" \
   "$task_config/ClusterGenerationSelection.swift" "$task_config/ClusterCapabilityRecord.swift" \

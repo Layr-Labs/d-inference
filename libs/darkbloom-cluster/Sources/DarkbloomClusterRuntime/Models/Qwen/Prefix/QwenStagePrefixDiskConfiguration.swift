@@ -21,8 +21,13 @@ import Foundation
 ///   tokens), `..._MIN_TOKENS` (shortest prompt worth a record, 1,024),
 ///   `..._MAX_WRITE_GB_PER_DAY` (750, the product's endurance cap),
 ///   `..._MIN_FREE_GB` (writes stop below this much free space, 20).
+/// - `..._STOP_MARGIN_MS`: the plan's stop margin, which the installed owner
+///   passes so the close before the model's release fits in it
+///   (`QwenStagePrefixDiskPolicy.closeBounds`).
 ///
-/// This file needs nothing but Foundation and the runtime's error type.
+/// The write-behind byte bound is derived from this Mac's memory
+/// (`QwenStagePrefixDiskPolicy.queuedBytesBound`). This file needs nothing
+/// but Foundation, the runtime's error type and the disk policy.
 public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
     public static let directoryEnvironmentName = "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"
     public static let switchEnvironmentName = "DARKBLOOM_CLUSTER_PREFIX_SSD"
@@ -47,7 +52,9 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
     /// Write-behind bounds: jobs and host-visible bytes queued behind the
     /// writer. A persist beyond either is dropped; serving never waits.
     public var maximumQueuedJobs = 2
-    public var maximumQueuedBytes = 4 * 1_073_741_824
+    public var maximumQueuedBytes = QwenStagePrefixDiskPolicy.queuedBytesBound(physicalBytes: ProcessInfo.processInfo.physicalMemory)
+    /// The close before the model's release (`QwenStagePrefixDiskPolicy.closeBounds`).
+    public var closeBounds = QwenStagePrefixDiskPolicy.closeBounds(stopMarginMilliseconds: nil)
 
     public init(mode: Mode) { self.mode = mode }
 
@@ -82,6 +89,9 @@ public struct QwenStagePrefixDiskConfiguration: Equatable, Sendable {
             value.maximumWriteBytesPerDay = n == 0 ? Int.max : n * 1_000_000_000
         }
         if let n = integer("MIN_FREE_GB", 1...16_384) { value.minimumFreeBytes = n * 1_073_741_824 }
+        if let n = integer("STOP_MARGIN_MS", 1_000...600_000) {
+            value.closeBounds = QwenStagePrefixDiskPolicy.closeBounds(stopMarginMilliseconds: n)
+        }
         return value
     }
 }

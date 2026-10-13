@@ -653,7 +653,11 @@ public struct PairDriver: Sendable {
                     lease = try pair.reserve(requestID: id, reservation: .init(profileID: request.profileID,
                         promptTokenIDs: request.promptTokenIDs, stopTokenIDs: request.stopTokenIDs,
                         outputCount: request.outputCount, chunkSize: request.chunkSize,
-                        deadlineUptimeNanoseconds: deadline, capacityLimitBytes: capacity))
+                        deadlineUptimeNanoseconds: deadline, capacityLimitBytes: capacity,
+                        // A batch request's own sampling, as the single request's
+                        // (before the reservation's sampling was required, a
+                        // sampled batch request ran greedy here).
+                        sampling: request.sampling?.wire))
                 } catch {
                     var failed = row([], "none"); failed.failure = "reservation failed: \(error)"; box.add(failed); return
                 }

@@ -246,6 +246,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             guard opened.header.scope == scope, opened.header.frontiers.contains(where: { $0.tokens == frontier && $0.key == key }) else {
                 throw ProbeError("Prefix SSD record does not belong to this prompt")
             }
+            guard QwenStagePrefixDiskPolicy.belongs(headerRank: opened.header.rank, to: rank) else {
+                throw ProbeError("Prefix SSD record does not belong to this rank")
+            }
             if fault?.restoreFails == true {
                 throw QwenStagePrefixDiskInjectedFault()
             }
@@ -261,7 +264,10 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             return state
         } catch {
             lock.withLock { statistics.failedRestores += 1 }
-            if !checkFailed && !(error is QwenStagePrefixDiskInjectedFault) {
+            // Only a record that failed itself is deleted; a transient I/O
+            // failure keeps it for the next restore.
+            if QwenStagePrefixDiskPolicy.deletesRecord(after: error, checkFailed: checkFailed,
+                                                       injected: error is QwenStagePrefixDiskInjectedFault) {
                 remove(name: name, reason: "unreadable")
             }
             log("darkbloom-prefix-ssd-v1 rank=\(rank) event=restore-failed frontier=\(frontier) check=\(checkFailed)"
@@ -346,7 +352,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         }
         let job: QwenStagePrefixDiskJob
         do {
-            job = try QwenStagePrefixDiskJob.prepare(scope: scope, recordKey: recordKey, fileName: name, deepest: deepest,
+            job = try QwenStagePrefixDiskJob.prepare(scope: scope, recordKey: recordKey, fileName: name, rank: rank, deepest: deepest,
                 frontiers: chosen.map { ($0, frontierKeys[$0.committedTokens]!) }, blockTokens: blockTokens)
         } catch {
             lock.withLock { statistics.droppedPersists += 1 }
@@ -450,7 +456,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     /// restores), never when it is stuck. A write still running when the
     /// final bound passes stops at its next unit and leaves only a temporary
     /// file, deleted at next load.
-    func close(timeoutSeconds: Double = 20) {
+    func close(timeoutSeconds: Double? = nil) {
+        // The bounds come from the plan's stop margin (`closeBounds`).
+        let timeoutSeconds = timeoutSeconds ?? configuration.closeBounds.boundSeconds
         var drained = drain(timeoutSeconds: timeoutSeconds)
         var extended = false
         if Self.teardownExtends(drained: drained, lastCompletedWrite: lock.withLock { lastCompletedWrite },
@@ -460,7 +468,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             drained = drain(timeoutSeconds: timeoutSeconds)
         }
         lock.withLock { cancelled = true; statistics.closeExtended = extended; statistics.closeDrained = drained }
-        if !drained { _ = drain(timeoutSeconds: 5) }
+        if !drained { _ = drain(timeoutSeconds: configuration.closeBounds.finalSeconds) }
         // This rank no longer uses the plan directory, nor its staging.
         lock.withLock { if inUse >= 0 { Darwin.close(inUse); inUse = -1 } }
         if let stagingDirectory { Self.removeStaging(stagingDirectory) }
@@ -479,7 +487,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
 
     /// Deletes every record of this rank (diagnosis and tests).
     func sweep() {
-        drain(timeoutSeconds: 20)
+        drain(timeoutSeconds: configuration.closeBounds.boundSeconds)
         let names = lock.withLock { Array(records.keys) }
         for name in names { remove(name: name, reason: "sweep") }
     }

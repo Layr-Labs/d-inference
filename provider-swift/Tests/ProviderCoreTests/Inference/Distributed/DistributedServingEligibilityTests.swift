@@ -163,7 +163,8 @@ import DarkbloomClusterProtocol
         #expect(!ClusterPairServingGrants.records.isEmpty && ClusterPairServingGrants.decisions.ignored == 0)
         #expect(Set(granted) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
                                  "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"])
-        #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gpt_oss_20b", "registered_gemma4_26b",
+        // registered_gemma4_26b has no record of its own: the two that named it ran the 8-bit artifact and are not shipped.
+        #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gpt_oss_20b",
                                                                 "registered_gemma4_26b_8bit", "registered_gemma4_26b_qat_4bit"])
         #expect(ClusterPairServingGrants.withheld["registered_gpt_oss_20b"]?.contains("diverged at cuts 4, 8 and 10") == true)
     }

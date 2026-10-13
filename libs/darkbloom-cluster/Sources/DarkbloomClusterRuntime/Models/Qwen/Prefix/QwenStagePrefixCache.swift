@@ -110,8 +110,10 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     public static let defaultPromptLimit = 64
     /// Frontiers one request captures at most (its split frontier and grid).
     public static let defaultFrontiersPerPrompt = 32
-    /// The budget never exceeds this, however much memory the Mac has.
-    public static let maximumBudgetBytes = 8 << 30
+    /// The budget never exceeds this: a thirty-second of this Mac's memory
+    /// (8 GiB on 256 GB; `QwenStagePrefixDiskPolicy.residentCeilingBytes`).
+    public static let maximumBudgetBytes = QwenStagePrefixDiskPolicy.residentCeilingBytes(
+        physicalBytes: ProcessInfo.processInfo.physicalMemory)
     /// Grid frontiers kept besides `promptCount - 1`: multiples of this many
     /// tokens (rounded up to a multiple of the request's chunk size). Keeping
     /// one costs its compact recurrent state (about 110 MB on the 27B's

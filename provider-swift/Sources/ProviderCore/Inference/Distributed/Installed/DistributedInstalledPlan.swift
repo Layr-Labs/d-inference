@@ -38,8 +38,9 @@ struct DistributedInstalledPlan: Sendable {
         // No plan exists for a model a pair may not serve, so nothing below
         // this point (owner, session, member registration) can start one.
         // Both are keyed by the runtime's model, whatever the public name.
+        // The grant rests only on records of the installed artifact.
         grant = try ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID,
-            publicModelID: configuration.publicModelID)
+            publicModelID: configuration.publicModelID, artifactSHA256: capability.artifactSHA256)
         budgets = try DistributedInstalledPairServingTable.servingBudgets(runtimeModelID: capability.runtimeModelID,
             publicModelID: configuration.publicModelID)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
@@ -71,7 +72,7 @@ struct DistributedInstalledPlan: Sendable {
     func requireLocalRankGranted(chipClass: ClusterChipClass?) throws {
         try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
             chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID,
-            cuts: partition.stages.dropLast().map(\.sourceLayerEnd), mode: configuration.selectedGenerationMode)
+            artifactSHA256: capability.artifactSHA256, cuts: partition.stages.dropLast().map(\.sourceLayerEnd), mode: configuration.selectedGenerationMode)
     }
 
     /// How this build's native ranks find each other; see the type.
@@ -116,7 +117,7 @@ struct DistributedInstalledPlan: Sendable {
         // (`nativePrefixSSDKey`), never into this environment.
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
-            prefixCacheOff: prefixCacheOff)) { current, _ in current }
+            prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
         // Continuous batching (pipeline mode only): both owners must give their
         // workers the same lane count (the workers' load agreement refuses a
         // mismatch). A setup in a phase-split mode keeps one request at a time.

@@ -43,10 +43,12 @@ public enum ClusterOrphanReaper {
     /// How long a leftover may still be unwinding by its own contract before
     /// the reaper signals it: the rank lease it may still hold, the longest
     /// time its owner waits for it (SIGTERM and SIGKILL margins), and the
-    /// forced exit's dead-man. Derived from the protocol's bounds, never
-    /// from a Mac or a model.
+    /// forced exit's dead-man with its one extension (a release whose writes
+    /// progress may run twice the bound). Derived from the protocol's bounds,
+    /// never from a Mac or a model. The contract starts when the leftover's
+    /// parent died, not when it started (see `sweepProcesses`).
     public static let contractGraceNanoseconds: UInt64 = ClusterWorkerLease.ttlNanoseconds
-        + ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + 20_000_000_000
+        + ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + ClusterForcedExitBounds.longestNanoseconds()
 
     public enum Role: String, Encodable, Sendable { case worker, owner }
 
@@ -112,6 +114,38 @@ public enum ClusterOrphanReaper {
         guard let index = entry.arguments.firstIndex(of: "--membership-epoch"), index + 1 < entry.arguments.count,
               let uuid = UUID(uuidString: entry.arguments[index + 1]) else { return nil }
         return uuid.uuidString.lowercased()
+    }
+
+    // MARK: Force-cancel
+
+    /// What `darkbloom cluster cancel-all` does with each cluster process.
+    public struct CancelTargets: Equatable, Sendable {
+        public let owners: [Int32]
+        public let workers: [Int32]
+        /// Owners to send SIGUSR1: those running this very image.
+        public let signal: [Int32]
+    }
+
+    /// The owners of this Mac outside `protectedProcessIdentifiers`, and the
+    /// ones among them whose running image is `ownImage` (the kernel's path of
+    /// each process's executable, `image`). Only such an owner carries the
+    /// force-cancel hook for certain; any other dies of SIGUSR1, so it is
+    /// listed and never signalled. The first argument is not compared: an
+    /// owner is launched by absolute path, a person types `darkbloom`.
+    public static func cancelTargets(processes: [ClusterProcessTable.Entry], ownImage: String?,
+                                     protectedProcessIdentifiers: Set<Int32>,
+                                     image: (Int32) -> String? = { ClusterProcessTable.executablePath(of: $0) }) -> CancelTargets {
+        var owners: [Int32] = [], workers: [Int32] = [], signal: [Int32] = []
+        for entry in processes where !protectedProcessIdentifiers.contains(entry.processIdentifier) {
+            switch role(of: entry) {
+            case .owner:
+                owners.append(entry.processIdentifier)
+                if let ownImage, image(entry.processIdentifier) == ownImage { signal.append(entry.processIdentifier) }
+            case .worker: workers.append(entry.processIdentifier)
+            case nil: break
+            }
+        }
+        return .init(owners: owners.sorted(), workers: workers.sorted(), signal: signal.sorted())
     }
 
     // MARK: Sweep
@@ -189,7 +223,13 @@ public enum ClusterOrphanReaper {
     }
 
     /// Ends every candidate of `plan` as the contract allows and returns what
-    /// happened to each. `startedAt` is wall-clock seconds. Before every
+    /// happened to each. `startedAt` is wall-clock seconds and is the
+    /// candidate's identity only, never its age: a worker that served for an
+    /// hour and lost its owner a moment ago is starting its contract now.
+    /// The kernel keeps no time of a reparenting, and the parent died at the
+    /// latest when the sweep saw the orphan, so the grace runs from the
+    /// sweep's start, once for all candidates (handling them one after the
+    /// other never stretches it). Before every
     /// signal the number must still hold the planned process (same start
     /// time; oMLX `_sweep_rank_processes`: "identity changed; refusing to
     /// signal a reused PID"): the wait before a signal can be minutes, long
@@ -197,14 +237,11 @@ public enum ClusterOrphanReaper {
     /// candidate whose start is unknown is never signalled.
     public static func sweepProcesses(_ plan: Plan, limits: Limits = .init(), actions: Actions = .init()) -> [ProcessResult] {
         var results: [ProcessResult] = []
+        let graceSum = actions.now().addingReportingOverflow(limits.contractGraceNanoseconds)
+        let graceEnd = graceSum.overflow ? UInt64.max : graceSum.partialValue
         for candidate in plan.candidates {
             let begin = actions.now()
-            let elapsedSinceStart = candidate.startedAt.map { max(0.0, actions.wallClock() - $0) }
-            var remainingGrace: UInt64 = 0
-            if let elapsed = elapsedSinceStart {
-                let used = UInt64(min(elapsed, 1e9) * 1e9)
-                remainingGrace = used >= limits.contractGraceNanoseconds ? 0 : limits.contractGraceNanoseconds - used
-            }
+            let remainingGrace = graceEnd > begin ? graceEnd - begin : 0
             guard let planned = candidate.startedAt else {
                 results.append(.init(candidate: candidate, outcome: .unverified, waitedNanoseconds: 0)); continue
             }
@@ -297,16 +334,30 @@ public enum ClusterOrphanReaper {
         return rmdir(directory) == 0
     }
 
+    /// The membership epochs running cluster workers were started with,
+    /// whatever their parent: a session whose worker still runs (serving, or
+    /// an orphan still unwinding) owns its staging directory.
+    public static func runningWorkerEpochs(_ processes: [ClusterProcessTable.Entry]) -> Set<String> {
+        Set(processes.compactMap { role(of: $0) == .worker ? membershipEpoch(of: $0) : nil })
+    }
+
     /// Entries of a cache staging root named by a membership epoch that is
     /// not live and whose directory is older than the grace. Only such entries
-    /// are ever removed; everything else in the root is left alone.
+    /// are ever removed; everything else in the root is left alone. An epoch
+    /// is live when the caller names it or a running worker holds it
+    /// (`runningWorkers`, the process table read after the process sweep):
+    /// the callers name none, and a serving session's epoch directory keeps
+    /// the mtime of its first record (its writes land in `rank<r>` below it),
+    /// so its age alone says nothing.
     public static func staleStagingEntries(roots: [URL], liveEpochs: Set<String>, graceSeconds: Double,
-                                           now: Double = Date().timeIntervalSince1970) -> [URL] {
+                                           now: Double = Date().timeIntervalSince1970,
+                                           runningWorkers: [ClusterProcessTable.Entry] = []) -> [URL] {
+        let live = liveEpochs.union(runningWorkerEpochs(runningWorkers))
         var stale: [URL] = []
         for root in roots {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { continue }
             for name in names.sorted() {
-                guard let uuid = UUID(uuidString: name), uuid.uuidString.lowercased() == name, !liveEpochs.contains(name) else { continue }
+                guard let uuid = UUID(uuidString: name), uuid.uuidString.lowercased() == name, !live.contains(name) else { continue }
                 let entry = root.appendingPathComponent(name, isDirectory: true)
                 var information = stat()
                 guard lstat(entry.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR,
@@ -344,8 +395,11 @@ public enum ClusterOrphanReaper {
             else { errors.append("bootstrap directory not removed: \(directory)") }
         }
         var removedStaging: [String] = []
+        // Read again after the process sweep: what still runs keeps its staging.
+        let stillRunning = stagingRoots.isEmpty ? [] : ClusterProcessTable.running()
         for entry in staleStagingEntries(roots: stagingRoots, liveEpochs: liveEpochs,
-                                         graceSeconds: Double(limits.contractGraceNanoseconds) / 1e9) {
+                                         graceSeconds: Double(limits.contractGraceNanoseconds) / 1e9,
+                                         runningWorkers: stillRunning) {
             do { try FileManager.default.removeItem(at: entry); removedStaging.append(entry.path) }
             catch { errors.append("staging entry not removed: \(entry.lastPathComponent)") }
         }

@@ -227,6 +227,15 @@ import Foundation
             }
             return
         }
+        // The synthetic capabilities below carry the artifact hash("b"): in this check build it stands for each
+        // registered model's own recorded artifact (a pair-serving grant rests on records of the installed artifact).
+        let synthetic = hash("b")
+        for record in ClusterPairServingGrants.records {
+            let key = ClusterPairServingGrants.fixtureKey(synthetic, record.runtimeModelID)
+            ClusterPairServingGrants.fixtureArtifacts.withLock {
+                if $0[key] == nil { $0[key] = record.artifactSHA256 }
+            }
+        }
         // A 32-layer model of 5 GiB with the 9B's four admitted cuts.
         var part = ClusterModelLayout.Part(storedBytes: gib / 8, loadedBytes: gib / 8, largestTensorBytes: gib / 16, tensorCount: 30)
         part.requestWorkBytes = 0
@@ -547,6 +556,21 @@ import Foundation
             && !allows([m2Max, m2Max], "registered_loopback") && !allows([m2Max, m2Max], "registered_virtual"))
         require("the records this build ships all decode and are all used", !ClusterPairServingGrants.records.isEmpty
             && ClusterPairServingGrants.decisions.ignored == 0 && ClusterPairServingGrants.records.allSatisfy(\.isConsistent))
+        // A grant rests on records of the installed artifact: the same records, another artifact, no grant.
+        let ran = ClusterPairServingGrants.records.first { $0.runtimeModelID == "registered_qwen35_9b" }!.artifactSHA256
+        require("the 9B's grant holds for the artifact its records ran", (try? ClusterPairServingGrants.grant(
+            runtimeModelID: "registered_qwen35_9b", publicModelID: "p", artifactSHA256: ran)) != nil)
+        refuses("another artifact of the 9B has no grant", because: "is installed as artifact 999999999999") {
+            _ = try ClusterPairServingGrants.grant(runtimeModelID: "registered_qwen35_9b", publicModelID: "p", artifactSHA256: hash("9"))
+        }
+        refuses("a rank of another artifact is refused", because: "its cross-cable qualification records ran only") {
+            try ClusterPairServingGrants.requireRank(0, of: 2, chipClass: m3Ultra, runtimeModelID: "registered_qwen35_9b",
+                publicModelID: "p", artifactSHA256: hash("9"), cuts: [4], mode: .pipeline)
+        }
+        // One artifact is one model: a record labelled with one model that ran another model's artifact (the two
+        // registered_gemma4_26b records that ran the 8-bit artifact) is not shipped.
+        let owners = Dictionary(grouping: ClusterPairServingGrants.records, by: \.artifactSHA256).mapValues { Set($0.map(\.runtimeModelID)) }
+        require("no shipped artifact is recorded under two registered models", owners.values.allSatisfy { $0.count == 1 })
         require("the shipped records grant the 9B with the M3 Ultra leading, from records only",
             shipped([m3Ultra, cls("Apple M5 Ultra")], "registered_qwen35_9b") && !shipped([cls("Apple M5 Ultra"), m3Ultra], "registered_qwen35_9b"))
     }

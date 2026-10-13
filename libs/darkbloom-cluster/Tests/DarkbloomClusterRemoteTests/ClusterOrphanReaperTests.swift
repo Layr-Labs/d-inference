@@ -77,7 +77,7 @@ final class ClusterOrphanReaperTests: XCTestCase {
         var actions = ClusterOrphanReaper.Actions()
         actions.now = { fake.lock.withLock { fake.clock } }
         actions.sleep = { n in fake.lock.withLock { fake.clock += n } }
-        actions.wallClock = { 1_000 + 10 } // every candidate started 10 s ago
+        actions.wallClock = { 1_000 + 10 } // every candidate started 10 s ago (its age is not its grace)
         actions.isAlive = { pid in
             fake.lock.withLock {
                 if fake.dead.contains(pid) { return false }
@@ -99,7 +99,7 @@ final class ClusterOrphanReaperTests: XCTestCase {
             }
         }
         var limits = ClusterOrphanReaper.Limits()
-        limits.contractGraceNanoseconds = 20_000_000_000 // 10 s used, 10 s remain
+        limits.contractGraceNanoseconds = 20_000_000_000 // from the sweep's start, for all candidates
         limits.killMarginNanoseconds = 2_000_000_000
         limits.reapMarginNanoseconds = 1_000_000_000
         limits.pollNanoseconds = 500_000_000
@@ -108,12 +108,73 @@ final class ClusterOrphanReaperTests: XCTestCase {
         // 11 was never signalled; 12 got TERM only; 13 got TERM then KILL; 14 (identity unknown) and 15
         // (number reused by another process) were never signalled at all.
         XCTAssertEqual(fake.signals.map { "\($0.0):\($0.1)" }, ["12:\(SIGTERM)", "13:\(SIGTERM)", "13:\(SIGKILL)"])
-        // 11 waited within its remaining grace (3 s of the 10 s), not the whole grace.
+        // 11 ended by itself 3 s into the grace and waited only that long.
         XCTAssertEqual(results[0].waitedNanoseconds, 3_000_000_000)
         XCTAssertEqual(results[3].waitedNanoseconds, 0)
         // A sweep with an unverified candidate is not clean.
         XCTAssertFalse(ClusterOrphanReaper.Report(at: 0, processes: results, kept: [], journal: "nothingToRecover",
             bootstrapDirectoriesRemoved: [], stagingEntriesRemoved: [], errors: []).clean)
+    }
+
+    /// A fake table on a fake clock for the grace cases: `endsAt` processes
+    /// end by themselves at that clock, every other one on SIGTERM. Returns
+    /// the results and each signal with the clock it was sent at.
+    private func sweepOnFakeClock(_ candidates: [ClusterOrphanReaper.Candidate], startedAgoSeconds: Double,
+                                  endsAt: [Int32: UInt64], grace: UInt64) -> ([ClusterOrphanReaper.ProcessResult], [String]) {
+        final class Fake: @unchecked Sendable {
+            let lock = NSLock(); var clock: UInt64 = 0; var dead: Set<Int32> = []; var sent: [String] = []
+        }
+        let fake = Fake()
+        var actions = ClusterOrphanReaper.Actions()
+        actions.now = { fake.lock.withLock { fake.clock } }
+        actions.sleep = { n in fake.lock.withLock { fake.clock += n } }
+        actions.wallClock = { 1_000 + startedAgoSeconds }
+        actions.startTime = { pid in
+            fake.lock.withLock {
+                if fake.dead.contains(pid) { return nil }
+                if let at = endsAt[pid], fake.clock >= at { fake.dead.insert(pid); return nil }
+                return 1_000
+            }
+        }
+        actions.signal = { pid, signal in
+            fake.lock.withLock { fake.sent.append("\(pid):\(signal)@\(fake.clock / 1_000_000_000)s"); if signal == SIGTERM { fake.dead.insert(pid) } }
+        }
+        var limits = ClusterOrphanReaper.Limits()
+        limits.contractGraceNanoseconds = grace; limits.killMarginNanoseconds = 2_000_000_000
+        limits.reapMarginNanoseconds = 1_000_000_000; limits.pollNanoseconds = 500_000_000
+        let results = ClusterOrphanReaper.sweepProcesses(.init(candidates: candidates, kept: []), limits: limits, actions: actions)
+        return (results, fake.lock.withLock { fake.sent })
+    }
+
+    /// A worker that served for an hour and lost its owner just now is only
+    /// starting its contract: the grace runs from its parent's death (at the
+    /// latest the sweep's start), never from the process's start.
+    func testGraceRunsFromTheParentsDeathNotFromTheProcessStart() {
+        let candidate = ClusterOrphanReaper.Candidate(processIdentifier: 21, role: .worker, membershipEpoch: nil,
+                                                      startedAt: 1_000, reason: "parent is gone")
+        let (results, sent) = sweepOnFakeClock([candidate], startedAgoSeconds: 3_600, endsAt: [21: 15_000_000_000],
+                                               grace: 20_000_000_000)
+        XCTAssertEqual(results.map(\.outcome), [.endedByItself], "signalled at once: \(sent)")
+        XCTAssertEqual(sent, [], "a worker inside its contract is never signalled")
+        XCTAssertEqual(results.first?.waitedNanoseconds, 15_000_000_000)
+    }
+
+    /// Candidates are handled one after the other, but the grace is one
+    /// deadline for all of them: the second is not given a second grace.
+    func testOneGraceForAllCandidatesOfASweep() {
+        let candidates = [21, 22].map { ClusterOrphanReaper.Candidate(processIdentifier: Int32($0), role: .worker,
+                                                                       membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone") }
+        let (results, sent) = sweepOnFakeClock(candidates, startedAgoSeconds: 0, endsAt: [:], grace: 20_000_000_000)
+        XCTAssertEqual(results.map(\.outcome), [.endedAfterTerm, .endedAfterTerm])
+        XCTAssertEqual(sent, ["21:\(SIGTERM)@20s", "22:\(SIGTERM)@20s"])
+    }
+
+    /// The grace covers the forced exit's longest run: the dead-man and its
+    /// one extension, after the lease and the owner's longest allowance.
+    func testContractGraceCoversTheDeadManAndItsOneExtension() {
+        XCTAssertEqual(ClusterForcedExitBounds.longestNanoseconds(), 2 * ClusterForcedExitBounds.deadManNanoseconds)
+        XCTAssertEqual(ClusterOrphanReaper.contractGraceNanoseconds,
+                       ClusterWorkerLease.ttlNanoseconds + ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + 40_000_000_000)
     }
 
     /// A real reparented process named as the worker: the sweep ends it with
@@ -218,15 +279,77 @@ final class ClusterOrphanReaperTests: XCTestCase {
         XCTAssertEqual(ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [live], graceSeconds: 60, now: now), [])
     }
 
+    /// Review round 4: `darkbloom cluster cancel-all` compared each owner's
+    /// first argument with its own. An owner is launched by absolute path
+    /// (`ClusterLocalOwnerConfiguration`), while a person types `darkbloom`
+    /// (the shell passes the word as typed), so the command signalled nothing
+    /// on the user path. The decision now compares the images the kernel
+    /// reports for both processes; spelling of the first argument is ignored.
+    func testCancelAllTargetsOwnersRunningThisImageWhateverTheirFirstArgument() {
+        let installed = "/opt/x/darkbloom"
+        let processes = [
+            owner(900_201, parent: getpid()),                                                   // same image, absolute argv[0]
+            .init(processIdentifier: 900_202, arguments: ["darkbloom", "cluster", "worker-owner", "--stdio"],
+                  parentProcessIdentifier: 1, executableName: "darkbloom", startedAt: 1_000), // same image, bare argv[0]
+            .init(processIdentifier: 900_203, arguments: ["/old/darkbloom", "cluster", "worker-owner", "--stdio"],
+                  parentProcessIdentifier: 1, executableName: "darkbloom", startedAt: 1_000), // another install
+            owner(900_204, parent: 1),                                                          // image unreadable
+            worker(900_205, parent: 1),                                                         // workers are never signalled
+            owner(900_206, parent: 1),                                                          // this process's own lineage
+        ]
+        let images: [Int32: String] = [900_201: installed, 900_202: installed, 900_203: "/old/darkbloom", 900_206: installed]
+        let targets = ClusterOrphanReaper.cancelTargets(processes: processes, ownImage: installed,
+                                                        protectedProcessIdentifiers: [900_206], image: { images[$0] })
+        XCTAssertEqual(targets.owners, [900_201, 900_202, 900_203, 900_204])
+        XCTAssertEqual(targets.workers, [900_205])
+        XCTAssertEqual(targets.signal, [900_201, 900_202], "only owners whose running image is this one")
+        // Without its own image the command signals nothing.
+        XCTAssertEqual(ClusterOrphanReaper.cancelTargets(processes: processes, ownImage: nil, protectedProcessIdentifiers: [],
+                                                         image: { images[$0] }).signal, [])
+    }
+
+    /// Review round 4: every caller of the sweep (`darkbloom cluster reap`,
+    /// a member's start and end, the supervisor before a restart) names no
+    /// live epoch, and a live session's staging directory keeps the mtime of
+    /// its first record (its writes land one level down, in `rank<r>`). So a
+    /// session serving longer than the grace lost its staging directory, and
+    /// the record being written, to any sweep on its Mac. A running worker
+    /// started with an epoch (whatever its parent) makes that epoch live.
+    func testStagingOfAnEpochARunningWorkerHoldsIsNeverStale() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("staging-" + UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let serving = UUID().uuidString.lowercased(), dead = UUID().uuidString.lowercased(), orphaned = UUID().uuidString.lowercased()
+        for name in [serving, dead, orphaned] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(name).appendingPathComponent("rank0"),
+                                                    withIntermediateDirectories: true)
+        }
+        let me = getpid()
+        // The serving session's worker has a live parent; the orphaned one's
+        // parent is gone (the reaper's to end, but while it runs its writes
+        // are still its own).
+        let running = [worker(900_101, parent: me, epoch: serving), worker(900_102, parent: 1, epoch: orphaned),
+                       owner(900_103, parent: me)]
+        XCTAssertEqual(ClusterOrphanReaper.runningWorkerEpochs(running), [serving, orphaned])
+        let later = Date().timeIntervalSince1970 + 3_600
+        let stale = ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [], graceSeconds: 60, now: later,
+                                                            runningWorkers: running)
+        XCTAssertEqual(stale.map(\.lastPathComponent), [dead], "only the epoch no running worker holds")
+    }
+
     func testEnvironmentGuardsYieldToACanonicalPinnedValueOnly() {
         let base = ["PATH": "/usr/bin:/bin"]
         let applied = ClusterWorkerEnvironmentGuards.apply(to: base, ownerEnvironment: [:])
         XCTAssertEqual(applied["MLX_MAX_OPS_PER_BUFFER"], "16")
-        XCTAssertEqual(applied["MLX_MAX_MB_PER_BUFFER"], "512")
+        // No megabyte value: MLX's own per-chip cap (40-50 MB a command
+        // buffer) applies; a default of its own could only loosen it.
+        XCTAssertNil(applied["MLX_MAX_MB_PER_BUFFER"], "a guard never loosens MLX's own per-chip cap")
         XCTAssertEqual(applied["PATH"], "/usr/bin:/bin")
         let pinned = ClusterWorkerEnvironmentGuards.apply(to: base, ownerEnvironment: ["MLX_MAX_OPS_PER_BUFFER": "4", "MLX_MAX_MB_PER_BUFFER": "lots"])
         XCTAssertEqual(pinned["MLX_MAX_OPS_PER_BUFFER"], "4", "the operator's value is kept")
-        XCTAssertEqual(pinned["MLX_MAX_MB_PER_BUFFER"], "512", "free text never reaches a worker")
+        XCTAssertNil(pinned["MLX_MAX_MB_PER_BUFFER"], "free text never reaches a worker")
+        let operatorCap = ClusterWorkerEnvironmentGuards.apply(to: base, ownerEnvironment: ["MLX_MAX_MB_PER_BUFFER": "24"])
+        XCTAssertEqual(operatorCap["MLX_MAX_MB_PER_BUFFER"], "24", "an operator's own canonical cap still reaches the worker")
         let fixed = ClusterWorkerEnvironmentGuards.apply(to: ["MLX_MAX_OPS_PER_BUFFER": "8"], ownerEnvironment: ["MLX_MAX_OPS_PER_BUFFER": "4"])
         XCTAssertEqual(fixed["MLX_MAX_OPS_PER_BUFFER"], "8", "a value the plan already fixed is not replaced")
         XCTAssertFalse(ClusterWorkerEnvironmentGuards.isCanonical("0"))

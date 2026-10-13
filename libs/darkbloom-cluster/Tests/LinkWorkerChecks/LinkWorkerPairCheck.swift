@@ -145,6 +145,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try leaseLapsesOverALiveLink(follower, owner, worker); passed += 1
         try followerWorkerLost(follower, owner, worker); passed += 1
         try followerProcessKilled(follower, owner, worker); passed += 1
+        try followerOwnerExitsAtLaunch(follower, owner, worker); passed += 1
         try refusedOpen(follower, owner, worker); passed += 1
         print("link-worker: \(passed) groups passed (two processes over loopback; not a hardware pass)")
     }
@@ -330,6 +331,35 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try require(wait(seconds: 45) { harness.followerJournalBytes() == 0 }, "The follower's owner left its journal after its member was killed")
         _ = try? harness.finish()
         print(String(format: "PASS follower process killed mid-request: loss stated %.1f s after, request ended %.1f s after, pair shut down, rank 1 unproven, follower journal cleared", stated, retired))
+    }
+
+    /// The follower's OWNER exits at launch (on hardware: the M5 Ultra's
+    /// owner exited status 1 at launch while another app held 148 GB wired):
+    /// the follower releases the session without a cleanup proof. Nothing
+    /// can follow that release, so the leader's start fails and its stop ends
+    /// at once, rank 1 unproven, instead of waiting out the stop allowance
+    /// (177 s on hardware).
+    static func followerOwnerExitsAtLaunch(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "transport-exit")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        let began = now()
+        var startFailed = false
+        do { _ = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 20_000_000_000) } catch { startFailed = true }
+        try require(startFailed, "The pair started with a follower whose owner exited at launch")
+        try require(harness.sawReport("released false", seconds: 10), "The follower did not release the session: \(harness.reports)")
+        let cleanup = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { second.waitForNativeCleanup(); cleanup.signal() }
+        try require(cleanup.wait(timeout: .now() + 3) == .success, "The leader still waits for a cleanup proof after the follower's last message")
+        try require(!second.nativeCleanupObserved && !second.waitForOwnerReleased(deadline: now() + 1_000_000_000),
+            "A release without proof was claimed as clean")
+        first.requestNativeCleanup()
+        try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
+        let took = Double(now() - began) / 1e9
+        let status = try harness.finish()
+        try require(status == 0, "Follower exit \(status): \(harness.reports)")
+        print(String(format: "PASS follower owner exits at launch: start failed, leader's cleanup wait ended with the follower's release (%.1f s), rank 1 unproven", took))
     }
 
     /// A follower whose own selection differs refuses the open; nothing runs.

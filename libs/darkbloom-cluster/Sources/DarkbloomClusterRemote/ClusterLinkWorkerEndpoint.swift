@@ -546,6 +546,14 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     guard accepted, !released else { throw ClusterLinkWorkerError.invalid("Repeated release") }
                     released = true; releasedCleanly = (wire.releasedCleanly ?? false) && cleanup
                     terminationValue = wire.ownerTermination; endOwner = !ownerLeft; ownerLeft = true
+                    // The follower's last message of the session: no cleanup
+                    // proof can follow it. A release without one (its owner
+                    // ended without proving its worker's exit, e.g. it exited
+                    // at launch) ends the cleanup wait now, unproven
+                    // (`nativeCleanupObserved` stays false, the session is
+                    // quarantined) instead of holding a stop until its caller's
+                    // deadline.
+                    if !cleanup { complete = !nativeLeft; nativeLeft = true; invalidate = true }
                 default: throw ClusterLinkWorkerError.invalid("Leader message from the follower")
                 }
             }

@@ -152,7 +152,8 @@ final class EndpointBox: @unchecked Sendable {
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
         let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
-        try require(environment.count==12 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1","native environment widened")
+        try require(environment.count==14 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
+            && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512","native environment widened")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
         // without the product's key source, an owner-only key file made once and never replaced.
         let keyFile=prepared.plan.paths.deviceDirectory.appendingPathComponent("prefix-ssd-v1.key")
@@ -198,7 +199,7 @@ final class EndpointBox: @unchecked Sendable {
             && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"] != nil,"prefix SSD off switch not passed")
         let cacheOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4"])
-        try require(cacheOff.count==11 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
+        try require(cacheOff.count==13 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
             "prefix cache off must not configure the SSD tier")
         let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
             "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
@@ -266,8 +267,8 @@ final class EndpointBox: @unchecked Sendable {
             try FileManager.default.createDirectory(at:stagingRoot.appendingPathComponent(epoch),withIntermediateDirectories:true)
         }
         try Data(repeating:1,count:3).write(to:stagingRoot.appendingPathComponent(deadEpoch+"/.half.1.tmp"))
-        let stale=ClusterOrphanReaper.staleStagingEntries(roots:[stagingRoot],liveEpochs:[liveEpoch],graceSeconds:0)
-        try require(stale.map(\.lastPathComponent)==[deadEpoch],"the reaper must name only the dead epoch's staging directory")
+        let staleStaging=ClusterOrphanReaper.staleStagingEntries(roots:[stagingRoot],liveEpochs:[liveEpoch],graceSeconds:0)
+        try require(staleStaging.map{$0.lastPathComponent}==[deadEpoch],"the reaper must name only the dead epoch's staging directory")
         let inspected=ClusterPrefixSSDInspection.inspect(root:tierRoot)
         try require(inspected.present && inspected.plans==2 && inspected.records==3 && inspected.bytes==1507 && inspected.ranks.count==3
             && inspected.line.hasPrefix("Cluster prefix tier: 2 plans, 3 records, 0.00 GB"),"cluster tier inspection miscounts")
@@ -556,7 +557,7 @@ final class EndpointBox: @unchecked Sendable {
                 generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-            try require(environment.count==12+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+            try require(environment.count==14+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
             try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")

@@ -382,7 +382,7 @@ struct PrefixCacheContractTests {
     }
 
     /// Finding F4: four rotating 8K documents, each captured with its split
-    /// frontier and 16 grid frontiers. A frontier-count limit of 32 kept only
+    /// frontier and 15 grid frontiers. A frontier-count limit of 32 kept only
     /// the last two; retention by budget keeps all four, and under byte
     /// pressure the older prompts' grid goes before any prompt's deepest.
     @Test func rotatingDocumentsAreAllRetainedByBudgetAndTheGridThinsFirst() {
@@ -390,22 +390,22 @@ struct PrefixCacheContractTests {
         func states() -> [QwenStagePrefixState] {
             stride(from: 512, through: 8_190, by: 512).map { sized($0, own: 1_000) } + [sized(8_191, own: 1_000)]
         }
-        // Roomy: 4 x (17 x 1,000 + 4,000 shared) = 84,000 bytes, all kept.
+        // Roomy: 4 x (16 x 1,000 + 4,000 shared) = 80,000 bytes, all kept.
         let roomy = QwenStagePrefixCache(budgetBytes: 1_000_000)
         for index in 0..<4 { roomy.insert(scope: "s", tokens: document(index), states: states(), sharedBytes: 4_000) }
-        #expect(roomy.promptCount == 4 && roomy.count == 68 && roomy.evictions == 0)
+        #expect(roomy.promptCount == 4 && roomy.count == 64 && roomy.evictions == 0)
         for index in 0..<4 {
             #expect(roomy.frontiers(scope: "s", tokens: document(index), maximumFrontier: 8_191).first == 8_191)
         }
-        // Tight: room for three deepest frontiers (3 x 5,000) and the newest whole prompt (21,000).
-        let tight = QwenStagePrefixCache(budgetBytes: 36_000)
+        // Tight: room for three deepest frontiers (3 x 5,000) and the newest whole prompt (20,000).
+        let tight = QwenStagePrefixCache(budgetBytes: 35_000)
         for index in 0..<4 { tight.insert(scope: "s", tokens: document(index), states: states(), sharedBytes: 4_000) }
-        #expect(tight.promptCount == 4 && tight.bytesInUse <= 36_000)
+        #expect(tight.promptCount == 4 && tight.bytesInUse <= 35_000)
         for index in 0..<3 {
             #expect(tight.frontiers(scope: "s", tokens: document(index), maximumFrontier: 8_191) == [8_191])
         }
         // The newest document keeps its whole grid (a new question over it reuses the deepest grid frontier).
-        #expect(tight.frontiers(scope: "s", tokens: document(3), maximumFrontier: 8_191).count == 17)
+        #expect(tight.frontiers(scope: "s", tokens: document(3), maximumFrontier: 8_191).count == 16)
         // The prompt count bounds too: a limit of 3 keeps the three most recent documents.
         let counted = QwenStagePrefixCache(budgetBytes: 1_000_000, promptLimit: 3)
         for index in 0..<4 { counted.insert(scope: "s", tokens: document(index), states: states(), sharedBytes: 4_000) }

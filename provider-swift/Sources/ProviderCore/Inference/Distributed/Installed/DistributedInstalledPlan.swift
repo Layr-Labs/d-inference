@@ -65,9 +65,13 @@ struct DistributedInstalledPlan: Sendable {
     /// it runs, right before it serves or launches it, so a placement starts
     /// only when every rank's class is listed for its role. A capability
     /// record, a saved setup or a peer never supplies the class.
+    /// A model whose grant restricts shapes is also held to the placement's
+    /// cuts (from the selected Plan) and mode: this rank runs only a shape a
+    /// passed check ran with its class at its rank.
     func requireLocalRankGranted(chipClass: ClusterChipClass?) throws {
         try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
-            chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID)
+            chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID,
+            cuts: partition.stages.dropLast().map(\.sourceLayerEnd), mode: configuration.selectedGenerationMode)
     }
 
     /// How this build's native ranks find each other; see the type.

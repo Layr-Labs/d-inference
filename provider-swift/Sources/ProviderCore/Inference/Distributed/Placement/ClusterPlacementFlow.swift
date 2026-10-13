@@ -74,6 +74,15 @@ public enum ClusterPlacementFlow {
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
             runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID)
         policy.leader = granted.leader
+        // A model with a failed cross-cable check on record is planned only at
+        // the shapes a check passed in (each rank's chip class, the cuts, the
+        // mode): the universal rule of `ClusterPairQualificationRecords`.
+        let records = ClusterPairServingGrants.records(runtimeModelID: capability.runtimeModelID)
+        if records.restrictsShapes {
+            policy.admitsShape = { chips, cuts, mode in
+                records.admits(chipClasses: chips.map { ClusterChipClass(chipName: $0) }, cuts: cuts, mode: mode)
+            }
+        }
         policy.modes = capability.supportedGenerationModes
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]
@@ -84,6 +93,11 @@ public enum ClusterPlacementFlow {
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
         var lines = ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
         if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
+        if records.restrictsShapes {
+            lines.append("Qualified placements")
+            lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placement, so only placements "
+                + "a check passed in are planned: \(records.passedShapesText).")
+        }
         var setup: ClusterPlacementSetup?
         if let chosen = result.chosen {
             let value = try ClusterPlacementSetup.synthesize(description: description, capability: capability, chosen: chosen)

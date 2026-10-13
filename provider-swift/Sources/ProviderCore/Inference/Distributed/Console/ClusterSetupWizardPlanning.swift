@@ -95,6 +95,11 @@ enum ClusterSetupPlanning {
     }
 
     static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String) -> String {
+        if let excluded = result.unqualifiedPossible, excluded > 0 {
+            let alone = result.alone.first(where: { $0.fit.possible })
+                .map { "; \($0.device) holds it alone: serve it on that Mac with `darkbloom start`" } ?? ""
+            return "no split that fits has passed this model's cross-cable check on these chips (it diverged at another split)" + alone
+        }
         if let alone = result.alone.first(where: { $0.fit.possible }) {
             return "no split this Mac leads holds it, but \(alone.device) holds it alone: serve it on that Mac with `darkbloom start`"
         }

@@ -107,6 +107,119 @@ import Foundation
         require("chips of no known generation keep the plain plan", unknown.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
     }
 
+    /// The universal rule of qualification records (`ClusterPairQualificationRecords`): a model with a failed
+    /// cross-cable check on record is planned and started only at shapes a check passed in. Synthetic records of
+    /// two to four ranks on several chips; then the registered GPT-OSS records through the guided step's own
+    /// decision, on an M3 Ultra with an M5 Ultra (passed at cut 12, diverged at cut 4) and with a chip no check ran.
+    static func qualifiedShapes(description base: [String: Any], slowTwo: [ClusterPlacementDevice]) throws {
+        let m3 = ClusterChipClass.appleM3Ultra, m5u = ClusterChipClass.appleM5Ultra, m5 = ClusterChipClass.appleM5Max
+        let m2 = ClusterChipClass(chipName: "Apple M2 Max")!, m4 = ClusterChipClass(chipName: "Apple M4 Pro")!
+        let open = ClusterPairQualificationRecords(runtimeModelID: "x",
+            passed: [.init(chipClasses: [m3, m5], cuts: [16], mode: .pipeline)], failed: [])
+        require("records: with no failed check no shape is restricted", !open.restrictsShapes
+            && open.admits(chipClasses: [m2, m4], cuts: [3], mode: .phaseSplit)
+            && open.admitsRank(0, of: 3, chipClass: m2, cuts: [1, 2], mode: .pipeline))
+        let three = ClusterPairQualificationRecords(runtimeModelID: "x",
+            passed: [.init(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .pipeline),
+                     .init(chipClasses: [m2, m2], cuts: [12], mode: .pipelineCompactDecode)],
+            failed: [.init(chipClasses: [m2, m4, m5u], cuts: [10, 20], mode: .pipeline)])
+        require("records: one failed check restricts every shape of the model", three.restrictsShapes)
+        require("records: a passed shape of three ranks is admitted whole", three.admits(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .pipeline))
+        require("records: another cut, mode or order of the same chips is not",
+            !three.admits(chipClasses: [m2, m4, m5u], cuts: [10, 20], mode: .pipeline)
+                && !three.admits(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .phaseSplit)
+                && !three.admits(chipClasses: [m5u, m4, m2], cuts: [8, 20], mode: .pipeline)
+                && !three.admits(chipClasses: [m2, nil, m5u], cuts: [8, 20], mode: .pipeline))
+        require("records: each rank decides its own half with its own class",
+            three.admitsRank(1, of: 3, chipClass: m4, cuts: [8, 20], mode: .pipeline)
+                && !three.admitsRank(1, of: 3, chipClass: m2, cuts: [8, 20], mode: .pipeline)
+                && !three.admitsRank(1, of: 2, chipClass: m4, cuts: [8, 20], mode: .pipeline)
+                && three.admitsRank(1, of: 2, chipClass: m2, cuts: [12], mode: .pipelineCompactDecode))
+        let four = ClusterPairQualificationRecords(runtimeModelID: "x", passed: [], failed: [.init(chipClasses: [m4, m4, m4, m4], cuts: [6, 12, 18], mode: .pipeline)])
+        require("records: a model whose every check failed admits no shape", four.restrictsShapes
+            && !four.admits(chipClasses: [m4, m4, m4, m4], cuts: [6, 12, 18], mode: .pipeline) && four.passedShapesText == "none")
+
+        // The registered records: GPT-OSS diverged at cut 4 with the M3 Ultra leading the M5 Ultra and passed at 12.
+        let gpt = ClusterPairServingGrants.records(runtimeModelID: "registered_gpt_oss_20b")
+        require("GPT-OSS: its failed checks restrict its shapes", gpt.restrictsShapes
+            && gpt.admits(chipClasses: [m3, m5u], cuts: [12], mode: .pipeline)
+            && gpt.admits(chipClasses: [m3, m5u], cuts: [11], mode: .pipeline)
+            && !gpt.admits(chipClasses: [m3, m5u], cuts: [10], mode: .pipeline)
+            && !gpt.admits(chipClasses: [m3, m5u], cuts: [12], mode: .pipelineCompactDecode)
+            && !gpt.admits(chipClasses: [m3, m5u], cuts: [4], mode: .pipeline)
+            && !gpt.admits(chipClasses: [m5u, m3], cuts: [12], mode: .pipeline))
+        require("a model with no failed check keeps its grant by role and class",
+            !ClusterPairServingGrants.records(runtimeModelID: "registered_qwen38_27b").restrictsShapes)
+        try ClusterPairServingGrants.requirePlacement([m3, m5], runtimeModelID: "registered_qwen38_27b", publicModelID: "p")
+
+        // The guided step on a 24-layer model registered as GPT-OSS, every cut admitted.
+        var part = ClusterModelLayout.Part(storedBytes: gib / 2, loadedBytes: gib / 2, largestTensorBytes: gib / 8, tensorCount: 32)
+        part.requestWorkBytes = 0
+        let cuts = Array(1..<24)
+        let layout = ClusterModelLayout(runtimeModelID: "registered_gpt_oss_20b", artifactSHA256: hash("b"), configurationSHA256: hash("c"),
+            layers: (0..<24).map { .init(index: $0, kind: $0 % 2 == 0 ? "sliding_attention" : "full_attention", weights: part,
+                stateFixedBytes: 2_621_440, stateBytesPerToken: $0 % 2 == 0 ? 0 : 4096, cost: 1) },
+            ingress: .init(storedBytes: gib / 2, loadedBytes: gib / 2, largestTensorBytes: gib / 2, tensorCount: 3),
+            egress: .init(storedBytes: gib / 2, loadedBytes: gib / 2, largestTensorBytes: gib / 2, tensorCount: 4),
+            excluded: .init(), admittedCuts: cuts, structuralCuts: cuts,
+            generationModes: [.pipeline, .pipelineCompactDecode], prefillSchedules: [.serial, .oneChunkLookahead],
+            maximumPromptTokens: 8192, maximumOutputTokens: 128, maximumChunkTokens: 512, boundaryBytesPerToken: 11520,
+            requestChargeEveryRankBytes: 0)
+        let capability = try ClusterRuntimeCapability(runtimeBinarySHA256: hash("a"), adapterID: "gpt-oss-layer-stage", adapterVersion: 1,
+            runtimeModelID: "registered_gpt_oss_20b", artifactSHA256: hash("b"), configurationSHA256: hash("c"), manifestSHA256: hash("d"),
+            profile: .init(id: "registered_gpt_oss_20b_greedy_generation_v1", vocabularySize: 201088, maximumPromptTokens: 8192,
+                maximumOutputTokens: 128, maximumChunkTokens: 512, maximumContextTokens: 8320),
+            profileFingerprint: hash("e"), partitions: cuts.map { cut in
+                .init(planSHA256: String(repeating: "7", count: 62) + String(format: "%02d", cut), stages: [
+                    .init(rank: 0, sourceLayerStart: 0, sourceLayerEnd: cut, stagePlanSHA256: String(repeating: "1", count: 62) + String(format: "%02d", cut),
+                          constructionConfigurationSHA256: hash("2")),
+                    .init(rank: 1, sourceLayerStart: cut, sourceLayerEnd: 24, stagePlanSHA256: String(repeating: "3", count: 62) + String(format: "%02d", cut),
+                          constructionConfigurationSHA256: hash("4"))]) },
+            arithmeticPolicyID: "gpt_oss_ordinary_cache_split_experts_bf16_defaults_v1", arithmeticPolicySHA256: hash("5"),
+            supportedPrefillSchedules: [.serial, .oneChunkLookahead], supportedGenerationModes: [.pipeline, .pipelineCompactDecode])
+        var object = base
+        object["capabilitySHA256"] = ClusterConfigurationCodec.sha256(try ClusterRuntimeCapabilityCodec.encode(capability))
+        object["publicModelID"] = "fixture/gpt-oss"
+        let description = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: object))
+        // Each profile carries the model-free device index the two Macs measured (2026-10-12): the M5 Ultra 5.0x the
+        // M3 Ultra's prefill and 1.8x its decode, which alone puts the cut at 4.
+        func profile(_ device: ClusterPlacementDevice, _ name: String, index: (Double, Double)? = nil) throws -> ClusterDeviceProfile {
+            let p = device.profile
+            var value = try ClusterDeviceProfile(chip: name, performanceCores: p.performanceCores, efficiencyCores: p.efficiencyCores, gpuCores: p.gpuCores,
+                osVersion: p.osVersion, osBuild: p.osBuild, physicalMemoryBytes: p.physicalMemoryBytes,
+                gpuRecommendedWorkingSetBytes: p.gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: p.gpuMaximumBufferBytes,
+                allocatorLimitBytes: p.allocatorLimitBytes, memory: p.memory, power: p.power)
+            value.speedIndex = index.map { ClusterDeviceIndex(chip: name, osBuild: p.osBuild, benchmark: "qmm_h4096_b4_g64_x16_v1",
+                prefillIndex: $0.0, decodeIndex: $0.1) }
+            return value
+        }
+        let ultra3 = try profile(slowTwo[0], "Apple M3 Ultra", index: (469_577, 25_949))
+        let ultra5 = try profile(slowTwo[1], "Apple M5 Ultra", index: (2_334_000, 45_290))
+        let speeds = ClusterSpeedEstimator.estimate(devices: [ultra3, ultra5].map { .init(chip: $0.chip, osBuild: $0.osBuild) },
+            artifactSHA256: layout.artifactSHA256, promptTokens: layout.maximumPromptTokens, measurements: [],
+            indices: [ultra3, ultra5].compactMap(\.speedIndex))
+        var free = ClusterPlacementPolicy(); free.leader = "mac-one"
+        let ungated = try ClusterPlacementPlanner.plan(devices: [.init(label: "mac-one", profile: ultra3, speed: speeds[0]),
+            .init(label: "mac-two", profile: ultra5, speed: speeds[1])], layout: layout, policy: free)
+        require("GPT-OSS on the two Ultras: speed alone would cut where its check diverged",
+            (ungated.chosen?.cut ?? 99) <= 10)
+        let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: ultra3, peerProfile: ultra5, layout: layout, leader: "mac-one")
+        // Passed at cuts 11, 12 and 16: the fastest of those, 11, gives the faster M5 Ultra the most layers.
+        require("GPT-OSS on an M3 Ultra leading an M5 Ultra is planned only at its passed shapes, the fastest first",
+            decided.result.chosen?.cut == 11 && decided.result.chosen?.mode == .pipeline
+                && decided.result.alternatives.allSatisfy { [11, 12, 16].contains($0.cut) && $0.mode == .pipeline }
+                && (decided.result.unqualifiedPossible ?? 0) > 0)
+        require("the plan says why, with the passed placements",
+            decided.lines.contains("Qualified placements")
+                && decided.lines.contains { $0.contains("apple_m3_ultra then apple_m5_ultra at cut 12 (pipeline_v1)") })
+        let elsewhere = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: ultra3, peerProfile: try profile(slowTwo[1], "Apple M4 Pro"), layout: layout, leader: "mac-one")
+        require("GPT-OSS on chips no check passed is planned nowhere, and the plan says so",
+            elsewhere.result.chosen == nil && elsewhere.setup == nil && (elsewhere.result.unqualifiedPossible ?? 0) > 0
+                && elsewhere.lines.contains("Refused: no placement these Macs can hold is qualified for this model"))
+    }
+
     static func main() throws {
         if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "flow" {
             do { try flow(Array(CommandLine.arguments.dropFirst(2))) } catch {
@@ -212,6 +325,7 @@ import Foundation
             && splitOne.generationMode == .phaseSplit && splitTwo.generationMode == .phaseSplit)
         try speculativeHeadByDefault(layout: layout, description: description, capability: capability,
             capabilityHash: capabilityHash, slowTwo: slowTwo)
+        try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,

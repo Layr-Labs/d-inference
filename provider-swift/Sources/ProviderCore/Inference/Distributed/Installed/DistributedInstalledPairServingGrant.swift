@@ -114,7 +114,6 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     public let qualifications: [ClusterPairServingQualification]
     /// The same runs in plain words.
     public let evidence: String
-
     /// Every class a qualification ran as its last rank.
     public var decodingRankChipClasses: Set<ClusterChipClass> { Set(qualifications.compactMap(\.chipClasses.last)) }
     /// Every class a qualification ran at a rank before its last.
@@ -131,6 +130,53 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     public var chipClasses: Set<ClusterChipClass> { decodingRankChipClasses.union(pipelineRankChipClasses) }
 }
 
+/// Every cross-cable check of one model on record, passed and failed, each
+/// in the shape of a parity qualification (each rank's chip class in rank
+/// order, the cuts, the mode).
+///
+/// The universal rule these records carry: a model whose numerics depend on
+/// the shape of its placement shows it by failing a check at some shape, on
+/// any chips. From then on the cut and the mode are part of what a pair may
+/// run: a placement is planned and served only when a passed check ran
+/// exactly its shape. A model with no failed check keeps a grant by role and
+/// chip class only. Records decide; no model or chip is named by the rule.
+public struct ClusterPairQualificationRecords: Sendable, Equatable {
+    public let runtimeModelID: String
+    public let passed: [ClusterPairServingQualification]
+    public let failed: [ClusterPairServingQualification]
+
+    public var restrictsShapes: Bool { !failed.isEmpty }
+
+    /// A whole placement's shape: a passed check ran exactly it. Every
+    /// shape is admitted when the records restrict none.
+    public func admits(chipClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode) -> Bool {
+        guard restrictsShapes else { return true }
+        let classes = chipClasses.compactMap { $0 }
+        guard classes.count == chipClasses.count else { return false }
+        return passed.contains { $0.chipClasses == classes && $0.cuts == cuts && $0.mode == mode }
+    }
+
+    /// One rank's half of `admits`, decided on the Mac that runs the rank
+    /// with only its own class: some passed check ran a placement of this many
+    /// ranks with this class at this rank, at these cuts, in this mode.
+    public func admitsRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass, cuts: [Int],
+                           mode: ClusterGenerationMode) -> Bool {
+        guard restrictsShapes else { return true }
+        return passed.contains { q in
+            q.chipClasses.count == rankCount && q.chipClasses.indices.contains(rank) && q.chipClasses[rank] == chipClass
+                && q.cuts == cuts && q.mode == mode
+        }
+    }
+
+    /// The passed shapes in plain words.
+    public var passedShapesText: String {
+        passed.isEmpty ? "none" : passed.map { q in
+            q.chipClasses.map(\.rawValue).joined(separator: " then ") + " at cut " + q.cuts.map(String.init).joined(separator: "/")
+                + " (" + q.mode.rawValue + ")"
+        }.joined(separator: "; ")
+    }
+}
+
 /// Why a pair may not serve a placement.
 public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertible, LocalizedError, Sendable {
     public enum Reason: Equatable, Sendable {
@@ -144,6 +190,9 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         case unknownChip(rank: Int, role: ClusterPairServingRole)
         /// This rank's class is not listed for its role.
         case classNotAllowed(rank: Int, role: ClusterPairServingRole, chipClass: ClusterChipClass, allowed: [ClusterChipClass])
+        /// The model's grant restricts shapes, and no passed check ran this
+        /// rank's class at this rank with these cuts in this mode.
+        case shapeNotQualified(rank: Int, chipClass: ClusterChipClass, cuts: [Int], mode: ClusterGenerationMode, qualified: String)
     }
     public let runtimeModelID: String
     public let publicModelID: String
@@ -168,6 +217,12 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
                 + "rank \(rank) of this placement is that rank and runs on \(chipClass.rawValue). "
                 + "A chip class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not change it. "
                 + "Choose a placement whose ranks run on the listed classes; a class is added only after a cross-cable check on it passes." + policy
+        case .shapeNotQualified(let rank, let chipClass, let cuts, let mode, let qualified):
+            return model + " diverged from its single-Mac reference in a cross-cable check at some placement, so a pair serves it only "
+                + "at placements a check passed in (each rank's chip class, the cut, the mode): \(qualified). "
+                + "Rank \(rank) of this placement runs on \(chipClass.rawValue) at cut \(cuts.map(String.init).joined(separator: "/")) "
+                + "in \(mode.rawValue), which no passed check covers. Plan again (`darkbloom cluster plan` keeps to the passed placements); "
+                + "a placement is added only after a cross-cable check of it passes." + policy
         }
     }
 }
@@ -202,6 +257,10 @@ public enum ClusterPairServingGrants {
 
     /// The passed checks of one order at one cut, one per mode.
     private static func passed(_ chipClasses: [ClusterChipClass], cut: Int, _ modes: ClusterGenerationMode...) -> [ClusterPairServingQualification] {
+        modes.map { .init(chipClasses: chipClasses, cuts: [cut], mode: $0) }
+    }
+    /// The failed checks of one order at one cut, one per mode.
+    private static func failed(_ chipClasses: [ClusterChipClass], cut: Int, _ modes: ClusterGenerationMode...) -> [ClusterPairServingQualification] {
         modes.map { .init(chipClasses: chipClasses, cuts: [cut], mode: $0) }
     }
 
@@ -247,16 +306,46 @@ public enum ClusterPairServingGrants {
                                                              bonsai_2_27b, nemotron35_lightning]
 
     /// Registered models whose cross-cable checks have not all passed, and
-    /// why. A grant admits a model at every cut the planner may choose, so a
-    /// model with a cut that diverged stays withheld even where another cut
-    /// passed.
+    /// why. Whatever this decides, a model with a failed check on record is
+    /// planned only at shapes a check passed (`records`).
     public static let withheld: [String: String] = [
-        "registered_gpt_oss_20b": "its cross-cable check diverged at cuts 8 and 10 (output 1 of the 4,096-token request, reference margin 0.82, not a near tie), although cut 12 gave the reference's tokens",
+        "registered_gpt_oss_20b": "its cross-cable check diverged at cuts 8 and 10 with an M5 Max decoding and at cut 4 with an M5 Ultra decoding (output 1 of the 4,096-token request, reference margins 0.51 to 0.82, not near ties), although cut 12 gave the reference's tokens on both pairs and cuts 11 and 16 on the M5 Ultra pair",
         "registered_mimo_v26_flash_mopd": "its 4,096-token cross-cable request departs from the reference at output 50 and the departure is not classified (the reference recorded no logits there), although the short request gave the reference's tokens",
         "registered_gemma4_26b_qat_4bit": "its cross-cable check diverged at cut 12 (token 7 of the 31-token request, margin 0.30, not a near tie), although cuts 15 and 18 passed",
         "registered_gemma4_26b_8bit": "its cross-cable check diverged at cut 12 (tokens 21 and 20 of the 4,096- and 5,120-token requests, margins of 0.25 and more, not near ties)",
         "registered_gemma4_26b": "no cross-cable check has run on this artifact",
     ]
+
+    /// The failed checks of a model on record (`diverged` or `incomparable`
+    /// against a single-Mac reference), each in a qualification's shape. One
+    /// entry is enough to restrict the model's shapes (`ClusterPairQualificationRecords`).
+    public static let failedChecks: [String: [ClusterPairServingQualification]] = [
+        // M3 Ultra rank 0: with an M5 Max decoding at cuts 8 and 10 (2026-10-09/10, pipeline serial and lookahead,
+        // compact decode); with an M5 Ultra decoding at cut 4 (2026-10-12, serial and lookahead, the 4,096-token
+        // request) and at cuts 8 and 10 (2026-10-12, the same request's first two outputs). Every cut that leaves
+        // layer 10 to the M5 departs at output 1; cuts 11, 12 and 16 do not.
+        "registered_gpt_oss_20b": failed(m3UltraLeads, cut: 8, .pipeline, .pipelineCompactDecode)
+            + failed(m3UltraLeads, cut: 10, .pipeline, .pipelineCompactDecode)
+            + failed(m3UltraLeadsM5Ultra, cut: 4, .pipeline) + failed(m3UltraLeadsM5Ultra, cut: 8, .pipeline)
+            + failed(m3UltraLeadsM5Ultra, cut: 10, .pipeline),
+    ]
+
+    /// The passed checks of a withheld model, kept on record so that its plan
+    /// keeps to them. A granted model's passed checks are its grant's.
+    public static let withheldPassedChecks: [String: [ClusterPairServingQualification]] = [
+        // Pipeline, the 4,096-token request: tokens equal both Macs' references at cut 12 with an M5 Max decoding
+        // (2026-10-11) and at cuts 11, 12 and 16 with an M5 Ultra decoding (2026-10-12, serial and lookahead).
+        "registered_gpt_oss_20b": passed(m3UltraLeads, cut: 12, .pipeline)
+            + passed(m3UltraLeadsM5Ultra, cut: 11, .pipeline) + passed(m3UltraLeadsM5Ultra, cut: 12, .pipeline)
+            + passed(m3UltraLeadsM5Ultra, cut: 16, .pipeline),
+    ]
+
+    /// Every check of a model on record, passed and failed.
+    public static func records(runtimeModelID: String) -> ClusterPairQualificationRecords {
+        .init(runtimeModelID: runtimeModelID,
+              passed: granted.first { $0.runtimeModelID == runtimeModelID }?.qualifications ?? withheldPassedChecks[runtimeModelID] ?? [],
+              failed: failedChecks[runtimeModelID] ?? [])
+    }
 
     /// The grant for a model a pair may serve; a refusal for every other model.
     public static func grant(runtimeModelID: String, publicModelID: String) throws -> ClusterPairServingGrant {
@@ -268,7 +357,8 @@ public enum ClusterPairServingGrants {
     /// One rank of a placement, checked on the Mac that runs it with that
     /// Mac's own chip class. Every rank checked this way is the whole placement.
     public static func requireRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass?,
-                                   runtimeModelID: String, publicModelID: String) throws {
+                                   runtimeModelID: String, publicModelID: String,
+                                   cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil) throws {
         let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
         func refuse(_ reason: ClusterPairServingRefusal.Reason) -> ClusterPairServingRefusal {
             .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: reason)
@@ -281,17 +371,36 @@ public enum ClusterPairServingGrants {
         guard allowed.contains(chipClass) else {
             throw refuse(.classNotAllowed(rank: rank, role: role, chipClass: chipClass, allowed: allowed.sorted()))
         }
+        // A shape-restricted grant needs the placement's shape: a caller that
+        // does not give it is refused rather than admitted at any cut.
+        let checks = records(runtimeModelID: runtimeModelID)
+        if checks.restrictsShapes {
+            guard let cuts, let mode, checks.admitsRank(rank, of: rankCount, chipClass: chipClass, cuts: cuts, mode: mode) else {
+                throw refuse(.shapeNotQualified(rank: rank, chipClass: chipClass, cuts: cuts ?? [], mode: mode ?? .pipeline,
+                    qualified: checks.passedShapesText))
+            }
+        }
     }
 
     /// A whole placement: each rank's chip class in rank order.
-    public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String) throws {
+    public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String,
+                                        cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil) throws {
         guard rankClasses.count >= 2 else {
             throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
                 reason: .placementShape(rank: 0, rankCount: rankClasses.count))
         }
         for (rank, chipClass) in rankClasses.enumerated() {
             try requireRank(rank, of: rankClasses.count, chipClass: chipClass,
-                            runtimeModelID: runtimeModelID, publicModelID: publicModelID)
+                            runtimeModelID: runtimeModelID, publicModelID: publicModelID, cuts: cuts, mode: mode)
+        }
+        // Each rank's half holds; under shape restriction the classes must
+        // also come from one passed check together.
+        let checks = records(runtimeModelID: runtimeModelID)
+        if checks.restrictsShapes, let cuts, let mode, let last = rankClasses.last.flatMap({ $0 }),
+           !checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode) {
+            throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                reason: .shapeNotQualified(rank: rankClasses.count - 1, chipClass: last, cuts: cuts, mode: mode,
+                    qualified: checks.passedShapesText))
         }
     }
 }

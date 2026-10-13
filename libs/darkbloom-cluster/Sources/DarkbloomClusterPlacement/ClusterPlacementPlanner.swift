@@ -58,6 +58,13 @@ public struct ClusterPlacementPolicy: Sendable {
     /// first. With the devices' live admissible memory in their profiles,
     /// that keeps less on the Mac with less room, at no material cost in time.
     public var preferHeadroomWithinTies = false
+    /// The placement shapes the model's qualification records allow, when
+    /// they restrict shapes: called with a candidate's chip names in rank
+    /// order (`ClusterDeviceProfile.chip`), its cuts and its mode. A
+    /// candidate it refuses is never chosen, ranked or offered as an
+    /// alternative; the structural and any-boundary bests still say what
+    /// memory alone would allow. Nil, the default, admits every shape.
+    public var admitsShape: (@Sendable (_ chips: [String], _ cuts: [Int], _ mode: ClusterGenerationMode) -> Bool)?
     public init() {}
 }
 
@@ -193,6 +200,10 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     public let aloneAsFast: [String]
     public let refusal: ClusterPlacementRefusal?
     public let candidatesConsidered: Int
+    /// Placements that would be possible but whose shape the policy's
+    /// `admitsShape` refused: no passed qualification covers them. Nil when
+    /// the policy restricts no shape.
+    public let unqualifiedPossible: Int?
 }
 
 /// Decides how a model is divided between devices from what the devices
@@ -233,7 +244,15 @@ public enum ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let admitted = try context.candidates(.admitted)
-        let ranked = context.preferringHeadroom(context.ordered(admitted.filter(\.possible), regime: policy.regime),
+        // Shapes no passed qualification covers are left out here, before any
+        // ranking: they are never chosen, ranked or offered as alternatives.
+        let qualified = policy.admitsShape.map { admits in
+            admitted.filter { candidate in
+                admits(candidate.ranks.map { rank in devices.first { $0.label == rank.device }?.profile.chip ?? "" },
+                       candidate.cuts, candidate.mode)
+            }
+        } ?? admitted
+        let ranked = context.preferringHeadroom(context.ordered(qualified.filter(\.possible), regime: policy.regime),
             regime: policy.regime)
         let other: ClusterPlacementPolicy.Regime = policy.regime == .sustained ? .rested : .sustained
         let structural = context.ordered(try context.candidates(.structural).filter(\.possible), regime: policy.regime).first
@@ -244,7 +263,9 @@ public enum ClusterPlacementPlanner {
         // A Mac that holds the whole model is a placement too: the model is
         // refused only when no division and no single Mac can hold it.
         var refusal: ClusterPlacementRefusal?
-        if ranked.isEmpty, !alone.contains(where: \.fit.possible) {
+        // Memory refuses only when no admitted placement is possible at all;
+        // a possible placement the qualification left out is reported as that.
+        if !admitted.contains(where: \.possible), !alone.contains(where: \.fit.possible) {
             let extents = devices.map { (first: context.extent($0, first: true), last: context.extent($0, first: false)) }
             var uncovered: (layers: Int, bytes: Int)?
             if devices.count == 2 {
@@ -275,9 +296,11 @@ public enum ClusterPlacementPlanner {
         return .init(runtimeModelID: layout.runtimeModelID, promptTokens: prompt, outputTokens: outputs,
             regime: policy.regime, basis: basis, chosen: ranked.first,
             alternatives: Array(ranked.dropFirst().prefix(policy.alternatives)),
-            chosenForOtherRegime: context.ordered(admitted.filter(\.possible), regime: other).first,
+            chosenForOtherRegime: context.ordered(qualified.filter(\.possible), regime: other).first,
             bestStructural: structural, bestAnyBoundary: anyBoundary,
-            alone: alone, aloneAsFast: aloneAsFast, refusal: refusal, candidatesConsidered: admitted.count)
+            alone: alone, aloneAsFast: aloneAsFast, refusal: refusal, candidatesConsidered: admitted.count,
+            unqualifiedPossible: policy.admitsShape == nil ? nil
+                : admitted.filter(\.possible).count - qualified.filter(\.possible).count)
     }
 
     /// One explicit placement, evaluated as the planner evaluates its own

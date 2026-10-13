@@ -55,8 +55,9 @@ struct ClusterPrefixCacheSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let missing = directory.appendingPathComponent("absent.json")
         #expect(try ClusterPrefixCacheSettings.savedCacheSettings(providerConfiguration: missing) == CacheSettings())
-        let file = directory.appendingPathComponent("config.json")
-        try Data(#"{"cache":{"daily_write_gb":42}}"#.utf8).write(to: file)
+        // The provider configuration is TOML (`ConfigManager.parseValidating`).
+        let file = directory.appendingPathComponent("provider.toml")
+        try Data("[cache]\ndaily_write_gb = 42\n".utf8).write(to: file)
         chmod(file.path, 0o600)
         #expect(try ClusterPrefixCacheSettings.savedCacheSettings(providerConfiguration: file).dailyWriteGB == 42)
     }

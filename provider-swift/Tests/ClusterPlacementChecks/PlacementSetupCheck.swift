@@ -112,7 +112,7 @@ import Foundation
     /// two to four ranks on several chips; then the registered GPT-OSS records through the guided step's own
     /// decision, on an M3 Ultra with an M5 Ultra (passed at cut 12, diverged at cut 4) and with a chip no check ran.
     static func qualifiedShapes(description base: [String: Any], slowTwo: [ClusterPlacementDevice]) throws {
-        let m3 = ClusterChipClass.appleM3Ultra, m5u = ClusterChipClass.appleM5Ultra, m5 = ClusterChipClass.appleM5Max
+        let m3 = ClusterChipClass(chipName: "Apple M3 Ultra")!, m5u = ClusterChipClass(chipName: "Apple M5 Ultra")!, m5 = ClusterChipClass(chipName: "Apple M5 Max")!
         let m2 = ClusterChipClass(chipName: "Apple M2 Max")!, m4 = ClusterChipClass(chipName: "Apple M4 Pro")!
         let open = ClusterPairQualificationRecords(runtimeModelID: "x",
             passed: [.init(chipClasses: [m3, m5], cuts: [16], mode: .pipeline)], failed: [])

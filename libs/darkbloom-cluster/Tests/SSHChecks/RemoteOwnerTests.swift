@@ -355,9 +355,8 @@ func directory() throws -> URL {
         try require(e.nativeCleanupObserved, "Cancellation watchdog failed to obtain actual native terminal")
         try require(e.readiness == nil, "Failed owner became ready")
     }
-    /// An owner killed by a signal while a request runs (the qualifier's F3
-    /// trigger: SIGUSR1 from another process) can never publish its worker's
-    /// cleanup. The leader's waits on it end at once, claiming nothing: no
+    /// An owner killed by a signal while a request runs can never publish its
+    /// worker's cleanup. The leader's waits on it end at once, claiming nothing: no
     /// cleanup is observed, ownership stays unresolved, the signal is named.
     static func ownerDeathEndsTheWaits(_ owner: URL, _ worker: String) throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
@@ -372,13 +371,16 @@ func directory() throws -> URL {
         guard let pid = e.ownerProcessIdentifier else { throw OwnerWire.invalid("Owner process not running") }
         let ended = DispatchSemaphore(value: 0)
         Thread { e.waitForNativeCleanup(); ended.signal() }.start()
-        try require(Darwin.kill(pid, SIGUSR1) == 0, "Could not signal the owner")
+        // SIGKILL (a fixture owner; no model): SIGUSR1, the qualifier's F3
+        // trigger, is now the owner's force-cancel hook (orphan eradication),
+        // which fences the worker and proves its cleanup instead of dying.
+        try require(Darwin.kill(pid, SIGKILL) == 0, "Could not signal the owner")
         let began = DispatchTime.now().uptimeNanoseconds
         try require(ended.wait(timeout: .now() + 10) == .success, "The cleanup wait outlived the owner's death (10 s)")
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e9
         try require(!e.nativeCleanupObserved && !e.ownerDeviceLeaseReleasedObserved, "A dead owner's cleanup was claimed")
-        try require(e.ownerTermination == .signalled(SIGUSR1), "Owner termination differs: \(String(describing: e.ownerTermination))")
-        try require(e.unresolvedReason?.contains("terminated by signal \(SIGUSR1)") == true, "The cause is not named: \(e.unresolvedReason ?? "none")")
+        try require(e.ownerTermination == .signalled(SIGKILL), "Owner termination differs: \(String(describing: e.ownerTermination))")
+        try require(e.unresolvedReason?.contains("terminated by signal \(SIGKILL)") == true, "The cause is not named: \(e.unresolvedReason ?? "none")")
         try require(!e.waitForOwnerReleased(deadline: DispatchTime.now().uptimeNanoseconds + 2_000_000_000), "A dead owner's release was claimed")
         try require(e.readiness == nil, "A dead owner stayed ready")
         print(String(format: "PASS an owner killed by a signal mid-request ends the leader's waits in %.2f s, claiming nothing", elapsed))

@@ -150,7 +150,8 @@ check prefix-ssd-key-file-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PRE
 check prefix-ssd-key-in-the-environment-is-refused-with-its-line-too 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is never read from the environment" "$ssdkey" \
   "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY=$ssdkey" -- --prefix-ssd-key "$ssdscheme"
 check prefix-ssd-key-argument-takes-only-its-scheme 1 "--prefix-ssd-key takes only $ssdscheme" "" -- --prefix-ssd-key yes
-check prefix-ssd-key-line-must-arrive 1 "Worker input ended before the prefix-SSD key" "" -- --prefix-ssd-key "$ssdscheme"
+# (/dev/null: macOS poll reports the device invalid, so the read stops before any byte: "failed before")
+check prefix-ssd-key-line-must-arrive 1 "before the prefix-SSD key" "" -- --prefix-ssd-key "$ssdscheme"
 CHECK_INPUT="$work/ssd-other-epoch" check prefix-ssd-key-of-another-epoch-is-refused 1 "prefix-SSD key belongs to another epoch or rank" "$ssdkey32" -- --prefix-ssd-key "$ssdscheme"
 CHECK_INPUT="$work/ssd-other-rank" check prefix-ssd-key-of-another-rank-is-refused 1 "prefix-SSD key belongs to another epoch or rank" "$ssdkey32" -- --prefix-ssd-key "$ssdscheme"
 CHECK_INPUT="$work/ssd-short-key" check prefix-ssd-key-of-another-length-is-refused 1 "Invalid prefix-SSD key" "" -- --prefix-ssd-key "$ssdscheme"

@@ -121,7 +121,7 @@ func localEndpoint(_ owner: URL, _ worker: String, _ dir: URL, behavior: String,
 func runRequest(_ pair: ClusterWorkerPair) throws {
     let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
         promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-        deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800))
+        deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
     try request.start { _ in true }
     try require(wait(seconds: 6) { request.isRetired }, "Paired request over the link did not retire")
     request.releaseResources()
@@ -270,7 +270,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
     static func codec() throws {
         let epoch = fixtureIdentity.membershipEpoch, session = UUID(), request = UUID()
         let reserve = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
-            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100))
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil))
         let wire = try ClusterLinkWorkerWire.command(reserve, requestID: request, epoch: epoch, session: session, sequence: 3,
             now: 8_000, deliveryDeadline: 8_200)
         let bytes = try wire.encoded()
@@ -410,7 +410,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800))
+            deadlineUptimeNanoseconds: now() + 8_000_000_000, capacityLimitBytes: 1800, sampling: nil))
         var failed = false
         do { try request.start { _ in true } } catch { failed = true }
         _ = wait(seconds: 8) { request.isRetired || pair.readiness == nil }
@@ -440,7 +440,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let pair = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 10_000_000_000)
         let request = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
             promptTokenIDs: [1, 2], stopTokenIDs: [], outputCount: 2, chunkSize: 1,
-            deadlineUptimeNanoseconds: now() + 50_000_000_000, capacityLimitBytes: 1800))
+            deadlineUptimeNanoseconds: now() + 50_000_000_000, capacityLimitBytes: 1800, sampling: nil))
         try request.start { _ in true }
         Thread.sleep(forTimeInterval: 0.5)
         try require(!request.isRetired && pair.readiness != nil, "The stalled request should still be in flight")

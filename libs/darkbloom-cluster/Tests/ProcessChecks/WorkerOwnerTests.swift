@@ -38,7 +38,7 @@ private struct Harness: Sendable {
     func reservation(outputs: Int = 2, stops: [Int] = [], seconds: UInt64 = 10, capacity: Int = 1800) -> ClusterWorkerReservation {
         .init(profileID: fixtureProfile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
             outputCount: outputs, chunkSize: 2, deadlineUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + seconds * 1_000_000_000,
-            capacityLimitBytes: capacity)
+            capacityLimitBytes: capacity, sampling: nil)
     }
     func awaitRetirement(_ request: ClusterWorkerRequest, seconds: Double = 8) async throws {
         let end = ProcessInfo.processInfo.systemUptime + seconds

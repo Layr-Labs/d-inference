@@ -165,7 +165,7 @@ private final class Harness {
     func reservation(deadline: UInt64? = nil) -> ClusterWorkerReservation {
         .init(profileID: "test", promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2,
             chunkSize: 2, deadlineUptimeNanoseconds: deadline ?? (DispatchTime.now().uptimeNanoseconds + 3_000_000_000),
-            capacityLimitBytes: 4096)
+            capacityLimitBytes: 4096, sampling: nil)
     }
     func start(_ id: UUID, deadline: UInt64? = nil) throws {
         guard case .ready = try event().event else { throw WorkerFailure.invalid("Missing fake ready") }

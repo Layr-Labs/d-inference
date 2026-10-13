@@ -79,7 +79,7 @@ private final class AdmissionCompletion: @unchecked Sendable {
             do {
                 _ = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
                     promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800),
+                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800, sampling: nil),
                     admissionDeadline: DispatchTime.now().uptimeNanoseconds + UInt64(milliseconds) * 1_000_000)
             } catch { refused = true }
             try requirePartial(refused && pair.readiness == nil, "Admission failure did not quarantine pair")
@@ -107,7 +107,7 @@ private final class AdmissionCompletion: @unchecked Sendable {
 
     static func reservation(prompt: Int = 3, output: Int = 2, until end: UInt64) -> ClusterWorkerReservation {
         .init(profileID: fixtureProfile.id, promptTokenIDs: Array(1...prompt), stopTokenIDs: [], outputCount: output,
-              chunkSize: 2, deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800)
+              chunkSize: 2, deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800, sampling: nil)
     }
 
     /// One complete request on the pair: reserved, started, every token taken.
@@ -197,7 +197,7 @@ private final class AdmissionCompletion: @unchecked Sendable {
             do {
                 _ = try pair.reserve(requestID: UUID(), reservation: .init(profileID: fixtureProfile.id,
                     promptTokenIDs: [1, 2, 3], stopTokenIDs: [], outputCount: 2, chunkSize: 2,
-                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800),
+                    deadlineUptimeNanoseconds: end, capacityLimitBytes: 1800, sampling: nil),
                     admissionDeadline: DispatchTime.now().uptimeNanoseconds + 100_000_000)
                 completion.complete(refused: false)
             } catch { completion.complete(refused: true) }

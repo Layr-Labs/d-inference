@@ -22,7 +22,7 @@ private let ready = ClusterWorkerReady(identity: identity, rank: 0, profile: pro
     executionPlanSHA256: String(repeating: "e", count: 64), requestCapacityBytes: 1024)
 private func reservation(output: Int = 2, stops: [Int] = [], deadline: UInt64 = 1000) -> ClusterWorkerReservation {
     .init(profileID: profile.id, promptTokenIDs: [1, 2, 3], stopTokenIDs: stops,
-        outputCount: output, chunkSize: 2, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900)
+        outputCount: output, chunkSize: 2, deadlineUptimeNanoseconds: deadline, capacityLimitBytes: 900, sampling: nil)
 }
 private struct Conversation {
     var session: ClusterWorkerSession
@@ -119,7 +119,7 @@ struct ClusterWorkerProtocolTests {
             try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(frame)) == frame, "Event round trip")
         }
         let boundary = ClusterWorkerReservation(profileID: "large", promptTokenIDs: Array(repeating: 262143, count: 32767),
-            stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1)
+            stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1, sampling: nil)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(boundary))
         try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "Bounded maximum token input")
     }

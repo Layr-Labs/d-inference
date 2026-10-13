@@ -260,24 +260,40 @@ private func parent() throws {
         try require(ProcessForcedExit.extendedDeadline(progress: deadline, deadline: deadline, bound: bound) == deadline + bound, "write at the deadline")
         try require(ProcessForcedExit.extendedDeadline(progress: deadline + 1, deadline: deadline, bound: bound) == nil, "a stamp from the future")
         try require(ProcessForcedExit.extendedDeadline(progress: UInt64.max - 1, deadline: UInt64.max, bound: bound) == UInt64.max, "overflow saturates")
+        // The dead-man wakes after its deadline (its sleep overshoots): a write
+        // that completed in between is recent progress, and the new deadline
+        // still counts from the old one.
+        try require(ProcessForcedExit.extendedDeadline(progress: deadline + 5_000_000, deadline: deadline, bound: bound,
+                                                       now: deadline + 10_000_000) == deadline + bound, "a write after the deadline, before the read")
+        try require(ProcessForcedExit.extendedDeadline(progress: deadline + 20_000_000, deadline: deadline, bound: bound,
+                                                       now: deadline + 10_000_000) == nil, "a stamp later than the read")
     }
     try check("a-progressing-release-gets-one-extension-and-finishes") {
         let o = try run("progress-extends")
         try require(o.status == 78, "status \(String(describing: o.status)): \(o.stderr)")
         try require(o.seconds >= 1.15 && o.seconds < 1.6, "took \(o.seconds) s (dead-man 0.8 s, release 1.2 s)")
-        try require(ordered(o.stderr, ["status=78 reason=test phase=claimed dead_man_ms=800", "test-release-writing", "test-release-done", "phase=released detail=progressed"]), o.stderr)
+        try require(ordered(o.stderr, ["status=78 reason=test phase=claimed dead_man_ms=800", "test-release-writing",
+                                       "status=78 phase=extended dead_man_ms=800 extension=1/1", "test-release-done",
+                                       "phase=released detail=progressed"]), o.stderr)
     }
     try check("a-release-whose-writes-stopped-ends-at-the-dead-man") {
         let o = try run("progress-stale")
         try require(o.status == 79, "status \(String(describing: o.status)): \(o.stderr)")
         try require(o.seconds >= 0.75 && o.seconds < 1.2, "took \(o.seconds) s (no extension for a stale write)")
         try require(!o.stderr.contains("phase=released"), "a stalled release reported done")
+        try require(!o.stderr.contains("phase=extended"), "an extension was reported without one")
     }
     try check("endless-writes-earn-exactly-one-extension") {
         let o = try run("progress-forever")
         try require(o.status == 80, "status \(String(describing: o.status)): \(o.stderr)")
-        try require(o.seconds >= 1.55 && o.seconds < 2.2, "took \(o.seconds) s (expected twice the 0.8 s bound)")
+        try require(o.seconds >= 1.55 && o.seconds < 2.2, "took \(o.seconds) s (expected twice the 0.8 s bound): \(o.stderr)")
         try require(!o.stderr.contains("phase=released"), "an endless release reported done")
+        // The extended forced exit is visible: one line, written when the bound moved.
+        try require(o.stderr.components(separatedBy: "phase=extended").count == 2, "extension lines: \(o.stderr)")
+    }
+    try check("the-bound-is-the-protocols-and-the-longest-run-counts-its-one-extension") {
+        try require(ProcessForcedExit.defaultDeadManNanoseconds == ClusterForcedExitBounds.deadManNanoseconds, "dead-man differs")
+        try require(ClusterForcedExitBounds.longestNanoseconds(deadMan: 800_000_000) == 1_600_000_000, "longest run")
     }
     print("{\"passed\":true,\"cases\":\(passed),\"forcedExit\":\"actual-runtime-sources\",\"progressExtendedDeadMan\":true,\"modelOrGPUExecution\":false}")
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { Box, Home as HomeIcon, Monitor, Trophy, Zap } from 'lucide-react';
 import type { Route } from '../shared/contracts';
 import { api, isPreview, useBackend } from './useBackend';
@@ -41,6 +41,11 @@ export default function App() {
     setOnboarding(false);
   };
   useEffect(() => api?.onNavigate(navigate), [navigate]);
+  // The document is the scroll container, so a new page or Mac would otherwise open at the
+  // previous page's scroll offset, below its header and tabs.
+  useLayoutEffect(() => {
+    document.documentElement.scrollTop = 0;
+  }, [route, machine]);
   if (!backend.state || onboarding)
     return (
       <>

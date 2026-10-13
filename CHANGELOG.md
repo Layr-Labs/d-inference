@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop page scroll position
+
+- Open each desktop page, Mac and My Macs tab at the top. Previously the window kept the previous page's scroll offset, so following View earnings or Explore Stats from lower on Home, or switching Macs, landed below the new page's header and tabs.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

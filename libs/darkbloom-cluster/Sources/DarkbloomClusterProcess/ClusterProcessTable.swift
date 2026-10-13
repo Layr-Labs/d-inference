@@ -75,6 +75,15 @@ public enum ClusterProcessTable {
         return Int32(info.pbi_ppid)
     }
 
+    /// When the process now holding `identifier` started (seconds since 1970,
+    /// the same reading as `Entry.startedAt`), nil when none does or it is a
+    /// zombie. With the start time recorded when the process was first seen,
+    /// this tells a recycled process number from the process it was.
+    public static func startTime(of identifier: Int32) -> Double? {
+        guard identifier > 0, let info = bsdInfo(identifier), info.pbi_status != UInt32(SZOMB) else { return nil }
+        return Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1e6
+    }
+
     /// The UNIX-domain socket paths bound by `identifier`'s open descriptors,
     /// read from the kernel's descriptor table without touching the sockets.
     /// Empty for a process this user cannot inspect. A path stays listed

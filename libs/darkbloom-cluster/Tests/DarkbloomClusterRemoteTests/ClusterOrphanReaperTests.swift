@@ -60,6 +60,8 @@ final class ClusterOrphanReaperTests: XCTestCase {
             .init(processIdentifier: 12, role: .worker, membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone"),
             .init(processIdentifier: 13, role: .owner, membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone"),
             .init(processIdentifier: 14, role: .worker, membershipEpoch: nil, startedAt: nil, reason: "parent is gone"),
+            // Its number is reused by another process (another start time) before the grace ends.
+            .init(processIdentifier: 15, role: .worker, membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone"),
         ], kept: [])
         final class Fake: @unchecked Sendable {
             let lock = NSLock()
@@ -83,6 +85,12 @@ final class ClusterOrphanReaperTests: XCTestCase {
                 return true
             }
         }
+        // Start times: the planned 1_000 while the process lives; pid 15's number holds a newer process from 2 s on.
+        let alive = actions.isAlive
+        actions.startTime = { pid in
+            if pid == 15 { return fake.lock.withLock { fake.clock } >= 2_000_000_000 ? 2_000 : 1_000 }
+            return alive(pid) ? 1_000 : nil
+        }
         actions.signal = { pid, signal in
             fake.lock.withLock {
                 fake.signals.append((pid, signal))
@@ -96,13 +104,16 @@ final class ClusterOrphanReaperTests: XCTestCase {
         limits.reapMarginNanoseconds = 1_000_000_000
         limits.pollNanoseconds = 500_000_000
         let results = ClusterOrphanReaper.sweepProcesses(plan, limits: limits, actions: actions)
-        XCTAssertEqual(results.map(\.outcome), [.endedByItself, .endedAfterTerm, .endedAfterKill, .survived])
-        // 11 was never signalled; 12 got TERM only; 13 and 14 got TERM then KILL.
-        XCTAssertEqual(fake.signals.map { "\($0.0):\($0.1)" }, ["12:\(SIGTERM)", "13:\(SIGTERM)", "13:\(SIGKILL)", "14:\(SIGTERM)", "14:\(SIGKILL)"])
+        XCTAssertEqual(results.map(\.outcome), [.endedByItself, .endedAfterTerm, .endedAfterKill, .unverified, .replaced])
+        // 11 was never signalled; 12 got TERM only; 13 got TERM then KILL; 14 (identity unknown) and 15
+        // (number reused by another process) were never signalled at all.
+        XCTAssertEqual(fake.signals.map { "\($0.0):\($0.1)" }, ["12:\(SIGTERM)", "13:\(SIGTERM)", "13:\(SIGKILL)"])
         // 11 waited within its remaining grace (3 s of the 10 s), not the whole grace.
         XCTAssertEqual(results[0].waitedNanoseconds, 3_000_000_000)
-        // 14 (unknown start) got no grace: TERM at once, KILL after the margin, reported after the reap margin.
-        XCTAssertEqual(results[3].waitedNanoseconds, 3_000_000_000)
+        XCTAssertEqual(results[3].waitedNanoseconds, 0)
+        // A sweep with an unverified candidate is not clean.
+        XCTAssertFalse(ClusterOrphanReaper.Report(at: 0, processes: results, kept: [], journal: "nothingToRecover",
+            bootstrapDirectoriesRemoved: [], stagingEntriesRemoved: [], errors: []).clean)
     }
 
     /// A real reparented process named as the worker: the sweep ends it with

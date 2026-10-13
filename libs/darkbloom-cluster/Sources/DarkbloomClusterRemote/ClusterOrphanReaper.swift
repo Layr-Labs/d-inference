@@ -123,6 +123,14 @@ public enum ClusterOrphanReaper {
         case endedAfterKill
         /// Still running after SIGKILL and the reap margin; reported, never hidden.
         case survived
+        /// The process number now belongs to another process (its start time
+        /// differs from the planned one): the orphan is gone, and nothing more
+        /// is ever sent to that number.
+        case replaced
+        /// The candidate's start time was unknown when it was planned, so its
+        /// identity cannot be checked before a signal: nothing is sent, and
+        /// the sweep is not clean.
+        case unverified
     }
 
     public struct ProcessResult: Equatable, Sendable, Encodable {
@@ -147,13 +155,16 @@ public enum ClusterOrphanReaper {
             self.at = at; self.processes = processes; self.kept = kept; self.journal = journal
             self.bootstrapDirectoriesRemoved = bootstrapDirectoriesRemoved; self.stagingEntriesRemoved = stagingEntriesRemoved
             self.errors = errors
-            clean = processes.allSatisfy { $0.outcome != .survived } && errors.isEmpty && journal != "refusedLiveWorker"
+            clean = processes.allSatisfy { $0.outcome != .survived && $0.outcome != .unverified } && errors.isEmpty
+                && journal != "refusedLiveWorker"
         }
     }
 
     /// Hooks the sweep acts through; production uses the real ones.
     public struct Actions: Sendable {
         public var isAlive: @Sendable (Int32) -> Bool = { ClusterProcessTable.isAlive($0) }
+        /// The start time of the process now holding the number; nil when none.
+        public var startTime: @Sendable (Int32) -> Double? = { ClusterProcessTable.startTime(of: $0) }
         public var signal: @Sendable (Int32, Int32) -> Void = { _ = Darwin.kill($0, $1) }
         public var now: @Sendable () -> UInt64 = { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
         public var sleep: @Sendable (UInt64) -> Void = { nanoseconds in
@@ -178,8 +189,12 @@ public enum ClusterOrphanReaper {
     }
 
     /// Ends every candidate of `plan` as the contract allows and returns what
-    /// happened to each. `startedAt` is wall-clock seconds; a candidate whose
-    /// start is unknown is treated as past its grace.
+    /// happened to each. `startedAt` is wall-clock seconds. Before every
+    /// signal the number must still hold the planned process (same start
+    /// time; oMLX `_sweep_rank_processes`: "identity changed; refusing to
+    /// signal a reused PID"): the wait before a signal can be minutes, long
+    /// enough for the number to be reused by an unrelated process. A
+    /// candidate whose start is unknown is never signalled.
     public static func sweepProcesses(_ plan: Plan, limits: Limits = .init(), actions: Actions = .init()) -> [ProcessResult] {
         var results: [ProcessResult] = []
         for candidate in plan.candidates {
@@ -190,22 +205,54 @@ public enum ClusterOrphanReaper {
                 let used = UInt64(min(elapsed, 1e9) * 1e9)
                 remainingGrace = used >= limits.contractGraceNanoseconds ? 0 : limits.contractGraceNanoseconds - used
             }
-            func wait(_ bound: UInt64) -> Bool { // true when the process ended within the bound
+            guard let planned = candidate.startedAt else {
+                results.append(.init(candidate: candidate, outcome: .unverified, waitedNanoseconds: 0)); continue
+            }
+            /// Whether the number still holds the planned process.
+            enum Presence { case same, gone, replaced }
+            func presence() -> Presence {
+                guard let started = actions.startTime(candidate.processIdentifier) else { return .gone }
+                return abs(started - planned) < 0.001 ? .same : .replaced
+            }
+            /// Waits at most `bound` for the planned process to leave the number.
+            func wait(_ bound: UInt64) -> Presence {
                 let end = actions.now() &+ bound
-                while actions.isAlive(candidate.processIdentifier) {
-                    if actions.now() >= end { return false }
+                while true {
+                    let state = presence()
+                    if state != .same || actions.now() >= end { return state }
                     actions.sleep(min(limits.pollNanoseconds, max(1, end &- actions.now())))
                 }
-                return true
+            }
+            /// Sends `signal` only to the planned process; the presence it found.
+            func send(_ signal: Int32) -> Presence {
+                let state = presence()
+                if state == .same { actions.signal(candidate.processIdentifier, signal) }
+                return state
             }
             let outcome: ProcessOutcome
-            if wait(remainingGrace) { outcome = .endedByItself }
-            else {
-                actions.signal(candidate.processIdentifier, SIGTERM)
-                if wait(limits.killMarginNanoseconds) { outcome = .endedAfterTerm }
-                else {
-                    actions.signal(candidate.processIdentifier, SIGKILL)
-                    outcome = wait(limits.reapMarginNanoseconds) ? .endedAfterKill : .survived
+            switch wait(remainingGrace) {
+            case .gone: outcome = .endedByItself
+            case .replaced: outcome = .replaced
+            case .same:
+                switch send(SIGTERM) {
+                case .gone: outcome = .endedByItself
+                case .replaced: outcome = .replaced
+                case .same:
+                    switch wait(limits.killMarginNanoseconds) {
+                    case .gone: outcome = .endedAfterTerm
+                    case .replaced: outcome = .replaced
+                    case .same:
+                        switch send(SIGKILL) {
+                        case .gone: outcome = .endedAfterTerm
+                        case .replaced: outcome = .replaced
+                        case .same:
+                            switch wait(limits.reapMarginNanoseconds) {
+                            case .gone: outcome = .endedAfterKill
+                            case .replaced: outcome = .replaced
+                            case .same: outcome = .survived
+                            }
+                        }
+                    }
                 }
             }
             results.append(.init(candidate: candidate, outcome: outcome, waitedNanoseconds: actions.now() &- begin))

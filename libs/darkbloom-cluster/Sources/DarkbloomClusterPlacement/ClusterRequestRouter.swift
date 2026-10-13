@@ -193,3 +193,52 @@ public enum ClusterRequestRouter {
         return high
     }
 }
+
+/// The router a serving leader keeps for one formed setup: one decision per
+/// request, from the setup's placement and the speed records it has served
+/// (re-read through `served` at most every `refreshSeconds`). Thread-safe.
+/// Any failure to decide routes the request to the pair as placed, which is
+/// always a qualified path.
+public final class ClusterRequestRouting: @unchecked Sendable {
+    public let setup: ClusterRequestRouter.Setup
+    private let served: @Sendable () -> [ClusterServedSample]
+    private let refreshSeconds: Double
+    private let clock: @Sendable () -> Double
+    private let lock = NSLock()
+    private var samples: [ClusterServedSample] = []
+    private var readAt = -Double.infinity
+
+    public init(setup: ClusterRequestRouter.Setup, refreshSeconds: Double = 30,
+                clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
+                served: @escaping @Sendable () -> [ClusterServedSample]) {
+        self.setup = setup; self.served = served; self.refreshSeconds = refreshSeconds; self.clock = clock
+    }
+
+    public func route(promptTokens: Int, maximumOutputTokens: Int) -> ClusterRequestRoute? {
+        let now = clock()
+        let current: [ClusterServedSample] = lock.withLock {
+            if now - readAt >= refreshSeconds { samples = served(); readAt = now }
+            return samples
+        }
+        let outputs = ClusterRequestRouter.expectedOutputTokens(maximum: maximumOutputTokens, served: current)
+        return try? ClusterRequestRouter.decide(setup, promptTokens: promptTokens, outputTokens: outputs, served: current)
+    }
+}
+
+extension ClusterServedSample {
+    /// A served sample from what a leader's telemetry record carries (route
+    /// `pair` or `alone:<member>`); nil when the record is no speed record:
+    /// failed, restored from a prefix cache, or without a first token.
+    public static func fromTelemetry(route: String?, promptTokens: Int, cachedTokens: Int, completionTokens: Int,
+                                     firstTokenMilliseconds: Double?, decodeTokensPerSecond: Double?, outcome: String,
+                                     finishedAt: Double) -> ClusterServedSample? {
+        guard cachedTokens == 0, outcome == "stop" || outcome == "length", let first = firstTokenMilliseconds else { return nil }
+        let label = route ?? "pair"
+        let member = label.hasPrefix("alone:") ? String(label.dropFirst(6)) : nil
+        guard member != nil || label == "pair" else { return nil }
+        let value = ClusterServedSample(route: member == nil ? .pair : .alone, member: member, promptTokens: promptTokens,
+            outputTokens: completionTokens, firstTokenSeconds: first / 1_000, decodeTokensPerSecond: decodeTokensPerSecond,
+            finishedAt: finishedAt)
+        return value.valid ? value : nil
+    }
+}

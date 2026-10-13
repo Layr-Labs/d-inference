@@ -102,6 +102,28 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
             && ClusterRequestRouter.expectedOutputTokens(maximum: 64, served: slowPair) == 64
             && ClusterRequestRouter.expectedOutputTokens(maximum: 300, served: []) == 300)
 
+    // The serving leader's router: re-reads its records, and decides like the router.
+    final class Box: @unchecked Sendable { var samples: [ClusterServedSample] = []; var reads = 0; var now = 0.0 }
+    let box = Box()
+    let routing = ClusterRequestRouting(setup: pair.setup, refreshSeconds: 30, clock: { box.now }) { box.reads += 1; return box.samples }
+    let first = routing.route(promptTokens: near, maximumOutputTokens: 128)
+    box.samples = slowPair; box.now = 10
+    let cached = routing.route(promptTokens: near, maximumOutputTokens: 128)
+    box.now = 40
+    let refreshed = routing.route(promptTokens: near, maximumOutputTokens: 128)
+    checks.require("a serving router decides like the router, and takes new speed records at its refresh",
+        first == predicted && cached == predicted && refreshed?.path == .alone && box.reads == 2
+            && refreshed?.workerRoute == .decodingRankAlone && first?.workerRoute == nil)
+    checks.require("a telemetry record becomes a served sample only when it computed its whole prompt and completed",
+        ClusterServedSample.fromTelemetry(route: "alone:m5ultra", promptTokens: 400, cachedTokens: 0, completionTokens: 9,
+            firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "stop", finishedAt: 1)?.member == "m5ultra"
+            && ClusterServedSample.fromTelemetry(route: nil, promptTokens: 400, cachedTokens: 0, completionTokens: 9,
+                firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "length", finishedAt: 1)?.route == .pair
+            && ClusterServedSample.fromTelemetry(route: nil, promptTokens: 400, cachedTokens: 12, completionTokens: 9,
+                firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "stop", finishedAt: 1) == nil
+            && ClusterServedSample.fromTelemetry(route: "pair", promptTokens: 400, cachedTokens: 0, completionTokens: 9,
+                firstTokenMilliseconds: 80, decodeTokensPerSecond: 200, outcome: "engine_error", finishedAt: 1) == nil)
+
     // Speed records from served requests, recovering absolute rates from the
     // model-free index's ratios alone (the fresh-install case, F1).
     let index3 = ClusterDeviceSpeed(source: .transferredByDeviceIndex, absolute: false,

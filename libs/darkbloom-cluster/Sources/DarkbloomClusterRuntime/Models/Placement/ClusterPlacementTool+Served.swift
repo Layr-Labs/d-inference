@@ -191,7 +191,9 @@ extension ClusterPlacementTool {
             lines.append("  \(device.label): \(device.speed.source.rawValue): \(device.speed.explanation)")
         }
         if !served.lines.isEmpty { lines.append("Speed records from served requests"); lines += served.lines }
-        lines.append("Routes (priced at \(outputs) output tokens)")
+        let absolute = devices.allSatisfy(\.speed.absolute)
+        lines.append("Routes (priced at \(outputs) output tokens" + (absolute ? ")"
+            : "; times in the index's relative units: no speed of this model was measured or served yet, only their ratio decides)"))
         for d in decisions {
             var text = "  \(d.promptTokens) prompt tokens -> \(d.label): " + String(format: "pair %.3f s (first token %.3f s, %@)",
                 d.pairSeconds, d.pairFirstTokenSeconds, d.pairBasis.rawValue)

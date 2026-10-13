@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — the cluster comes back after a reboot
+
+- `darkbloom cluster` (leader and members) installs this Mac's cluster service as a per-user LaunchAgent (`io.darkbloom.cluster-service.<digest of the install>`): launchd starts it at login and runs it under the cluster supervisor (`darkbloom cluster service --supervise`), which restarts it after 15 s doubling to 300 s and parks it after three quick failures; launchd restarts only a supervisor that crashed. Running `darkbloom cluster` again keeps an unchanged agent, replaces a changed one, restarts a parked one, and takes over from a service an earlier version started in a terminal. Nothing is asked beyond the cluster link's one approval.
+- `darkbloom cluster stop` stops this Mac's cluster service and removes its login agent (on the leader the cluster stops serving first); unpairing the last pairing (`darkbloom cluster pair --forget`) removes it too. `darkbloom status` shows whether the cluster service starts at login, whether it runs, and its supervisor's phase.
+
 ## Unreleased — cluster sessions without a fixed lifetime; rank lease and keep-warm
 
 - A two-Mac cluster session has no fixed lifetime and no request count any more. The 300-second session (1,800 for MiMo), the sixteen-request cap, the installed session's teardown at its deadline, the rotation to a new session after sixteen requests and the member session's 900-second cap are removed; a loaded model stays resident and serving until it is stopped (`darkbloom stop`, an operator unload, an autopilot model switch) or a real failure is detected. The capability record drops `maxLifetimeSeconds` and `maxRequests`.

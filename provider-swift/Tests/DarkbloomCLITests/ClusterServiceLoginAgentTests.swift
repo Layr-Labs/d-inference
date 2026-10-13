@@ -28,7 +28,7 @@ struct ClusterServiceLoginAgentTests {
         #expect(try Darkbloom.parseAsRoot(["stop"]) is darkbloom.Stop)
     }
 
-    @Test func theSupervisedServiceBeatsUntilItFinishes() async throws {
+    @Test func theSupervisedServiceBeatsUntilItFinishes() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cluster-service-beat-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let health = directory.appendingPathComponent("service-health.json")
@@ -38,7 +38,7 @@ struct ClusterServiceLoginAgentTests {
         supervision.start(stop: stop, running: { true })
         let deadline = Date().addingTimeInterval(5)
         while ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: health) == nil, Date() < deadline {
-            try await Task.sleep(nanoseconds: 50_000_000)
+            Thread.sleep(forTimeInterval: 0.05)
         }
         let beat = try #require(ClusterSupervisionFiles.read(ClusterMemberHealth.self, from: health))
         #expect(beat.pid == getpid() && beat.phase == .serving)

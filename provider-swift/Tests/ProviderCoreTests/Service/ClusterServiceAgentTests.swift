@@ -158,7 +158,8 @@ struct ClusterServiceAgentTests {
         let made = try job()
         launchd.disable(made.label)
         try withFakeLaunchd(launchd) { _ in
-            #expect(try ClusterServiceAgent.install(made, serviceRunning: { launchd.serviceRunning }, stopUnsupervisedService: {}) == .installed)
+            let outcome = try ClusterServiceAgent.install(made, serviceRunning: { launchd.serviceRunning }, stopUnsupervisedService: {})
+            #expect(outcome == .installed)
             #expect(launchd.verbs.contains("enable"))
             #expect(launchd.loaded == [made.label])
         }
@@ -192,7 +193,7 @@ struct ClusterServiceAgentTests {
             // launchd keeps the job (its service is still releasing a part): bootout succeeds, print keeps finding it.
             let stuck = FakeLaunchd()
             stuck.preload(made.label)
-            try LaunchctlControl.$runnerForTesting.withValue({ arguments in
+            LaunchctlControl.$runnerForTesting.withValue({ arguments in
                 arguments.first == "bootout" ? ok : try stuck.run(arguments)
             }) {
                 #expect(throws: LaunchAgentError.self) { try ClusterServiceAgent.uninstall() }

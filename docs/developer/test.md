@@ -4876,6 +4876,13 @@ bridge with deterministic engine receipts: a one-token startup warmup must not
 seed a slow deadline/heartbeat rate, and overlapping customer work must remain
 measurable. `ModelCalibrationTests` exercises bounded native bootstrap, customer
 preemption and actual retirement without customer traffic or model weights.
+`ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
+through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
+catalog IDs with both automatic paged selection and explicit contiguous KV.
+It verifies fresh prefill/decode heartbeat evidence and zero customer-work
+counters across repeated engine construction, without a customer request.
+The dependency's `OrdinaryRequestRetirementTests` covers ordinary completion,
+early watchdog terminal, waiter cancellation, zero work and closed admission.
 `ModelCalibrationPolicyTests` keeps the native MiMo sweep and smaller ordinary
 startup bounds explicit. Run these together with `EngineV2PrefillSamplingTests`
 and `PrefillEvidenceRecoveryTests` using the provider test runner. Synthetic

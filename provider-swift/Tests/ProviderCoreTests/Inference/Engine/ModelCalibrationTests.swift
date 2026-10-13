@@ -40,7 +40,7 @@ struct ModelCalibrationTests {
         let measurements = try #require(snapshot.performanceMeasurements)
         #expect(measurements.isolatedPrefill?.sampleCount == 2)
         #expect(measurements.decode?.sampleCount == 2)
-        #expect(measurements.workloadBuckets.contains { $0.phase == "prefill" && $0.promptTokenBucket == 512 })
+        #expect(measurements.workloadBuckets.contains { $0.phase == "prefill" && $0.promptTokenBucket == 1_024 })
         #expect(measurements.workloadBuckets.allSatisfy { $0.concurrentRequests == 1 })
         #expect(measurements.deliveredDecode == nil && measurements.endToEnd == nil)
         #expect(await bridge.calibrationCountersTest() == [0, 0, 0, 0])
@@ -48,6 +48,24 @@ struct ModelCalibrationTests {
         #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
         #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false,
             now: .now + .seconds(3_600))), "ordinary native models bootstrap once per loaded engine")
+        await bridge.shutdown()
+    }
+
+    @Test("MiMo calibration retains its wider bootstrap and later maintenance measurements")
+    func continuousCalibrationKeepsWideEvidence() async throws {
+        let (bridge, engine, budget) = try fixture()
+        // Exercise the existing continuous plan under the same shared idle
+        // owner, without fabricating a published MiMo native transaction.
+        await bridge.runContinuousCalibrationTest(budget: budget)
+        let first = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(first.workloadBuckets.contains { $0.promptTokenBucket == 4_096 })
+        #expect(first.workloadBuckets.contains { ($0.concurrentRequests ?? 1) > 1 })
+        let before = try #require(first.isolatedPrefill?.sampleCount)
+        await bridge.runContinuousCalibrationTest(budget: budget)
+        let second = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(second.isolatedPrefill?.sampleCount == before + 3)
+        #expect(await bridge.calibrationCountersTest() == [0, 0, 0, 0])
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         await bridge.shutdown()
     }
 
@@ -66,7 +84,6 @@ struct ModelCalibrationTests {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (calibration, engine, budget) = try fixture(gate: gate)
-        await calibration.resetBootstrapCalibrationTest()
         #expect(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false))
         try await waitForEntry(gate)
         await calibration.interruptModelCalibration(["calibration-already-retired"])
@@ -99,7 +116,6 @@ struct ModelCalibrationTests {
         #expect(budget.serviceBudget.acquire(ownerID: "busy", concurrency: 24))
         #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
         budget.serviceBudget.release(ownerID: "busy")
-        await bridge.resetBootstrapCalibrationTest()
         #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
         await bridge.stopModelCalibration()
         #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
@@ -112,7 +128,6 @@ struct ModelCalibrationTests {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (bridge, engine, budget) = try fixture(gate: gate)
-        await bridge.resetBootstrapCalibrationTest()
         #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
         try await waitForEntry(gate)
         let completed = RecoveryActivityAttempt()
@@ -132,7 +147,6 @@ struct ModelCalibrationTests {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (calibration, _, budget) = try fixture(gate: gate)
-        await calibration.resetBootstrapCalibrationTest()
         #expect(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false))
         try await waitForEntry(gate)
         let (foreground, engine, _) = try fixture(budget: budget)
@@ -180,8 +194,14 @@ struct ModelCalibrationTests {
 }
 
 private extension EngineV2Bridge {
+    func runContinuousCalibrationTest(budget: GlobalKVCacheBudget) async {
+        let task = budget.serviceBudget.idleCalibration.startIfIdle(isIdle: { budget.serviceBudget.isIdle }) {
+            await self.runModelCalibration(continuous: true, requireNominalPosture: false)
+        }
+        #expect(task != nil)
+        await task?.value
+    }
     func waitForCalibrationTest() async { await modelCalibration.task?.value }
-    func resetBootstrapCalibrationTest() { modelCalibration.bootstrapCompleted = false }
     func wasCalibrationInterruptedTest() -> Bool { modelCalibration.interrupted }
     func calibrationCountersTest() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]

@@ -3,15 +3,14 @@ import MLXLMCommon
 
 extension EngineV2Bridge {
     /// Called after slot publication and on capacity ticks, never on scan or
-    /// attestation. Ordinary native block engines bootstrap once per loaded
+    /// attestation. Ordinary autoregressive and native block engines bootstrap once per loaded
     /// configuration; native MiMo retains its periodic maintenance plan.
     @discardableResult
     func startModelCalibrationIfNeeded(requireNominalPosture: Bool = true,
         now: ContinuousClock.Instant = .now) -> Bool {
         let continuous = nativeTransactionID != nil
-        guard (continuous || ownedEngine is CBv2NativeBlockEngine),
-            supportsPrefillRecoveryRetirement, canSubmitWithNativeOwner(),
-            deadlineProfile == nil, !slotPostureClosed,
+        guard ownedEngine is EngineV2 || ownedEngine is CBv2NativeBlockEngine,
+            canSubmitWithNativeOwner(), !slotPostureClosed,
             continuous || !modelCalibration.bootstrapCompleted,
             !modelCalibration.closed, modelCalibration.task == nil, active.isEmpty, pendingSubmissionIDs.isEmpty,
             modelCalibration.nextAttempt.map({ now >= $0 }) ?? true,

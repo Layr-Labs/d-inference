@@ -782,9 +782,9 @@ extension EngineV2Bridge {
                     let submitted = try native.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
-                } else if let native = engine as? EngineV2,
-                    native.nativeShutdownExecutionContractID != nil {
-                    let submitted = try native.submitWithNativeRetirement(engineRequest)
+                } else if let autoregressive = engine as? EngineV2,
+                    autoregressive.nativeShutdownExecutionContractID != nil || modelCalibration.requests[id] != nil {
+                    let submitted = try autoregressive.submitWithRetirement(engineRequest)
                     events = submitted.events
                     nativeRetirement = submitted.retirement
                 } else {

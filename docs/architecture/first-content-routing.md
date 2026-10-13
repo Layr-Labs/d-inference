@@ -241,18 +241,20 @@ and neutral terminal causes do not contribute. Existing health-breaker
 classification remains unchanged: exploration eligibility is separate from
 provider health.
 
-### Native model startup calibration
+### Model startup calibration
 
 After native slot publication and on provider capacity ticks,
 `refreshModelCalibration` asks the loaded bridge to measure its actual serving
-configuration. Ordinary native block engines run one startup bootstrap per
+configuration. Ordinary `EngineV2` autoregressive engines (including dense and MoE Qwens) and
+`CBv2NativeBlockEngine` slots run one startup bootstrap per
 loaded engine: an excluded 128-token warmup followed by two cold, solo probes of
 at most 512 prompt tokens and 32 output tokens. This supplies actual prefill and
 decode evidence before customer traffic is needed to discover the model's speed.
 Interrupted or failed bootstraps retry with the existing bounded backoff; a
 completed bootstrap does not become periodic synthetic traffic. Native MiMo
 retains its longer bootstrap and periodic maintenance described below. Calibration runs only on an idle Mac in nominal thermal state
-outside Low Power Mode, with no reviewed deadline profile. The existing engine,
+outside Low Power Mode. Reviewed deadline profiles retain their existing
+posture and applicability checks; calibration does not replace those profiles. The existing engine,
 MTP configuration, context limit, memory gates and concurrency ceiling are used;
 calibration never certifies a higher concurrency or changes a memory floor.
 
@@ -277,6 +279,15 @@ request's original first-content clock continues during that wait. Expiry or
 cancellation at retirement records the ordinary deadline verdict before any
 service/KV admission. Unload and
 shutdown stop the calibration; no background task can retain retired weights.
+
+Ordinary autoregressive calibration uses `EngineV2.submitWithRetirement` from
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift`.
+It returns the actual submitted stream generation's ownership acknowledgement.
+The bridge keeps its shared service and KV reservations until that acknowledgement
+completes, including after an early watchdog terminal or a cancelled consumer.
+This enables ordinary Qwen slots without impersonating a managed MiMo transaction
+or weakening its native shutdown contract. Unsupported custom engine adapters
+remain ineligible until they expose a trustworthy retirement boundary.
 
 The one-token startup health check is explicitly marked `startupWarmup` by
 `ProviderLoop.runStartupSelfTestDecode`. The scheduler carries this local-only

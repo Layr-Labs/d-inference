@@ -1049,8 +1049,9 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 The startup health check exercises a one-token request through the serving
 adapter with `EngineMeasurementPurpose.startupWarmup`. That request warms first-use
 kernels and checks output, but its tiny prompt does not train model throughput.
-Each native block engine can then collect real solo prefill/decode measurements
+Each supported autoregressive or native block engine can then collect real solo
+prefill/decode measurements
 through the bounded, customer-preemptible
-[startup calibration](first-content-routing.md#native-model-startup-calibration).
+[startup calibration](first-content-routing.md#model-startup-calibration).
 The engine retains its memory, context, first-content deadline and actual
 retirement rules; calibration does not substitute hardware guesses for rates.

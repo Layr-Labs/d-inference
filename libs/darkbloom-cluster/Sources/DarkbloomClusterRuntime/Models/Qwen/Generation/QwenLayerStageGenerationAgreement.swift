@@ -59,6 +59,10 @@ struct QwenLayerStageGenerationAgreement {
                 throw ProbeError("Phase-split terms were derived for a different request")
             }
         }
+        // Only a phase split's decoding rank holds every layer, so only it can serve a request alone.
+        guard !request.decodingRankAlone || phaseSplit != nil else {
+            throw ProbeError("A request routed to the decoding rank alone needs a phase split: no rank holds every layer")
+        }
         guard speculativeHead == nil || (phaseSplit != nil && !compactDecode) else {
             throw ProbeError("A speculative head runs only on the decoding rank of a phase-split request")
         }

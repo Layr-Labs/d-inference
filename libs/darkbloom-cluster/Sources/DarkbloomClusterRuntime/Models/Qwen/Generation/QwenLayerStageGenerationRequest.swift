@@ -78,6 +78,9 @@ struct QwenLayerStageGenerationRequest: Equatable {
     /// after `promptCount - 1` tokens is an exact frame boundary both ranks
     /// can keep. Both ranks agree on this before the first forward.
     private(set) var splitsFinalPromptToken = false
+    /// The decoding rank serves this request alone (`ClusterWorkerRoute`):
+    /// bound into the fingerprint, so both ranks agree before the first forward.
+    let decodingRankAlone: Bool
     /// End offsets of the prefill frames, in order. Nil keeps the original
     /// fixed-chunk plan from offset zero.
     private var prefillFrameEnds: [Int]?
@@ -87,7 +90,7 @@ struct QwenLayerStageGenerationRequest: Equatable {
 
     init(profile: QwenLayerStageGenerationProfile, requestID: UUID, promptTokenIDs: [Int],
          chunkSize: Int, outputCount: Int, stopTokenIDs: Set<Int>,
-         sampling: ClusterWorkerSampling? = nil) throws {
+         sampling: ClusterWorkerSampling? = nil, route: ClusterWorkerRoute? = nil) throws {
         guard (1...profile.maximumPromptTokens).contains(promptTokenIDs.count),
               (1...profile.maximumChunkTokens).contains(chunkSize),
               (1...profile.maximumOutputTokens).contains(outputCount),
@@ -115,6 +118,9 @@ struct QwenLayerStageGenerationRequest: Equatable {
         ]
         // Both ranks agree on the sampling values; greedy requests keep their fingerprint.
         if let state = self.sampling { fields.append("sampling=" + state.fingerprint) }
+        // A request the pair serves as placed keeps its fingerprint.
+        decodingRankAlone = route == .decodingRankAlone
+        if let route { fields.append("route=" + route.rawValue) }
         fingerprint = sha256(Data(fields.joined(separator: "\n").utf8))
     }
 

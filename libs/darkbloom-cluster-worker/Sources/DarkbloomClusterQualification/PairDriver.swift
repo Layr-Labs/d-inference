@@ -398,7 +398,7 @@ public struct PairDriver: Sendable {
                     promptTokenIDs: current.promptTokenIDs, stopTokenIDs: current.stopTokenIDs,
                     outputCount: current.outputCount, chunkSize: current.chunkSize,
                     deadlineUptimeNanoseconds: requestDeadline, capacityLimitBytes: capacity,
-                    sampling: current.sampling?.wire))
+                    sampling: current.sampling?.wire, route: current.route.flatMap(ClusterWorkerRoute.init(rawValue:))))
             } catch ClusterWorkerOwnerError.refused(let why) {
                 // This request alone: refused up front (longer than the
                 // serving context) or by a rank's live gate and given back by

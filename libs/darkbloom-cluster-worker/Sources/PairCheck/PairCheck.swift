@@ -23,6 +23,7 @@ import Foundation
               (--model-dir /ABS/MODEL (--user-text-file FILE | --raw-text-file FILE) [--prompt-tokens N]
                | --synthetic-tokens N [--seed N] | --token-ids-file FILE)
               [--stop-token-ids A,B] [--request-id UUID] [--model-id REGISTERED_MODEL_ID (default: the tokenizer's model)]
+              [--route decoding_rank_alone (the phase split's decoding rank serves it alone; the planner's per-request route)]
               [--temperature F [--top-p F] [--top-k N] [--min-p F] --sampling-seed N [--sampling-stream N]
                (a sampled request: the decoding rank draws with the product's sampler, keyed on seed, stream and index)]
           darkbloom-cluster-pair-check run --request REQUEST.json --stage-cut CUT --report NEW-REPORT.json
@@ -116,7 +117,7 @@ import Foundation
         let fields = try parse(arguments, allowed: ["--output", "--chunk-size", "--output-count", "--model-dir",
             "--user-text-file", "--raw-text-file", "--prompt-tokens", "--synthetic-tokens", "--seed",
             "--token-ids-file", "--stop-token-ids", "--request-id", "--model-id",
-            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream"])
+            "--temperature", "--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream", "--route"])
         guard let output = fields["--output"]?.first, let chunk = try integer(fields, "--chunk-size"),
               let count = try integer(fields, "--output-count") else { throw Failure(usage) }
         let stops = try (fields["--stop-token-ids"]?.first ?? "").split(separator: ",").map { text -> Int in
@@ -193,8 +194,12 @@ import Foundation
         } else if ["--top-p", "--top-k", "--min-p", "--sampling-seed", "--sampling-stream"].contains(where: { fields[$0] != nil }) {
             throw Failure("Sampling options need --temperature")
         }
-        let value = try QualificationRequest(requestID: id, promptTokenIDs: tokens, chunkSize: chunk,
+        var value = try QualificationRequest(requestID: id, promptTokenIDs: tokens, chunkSize: chunk,
             outputCount: count, stopTokenIDs: stops, promptSource: source, modelID: modelID, sampling: sampling)
+        if let route = fields["--route"]?.first {
+            value.route = route
+            try value.validate()
+        }
         try QualificationFiles.writeNew(value.encoded(), to: URL(fileURLWithPath: output))
         print("request \(value.requestID) for \(value.modelID): \(tokens.count) prompt tokens, chunk \(chunk), \(count) outputs, prompt SHA-256 \(value.promptTokenIDsSHA256)"
             + (sampling.map { " sampled (temperature \($0.temperature), top-p \($0.topP), top-k \($0.topK), seed \($0.seed))" } ?? ""))

@@ -182,6 +182,9 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
     public var promptSource: QualificationPromptSource
     /// Nil (and absent from the file) for greedy text.
     public var sampling: QualificationSampling?
+    /// Nil (and absent from the file) for the pair as placed;
+    /// `decoding_rank_alone` routes it to the decoding rank alone (`ClusterWorkerRoute`).
+    public var route: String?
 
     public init(requestID: UUID, promptTokenIDs: [Int], chunkSize: Int, outputCount: Int,
                 stopTokenIDs: [Int], promptSource: QualificationPromptSource,
@@ -215,6 +218,7 @@ public struct QualificationRequest: Codable, Equatable, Sendable {
             && stopTokenIDs.allSatisfy { (0..<vocabulary).contains($0) }, "stop IDs must be sorted, unique and in the vocabulary")
         try require(promptTokenIDsSHA256 == QualificationHash.tokenIDs(promptTokenIDs), "prompt hash differs from the prompt")
         try require(["chatText", "rawText", "synthetic", "tokenIDs"].contains(promptSource.kind), "unknown prompt source")
+        try require(route == nil || route.flatMap(ClusterWorkerRoute.init(rawValue:)) != nil, "unknown route")
         if let sampling {
             let wire = sampling.wire
             try require([wire.temperature, wire.topP, wire.minP].allSatisfy(\.isFinite) && wire.isStochastic

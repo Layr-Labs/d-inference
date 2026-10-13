@@ -132,7 +132,17 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             var session: QwenLayerStageSession?
             let prefix: QwenStagePrefixSummary
             let agreement: QwenLayerStageGenerationAgreement
-            do {
+            // A request routed to the decoding rank alone reuses and keeps no
+            // prompt prefix: both ranks skip the prefix exchanges alike (the
+            // route is in the agreement both checked above).
+            let alone = unplannedAgreement.request.decodingRankAlone
+            if alone {
+                agreement = unplannedAgreement
+                session = try QwenLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
+                    hiddenTap: collective.rank == 1 ? decoder?.tap() : nil)
+                prefix = .init(reusedPromptTokens: 0, agreedPromptTokens: 0, splitFinalToken: false, storedFrontiers: [],
+                    cacheEntries: prefixCache?.count ?? 0)
+            } else {
                 let planned = try agreeQwenStagePrefixPlan(cache: prefixCache, loaded: loaded, plan: plan,
                     agreement: unplannedAgreement, collective: collective, hiddenTap: decoder?.tap(), check: checked)
                 agreement = planned.agreement; session = planned.session; prefix = planned.summary
@@ -185,7 +195,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             var producer: QwenGenerationLookaheadProducer?
             do {
                 let owned = session!
-                if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0 {
+                if agreement.prefillPolicy == .oneChunkLookahead, collective.rank == 0, !alone {
                     producer = try .init(request: agreement.request)
                 }
                 var selectedTokens = [Int]()
@@ -193,7 +203,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 // A phase-split request leaves this loop after its first agreed
                 // token and decision; a pipeline request runs it to the end.
                 let split = agreement.phaseSplit
-                while control.phase == .frame,
+                // A request the decoding rank serves alone runs no pair frame at all.
+                while control.phase == .frame, !alone,
                       split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()

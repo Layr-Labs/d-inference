@@ -160,7 +160,8 @@ struct QwenPhaseSplitRelayPacket {
         guard let split = agreement.phaseSplit, (1...split.terms.relayBatchTokens).contains(tokenIDs.count),
               payloadSHA256.count == tokenIDs.count, payloadSHA256.allSatisfy(qwenStageWireIsSHA256),
               qwenStageWireIsSHA256(handoffFingerprint), qwenStageWireIsSHA256(previousTokenChainSHA256),
-              firstOrdinal >= split.terms.handoffSelectedTokens, firstOrdinal <= request.outputCount - tokenIDs.count,
+              firstOrdinal >= (request.decodingRankAlone ? 0 : split.terms.handoffSelectedTokens),
+              firstOrdinal <= request.outputCount - tokenIDs.count,
               tokenIDs.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }),
               // A stop token ends the batch; nothing may follow it.
               !tokenIDs.dropLast().contains(where: request.stopTokenIDs.contains) else {
@@ -245,5 +246,58 @@ struct QwenPhaseSplitRelayDecisionPacket {
             selectedTokenCount: selected, tokenChainSHA256: chain, decision: decision)
         try QwenLayerStageGenerationWireJSON.requireExact(object, result.content)
         return result
+    }
+}
+
+/// A request the decoding rank serves alone: the residual digests of its
+/// prompt frames before the last, which rank 1 computed by itself. Rank 0
+/// takes them through the unchanged control state machine, so both ranks hold
+/// the same frames and history before the first relayed token. In batches of
+/// at most `payloadsPerPacket`, in frame order; rank 0 knows how many frames
+/// the prompt has.
+struct QwenAlonePromptPacket {
+    struct Content: Encodable, Equatable {
+        let schema = "qwen_stage_alone_prompt_v1"
+        let agreementFingerprint: String
+        let membershipEpoch: String
+        let requestFingerprint: String
+        let firstFrame: Int
+        let payloadSHA256: [String]
+    }
+    static let frameBytes = 8192
+    static let payloadsPerPacket = 96
+    let content: Content
+    let fingerprint: String
+
+    init(agreement: QwenLayerStageGenerationAgreement, firstFrame: Int, payloadSHA256: [String]) throws {
+        let request = agreement.request
+        guard request.decodingRankAlone, agreement.phaseSplit != nil,
+              (1...Self.payloadsPerPacket).contains(payloadSHA256.count), payloadSHA256.allSatisfy(qwenStageWireIsSHA256),
+              firstFrame >= 0, firstFrame + payloadSHA256.count <= request.prefillFrameCount - 1 else {
+            throw ProbeError("Alone-route prompt batch differs from the request's prompt frames")
+        }
+        content = .init(agreementFingerprint: agreement.fingerprint, membershipEpoch: agreement.descriptor.membershipEpoch,
+            requestFingerprint: request.fingerprint, firstFrame: firstFrame, payloadSHA256: payloadSHA256)
+        fingerprint = try qwenGenerationFingerprint("alone-prompt", content)
+    }
+
+    func encoded() throws -> Data {
+        let data = try canonicalJSONData(content)
+        guard data.count <= Self.frameBytes - QwenControlFrame.headerBytes else { throw ProbeError("Alone-route prompt batch exceeds its frame") }
+        return data
+    }
+
+    static func decode(_ data: Data, agreement: QwenLayerStageGenerationAgreement, firstFrame: Int) throws -> Self {
+        let object = try QwenLayerStageGenerationWireJSON.object(data, maximumBytes: frameBytes)
+        guard let digests = object["payloadSHA256"] as? [String] else { throw ProbeError("Alone-route prompt batch lists no frame") }
+        let result = try Self(agreement: agreement, firstFrame: firstFrame, payloadSHA256: digests)
+        try QwenLayerStageGenerationWireJSON.requireExact(object, result.content)
+        return result
+    }
+
+    /// What both ranks name the relay of a request served alone by, in place
+    /// of a hand-off header's fingerprint: there was no hand-off.
+    static func relayFingerprint(_ agreement: QwenLayerStageGenerationAgreement) -> String {
+        sha256(Data(("qwen-stage-alone-relay-v1|" + agreement.fingerprint).utf8))
     }
 }

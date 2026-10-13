@@ -51,6 +51,8 @@ struct MiMoResidentAdmission {
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
+        // No rank of this family holds every layer: every request uses the pair.
+        guard value.route == nil else { throw ProbeError("This family serves no request on one rank alone") }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
             sampling: value.sampling)

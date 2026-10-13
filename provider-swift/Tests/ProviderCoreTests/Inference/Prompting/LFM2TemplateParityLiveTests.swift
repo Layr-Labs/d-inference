@@ -120,9 +120,15 @@ final class LFM2TemplateParityLiveTests: XCTestCase {
         guard let modelPath = ProcessInfo.processInfo.environment["LFM2_TEMPLATE_MODEL_DIR"] else {
             throw XCTSkip("set LFM2_TEMPLATE_MODEL_DIR for the local artifact gate")
         }
+        let directory = URL(fileURLWithPath: modelPath, isDirectory: true)
         XCTAssertEqual(TemplateRenderCheck.renderOK(
-            at: URL(fileURLWithPath: modelPath, isDirectory: true),
-            modelID: "LiquidAI/LFM2.5-24B-A2B-MLX-4bit"), true)
+            at: directory, modelID: "LiquidAI/LFM2.5-24B-A2B-MLX-4bit"), true)
+        // Text-only: no media fixtures, no media advertisement, so image/video
+        // parts take the established mediaUnsupportedByModel rejection.
+        let config = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(
+            contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any])
+        XCTAssertEqual(config["model_type"] as? String, "lfm2_moe")
+        XCTAssertFalse(ModelMediaPolicy.advertisesMedia(config, modelID: "LiquidAI/LFM2.5-24B-A2B-MLX-4bit"))
     }
 }
 

@@ -43,10 +43,12 @@ public enum ClusterOrphanReaper {
     /// How long a leftover may still be unwinding by its own contract before
     /// the reaper signals it: the rank lease it may still hold, the longest
     /// time its owner waits for it (SIGTERM and SIGKILL margins), and the
-    /// forced exit's dead-man. Derived from the protocol's bounds, never
-    /// from a Mac or a model.
+    /// forced exit's dead-man with its one extension (a release whose writes
+    /// progress may run twice the bound). Derived from the protocol's bounds,
+    /// never from a Mac or a model. The contract starts when the leftover's
+    /// parent died, not when it started (see `sweepProcesses`).
     public static let contractGraceNanoseconds: UInt64 = ClusterWorkerLease.ttlNanoseconds
-        + ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + 20_000_000_000
+        + ClusterWorkerSignalPolicy.maximumAllowanceNanoseconds + ClusterForcedExitBounds.longestNanoseconds()
 
     public enum Role: String, Encodable, Sendable { case worker, owner }
 
@@ -221,7 +223,13 @@ public enum ClusterOrphanReaper {
     }
 
     /// Ends every candidate of `plan` as the contract allows and returns what
-    /// happened to each. `startedAt` is wall-clock seconds. Before every
+    /// happened to each. `startedAt` is wall-clock seconds and is the
+    /// candidate's identity only, never its age: a worker that served for an
+    /// hour and lost its owner a moment ago is starting its contract now.
+    /// The kernel keeps no time of a reparenting, and the parent died at the
+    /// latest when the sweep saw the orphan, so the grace runs from the
+    /// sweep's start, once for all candidates (handling them one after the
+    /// other never stretches it). Before every
     /// signal the number must still hold the planned process (same start
     /// time; oMLX `_sweep_rank_processes`: "identity changed; refusing to
     /// signal a reused PID"): the wait before a signal can be minutes, long
@@ -229,14 +237,11 @@ public enum ClusterOrphanReaper {
     /// candidate whose start is unknown is never signalled.
     public static func sweepProcesses(_ plan: Plan, limits: Limits = .init(), actions: Actions = .init()) -> [ProcessResult] {
         var results: [ProcessResult] = []
+        let graceSum = actions.now().addingReportingOverflow(limits.contractGraceNanoseconds)
+        let graceEnd = graceSum.overflow ? UInt64.max : graceSum.partialValue
         for candidate in plan.candidates {
             let begin = actions.now()
-            let elapsedSinceStart = candidate.startedAt.map { max(0.0, actions.wallClock() - $0) }
-            var remainingGrace: UInt64 = 0
-            if let elapsed = elapsedSinceStart {
-                let used = UInt64(min(elapsed, 1e9) * 1e9)
-                remainingGrace = used >= limits.contractGraceNanoseconds ? 0 : limits.contractGraceNanoseconds - used
-            }
+            let remainingGrace = graceEnd > begin ? graceEnd - begin : 0
             guard let planned = candidate.startedAt else {
                 results.append(.init(candidate: candidate, outcome: .unverified, waitedNanoseconds: 0)); continue
             }

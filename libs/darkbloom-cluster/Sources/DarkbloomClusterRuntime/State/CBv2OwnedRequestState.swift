@@ -396,6 +396,20 @@ final class CBv2OwnedRequestState {
             do { try evaluation.rollback() } catch { cleanupError = error }
         }
         evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil
+        if PagedLayerCache.engineTrace, pagedHost {
+            // Diagnosis only (cumulative per host cache): which paged paths served the request.
+            let paged: [PagedLayerCache] = geometry.caches.compactMap { $0 as? PagedLayerCache }
+            var multiQuery = 0, batched = 0, gathers = 0, mirrorChunks = 0
+            for cache in paged {
+                multiQuery += cache.mtpMultiQueryCalls; batched += cache.mtpBatchedAttentionCalls
+                gathers += cache.prefillHistoryGathers; mirrorChunks += cache.prefillMirrorChunks
+            }
+            let plan: String = paged.first?.segmentDispatchTrace ?? "-"
+            var line = "darkbloom-paged-engine-trace-v1 committed=\(committedTokens) layers=\(paged.count)"
+            line += " mq_windows=\(multiQuery) batched_windows=\(batched)"
+            line += " prefill_gathers=\(gathers) mirror_chunks=\(mirrorChunks) plan0=\(plan)"
+            log(line)
+        }
         bank.releaseBoundRows()
         releasedRows = rows.compactMap { $0 }
         backend.release(rows); rows.removeAll()

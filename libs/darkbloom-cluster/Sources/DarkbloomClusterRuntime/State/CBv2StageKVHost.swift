@@ -42,6 +42,14 @@ public enum ClusterStageKVBackendKind: String, Sendable, Equatable {
     /// and prefill chunks re-gather all earlier pages (first token 9.3 vs
     /// 7.1 s). `batchLanes` > 1 only occurs in pipeline mode, which has no
     /// head. Paged returns for MTP stages once both gaps close.
+    ///
+    /// 2026-10-13 (items 23-25: prefill mirror, multi-query verify kernel,
+    /// host frontier): still kept. The prefill gap is nearly closed (first
+    /// token within 1-5 %), but paged MTP decode stays 7-34 % below
+    /// contiguous on the pair (9B 30K 87 vs 104 tok/s, 27B 30K 30 vs 45).
+    /// The multi-query verify window costs ~2.5x the contiguous window's
+    /// attention (attention only, 9B geometry at 30K: 10.6 vs 4.2 ms per
+    /// 4 layers, 17.6 ms before item 24).
     public static func resolved(environment: [String: String], speculative: Bool, batchLanes: Int) throws -> Self {
         if let value = try Self.named(environment) { return value }
         return speculative && batchLanes <= 1 ? .contiguous : .paged
@@ -140,6 +148,13 @@ final class CBv2StageKVHost {
                 throw ProbeError("Paged KV backend is ineligible for this stage: \(error)")
             }
             let storage = paged.makeLayerCaches()
+            // Item 23: a one-request host's prompt chunks attend a transient
+            // contiguous mirror instead of re-gathering the history per chunk.
+            // The mirror is one more copy of the prefilling request's KV,
+            // which `perRequest` bounds; batch lanes keep the gather.
+            if lanes == 1 {
+                for cache in storage { cache.prefillMirrorAllowed = true }
+            }
             caches = try compact { layer, _ in
                 guard let index = storageForModelLayer[layer], storage.indices.contains(index) else {
                     throw ProbeError("Paged cache storage mapping misses model layer \(layer)")

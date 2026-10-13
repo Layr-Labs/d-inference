@@ -35,16 +35,17 @@ struct CBv2PagedEngineGapTests {
         host.caches.compactMap { $0 as? PagedLayerCache }
     }
 
-    static func host(_ model: Qwen35TextModel, _ kind: ClusterStageKVBackendKind) throws -> CBv2StageKVHost {
-        try CBv2StageKVHost(model: model, kind: kind, lanes: 1, maximumTokensPerRequest: 64,
+    static func host(_ model: Qwen35TextModel, _ kind: ClusterStageKVBackendKind, lanes: Int = 1) throws
+        -> CBv2StageKVHost {
+        try CBv2StageKVHost(model: model, kind: kind, lanes: lanes, maximumTokensPerRequest: 64,
             maximumChunkTokens: Synthetic.chunk)
     }
 
     /// Prompt, then a greedy one-token step; the tokens and, on paged, what
     /// the prompt cost in history gathers.
-    static func promptAndStep(_ model: Qwen35TextModel, _ kind: ClusterStageKVBackendKind) throws
+    static func promptAndStep(_ model: Qwen35TextModel, _ kind: ClusterStageKVBackendKind, lanes: Int = 1) throws
         -> (tokens: [Int], gathers: Int, mirrorChunks: Int, mirrorBytesAfterPrompt: Int, mirrorBytesAfterStep: Int) {
-        let host = try Self.host(model, kind)
+        let host = try Self.host(model, kind, lanes: lanes)
         let state = try CBv2OwnedRequestState(geometry: Synthetic.geometry(model, host: host),
             promptCount: prompt.count, outputCount: 16)
         let next = Synthetic.argmax(try Synthetic.prefill(model, state, prompt))
@@ -70,6 +71,18 @@ struct CBv2PagedEngineGapTests {
         #expect(paged.mirrorBytesAfterPrompt > 0)
         #expect(paged.mirrorBytesAfterStep == 0, "the prefill mirror outlived the prompt")
         #expect(paged.tokens == contiguous.tokens, "paged prompt tokens differ from contiguous")
+    }
+
+    /// The mirror is transient memory the pool does not charge, so only the
+    /// one-request host (whose per-request budget bounds it) opts in; a
+    /// batch-lane host keeps the gather, with the same tokens.
+    @Test func batchLaneHostKeepsTheGatherAndMatchesContiguous() throws {
+        let model = try Synthetic.model()
+        let paged = try Self.promptAndStep(model, .paged, lanes: 2)
+        let contiguous = try Self.promptAndStep(model, .contiguous, lanes: 2)
+        #expect(paged.mirrorChunks == 0, "a batch-lane host used the uncharged prefill mirror")
+        #expect(paged.gathers > 0)
+        #expect(paged.tokens == contiguous.tokens, "batch-lane paged prompt tokens differ from contiguous")
     }
 
     @Test func pagedVerifyWindowReadsTheContextOncePerWindow() throws {

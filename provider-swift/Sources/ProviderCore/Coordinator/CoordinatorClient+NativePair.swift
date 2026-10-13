@@ -27,9 +27,17 @@ extension CoordinatorClient {
         adoptNativePairMember(control)
     }
 
-    /// Makes `control` this client's member control.
+    /// Makes `control` this client's member control. A change of its session's
+    /// report (its owner launched; its worker published the data plane's
+    /// protection) goes to the coordinator in a heartbeat at once: a re-formed
+    /// cluster is refused public requests until every member reported its
+    /// session encrypted and peer-verified, and the periodic interval left it
+    /// refused for up to a whole interval (integration round 4, finding 1).
     internal func adoptNativePairMember(_ control: NativePairMemberControl) {
         nativePairMember = control
+        control.sessionStatusChanged = { [weak self] _ in
+            Task { await self?.sendEventHeartbeat() }
+        }
     }
 
     /// Called at this connection's member acceptance. The connection was built

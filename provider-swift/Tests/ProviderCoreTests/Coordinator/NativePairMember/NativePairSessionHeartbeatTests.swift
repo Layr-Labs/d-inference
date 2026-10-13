@@ -38,21 +38,27 @@ struct NativePairSessionHeartbeatTests {
         } catch { await peer.close(); throw error }
     }
 
-    /// The watch reports each change of the session's report once, and stops
-    /// once the session is no longer the control's current one.
-    @Test func theWatchReportsEachChangeOnceAndStopsWithItsSession() async throws {
-        let reports = NativePairSessionReports()
-        let values: [ClusterSessionStatus?] = [nil, nil,
-            .init(epoch: "00112233445566778899aabbccddeeff", generation: 3, encryptedDataPlane: false, peerVerified: false),
-            .init(epoch: "00112233445566778899aabbccddeeff", generation: 3, encryptedDataPlane: false, peerVerified: false),
-            .init(epoch: "00112233445566778899aabbccddeeff", generation: 3, encryptedDataPlane: true, peerVerified: true),
-            .init(epoch: "00112233445566778899aabbccddeeff", generation: 3, encryptedDataPlane: true, peerVerified: true)]
-        let source = NativePairSessionReports.Source(values)
-        NativePairSessionStatusWatch.start(pollMilliseconds: 2, current: { source.current }, live: { source.live },
+    /// The watch reports each change of the session's report once, stops at
+    /// the final report (encrypted and verified), and stops with its session.
+    @Test func theWatchReportsEachChangeOnceAndStopsAtTheFinalReportOrWithItsSession() async throws {
+        let epoch = "00112233445566778899aabbccddeeff"
+        let plain = ClusterSessionStatus(epoch: epoch, generation: 3, encryptedDataPlane: false, peerVerified: false)
+        let keyed = ClusterSessionStatus(epoch: epoch, generation: 3, encryptedDataPlane: true, peerVerified: true)
+        // Formation: nothing, the owner launched, readiness keyed the data plane; then nothing more is read.
+        let reports = NativePairSessionReports(), source = NativePairSessionReports.Source([nil, nil, plain, plain, keyed, keyed, keyed])
+        NativePairSessionStatusWatch.start(pollMilliseconds: 2, current: { source.current }, live: { true },
                                            changed: { reports.record($0) })
-        try await memberFixtureWaitUntil { !source.live }
+        try await memberFixtureWaitUntil { reports.values.count == 2 }
         try await Task.sleep(for: .milliseconds(50))
-        #expect(reports.values.map(\.encryptedDataPlane) == [false, true])
+        #expect(reports.values == [plain, keyed])
+        #expect(source.reads == 5, "the watch stops reading at the final report")
+        // A session that ends before its data plane is keyed: its one report, then nothing.
+        let ended = NativePairSessionReports(), short = NativePairSessionReports.Source([nil, plain, plain])
+        NativePairSessionStatusWatch.start(pollMilliseconds: 2, current: { short.current }, live: { short.live },
+                                           changed: { ended.record($0) })
+        try await memberFixtureWaitUntil { !short.live }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(ended.values == [plain])
     }
 }
 
@@ -67,11 +73,13 @@ final class NativePairSessionReports: @unchecked Sendable {
         private let lock = NSLock()
         private var remaining: [ClusterSessionStatus?]
         private var last: ClusterSessionStatus?
+        private var count = 0
         init(_ values: [ClusterSessionStatus?]) { remaining = values }
         /// Each read takes the next value; past the end the session has ended.
         var current: ClusterSessionStatus? {
-            lock.withLock { if !remaining.isEmpty { last = remaining.removeFirst() }; return last }
+            lock.withLock { count += 1; if !remaining.isEmpty { last = remaining.removeFirst() }; return last }
         }
         var live: Bool { lock.withLock { !remaining.isEmpty } }
+        var reads: Int { lock.withLock { count } }
     }
 }

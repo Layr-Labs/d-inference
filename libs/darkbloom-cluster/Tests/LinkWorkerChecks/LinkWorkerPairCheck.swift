@@ -139,7 +139,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let follower = URL(fileURLWithPath: CommandLine.arguments[1]), owner = URL(fileURLWithPath: CommandLine.arguments[2])
         let worker = CommandLine.arguments[3]
         var passed = 0
-        try codec(); passed += 1; print("PASS codec: no host uptime crosses, closed fields")
+        try codec(); passed += 1; print("PASS codec: no host uptime crosses, a sampled reservation keeps its sampling, closed fields")
         try served(follower, owner, worker, profile: "prelude"); passed += 1
         try served(follower, owner, worker, profile: "mesh2"); passed += 1
         try served(follower, owner, worker, profile: "none"); passed += 1
@@ -221,6 +221,21 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
             && r.promptTokenIDs == [7, 8, 9], "Reservation not rebased on the receiver's clock")
         try rejects { _ = try ClusterLinkWorkerWire.command(reserve, requestID: request, epoch: epoch, session: session, sequence: 3,
             now: 9_500, deliveryDeadline: 9_600) }
+        // A sampled reservation reaches the follower's rank with its sampling:
+        // both ranks get it (the selecting rank draws with it). Dropped on the
+        // link, the follower ran the request greedy and the ranks disagreed at
+        // the first token, which ended the pair (RC blocker: any sampled request).
+        let sampling = ClusterWorkerSampling(temperature: 0.7, topP: 0.9, topK: 0, minP: 0, repetitionPenalty: 1,
+            repetitionContextSize: 0, frequencyPenalty: 0, presencePenalty: 0, seed: 7, stream: 11,
+            logitBias: [.init(tokenID: 3, bias: -1)])
+        let sampled = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: sampling))
+        let sampledLocal = try ClusterLinkWorkerWire.decode(try ClusterLinkWorkerWire.command(sampled, requestID: request, epoch: epoch,
+            session: session, sequence: 4, now: 8_000, deliveryDeadline: 8_200).encoded()).localCommand(now: 50_000)
+        guard case .reserve(let s) = sampledLocal.command else { throw ClusterOwnerStateError.invalid("Sampled reserve lost") }
+        try require(s.sampling == sampling && s.deadlineUptimeNanoseconds == 51_000,
+            "A sampled reservation lost its sampling on the link: \(String(describing: s.sampling))")
+        try require(r.sampling == nil, "A greedy reservation gained sampling on the link")
         // Closed fields per kind.
         var renew = ClusterLinkWorkerWire(kind: .renew, epoch: epoch, session: session, sequence: 1)
         try rejects { _ = try renew.encoded() }

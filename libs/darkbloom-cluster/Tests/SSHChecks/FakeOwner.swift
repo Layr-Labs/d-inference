@@ -15,6 +15,12 @@ import DarkbloomClusterSecurity
         let parts = CommandLine.arguments[4].split(separator: "+").map(String.init)
         let options = Set(parts.dropLast()), behavior = parts.last ?? ""
         if behavior == "transport-exit" { return }
+        if options.contains("refuse-launch") {
+            // An owner that refuses its launch with its own reason (as a memory
+            // gate does) and exits with status 1, before any worker starts.
+            FileHandle.standardError.write(Data("fixture owner: the memory gate refused this load\u{1b}[0m\n".utf8))
+            exit(1)
+        }
         if behavior == "inflight-round" {
             let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: STDOUT_FILENO, readingCommands: true)
             let deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000

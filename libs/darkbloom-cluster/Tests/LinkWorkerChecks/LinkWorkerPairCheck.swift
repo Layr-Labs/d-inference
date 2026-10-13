@@ -149,6 +149,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try refusedOpen(follower, owner, worker); passed += 1
         try fenceNamesItsCause(follower, owner, worker); passed += 1
         try proofCeilingEndsTheWait(follower, owner, worker); passed += 1
+        try followerOwnerEndNamed(follower, owner, worker); passed += 1
         print("link-worker: \(passed) groups passed (two processes over loopback; not a hardware pass)")
     }
 
@@ -203,6 +204,32 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let status = try harness.finish()
         try require(status == 0, "Follower exit \(status): \(harness.reports)")
         print(String(format: "PASS the proof ceiling ends the leader's wait with the link down: %.1f s (grant 3 s, allowance 1 s)", elapsed))
+    }
+
+    /// The follower's owner refuses its launch (its memory gate, say) and
+    /// exits with status 1: the follower's report and the leader's endpoint
+    /// both name how it ended and the owner's own last line (S24), not only
+    /// "follower endpoint closed".
+    static func followerOwnerEndNamed(_ follower: URL, _ owner: URL, _ worker: String) throws {
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "refuse-launch+normal")
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
+        let second = try harness.linkEndpoint(relay: nil)
+        var started = true
+        do { _ = try ClusterWorkerPair(workers: [first, second], startupDeadline: now() + 6_000_000_000) } catch { started = false }
+        try require(!started, "A pair formed with a follower whose owner refused its launch")
+        first.requestNativeCleanup()
+        let named = "its owner exited with status 1: fixture owner: the memory gate refused this load"
+        try require(wait(seconds: 10) { harness.reports.contains { $0.contains("fenced follower endpoint closed: " + named) } },
+            "The follower's report does not name its owner's end: \(harness.reports)")
+        try require(wait(seconds: 10) { second.followerReport?.contains(named) == true },
+            "The leader was not told how the follower's owner ended: \(second.followerReport ?? "nothing") / \(second.diagnosticSummary)")
+        try require(second.followerReport?.contains("\u{1b}") == false, "A control character crossed the link")
+        try require(second.diagnosticSummary.contains("the follower said: " + named), "The leader's summary omits it: \(second.diagnosticSummary)")
+        _ = second.waitForOwnerReleased(deadline: now() + 10_000_000_000)
+        let status = try harness.finish()
+        try require(status == 0, "Follower exit \(status)")
+        print("PASS a follower owner that refuses its launch is named on both Macs: \(named)")
     }
 
     static func codec() throws {

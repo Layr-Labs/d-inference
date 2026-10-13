@@ -282,6 +282,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     private var releasedCleanly = false
     private var accepted = false
     private var refusal: String?
+    /// What the follower last said about its own endpoint (S24): why it was
+    /// invalidated, or how its owner ended without its worker's cleanup.
+    private var followerDetail: String?
     private var ready: ClusterWorkerReady?
     private var terminationValue: ClusterWorkerProcessTermination?
     private var incoming: [ClusterWorkerEventFrame] = []
@@ -323,11 +326,14 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                 + (fenceReason.map { " (\($0))" } ?? "") + "; cleanup proof \(cleanup ? "received" : "missing")"
                 + "; release proof \(released ? (releasedCleanly ? "received" : "received without the owner's proof") : "missing")"
                 + "; refused follower messages \(refusedWires)" + (lastRefusedWire.map { " (last: \($0))" } ?? "")
+                + (followerDetail.map { "; the follower said: \($0)" } ?? "")
                 + (proofCeilingPassed ? "; the follower's proof ceiling passed" : "")
         }
     }
     /// Why the follower refused the open, if it did.
     public var refusalReason: String? { lock.withLock { refusal } }
+    /// What the follower said about its own endpoint, if anything (S24).
+    public var followerReport: String? { lock.withLock { followerDetail } }
     public var renewals: UInt64 { lock.withLock { renewalsSent } }
 
     /// Opens the session at once: the follower launches its owner when the
@@ -530,7 +536,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     complete = true; endOwner = true; invalidate = true
                 case .invalidated:
                     guard accepted else { throw ClusterLinkWorkerError.invalid("Invalidation before acceptance") }
-                    invalidate = true
+                    followerDetail = wire.detail; invalidate = true
                 case .event:
                     guard accepted, !cleanup, let payload = wire.worker else { throw ClusterLinkWorkerError.invalid("Event outside the session") }
                     let event = try ClusterWorkerCodec.decodeEvent(payload)
@@ -844,6 +850,36 @@ private final class ServerSession: @unchecked Sendable {
         endpoint?.requestNativeCleanup()
     }
 
+    /// How this session's owner ended without its worker's cleanup proof, with
+    /// the last line it wrote (bounded, control characters removed): e.g. a
+    /// load its memory gate refused. Nil while the owner runs (after waiting
+    /// up to `nanoseconds` for it to end) or when its cleanup was proven.
+    static func ownerCause(_ endpoint: ClusterRemoteWorkerEndpoint, waitingUpTo nanoseconds: UInt64) -> String? {
+        let until = DispatchTime.now().uptimeNanoseconds + nanoseconds
+        while endpoint.ownerTermination == nil && DispatchTime.now().uptimeNanoseconds < until { Thread.sleep(forTimeInterval: 0.01) }
+        guard let termination = endpoint.ownerTermination, !endpoint.nativeCleanupObserved else { return nil }
+        // Its exit is recorded just before its last output is drained (itself
+        // bounded at two seconds): wait for that, no longer.
+        let drained = DispatchTime.now().uptimeNanoseconds + 2_500_000_000
+        while !endpoint.diagnosticDrainComplete && DispatchTime.now().uptimeNanoseconds < drained { Thread.sleep(forTimeInterval: 0.01) }
+        let words = String(decoding: endpoint.diagnosticTail, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map { String($0.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) }) }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last(where: { !$0.isEmpty })
+        return "its owner \(ClusterRemoteWorkerEndpoint.describe(termination))" + (words.map { ": " + String($0.prefix(160)) } ?? "")
+    }
+
+    /// At most `bytes` UTF-8 bytes, cut at a character boundary.
+    static func bounded(_ text: String, bytes: Int) -> String {
+        var result = ""
+        for character in text {
+            guard result.utf8.count + String(character).utf8.count <= bytes else { break }
+            result.append(character)
+        }
+        return result
+    }
+
     private func localInvalidated() {
         let cleanup = lock.withLock { endpoint?.nativeCleanupObserved ?? false }
         if !cleanup { send({ $0.detail = "follower endpoint invalidated" }, kind: .invalidated) }
@@ -875,6 +911,12 @@ private final class ServerSession: @unchecked Sendable {
         if endpoint.nativeCleanupObserved {
             send({ _ in }, kind: .cleanup)
             server.emit(.cleanup(session: id))
+        } else if let cause = Self.ownerCause(endpoint, waitingUpTo: 0) {
+            // How the owner ended, in its own words (S24): this Mac's report
+            // (once more if the first fence could not say it yet) and the
+            // leader's incident, not only "rank 1 ended".
+            server.emit(.fenced(session: id, reason: "follower endpoint closed: " + cause))
+            send({ $0.detail = Self.bounded(cause, bytes: 250) }, kind: .invalidated)
         }
         let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
         let cleanly = endpoint.waitForOwnerReleased(deadline: deadline)

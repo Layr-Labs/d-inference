@@ -168,6 +168,11 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         if let link = endpoint as? ClusterLinkWorkerEndpoint, let reason = link.refusalReason {
             return "rank \(endpoint.rank) follower refused the open: \(reason.isEmpty ? "no reason given" : String(reason.prefix(512)))"
         }
+        // How the follower's own owner ended, in its words (e.g. its memory
+        // gate refused the load), not only that its endpoint closed.
+        if let link = endpoint as? ClusterLinkWorkerEndpoint, let report = link.followerReport {
+            return "rank \(endpoint.rank) follower: \(String(report.prefix(512)))"
+        }
         return nil
     }
 

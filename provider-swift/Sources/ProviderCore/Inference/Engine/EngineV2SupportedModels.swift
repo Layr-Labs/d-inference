@@ -65,6 +65,19 @@ public enum EngineV2SupportedModels {
         }
     }
 
+    /// The official Liquid MLX artifact and its stable catalog id. Other
+    /// `lfm2_moe` checkpoints (for example LFM2.5-8B-A1B) share the
+    /// model_type but carry no onboarding evidence, so they are not admitted.
+    public static let lfm25_24bA2BModelID = "LiquidAI/LFM2.5-24B-A2B-MLX-4bit"
+    public static let lfm25_24bA2BRegistryModelID = "lfm2.5-24b-a2b"
+
+    public static func isLFM25ListingModelID(_ modelID: String?) -> Bool {
+        switch modelID {
+        case lfm25_24bA2BModelID, lfm25_24bA2BRegistryModelID: return true
+        default: return false
+        }
+    }
+
     /// Exact owned private candidate ID, not a family-name or substring grant.
     /// Loaded artifact/capability checks still apply to paging and prefix reuse.
     public static func isQwen4ExpListingModelID(_ modelID: String?) -> Bool {

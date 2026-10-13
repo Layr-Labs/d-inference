@@ -47,6 +47,7 @@ extension PrefixCachePolicy {
                     || key.hasPrefix("DARKBLOOM_QWEN_") || key.hasPrefix("DARKBLOOM_MTP_")
                     || key.hasPrefix("DARKBLOOM_QWEN4_")
                     || key.hasPrefix("DARKBLOOM_NEMOTRON35_")
+                    || key.hasPrefix("DARKBLOOM_LFM2_")
                     || key.hasPrefix("DARKBLOOM_GPTOSS_") || key.hasPrefix("DARKBLOOM_GEMMA4_")
                     || key.hasPrefix("DARKBLOOM_DIFFUSION_") {
                 numerics[scope + "." + key] = value

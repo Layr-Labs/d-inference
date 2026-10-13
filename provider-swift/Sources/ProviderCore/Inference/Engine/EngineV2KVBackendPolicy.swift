@@ -31,6 +31,7 @@ public enum EngineV2KVBackendPolicy {
         case .auto:
             if EngineV2SupportedModels.isBonsai2ListingModelID(modelID) { return .paged }
             if EngineV2SupportedModels.isNemotron35ListingModelID(modelID) { return .paged }
+            if EngineV2SupportedModels.isLFM25ListingModelID(modelID) { return .paged }
             if EngineV2SupportedModels.isQwen4ExpListingModelID(modelID) { return .paged }
             switch modelID {
             case "Qwen3.5-9B", "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",

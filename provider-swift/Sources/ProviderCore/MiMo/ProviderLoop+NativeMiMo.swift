@@ -400,7 +400,7 @@ extension ProviderLoop {
         for waiter in loadingWaiters.removeValue(forKey: modelID) ?? [] { waiter.resume() }
         releaseLoadGateWaiters()
         await retryReserveDeferredPrefetches()
-        await refreshMimoCalibration()
+        await refreshModelCalibration()
     }
 
     func finishNativeMiMoLoadFailure(modelID: String, load: MiMoV26ServingLoad, error: Error) async {

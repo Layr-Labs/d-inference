@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 ## Provider endpoint resumption and logout
 
@@ -4868,3 +4868,15 @@ scrubbing, so every memory-backed personal-data rule has observed coverage.
 The scanner regressions also verify numbered source reconstruction, annotation
 capacity, original citation coordinates, and that final-reviewer uncertainty cannot
 grant conditional merge clearance.
+
+### Startup performance recovery regression
+
+`StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and
+bridge with deterministic engine receipts: a one-token startup warmup must not
+seed a slow deadline/heartbeat rate, and overlapping customer work must remain
+measurable. `ModelCalibrationTests` exercises bounded native bootstrap, customer
+preemption and actual retirement without customer traffic or model weights.
+`ModelCalibrationPolicyTests` keeps the native MiMo sweep and smaller ordinary
+startup bounds explicit. Run these together with `EngineV2PrefillSamplingTests`
+and `PrefillEvidenceRecoveryTests` using the provider test runner. Synthetic
+timings prove state transitions, not real GPU throughput or fleet recovery.

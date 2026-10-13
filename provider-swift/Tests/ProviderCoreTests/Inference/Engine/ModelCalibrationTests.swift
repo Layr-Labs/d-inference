@@ -3,18 +3,18 @@ import MLXLMCommon
 import Testing
 @testable import ProviderCore
 
-@Suite("Automatic MiMo calibration", .serialized)
-struct MimoCalibrationTests {
+@Suite("Automatic model calibration", .serialized)
+struct ModelCalibrationTests {
     private func fixture(budget: GlobalKVCacheBudget? = nil, gate: RecoveryStepGate? = nil)
         throws -> (EngineV2Bridge, CBv2NativeBlockEngine, GlobalKVCacheBudget) {
-        let tokenizer = MimoCalibrationTokenizer()
+        let tokenizer = ModelCalibrationTokenizer()
         let budget = budget ?? GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
         }
         let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 4, shutdownGraceSeconds: 0,
             reservationForRequest: { _ in 1_024 }, makeSession: { request, cancellation in
-                MimoCalibrationSession(request: request, cancellation: cancellation, gate: gate)
+                ModelCalibrationSession(request: request, cancellation: cancellation, gate: gate)
             })
         let bridge = EngineV2Bridge(engine: engine, modelId: "mimo-calibration-fixture",
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [], maxConcurrentRequests: 4,
@@ -34,18 +34,30 @@ struct MimoCalibrationTests {
     @Test("startup measurements seed heartbeats without billing/generation totals or warmup samples")
     func bootstrapUsesActualEngineReceipts() async throws {
         let (bridge, engine, budget) = try fixture()
-        #expect(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false))
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
         await bridge.waitForCalibrationTest()
         let snapshot = await bridge.backendSlotCapacity()
         let measurements = try #require(snapshot.performanceMeasurements)
-        #expect(measurements.isolatedPrefill?.sampleCount == 5)
-        #expect(measurements.decode?.sampleCount == 5)
-        #expect(measurements.workloadBuckets.contains { $0.phase == "prefill" && $0.promptTokenBucket == 4_096 })
-        #expect(measurements.workloadBuckets.contains { $0.phase == "decode" && $0.concurrentRequests == 4 })
+        #expect(measurements.isolatedPrefill?.sampleCount == 2)
+        #expect(measurements.decode?.sampleCount == 2)
+        #expect(measurements.workloadBuckets.contains { $0.phase == "prefill" && $0.promptTokenBucket == 512 })
+        #expect(measurements.workloadBuckets.allSatisfy { $0.concurrentRequests == 1 })
         #expect(measurements.deliveredDecode == nil && measurements.endToEnd == nil)
         #expect(await bridge.calibrationCountersTest() == [0, 0, 0, 0])
         #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
-        #expect(!(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false)))
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false,
+            now: .now + .seconds(3_600))), "ordinary native models bootstrap once per loaded engine")
+        await bridge.shutdown()
+    }
+
+    @Test("legacy engines without native retirement never start background calibration")
+    func legacyEngineIsExcluded() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = EngineV2Bridge(engine: engine, modelId: "legacy-fixture",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [])
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
+        #expect(engine.ordinarySubmissionCount == 0)
         await bridge.shutdown()
     }
 
@@ -54,10 +66,10 @@ struct MimoCalibrationTests {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (calibration, engine, budget) = try fixture(gate: gate)
-        await calibration.useMaintenanceCalibrationTest()
-        #expect(await calibration.startMimoCalibrationIfNeeded(requireNativeMiMo: false))
+        await calibration.resetBootstrapCalibrationTest()
+        #expect(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false))
         try await waitForEntry(gate)
-        await calibration.interruptMimoCalibration(["calibration-already-retired"])
+        await calibration.interruptModelCalibration(["calibration-already-retired"])
         #expect(!(await calibration.wasCalibrationInterruptedTest()))
         let (foreground, _, _) = try fixture(budget: budget)
         let observed = RecoveryActivityAttempt()
@@ -81,17 +93,16 @@ struct MimoCalibrationTests {
         await foreground.shutdown()
     }
 
-    @Test("busy Macs and unrelated native engines do not run the MiMo bootstrap")
+    @Test("native model startup calibration respects active work and shutdown")
     func admissionAndLifecycleBounds() async throws {
         let (bridge, _, budget) = try fixture()
-        #expect(!(await bridge.startMimoCalibrationIfNeeded()))
         #expect(budget.serviceBudget.acquire(ownerID: "busy", concurrency: 24))
-        #expect(!(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false)))
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
         budget.serviceBudget.release(ownerID: "busy")
-        await bridge.useMaintenanceCalibrationTest()
-        #expect(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false))
-        await bridge.stopMimoCalibration()
-        #expect(!(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false)))
+        await bridge.resetBootstrapCalibrationTest()
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
+        await bridge.stopModelCalibration()
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
         #expect(budget.serviceBudget.count == 0)
         await bridge.shutdown()
     }
@@ -101,8 +112,8 @@ struct MimoCalibrationTests {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (bridge, engine, budget) = try fixture(gate: gate)
-        await bridge.useMaintenanceCalibrationTest()
-        #expect(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false))
+        await bridge.resetBootstrapCalibrationTest()
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
         try await waitForEntry(gate)
         let completed = RecoveryActivityAttempt()
         let shutdown = Task { await bridge.shutdown(); completed.markStarted() }
@@ -113,7 +124,7 @@ struct MimoCalibrationTests {
         await shutdown.value
         #expect(completed.started && budget.serviceBudget.count == 0)
         #expect(await bridge.calibrationCountersTest() == [0, 0, 0, 0])
-        #expect(!(await bridge.startMimoCalibrationIfNeeded(requireNativeMiMo: false)))
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
     }
 
     @Test("calibration retirement preserves the original deadline and cancellation diagnostics", arguments: [false, true])
@@ -121,8 +132,8 @@ struct MimoCalibrationTests {
         let gate = RecoveryStepGate()
         defer { gate.release() }
         let (calibration, _, budget) = try fixture(gate: gate)
-        await calibration.useMaintenanceCalibrationTest()
-        #expect(await calibration.startMimoCalibrationIfNeeded(requireNativeMiMo: false))
+        await calibration.resetBootstrapCalibrationTest()
+        #expect(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false))
         try await waitForEntry(gate)
         let (foreground, engine, _) = try fixture(budget: budget)
         let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10)
@@ -160,7 +171,7 @@ struct MimoCalibrationTests {
     func completeTemplates() async throws {
         let (bridge, _, _) = try fixture()
         for target in [128, 512, 4_096] {
-            let tokens = try await bridge.mimoCalibrationPrompt(targetTokens: target, variant: 1)
+            let tokens = try await bridge.modelCalibrationPrompt(targetTokens: target, variant: 1)
             #expect(tokens.count <= target && tokens.count > target / 2)
             #expect(tokens.first == 1 && tokens.last == 2)
         }
@@ -169,9 +180,9 @@ struct MimoCalibrationTests {
 }
 
 private extension EngineV2Bridge {
-    func waitForCalibrationTest() async { await mimoCalibration.task?.value }
-    func useMaintenanceCalibrationTest() { mimoCalibration.bootstrapCompleted = true }
-    func wasCalibrationInterruptedTest() -> Bool { mimoCalibration.interrupted }
+    func waitForCalibrationTest() async { await modelCalibration.task?.value }
+    func resetBootstrapCalibrationTest() { modelCalibration.bootstrapCompleted = false }
+    func wasCalibrationInterruptedTest() -> Bool { modelCalibration.interrupted }
     func calibrationCountersTest() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
     }

@@ -1,30 +1,30 @@
 import Foundation
 
 extension EngineV2Bridge {
-    func runMimoCalibrationCell(_ cell: MimoCalibrationPolicy.Cell, tokens: [Int]) async -> Bool {
+    func runModelCalibrationCell(_ cell: ModelCalibrationPolicy.Cell, tokens: [Int]) async -> Bool {
         let ids = (0..<cell.width).map { _ in "calibration-" + UUID().uuidString }
-        for id in ids { mimoCalibration.requests[id] = cell }
+        for id in ids { modelCalibration.requests[id] = cell }
         let timer = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: UInt64(MimoCalibrationPolicy.maximumGroupSeconds * 1_000_000_000)) }
+            do { try await Task.sleep(nanoseconds: UInt64(ModelCalibrationPolicy.maximumGroupSeconds * 1_000_000_000)) }
             catch { return }
-            await self?.interruptMimoCalibration(ids)
+            await self?.interruptModelCalibration(ids)
         }
-        defer { timer.cancel(); for id in ids { mimoCalibration.requests.removeValue(forKey: id) } }
+        defer { timer.cancel(); for id in ids { modelCalibration.requests.removeValue(forKey: id) } }
         return await withTaskCancellationHandler {
             await withTaskGroup(of: Bool.self) { group in
                 for id in ids {
-                    group.addTask { await self.runMimoCalibrationRequest(id, cell: cell, tokens: tokens) }
+                    group.addTask { await self.runModelCalibrationRequest(id, cell: cell, tokens: tokens) }
                 }
                 var success = true
                 for await result in group { success = success && result }
-                return success && !Task.isCancelled && !mimoCalibration.interrupted
+                return success && !Task.isCancelled && !modelCalibration.interrupted
             }
         } onCancel: {
-            Task { await self.interruptMimoCalibration(ids) }
+            Task { await self.interruptModelCalibration(ids) }
         }
     }
 
-    private func runMimoCalibrationRequest(_ id: String, cell: MimoCalibrationPolicy.Cell,
+    private func runModelCalibrationRequest(_ id: String, cell: ModelCalibrationPolicy.Cell,
         tokens: [Int]) async -> Bool {
         guard !Task.isCancelled else { return false }
         let request = ChatCompletionRequest(model: modelId, messages: [], temperature: 0,
@@ -48,11 +48,11 @@ extension EngineV2Bridge {
         return success && !Task.isCancelled
     }
 
-    func interruptMimoCalibration(_ ids: [String]) {
+    func interruptModelCalibration(_ ids: [String]) {
         // A delayed timer/cancellation callback cannot interrupt a later cell
         // or a replacement session after these exact requests have retired.
-        guard ids.contains(where: { mimoCalibration.requests[$0] != nil }) else { return }
-        mimoCalibration.interrupted = true
+        guard ids.contains(where: { modelCalibration.requests[$0] != nil }) else { return }
+        modelCalibration.interrupted = true
         for id in ids { cancel(requestId: id) }
     }
 }

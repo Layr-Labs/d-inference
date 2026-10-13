@@ -54,6 +54,7 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     let activity: EngineMeasurementActivity
     let activityID: UUID
     let deadlineRateEvidence: DeadlineRateEvidence?
+    let measurementPurpose: EngineMeasurementPurpose
     private let isolationGuard: CBv2FirstContentEvidenceGuard?
     /// Set only by a native owner-bound submission. This distinguishes its
     /// target-decoder work from text and legacy vision without trusting input
@@ -69,7 +70,9 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     init(activity: EngineMeasurementActivity, model: String,
         deadlineRateEvidence: DeadlineRateEvidence? = nil,
         isolationGuard: CBv2FirstContentEvidenceGuard? = nil,
+        measurementPurpose: EngineMeasurementPurpose = .serving,
         nativeCausalMedia: Bool = false, nativeRateEvidence: NativeMediaRateEvidence? = nil) {
+        self.measurementPurpose = measurementPurpose
         self.activity = activity
         self.deadlineRateEvidence = deadlineRateEvidence
         self.isolationGuard = isolationGuard

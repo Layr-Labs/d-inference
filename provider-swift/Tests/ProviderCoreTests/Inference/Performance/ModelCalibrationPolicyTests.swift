@@ -2,18 +2,27 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-@Suite("MiMo calibration work bounds")
-struct MimoCalibrationPolicyTests {
+@Suite("Model calibration work bounds")
+struct ModelCalibrationPolicyTests {
+    @Test func ordinaryStartupHasOneExcludedWarmupAndTwoBoundedSoloMeasurements() {
+        let cells = ModelCalibrationPolicy.startup
+        #expect(cells.count == 3)
+        #expect(cells.map(\.promptTokens) == [128, 512, 512])
+        #expect(cells.map(\.outputTokens) == [8, 32, 32])
+        #expect(cells.map(\.warmup) == [true, false, false])
+        #expect(cells.allSatisfy { $0.width == 1 })
+    }
+
     @Test func expensiveCellsRequireMeasuredRatesAndStayWithinExistingCap() {
-        let cells = MimoCalibrationPolicy.bootstrap(maximumConcurrency: 3)
+        let cells = ModelCalibrationPolicy.bootstrap(maximumConcurrency: 3)
         #expect(cells.allSatisfy { $0.width <= 3 })
         #expect(cells.filter { $0.width > 1 }.map(\.width) == [2])
-        #expect(MimoCalibrationPolicy.maintenance.allSatisfy { $0.width == 1 })
-        #expect(MimoCalibrationPolicy.maintenance.map(\.promptTokens) == [512, 4_096, 512])
-        let long = MimoCalibrationPolicy.Cell(promptTokens: 4_096, outputTokens: 32, width: 1)
-        #expect(!MimoCalibrationPolicy.affordable(long, prefill: nil, decode: 60))
-        #expect(!MimoCalibrationPolicy.affordable(long, prefill: 6, decode: 60))
-        #expect(MimoCalibrationPolicy.affordable(long, prefill: 900, decode: 60))
+        #expect(ModelCalibrationPolicy.maintenance.allSatisfy { $0.width == 1 })
+        #expect(ModelCalibrationPolicy.maintenance.map(\.promptTokens) == [512, 4_096, 512])
+        let long = ModelCalibrationPolicy.Cell(promptTokens: 4_096, outputTokens: 32, width: 1)
+        #expect(!ModelCalibrationPolicy.affordable(long, prefill: nil, decode: 60))
+        #expect(!ModelCalibrationPolicy.affordable(long, prefill: 6, decode: 60))
+        #expect(ModelCalibrationPolicy.affordable(long, prefill: 900, decode: 60))
     }
 
     @Test func batchedEvidenceDoesNotOverwriteSoloRates() {

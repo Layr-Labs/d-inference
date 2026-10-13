@@ -1,7 +1,7 @@
 import Foundation
 import MLXLMCommon
 
-struct MimoCalibrationTokenizer: Tokenizer {
+struct ModelCalibrationTokenizer: Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { Array(repeating: 1, count: text.utf8.count / 4) }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "example" }
     func convertTokenToId(_ token: String) -> Int? { nil }
@@ -17,7 +17,7 @@ struct MimoCalibrationTokenizer: Tokenizer {
 
 /// Real native-loop lifecycle with deterministic work intervals. These are
 /// synthetic test timings, never MiMo hardware qualification measurements.
-final class MimoCalibrationSession: CBv2NativeBlockSession {
+final class ModelCalibrationSession: CBv2NativeBlockSession {
     let request: CBv2Request
     let cancellation: CBv2NativeBlockCancellation
     let gate: RecoveryStepGate?

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -1043,3 +1043,14 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 - [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) — coordinator-side contract identity
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable and config key with its default
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — wire shape of capacity, timing and status fields
+
+### Startup timing evidence
+
+The startup health check exercises a one-token request through the serving
+adapter with `EngineMeasurementPurpose.startupWarmup`. That request warms first-use
+kernels and checks output, but its tiny prompt does not train model throughput.
+Each native block engine can then collect real solo prefill/decode measurements
+through the bounded, customer-preemptible
+[startup calibration](first-content-routing.md#native-model-startup-calibration).
+The engine retains its memory, context, first-content deadline and actual
+retirement rules; calibration does not substitute hardware guesses for rates.

@@ -241,16 +241,22 @@ and neutral terminal causes do not contribute. Existing health-breaker
 classification remains unchanged: exploration eligibility is separate from
 provider health.
 
-### Automatic MiMo calibration
+### Native model startup calibration
 
-After native MiMo slot publication and on provider capacity ticks,
-`refreshMimoCalibration` asks the loaded bridge to measure its actual serving
-configuration. Calibration runs only on an idle Mac in nominal thermal state
+After native slot publication and on provider capacity ticks,
+`refreshModelCalibration` asks the loaded bridge to measure its actual serving
+configuration. Ordinary native block engines run one startup bootstrap per
+loaded engine: an excluded 128-token warmup followed by two cold, solo probes of
+at most 512 prompt tokens and 32 output tokens. This supplies actual prefill and
+decode evidence before customer traffic is needed to discover the model's speed.
+Interrupted or failed bootstraps retry with the existing bounded backoff; a
+completed bootstrap does not become periodic synthetic traffic. Native MiMo
+retains its longer bootstrap and periodic maintenance described below. Calibration runs only on an idle Mac in nominal thermal state
 outside Low Power Mode, with no reviewed deadline profile. The existing engine,
 MTP configuration, context limit, memory gates and concurrency ceiling are used;
 calibration never certifies a higher concurrency or changes a memory floor.
 
-`MimoCalibrationPolicy.bootstrap` excludes one warmup, measures two short and
+`ModelCalibrationPolicy.bootstrap` excludes one warmup, measures two short and
 two longer text cells, sweeps the supported concurrent widths, and finishes with
 a solo cell. Prompts contain built-in prose and code, not customer content; the
 complete chat template is rendered to at most 128 warmup, 512 short or 4,096
@@ -272,6 +278,14 @@ cancellation at retirement records the ordinary deadline verdict before any
 service/KV admission. Unload and
 shutdown stop the calibration; no background task can retain retired weights.
 
+The one-token startup health check is explicitly marked `startupWarmup` by
+`ProviderLoop.runStartupSelfTestDecode`. The scheduler carries this local-only
+`EngineMeasurementPurpose` into the request's `EnginePrefillReceipt`. Its first-use
+timing never trains prefill, decode, workload-bucket or delivered-rate estimates;
+the generated work, resource ownership and health-check result are unchanged.
+Other requests remain independently measurable even when they overlap the
+warmup. Client JSON cannot select this purpose.
+
 Only completed, uncached, isolated calibration receipts seed ordinary phase
 rates. They replace the previous estimate while preserving monotonic producer
 counts and the engine epoch; subsequent serving observations resume EWMA smoothing.
@@ -289,9 +303,9 @@ heartbeats so idle machines can be selected before receiving customer traffic.
 
 ```mermaid
 flowchart TD
-    A["Native MiMo published / capacity tick"] --> B["startMimoCalibrationIfNeeded"]
+    A["Native model published / capacity tick"] --> B["startModelCalibrationIfNeeded"]
     B --> C{"Mac idle and evidence needs refresh?"}
-    C -->|Yes| D["Loaded engine: warmup, cold text, bounded batches"]
+    C -->|Yes| D["Startup: warmup and two cold solo probes"]
     D --> E["Real phase receipts and workload buckets"]
     E --> F["Performance refresh → heartbeat → routing"]
     G["Customer request on any model"] --> H["IdleCalibrationCoordinator.beginForeground"]
@@ -616,7 +630,7 @@ does not represent a random sample of all outcomes.
 | Request retry and terminal ownership | `coordinator/api/inference/dispatch.go` — `dispatchState` |
 | Persisted forecast evidence | `coordinator/internal/observation/profile/profiler_record.go` — `DecisionJSON` |
 | Native text measurement recovery | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefillRecovery.swift` — `canRecoverPrefillEvidence`; `provider-swift/Sources/ProviderCore/Inference/Performance/PrefillEvidenceRecovery.swift` — `PrefillEvidenceRecovery` |
-| Automatic MiMo calibration and customer preemption | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MimoCalibration.swift` — `startMimoCalibrationIfNeeded`; `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` — `beginForeground` |
+| Native startup calibration and customer preemption | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift` — `startModelCalibrationIfNeeded`; `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` — `beginForeground` |
 | Conservative prompt-size evidence | `coordinator/registry/prefill_workload_rates.go` — `capPrefillByWorkload`; `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` — `freshIsolatedPrefillRate` |
 
 ## Related

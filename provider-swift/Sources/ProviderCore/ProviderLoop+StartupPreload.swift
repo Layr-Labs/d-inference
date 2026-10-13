@@ -482,7 +482,8 @@ extension ProviderLoop {
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },
-            defaultMaxTokens: Self.schedulerDefaultMaxTokens
+            defaultMaxTokens: Self.schedulerDefaultMaxTokens,
+            measurementPurpose: .startupWarmup
         )
         let service = MLXOpenAIService(engine: engine)
 

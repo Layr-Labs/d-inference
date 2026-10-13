@@ -20,7 +20,7 @@ extension EngineV2Bridge {
             serviceBudget?.reduceExclusiveAllowance(ownerID: serviceOwnerPrefix + ":" + id,
                 concurrency: prefillEvidenceRecovery.servingConcurrency)
         }
-        let calibration = mimoCalibration.requests[id]
+        let calibration = modelCalibration.requests[id]
         guard calibration?.warmup != true else { return }
         let usage = sample.usage
         let saved = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)
@@ -35,6 +35,7 @@ extension EngineV2Bridge {
         // Valid computed work is useful even when vision/reuse or the timing
         // window excludes the rate. Publish after all counters and EWMAs agree.
         defer { performanceUpdates?.notify() }
+        guard receipt.measurementPurpose == .serving else { return }
         guard usage.timing.visionChunks == 0 || receipt.nativeCausalMedia,
             saved > 0 ? usage.prefixCacheOutcome == .hit : Self.isColdPrefillSample(usage: usage),
             let seconds = EngineV2NativeBlockTiming.prefillSeconds(usage.timing),
@@ -127,8 +128,12 @@ extension EngineV2Bridge {
         id: String, state: ActiveRequestState, usage: CBv2Usage, completion: Int,
         deliveredTps: Double, now: ContinuousClock.Instant
     ) {
-        let calibration = mimoCalibration.requests[id]
+        let calibration = modelCalibration.requests[id]
         guard calibration?.warmup != true else { return }
+        guard state.prefillReceipt?.measurementPurpose != .startupWarmup else {
+            recordGenerationWork(completion: completion)
+            return
+        }
         let overlap = state.prefillReceipt?.overlap
             ?? EngineMeasurementActivity.Overlap(contended: true, otherModel: true)
         let cached = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens) > 0
@@ -159,7 +164,7 @@ extension EngineV2Bridge {
     }
 
     func recordGenerationWork(completion: Int, requestID: String? = nil) {
-        if let requestID, mimoCalibration.requests[requestID] != nil { return }
+        if let requestID, modelCalibration.requests[requestID] != nil { return }
         generatedTokensTotal = Self.saturatingCounter(generatedTokensTotal, adding: completion)
         generationRequestsTotal = Self.saturatingCounter(generationRequestsTotal, adding: 1)
         performanceUpdates?.notify()

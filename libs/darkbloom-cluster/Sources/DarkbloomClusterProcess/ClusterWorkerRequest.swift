@@ -52,8 +52,8 @@ public final class ClusterWorkerRequest: @unchecked Sendable {
                 stopTokenIDs: reservation.stopTokenIDs, outputCount: reservation.outputCount, chunkSize: reservation.chunkSize,
                 deadlineUptimeNanoseconds: reservation.deadlineUptimeNanoseconds,
                 capacityLimitBytes: min(capacity, reservation.capacityLimitBytes - bytes),
-                // Both ranks get the request's sampling: the selecting rank draws with it.
-                sampling: reservation.sampling)
+                // Both ranks get the request's sampling (the selecting rank draws with it) and its route.
+                sampling: reservation.sampling, route: reservation.route)
             try lock.withLock {
                 guard cancellation == nil else { throw ClusterWorkerOwnerError.cancelled }
                 try worker.sendWorkerCommand(.reserve(local), requestID: requestID, deadline: deadline)

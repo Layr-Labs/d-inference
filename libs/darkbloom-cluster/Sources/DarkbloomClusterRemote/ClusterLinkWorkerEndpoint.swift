@@ -238,8 +238,8 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
             wire.remainingNanoseconds = min(r.deadlineUptimeNanoseconds - now, ClusterWorkerLimits.deadlineNanoseconds)
             sent = .reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
                 outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: 1,
-                // The sampling crosses with the reservation: both ranks get it.
-                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling))
+                // The sampling and the route cross with the reservation: both ranks get them.
+                capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route))
         }
         wire.worker = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: sequence,
             requestID: requestID, command: sent))
@@ -264,7 +264,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         guard !deadline.overflow else { throw ClusterLinkWorkerError.invalid("Reservation duration overflow") }
         return (.reserve(.init(profileID: r.profileID, promptTokenIDs: r.promptTokenIDs, stopTokenIDs: r.stopTokenIDs,
             outputCount: r.outputCount, chunkSize: r.chunkSize, deadlineUptimeNanoseconds: deadline.partialValue,
-            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling)), frame.requestID, end.partialValue)
+            capacityLimitBytes: r.capacityLimitBytes, sampling: r.sampling, route: r.route)), frame.requestID, end.partialValue)
     }
 }
 

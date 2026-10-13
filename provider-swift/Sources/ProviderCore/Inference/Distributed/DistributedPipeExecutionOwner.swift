@@ -68,7 +68,12 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         // predicted faster than the member alone beyond the tie tolerance, so
         // a strong Mac is never made slower by its pair. Both are qualified.
         let decided = routing?.route(promptTokens: request.promptTokens.count, maximumOutputTokens: request.maxTokens)
-        let route = decided.map { DistributedRequestRouteNote(label: $0.label, reason: $0.reason) }
+        let route = decided.map { value in
+            let served = value.pairBasis == .served || value.aloneBasis == .served
+            return DistributedRequestRouteNote(label: value.label, reason: value.reason + String(format: " (pair %.2f s, alone %@; %@)",
+                value.pairSeconds, value.aloneSeconds.map { String(format: "%.2f s", $0) } ?? "-",
+                served ? "corrected by this pair's speed records" : "predicted from the plan"))
+        }
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,
             stopTokenIDs: request.stopTokens.sorted(), outputCount: request.maxTokens, chunkSize: chunkSize,
             deadlineUptimeNanoseconds: deadlines.generation, capacityLimitBytes: capacityLimit, sampling: sampling,

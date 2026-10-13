@@ -139,7 +139,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         let follower = URL(fileURLWithPath: CommandLine.arguments[1]), owner = URL(fileURLWithPath: CommandLine.arguments[2])
         let worker = CommandLine.arguments[3]
         var passed = 0
-        try codec(); passed += 1; print("PASS codec: no host uptime crosses, a sampled reservation keeps its sampling, closed fields")
+        try codec(); passed += 1; print("PASS codec: no host uptime crosses, a sampled reservation keeps its sampling and a routed one its route, closed fields")
         try served(follower, owner, worker, profile: "prelude"); passed += 1
         try served(follower, owner, worker, profile: "mesh2"); passed += 1
         try served(follower, owner, worker, profile: "none"); passed += 1
@@ -298,6 +298,15 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try require(s.sampling == sampling && s.deadlineUptimeNanoseconds == 51_000,
             "A sampled reservation lost its sampling on the link: \(String(describing: s.sampling))")
         try require(r.sampling == nil, "A greedy reservation gained sampling on the link")
+        // A routed reservation reaches the follower's rank with its route: both
+        // ranks bind it into the request (dropped, the decoding rank would wait
+        // for a hand-off rank 0 never sends).
+        let routed = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, route: .decodingRankAlone))
+        let routedLocal = try ClusterLinkWorkerWire.decode(try ClusterLinkWorkerWire.command(routed, requestID: request, epoch: epoch,
+            session: session, sequence: 5, now: 8_000, deliveryDeadline: 8_200).encoded()).localCommand(now: 50_000)
+        guard case .reserve(let t) = routedLocal.command else { throw ClusterOwnerStateError.invalid("Routed reserve lost") }
+        try require(t.route == .decodingRankAlone && r.route == nil, "A reservation's route did not cross the link unchanged")
         // Closed fields per kind.
         var renew = ClusterLinkWorkerWire(kind: .renew, epoch: epoch, session: session, sequence: 1)
         try rejects { _ = try renew.encoded() }

@@ -62,11 +62,16 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -parse-
 "$task_build/orphan-wired-check"
 
 task_repo="$(cd "$task_root/../.." && pwd)"
+# The pipe owner asks the request router (DarkbloomClusterPlacement) for each request's route.
+xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
+  -I "$task_build" -L "$task_build" -lDarkbloomClusterProtocol -Xlinker -rpath -Xlinker "$task_build" \
+  -module-name DarkbloomClusterPlacement -emit-module-path "$task_build/DarkbloomClusterPlacement.swiftmodule" \
+  "$task_root"/Sources/DarkbloomClusterPlacement/*.swift -o "$task_build/libDarkbloomClusterPlacement.dylib"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
   -module-name MLXLMCommon -emit-module-path "$task_build/MLXLMCommon.swiftmodule" \
   "$task_root/Tests/ProcessChecks/MLXLMCommonContractValues.swift" -o "$task_build/libMLXLMCommon.dylib"
 xcrun swiftc -swift-version 6 -warnings-as-errors -target "$task_target" -emit-library -emit-module \
-  -I "$task_build" -L "$task_build" -lMLXLMCommon -lDarkbloomClusterProtocol -lDarkbloomClusterProcess \
+  -I "$task_build" -L "$task_build" -lMLXLMCommon -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterPlacement \
   -Xlinker -rpath -Xlinker "$task_build" \
   -module-name ProviderPipeContract -emit-module-path "$task_build/ProviderPipeContract.swiftmodule" \
   "$task_repo/provider-swift/Sources/ProviderCore/Inference/Distributed/Requests/DistributedRequestDeadlineContext.swift" \

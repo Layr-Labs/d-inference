@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -113,7 +113,7 @@ On **macOS 27 or later**, the installer and `darkbloom enroll` skip MDM profile
 download and System Settings. Run `darkbloom status` and `darkbloom doctor` to
 check App Attest approval. Serving requires a qualified signed provider and an
 enabled coordinator; pending or unavailable approval does not trigger MDM
-fallback. See [serving authorization](../reference/provider-authorization.md).
+fallback. See [current platform serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
 
 On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy setup:
 
@@ -216,10 +216,18 @@ private_only = false         # true = serve only your own self-route traffic
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.
 
+The [Qwen-first rollout decision](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md)
+preserves historical qualification evidence, not current backend selection.
+
 ## Earnings and billing
 
+Current backend behavior is owned by the
+[platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master);
+the immutable pricing citation below is evidence, not current source or proof
+of deployed pricing.
+
 During the public alpha the platform fee is 0%, so providers keep 100% of the
-per-token revenue (`coordinator/payments/pricing.go:39-43`).
+per-token revenue ([coordinator/payments/pricing.go:39-43](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/payments/pricing.go)).
 
 There is no `darkbloom earnings` CLI command. View payouts, Stripe Connect
 status, and usage in the console at `https://console.darkbloom.dev`.

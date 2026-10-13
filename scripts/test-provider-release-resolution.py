@@ -18,7 +18,6 @@ class ReleaseResolutionTests(unittest.TestCase):
             shutil.copy2(Path(__file__).parent / name, self.root / "scripts" / name)
         for name, content in (
             ("provider-swift/Sources/ProviderCore/ProviderCore.swift", 'public static let version = "0.9.0"'),
-            ("coordinator/api/server.go", 'var LatestProviderVersion = "0.9.0"'),
         ):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +75,23 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(values, {})
         self.assertFalse((self.root / "unexpected-command").exists())
 
+    def test_missing_malformed_or_ambiguous_provider_version_fails_before_outputs(self):
+        source = self.root / "provider-swift/Sources/ProviderCore/ProviderCore.swift"
+        for content in (None, "", 'public static let version = "invalid"',
+                        'public static let version = "0.9.0"\npublic static let version = "0.9.0"'):
+            with self.subTest(content=content):
+                if content is None:
+                    source.unlink()
+                else:
+                    source.write_text(content)
+                result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(values, {})
+
     def test_retained_coordinator_version_does_not_control_provider_release(self):
-        (self.root / "coordinator/api/server.go").write_text('var LatestProviderVersion = "0.9.1"\n')
+        source = self.root / "coordinator/api/server.go"
+        source.parent.mkdir(parents=True)
+        source.write_text('var LatestProviderVersion = "0.9.1"\n')
         result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(values["version"], "0.9.0")
@@ -105,15 +119,6 @@ class ReleaseResolutionTests(unittest.TestCase):
                                         cwd=self.root, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode == 0, succeeds, result.stderr)
 
-    def test_invalid_or_ambiguous_source_version_is_rejected(self):
-        source = self.root / "provider-swift/Sources/ProviderCore/ProviderCore.swift"
-        for content in ('', 'public static let version = "invalid"\n',
-                        'public static let version = "0.9.0"\n' * 2):
-            with self.subTest(content=content):
-                source.write_text(content)
-                result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(values, {})
 
 
 if __name__ == "__main__":

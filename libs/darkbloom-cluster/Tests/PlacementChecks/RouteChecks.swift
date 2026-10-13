@@ -1,0 +1,171 @@
+import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
+import Foundation
+
+/// Per-request routes and speed records from served requests, on constructed
+/// Macs of several generations and sizes. The speeds below are inputs of a
+/// check, not claims about any machine; the code under test names no chip.
+func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks) throws {
+    let nine = try layoutWithHead(inputs.nine, bytes: 136_881_152, count: 31)
+    func plan(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout, modes: [ClusterGenerationMode]? = nil) throws
+        -> (setup: ClusterRequestRouter.Setup, result: ClusterPlacementResult) {
+        var policy = ClusterPlacementPolicy(); policy.modes = modes
+        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
+        guard let chosen = result.chosen else { throw ClusterPlacementError("constructed pair has no placement") }
+        let ordered = chosen.ranks.map { rank in devices.first { $0.label == rank.device }! }
+        return (.init(devices: ordered, cuts: chosen.cuts, mode: chosen.mode, schedule: chosen.prefillSchedule, layout: layout), result)
+    }
+    let chunk = nine.maximumChunkTokens
+
+    // Two equal older Macs (2 x 64 GB M1 Max): two always beat one once the
+    // prompt fills more than one chunk; a one-chunk prompt cannot overlap.
+    do {
+        let speed = measured(prefill: 600, decode: 40)
+        let macs = [try SyntheticMac.idle(64).device("m1max-a", speed: speed, chip: "Apple M1 Max"),
+                    try SyntheticMac.idle(64).device("m1max-b", speed: speed, chip: "Apple M1 Max")]
+        let free = try plan(macs, nine)
+        if !free.setup.mode.isPhaseSplit {
+            let route = try ClusterRequestRouter.decide(free.setup, promptTokens: 64, outputTokens: 64)
+            checks.require("2x M1 Max: a placement no member holds whole serves every request as the pair",
+                route.path == .pair && route.aloneCandidate == nil && route.aloneSeconds == nil)
+        }
+        let split = try plan(macs, nine, modes: [.phaseSplit])
+        let short = try ClusterRequestRouter.decide(split.setup, promptTokens: chunk / 4, outputTokens: 64)
+        let long = try ClusterRequestRouter.decide(split.setup, promptTokens: 16 * chunk, outputTokens: 64)
+        checks.require("2x M1 Max phase split: a one-chunk prompt is no faster on the pair, so the decoding member serves it alone",
+            short.path == .alone && short.member == split.setup.devices.last?.label)
+        checks.require("2x M1 Max phase split: a long prompt goes to the pair, predicted much faster than one Mac",
+            long.path == .pair && (long.aloneSeconds ?? 0) > 1.3 * long.pairSeconds)
+        let crossover = try ClusterRequestRouter.crossoverPromptTokens(split.setup, outputTokens: 64, maximumPrompt: 32_768)
+        checks.require("2x M1 Max: the pair is chosen from a few chunks of prompt on",
+            crossover.map { $0 > chunk && $0 <= 4 * chunk } ?? false)
+    }
+
+    // A strong Mac with a small old one (M2 Ultra 192 GB + M1 16 GB): the pair
+    // is never faster for a model the strong Mac holds, so it serves alone at
+    // every prompt length; a model only the pair has room for always pairs.
+    do {
+        let ultra = try SyntheticMac.idle(192).device("m2ultra", speed: measured(prefill: 1_500, decode: 60), chip: "Apple M2 Ultra")
+        let small = try SyntheticMac.idle(16).device("m1", speed: measured(prefill: 150, decode: 12), chip: "Apple M1")
+        let split = try plan([ultra, small], nine, modes: [.phaseSplit])
+        checks.require("M2 Ultra + M1: the strong Mac decodes", split.setup.devices.last?.label == "m2ultra")
+        let decisions = try [64, chunk, 4 * chunk, 16 * chunk].map {
+            try ClusterRequestRouter.decide(split.setup, promptTokens: $0, outputTokens: 128)
+        }
+        checks.require("M2 Ultra + M1: every request is served by the M2 Ultra alone (never slower than the strong Mac)",
+            decisions.allSatisfy { $0.path == .alone && $0.member == "m2ultra" && ($0.aloneSeconds ?? .infinity) <= $0.pairSeconds })
+        checks.require("M2 Ultra + M1: no prompt length makes the pair worth it",
+            try ClusterRequestRouter.crossoverPromptTokens(split.setup, outputTokens: 128, maximumPrompt: 32_768) == nil)
+        // Capacity: 60 layers of 3 GiB, more than either Mac holds, pipeline only.
+        let huge = try syntheticLayout(layers: 60, layerGiB: 3, modes: [.pipeline])
+        let big = try SyntheticMac.idle(192).device("m2ultra", speed: measured(prefill: 300, decode: 10), chip: "Apple M2 Ultra")
+        let other = try SyntheticMac.idle(128).device("m1ultra", speed: measured(prefill: 150, decode: 6), chip: "Apple M1 Ultra")
+        let capacity = try plan([big, other], huge)
+        let route = try ClusterRequestRouter.decide(capacity.setup, promptTokens: 32, outputTokens: 16)
+        let always = try ClusterRequestRouter.crossoverPromptTokens(capacity.setup, outputTokens: 16, maximumPrompt: 8_192)
+        checks.require("a capacity model (no Mac holds it alone) always goes to the pair, whatever the prompt",
+            capacity.result.alone.allSatisfy { !$0.fit.possible } && route.path == .pair && route.aloneCandidate == nil && always == 1)
+    }
+
+    // The bench's generation gap (M3 Ultra + M5 Ultra): rates in the proportion
+    // the model-free index measured between such Macs (prefill ~5x, decode ~1.8x).
+    let m3 = try SyntheticMac.idle(256).device("m3ultra", speed: measured(prefill: 1_000, decode: 100), chip: "Apple M3 Ultra")
+    let m5 = try SyntheticMac.idle(256).device("m5ultra", speed: measured(prefill: 4_980, decode: 176), chip: "Apple M5 Ultra")
+    let pair = try plan([m3, m5], nine)
+    checks.require("M3 Ultra + M5 Ultra: a phase split with the head, the M5 Ultra decoding",
+        pair.setup.mode == .phaseSplitMTP && pair.setup.devices.last?.label == "m5ultra")
+    let short = try ClusterRequestRouter.decide(pair.setup, promptTokens: 256, outputTokens: 128)
+    let long = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128)
+    checks.require("M3 Ultra + M5 Ultra: a short prompt is served by the M5 Ultra alone (holds every layer and the head)",
+        short.path == .alone && short.member == "m5ultra" && short.aloneBasis == .predicted)
+    checks.require("M3 Ultra + M5 Ultra: a long prompt goes to the pair", long.path == .pair && long.reason.contains("faster"))
+    let crossover = try ClusterRequestRouter.crossoverPromptTokens(pair.setup, outputTokens: 128, maximumPrompt: 32_768)
+    checks.require("M3 Ultra + M5 Ultra: the crossover is a prompt of several chunks",
+        crossover.map { $0 > 2 * chunk && $0 < 24_576 } ?? false)
+    checks.require("the route is the same whichever Mac was listed first",
+        try ClusterRequestRouter.decide(plan([m5, m3], nine).setup, promptTokens: 256, outputTokens: 128) == short)
+
+    // Served requests correct a route's prediction: a pair whose hand-off and
+    // link cost what the planner did not price loses where it was predicted to win.
+    let near = (crossover ?? 6 * chunk) * 3 / 2
+    let predicted = try ClusterRequestRouter.decide(pair.setup, promptTokens: near, outputTokens: 128)
+    let slowPair = (0..<3).map { index in
+        ClusterServedSample(route: .pair, member: nil, promptTokens: near + index, outputTokens: 128,
+            firstTokenSeconds: predicted.pairFirstTokenSeconds * 1.6, decodeTokensPerSecond: 128 / max(0.001, predicted.pairSeconds - predicted.pairFirstTokenSeconds),
+            finishedAt: Double(1_000 + index))
+    }
+    let corrected = try ClusterRequestRouter.decide(pair.setup, promptTokens: near, outputTokens: 128, served: slowPair)
+    checks.require("served pair requests 60 % slower than predicted move a near-crossover prompt to the member alone (\(near) tokens)",
+        predicted.path == .pair && corrected.path == .alone && corrected.pairBasis == .served && corrected.aloneBasis == .predicted)
+    checks.require("the output length a route is priced at follows what the setup served, never above the request's limit",
+        ClusterRequestRouter.expectedOutputTokens(maximum: 4_096, served: slowPair) == 128
+            && ClusterRequestRouter.expectedOutputTokens(maximum: 64, served: slowPair) == 64
+            && ClusterRequestRouter.expectedOutputTokens(maximum: 300, served: []) == 300)
+
+    // Speed records from served requests, recovering absolute rates from the
+    // model-free index's ratios alone (the fresh-install case, F1).
+    let index3 = ClusterDeviceSpeed(source: .transferredByDeviceIndex, absolute: false,
+        rested: .init(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1), sustained: nil, explanation: "index reference")
+    let index5 = ClusterDeviceSpeed(source: .transferredByDeviceIndex, absolute: false,
+        rested: .init(prefillTokensPerSecond: 4.98, decodeTokensPerSecond: 1.76), sustained: nil, explanation: "index ratio")
+    let r3 = try SyntheticMac.idle(256).device("m3ultra", speed: index3, chip: "Apple M3 Ultra")
+    let r5 = try SyntheticMac.idle(256).device("m5ultra", speed: index5, chip: "Apple M5 Ultra")
+    // What the "true" pair (the measured rates above) serves at two prompt lengths.
+    var truthPolicy = ClusterPlacementPolicy()
+    let served = try [2 * chunk, 8 * chunk].enumerated().map { index, prompt -> ClusterServedSample in
+        truthPolicy.promptTokens = prompt; truthPolicy.outputTokens = 128
+        let truth = try ClusterPlacementPlanner.evaluate(devices: pair.setup.devices, cuts: pair.setup.cuts, mode: pair.setup.mode,
+            prefillSchedule: pair.setup.schedule, layout: nine, policy: truthPolicy).rested
+        return .init(route: .pair, member: nil, promptTokens: prompt, outputTokens: 128, firstTokenSeconds: truth.firstTokenSeconds,
+            decodeTokensPerSecond: truth.decodeTokensPerSecond, finishedAt: Double(2_000 + index))
+    }
+    let placement = ClusterServedCalibration.Placement(devices: [r3, r5], cuts: pair.setup.cuts, mode: pair.setup.mode,
+        schedule: pair.setup.schedule, layout: nine)
+    let derived = try ClusterServedCalibration.measurements(served, placement: placement, runtimeBinarySHA256: "served",
+        measuredUTC: "2026-10-13T00:00:00Z")
+    let p3 = derived.first { $0.key.chip == "Apple M3 Ultra" }?.rested, p5 = derived.first { $0.key.chip == "Apple M5 Ultra" }?.rested
+    func close(_ a: Double?, _ b: Double) -> Bool { a.map { abs($0 / b - 1) < 0.01 } ?? false }
+    checks.require("pair requests turn index ratios into absolute prefill rates (within 1 %)",
+        close(p3?.prefillTokensPerSecond, 1_000) && close(p5?.prefillTokensPerSecond, 4_980))
+    checks.require("a phase split's decode measures the decoding member with its head, and the other by the index ratio",
+        close(p5?.speculativeDecodeTokensPerSecond, 176 * 1.44) && close(p5?.decodeTokensPerSecond, 176)
+            && close(p3?.decodeTokensPerSecond, 100))
+    // The next plan uses them: measured, absolute, the same placement.
+    let estimated = ClusterSpeedEstimator.estimate(devices: [.init(chip: "Apple M3 Ultra", osBuild: "SYNTH"), .init(chip: "Apple M5 Ultra", osBuild: "SYNTH")],
+        artifactSHA256: nine.artifactSHA256, promptTokens: 4 * chunk, measurements: derived)
+    let replanned = try plan(zip([r3, r5], estimated).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }, nine)
+    checks.require("the next plan starts from the served records: measured, absolute, same placement as the true rates give",
+        estimated.allSatisfy { $0.source == .measured && $0.absolute } && replanned.result.basis.absolute
+            && replanned.setup.cuts == pair.setup.cuts && replanned.setup.mode == pair.setup.mode)
+    // A member that served alone measured itself directly.
+    let alone = ClusterServedSample(route: .alone, member: "m5ultra", promptTokens: 2_000, outputTokens: 100,
+        firstTokenSeconds: 0.5, decodeTokensPerSecond: 250, finishedAt: 3_000)
+    let direct = try ClusterServedCalibration.measurements([alone], placement: placement, runtimeBinarySHA256: "served", measuredUTC: "x")
+    checks.require("a request served alone measures that Mac's whole-model prefill and decode directly",
+        direct.count == 1 && direct[0].key.chip == "Apple M5 Ultra" && close(direct[0].rested.prefillTokensPerSecond, 4_000)
+            && close(direct[0].rested.speculativeDecodeTokensPerSecond, 250))
+
+    // The records file: bounded per setup and route, its own encoding, invalid samples dropped.
+    let setup = ClusterServedSpeedRecords.Setup(modelID: "m", mode: "phase_split_mtp_v1",
+        cut: ClusterServedSpeedRecords.Setup.cut([4], layerCount: 32), ranks: ["a", "b"])
+    var records = ClusterServedSpeedRecords()
+    for index in 0..<40 {
+        records.add(.init(route: .pair, member: nil, promptTokens: 100 + index, outputTokens: 10, firstTokenSeconds: 0.1,
+            decodeTokensPerSecond: 50, finishedAt: Double(index)), setup: setup)
+    }
+    records.add(.init(route: .alone, member: "b", promptTokens: 10, outputTokens: 10, firstTokenSeconds: 0.05,
+        decodeTokensPerSecond: 60, finishedAt: 50), setup: setup)
+    records.add(.init(route: .alone, member: nil, promptTokens: 10, outputTokens: 10, firstTokenSeconds: 0.05,
+        decodeTokensPerSecond: 60, finishedAt: 51), setup: setup)
+    records.add(.init(route: .pair, member: nil, promptTokens: 10, outputTokens: 10, firstTokenSeconds: .nan,
+        decodeTokensPerSecond: 60, finishedAt: 52), setup: setup)
+    let kept = records.samples(for: setup)
+    checks.require("served records keep the newest 32 per setup and route, and drop invalid samples",
+        kept.filter { $0.route == .pair }.count == 32 && kept.filter { $0.route == .pair }.first?.promptTokens == 108
+            && kept.filter { $0.route == .alone }.count == 1)
+    checks.require("served records survive their own encoding", try ClusterServedSpeedRecords.decode(records.encoded()) == records)
+    checks.require("a cut string reads back to the placement's cuts",
+        setup.cut == "0-4|4-32" && ClusterServedSpeedRecords.Setup.cuts("0-4|4-32", layerCount: 32) == [4]
+            && ClusterServedSpeedRecords.Setup.cuts("0-4|5-32", layerCount: 32) == nil
+            && ClusterServedSpeedRecords.Setup.cuts("0-4|4-31", layerCount: 32) == nil)
+}

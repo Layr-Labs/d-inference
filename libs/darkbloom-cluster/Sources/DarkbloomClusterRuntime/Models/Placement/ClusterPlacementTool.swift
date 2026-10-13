@@ -94,8 +94,10 @@ public enum ClusterPlacementTool {
             return ClusterPlacementExplanation.layout(layout).joined(separator: "\n")
         case "plan":
             return try plan(rest, sampleDevice: sampleDevice)
+        case "route":
+            return try route(rest)
         default:
-            throw ProbeError("Unknown subcommand: \(command)\n" + usage)
+            throw ProbeError("Unknown subcommand: \(command)\n" + usage + "\n" + servedUsage)
         }
     }
 
@@ -111,7 +113,7 @@ public enum ClusterPlacementTool {
     static func plan(_ arguments: [String], sampleDevice: () throws -> ClusterDeviceProfile) throws -> String {
         let parsed = try Arguments(arguments, flags: ["--json"], options: ["--model-dir", "--layout", "--local", "--peer",
             "--speed", "--index", "--link", "--prompt-tokens", "--output-tokens", "--regime", "--modes", "--alternatives",
-            "--leader"])
+            "--leader", "--served", "--served-ranks"])
         let layout: ClusterModelLayout
         switch (try parsed.one("--model-dir"), try parsed.one("--layout")) {
         case (let directory?, nil): layout = try ClusterPlacementArtifact.layout(directory: URL(fileURLWithPath: directory, isDirectory: true))
@@ -171,9 +173,24 @@ public enum ClusterPlacementTool {
             devices: profiles.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
             artifactSHA256: layout.artifactSHA256, promptTokens: policy.promptTokens ?? layout.maximumPromptTokens,
             measurements: measurements, indices: indices + profiles.compactMap { $0.profile.speedIndex })
-        let devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }
+        var devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }
+        // Requests a setup served on these devices are measurements too: the
+        // next plan starts from them (`ClusterServedCalibration`).
+        var servedLines: [String] = []
+        if let files = parsed.values["--served"] {
+            let ranks = try parsed.one("--served-ranks").map { $0.split(separator: ",").map(String.init) }
+            let served = try servedMeasurements(try servedEntries(files, ranks: ranks), devices: devices, layout: layout, link: link)
+            servedLines = ["Speed records from served requests"] + served.lines
+            if !served.measurements.isEmpty {
+                let again = ClusterSpeedEstimator.estimate(
+                    devices: profiles.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
+                    artifactSHA256: layout.artifactSHA256, promptTokens: policy.promptTokens ?? layout.maximumPromptTokens,
+                    measurements: measurements + served.measurements, indices: indices + profiles.compactMap { $0.profile.speedIndex })
+                devices = zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.label, profile: $0.0.profile, speed: $0.1) }
+            }
+        }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
-        let explanation = ClusterPlacementExplanation.describe(result, devices: devices, layout: layout, link: link)
+        let explanation = servedLines + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout, link: link)
         if parsed.flags.contains("--json") {
             return try json(PlanOutput(devices: devices.map { .init(label: $0.label, profile: $0.profile, speed: $0.speed) },
                 layout: layout, link: link, result: result, explanation: explanation))

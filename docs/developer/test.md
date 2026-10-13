@@ -3518,6 +3518,14 @@ no test needs production credentials or production inference. The representation
 suite checks preserved framework `Vary` tokens as well as `Accept`, including
 alternating HTML/Markdown requests. Preserve that regression across Next upgrades.
 
+For story interaction changes, `landing/tests/story-gestures.test.mjs` dispatches
+DOM pointer, wheel and keyboard events through the same gesture binding used
+by the homepage. It covers browsing from the media and text, vertical-scroll
+passthrough, control interactions, cancellation and listener cleanup. Run it
+with `cd landing && node --test tests/story-gestures.test.mjs`; no server is
+needed. These DOM tests do not replace browser checks for native pointer
+capture, touch scrolling or carousel layout.
+
 Search results and cross-domain discovery require separate read-only inspection
 after an authorized deployment. A passing local suite is not live verification. For a
 migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the

@@ -11,7 +11,7 @@ before(async () => {
 after(async () => site?.close());
 
 for (const [path, heading] of [
-  ["/", "The compute grid"],
+  ["/", "AI, powered by"],
   ["/about", "A new topology for private inference"],
   ["/terms", "Terms of Service"],
   ["/privacy", "Privacy Policy"],

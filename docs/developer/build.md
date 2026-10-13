@@ -985,6 +985,8 @@ cd landing && npm run dev
 
 Copy `landing/.env.example` to `.env.local` inside that directory to
 configure runtime integrations. A production build needs no credentials.
+The landing test dependencies include jsdom for DOM-based story gesture
+regressions; `npm ci` installs it alongside the existing development tools.
 The hosting root is `landing`, with the Next.js preset; its API routes
 require a server runtime rather than a static export. See the
 [marketing README](../../landing/README.md) for deployment handoff.

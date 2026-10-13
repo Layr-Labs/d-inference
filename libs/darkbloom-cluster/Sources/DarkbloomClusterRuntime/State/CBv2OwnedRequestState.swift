@@ -336,17 +336,31 @@ final class CBv2OwnedRequestState {
     /// and dtype are checked at adoption. Contiguous hosts keep every check.
     var pagedHost: Bool { geometry.host?.kind == .paged }
 
+    /// The frontier a cache's `positionOffsets` holds. A paged cache keeps the
+    /// host values its device array is advanced by (item 25: the per-layer
+    /// `asArray` was a host read per attention layer per step on the decode
+    /// path); full validation (`deviceRead`, adoption and contiguous hosts)
+    /// still reads the device array, and checks the host mirror against it.
+    static func frontier(of cache: any CBv2AttendingLayerCache, deviceRead: Bool) -> [Int32]? {
+        guard let paged = cache as? PagedLayerCache else {
+            return cache.positionOffsets.asArray(Int32.self)
+        }
+        guard deviceRead else { return paged.hostPositionOffsets }
+        let device = cache.positionOffsets.asArray(Int32.self)
+        return device == paged.hostPositionOffsets ? device : nil
+    }
+
     func validateState(after count: Int, storageViews: Bool = true) throws {
         // A host's caches are shared: bind this request's rows (a no-op when
         // they are bound already) before checking what the caches hold.
         if hosted { _ = bank.layerCaches(rowStates: [rows]) }
         for (index, optionalRow) in rows.enumerated() {
             let kind = geometry.kinds[index], retained = kind.retainedTokens(atFrontier: count)
+            let cache = geometry.caches[index]
             guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == retained,
-                geometry.caches[index].rows.count == 1, geometry.caches[index].rows[0] === row,
-                geometry.caches[index].positionOffsets.shape == [1],
-                geometry.caches[index].positionOffsets.dtype == .int32,
-                geometry.caches[index].positionOffsets.asArray(Int32.self) == [Int32(count)] else {
+                cache.rows.count == 1, cache.rows[0] === row,
+                cache.positionOffsets.shape == [1], cache.positionOffsets.dtype == .int32,
+                Self.frontier(of: cache, deviceRead: storageViews) == [Int32(count)] else {
                 throw ProbeError("CBv2 KV ownership or device token frontier differs")
             }
             guard storageViews else { continue }
@@ -382,6 +396,20 @@ final class CBv2OwnedRequestState {
             do { try evaluation.rollback() } catch { cleanupError = error }
         }
         evaluation = nil; evaluationWasStaged = false; windowTokens = nil; windowPhase = nil
+        if PagedLayerCache.engineTrace, pagedHost {
+            // Diagnosis only (cumulative per host cache): which paged paths served the request.
+            let paged: [PagedLayerCache] = geometry.caches.compactMap { $0 as? PagedLayerCache }
+            var multiQuery = 0, batched = 0, gathers = 0, mirrorChunks = 0
+            for cache in paged {
+                multiQuery += cache.mtpMultiQueryCalls; batched += cache.mtpBatchedAttentionCalls
+                gathers += cache.prefillHistoryGathers; mirrorChunks += cache.prefillMirrorChunks
+            }
+            let plan: String = paged.first?.segmentDispatchTrace ?? "-"
+            var line = "darkbloom-paged-engine-trace-v1 committed=\(committedTokens) layers=\(paged.count)"
+            line += " mq_windows=\(multiQuery) batched_windows=\(batched)"
+            line += " prefill_gathers=\(gathers) mirror_chunks=\(mirrorChunks) plan0=\(plan)"
+            log(line)
+        }
         bank.releaseBoundRows()
         releasedRows = rows.compactMap { $0 }
         backend.release(rows); rows.removeAll()

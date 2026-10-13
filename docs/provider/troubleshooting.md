@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -188,6 +188,8 @@ A new binary version clears a stale record on start. Clearing the guard restores
 normal selection on the next model load. It does not bypass live precision,
 operator settings or loaded-model capability checks, and does not guarantee
 paged service or qualify a runtime.
+The [Qwen-first rollout](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/qwen-first-paged-ssd-rollout.md)
+is historical qualification evidence, not the current selection policy.
 
 `kv backend posture` ✗ means an explicit backend request was refused or the
 served backend differs from the request. Read the reported reason. For explicit

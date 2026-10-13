@@ -32,9 +32,12 @@ def select(api, run_id, attempt):
         raise ValueError("Retained run and current release tag differ")
     verify_source(api, source)
     version = tag[1:]
-    path = "provider-swift/Sources/ProviderCore/ProviderCore.swift"
-    file = api.get(f"contents/{path}?ref={source}")
-    values = re.findall(r'public static let version = "([^"]+)"', base64.b64decode(file["content"]).decode())
+    file = api.get(f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={source}")
+    content = file.get("content") if isinstance(file, dict) else None
+    if not isinstance(content, str):
+        raise ValueError("Retained provider source is missing")
+    values = re.findall(r'public static let version = "([^"]+)"',
+                        base64.b64decode("".join(content.split()), validate=True).decode())
     if values != [version]:
         raise ValueError("Retained source version differs from release tag")
     jobs = api.pages(f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")

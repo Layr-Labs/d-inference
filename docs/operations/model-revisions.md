@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-09
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -18,8 +18,9 @@ Overwriting an already published R2 revision is rejected.
 - The model already has an active registry entry. Qualify the new checkpoint's
   engine compatibility, memory, output and MTP behavior separately; an upload
   succeeding is not a model-quality verdict.
-- Deploy the coordinator support and release the provider support once. Macs
-  must advertise `model_revisions_v1` for automatic same-ID updates.
+- Confirm the external platform already supports the revision API and Macs
+  advertise `model_revisions_v1` for automatic same-ID updates. Backend
+  deployment is owned by the platform and is not part of this runbook.
 - Configure AWS CLI credentials for the R2 bucket and
   `MODEL_REGISTRY_PUBLISHING_KEY` for the selected coordinator. The command takes
   the R2 endpoint explicitly or through `R2_ENDPOINT`.
@@ -31,7 +32,7 @@ Overwriting an already published R2 revision is rejected.
 ## Steps
 
 1. Read the existing catalog entry and save its version and hash before selecting
-   replacement bytes. The [Nemotron Lightning rollout](cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2)
+   replacement bytes. The [Nemotron Lightning rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2)
    uses the catalog ID `nvidia-nemotron-3.5-lightning`; confirm that ID and its
    active entry on the selected coordinator. A Hugging Face repository name is
    a download source and does not replace the catalog ID.
@@ -103,7 +104,7 @@ Overwriting an already published R2 revision is rejected.
 
 5. If this model participates in cache routing, qualify and derive the new
    `(model_id, model_aggregate_sha256, prompt_contract_id)` tuple using the
-   [cache-routing rollout](cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2).
+   [cache-routing rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#widen-the-plan-gate-and-add-nemotron-lightning-and-bonsai-2).
    Append it to `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` through that
    runbook's separately approved deployment step. Keep tuples for retained
    approved revisions during convergence and rollback. Promotion does not update
@@ -111,7 +112,7 @@ Overwriting an already published R2 revision is rejected.
    tokenizer and prompt contract remain identical. Until it is appended the
    model has no cache routing: `artifact_allowlist.stale_models` in
    `GET /v1/cache/status` counts it and the coordinator log names the exact
-   tuple ([stale entries](cache-routing-rollout.md#stale-entries-after-a-model-revision)).
+   tuple ([stale entries](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#stale-entries-after-a-model-revision)).
 
 ## Verification
 
@@ -156,7 +157,7 @@ revocation is not complete until the live routing policy refresh succeeds.
 
 ## Related
 
-- [Coordinator deployment](coordinator-deploy.md)
+- [Coordinator deployment](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md)
 - [Provider release](provider-release.md)
 - [Model revision design](../architecture/model-revisions.md)
-- [Cache-routing rollout](cache-routing-rollout.md)
+- [Cache-routing rollout](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md)

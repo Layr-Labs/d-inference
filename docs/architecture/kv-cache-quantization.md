@@ -1,6 +1,6 @@
 # KV execution and checkpoint quantization
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 The provider defaults to native attention execution and independently requests
 `balanced` storage for eligible encrypted checkpoints. Explicit live packed
@@ -295,6 +295,6 @@ whole-model quality or performance guarantee for this path.
 - [Inference architecture](inference.md)
 - [Prefix cache architecture](prefix-cache.md)
 - [SSD format reference](../reference/ssd-kv-cache.md)
-- [Native-inference checkpoint design](../design/native-inference-quantized-checkpoints.md)
+- [Native-inference checkpoint design, archived original](https://github.com/Layr-Labs/d-inference/blob/f35743857cb2fd9d408617e9f9da884ad166e8e2/docs/design/native-inference-quantized-checkpoints.md)
 - [Initial live-packed numerical investigation](../design/runtime-kv-compression.md)
 - [Historical live-packed model and encrypted-cache qualification](../reports/2026-10-09-runtime-kv-quantization.md)

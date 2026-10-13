@@ -30,13 +30,16 @@ import Foundation
 /// `DARKBLOOM_CLUSTER_PREFIX_SSD_DIR` (absolute) moves the root; the rank's
 /// budget switches (`..._MAX_GB`, `..._MAX_RECORDS`, `..._TTL_SECONDS`,
 /// `..._STRIDE`, `..._MIN_TOKENS`, `..._MAX_WRITE_GB_PER_DAY`,
-/// `..._MIN_FREE_GB`) pass through unchanged; the rank bounds each.
+/// `..._MIN_FREE_GB`) pass through unchanged; the rank bounds each. The plan's
+/// stop margin reaches the rank (`..._STOP_MARGIN_MS`) so the tier's close
+/// before the model's release fits in the time this owner gives the release.
 enum DistributedInstalledPrefixSSD {
     static let switchName = "DARKBLOOM_CLUSTER_PREFIX_SSD"
     static let directoryName = "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"
     static let keyName = "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"
     static let keyFileName = "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"
     static let keyFileBaseName = "prefix-ssd-v1.key"
+    static let stopMarginName = "DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"
     static let passedThrough = ["MAX_GB", "MAX_RECORDS", "TTL_SECONDS", "STRIDE", "MIN_TOKENS",
                                 "MAX_WRITE_GB_PER_DAY", "MIN_FREE_GB"].map { "DARKBLOOM_CLUSTER_PREFIX_SSD_" + $0 }
 
@@ -62,7 +65,8 @@ enum DistributedInstalledPrefixSSD {
     /// switches; the built-in root otherwise); the cluster-only switches
     /// below are diagnosis overrides.
     static func environment(home: URL, deviceDirectory: URL, ownerEnvironment: [String: String], prefixCacheOff: Bool,
-                            key: OwnerKey? = nil, settings: ClusterPrefixCacheSettings? = nil) -> [String: String] {
+                            key: OwnerKey? = nil, settings: ClusterPrefixCacheSettings? = nil,
+                            stopMarginNanoseconds: UInt64? = nil) -> [String: String] {
         let product = settings ?? productSettings(home: home)
         guard !prefixCacheOff, product.prefixCacheEnabled else { return [:] }
         var directory = product.root.path
@@ -79,6 +83,9 @@ enum DistributedInstalledPrefixSSD {
         case .file(let url): result[keyFileName] = url.path
         }
         result.merge(product.rankSwitches) { current, _ in current }
+        if let margin = stopMarginNanoseconds {
+            result[stopMarginName] = String(min(600_000, max(1_000, margin / 1_000_000)))
+        }
         for name in passedThrough {
             if let value = ownerEnvironment[name], value.utf8.count <= 12, value.allSatisfy(\.isNumber) { result[name] = value }
         }

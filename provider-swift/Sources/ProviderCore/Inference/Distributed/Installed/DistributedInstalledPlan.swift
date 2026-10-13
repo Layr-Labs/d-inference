@@ -119,7 +119,7 @@ struct DistributedInstalledPlan: Sendable {
         // The prefix cache's SSD tier (on with the cache; see the type).
         environment.merge(DistributedInstalledPrefixSSD.environment(home: paths.homeDirectory,
             deviceDirectory: paths.deviceDirectory, ownerEnvironment: ownerEnvironment,
-            prefixCacheOff: prefixCacheOff)) { current, _ in current }
+            prefixCacheOff: prefixCacheOff, stopMarginNanoseconds: budgets.stopMarginNanoseconds)) { current, _ in current }
         // Continuous batching (pipeline mode only): both owners must give their
         // workers the same lane count (the workers' load agreement refuses a
         // mismatch). A setup in a phase-split mode keeps one request at a time.

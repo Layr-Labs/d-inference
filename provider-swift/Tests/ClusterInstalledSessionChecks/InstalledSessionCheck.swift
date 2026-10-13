@@ -153,7 +153,8 @@ final class EndpointBox: @unchecked Sendable {
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
         let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
-        try require(environment.count==13 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
+        try require(environment.count==14 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
+            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_STOP_MARGIN_MS"]==String(prepared.plan.budgets.stopMarginNanoseconds/1_000_000)
             && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]==nil,"native environment widened")
         // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
         // without the product's key source, an owner-only key file made once and never replaced.
@@ -559,8 +560,8 @@ final class EndpointBox: @unchecked Sendable {
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
             // Plus exactly MLX's command-buffer operation guard every rank gets (orphan port #5; the megabyte cap is MLX's
-            // own per chip unless an operator pins one) and the prefix SSD tier's two.
-            try require(environment.count==13+extra.count+(environment["MLX_MAX_MB_PER_BUFFER"]==nil ? 0 : 1)
+            // own per chip unless an operator pins one) and the prefix SSD tier's three (directory, key, the plan's stop margin).
+            try require(environment.count==14+extra.count+(environment["MLX_MAX_MB_PER_BUFFER"]==nil ? 0 : 1)
                 && extra.allSatisfy{environment[$0.key]==$0.value}
                 && environment["MLX_MAX_OPS_PER_BUFFER"]=="16"
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"

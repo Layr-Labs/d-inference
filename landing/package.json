@@ -15,14 +15,15 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "12.1.0",
+    "@next/eslint-plugin-next": "16.2.6",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "25.3.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "eslint": "9.39.3",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "@next/eslint-plugin-next": "16.2.6",
-    "eslint": "9.39.3",
     "typescript-eslint": "8.56.1"
   }
 }

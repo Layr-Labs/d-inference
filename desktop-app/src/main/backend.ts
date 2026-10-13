@@ -13,6 +13,7 @@ import {
   type Snapshot,
 } from '../shared/contracts';
 import { frameData, splitFrames } from './sse';
+import type { PreviewRuntime } from './previewRuntime';
 
 const execute = promisify(execFile);
 const runtimeRequirement =
@@ -59,19 +60,29 @@ export class Backend extends EventEmitter {
   snapshot?: Snapshot;
   private connection?: ReturnType<typeof validateDiscovery>;
   private stopped = false;
-  constructor(private packaged: boolean) {
+  constructor(
+    private packaged: boolean,
+    private preview?: PreviewRuntime,
+  ) {
     super();
   }
   get binary() {
     return (
+      this.preview?.binary ||
       (!this.packaged && process.env.DARKBLOOM_CLI_PATH) ||
       path.join(homedir(), '.darkbloom/bin/darkbloom')
     );
   }
-  // Packaged builds only execute a runtime signed by Darkbloom's Developer ID.
+  // Releases require Darkbloom's Developer ID; opt-in previews require their
+  // compiled-in review signer and dedicated bundled-API identifier.
   private async verifyRuntime(binary: string) {
     if (this.packaged)
-      await execute('/usr/bin/codesign', ['--verify', '--strict', runtimeRequirement, binary]);
+      await execute('/usr/bin/codesign', [
+        '--verify',
+        '--strict',
+        this.preview?.requirement || runtimeRequirement,
+        binary,
+      ]);
   }
   private status(value: DesktopStatus) {
     this.current = value;
@@ -81,7 +92,8 @@ export class Backend extends EventEmitter {
     try {
       const binary = await realpath(this.binary);
       await this.verifyRuntime(binary);
-      if (this.packaged || process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY !== '1')
+      if (this.preview) await this.preview.ensure();
+      else if (this.packaged || process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY !== '1')
         await execute(binary, ['desktop', 'ensure'], {
           timeout: ensureTimeoutMs,
           maxBuffer: 64_000,
@@ -109,7 +121,8 @@ export class Backend extends EventEmitter {
   }
   private async discover() {
     const file = path.join(
-      (!this.packaged && process.env.DARKBLOOM_DESKTOP_DIR) ||
+      this.preview?.directory ||
+        (!this.packaged && process.env.DARKBLOOM_DESKTOP_DIR) ||
         path.join(homedir(), '.darkbloom/desktop'),
       'connection.json',
     );
@@ -206,6 +219,8 @@ export class Backend extends EventEmitter {
     }
   }
   async install(script: string) {
+    if (this.preview)
+      throw new Error('Rebuild the local preview to update its bundled desktop API.');
     this.status({ state: 'installing', message: 'Installing the verified Swift runtime…' });
     try {
       let existing: string | undefined;

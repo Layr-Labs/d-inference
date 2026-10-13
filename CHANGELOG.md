@@ -7,6 +7,8 @@
 
 ## Unreleased — macOS desktop app
 
+- Add an opt-in, Developer ID signed Darkbloom Preview DMG with a bundled desktop API, separate application state, and managed API startup/shutdown. Keep provider operations on the verified installed runtime and preserve normal release signing requirements.
+
 - Use one bottom operation notification across Home, My Macs and its tabs, Leaderboard, Updates and onboarding. Dismiss success after ten seconds without restarting on navigation or state refresh, retain failures until Close, and route immediate action errors through the same popup. Preserve cancellation and expandable diagnostics; keep sign-in in its dedicated dialog.
 
 - Show the signed-in email and status in the sidebar account control. Reuse the existing account-earnings response for verified identity, retain it across desktop restarts, truncate long addresses visually with their full value accessible, and clear it on sign-out. Add an optional owner email to the coordinator response; older coordinators keep the generic Account label.

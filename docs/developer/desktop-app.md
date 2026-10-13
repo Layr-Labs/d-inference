@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-12
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -104,6 +104,38 @@ requires the release qualifications below.
    The packaged app checks only when `app-update.yml` declares a `generic` https
    feed. The GUI must never use this repository's GitHub releases. Those are
    provider runtime releases with no `latest-mac.yml`.
+
+## Signed local preview
+
+To review an unmerged desktop API with an existing vendor-signed provider
+installation, build **Darkbloom Preview** with your own Developer ID. It has a
+separate bundle ID and application-data directory. Opening it starts the
+bundled API in native attach-only mode; provider operations continue to use the
+verified installed runtime. Quitting stops the API while preserving sign-in and
+dashboard state. It does not install a login item or configure an update feed.
+
+Initialize the Swift submodules, install the frontend dependencies, then run:
+
+```bash
+cd desktop-app
+CSC_NAME='<Developer ID certificate SHA-1>' \
+DARKBLOOM_PREVIEW_TEAM_ID='<Apple team ID>' npm run preview:dist
+```
+
+`desktop-app/scripts/package-preview.mjs` builds the CLI, stages its resource bundles, signs
+the API with the supplied identity and verifies its team before packaging. The
+result is `release/mac-arm64/Darkbloom Preview.app` and a DMG/ZIP in `release/`.
+Verify the app with `codesign --verify --deep --strict` before opening it. This
+command signs the application; notarization still needs electron-builder's
+configured Apple credentials. Check the packaging output for its actual status.
+
+Re-run the same command after edits. The preview's signer is compiled into the
+main process, and the bundled executable must satisfy that team and the
+`io.darkbloom.desktop.preview.runtime` identifier. Runtime environment variables
+cannot opt a release app into this mode. Ordinary builds retain the vendor's
+runtime-signature requirement. The native API's lock rejects another preview
+using the same state directory; close the existing preview before relaunching.
+The local build is for desktop review, not a qualified provider release.
 
 ## Verify
 

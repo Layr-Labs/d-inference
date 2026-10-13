@@ -1,6 +1,13 @@
 # Test
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-12
+
+`desktop-app/tests/previewRuntime.test.ts` exercises local-preview process
+startup, duplicate-start suppression, shutdown, persistent state, startup failure,
+and signature rejection using isolated executable fixtures. Run
+`npm test -- --maxWorkers=4` in `desktop-app/` to bound UI-test concurrency while
+compiling Swift. Check the signed packaged app separately using the
+[desktop preview procedure](desktop-app.md#signed-local-preview).
 
 Desktop activity and earnings tests are described in the
 [desktop verification guide](desktop-app.md#verify). `make desktop-api-test`

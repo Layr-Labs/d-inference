@@ -1,6 +1,11 @@
 # Build
 
-> Last updated: 2026-10-05
+> Last updated: 2026-10-12
+
+For a Developer ID signed desktop DMG with a bundled review API, follow the
+[signed local preview procedure](desktop-app.md#signed-local-preview).
+`desktop-app/scripts/package-preview.mjs` keeps this build separate from the
+regular release app and verifies the bundled API's signing team.
 
 The provider test runner isolates daemon-state and loaded-model snapshots in a
 temporary directory for each run. Unit-test providers must not overwrite the

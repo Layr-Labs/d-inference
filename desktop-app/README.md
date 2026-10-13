@@ -80,6 +80,9 @@ More detail is in [development and qualification](../docs/developer/desktop-app.
 
 ## Notes
 
+For a signed local DMG that includes the matching desktop API, use the
+[local preview packaging procedure](../docs/developer/desktop-app.md#signed-local-preview).
+
 The native app normally connects to `~/.darkbloom/bin/darkbloom`; development
 can override `DARKBLOOM_CLI_PATH`.
 

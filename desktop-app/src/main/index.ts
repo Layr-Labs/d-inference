@@ -12,10 +12,23 @@ import { createTray } from './tray';
 import { updateChecksEnabled } from './updateFeed';
 import { desktopUpdates, readUpdateConfig } from './updates';
 import { MainWindow } from './window';
+import { PreviewRuntime, previewTeam } from './previewRuntime';
 
 registerAppScheme();
-const backend = new Backend(app.isPackaged);
+if (app.isPackaged && previewTeam) {
+  app.setName('Darkbloom Preview');
+  app.setPath('userData', path.join(app.getPath('appData'), 'Darkbloom Preview'));
+}
 const uiSmokeTest = process.argv.includes('--ui-smoke-test');
+const preview =
+  app.isPackaged && previewTeam && !uiSmokeTest
+    ? new PreviewRuntime(
+        path.join(process.resourcesPath, 'preview-runtime', 'darkbloom'),
+        path.join(app.getPath('userData'), 'desktop-api'),
+        previewTeam,
+      )
+    : undefined;
+const backend = new Backend(app.isPackaged, preview);
 if (uiSmokeTest)
   backend.current = { state: 'missing', message: 'UI smoke test: native backend disabled.' };
 const devURL = !app.isPackaged ? process.env.DARKBLOOM_DEV_URL : undefined;
@@ -27,7 +40,7 @@ else {
   app.on('second-instance', () => show());
   app.whenReady().then(async () => {
     const startHidden = launchedHidden(app);
-    if (app.isPackaged && !uiSmokeTest) await initializeLoginItem(app);
+    if (app.isPackaged && !uiSmokeTest && !previewTeam) await initializeLoginItem(app);
     serveRenderer(path.join(__dirname, 'renderer'));
     const updateTray = createTray(backend, show);
     window.create(startHidden);
@@ -53,8 +66,16 @@ else {
   });
   app.on('activate', () => show());
   app.on('window-all-closed', () => {});
-  app.on('before-quit', () => {
+  let previewStopped = false;
+  app.on('before-quit', (event) => {
     prepareQuit();
     backend.stop();
+    if (preview && !previewStopped) {
+      event.preventDefault();
+      void preview.stop().finally(() => {
+        previewStopped = true;
+        app.quit();
+      });
+    }
   });
 }

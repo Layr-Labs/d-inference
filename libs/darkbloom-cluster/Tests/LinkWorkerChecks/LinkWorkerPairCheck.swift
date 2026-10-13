@@ -340,7 +340,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
     /// at once, rank 1 unproven, instead of waiting out the stop allowance
     /// (177 s on hardware).
     static func followerOwnerExitsAtLaunch(_ follower: URL, _ owner: URL, _ worker: String) throws {
-        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "transport-exit")
+        let harness = try LinkHarness(follower: follower, owner: owner, worker: worker, profile: "none", behavior: "refuse-exit")
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let first = try localEndpoint(owner, worker, dir, behavior: "normal", relay: nil)
         let second = try harness.linkEndpoint(relay: nil)
@@ -354,12 +354,15 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try require(cleanup.wait(timeout: .now() + 3) == .success, "The leader still waits for a cleanup proof after the follower's last message")
         try require(!second.nativeCleanupObserved && !second.waitForOwnerReleased(deadline: now() + 1_000_000_000),
             "A release without proof was claimed as clean")
+        // The follower says why, in its owner's words (S24: "its owner exited with status 0" alone named nothing).
+        try require(second.followerReason == "stage load refused: fixture reason (needs 9 GiB, 3 GiB reclaimable)",
+            "The follower's reason did not reach the leader: \(String(describing: second.followerReason))")
         first.requestNativeCleanup()
         try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")
         let took = Double(now() - began) / 1e9
         let status = try harness.finish()
         try require(status == 0, "Follower exit \(status): \(harness.reports)")
-        print(String(format: "PASS follower owner exits at launch: start failed, leader's cleanup wait ended with the follower's release (%.1f s), rank 1 unproven", took))
+        print(String(format: "PASS follower owner exits at launch: start failed, leader's cleanup wait ended with the follower's release (%.1f s), rank 1 unproven, the owner's reason stated (%@)", took, second.followerReason ?? "none"))
     }
 
     /// A follower whose own selection differs refuses the open; nothing runs.

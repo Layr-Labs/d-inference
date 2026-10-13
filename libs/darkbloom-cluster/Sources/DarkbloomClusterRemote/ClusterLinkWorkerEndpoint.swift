@@ -137,7 +137,7 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
         case .event: required = ["worker"]; optional = []
         case .bootstrapRound: required = ["bootstrapSequence", "bootstrapBytes", "ownerIncarnation", "ownerLease"]; optional = []
         case .bootstrapReply: required = ["bootstrapSequence", "bootstrapBytes"]; optional = []
-        case .released: required = ["releasedCleanly"]; optional = ["termination", "status"]
+        case .released: required = ["releasedCleanly"]; optional = ["termination", "status", "detail"]
         }
         let present = presentFields
         guard required.isSubset(of: present), present.isSubset(of: required.union(optional)) else {
@@ -163,6 +163,20 @@ public struct ClusterLinkWorkerWire: Codable, Sendable, Equatable {
                 throw fail("Owner termination differs")
             }
         } else { guard status == nil else { throw fail("Status without a termination") } }
+    }
+
+    /// The follower's invalidation when its owner said nothing.
+    static let genericInvalidation = "follower endpoint invalidated"
+
+    /// The owner's last non-empty diagnostic line as plain printable ASCII,
+    /// at most 200 bytes (the wire's detail bound is 256); nil when there is
+    /// none. Crosses the link encrypted, like every worker-wire message.
+    static func ownerReason(_ tail: Data) -> String? {
+        let text = String(decoding: tail.suffix(4096), as: UTF8.self)
+        guard let line = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+            .map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { !$0.isEmpty }) else { return nil }
+        let ascii = String(String.UnicodeScalarView(line.unicodeScalars.map { (32...126).contains($0.value) ? $0 : "?" }))
+        return ascii.isEmpty ? nil : String(ascii.prefix(200))
     }
 
     public func encoded() throws -> Data {
@@ -298,6 +312,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     /// Why the follower was declared lost (its link closed for good or its
     /// process restarted); nil while it is not.
     private var loss: String?
+    /// The follower's own account of why its rank ended (its owner's last
+    /// diagnostic line), when it sent one.
+    private var followerDetail: String?
     /// Each wait group is left exactly once: by its proof, or by the loss.
     private var nativeLeft = false
     private var ownerLeft = false
@@ -316,6 +333,9 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
     public var refusalReason: String? { lock.withLock { refusal } }
     /// Why the follower was declared lost, if it was (`linkLost`).
     public var lossReason: String? { lock.withLock { loss } }
+    /// Why the follower's rank ended, in the follower's words (its owner's
+    /// last diagnostic line, plain ASCII, bounded), if it said.
+    public var followerReason: String? { lock.withLock { followerDetail } }
     public var renewals: UInt64 { lock.withLock { renewalsSent } }
 
     /// Opens the session at once: the follower launches its owner when the
@@ -512,6 +532,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     complete = !nativeLeft; endOwner = !ownerLeft; nativeLeft = true; ownerLeft = true; invalidate = true
                 case .invalidated:
                     guard accepted else { throw ClusterLinkWorkerError.invalid("Invalidation before acceptance") }
+                    if let detail = wire.detail, detail != ClusterLinkWorkerWire.genericInvalidation { followerDetail = detail }
                     invalidate = true
                 case .event:
                     guard accepted, !cleanup, let payload = wire.worker else { throw ClusterLinkWorkerError.invalid("Event outside the session") }
@@ -546,6 +567,7 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     guard accepted, !released else { throw ClusterLinkWorkerError.invalid("Repeated release") }
                     released = true; releasedCleanly = (wire.releasedCleanly ?? false) && cleanup
                     terminationValue = wire.ownerTermination; endOwner = !ownerLeft; ownerLeft = true
+                    if let detail = wire.detail { followerDetail = detail }
                     // The follower's last message of the session: no cleanup
                     // proof can follow it. A release without one (its owner
                     // ended without proving its worker's exit, e.g. it exited
@@ -837,8 +859,9 @@ private final class ServerSession: @unchecked Sendable {
     }
 
     private func localInvalidated() {
-        let cleanup = lock.withLock { endpoint?.nativeCleanupObserved ?? false }
-        if !cleanup { send({ $0.detail = "follower endpoint invalidated" }, kind: .invalidated) }
+        let (cleanup, endpoint) = lock.withLock { (self.endpoint?.nativeCleanupObserved ?? false, self.endpoint) }
+        let reason = endpoint.flatMap { ClusterLinkWorkerWire.ownerReason($0.diagnosticTail) } ?? ClusterLinkWorkerWire.genericInvalidation
+        if !cleanup { send({ $0.detail = reason }, kind: .invalidated) }
     }
 
     /// Relays events, enforces the leader's lease, then reports cleanup and release.
@@ -871,7 +894,10 @@ private final class ServerSession: @unchecked Sendable {
         let deadline = max(endpoint.ownerRetirementDeadlineUptimeNanoseconds, DispatchTime.now().uptimeNanoseconds) + 3_000_000_000
         let cleanly = endpoint.waitForOwnerReleased(deadline: deadline)
         let termination = endpoint.ownerTermination
-        send({ $0.releasedCleanly = cleanly; $0.setOwnerTermination(termination) }, kind: .released)
+        // An unclean release says why, in the owner's words (its diagnostics
+        // are drained once it has ended), so the leader states the reason.
+        let reason = cleanly ? nil : ClusterLinkWorkerWire.ownerReason(endpoint.diagnosticTail)
+        send({ $0.releasedCleanly = cleanly; $0.setOwnerTermination(termination); $0.detail = reason }, kind: .released)
         server.emit(.released(session: id, cleanly: cleanly))
         server.ended(self)
     }

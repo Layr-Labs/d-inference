@@ -161,8 +161,11 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         if let link = endpoint as? ClusterLinkWorkerEndpoint, let reason = link.refusalReason {
             return "rank \(endpoint.rank) follower refused the open: \(reason.isEmpty ? "no reason given" : String(reason.prefix(512)))"
         }
-        if let link = endpoint as? ClusterLinkWorkerEndpoint, let reason = link.lossReason {
-            return "rank \(endpoint.rank) follower lost: \(String(reason.prefix(512)))"
+        if let link = endpoint as? ClusterLinkWorkerEndpoint {
+            let said = link.followerReason.map { "rank \(endpoint.rank) follower said: \($0)" }
+            let lost = link.lossReason.map { "rank \(endpoint.rank) follower lost: \(String($0.prefix(512)))" }
+            let both = [said, lost].compactMap { $0 }
+            if !both.isEmpty { return both.joined(separator: "; ") }
         }
         return nil
     }

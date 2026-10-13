@@ -15,6 +15,11 @@ import DarkbloomClusterSecurity
         let parts = CommandLine.arguments[4].split(separator: "+").map(String.init)
         let options = Set(parts.dropLast()), behavior = parts.last ?? ""
         if behavior == "transport-exit" { return }
+        // An owner that refuses at launch and says why on its standard error.
+        if behavior == "refuse-exit" {
+            FileHandle.standardError.write(Data("starting\nstage load refused: fixture reason (needs 9 GiB, 3 GiB reclaimable)\n".utf8))
+            return
+        }
         if behavior == "inflight-round" {
             let pipe = try ClusterOwnerPipe(input: STDIN_FILENO, output: STDOUT_FILENO, readingCommands: true)
             let deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000

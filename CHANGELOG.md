@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop runtime protocol check
+
+- Keep the desktop app disconnected from a runtime that speaks an incompatible protocol. Previously the app reported the error and then, within a quarter second, connected to the runtime's event stream anyway, showed it as ready and forwarded its unchecked snapshots. Streamed snapshots are now checked too.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

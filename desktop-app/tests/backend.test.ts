@@ -103,3 +103,64 @@ it('runs the existing runtime update without the signature gate in development',
   await backend.install(path.join(home, 'unused-install.sh'));
   expect(existsSync(path.join(home, 'update-ran'))).toBe(true);
 });
+
+// A runtime whose initial state and event stream report the given protocols.
+async function runtimeSpeaking(initial: number, streamed: number) {
+  const state = (protocol: number, observed_at: number) => ({
+    protocol,
+    models: [],
+    machine: {},
+    observed_at,
+  });
+  const server = createServer((request, response) => {
+    if (request.url === '/control/v1/state')
+      return void response.end(JSON.stringify(state(initial, 0)));
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    response.end(`event: state\ndata: ${JSON.stringify(state(streamed, 1))}\n\n`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dir = path.join(home, 'desktop');
+  await mkdir(dir);
+  const record = path.join(dir, 'connection.json');
+  const port = (server.address() as AddressInfo).port;
+  await writeFile(
+    record,
+    JSON.stringify({ version: 1, port, pid: process.pid, token: 't'.repeat(40) }),
+  );
+  await chmod(record, 0o600);
+  process.env.DARKBLOOM_DESKTOP_DIR = dir;
+  process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY = '1';
+  return server;
+}
+
+function observe(backend: Backend) {
+  const seen = { protocols: [] as number[], statuses: [] as string[] };
+  backend.on('state', (snapshot: Snapshot) => seen.protocols.push(snapshot.protocol));
+  backend.on('status', (status: { state: string }) => seen.statuses.push(status.state));
+  return seen;
+}
+
+it('never watches a runtime whose protocol it rejected', async () => {
+  const server = await runtimeSpeaking(2, 2);
+  const backend = new Backend(false);
+  const seen = observe(backend);
+  void backend.watch();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  backend.stop();
+  server.close();
+  expect(seen.protocols).toEqual([]);
+  expect(seen.statuses).toEqual(['error']);
+  expect(backend.current.state).toBe('error');
+});
+
+it('stops forwarding when a streamed snapshot changes protocol', async () => {
+  const server = await runtimeSpeaking(1, 2);
+  const backend = new Backend(false);
+  const seen = observe(backend);
+  void backend.watch();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  backend.stop();
+  server.close();
+  expect(seen.protocols).toEqual([1]);
+  expect(seen.statuses.at(-1)).not.toBe('ready');
+});

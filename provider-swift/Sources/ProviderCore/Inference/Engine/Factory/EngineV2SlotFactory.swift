@@ -50,6 +50,13 @@ enum EngineV2SlotFactory {
         var pagedPreflight: (([CBv2LayerKind]) throws -> Void)? = nil
         var makePrefixCache:
             (([CBv2LayerKind], CBv2PrefixReuseCapability) async -> SSDPrefixCache?)? = nil
+        /// Code-only seam (never environment-reachable): supplies the
+        /// complete-checkpoint KEK when the caller ALSO opted into the isolated
+        /// persistent-key test mode (`DARKBLOOM_PREFIX_CACHE_TEST_ROOT` +
+        /// `_ALLOW_EPHEMERAL` + `_TEST_PERSISTENT_KEY`). Lets a qualification
+        /// test restore its own SSD files across processes without the
+        /// Secure Enclave or Keychain. The store is refused outside that mode.
+        var completeCheckpointKeyLoader: SSDCacheKeyMaterial.PersistentLoader? = nil
     }
 
     /// Human-readable cache state for the slot-serving log line.
@@ -406,7 +413,8 @@ enum EngineV2SlotFactory {
             mtpDrafter: assistantHandle?.drafter, mtpConfig: mtpConfig,
             kvBudget: kvBudget, environment: environment,
             persistentTestNamespace: persistentTestNamespace,
-            identityOverride: assemblyOverrides.completeCheckpointIdentity)
+            identityOverride: assemblyOverrides.completeCheckpointIdentity,
+            keyLoader: assemblyOverrides.completeCheckpointKeyLoader)
         let ssdHybridCheckpointStore = completePreparation?.cache
         let attentionPreparation: AttentionPrefixCachePreparation
         if let completePreparation {

@@ -9,7 +9,8 @@ enum SSDHybridCheckpointStoreFactory {
         nativePrefillChunkSize: Int? = nil,
         kvBudget: GlobalKVCacheBudget?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil
+        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
+        persistentLoader: SSDCacheKeyMaterial.PersistentLoader? = nil
     ) async -> SSDHybridCheckpointStore? {
         guard [identity.modelAggregateHash, identity.promptContractID, identity.buildID, identity.numericsFingerprint]
             .allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 }),
@@ -36,6 +37,10 @@ enum SSDHybridCheckpointStoreFactory {
         do {
             try persistentTestNamespace?.validate(environment: environment)
         } catch { return nil }
+        // An injected key is accepted only in the isolated persistent-key test
+        // mode, so it can never key files under the product cache root.
+        guard persistentLoader == nil || (SSDPrefixCacheFactory.isolatedTestRoot(environment: environment) != nil
+            && environment["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] == "1") else { return nil }
         let wholeRoot = SSDPrefixCacheFactory.cacheRootDirectory(environment: environment)
         // Distinct from attention-only blocks; the existing global maintainer
         // recognizes this same12hex/fanout/.dbk3 hierarchy and accounts all files.
@@ -47,7 +52,8 @@ enum SSDHybridCheckpointStoreFactory {
             }
             try SSDBlockStore.prepareModelRoot(dedicatedRoot: wholeRoot, modelRoot: root)
             let material = try await SSDPrefixCacheFactory.loadKeyMaterial(
-                environment: environment, persistentTestNamespace: persistentTestNamespace)
+                environment: environment, persistentTestNamespace: persistentTestNamespace,
+                persistentLoader: persistentLoader)
             let fingerprint = Data(HMAC<SHA256>.authenticationCode(
                 for: Data("darkbloom-cache-epoch-key-binding-v1".utf8), using: material.key)).hexString
             let epoch = try SSDCacheEpochStore(root: root, binding: .init(

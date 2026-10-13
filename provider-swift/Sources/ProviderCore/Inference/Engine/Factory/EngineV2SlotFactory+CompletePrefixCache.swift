@@ -20,7 +20,8 @@ extension EngineV2SlotFactory {
         mtpDrafter: (any CBv2MTPDrafter)?, mtpConfig: CBv2MTPConfig,
         kvBudget: GlobalKVCacheBudget?, environment: [String: String],
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
-        identityOverride: CBv2CompleteCheckpointIdentity? = nil
+        identityOverride: CBv2CompleteCheckpointIdentity? = nil,
+        keyLoader: SSDCacheKeyMaterial.PersistentLoader? = nil
     ) async -> CompletePrefixCachePreparation? {
         let historicalCapability = model as? any CBv2HistoricalAttentionCheckpointProviding
         let historicalTarget = historicalCapability?.cbv2SupportsHistoricalAttentionCheckpoint == true
@@ -62,7 +63,8 @@ extension EngineV2SlotFactory {
         let cache = await SSDHybridCheckpointStoreFactory.make(
             modelId: modelId, identity: identity, backendLayout: storage.backendLayout,
             kvBudget: kvBudget, environment: environment,
-            persistentTestNamespace: persistentTestNamespace)
+            persistentTestNamespace: persistentTestNamespace,
+            persistentLoader: keyLoader)
         return .init(cache: cache, status: cache == nil
             ? .init(state: .error, reason: .cacheInitFailed) : .scanPending,
             checkpointQuantization: cache == nil ? nil : storage.checkpointQuantization)

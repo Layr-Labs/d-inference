@@ -256,6 +256,15 @@ work. Existing symlink ancestors of candidate and protected cache roots are
 resolved even when the final directories do not exist; dangling links, loops and
 raw traversal refuse. No root is created by that validation.
 
+Gated real-weights qualification tests that must restore their own files in a
+second process without the Secure Enclave or Keychain pass a code-only
+`completeCheckpointKeyLoader` through `EngineV2SlotFactory.AssemblyOverrides`;
+it reaches `SSDHybridCheckpointStoreFactory.make(persistentLoader:)`. The
+factory refuses an injected loader unless the test root, the ephemeral
+allowance and `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY=1` are all present,
+so it can never key the product cache root, and no environment variable can
+supply key bytes (`SSDHybridCheckpointStoreKeyLoaderTests`).
+
 Namespaced key failure cannot fall back to an ephemeral key. Omitting the namespace
 preserves the existing production selection and fallback behavior. Reports record
 namespace, selectors, isolated root and observed key mode without key bytes. This

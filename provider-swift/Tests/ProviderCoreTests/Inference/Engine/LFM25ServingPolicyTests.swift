@@ -1,9 +1,10 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Host-only serving policy for LFM2.5-24B-A2B (`lfm2_moe`): paged KV and
-// SSD complete-checkpoint defaults, the unmeasured activation reserve,
-// artifact sampling defaults, MTP off, and the attention-only pre-load KV rate. Loaded-model capability checks live in
-// the native adapter tests; these pin the defaults that must not regress.
+// Host-only serving policy for LFM2.5-24B-A2B (`lfm2_moe`): the exact-ID
+// advertise gate, paged KV and SSD complete-checkpoint defaults, the
+// unmeasured activation reserve, artifact sampling defaults, MTP off, and the
+// attention-only pre-load KV rate. Loaded-model capability checks live in
+// `LFM25NativeAdapterTests`; these pin the defaults that must not regress.
 
 import Foundation
 import Testing
@@ -24,13 +25,18 @@ private let unqualifiedLFMIDs = [
 ]
 
 /// Facts from the pinned artifact config (667408d): 30 conv + 10 attention.
-private func lfmConfigJSON() -> String {
+/// Shared with the native adapter tests, which decode it as the real
+/// `LFM2MoEConfiguration`.
+func lfm25PinnedConfigJSON() -> String {
     let types = (0..<40).map { $0 % 4 == 2 ? "\"full_attention\"" : "\"conv\"" }
     return """
-        {"model_type":"lfm2_moe","num_hidden_layers":40,"hidden_size":2048,
-         "num_attention_heads":32,"num_key_value_heads":8,"conv_L_cache":3,
+        {"model_type":"lfm2_moe","vocab_size":128000,"num_hidden_layers":40,"hidden_size":2048,
+         "num_attention_heads":32,"num_key_value_heads":8,"conv_L_cache":3,"conv_bias":false,
          "max_position_embeddings":131072,"num_experts":64,"num_experts_per_tok":4,
-         "moe_intermediate_size":1536,"intermediate_size":11776,
+         "moe_intermediate_size":1536,"intermediate_size":11776,"num_dense_layers":2,
+         "norm_eps":1e-05,"norm_topk_prob":true,"use_expert_bias":true,
+         "routed_scaling_factor":1.0,"tie_word_embeddings":true,
+         "rope_parameters":{"rope_theta":10000000.0,"rope_type":"default"},
          "layer_types":[\(types.joined(separator: ","))]}
         """
 }
@@ -42,8 +48,59 @@ private func temporaryDirectory(_ label: String) throws -> URL {
     return root
 }
 
+private func gateLoop(models: [ModelInfo]) throws -> ProviderLoop {
+    let config = ProviderLoopConfig(
+        coordinatorURL: "ws://127.0.0.1:0/ignored",
+        hardware: HardwareInfo(
+            machineModel: "Mac15,14", chipName: "Apple M3 Ultra", chipFamily: .m3, chipTier: .ultra,
+            memoryGb: 256, memoryAvailableGb: 250,
+            cpuCores: CpuCores(total: 32, performance: 24, efficiency: 8),
+            gpuCores: 80, memoryBandwidthGbs: 819),
+        models: models,
+        config: ProviderConfig(
+            provider: ProviderSettings(name: "lfm-gate-test", memoryReserveGB: 1),
+            backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3),
+            coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
+    return try ProviderLoop(config: config, attestationSigner: nil)
+}
+
 @Suite("LFM2.5-24B-A2B serving policy")
 struct LFM25ServingPolicyTests {
+
+    // MARK: advertise gate
+
+    @Test("exact artifact and catalog ids are advertised; shared-type checkpoints are not")
+    func exactAdvertiseGate() async throws {
+        for id in lfmIDs {
+            #expect(EngineV2SupportedModels.isLFM25ListingModelID(id))
+            #expect(EngineV2SupportedModels.isSupported(
+                model: ModelInfo(id: id, modelType: "lfm2_moe", sizeBytes: 1, estimatedMemoryGb: 1)))
+            #expect(EngineV2SupportedModels.isSupported(
+                model: ModelInfo(id: id, modelType: " LFM2_MOE\n", sizeBytes: 1, estimatedMemoryGb: 1)))
+            // A qualified id is not a grant for another architecture.
+            for type in [nil, "", "lfm2", "lfm2_vl", "qwen3"] as [String?] {
+                #expect(!EngineV2SupportedModels.isSupported(
+                    model: ModelInfo(id: id, modelType: type, sizeBytes: 1, estimatedMemoryGb: 1)))
+            }
+        }
+        for id in unqualifiedLFMIDs {
+            #expect(!EngineV2SupportedModels.isLFM25ListingModelID(id))
+            #expect(!EngineV2SupportedModels.isSupported(
+                model: ModelInfo(id: id, modelType: "lfm2_moe", sizeBytes: 1, estimatedMemoryGb: 1)))
+        }
+        // model_type alone never admits the family.
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "lfm2_moe"))
+
+        let qualified = ModelInfo(
+            id: EngineV2SupportedModels.lfm25_24bA2BModelID, modelType: "lfm2_moe",
+            sizeBytes: 1 << 30, estimatedMemoryGb: 1.2)
+        let small = ModelInfo(
+            id: "LiquidAI/LFM2.5-8B-A1B-MLX-4bit", modelType: "lfm2_moe",
+            sizeBytes: 1 << 30, estimatedMemoryGb: 1.2)
+        let loop = try gateLoop(models: [qualified, small])
+        #expect(await loop.isModelAdvertised(qualified.id))
+        #expect(!(await loop.isModelAdvertised(small.id)))
+    }
 
     // MARK: paged attention + prefix cache defaults
 
@@ -81,7 +138,7 @@ struct LFM25ServingPolicyTests {
         // A default-on SSD load must take the fresh content-hash bracket.
         let directory = try temporaryDirectory("loadhash")
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data(lfmConfigJSON().utf8).write(to: directory.appendingPathComponent("config.json"))
+        try Data(lfm25PinnedConfigJSON().utf8).write(to: directory.appendingPathComponent("config.json"))
         for id in lfmIDs {
             #expect(PrefixCachePolicy.requiresLoadHashBracket(
                 modelId: id, modelDirectory: directory, environment: [:]))
@@ -111,7 +168,7 @@ struct LFM25ServingPolicyTests {
         let directory = try temporaryDirectory("kv")
         defer { try? FileManager.default.removeItem(at: directory) }
         let config = directory.appendingPathComponent("config.json")
-        try Data(lfmConfigJSON().utf8).write(to: config)
+        try Data(lfm25PinnedConfigJSON().utf8).write(to: config)
         let architecture = KVEstimation.parseModelArchitecture(at: config)
         #expect(architecture.numLayers == 40)
         #expect(architecture.kvHeads == 8)
@@ -142,7 +199,7 @@ struct LFM25ServingPolicyTests {
         for name in ["LiquidAI--LFM2.5-24B-A2B-MLX-4bit", "LiquidAI--LFM2.5-8B-A1B-MLX-4bit"] {
             let snapshot = cache.appendingPathComponent("models--\(name)/snapshots/0123456789abcdef")
             try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-            try Data(lfmConfigJSON().utf8).write(to: snapshot.appendingPathComponent("config.json"))
+            try Data(lfm25PinnedConfigJSON().utf8).write(to: snapshot.appendingPathComponent("config.json"))
             try Data(count: 3 << 20).write(to: snapshot.appendingPathComponent("model.safetensors"))
         }
         let models = ModelScanner.scanAllModels(in: cache, environment: [:])
@@ -151,6 +208,8 @@ struct LFM25ServingPolicyTests {
         #expect(qualified.isVision == nil)
         #expect(qualified.sizeBytes == 3 << 20)
         #expect(abs(qualified.estimatedMemoryGb - Double(3 << 20) / 1_073_741_824 * 1.2) < 1e-9)
+        #expect(EngineV2SupportedModels.partition(models).supported.map(\.id)
+            == [EngineV2SupportedModels.lfm25_24bA2BModelID])
     }
 
     // MARK: sampling

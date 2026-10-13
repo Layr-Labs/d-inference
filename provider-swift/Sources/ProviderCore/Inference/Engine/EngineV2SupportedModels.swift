@@ -20,6 +20,10 @@
 //   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
 //                       automatic paging/cache policy is separately scoped
 //
+//   * `lfm2_moe`     — exact LFM2.5-24B-A2B MLX 4-bit artifact and its catalog
+//                       id only (LFM2MoEModel: attention KV + recurrent conv
+//                       state); other `lfm2_moe` checkpoints stay unadvertised.
+//
 //   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
 //                       artifact/sidecar validity and per-request bounds remain
 //                       mandatory; this does not activate automatic MTP.
@@ -86,9 +90,12 @@ public enum EngineV2SupportedModels {
 
     /// Nano and Lightning share a model_type but have different checkpoint
     /// contracts. Only the selected Lightning artifact is onboarded here.
+    /// Likewise only the exact LFM2.5-24B-A2B identities admit `lfm2_moe`.
     public static func isSupported(model: ModelInfo) -> Bool {
-        if normalized(model.modelType) == "nemotron_h" {
-            return isNemotron35ListingModelID(model.id)
+        switch normalized(model.modelType) {
+        case "nemotron_h": return isNemotron35ListingModelID(model.id)
+        case "lfm2_moe": return isLFM25ListingModelID(model.id)
+        default: break
         }
         return isSupported(modelType: model.modelType)
     }

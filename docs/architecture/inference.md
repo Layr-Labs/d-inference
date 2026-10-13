@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -536,7 +536,9 @@ the knobs a request omits; an explicit request value always wins, so
 `model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
 (`EngineV2SupportedModels.isNemotron35ListingModelID`) honours its artifact
 (`temperature 1.0`, `top_p 0.95`, `do_sample true`, the values the model card
-recommends). Every other family keeps the legacy defaults in the table
+recommends), and `model_type == lfm2_moe` with an exact LFM2.5-24B-A2B id
+(`EngineV2SupportedModels.isLFM25ListingModelID`) honours its artifact
+(`temperature 0.1`, `top_k 50`, `repetition_penalty 1.05`). Every other family keeps the legacy defaults in the table
 byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
@@ -661,6 +663,7 @@ records tiny-model correctness and remaining release gates.
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
+| `lfm2_moe` | LFM2.5-24B-A2B | Advertisement is limited to `EngineV2SupportedModels.isLFM25ListingModelID` (`LiquidAI/LFM2.5-24B-A2B-MLX-4bit`, `lfm2.5-24b-a2b`); other `lfm2_moe` checkpoints are not advertised. Native `LFM2MoEModel`: 10 attention layers own paged KV, 30 short-conv layers carry request-owned conv state in complete recurrent checkpoints; paged KV and SSD prefix reuse default on for the exact ids; no MTP. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else

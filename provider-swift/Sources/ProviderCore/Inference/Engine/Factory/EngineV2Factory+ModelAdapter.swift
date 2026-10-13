@@ -61,6 +61,10 @@ extension EngineV2Factory {
                 layerKinds = nemotron.cbv2LayerKinds
                 modelCapabilities = nemotron.cbv2Capabilities
                 newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }
+            case let lfm as LFM2MoEModel:
+                layerKinds = lfm.cbv2LayerKinds
+                modelCapabilities = lfm.cbv2Capabilities
+                newCaches = { make in try lfm.newCacheV2(makeLayerCache: make) }
             case let qwen as Qwen4ExpModel:
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities

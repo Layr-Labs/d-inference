@@ -218,6 +218,35 @@ final class ClusterOrphanReaperTests: XCTestCase {
         XCTAssertEqual(ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [live], graceSeconds: 60, now: now), [])
     }
 
+    /// Review round 4: every caller of the sweep (`darkbloom cluster reap`,
+    /// a member's start and end, the supervisor before a restart) names no
+    /// live epoch, and a live session's staging directory keeps the mtime of
+    /// its first record (its writes land one level down, in `rank<r>`). So a
+    /// session serving longer than the grace lost its staging directory, and
+    /// the record being written, to any sweep on its Mac. A running worker
+    /// started with an epoch (whatever its parent) makes that epoch live.
+    func testStagingOfAnEpochARunningWorkerHoldsIsNeverStale() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("staging-" + UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let serving = UUID().uuidString.lowercased(), dead = UUID().uuidString.lowercased(), orphaned = UUID().uuidString.lowercased()
+        for name in [serving, dead, orphaned] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(name).appendingPathComponent("rank0"),
+                                                    withIntermediateDirectories: true)
+        }
+        let me = getpid()
+        // The serving session's worker has a live parent; the orphaned one's
+        // parent is gone (the reaper's to end, but while it runs its writes
+        // are still its own).
+        let running = [worker(900_101, parent: me, epoch: serving), worker(900_102, parent: 1, epoch: orphaned),
+                       owner(900_103, parent: me)]
+        XCTAssertEqual(ClusterOrphanReaper.runningWorkerEpochs(running), [serving, orphaned])
+        let later = Date().timeIntervalSince1970 + 3_600
+        let stale = ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [], graceSeconds: 60, now: later,
+                                                            runningWorkers: running)
+        XCTAssertEqual(stale.map(\.lastPathComponent), [dead], "only the epoch no running worker holds")
+    }
+
     func testEnvironmentGuardsYieldToACanonicalPinnedValueOnly() {
         let base = ["PATH": "/usr/bin:/bin"]
         let applied = ClusterWorkerEnvironmentGuards.apply(to: base, ownerEnvironment: [:])

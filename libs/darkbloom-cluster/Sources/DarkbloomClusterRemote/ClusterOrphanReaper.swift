@@ -297,16 +297,30 @@ public enum ClusterOrphanReaper {
         return rmdir(directory) == 0
     }
 
+    /// The membership epochs running cluster workers were started with,
+    /// whatever their parent: a session whose worker still runs (serving, or
+    /// an orphan still unwinding) owns its staging directory.
+    public static func runningWorkerEpochs(_ processes: [ClusterProcessTable.Entry]) -> Set<String> {
+        Set(processes.compactMap { role(of: $0) == .worker ? membershipEpoch(of: $0) : nil })
+    }
+
     /// Entries of a cache staging root named by a membership epoch that is
     /// not live and whose directory is older than the grace. Only such entries
-    /// are ever removed; everything else in the root is left alone.
+    /// are ever removed; everything else in the root is left alone. An epoch
+    /// is live when the caller names it or a running worker holds it
+    /// (`runningWorkers`, the process table read after the process sweep):
+    /// the callers name none, and a serving session's epoch directory keeps
+    /// the mtime of its first record (its writes land in `rank<r>` below it),
+    /// so its age alone says nothing.
     public static func staleStagingEntries(roots: [URL], liveEpochs: Set<String>, graceSeconds: Double,
-                                           now: Double = Date().timeIntervalSince1970) -> [URL] {
+                                           now: Double = Date().timeIntervalSince1970,
+                                           runningWorkers: [ClusterProcessTable.Entry] = []) -> [URL] {
+        let live = liveEpochs.union(runningWorkerEpochs(runningWorkers))
         var stale: [URL] = []
         for root in roots {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { continue }
             for name in names.sorted() {
-                guard let uuid = UUID(uuidString: name), uuid.uuidString.lowercased() == name, !liveEpochs.contains(name) else { continue }
+                guard let uuid = UUID(uuidString: name), uuid.uuidString.lowercased() == name, !live.contains(name) else { continue }
                 let entry = root.appendingPathComponent(name, isDirectory: true)
                 var information = stat()
                 guard lstat(entry.path, &information) == 0, information.st_mode & S_IFMT == S_IFDIR,
@@ -344,8 +358,11 @@ public enum ClusterOrphanReaper {
             else { errors.append("bootstrap directory not removed: \(directory)") }
         }
         var removedStaging: [String] = []
+        // Read again after the process sweep: what still runs keeps its staging.
+        let stillRunning = stagingRoots.isEmpty ? [] : ClusterProcessTable.running()
         for entry in staleStagingEntries(roots: stagingRoots, liveEpochs: liveEpochs,
-                                         graceSeconds: Double(limits.contractGraceNanoseconds) / 1e9) {
+                                         graceSeconds: Double(limits.contractGraceNanoseconds) / 1e9,
+                                         runningWorkers: stillRunning) {
             do { try FileManager.default.removeItem(at: entry); removedStaging.append(entry.path) }
             catch { errors.append("staging entry not removed: \(entry.lastPathComponent)") }
         }

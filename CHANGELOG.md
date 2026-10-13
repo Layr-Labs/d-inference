@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop Cooling readings and thresholds
+
+- Stop showing a cooling reading older than a minute as the current GPU temperature and spinning fans; the Cooling page now shows them as unavailable, matching its status and Home's fan indicator. Show a threshold set from the CLI between the 5 °C presets as itself, so the selected value is exactly what Enable provider cooling submits, and keep CLI-set speed and threshold within the whole-number ranges the desktop action accepts.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

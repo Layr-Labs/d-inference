@@ -1,6 +1,6 @@
 import type { BackendState } from '../useBackend';
 import { Empty, Header, Notice, Status } from '../components/UI';
-import { coolingStatus } from './cooling/status';
+import { coolingStale, coolingStatus } from './cooling/status';
 import { CoolingControls } from './cooling/CoolingControls';
 import { FanCards } from './cooling/FanCards';
 import styles from './cooling/cooling.module.css';
@@ -13,7 +13,9 @@ export function Cooling({
   embedded?: boolean;
 }) {
   const cooling = backend.cooling;
-  const fans = cooling?.supported ? cooling.fans : [];
+  // A stale reading is not shown as the current temperature or fan speed.
+  const stale = coolingStale(cooling);
+  const fans = cooling?.supported && !stale ? cooling.fans : [];
   return (
     <>
       <Header
@@ -27,7 +29,7 @@ export function Cooling({
         <div className={styles.temperature}>
           <span>GPU temperature</span>
           <strong>
-            {cooling?.temperature == null ? '—' : `${Math.round(cooling.temperature)}°`}
+            {cooling?.temperature == null || stale ? '—' : `${Math.round(cooling.temperature)}°`}
           </strong>
           <p>Cooling returns to macOS control when the provider stops.</p>
         </div>

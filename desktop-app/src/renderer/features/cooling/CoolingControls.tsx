@@ -4,14 +4,21 @@ import { Button } from '../../components/UI';
 import styles from './cooling.module.css';
 
 const thresholds = [40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90];
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+// The CLI accepts any threshold, so a configured value between the presets is offered as itself;
+// the select then shows exactly what Enable submits.
+const thresholdOptions = (current: number) =>
+  thresholds.includes(current) ? thresholds : [...thresholds, current].sort((a, b) => a - b);
 
 export function CoolingControls({ backend }: { backend: BackendState }) {
   const [speed, setSpeed] = useState(70);
   const [temperature, setTemperature] = useState(50);
   const titleID = useId();
   useEffect(() => {
-    if (backend.cooling?.speed != null) setSpeed(backend.cooling.speed);
-    if (backend.cooling?.threshold != null) setTemperature(backend.cooling.threshold);
+    // Native cooling accepts whole numbers: 60–90 % speed and a 40–90 °C threshold.
+    if (backend.cooling?.speed != null) setSpeed(Math.round(clamp(backend.cooling.speed, 60, 90)));
+    if (backend.cooling?.threshold != null)
+      setTemperature(Math.round(clamp(backend.cooling.threshold, 40, 90)));
   }, [backend.cooling?.speed, backend.cooling?.threshold]);
   return (
     <section className={styles.controls} aria-labelledby={titleID}>
@@ -38,7 +45,7 @@ export function CoolingControls({ backend }: { backend: BackendState }) {
             value={temperature}
             onChange={(e) => setTemperature(Number(e.target.value))}
           >
-            {thresholds.map((t) => (
+            {thresholdOptions(temperature).map((t) => (
               <option value={t} key={t}>
                 {t}°C
               </option>

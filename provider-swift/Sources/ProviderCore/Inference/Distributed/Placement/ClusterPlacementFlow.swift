@@ -50,7 +50,8 @@ public enum ClusterPlacementFlow {
                               localMemberID: String, localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile,
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
-                              regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil) throws
+                              regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
+                              served: [ClusterServedSpeedRecords.Entry] = []) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {
@@ -91,9 +92,24 @@ public enum ClusterPlacementFlow {
         let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
             artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens, measurements: measurements,
             indices: profiles.compactMap { $0.1.speedIndex })
-        let devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
+        var devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
+        // Requests this pair served are measurements too: the next plan starts from them.
+        let members = Set(profiles.map { $0.0 })
+        let ours = served.filter { $0.setup.modelID == description.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
+        var servedLines: [String] = []
+        if !ours.isEmpty {
+            let derived = try ClusterServedCalibration.measurements(entries: ours, devices: devices, layout: layout, link: .unmeasured,
+                measuredUTC: ISO8601DateFormatter().string(from: Date()))
+            servedLines = ["Speed records from served requests"] + derived.lines
+            if !derived.measurements.isEmpty {
+                let again = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
+                    artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens,
+                    measurements: measurements + derived.measurements, indices: profiles.compactMap { $0.1.speedIndex })
+                devices = zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
+            }
+        }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
-        var lines = ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        var lines = servedLines + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
         if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
         if records.restrictsShapes {
             lines.append("Qualified placements")

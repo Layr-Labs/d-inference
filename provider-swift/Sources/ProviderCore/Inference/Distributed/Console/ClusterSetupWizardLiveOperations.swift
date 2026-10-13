@@ -524,9 +524,15 @@ final class LiveContext: @unchecked Sendable {
             let manifest = ClusterSetupModelFolders.readManifest(directory.appendingPathComponent("manifest.json")) ?? Data()
             return .init(model: model, layout: layout, capability: capability, tokenizerFiles: ClusterSetupPlanning.tokenizerFiles(manifest: manifest))
         }
+        // The profiles are kept for the serving leader's per-request route; the speed
+        // records of requests this pair served join the measurements (the next plan).
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        if let peerID = description.members.first(where: { $0.id != memberID })?.id {
+            ClusterMemberProfiles.record([memberID: localProfile, peerID: peerProfile], homeDirectory: home)
+        }
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,
             localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements(),
-            leader: settings.derivedPlacement ? .some(nil) : .none)
+            leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home))
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)

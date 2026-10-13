@@ -322,6 +322,23 @@ public enum ClusterPlacementPlanner {
         return context.evaluate(order: Array(devices.indices), cuts: cuts, mode: mode, schedule: prefillSchedule)
     }
 
+    /// One Mac running the whole model by itself for the policy's request,
+    /// as the planner predicts it: serial prefill of every layer on that Mac,
+    /// then decode with the model's head when `speculativeHead` is true and
+    /// the Mac is credited one (`ClusterSpeculativeCredit`), plain otherwise.
+    /// No link is crossed. The route a phase split's decoding rank takes when
+    /// it serves a request alone (`ClusterRequestRouter`).
+    public static func evaluateAlone(device: ClusterPlacementDevice, layout: ClusterModelLayout,
+                                     speculativeHead: Bool, policy: ClusterPlacementPolicy = .init())
+        -> ClusterPlacementPrediction {
+        let context = Context(devices: [device], layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
+            outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [.pipeline], schedules: [.serial],
+            link: .unmeasured, policy: policy)
+        let mode: ClusterGenerationMode = speculativeHead && layout.generationModes.contains(.phaseSplitMTP) ? .phaseSplitMTP : .pipeline
+        return context.prediction(policy.regime, order: [device], ranges: [layout.range(0..<layout.layerCount)],
+            mode: mode, schedule: .serial)
+    }
+
     struct Context {
         let devices: [ClusterPlacementDevice]
         let layout: ClusterModelLayout

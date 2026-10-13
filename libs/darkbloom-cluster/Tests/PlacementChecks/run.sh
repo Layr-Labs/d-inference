@@ -77,6 +77,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Placement/QwenDensePlacementFamily.swift" \
   "$R/Models/Placement/ClusterPlacementArtifact.swift" \
   "$R/Models/Placement/ClusterPlacementTool.swift" \
+  "$R/Models/Placement/ClusterPlacementTool+Served.swift" \
   "$task_package"/Tests/PlacementChecks/*.swift -o "$task_build/check"
 "$task_build/check" "$task_package/Tests/StageMetadataChecks/Inputs/qwen-retained-inputs.json" "$task_package/Tests/PlacementChecks/Golden"
 # PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries

@@ -216,14 +216,28 @@ public struct ClusterWorkerReservation: Equatable, Sendable {
     /// from another (a hop, a codec, a local copy) that forgot it would
     /// silently serve a sampled request greedily, the F1 root-cause class.
     public let sampling: ClusterWorkerSampling?
+    /// Which way this request goes (`ClusterRequestRouter`); nil is the pair as
+    /// placed, and then the reservation's bytes are exactly those of a worker
+    /// without routes.
+    public let route: ClusterWorkerRoute?
     public init(profileID: String, promptTokenIDs: [Int], stopTokenIDs: [Int], outputCount: Int,
                 chunkSize: Int, deadlineUptimeNanoseconds: UInt64, capacityLimitBytes: Int,
-                sampling: ClusterWorkerSampling?) {
+                sampling: ClusterWorkerSampling?, route: ClusterWorkerRoute? = nil) {
         self.profileID = profileID; self.promptTokenIDs = promptTokenIDs; self.stopTokenIDs = stopTokenIDs
         self.outputCount = outputCount; self.chunkSize = chunkSize
         self.deadlineUptimeNanoseconds = deadlineUptimeNanoseconds; self.capacityLimitBytes = capacityLimitBytes
-        self.sampling = sampling
+        self.sampling = sampling; self.route = route
     }
+}
+
+/// A request routed away from the pair as placed. Both ranks are told the
+/// same route and bind it into the request's agreement.
+public enum ClusterWorkerRoute: String, Equatable, Sendable {
+    /// The decoding rank, which holds every layer under a phase split,
+    /// prefills and decodes the whole request by itself: its own single-chip
+    /// computation of the whole model. The other rank only publishes the
+    /// tokens it relays.
+    case decodingRankAlone = "decoding_rank_alone"
 }
 
 public enum ClusterWorkerTokenDecision: String, Sendable { case proceed, cleanStop }

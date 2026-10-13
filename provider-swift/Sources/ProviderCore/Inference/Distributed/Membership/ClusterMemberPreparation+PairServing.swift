@@ -54,7 +54,10 @@ extension ClusterMemberPreparation {
             observabilityFacts: plan.observabilityFacts(membershipEpoch: nil),
             makeOwner: ClusterPairServingContext.pairOwner(profile: profile, chunkTokens: plan.configuration.chunkTokens,
                 startupAllowanceNanoseconds: plan.budgets.startupAllowanceNanoseconds, timing: plan.budgets.pairTiming,
-                follower: follower))
+                routing: {
+                    ClusterRequestRoutingBasis.make(plan: plan, homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                        deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+                }, follower: follower))
     }
 
     /// Installs this member's serving of its pair's committed starts (S10)

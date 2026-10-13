@@ -37,6 +37,7 @@ import Foundation
             try checkQualifiedShapes(layouts.twentySeven, checks)
             try checkSpeed(layouts.twentySeven, checks)
             try checkSpeculativeCredit(inputs, checks)
+            try checkRequestRoutes(inputs, checks)
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
             try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)

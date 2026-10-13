@@ -554,6 +554,20 @@ final class QwenLayerStageSession {
         } catch { try fail(error) }
     }
 
+    /// The producer stage of a request the decoding rank served alone: it ran
+    /// no frame, so it retires empty, cleanly, once both ranks agreed the route.
+    func retireUnusedForDecodingRankAlone() throws {
+        do {
+            try state.requireOpen()
+            guard stage.stageIndex == 0, request.decodingRankAlone, schedule.committedTokens == 0,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Only an unused producer stage of a request served alone retires empty")
+            }
+            handedOff = true
+            try retire(failed: false)
+        } catch { try fail(error) }
+    }
+
     /// The state-snapshot fingerprint of the current committed state.
     func stateFingerprint(check: () throws -> Void) throws -> String {
         try snapshot(includeBytes: false, check: check).fingerprint

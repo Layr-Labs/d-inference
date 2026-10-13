@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
 import DarkbloomClusterRemote
@@ -88,6 +89,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     /// Bounds the stop's waits once a stop nobody asked for began (see the type).
     private let stopBound: DistributedInstalledStopBound
     private var stopDetailText: String?
+    private var routingNoteText: String?
+    /// How this session routes requests (`ClusterRequestRoutingBasis`), once started.
+    public var routingNote: String? { lock.withLock { routingNoteText } }
     /// Why an unresolved stop is unresolved (S24): which rank's proof is
     /// missing and what its endpoint knows about it.
     public var stopDetail: String? { lock.withLock { stopDetailText } }
@@ -162,7 +166,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             membershipEpoch: values.1.uuidString.lowercased(),
             // The last request failure comes last: the classifier scans newest first (S24).
             diagnostics: (ordered.compactMap(Self.diagnostic) + [values.3, values.2].compactMap { $0 }).filter { !$0.isEmpty },
-            terminations: terminations, peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user))
+            terminations: terminations, peerHosts: configuration.peers.map(\.host), peerUsers: configuration.peers.map(\.user),
+            ranks: configuration.peers.sorted { $0.rank < $1.rank }.map(\.id))
     }
 
     /// One rank's diagnostics for an incident: an SSH owner's standard-error
@@ -345,7 +350,13 @@ public final class DistributedInstalledSession: @unchecked Sendable {
                 lanes: prepared.plan.batchLanes() ?? 1)
         } catch { throw Self.startFailure(error, endpoints: values) }
         lock.withLock { self.pair = pair }
-        let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens)
+        // Per-request route (pair, or the member holding the whole model alone), derived from this setup.
+        let routing = ClusterRequestRoutingBasis.make(plan: prepared.plan,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            deadline: DispatchTime.now().uptimeNanoseconds + 15_000_000_000)
+        lock.withLock { routingNoteText = routing.note }
+        let owner = try DistributedPipeExecutionOwner(pair: pair, profile: profile, chunkSize: configuration.chunkTokens,
+            routing: routing.routing)
         owner.setReadinessInvalidationHandler { [weak self] in self?.beginStop(abnormal: true) }
         // S16: a keyed session is ready only when both ranks report the same
         // encrypted data plane with each peer verified against its pin.

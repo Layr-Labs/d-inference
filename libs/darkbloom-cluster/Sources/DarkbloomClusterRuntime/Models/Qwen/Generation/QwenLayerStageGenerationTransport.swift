@@ -426,6 +426,24 @@ final class QwenLayerStageGenerationTransport {
         }
     }
 
+    /// Rank 1, serving a request alone: its prompt frames' residual digests.
+    func sendAlonePrompt(_ packet: QwenAlonePromptPacket, check: () throws -> Void) throws {
+        try operation {
+            guard rank == 1 else { throw ProbeError("Only the decoding rank serves a request alone") }
+            try sendFrame(try packet.encoded(), frameBytes: QwenAlonePromptPacket.frameBytes,
+                record: record(.tokenRelay, "alone-prompt"), check: check)
+        }
+    }
+
+    /// Rank 0: the next batch of those digests, from frame `firstFrame`.
+    func receiveAlonePrompt(firstFrame: Int, check: () throws -> Void) throws -> QwenAlonePromptPacket {
+        try operation {
+            guard rank == 0 else { throw ProbeError("Only the request owner receives an alone-route prompt") }
+            return try .decode(receiveFrame(frameBytes: QwenAlonePromptPacket.frameBytes,
+                record: record(.tokenRelay, "alone-prompt"), check: check), agreement: agreement, firstFrame: firstFrame)
+        }
+    }
+
     /// One fixed-size zero-padded transfer per control message.
     private func sendFrame(_ body: Data, frameBytes: Int, record scope: CollectiveRecordScope,
                            check: () throws -> Void) throws {

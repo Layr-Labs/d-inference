@@ -166,11 +166,24 @@ public protocol DistributedResidentRequestLease: AnyObject, Sendable {
     func waitUntilRetired() async
     /// Called exactly once after waitUntilRetired, never on a timeout alone.
     func releaseResources()
+    /// Which way this request was routed, when the owner routes requests.
+    var route: DistributedRequestRouteNote? { get }
 }
 
 public extension DistributedResidentRequestLease {
     /// An owner without a clean stop of its own: every caller stop is `cancel()`.
     func requestCleanStop() -> Bool { false }
+    /// An owner without per-request routes: every request runs as placed.
+    var route: DistributedRequestRouteNote? { nil }
+}
+
+/// Which way one request went (`ClusterRequestRouter`), as its telemetry and
+/// `darkbloom cluster status` name it: `pair`, or `alone:<member>` when the
+/// member holding the whole model served it by itself, and why.
+public struct DistributedRequestRouteNote: Sendable, Equatable {
+    public let label: String
+    public let reason: String
+    public init(label: String, reason: String) { self.label = label; self.reason = reason }
 }
 
 /// Injectable, exclusive resident owner. No live Qwen backend is attached here.

@@ -40,11 +40,21 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
     public let mtpAcceptance: Double?
     /// `stop`, `length`, `cancelled`, `engine_error`, or a terminal cause.
     public let outcome: String
+    /// Which way the request went (`ClusterRequestRouter`): `pair`, or
+    /// `alone:<member>` when the member that holds the whole model served it
+    /// by itself. Nil in a record written before routes.
+    public let route: String?
+    /// Why, in plain words, with the two predicted times.
+    public let routeReason: String?
+    /// The members in rank order (their setup labels), so that a speed
+    /// record names which Mac held which range. Nil in an older record.
+    public let ranks: [String]?
 
     public init(requestID: String, finishedAt: Double, modelID: String, mode: String, cut: String,
                 promptTokens: Int, cachedTokens: Int, completionTokens: Int, firstTokenMilliseconds: Double?,
                 decodeTokensPerSecond: Double?, handoffMilliseconds: Double?, handoffBytes: Int?,
-                mtpDrafted: Int?, mtpAccepted: Int?, outcome: String) {
+                mtpDrafted: Int?, mtpAccepted: Int?, outcome: String, route: String? = nil, routeReason: String? = nil,
+                ranks: [String]? = nil) {
         self.requestID = requestID; self.finishedAt = finishedAt; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.promptTokens = promptTokens; self.cachedTokens = cachedTokens
         self.completionTokens = completionTokens; self.firstTokenMilliseconds = firstTokenMilliseconds
@@ -54,6 +64,15 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
             mtpAcceptance = (Double(mtpAccepted) / Double(mtpDrafted) * 10_000).rounded() / 10_000
         } else { mtpAcceptance = nil }
         self.outcome = outcome
+        self.route = route.map { String($0.prefix(80)) }
+        self.routeReason = routeReason.map { String($0.prefix(240)) }
+        self.ranks = ranks.flatMap { $0.count <= 8 && $0.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }) ? $0 : nil }
+    }
+
+    /// A speed record: a completed request that computed its whole prompt
+    /// (nothing restored from a prefix cache) and timed its first token.
+    public var isSpeedRecord: Bool {
+        cachedTokens == 0 && (outcome == "stop" || outcome == "length") && firstTokenMilliseconds != nil && promptTokens > 0
     }
 }
 
@@ -102,6 +121,58 @@ public struct ClusterPairTelemetryFile: Codable, Sendable, Equatable {
     public let records: [ClusterPairRequestTelemetry]
 }
 
+/// Speed records written from served requests (PERF-BACKLOG item 12 / GAPS
+/// (c) 4): the leader keeps every request that computed its whole prompt, per
+/// setup (model, mode, cut) and route, across serving sessions, in
+/// `~/.darkbloom/cluster/served-speed.json` (owner-only), beside the pair
+/// telemetry. The planner reads it on the next plan (`darkbloom-cluster-plan
+/// plan --served`, `ClusterServedCalibration`) and the router prices each
+/// route from it. Values only, as the telemetry.
+public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
+    public static let schemaName = "darkbloom_served_speed_v1"
+    /// Kept per setup and route; the oldest goes first.
+    public static let keptPerRoute = 32
+    public static let keptInAll = 512
+    public let schema: String
+    public let updatedAt: Double
+    /// Oldest first.
+    public let records: [ClusterPairRequestTelemetry]
+
+    public static func defaultFile(homeDirectory: URL) -> URL {
+        homeDirectory.appendingPathComponent(".darkbloom/cluster/served-speed.json")
+    }
+
+    /// `records` with `value` added when it is a speed record, bounded.
+    public static func adding(_ value: ClusterPairRequestTelemetry, to records: [ClusterPairRequestTelemetry]) -> [ClusterPairRequestTelemetry] {
+        guard value.isSpeedRecord else { return records }
+        var result = records + [value]
+        func key(_ r: ClusterPairRequestTelemetry) -> String {
+            [r.modelID, r.mode, r.cut, r.route ?? "pair", (r.ranks ?? []).joined(separator: ",")].joined(separator: "\u{1f}")
+        }
+        let same = result.indices.filter { key(result[$0]) == key(value) }
+        if same.count > keptPerRoute {
+            let drop = Set(same.prefix(same.count - keptPerRoute))
+            result = result.indices.filter { !drop.contains($0) }.map { result[$0] }
+        }
+        if result.count > keptInAll { result.removeFirst(result.count - keptInAll) }
+        return result
+    }
+
+    public static func read(_ file: URL) -> ClusterServedSpeedFile? {
+        let descriptor = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size <= 1 << 20 else { return nil }
+        var bytes = Data(count: Int(info.st_size))
+        let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
+        guard count == Int(info.st_size),
+              let value = try? JSONDecoder().decode(ClusterServedSpeedFile.self, from: bytes),
+              value.schema == schemaName else { return nil }
+        return value
+    }
+}
+
 /// The last `capacity` records of one serving session, in memory and on disk.
 /// Thread-safe. A write failure never reaches the request path: it is counted.
 public final class ClusterPairTelemetryLog: @unchecked Sendable {
@@ -118,6 +189,8 @@ public final class ClusterPairTelemetryLog: @unchecked Sendable {
     private let lock = NSLock()
     private var records: [ClusterPairRequestTelemetry] = []
     private var failures = 0
+    /// Routes this session already served a completed cold request on.
+    private var warmedRoutes: Set<String> = []
 
     /// `file` nil keeps the records in memory only (tests).
     public init(file: URL?, sessionID: String = UUID().uuidString.lowercased(), capacity: Int = defaultCapacity,
@@ -140,6 +213,23 @@ public final class ClusterPairTelemetryLog: @unchecked Sendable {
                 encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
                 var bytes = try encoder.encode(snapshot); bytes.append(10)
                 try ClusterIncidentLog.writeAtomically(bytes, to: file)
+            } catch { failures += 1 }
+            // The speed records outlive the session: read, add, write back.
+            // The first request a session serves on a route pays that path's
+            // one-time costs (kernel builds, first allocations at its shapes):
+            // seconds on the pair, which would make the route look slower than
+            // it serves. It stays in the telemetry, not in the speed records.
+            guard value.isSpeedRecord else { return }
+            guard warmedRoutes.insert(value.route ?? "pair").inserted == false else { return }
+            let history = file.deletingLastPathComponent().appendingPathComponent("served-speed.json")
+            let kept = ClusterServedSpeedFile.read(history)?.records ?? []
+            let updated = ClusterServedSpeedFile(schema: ClusterServedSpeedFile.schemaName, updatedAt: clock(),
+                records: ClusterServedSpeedFile.adding(value, to: kept))
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                var bytes = try encoder.encode(updated); bytes.append(10)
+                try ClusterIncidentLog.writeAtomically(bytes, to: history)
             } catch { failures += 1 }
         }
     }

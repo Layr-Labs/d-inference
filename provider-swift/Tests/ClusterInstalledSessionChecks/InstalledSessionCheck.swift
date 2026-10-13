@@ -71,6 +71,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
+        try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)
         try bootstrapSelection(fixture,prepared)
@@ -92,6 +93,23 @@ final class EndpointBox: @unchecked Sendable {
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
         print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
+    }
+    /// Round-4 finding 1: the prefix-SSD key never reaches a native rank's environment, which any process of
+    /// the same user can read for the rank's whole life. A real child is started with exactly the environment
+    /// the owner gives a native rank and prints it: neither key variable nor the key's bytes may appear.
+    static func prefixSSDKeyNeverInChildEnvironment(_ prepared:DistributedInstalledPreparation) throws {
+        let derived=Data((0..<32).map { UInt8(0xA0 ^ $0) })
+        DistributedInstalledPrefixSSD.installDurableKeySource { derived }
+        defer { DistributedInstalledPrefixSSD.installDurableKeySource { nil } }
+        let hex=derived.map { String(format:"%02x",$0) }.joined()
+        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        let child=Process();child.executableURL=URL(fileURLWithPath:"/usr/bin/env");child.arguments=[];child.environment=environment
+        let out=Pipe();child.standardOutput=out;try child.run()
+        let printed=String(decoding:out.fileHandleForReading.readDataToEndOfFile(),as:UTF8.self);child.waitUntilExit()
+        try require(child.terminationStatus==0 && printed.contains("JACCL_RANK=") && printed.contains("DARKBLOOM_CLUSTER_PREFIX_SSD_DIR="),
+            "the child did not print the rank's environment")
+        try require(!printed.contains("DARKBLOOM_CLUSTER_PREFIX_SSD_KEY") && !printed.lowercased().contains(hex)
+            && !printed.contains(derived.base64EncodedString()),"the prefix-SSD key reached a native rank's environment")
     }
     static func changedConfiguration(_ f:InstalledFixture,edit:(inout [String:Any])->Void) throws->ClusterConfiguration {
         var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(f.configuration)) as! [String:Any];edit(&object)

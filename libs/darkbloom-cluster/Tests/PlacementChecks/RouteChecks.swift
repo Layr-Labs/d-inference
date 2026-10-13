@@ -78,9 +78,30 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     let long = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128)
     checks.require("M3 Ultra + M5 Ultra: a short prompt is served by the M5 Ultra alone (holds every layer and the head)",
         short.path == .alone && short.member == "m5ultra" && short.aloneBasis == .predicted)
-    checks.require("M3 Ultra + M5 Ultra: a long prompt goes to the pair", long.path == .pair && long.reason.contains("faster"))
-    let crossover = try ClusterRequestRouter.crossoverPromptTokens(pair.setup, outputTokens: 128, maximumPrompt: 32_768)
-    checks.require("M3 Ultra + M5 Ultra: the crossover is a prompt of several chunks",
+    // A prediction alone never sends a request to the pair on a small margin: the strong Mac serves (and is measured)
+    // until both routes served near that length; then the tie tolerance decides.
+    let longGain = (long.aloneSeconds ?? 0) / long.pairSeconds - 1
+    checks.require("M3 Ultra + M5 Ultra: a long prompt predicted faster on the pair by under the unmeasured margin is served alone until both are measured",
+        longGain > pair.setup.tieTolerance && longGain < pair.setup.unmeasuredMargin && long.path == .alone && long.reason.contains("not both measured"))
+    func sample(_ route: ClusterServedSample.Route, _ member: String?, _ prompt: Int, first: Double, total: Double) -> ClusterServedSample {
+        .init(route: route, member: member, promptTokens: prompt, outputTokens: 128, firstTokenSeconds: first,
+              decodeTokensPerSecond: 127 / max(0.001, total - first), finishedAt: 500)
+    }
+    let measuredLong = [sample(.pair, nil, 24_000, first: long.pairFirstTokenSeconds, total: long.pairSeconds),
+                        sample(.alone, "m5ultra", 25_000, first: long.aloneFirstTokenSeconds!, total: long.aloneSeconds!)]
+    let longMeasured = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128, served: measuredLong)
+    checks.require("M3 Ultra + M5 Ultra: measured near that length as predicted, the long prompt goes to the pair",
+        longMeasured.path == .pair && longMeasured.pairBasis == .served && longMeasured.aloneBasis == .served
+            && longMeasured.reason.contains("both measured"))
+    checks.require("measurements far from the prompt length do not count as measured near it",
+        try ClusterRequestRouter.decide(pair.setup, promptTokens: 4 * chunk, outputTokens: 128, served: measuredLong).path == .alone)
+    // Predictions trusted (margin = tolerance), the planner's crossover and corrections as before.
+    let trusted = ClusterRequestRouter.Setup(devices: pair.setup.devices, cuts: pair.setup.cuts, mode: pair.setup.mode,
+        schedule: pair.setup.schedule, layout: nine, unmeasuredMargin: 0)
+    checks.require("M3 Ultra + M5 Ultra, predictions trusted: a long prompt goes to the pair",
+        try ClusterRequestRouter.decide(trusted, promptTokens: 24_576, outputTokens: 128).path == .pair)
+    let crossover = try ClusterRequestRouter.crossoverPromptTokens(trusted, outputTokens: 128, maximumPrompt: 32_768)
+    checks.require("M3 Ultra + M5 Ultra, predictions trusted: the crossover is a prompt of several chunks",
         crossover.map { $0 > 2 * chunk && $0 < 24_576 } ?? false)
     checks.require("the route is the same whichever Mac was listed first",
         try ClusterRequestRouter.decide(plan([m5, m3], nine).setup, promptTokens: 256, outputTokens: 128) == short)
@@ -88,13 +109,13 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     // Served requests correct a route's prediction: a pair whose hand-off and
     // link cost what the planner did not price loses where it was predicted to win.
     let near = (crossover ?? 6 * chunk) * 3 / 2
-    let predicted = try ClusterRequestRouter.decide(pair.setup, promptTokens: near, outputTokens: 128)
+    let predicted = try ClusterRequestRouter.decide(trusted, promptTokens: near, outputTokens: 128)
     let slowPair = (0..<3).map { index in
         ClusterServedSample(route: .pair, member: nil, promptTokens: near + index, outputTokens: 128,
             firstTokenSeconds: predicted.pairFirstTokenSeconds * 1.6, decodeTokensPerSecond: 128 / max(0.001, predicted.pairSeconds - predicted.pairFirstTokenSeconds),
             finishedAt: Double(1_000 + index))
     }
-    let corrected = try ClusterRequestRouter.decide(pair.setup, promptTokens: near, outputTokens: 128, served: slowPair)
+    let corrected = try ClusterRequestRouter.decide(trusted, promptTokens: near, outputTokens: 128, served: slowPair)
     checks.require("served pair requests 60 % slower than predicted move a near-crossover prompt to the member alone (\(near) tokens)",
         predicted.path == .pair && corrected.path == .alone && corrected.pairBasis == .served && corrected.aloneBasis == .predicted)
     checks.require("the output length a route is priced at follows what the setup served, never above the request's limit",
@@ -105,7 +126,7 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     // The serving leader's router: re-reads its records, and decides like the router.
     final class Box: @unchecked Sendable { var samples: [ClusterServedSample] = []; var reads = 0; var now = 0.0 }
     let box = Box()
-    let routing = ClusterRequestRouting(setup: pair.setup, refreshSeconds: 30, clock: { box.now }) { box.reads += 1; return box.samples }
+    let routing = ClusterRequestRouting(setup: trusted, refreshSeconds: 30, clock: { box.now }) { box.reads += 1; return box.samples }
     let first = routing.route(promptTokens: near, maximumOutputTokens: 128)
     box.samples = slowPair; box.now = 10
     let cached = routing.route(promptTokens: near, maximumOutputTokens: 128)

@@ -61,11 +61,19 @@ public enum ClusterRequestRouter {
         public let regime: ClusterPlacementPolicy.Regime
         /// The pair must be predicted faster than this share to be chosen.
         public let tieTolerance: Double
+        /// Until both routes served requests near a prompt length (within a
+        /// factor of two), the pair must be predicted faster than this share:
+        /// a prediction only (the speed index, a whole-model rate stretched to
+        /// another length) never makes a request slower than the member alone
+        /// on a small margin. The member alone serves meanwhile, which measures
+        /// it there.
+        public let unmeasuredMargin: Double
         public init(devices: [ClusterPlacementDevice], cuts: [Int], mode: ClusterGenerationMode, schedule: ClusterPrefillSchedule,
                     layout: ClusterModelLayout, link: ClusterLinkCosts = .unmeasured,
-                    regime: ClusterPlacementPolicy.Regime = .rested, tieTolerance: Double = 0.03) {
+                    regime: ClusterPlacementPolicy.Regime = .rested, tieTolerance: Double = 0.03, unmeasuredMargin: Double = 0.25) {
             self.devices = devices; self.cuts = cuts; self.mode = mode; self.schedule = schedule; self.layout = layout
             self.link = link; self.regime = regime; self.tieTolerance = tieTolerance
+            self.unmeasuredMargin = max(tieTolerance, unmeasuredMargin)
         }
 
         /// The members holding every layer under this placement: the last
@@ -174,8 +182,17 @@ public enum ClusterRequestRouter {
                 : "no member holds the whole model under \(setup.mode.rawValue): every request uses the pair")
         }
         let gain = best.priced.seconds / pair.seconds - 1
+        // Both routes measured near this length: the tie tolerance decides. Otherwise the larger margin.
+        func near(_ s: ClusterServedSample) -> Bool { abs(log(Double(s.promptTokens) / Double(promptTokens))) <= log(2.0) }
+        let measured = samples.contains { $0.route == .pair && near($0) }
+            && samples.contains { $0.route == .alone && $0.member == best.device.label && near($0) }
+        if gain > (measured ? setup.tieTolerance : setup.unmeasuredMargin) {
+            return make(.pair, String(format: "the pair is predicted %.0f%% faster than %@ alone", gain * 100, best.device.label)
+                + (measured ? ", both measured near this length" : ""))
+        }
         if gain > setup.tieTolerance {
-            return make(.pair, String(format: "the pair is predicted %.0f%% faster than %@ alone", gain * 100, best.device.label))
+            return make(.alone, String(format: "the pair is predicted %.0f%% faster, but the two were not both measured near this length; "
+                + "%@ alone serves it (the pair must never make a request slower) until they are", gain * 100, best.device.label))
         }
         return make(.alone, gain >= 0
             ? String(format: "%@ alone is predicted within %.0f%% of the pair, so the pair would not make it faster", best.device.label, setup.tieTolerance * 100)

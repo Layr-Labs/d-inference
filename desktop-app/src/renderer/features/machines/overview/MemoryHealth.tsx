@@ -7,12 +7,18 @@ export function MemoryHealth({ memory }: { memory: Snapshot['memory'] }) {
   const share = (value = 0) => (total > 0 ? Math.min(100, Math.max(0, (value / total) * 100)) : 0);
   const activeShare = share(active);
   const reported = active != null || cache != null;
+  // The runtime reports zero when it could not detect this Mac's memory.
+  const size = total > 0 ? gb(total) : 'unknown';
   return (
     <div className={styles.cell}>
       <div className={styles.cellLabel}>
         <span>Memory</span>
         <span>
-          {reported ? `${gb((active || 0) + (cache || 0))} of ${gb(total)}` : `${gb(total)} total`}
+          {reported
+            ? `${gb((active || 0) + (cache || 0))} of ${size}`
+            : total > 0
+              ? `${size} total`
+              : 'Memory unknown'}
         </span>
       </div>
       <span className={styles.memoryBar} aria-hidden="true">

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop milestone, empty chart and unknown memory display
+
+- Keep Home's network strip from showing a total just short of a milestone as reaching it (for example "1B" with "Next milestone 1B", every cell lit and 100%). Leave an all-zero earnings chart's scale unlabeled instead of "$0.000001", and show undetected memory as unknown instead of 0 GB on This Mac's Overview and Home's memory legend.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

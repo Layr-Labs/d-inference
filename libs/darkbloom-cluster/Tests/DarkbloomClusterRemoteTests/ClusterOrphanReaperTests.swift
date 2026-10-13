@@ -218,6 +218,35 @@ final class ClusterOrphanReaperTests: XCTestCase {
         XCTAssertEqual(ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [live], graceSeconds: 60, now: now), [])
     }
 
+    /// Review round 4: `darkbloom cluster cancel-all` compared each owner's
+    /// first argument with its own. An owner is launched by absolute path
+    /// (`ClusterLocalOwnerConfiguration`), while a person types `darkbloom`
+    /// (the shell passes the word as typed), so the command signalled nothing
+    /// on the user path. The decision now compares the images the kernel
+    /// reports for both processes; spelling of the first argument is ignored.
+    func testCancelAllTargetsOwnersRunningThisImageWhateverTheirFirstArgument() {
+        let installed = "/opt/x/darkbloom"
+        let processes = [
+            owner(900_201, parent: getpid()),                                                   // same image, absolute argv[0]
+            .init(processIdentifier: 900_202, arguments: ["darkbloom", "cluster", "worker-owner", "--stdio"],
+                  parentProcessIdentifier: 1, executableName: "darkbloom", startedAt: 1_000), // same image, bare argv[0]
+            .init(processIdentifier: 900_203, arguments: ["/old/darkbloom", "cluster", "worker-owner", "--stdio"],
+                  parentProcessIdentifier: 1, executableName: "darkbloom", startedAt: 1_000), // another install
+            owner(900_204, parent: 1),                                                          // image unreadable
+            worker(900_205, parent: 1),                                                         // workers are never signalled
+            owner(900_206, parent: 1),                                                          // this process's own lineage
+        ]
+        let images: [Int32: String] = [900_201: installed, 900_202: installed, 900_203: "/old/darkbloom", 900_206: installed]
+        let targets = ClusterOrphanReaper.cancelTargets(processes: processes, ownImage: installed,
+                                                        protectedProcessIdentifiers: [900_206], image: { images[$0] })
+        XCTAssertEqual(targets.owners, [900_201, 900_202, 900_203, 900_204])
+        XCTAssertEqual(targets.workers, [900_205])
+        XCTAssertEqual(targets.signal, [900_201, 900_202], "only owners whose running image is this one")
+        // Without its own image the command signals nothing.
+        XCTAssertEqual(ClusterOrphanReaper.cancelTargets(processes: processes, ownImage: nil, protectedProcessIdentifiers: [],
+                                                         image: { images[$0] }).signal, [])
+    }
+
     /// Review round 4: every caller of the sweep (`darkbloom cluster reap`,
     /// a member's start and end, the supervisor before a restart) names no
     /// live epoch, and a live session's staging directory keeps the mtime of

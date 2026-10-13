@@ -70,31 +70,18 @@ public enum ClusterOrphanSweep {
         public let signalled: [Int32]
     }
 
-    /// SIGUSR1 to every owner started from THIS darkbloom binary (each fences
-    /// its worker: the protocol's own drain, locally triggered). An owner of
-    /// another install does not carry the hook, and a process without a
-    /// handler dies of SIGUSR1, so it is listed and never signalled; workers
-    /// are fenced by their owners, never signalled here (an orphaned worker
-    /// is the reaper's). Never SIGTERM, never SIGKILL.
-    public static func cancelAll(executablePath: String = Self.currentExecutablePath()) -> CancelAllReport {
-        let processes = ClusterProcessTable.running()
-        let mine = ClusterOrphanReaper.ownLineage()
-        var owners: [Int32] = [], workers: [Int32] = [], signalled: [Int32] = []
-        for entry in processes where !mine.contains(entry.processIdentifier) {
-            switch ClusterOrphanReaper.role(of: entry) {
-            case .owner:
-                owners.append(entry.processIdentifier)
-                guard entry.arguments.first == executablePath else { continue }
-                if Darwin.kill(entry.processIdentifier, SIGUSR1) == 0 { signalled.append(entry.processIdentifier) }
-            case .worker: workers.append(entry.processIdentifier)
-            case nil: break
-            }
-        }
-        return .init(owners: owners.sorted(), workers: workers.sorted(), signalled: signalled.sorted())
-    }
-
-    /// This process's executable, as the process table spells it.
-    public static func currentExecutablePath() -> String {
-        ClusterProcessTable.arguments(of: getpid())?.first ?? Bundle.main.executablePath ?? ""
+    /// SIGUSR1 to every owner running THIS darkbloom binary (each fences its
+    /// worker: the protocol's own drain, locally triggered). The kernel's path
+    /// of each owner's image is compared with this process's, never the first
+    /// argument (an owner is launched by absolute path; a person types
+    /// `darkbloom`). An owner of another install does not carry the hook, and a
+    /// process without a handler dies of SIGUSR1, so it is listed and never
+    /// signalled; workers are fenced by their owners, never signalled here (an
+    /// orphaned worker is the reaper's). Never SIGTERM, never SIGKILL.
+    public static func cancelAll(ownImage: String? = ClusterProcessTable.executablePath(of: getpid())) -> CancelAllReport {
+        let targets = ClusterOrphanReaper.cancelTargets(processes: ClusterProcessTable.running(), ownImage: ownImage,
+                                                        protectedProcessIdentifiers: ClusterOrphanReaper.ownLineage())
+        let signalled = targets.signal.filter { Darwin.kill($0, SIGUSR1) == 0 }
+        return .init(owners: targets.owners, workers: targets.workers, signalled: signalled)
     }
 }

@@ -126,6 +126,16 @@ public enum ClusterProcessTable {
         return result
     }
 
+    /// The kernel's path of the executable `identifier` runs; nil when the
+    /// process is gone or this user cannot inspect it.
+    public static func executablePath(of identifier: Int32) -> String? {
+        guard identifier > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        guard proc_pidpath(identifier, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return path.isEmpty ? nil : path
+    }
+
     static func executableName(_ identifier: Int32) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
         guard proc_pidpath(identifier, &buffer, UInt32(buffer.count)) > 0 else { return nil }

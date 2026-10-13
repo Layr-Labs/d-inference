@@ -114,6 +114,38 @@ public enum ClusterOrphanReaper {
         return uuid.uuidString.lowercased()
     }
 
+    // MARK: Force-cancel
+
+    /// What `darkbloom cluster cancel-all` does with each cluster process.
+    public struct CancelTargets: Equatable, Sendable {
+        public let owners: [Int32]
+        public let workers: [Int32]
+        /// Owners to send SIGUSR1: those running this very image.
+        public let signal: [Int32]
+    }
+
+    /// The owners of this Mac outside `protectedProcessIdentifiers`, and the
+    /// ones among them whose running image is `ownImage` (the kernel's path of
+    /// each process's executable, `image`). Only such an owner carries the
+    /// force-cancel hook for certain; any other dies of SIGUSR1, so it is
+    /// listed and never signalled. The first argument is not compared: an
+    /// owner is launched by absolute path, a person types `darkbloom`.
+    public static func cancelTargets(processes: [ClusterProcessTable.Entry], ownImage: String?,
+                                     protectedProcessIdentifiers: Set<Int32>,
+                                     image: (Int32) -> String? = { ClusterProcessTable.executablePath(of: $0) }) -> CancelTargets {
+        var owners: [Int32] = [], workers: [Int32] = [], signal: [Int32] = []
+        for entry in processes where !protectedProcessIdentifiers.contains(entry.processIdentifier) {
+            switch role(of: entry) {
+            case .owner:
+                owners.append(entry.processIdentifier)
+                if let ownImage, image(entry.processIdentifier) == ownImage { signal.append(entry.processIdentifier) }
+            case .worker: workers.append(entry.processIdentifier)
+            case nil: break
+            }
+        }
+        return .init(owners: owners.sorted(), workers: workers.sorted(), signal: signal.sorted())
+    }
+
     // MARK: Sweep
 
     public enum ProcessOutcome: String, Encodable, Sendable {

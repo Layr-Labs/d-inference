@@ -3506,8 +3506,17 @@ The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
 lint, the production build (including TypeScript checks), and `npm test`.
 The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
 production server to verify pages, legacy redirects, assets and unconfigured
-API responses without production credentials or upstream requests. For a
-migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
+API responses without production credentials or upstream requests.
+
+For story interaction changes, `landing/tests/story-gestures.test.mjs` dispatches
+DOM pointer, wheel and keyboard events through the same gesture binding used
+by the homepage. It covers browsing from the media and text, vertical-scroll
+passthrough, control interactions, cancellation and listener cleanup. Run it
+with `cd landing && node --test tests/story-gestures.test.mjs`; no server is
+needed. These DOM tests do not replace browser checks for native pointer
+capture, touch scrolling or carousel layout.
+
+For a migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
 `/docs` redirect, fonts/media, desktop and mobile scrolling, and chat states.
 Verify `/api/network` and `/api/about` against the configured upstreams;
 without a key, `/api/chat` should return `503`. Exercise story delivery with

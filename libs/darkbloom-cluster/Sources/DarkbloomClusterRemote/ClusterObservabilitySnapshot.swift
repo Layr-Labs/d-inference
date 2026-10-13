@@ -34,12 +34,21 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
         public let entries: [ClusterLinkStatusBoard.Entry]
     }
 
+    /// The speed records the leader kept from served requests, by route.
+    public struct SpeedRecords: Codable, Sendable, Equatable {
+        public let updatedAt: Double
+        public let records: Int
+        /// Records per route label (`pair`, `alone:<member>`).
+        public let byRoute: [String: Int]
+    }
+
     public let incidents: Incidents?
     public let telemetry: Telemetry?
     public let followers: Followers?
+    public var speedRecords: SpeedRecords?
 
-    public init(incidents: Incidents?, telemetry: Telemetry?, followers: Followers?) {
-        self.incidents = incidents; self.telemetry = telemetry; self.followers = followers
+    public init(incidents: Incidents?, telemetry: Telemetry?, followers: Followers?, speedRecords: SpeedRecords? = nil) {
+        self.incidents = incidents; self.telemetry = telemetry; self.followers = followers; self.speedRecords = speedRecords
     }
 
     /// Reads the three files under `homeDirectory/.darkbloom/cluster/`.
@@ -68,10 +77,14 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
                              ageSeconds: (age * 10).rounded() / 10)
             })
         }
-        return .init(incidents: incidents, telemetry: telemetry, followers: followers)
+        let speed = ClusterServedSpeedFile.read(ClusterServedSpeedFile.defaultFile(homeDirectory: homeDirectory)).map { file in
+            SpeedRecords(updatedAt: file.updatedAt, records: file.records.count,
+                byRoute: Dictionary(file.records.map { ($0.route ?? "pair", 1) }, uniquingKeysWith: +))
+        }
+        return .init(incidents: incidents, telemetry: telemetry, followers: followers, speedRecords: speed)
     }
 
-    public var isEmpty: Bool { incidents == nil && telemetry == nil && followers == nil }
+    public var isEmpty: Bool { incidents == nil && telemetry == nil && followers == nil && speedRecords == nil }
 
     /// Plain lines for a terminal: what each section says, newest first.
     public var lines: [String] {
@@ -101,13 +114,19 @@ public struct ClusterObservabilitySnapshot: Codable, Sendable, Equatable {
             line += "; cached prompt tokens \(s.cachedTokens) over \(s.requestsWithCacheHit) request\(s.requestsWithCacheHit == 1 ? "" : "s")"
             result.append(line)
             for record in telemetry.recent {
-                var text = "  \(record.mode) cut \(record.cut): \(record.promptTokens) prompt (\(record.cachedTokens) cached), \(record.completionTokens) out, \(record.outcome)"
+                var text = "  \(record.mode) cut \(record.cut)" + (record.route.map { " route \($0)" } ?? "")
+                    + ": \(record.promptTokens) prompt (\(record.cachedTokens) cached), \(record.completionTokens) out, \(record.outcome)"
                 if let value = record.firstTokenMilliseconds { text += "; first token \(format(value)) ms" }
                 if let value = record.decodeTokensPerSecond { text += "; decode \(format(value)) tok/s" }
                 if let value = record.handoffMilliseconds { text += "; hand-off \(format(value)) ms" }
                 if let value = record.mtpAcceptance { text += "; MTP \(record.mtpAccepted ?? 0)/\(record.mtpDrafted ?? 0) (\(format(value * 100))%)" }
                 result.append(text)
+                if let reason = record.routeReason { result.append("    route: " + reason) }
             }
+        }
+        if let speedRecords {
+            result.append("Speed records from served requests (the next plan and every route use them): \(speedRecords.records), "
+                + speedRecords.byRoute.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
         }
         if let followers {
             for entry in followers.entries {

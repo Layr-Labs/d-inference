@@ -53,7 +53,7 @@ extension ClusterPlacementTool {
                 continue
             }
             let telemetry = try JSONDecoder().decode(TelemetryFile.self, from: data)
-            guard telemetry.schema == "darkbloom_pair_telemetry_v1" else { throw ProbeError("\(file) is neither served records nor pair telemetry") }
+            guard ["darkbloom_pair_telemetry_v1", "darkbloom_served_speed_v1"].contains(telemetry.schema) else { throw ProbeError("\(file) is neither served records nor pair telemetry") }
             for record in telemetry.records {
                 guard record.cachedTokens == 0, record.outcome == "stop" || record.outcome == "length",
                       let first = record.firstTokenMilliseconds else { continue }

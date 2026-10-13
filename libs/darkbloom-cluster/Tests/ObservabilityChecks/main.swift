@@ -251,6 +251,32 @@ func telemetryChecks() throws {
           "C8 the status snapshot shows the newest request first and no absent section")
     check(snapshot.lines.contains { $0.contains("phase_split_mtp_v1 cut 0-16|16-32") && $0.contains("hand-off 80.0 ms") },
           "C9 status lines name mode, cut and hand-off")
+    // Speed records from served requests: cold completed requests only, kept across sessions, with their route.
+    let history = ClusterServedSpeedFile.defaultFile(homeDirectory: scratch.appendingPathComponent("home-c"))
+    check(ClusterServedSpeedFile.read(history)?.records.map(\.requestID) == ["r1", "r3", "r5"],
+          "C10 every completed request that computed its whole prompt is a speed record (not cached, not failed)")
+    let next = ClusterPairTelemetryLog(file: file, sessionID: "session-2", capacity: 4)
+    next.record(.init(requestID: "r6", finishedAt: 6, modelID: "m", mode: "phase_split_mtp_v1", cut: "0-16|16-32",
+        promptTokens: 40, cachedTokens: 0, completionTokens: 8, firstTokenMilliseconds: 30, decodeTokensPerSecond: 90,
+        handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop",
+        route: "alone:second", routeReason: "second alone is predicted 30% faster than the pair"))
+    let kept = ClusterServedSpeedFile.read(history)
+    check(kept?.records.map(\.requestID) == ["r1", "r3", "r5", "r6"] && kept?.records.last?.route == "alone:second"
+            && ClusterPairTelemetryLog.read(file)?.records.map(\.requestID) == ["r6"],
+          "C11 speed records outlive the serving session; the session's telemetry starts anew")
+    check(stat(history.path, &info) == 0 && info.st_mode & 0o777 == 0o600, "C12 the speed records file is owner-only")
+    var many: [ClusterPairRequestTelemetry] = []
+    for index in 0..<40 {
+        many = ClusterServedSpeedFile.adding(.init(requestID: "x\(index)", finishedAt: Double(index), modelID: "m", mode: "pipeline_v1",
+            cut: "0-1|1-2", promptTokens: 10, cachedTokens: 0, completionTokens: 2, firstTokenMilliseconds: 1,
+            decodeTokensPerSecond: 1, handoffMilliseconds: nil, handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil,
+            outcome: "length"), to: many)
+    }
+    check(many.count == ClusterServedSpeedFile.keptPerRoute && many.first?.requestID == "x8", "C13 speed records are bounded per setup and route")
+    let routed = ClusterObservabilitySnapshot.read(homeDirectory: scratch.appendingPathComponent("home-c"))
+    check(routed.lines.contains { $0.contains("route alone:second") } && routed.lines.contains { $0.contains("route: second alone is predicted") }
+            && routed.lines.contains { $0.hasPrefix("Speed records from served requests") && $0.contains("alone:second 1") && $0.contains("pair 3") },
+          "C14 status shows each request's route and why, and the speed records by route")
 }
 
 // MARK: D. Worker protocol

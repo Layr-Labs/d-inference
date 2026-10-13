@@ -122,6 +122,22 @@ struct ClusterWorkerProtocolTests {
             stopTokenIDs: Array(0..<256), outputCount: 1, chunkSize: 32768, deadlineUptimeNanoseconds: 1000, capacityLimitBytes: 1)
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(boundary))
         try check(try ClusterWorkerCodec.decodeCommand(ClusterWorkerCodec.encode(frame)) == frame, "Bounded maximum token input")
+        // A routed request: the route survives the codec; the pair as placed has no field at all.
+        let base = reservation()
+        let routed = ClusterWorkerReservation(profileID: base.profileID, promptTokenIDs: base.promptTokenIDs,
+            stopTokenIDs: base.stopTokenIDs, outputCount: base.outputCount, chunkSize: base.chunkSize,
+            deadlineUptimeNanoseconds: base.deadlineUptimeNanoseconds, capacityLimitBytes: base.capacityLimitBytes,
+            route: .decodingRankAlone)
+        let routedFrame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(routed))
+        let routedBytes = try ClusterWorkerCodec.encode(routedFrame)
+        try check(try ClusterWorkerCodec.decodeCommand(routedBytes) == routedFrame, "Routed reservation round trip")
+        let plainBytes = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0,
+            requestID: requestID, command: .reserve(base)))
+        try check(!String(decoding: plainBytes, as: UTF8.self).contains("route")
+            && String(decoding: routedBytes, as: UTF8.self).contains("\"route\":\"decoding_rank_alone\""),
+            "Only a routed reservation carries a route field")
+        let unknown = String(decoding: routedBytes, as: UTF8.self).replacingOccurrences(of: "decoding_rank_alone", with: "both_ranks_alone")
+        try check((try? ClusterWorkerCodec.decodeCommand(Data(unknown.utf8))) == nil, "An unknown route is refused")
     }
     static func malformedJSON() throws {
         let frame = ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: requestID, command: .reserve(reservation()))

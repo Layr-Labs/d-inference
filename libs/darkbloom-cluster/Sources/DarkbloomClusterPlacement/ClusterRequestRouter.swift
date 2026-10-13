@@ -29,6 +29,8 @@ public struct ClusterRequestRoute: Codable, Equatable, Sendable {
 
     /// `pair` or `alone:<member>`, as telemetry and status print it.
     public var label: String { member.map { "alone:" + $0 } ?? "pair" }
+    /// What the reservation tells both ranks: nil for the pair as placed.
+    public var workerRoute: ClusterWorkerRoute? { path == .alone ? .decodingRankAlone : nil }
 }
 
 /// Decides, for one request, whether the setup serves it as placed or the

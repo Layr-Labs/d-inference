@@ -38,7 +38,8 @@ struct LocalChatRequestTests {
         #expect(local.request == upstream)
         #expect(local.templateControls == ChatTemplateControls(
             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
-            promptDate: try #require(local.templateControls.promptDate)).withRawMiMoControls(evidence(invalid: true)))
+            promptDate: try #require(local.templateControls.promptDate)).withRawMiMoControls(evidence(invalid: true))
+            .withThinkingDisableEvidence(.init(fields: [.enableThinking])))
         #expect(local.request.reasoning?.enabled == true)
         #expect(local.request.streamOptions?.includeUsage == true)
         #expect(local.request.streamOptions?.continuousUsageStats == true)
@@ -46,22 +47,24 @@ struct LocalChatRequestTests {
 
     @Test("malformed extension fields are isolated and retain alias precedence", arguments: [
         (#""reasoning_effort":7,"enable_thinking":false,"preserve_thinking":true"#,
-         ChatTemplateControls(enableThinking: false, preserveThinking: true), true),
+         ChatTemplateControls(enableThinking: false, preserveThinking: true), true, [.enableThinking]),
         (#""reasoning_effort":" custom ","enable_thinking":"yes","chat_template_kwargs":{"enable_thinking":true},"preserve_thinking":false"#,
-         ChatTemplateControls(reasoningEffort: "custom", enableThinking: true, preserveThinking: false), true),
+         ChatTemplateControls(reasoningEffort: "custom", enableThinking: true, preserveThinking: false), true, []),
         (#""reasoning_effort":" \n ","enable_thinking":null,"chat_template_kwargs":{"enable_thinking":false},"preserve_thinking":{}"#,
-         ChatTemplateControls(enableThinking: false), true),
+         ChatTemplateControls(enableThinking: false), true, [.chatTemplateKwargsEnableThinking]),
         (#""enable_thinking":true,"chat_template_kwargs":false,"preserve_thinking":false"#,
-         ChatTemplateControls(enableThinking: true, preserveThinking: false), true),
+         ChatTemplateControls(enableThinking: true, preserveThinking: false), true, []),
         (#""enable_thinking":0,"chat_template_kwargs":{"enable_thinking":1},"preserve_thinking":"false""#,
-         ChatTemplateControls(), true),
+         ChatTemplateControls(), true, []),
         (#""unknown_extension":{"enable_thinking":true},"reasoning":{"enabled":false}"#,
-         ChatTemplateControls(), false),
-    ])
-    func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool) throws {
+         ChatTemplateControls(), false, [.reasoningEnabled]),
+    ] as [(String, ChatTemplateControls, Bool, Set<ThinkingDisableField>)])
+    func malformedExtensionsAreIndependent(fragment: String, expected: ChatTemplateControls, invalid: Bool,
+        disables: Set<ThinkingDisableField>) throws {
         let data = Data((#"{"model":"test/qwen","messages":[],"# + fragment + "}").utf8)
         let local = try JSONDecoder().decode(LocalChatRequest.self, from: data)
         let complete = expected.withRawMiMoControls(evidence(invalid: invalid))
+            .withThinkingDisableEvidence(.init(fields: disables))
         #expect(local.templateControls == complete.withPromptDate(try #require(local.templateControls.promptDate)))
         #expect(ProviderLoop.extractChatTemplateControls(from: data) == complete)
         #expect(local.templateControls.rawMiMoControls.invalid == invalid)
@@ -81,7 +84,7 @@ struct LocalChatRequestTests {
         let upstream = try decoder.decode([OpenAIChatCompletionRequest].self, from: data)
         #expect(local.map(\.request) == upstream)
         let expected = [
-            ChatTemplateControls(enableThinking: false),
+            ChatTemplateControls(enableThinking: false).withThinkingDisableEvidence(.init(fields: [.enableThinking])),
             ChatTemplateControls(),
             ChatTemplateControls(enableThinking: true).withRawMiMoControls(evidence(invalid: true)),
         ]

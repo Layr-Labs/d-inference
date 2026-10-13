@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -62,6 +62,7 @@ for these exact fleet/private-candidate identities, not family names, aliases or
 - `EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp`
 - `mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit` (target-only artifact)
 - `nvidia-nemotron-3.5-lightning-hybrid8` and `nvidia-nemotron-3.5-lightning-4bit-r1` (concrete builds behind the public Nemotron name during the mixed-precision rollout; same checkpoint contract)
+- `lfm2.5-24b-a2b` and `LiquidAI/LFM2.5-24B-A2B-MLX-4bit` (LFM2.5-24B-A2B; other `lfm2_moe` checkpoints are not listed)
 - `ternary-bonsai-2-27b`
 - `EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit`
 - `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`
@@ -111,7 +112,7 @@ record completed validation. Final sustained, connected-serving, quality and
 production-key restart checks remain subject to the
 [acceptance criteria](../design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
-defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
+defaults on for the exact Qwen, Nemotron Lightning, LFM2.5-24B-A2B and Bonsai 2 IDs above,
 `gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
 GPT-OSS 20B and Gemma QAT normally use paged historical-attention checkpoints;
 eligible native contiguous fallback uses a distinct complete layout rather than

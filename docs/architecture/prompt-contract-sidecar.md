@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-10-08
+> Last updated: 2026-10-13
 
 The Go `LowerResponsesInferenceBody` serving adapter preserves ordered inline
 media; it does not broaden this sidecar's text-only cache-planning contract.
@@ -696,6 +696,12 @@ values remain booleans through `ParserUtilities.asSendable` in
 
 For `model_type=nemotron_h`, the provider and sidecar instead use the pinned
 Nemotron template's Transformers-compatible default scalar and JSON filters.
+The provider applies the same filters to `model_type=lfm2_moe` (LFM2.5), whose
+template renders tool schemas with `tojson` and replays pythonic call
+arguments with `string` (`True`/`False`)
+(`NemotronTemplateFilters.usesReferenceFilters`); the `strict` metadata policy
+stays Nemotron-only. The sidecar does not yet mirror the LFM2.5 filters or its
+`{% generation %}` block, so LFM2.5 requests have no exact cache plan.
 `provider-swift/Sources/ProviderCoreFoundation/NemotronTemplateFilters.swift`
 and `coordinator/promptsidecar/src/render/nemotron.rs` preserve Unicode and
 use comma-space/colon-space JSON separators. The Swift writer bounds nesting

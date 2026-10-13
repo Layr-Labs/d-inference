@@ -43,6 +43,7 @@ public enum KVEstimation {
         "linear_attention",   // Qwen3.5 GatedDeltaNet
         "recurrent",
         "mamba",  // fixed recurrent state, not growing attention KV
+        "conv",   // LFM2 short-conv blocks: fixed (L_cache-1) x hidden state
         "mlp",    // stand-alone feed-forward blocks in hybrid trunks
         "moe",
     ]

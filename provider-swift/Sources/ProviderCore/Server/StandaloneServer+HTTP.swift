@@ -149,6 +149,10 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 status: HTTPResponse.Status(
                     code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
                 message: InferenceFailureCode.internalFailure.message)
+        } catch MultiModelBatchSchedulerEngineError.reasoningCannotBeDisabled(let field) {
+            // Fixed text naming a closed field spelling; no caller content.
+            return Self.openAIErrorResponse(
+                status: .badRequest, message: LFM2ReasoningControlPolicy.rejectionMessage(for: field))
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {

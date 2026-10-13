@@ -19,7 +19,8 @@
 //   are untouched.
 // * Gated per model family with explicit admission, like
 //   `ToolChoiceEnforcementPolicy.nativeStructuredTarget`: today only the
-//   qualified Nemotron 3.5 Lightning listing honors its artifact defaults.
+//   qualified Nemotron 3.5 Lightning and LFM2.5-24B-A2B listings honor their
+//   artifact defaults.
 //   Every other model keeps the legacy defaults byte-for-byte.
 // * `do_sample: false` in the file means greedy (legacy), matching HF
 //   semantics; an absent or unreadable file is legacy.
@@ -65,9 +66,14 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
 
     /// Family gate. Explicit admission per model onboarding; sharing the
     /// `model_type` is not enough (Nano and Lightning share `nemotron_h`).
+    /// LFM2.5-24B-A2B declares the vendor-recommended low-temperature
+    /// sampler (`temperature 0.1, top_k 50, repetition_penalty 1.05`).
     static func honorsArtifactDefaults(modelId: String, modelType: String?) -> Bool {
-        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
-            && EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
+        switch modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "nemotron_h": EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
+        case "lfm2_moe": EngineV2SupportedModels.isLFM25ListingModelID(modelId)
+        default: false
+        }
     }
 
     /// Resolve once at slot construction. `.legacy` when the gate is off,

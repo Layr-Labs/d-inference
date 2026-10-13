@@ -431,6 +431,20 @@ extension ProviderLoop {
             rejectInvalidRequest() // Never publish raw decrypted validation details.
             return
         }
+        // Exact-id reasoning-only refusal: before acceptance, admission or a
+        // cold load. The typed error maps to the closed 400 client_error frame.
+        do {
+            try LFM2ReasoningControlPolicy.validate(request: chatRequest, controls: templateControls)
+        } catch {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: Self.sanitizedInferenceFailure(from: error, phase: .request),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
         // Warm/cold classification for the TTFT tracker, captured BEFORE the

@@ -122,6 +122,7 @@ struct PrefixCacheCheckpointIdentityTests {
         "DARKBLOOM_NEMOTRON35_MTP_WINDOW_SSM",
         "DARKBLOOM_NEMOTRON35_MTP_COMPILED_MOE",
         "DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS",
+        "DARKBLOOM_LFM2_CONV_KERNEL",
     ])
     func modelOptimizationChanges(key: String) throws {
         let base = try #require(identity())

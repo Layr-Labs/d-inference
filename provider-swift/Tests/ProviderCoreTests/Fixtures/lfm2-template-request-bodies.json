@@ -1,0 +1,90 @@
+{
+  "sys_user": {
+    "model": "lfm2.5-24b-a2b",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Write one sentence about the sea."}
+    ]
+  },
+  "multiturn_reasoning_default": {
+    "model": "lfm2.5-24b-a2b",
+    "messages": [
+      {"role": "user", "content": "What is 2+2?"},
+      {"role": "assistant", "reasoning_content": "Simple arithmetic.", "content": "4"},
+      {"role": "user", "content": "And 3+3?"},
+      {"role": "assistant", "reasoning_content": "Again simple.", "content": "<think>stale</think>\n 6"},
+      {"role": "user", "content": "Thanks! Now 10*10?"}
+    ]
+  },
+  "multiturn_reasoning_preserve": {
+    "model": "lfm2.5-24b-a2b",
+    "preserve_thinking": true,
+    "messages": [
+      {"role": "user", "content": "What is 2+2?"},
+      {"role": "assistant", "reasoning_content": "Simple arithmetic.", "content": "4"},
+      {"role": "user", "content": "And 3+3?"},
+      {"role": "assistant", "reasoning_content": "Again simple.", "content": "6"},
+      {"role": "user", "content": "Thanks! Now 10*10?"}
+    ]
+  },
+  "tools_declared": {
+    "model": "lfm2.5-24b-a2b",
+    "messages": [
+      {"role": "system", "content": "Use tools when helpful."},
+      {"role": "user", "content": "What's the weather in Paris and the time in Tokyo?"}
+    ],
+    "tools": [
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a location.",
+        "parameters": {"type": "object", "properties": {
+          "location": {"type": "string", "description": "City and country, e.g. Paris, France"},
+          "unit": {"type": "string", "enum": ["celsius", "fahrenheit"], "description": "Temperature unit"}},
+          "required": ["location"]}}},
+      {"type": "function", "function": {"name": "get_time", "description": "Current local time — ISO 8601.",
+        "parameters": {"type": "object", "properties": {
+          "city": {"type": "string", "description": "City name"}}, "required": ["city"]}}}
+    ]
+  },
+  "tool_flow_string_args": {
+    "model": "lfm2.5-24b-a2b",
+    "messages": [
+      {"role": "user", "content": "Search the notes then look up Paris."},
+      {"role": "assistant", "reasoning_content": "I should call both tools.", "content": null,
+       "tool_calls": [
+         {"id": "call_1", "type": "function", "function": {"name": "search_notes",
+           "arguments": "{\"query\": \"it's a \\\"test\\\"\\nline2 \\\\ end\", \"limit\": 5, \"score\": 0.75, \"exact\": true, \"tags\": [\"a\", \"b\"], \"filter\": {\"k\": \"v\", \"n\": 2}, \"lang\": \"日本語 ✓\"}"}},
+         {"id": "call_2", "type": "function", "function": {"name": "get_weather", "arguments": "{\"location\": \"Paris, France\"}"}}
+       ]},
+      {"role": "tool", "tool_call_id": "call_1", "content": "[{\"title\": \"note 1\"}]"},
+      {"role": "tool", "tool_call_id": "call_2", "content": "{\"temperature\": 21, \"condition\": \"sunny\"}"}
+    ],
+    "tools": [
+      {"type": "function", "function": {"name": "search_notes", "description": "Search notes.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+          "required": ["query"]}}},
+      {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a location.",
+        "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}}}
+    ]
+  },
+  "tool_flow_empty_args_then_answer": {
+    "model": "lfm2.5-24b-a2b",
+    "messages": [
+      {"role": "system", "content": "Be brief."},
+      {"role": "user", "content": "What time is it?"},
+      {"role": "assistant", "content": "", "tool_calls": [
+         {"id": "call_9", "type": "function", "function": {"name": "now", "arguments": "{}"}}]},
+      {"role": "tool", "tool_call_id": "call_9", "content": "12:00"},
+      {"role": "assistant", "reasoning_content": "Report the time.", "content": "It is noon."},
+      {"role": "user", "content": "Thanks."}
+    ],
+    "tools": [
+      {"type": "function", "function": {"name": "now", "description": "Current time.",
+        "parameters": {"type": "object", "properties": {}}}}
+    ]
+  },
+  "unicode_user": {
+    "model": "lfm2.5-24b-a2b",
+    "messages": [
+      {"role": "user", "content": "Translate: 你好, мир! 🌊 café\n\tTabbed <|im_end|> literal"}
+    ]
+  }
+}

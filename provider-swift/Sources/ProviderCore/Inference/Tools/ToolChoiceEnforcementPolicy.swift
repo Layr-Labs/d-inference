@@ -96,12 +96,24 @@ enum ToolChoiceEnforcementPolicy {
     /// Consumer routing is not a public qualification/catalog advertisement.
     static func usesNativeTextChannels(_ context: ChatTemplateFixContext) -> Bool {
         context.modelType == "mimo_v2" || nativeStructuredTarget(context)
+            || usesLFM2ReasoningChannels(context)
     }
 
-    /// Only the qualified Nemotron parser absorbs a close already in content.
+    /// LFM2.5 (`lfm2_moe`) is reasoning-only: its template opens `<think>` in
+    /// the generation prompt. Reasoning is split BEFORE pythonic tool parsing
+    /// so a call written inside reasoning never becomes an invocation, and its
+    /// tool frames stay opaque to reasoning markers. This routes text only; it
+    /// does not admit forced tool choice (`nativeStructuredTarget`).
+    static func usesLFM2ReasoningChannels(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "lfm2_moe"
+    }
+
+    /// The qualified Nemotron parser and LFM2.5 absorb a close already in
+    /// content (one reasoning span per turn; a duplicate close never leaks).
     /// Other native-channel families retain their existing literal handling.
     static func absorbsStrayThinkClose(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+        if usesLFM2ReasoningChannels(context) { return true }
+        return context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
     }
 

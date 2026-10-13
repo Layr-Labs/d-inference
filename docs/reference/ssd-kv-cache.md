@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -319,6 +319,7 @@ exact-artifact release validation claim.
 | Qwen 3.5/3.8 dense (`qwen3_5`) | Full KV, recurrent state and optional typed MTP | Native contiguous or segmented paged | Supported floating/affine embedding typing, full owners and verified complete codec/storage identity |
 | Qwen 3.5/3.6 MoE (`qwen3_5_moe`) | Same recurrent complete codec | Native contiguous or segmented paged | Same gate as dense Qwen |
 | Selected Nemotron 3.5 Lightning (`nemotron_h`) | Native attention KV, Mamba convolution/FP32 SSM state, and optional shifted trusted MTP history | Native contiguous or segmented paged target | Exact Lightning model ID, loaded native types, complete checkpoint identity and typed Nemotron assistant codec when MTP is active |
+| LFM2.5-24B-A2B (`lfm2_moe`) | Native attention KV for the 10 attention layers and the last `L_cache - 1` gated conv inputs of the 30 short-conv layers (no SSM tensor) | Native contiguous or segmented paged target | Exact LFM2.5-24B-A2B model ID, loaded native types and complete checkpoint identity; no assistant (MTP off) |
 | Qwen3-VL MoE (`qwen3_vl_moe`) | Unsupported | No paged capability | No complete store (`unsupported_layout`) |
 | MiMo V2.6 (`mimo_v2`) | Asymmetric full/window target KV and optional trained-head checkpoint state | Native contiguous, text-only profile | Explicit MiMo COMPLETE-prefix opt-in, enabled model cache policy, exact loaded/store/process binding and observed native geometry; media profiles decline this checkpoint path |
 

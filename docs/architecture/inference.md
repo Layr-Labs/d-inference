@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -536,7 +536,9 @@ the knobs a request omits; an explicit request value always wins, so
 `model_type == nemotron_h` with a qualified Nemotron 3.5 Lightning listing id
 (`EngineV2SupportedModels.isNemotron35ListingModelID`) honours its artifact
 (`temperature 1.0`, `top_p 0.95`, `do_sample true`, the values the model card
-recommends). Every other family keeps the legacy defaults in the table
+recommends), and `model_type == lfm2_moe` with an exact LFM2.5-24B-A2B id
+(`EngineV2SupportedModels.isLFM25ListingModelID`) honours its artifact
+(`temperature 0.1`, `top_k 50`, `repetition_penalty 1.05`). Every other family keeps the legacy defaults in the table
 byte-for-byte. `do_sample: false` or an absent/unreadable file is legacy. The
 sampler is not part of prompt or cache identity, so prefix-cache and SSD
 checkpoint identity do not change.
@@ -548,8 +550,28 @@ markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
 call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
 
-Only qualified Nemotron Lightning listings absorb a stray `</think>` already
-in content state, leaving preceding text as content and tool arguments opaque.
+Only qualified Nemotron Lightning listings and LFM2.5 (`lfm2_moe`) absorb a
+stray `</think>` already in content state, leaving preceding text as content
+and tool arguments opaque.
+LFM2.5 is reasoning-only (its generation prompt ends in `<think>`), so
+`ToolChoiceEnforcementPolicy.usesLFM2ReasoningChannels` routes its text through
+`NativeChannelSplitter` seeded in reasoning state: reasoning is split before
+pythonic tool parsing, a call written inside reasoning is never invoked, and
+`<|tool_call_start|>`…`<|tool_call_end|>` frames are opaque to reasoning
+markers. This does not admit forced tool choice: `required`/named still fail
+closed and the tool-constraint capability is not advertised. Reasoning cannot
+be disabled: for the exact ids, `LFM2ReasoningControlPolicy` refuses top-level
+`enable_thinking: false`, `chat_template_kwargs.enable_thinking: false`,
+`reasoning.enabled: false`, and `reasoning.effort` / `reasoning_effort` of
+`none`/`off`/`0` (shadowed spellings included, via raw-body
+`ThinkingDisableEvidence`) with `reasoningCannotBeDisabled` before acceptance,
+model load or template render. The coordinator wire carries the closed
+`invalid_request` 400 (`client_error`: terminal, not retried, not charged), so
+coordinator clients see the generic "invalid inference request"; the local HTTP
+server returns a fixed message naming the offending field. Effort hints
+(`low`/`medium`/`high`) and absence are accepted and render the identical
+prompt: the template has no effort control
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/LFM2ReasoningControlPolicy.swift`).
 `ToolChoiceEnforcementPolicy.absorbsStrayThinkClose` gates the behavior by exact
 listing and `nemotron_h` type; `MultiModelBatchSchedulerEngine.makeEventStream`
 passes it through `NativeToolStreamRouter` to the splitter. Other native-channel
@@ -589,7 +611,7 @@ Resolution happens before submit so a bad parser name never orphans a request.
 | prefix `qwen3_next` | `.xmlFunction` | `XMLFunctionParser` |
 | prefix `nemotron` | `.nemotron` | Native Nemotron tool-frame parser |
 | `llama` with `vocab_size ≥ 128000` or `rope_scaling.rope_type == "llama3"` | `.llama3` | `Llama3ToolCallParser` |
-| prefix `lfm2` / `glm4` / `mistral3` | `.lfm2` / `.glm4` / `.mistral` | `PythonicToolCallParser` / `GLM4ToolCallParser` / `MistralToolCallParser` |
+| prefix `lfm2` / `glm4` / `mistral3` | `.lfm2` / `.glm4` / `.mistral` | `LFM2ToolCallParser` (every call of one `[f(...), g(...)]` frame; Python literals) / `GLM4ToolCallParser` / `MistralToolCallParser` |
 | anything else, including `qwen3_vl_moe` | `nil` → `.json` | `JSONToolCallParser` (`<tool_call>…</tool_call>`) |
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.
@@ -661,6 +683,7 @@ records tiny-model correctness and remaining release gates.
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
+| `lfm2_moe` | LFM2.5-24B-A2B | Advertisement is limited to `EngineV2SupportedModels.isLFM25ListingModelID` (`LiquidAI/LFM2.5-24B-A2B-MLX-4bit`, `lfm2.5-24b-a2b`); other `lfm2_moe` checkpoints are not advertised. Native `LFM2MoEModel`: 10 attention layers own paged KV, 30 short-conv layers carry request-owned conv state in complete recurrent checkpoints; paged KV and SSD prefix reuse default on for the exact ids; no MTP. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else

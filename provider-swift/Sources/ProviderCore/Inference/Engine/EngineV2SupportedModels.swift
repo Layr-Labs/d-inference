@@ -20,6 +20,10 @@
 //   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
 //                       automatic paging/cache policy is separately scoped
 //
+//   * `lfm2_moe`     — exact LFM2.5-24B-A2B MLX 4-bit artifact and its catalog
+//                       id only (LFM2MoEModel: attention KV + recurrent conv
+//                       state); other `lfm2_moe` checkpoints stay unadvertised.
+//
 //   * `mimo_v2`      — strict native MiMo root bundle and owned media load;
 //                       artifact/sidecar validity and per-request bounds remain
 //                       mandatory; this does not activate automatic MTP.
@@ -65,6 +69,19 @@ public enum EngineV2SupportedModels {
         }
     }
 
+    /// The official Liquid MLX artifact and its stable catalog id. Other
+    /// `lfm2_moe` checkpoints (for example LFM2.5-8B-A1B) share the
+    /// model_type but carry no onboarding evidence, so they are not admitted.
+    public static let lfm25_24bA2BModelID = "LiquidAI/LFM2.5-24B-A2B-MLX-4bit"
+    public static let lfm25_24bA2BRegistryModelID = "lfm2.5-24b-a2b"
+
+    public static func isLFM25ListingModelID(_ modelID: String?) -> Bool {
+        switch modelID {
+        case lfm25_24bA2BModelID, lfm25_24bA2BRegistryModelID: return true
+        default: return false
+        }
+    }
+
     /// Exact owned private candidate ID, not a family-name or substring grant.
     /// Loaded artifact/capability checks still apply to paging and prefix reuse.
     public static func isQwen4ExpListingModelID(_ modelID: String?) -> Bool {
@@ -73,9 +90,12 @@ public enum EngineV2SupportedModels {
 
     /// Nano and Lightning share a model_type but have different checkpoint
     /// contracts. Only the selected Lightning artifact is onboarded here.
+    /// Likewise only the exact LFM2.5-24B-A2B identities admit `lfm2_moe`.
     public static func isSupported(model: ModelInfo) -> Bool {
-        if normalized(model.modelType) == "nemotron_h" {
-            return isNemotron35ListingModelID(model.id)
+        switch normalized(model.modelType) {
+        case "nemotron_h": return isNemotron35ListingModelID(model.id)
+        case "lfm2_moe": return isLFM25ListingModelID(model.id)
+        default: break
         }
         return isSupported(modelType: model.modelType)
     }

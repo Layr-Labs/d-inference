@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — desktop release data for update status
+
+- Show provider release history on Updates when the coordinator publishes it without a support policy, which is what the native desktop API returns until the desktop release feed is deployed. The history no longer always reads "History unavailable"; the version floor stays unknown unless account data supplies it.
+- Load release data for This Mac's Overview, so a runtime below the supported floor offers Update now without first visiting Updates.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

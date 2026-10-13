@@ -72,8 +72,11 @@ export const updateAvailable = (installed: string, latest?: string, minimum?: st
 export function parseReleaseHistory(value: unknown): ReleaseHistory {
   if (!value || typeof value !== 'object') throw new Error('Missing release history');
   const data = value as Record<string, unknown>;
-  if (typeof data.minimum_provider_version !== 'string' || !Array.isArray(data.history))
-    throw new Error('Missing support policy');
+  // Coordinators without the desktop release feed publish history without a support policy;
+  // the floor then stays unknown (account data may still supply it) rather than hiding history.
+  if (!Array.isArray(data.history)) throw new Error('Missing release history');
+  if (data.minimum_provider_version != null && typeof data.minimum_provider_version !== 'string')
+    throw new Error('Invalid support policy');
   const history = data.history.map((entry: unknown) => {
     if (!entry || typeof entry !== 'object') throw new Error('Invalid release');
     const row = entry as Record<string, unknown>;
@@ -92,7 +95,9 @@ export function parseReleaseHistory(value: unknown): ReleaseHistory {
     };
   });
   return {
-    minimum_provider_version: data.minimum_provider_version,
+    ...(typeof data.minimum_provider_version === 'string' && {
+      minimum_provider_version: data.minimum_provider_version,
+    }),
     history,
     observed_at: typeof data.observed_at === 'string' ? data.observed_at : undefined,
   };

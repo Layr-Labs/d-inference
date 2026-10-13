@@ -512,7 +512,10 @@ public final class QwenResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
-                    // Every rank sweeps its cache before its model goes.
+                    // Every rank sweeps its cache before its model goes. Records
+                    // already queued for the SSD are finished first (bounded):
+                    // they are what a restarted pair restores.
+                    prefixCache.disk?.close()
                     prefixCache.sweep(); laneBook.clear()
                     // The stages' KV pools go with them; one still holding a
                     // request's pages is a failed release.

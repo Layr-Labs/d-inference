@@ -208,8 +208,12 @@ struct QwenPhaseSplitFault: Equatable {
     /// its deadline, as a rank that has stalled would.
     var stallAfterSegment: Int?
     var stallMilliseconds = 0
+    /// Either rank: the prompt-prefix SSD tier's restore fails (`prefix_ssd_restore_fail=1`)
+    /// or stops halfway for this long (`prefix_ssd_restore_stall=MILLISECONDS`).
+    var prefixDisk: QwenStagePrefixDiskFault?
 
-    /// `handoff_corrupt_segment=N` or `handoff_stall_after_segment=N:MILLISECONDS`.
+    /// `handoff_corrupt_segment=N`, `handoff_stall_after_segment=N:MILLISECONDS`,
+    /// `prefix_ssd_restore_fail=1` or `prefix_ssd_restore_stall=MILLISECONDS`.
     static func admit(environment: [String: String]) throws -> Self? {
         guard let text = environment[environmentName] else { return nil }
         let parts = text.split(separator: "=", omittingEmptySubsequences: false)
@@ -228,6 +232,11 @@ struct QwenPhaseSplitFault: Equatable {
             guard values.count == 2 else { throw ProbeError("\(environmentName) stall needs SEGMENT:MILLISECONDS") }
             return Self(stallAfterSegment: try number(values[0], 0...4096),
                         stallMilliseconds: try number(values[1], 1...600_000))
+        case "prefix_ssd_restore_fail":
+            guard parts[1] == "1" else { throw ProbeError("\(environmentName) prefix_ssd_restore_fail takes 1") }
+            return Self(prefixDisk: .init(restoreFails: true))
+        case "prefix_ssd_restore_stall":
+            return Self(prefixDisk: .init(restoreStallMilliseconds: try number(parts[1], 1...600_000)))
         default: throw ProbeError("Unknown \(environmentName)")
         }
     }

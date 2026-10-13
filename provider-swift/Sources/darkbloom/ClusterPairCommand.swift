@@ -57,7 +57,21 @@ extension Cluster {
         func run() throws {
             do {
                 if status { print(try ClusterPairCommandLine.status(json: json)); return }
-                if let forget { print(try ClusterPairCommandLine.forget(pin: forget)); return }
+                if let forget {
+                    print(try ClusterPairCommandLine.forget(pin: forget))
+                    // No rank of this Mac will open the pair's prefix records
+                    // again: reclaim them here (the peer reclaims its own when
+                    // it unpairs; a live rank's plan is left alone).
+                    if let settings = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: ConfigManager.defaultConfigPath()) {
+                        let report = ClusterPrefixSSDReclaim.reclaim(root: settings.root)
+                        if report.removedPlans > 0 || report.keptLive > 0 || !report.problems.isEmpty {
+                            print("Cluster prefix tier: removed \(report.removedPlans) plan\(report.removedPlans == 1 ? "" : "s")"
+                                + (report.keptLive > 0 ? ", \(report.keptLive) in use by a running rank (kept)" : "")
+                                + (report.problems.isEmpty ? "" : "; " + report.problems.joined(separator: "; ")) + ".")
+                        }
+                    }
+                    return
+                }
                 guard try ClusterPairCommandLine.pair(request) else { throw ExitCode(1) }
             } catch let failure as ClusterPairCommandLine.Failure {
                 throw ValidationError(failure.description)

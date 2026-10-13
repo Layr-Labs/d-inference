@@ -1,6 +1,6 @@
 # Prompt-prefix reuse on the pair, on by default
 
-> Last updated: 2026-10-10 (branch `work/cluster-paged-prefix`, base `1cb482bf8`)
+> Last updated: 2026-10-11 (SSD tier: branch `work/ssd-prefix-tier`, base `fa41f769d`)
 
 "Mac A" is the M3 Ultra (256 GB), "Mac B" the M5 Max (128 GB). Raw logs and
 reports are outside the repository in the task's evidence folder
@@ -13,7 +13,7 @@ reports are outside the repository in the task's evidence folder
 | Rank-local resident prefix reuse, dense Qwen (9B, 27B), pipeline and phase split | **Done, on by default**; measured across the cable (table below) |
 | Agreement before the first forward; mismatch means a cold prefill on both ranks | **Done** (unit tests; every cable request agreed) |
 | Provider: receipts, `cached_tokens`, frontiers published as resident evidence | **Done** (unit tests); not yet run through `darkbloom start` on the pair |
-| SSD tier per rank | **Not built** (plan below) |
+| SSD tier per rank (records survive a restarted pair) | **Built, on by default with the cache** (section "SSD tier"); cross-cable results in that section |
 | Paged KV in the stages | **Not built**: blocked, see below |
 
 ## How it works
@@ -106,17 +106,150 @@ the cache (no yielding) failed a request there on the live memory check after
 the cache grew to 25 entries (about 3 GB on that rank). The cache now gives
 entries back under that check; the rerun dropped 4 entries and completed.
 
-## Not built
+## SSD tier
 
-**SSD tier.** Plan, from the owner's design: per rank, a directory scoped by
-plan fingerprint and rank holding each kept frontier's state (the attention
-copy once per prompt, the recurrent state per frontier) and a boundary chain
-per prompt; at load every rank sweeps directories of other plans; the offer
-exchange gains a tier bit per frontier and a restore from disk goes ahead only
-if both ranks vote for the same boundary (unanimous), with the same
-confirmation as the resident tier (both restored or both cold). Needs a disk
-budget, an eviction order consistent with the resident tier, and a restart
-test.
+From the owner's design (oMLX `prompt_snapshot_cache.py`: per-rank boundary
+chains, unanimous boundary vote, directories scoped by plan and rank, sweep on
+every rank) and the product's SSD tier policies (encrypted at rest, keyed
+names, 30-minute sliding TTL, free-space floor, daily write cap, write-behind
+that never back-pressures serving). Code: `QwenStagePrefixDiskTier`,
+`QwenStagePrefixDiskRecord`, `QwenStagePrefixDiskConfiguration`,
+`QwenStagePrefixKeys` in `DarkbloomClusterRuntime/Models/Qwen/Prefix`.
+
+- **Directories.** `<root>/v1-<digest>/rank<r>/`, the digest over the plan
+  fingerprint, the verified artifact, the storage commitment, both ranks'
+  builds, the generation mode and the prefill schedule. A re-split, another
+  model, a new build or another mode is another directory. At load every rank
+  deletes the other plans' directories under its root (only names the tier
+  creates, and never one a live rank holds: each rank keeps a shared lock on
+  its plan directory's `in-use` file). The off switch deletes them all.
+- **Records.** One record per prompt per rank: this rank's attention rows up
+  to N-1, stored in units of one 512-row block (all heads), and the recurrent
+  state at N-1 and at each frontier on the disk grid (2,048 tokens, doubled
+  until a record keeps at most 8 grid frontiers). A shallower frontier reads
+  only its own units. Each record has its own random data key, wrapped with a
+  key derived from the owner's key; every unit is AES-GCM sealed under a nonce
+  made of its index; file names are keyed tags. A changed byte, a different
+  key or a record of another prompt is an absent record (deleted).
+- **Agreement.** The offer words carry a tier bit per frontier (magic
+  `PFX3`). Both ranks choose the deepest frontier both hold in either tier and
+  each restores from its own tier; the existing confirmation exchange makes
+  it both or neither (a rank that cannot read its record makes both ranks
+  prefill from zero). A frontier read from disk that both ranks confirmed
+  becomes resident on both ranks. A record the stage cannot adopt is deleted.
+- **Writes.** After both ranks retired a request cleanly, the rank prepares
+  the record's bytes on the serving thread (no copy of contiguous arrays) and
+  one serial writer seals and writes them behind serving (temporary file,
+  then rename; caching off). At most 2 jobs / 4 GiB wait behind the writer;
+  more is dropped, never waited for. Shutdown drains the queue (bounded) before
+  the model is released; a killed writer leaves only a temporary file, deleted
+  at the next load.
+- **Limits.** Least recently used by record count (64 a rank; both ranks run
+  the same operations, so they evict alike), then a byte budget (16 GiB a
+  rank; a safety bound that may differ between ranks: a frontier one rank no
+  longer holds is simply not chosen), a sliding TTL of 30 minutes (the
+  product's ceiling; the switch can only shorten it), no writes below 20 GiB
+  free or past 750 GB written in a day, and prompts under 1,024 tokens are not
+  kept.
+- **Configuration.** The worker reads `DARKBLOOM_CLUSTER_PREFIX_SSD_DIR` and
+  `DARKBLOOM_CLUSTER_PREFIX_SSD_KEY` (or `..._KEY_FILE`, a file only its user
+  can read); without both the tier is off and no prompt state touches the
+  disk. The installed owner sets both for its worker when the prefix cache is
+  on: root `~/Library/Caches/darkbloom/cluster-prefix-v1` (beside the
+  product's `kv3`, which it never touches) and this Mac's owner key, which
+  outlives every owner process (an owner serves one session, and the records
+  exist to warm the next one): derived from the product's Secure
+  Enclave-rooted KEK when the build holds the keychain entitlement (the
+  single-Mac SSD tier's key hierarchy; no new item or permission; passed in
+  the worker's environment, never written), otherwise a random key published
+  once in `~/.darkbloom/cluster-device/prefix-ssd-v1.key` (owner-only, never
+  replaced; the worker reads the file), and only if neither works a key of
+  the owner process (records then last one session). A rank deletes every
+  record a different key wrote.
+  `DARKBLOOM_CLUSTER_PREFIX_SSD=off` turns it off for diagnosis; budget
+  switches `..._MAX_GB`, `..._MAX_RECORDS`, `..._TTL_SECONDS`, `..._STRIDE`,
+  `..._MIN_TOKENS`, `..._MAX_WRITE_GB_PER_DAY`, `..._MIN_FREE_GB` pass through.
+- **Qualification.** `darkbloom-cluster-pair-check run` takes
+  `--local/--remote-prefix-ssd-dir` and `--...-prefix-ssd-key-file`,
+  `--prefix-ssd off`, and the faults `RANK:prefix_ssd_restore_fail=1` and
+  `RANK:prefix_ssd_restore_stall=MILLISECONDS` (qualification flag only). The
+  launcher report keeps the `darkbloom-prefix-v1` and
+  `darkbloom-prefix-ssd-v1` lines.
+
+### Measured across the cable, 2026-10-11 (Mac A rank 0, Mac B = M5 Max rank 1)
+
+27B (`Qwen3.8-27B-4bit-mtp`), cut 16, 8,192-token prompt, 64 greedy tokens,
+binaries from `9da16036f`; each line is its own pair session (workers started
+and stopped), SSD roots kept between sessions. Evidence folder
+`ssd-20261011/cable`.
+
+| Session | First token | Tokens | What the ranks did |
+|---|---|---|---|
+| Cold (pipeline) | 14.459 s | `f5c39b40…` (= cold reference) | prefilled, persisted one record per rank (rank 0 288 MB, rank 1 865 MB; 0.2 s behind serving) |
+| Restart, same prompt | **0.322 s** | `f5c39b40…` identical | both restored frontier 8,191 from SSD (46 ms / 85 ms read), confirmed; a repeat in the same session was a resident hit (0.061 s) |
+| Restart, second prompt (shares 7,680) | 0.134 s | `c0a6f86e…` = its cold reference | restored its own record from SSD |
+| Restore fault on rank 1 | 14.357 s | identical | rank 0 restored, rank 1 failed: both prefilled from zero (records kept) |
+| SIGTERM rank 1 halfway through its restore | (failed request) | | rank 0 ended by itself; no worker left, wired memory back on both; records unchanged |
+| Next session | 0.312 s | identical | restored from SSD |
+| Phase split + MTP cold / restart | 14.286 s / **0.446 s** | identical | own plan directory (mode is in the scope); opening it swept the pipeline plan on both ranks |
+| Another cut (20), then the off switch | | | other plans swept on both ranks; off deleted every plan directory on both ranks |
+
+Model-free and unit checks: the runtime's prefix suites (14 tests),
+`ClusterInstalledSessionChecks` (durable owner key: file made once, kept by a
+later owner, an unusable file left alone, the product key preferred when it
+loads), qualification, diagnostics and console check runners.
+
+Open: the product path (`darkbloom start` on the pair) has not been run with
+the tier (harness ready; Mac B was being replaced when this was written); the
+KEK-derived key needs the signed build to be exercised (unsigned builds use the
+key file).
+
+## Full caching on the cluster path (work/cluster-full-caching, 2026-10-12)
+
+Built on integration round 3 with the SSD tier merged, against the owner's
+oMLX caching as the reference (`omlx/cluster/prompt_snapshot_cache.py`,
+`omlx/cache/paged_ssd_cache.py`, the teardown, reclaim and MTP-timeline
+commits; the mechanism-by-mechanism map is in
+`evidence/full-caching-20261012/STATUS.md`, "Architecture").
+
+- The record format (`QwenStagePrefixDiskRecord`) gained an optional
+  `history` section: the decoding rank's speculative head history at each
+  kept frontier (three whole units: hidden `[1, f-1, H]`, tokens `[1, f-1]`,
+  last `[1, 1, H]`), restored into `QwenStagePrefixState.speculativeHistory`,
+  so a restore from the SSD drafts from the whole prompt as a resident hit
+  does (PERF-BACKLOG 13; oMLX `51df0333`). Records without the section
+  still restore (nil history).
+- Teardown (`QwenStagePrefixDiskTier.close`) finishes queued records within
+  its bound and extends the bound once, by itself, when a record completed
+  since the close began (progress), never when the writer is stuck (oMLX
+  `a58afee1`). `Statistics.closeExtended` / `closeDrained` report it.
+- A disk restore this rank adopted but the peer could not confirm stays
+  resident (within the budget) so the next offer is a memory hit instead of a
+  second read and decryption (oMLX U#3327, `event=restore-kept`). Every
+  promoted restore now charges its attention copy and history to the
+  resident budget (`QwenStagePrefixState.sharedBytes`); before, only the
+  recurrent bytes were counted.
+- Only prompt frontiers (`1..<promptCount`) are offered or written: no
+  drafted or generated timeline can reach a record (oMLX
+  mtp-terminal-commit), asserted by tests.
+- Settings: the pair reads the PRODUCT's caching surface
+  (`ClusterPrefixCacheSettings.product`: `darkbloom cache set` directory and
+  daily write cap, `DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_DISK_GB`
+  else half the free space, the 1,800 s TTL ceiling), installed once by
+  `cluster worker-owner`; the rank's root is
+  `<cache base>/darkbloom/cluster-prefix-v1`, beside the single-Mac `kv3`
+  tier; the key derives from the same Secure Enclave-rooted KEK. The
+  `DARKBLOOM_CLUSTER_PREFIX_*` variables remain diagnosis overrides.
+  `darkbloom cache status` shows the cluster tier (plans, records, bytes;
+  `--json` per plan and rank). `darkbloom cluster pair --forget` reclaims this
+  Mac's records (never a plan a live rank holds). `ClusterCacheSettingsSync`
+  is the versioned settings subset the leader sends members; its transport is
+  the onboarding track's control channel.
+- Sliding-window stages (Gemma 4, GPT-OSS) still refuse capture; the ring
+  snapshot design (one window unit per kept frontier, as oMLX stores the full
+  rotating state per boundary) is written up in the STATUS, not built.
+
+## Not built
 
 **Paged KV in the stages.** The product's `PagedKVBackend` implements the same
 `CBv2KVBackend` protocol and its `PagedLayerCache` owns attention dispatch, so

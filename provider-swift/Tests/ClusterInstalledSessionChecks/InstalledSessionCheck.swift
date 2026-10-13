@@ -151,10 +151,141 @@ final class EndpointBox: @unchecked Sendable {
         try altered(JSONSerialization.data(withJSONObject:original))
         let text=String(decoding:f.manifestBytes,as:UTF8.self)
         try altered(Data(text.replacingOccurrences(of:"\"schema_version\":1",with:"\"schema_version\":1,\"schema_version\":1").utf8))
-        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-        // Ten base entries plus exactly MLX's two command-buffer guards (orphan port #5), nothing else.
-        try require(environment.count==12 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
+        let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        try require(environment.count==14 && environment["JACCL_RANK"]=="0" && environment["MLX_ENABLE_TF32"]=="1"
             && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512","native environment widened")
+        // The prefix cache's SSD tier: on by default, under this user's caches, with this Mac's durable owner key:
+        // without the product's key source, an owner-only key file made once and never replaced.
+        let keyFile=prepared.plan.paths.deviceDirectory.appendingPathComponent("prefix-ssd-v1.key")
+        try require(environment["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==prepared.plan.paths.homeDirectory
+            .appendingPathComponent("Library/Caches/darkbloom/cluster-prefix-v1",isDirectory:true).path
+            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path
+            && environment["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==nil,"prefix SSD tier not configured")
+        var keyInfo=stat()
+        let keyText=try Data(contentsOf:keyFile)
+        try require(lstat(keyFile.path,&keyInfo)==0 && keyInfo.st_mode & S_IFMT==S_IFREG && keyInfo.st_mode & 0o077==0
+            && keyInfo.st_uid==getuid() && keyText.count==65 && DistributedInstalledPrefixSSD.isKeyText(keyText),
+            "prefix SSD key file is not an owner-only 64-hex key")
+        let again=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        try require(again["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path,"one owner, one SSD key")
+        // A later owner process (nothing cached) reads the same file, never a new key.
+        let device=prepared.plan.paths.deviceDirectory
+        let laterFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:device),laterText=try Data(contentsOf:keyFile)
+        try require(laterFile==keyFile && laterText==keyText,"a later owner must keep the same SSD key")
+        // A file that is not an owner-only key is never replaced and never used.
+        let otherDevice=device.deletingLastPathComponent().appendingPathComponent("cluster-device-check",isDirectory:true)
+        try FileManager.default.createDirectory(at:otherDevice,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+        defer { try? FileManager.default.removeItem(at:otherDevice) }
+        let bad=otherDevice.appendingPathComponent("prefix-ssd-v1.key")
+        try Data("not a key\n".utf8).write(to:bad);chmod(bad.path,0o600)
+        let badFile=DistributedInstalledPrefixSSD.keyFile(deviceDirectory:otherDevice),badText=try Data(contentsOf:bad)
+        try require(badFile==nil && badText==Data("not a key\n".utf8),"an unusable key file must be left alone")
+        // The product's key source, when installed and loading, wins: a hex key in the environment, no file.
+        let derived=Data((0..<32).map { UInt8($0) })
+        try require(DistributedInstalledPrefixSSD.environment(home:prepared.plan.paths.homeDirectory,deviceDirectory:otherDevice,
+            ownerEnvironment:[:],prefixCacheOff:false,key:.hex(derived.map { String(format:"%02x",$0) }.joined()))[
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==derived.map { String(format:"%02x",$0) }.joined(),"derived SSD key not passed")
+        DistributedInstalledPrefixSSD.installDurableKeySource { derived }
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
+            == .hex(derived.map { String(format:"%02x",$0) }.joined()),"product key source not preferred")
+        DistributedInstalledPrefixSSD.installDurableKeySource { nil }
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:device) == .file(keyFile),
+            "an unavailable product key must fall back to the key file")
+        try require(DistributedInstalledPrefixSSD.ownerKey(deviceDirectory:otherDevice)
+            == .hex(DistributedInstalledPrefixSSD.processKeyHex),"no usable key file: this owner's own key")
+        let ssdOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD":"off"])
+        try require(ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD"]=="off" && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY"]==nil
+            && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==nil
+            && ssdOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"] != nil,"prefix SSD off switch not passed")
+        let cacheOff=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_CACHE":"off",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4"])
+        try require(cacheOff.count==13 && cacheOff["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && cacheOff["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil,
+            "prefix cache off must not configure the SSD tier")
+        let tuned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"4",
+            "DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS":"x"])
+        try require(tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="4" && tuned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]==nil,
+            "prefix SSD budget switches not passed through or not bounded")
+        // ALIGN with the product's caching system: the owner installs the product's resolved settings (the saved cache
+        // directory, gate, budget rule, daily write cap and TTL the single-Mac tier reads); the rank's root and
+        // switches follow them, and the cluster-only switches remain diagnosis overrides.
+        let pinnedBase=prepared.plan.paths.homeDirectory.appendingPathComponent("pinned-volume",isDirectory:true)
+        var product=ClusterPrefixCacheSettings(root:ClusterPrefixCacheSettings.root(cacheBase:pinnedBase),prefixCacheEnabled:true,
+            byteBudget:40*1_073_741_824+5,dailyWriteBytes:120_000_000_000,ttlSeconds:900)
+        try require(product.root.path==pinnedBase.path+"/darkbloom/cluster-prefix-v1","cluster root is not beside the product's kv3 tier")
+        try require(ClusterPrefixCacheSettings.builtIn(home:prepared.plan.paths.homeDirectory).root.path==prepared.plan.paths.homeDirectory
+            .appendingPathComponent("Library/Caches/darkbloom/cluster-prefix-v1",isDirectory:true).path,"built-in root moved")
+        DistributedInstalledPrefixSSD.installProductSettings(product)
+        defer { DistributedInstalledPrefixSSD.installProductSettings(nil) }
+        let aligned=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        try require(aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==product.root.path
+            && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="40" && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_WRITE_GB_PER_DAY"]=="120"
+            && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]=="900" && aligned["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==keyFile.path,
+            "rank environment does not follow the product's cache settings")
+        // An unlimited daily cap is 0; a budget below one GiB is one; a TTL above the ceiling is the ceiling; a diagnosis
+        // override in the owner's environment still wins.
+        product.byteBudget=5;product.dailyWriteBytes=0;product.ttlSeconds=9_999
+        DistributedInstalledPrefixSSD.installProductSettings(product)
+        let bounded=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB":"2"])
+        try require(bounded["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_GB"]=="2" && bounded["DARKBLOOM_CLUSTER_PREFIX_SSD_MAX_WRITE_GB_PER_DAY"]=="0"
+            && bounded["DARKBLOOM_CLUSTER_PREFIX_SSD_TTL_SECONDS"]=="1800","product settings not bounded or override lost")
+        // The product's gate off: the pair's prefix cache is off and no SSD tier is configured.
+        product.prefixCacheEnabled=false
+        DistributedInstalledPrefixSSD.installProductSettings(product)
+        let gated=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL,ownerEnvironment:[:])
+        try require(gated["DARKBLOOM_CLUSTER_PREFIX_CACHE"]=="off" && gated["DARKBLOOM_CLUSTER_PREFIX_SSD_DIR"]==nil
+            && gated["DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE"]==nil,"the product's prefix cache gate must turn the pair's cache off")
+        // The leader's sync: the member keeps its own root, takes the leader's gate, cap, budget and TTL; an unknown
+        // version or an out-of-range value is refused and the member keeps its own.
+        product.prefixCacheEnabled=true;product.byteBudget=nil;product.dailyWriteBytes=nil;product.ttlSeconds=nil
+        let leader=ClusterPrefixCacheSettings(root:URL(fileURLWithPath:"/leader/root"),prefixCacheEnabled:true,
+            byteBudget:8*1_073_741_824,dailyWriteBytes:50_000_000_000,ttlSeconds:600)
+        let sync=ClusterCacheSettingsSync(leader:leader)
+        let applied=try ClusterCacheSettingsSync.decode(try sync.encoded()).applied(to:product)
+        try require(applied.root==product.root && applied.byteBudget==8*1_073_741_824 && applied.dailyWriteBytes==50_000_000_000
+            && applied.ttlSeconds==600 && applied.prefixCacheEnabled,"leader sync not applied to the member")
+        var stale=sync;stale.version=2
+        try require((try? stale.applied(to:product))==nil,"an unknown sync version must be refused")
+        var wide=sync;wide.ttlSeconds=3_600
+        try require((try? wide.applied(to:product))==nil,"an out-of-range synced TTL must be refused")
+        try require((try? ClusterCacheSettingsSync.decode(Data(repeating:0x20,count:5_000)))==nil,"an oversized sync must be refused")
+        // Inspection and reclaim read and remove only the tier's own names; a live rank's plan is kept.
+        let tierRoot=prepared.plan.paths.homeDirectory.appendingPathComponent("tier-root",isDirectory:true)
+        let planA=tierRoot.appendingPathComponent("v1-"+String(repeating:"ab",count:12),isDirectory:true)
+        let planB=tierRoot.appendingPathComponent("v1-"+String(repeating:"cd",count:12),isDirectory:true)
+        for directory in [planA.appendingPathComponent("rank0"),planA.appendingPathComponent("rank1"),planB.appendingPathComponent("rank0"),
+            tierRoot.appendingPathComponent("not-ours")] {
+            try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+        }
+        try Data(repeating:1,count:1000).write(to:planA.appendingPathComponent("rank0/"+String(repeating:"0",count:32)+".dbpx"))
+        try Data(repeating:1,count:500).write(to:planA.appendingPathComponent("rank1/"+String(repeating:"1",count:32)+".dbpx"))
+        try Data(repeating:1,count:10).write(to:planA.appendingPathComponent("rank1/.tmp.dbpx"))
+        try Data(repeating:1,count:7).write(to:planB.appendingPathComponent("rank0/"+String(repeating:"2",count:32)+".dbpx"))
+        // The rank stages records under <root>/staging/<membership epoch>; the reaper removes a dead epoch's only.
+        let stagingRoot=ClusterPrefixCacheSettings.stagingRoot(root:tierRoot)
+        let deadEpoch=UUID().uuidString.lowercased(), liveEpoch=UUID().uuidString.lowercased()
+        for epoch in [deadEpoch,liveEpoch] {
+            try FileManager.default.createDirectory(at:stagingRoot.appendingPathComponent(epoch),withIntermediateDirectories:true)
+        }
+        try Data(repeating:1,count:3).write(to:stagingRoot.appendingPathComponent(deadEpoch+"/.half.1.tmp"))
+        let staleStaging=ClusterOrphanReaper.staleStagingEntries(roots:[stagingRoot],liveEpochs:[liveEpoch],graceSeconds:0)
+        try require(staleStaging.map{$0.lastPathComponent}==[deadEpoch],"the reaper must name only the dead epoch's staging directory")
+        let inspected=ClusterPrefixSSDInspection.inspect(root:tierRoot)
+        try require(inspected.present && inspected.plans==2 && inspected.records==3 && inspected.bytes==1507 && inspected.ranks.count==3
+            && inspected.line.hasPrefix("Cluster prefix tier: 2 plans, 3 records, 0.00 GB"),"cluster tier inspection miscounts")
+        try require(!ClusterPrefixSSDInspection.inspect(root:tierRoot.appendingPathComponent("absent")).present,"an absent root must read as none")
+        let inUse=planB.appendingPathComponent("in-use")
+        try Data().write(to:inUse)
+        let held=open(inUse.path,O_RDONLY)
+        try require(held>=0 && flock(held,LOCK_EX|LOCK_NB)==0,"could not hold the live plan")
+        let reclaimed=ClusterPrefixSSDReclaim.reclaim(root:tierRoot)
+        try require(reclaimed.removedPlans==1 && reclaimed.keptLive==1 && !reclaimed.rootRemoved && reclaimed.problems.isEmpty
+            && !FileManager.default.fileExists(atPath:planA.path) && FileManager.default.fileExists(atPath:planB.path)
+            && FileManager.default.fileExists(atPath:tierRoot.appendingPathComponent("not-ours").path),"reclaim removed the wrong plans")
+        try require(FileManager.default.fileExists(atPath:stagingRoot.path),"reclaim must keep the staging root while a rank is live")
+        close(held)
+        let laterReclaim=ClusterPrefixSSDReclaim.reclaim(root:tierRoot)
+        try require(laterReclaim.removedPlans==1 && laterReclaim.keptLive==0 && !laterReclaim.rootRemoved,"a released plan must be reclaimed next time")
+        try require(!FileManager.default.fileExists(atPath:stagingRoot.path),"with no live rank the staging root is reclaimed too")
         try require(environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","installed plan did not set the collective progress limit")
         let local=try ClusterLocalOwnerConfiguration(installedDarkbloom:f.owner).launch()
         try require(local.arguments==["cluster","worker-owner","--stdio"] && local.environment.count==3,"local owner command widened")
@@ -426,8 +557,8 @@ final class EndpointBox: @unchecked Sendable {
                 generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
-            // Plus exactly MLX's two command-buffer guards every rank gets (orphan port #5).
-            try require(environment.count==12+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
+            // Plus exactly MLX's two command-buffer guards every rank gets (orphan port #5) and the prefix SSD tier's two.
+            try require(environment.count==14+extra.count && extra.allSatisfy{environment[$0.key]==$0.value}
                 && environment["MLX_MAX_OPS_PER_BUFFER"]=="16" && environment["MLX_MAX_MB_PER_BUFFER"]=="512"
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")

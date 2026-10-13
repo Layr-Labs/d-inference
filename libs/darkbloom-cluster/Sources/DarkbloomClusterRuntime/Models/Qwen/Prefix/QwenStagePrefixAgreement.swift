@@ -2,20 +2,29 @@ import Foundation
 import MLX
 
 /// What one rank holds for this request's prompt, sent to its peer before the
-/// first forward. Fixed 64 int32 words on the wire.
+/// first forward. Fixed 64 int32 words on the wire. Each frontier carries a
+/// tier bit: set when this rank holds it only on its SSD tier. The choice
+/// does not depend on tiers (each rank restores from its own); they are
+/// carried so both ranks log the same picture and a later policy can weigh
+/// a disk read against a shallower resident hit.
 struct QwenStagePrefixOffer: Equatable {
-    static let magic: Int32 = 0x5046_5831 // "PFX1"
+    static let magic: Int32 = 0x5046_5833 // "PFX3"
+    static let diskBit: Int32 = 1 << 30
     let enabled: Bool
     /// Deepest first; every value is in 1..<promptCount.
     let frontiers: [Int]
+    /// The frontiers above that this rank holds only on disk.
+    let onDisk: Set<Int>
 
-    init(enabled: Bool, frontiers: [Int]) {
+    init(enabled: Bool, frontiers: [Int], onDisk: Set<Int> = []) {
         self.enabled = enabled
         self.frontiers = enabled ? Array(frontiers.prefix(QwenStagePrefixCache.maximumOffered)) : []
+        self.onDisk = onDisk.intersection(self.frontiers)
     }
 
     var words: [Int32] {
-        var words = [Self.magic, enabled ? 1 : 0, Int32(frontiers.count)] + frontiers.map { Int32($0) }
+        var words = [Self.magic, enabled ? 1 : 0, Int32(frontiers.count)]
+            + frontiers.map { Int32($0) | (onDisk.contains($0) ? Self.diskBit : 0) }
         words += Array(repeating: 0, count: 64 - words.count)
         return words
     }
@@ -27,9 +36,14 @@ struct QwenStagePrefixOffer: Equatable {
               (0...QwenStagePrefixCache.maximumOffered).contains(Int(words[2])) else {
             self.init(enabled: false, frontiers: []); return
         }
-        let values = words[3..<(3 + Int(words[2]))].map(Int.init)
-        guard values.allSatisfy({ (1..<promptCount).contains($0) }) else { self.init(enabled: false, frontiers: []); return }
-        self.init(enabled: words[1] == 1, frontiers: values)
+        let raw = Array(words[3..<(3 + Int(words[2]))])
+        let values = raw.map { Int($0 & ~Self.diskBit) }
+        guard raw.allSatisfy({ $0 >= 0 }), values.allSatisfy({ (1..<promptCount).contains($0) }),
+              Set(values).count == values.count else {
+            self.init(enabled: false, frontiers: []); return
+        }
+        self.init(enabled: words[1] == 1, frontiers: values,
+                  onDisk: Set(zip(raw, values).filter { $0.0 & Self.diskBit != 0 }.map(\.1)))
     }
 }
 
@@ -100,6 +114,8 @@ struct QwenStagePrefixConfirmation: Equatable {
 public struct QwenStagePrefixSummary: Equatable, Encodable, Sendable {
     /// Prompt tokens both ranks restored instead of computing.
     public let reusedPromptTokens: Int
+    /// Where this rank restored them from: `resident`, `ssd`, or nil.
+    public var restoredTier: String? = nil
     /// The deepest frontier both ranks held before restore was confirmed.
     public let agreedPromptTokens: Int
     public let splitFinalToken: Bool

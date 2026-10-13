@@ -73,8 +73,8 @@ enum WorkerPrefixSSDKey {
     /// so the mismatch is loud and the worker never runs with the key there.
     static func refuseEnvironmentKey(_ environment: [String: String]) throws {
         for name in ClusterWorkerPrefixSSDKey.retiredEnvironmentNames where environment[name] != nil {
-            throw WorkerFailure.invalid("\(name) is accepted only on the worker's input (--prefix-ssd-key "
-                + "\(ClusterWorkerPrefixSSDKey.argument)); install an owner built with it")
+            throw WorkerFailure.invalid("\(name) is never read from the environment: the key comes only on the worker input "
+                + "(--prefix-ssd-key \(ClusterWorkerPrefixSSDKey.argument)); install an owner built with it")
         }
     }
 }

@@ -143,11 +143,11 @@ ssdline "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee" 0 "$ssdkey32" > "$work/ssd-other-
 ssdline "$ssdepoch" 1 "$ssdkey32" > "$work/ssd-other-rank"
 ssdline "$ssdepoch" 0 "$(head -c 16 /dev/zero | base64)" > "$work/ssd-short-key"
 printf '{"version":1,"kind":"prefixSSDKey","membershipEpoch":"%s","rank":0,"key":"%s","extra":1}\n' "$ssdepoch" "$ssdkey32" > "$work/ssd-extra-field"
-check prefix-ssd-key-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is accepted only on the worker's input" "$ssdkey" \
+check prefix-ssd-key-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is never read from the environment" "$ssdkey" \
   "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY=$ssdkey" "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR=$work/ssd" --
-check prefix-ssd-key-file-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE is accepted only on the worker's input" "" \
+check prefix-ssd-key-file-in-the-environment-is-refused 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE is never read from the environment" "" \
   "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY_FILE=$work/key" "DARKBLOOM_CLUSTER_PREFIX_SSD_DIR=$work/ssd" --
-check prefix-ssd-key-in-the-environment-is-refused-with-its-line-too 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is accepted only on the worker's input" "$ssdkey" \
+check prefix-ssd-key-in-the-environment-is-refused-with-its-line-too 1 "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY is never read from the environment" "$ssdkey" \
   "DARKBLOOM_CLUSTER_PREFIX_SSD_KEY=$ssdkey" -- --prefix-ssd-key "$ssdscheme"
 check prefix-ssd-key-argument-takes-only-its-scheme 1 "--prefix-ssd-key takes only $ssdscheme" "" -- --prefix-ssd-key yes
 check prefix-ssd-key-line-must-arrive 1 "Worker input ended before the prefix-SSD key" "" -- --prefix-ssd-key "$ssdscheme"

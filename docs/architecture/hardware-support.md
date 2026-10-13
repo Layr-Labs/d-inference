@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -332,6 +332,30 @@ Implementation: `provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMem
 `EngineProcessMemoryOwner.swift`, and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`.
 
+### Calibration ownership and foreground admission
+
+Automatic startup calibration uses the loaded engine's existing KV and service
+budgets. It does not lower activation or OS reserves, raise concurrency limits,
+or create a separate memory allowance. Only one calibration session runs on the
+Mac at a time. After an uncancelled session retires, the next eligible resident
+engine can start without waiting for a capacity tick.
+
+A customer request takes a foreground lease, cancels any current calibration,
+and waits for its actual retirement before admission. A consumer terminal event
+alone does not release the probe's ownership: the bridge waits for the event
+pump and service reservation to retire. Shutdown follows the same ownership
+boundary. Retirement releases request ownership; it is not a claim that the
+allocator has returned every cached physical byte to the OS. Original request
+deadlines and memory admission remain authoritative during this wait.
+
+The one-token startup health check is excluded from throughput learning, while
+its work accounting remains intact. Bounded calibration samples populate the
+existing capacity measurements and never increment served-request or output
+token totals. The detailed probe plan and retry/posture gates are documented in
+[model startup calibration](inference.md#model-startup-calibration). These are
+provider-local changes; capacity wire fields and the external platform's memory
+contract are unchanged.
+
 ### Cross-repository agreement
 
 Provider full-load quotations, measured activation floors and reported capacity must remain compatible with [platform admission](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/memorypolicy/structural.go). Review both repositories when changing these contracts; do not copy the backend implementation here or replace measured floors with shape-based estimates.
@@ -380,6 +404,7 @@ Provider full-load quotations, measured activation floors and reported capacity 
 | Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
 | Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
 | Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
+| Calibration ownership and foreground lease | `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationRequest`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`) |
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/Start/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |

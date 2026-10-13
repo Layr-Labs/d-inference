@@ -7,7 +7,8 @@ extension EngineV2Bridge {
     /// configuration; native MiMo retains its periodic maintenance plan.
     @discardableResult
     func startModelCalibrationIfNeeded(requireNominalPosture: Bool = true,
-        now: ContinuousClock.Instant = .now) -> Bool {
+        now: ContinuousClock.Instant = .now,
+        onRetired: (@Sendable () async -> Void)? = nil) -> Bool {
         let continuous = nativeTransactionID != nil
         // Early serving or partial samples must not suppress an unfinished bootstrap.
         let unfinishedBootstrap = !modelCalibration.bootstrapCompleted
@@ -22,7 +23,8 @@ extension EngineV2Bridge {
                 || performanceMeasurements.freshRate("decode", now: now,
                     maximumAge: ModelCalibrationPolicy.refreshAge) == nil,
             let serviceBudget else { return false }
-        let task = serviceBudget.idleCalibration.startIfIdle(isIdle: { serviceBudget.isIdle }) { [weak self] in
+        let task = serviceBudget.idleCalibration.startIfIdle(isIdle: { serviceBudget.isIdle },
+            onRetired: onRetired) { [weak self] in
             await self?.runModelCalibration(continuous: continuous, requireNominalPosture: requireNominalPosture)
         }
         guard let task else { return false }

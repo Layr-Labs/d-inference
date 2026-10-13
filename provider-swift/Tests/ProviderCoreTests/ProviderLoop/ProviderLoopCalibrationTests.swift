@@ -60,8 +60,93 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
+    @Test("all resident slots calibrate serially without waiting for a capacity tick")
+    func residentSlotsChainAfterRetirement() async throws {
+        let fixture = try await ServeLoopFixture.make(heartbeatIntervalSecs: 3_600)
+        let gates = (0..<3).map { _ in RecoveryStepGate() }
+        defer { for gate in gates { gate.release() } }
+        var bridges: [EngineV2Bridge] = []
+        for (id, gate) in zip([ServeLoopFixture.modelId, "second-model", "third-model"], gates) {
+            bridges.append(try await installCalibrationSlot(fixture, gate: gate, modelID: id))
+        }
+        await fixture.loop.refreshModelCalibration()
+        var scheduled = 0
+        for bridge in bridges { if await bridge.hasScheduledCalibration() { scheduled += 1 } }
+        #expect(scheduled == 1, "the Mac runs only one calibration session at a time")
+        for gate in gates { gate.release() }
+        let until = ContinuousClock.now + .seconds(5)
+        var completed = 0
+        repeat {
+            completed = 0
+            for bridge in bridges { if await bridge.completedCalibration() { completed += 1 } }
+            if completed < bridges.count { try await Task.sleep(for: .milliseconds(1)) }
+        } while completed < bridges.count && ContinuousClock.now < until
+        #expect(completed == 3, "session retirement schedules the remaining resident engines")
+        for bridge in bridges { await bridge.shutdown() }
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
+    @Test("foreground admission and draining prevent a retirement callback from starting another slot",
+        arguments: [false, true])
+    func cancelledChainDoesNotStartSuccessor(draining: Bool) async throws {
+        let fixture = try await ServeLoopFixture.make()
+        let gates = (0..<2).map { _ in RecoveryStepGate() }
+        defer { for gate in gates { gate.release() } }
+        let bridges = [
+            try await installCalibrationSlot(fixture, gate: gates[0]),
+            try await installCalibrationSlot(fixture, gate: gates[1], modelID: "second-model"),
+        ]
+        await fixture.loop.refreshModelCalibration()
+        let firstTask = await bridges[0].scheduledCalibrationTask()
+        let secondTask = await bridges[1].scheduledCalibrationTask()
+        let running = try #require(firstTask ?? secondTask)
+        let successor = firstTask == nil ? bridges[0] : bridges[1]
+        var foreground: Task<IdleCalibrationForegroundLease, Never>?
+        if draining {
+            await fixture.loop.beginServingDrain(owner: .lifecycle)
+        } else {
+            let budget = await fixture.loop.kvBudget.serviceBudget
+            foreground = Task { await budget.idleCalibration.beginForeground() }
+            let until = ContinuousClock.now + .seconds(5)
+            while !running.isCancelled && ContinuousClock.now < until {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            #expect(running.isCancelled)
+        }
+        for gate in gates { gate.release() }
+        let lease = await foreground?.value
+        await running.value
+        #expect(!(await successor.hasScheduledCalibration()))
+        lease?.finish()
+        for bridge in bridges { await bridge.shutdown() }
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
+    @Test("successful load completion schedules calibration before waking parked inference")
+    func loadWaiterObservesScheduledCalibration() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        let bridge = try await installCalibrationSlot(fixture, gate: gate)
+        let scheduled = try await fixture.loop.completeLoadWithWaitingInference(bridge: bridge)
+        #expect(scheduled)
+        gate.release()
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        await bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
     private func installCalibrationSlot(_ fixture: ServeLoopFixture, gate: RecoveryStepGate,
-        afterSelfTest: Bool = false, postureAllows: Bool = true) async throws -> EngineV2Bridge {
+        afterSelfTest: Bool = false, postureAllows: Bool = true,
+        modelID: String = ServeLoopFixture.modelId) async throws -> EngineV2Bridge {
         let tokenizer = ModelCalibrationTokenizer()
         let selection = ModelCalibrationSessionGate(gate: gate, requestNumber: afterSelfTest ? 2 : 1)
         let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 1 << 20,
@@ -69,12 +154,12 @@ struct ProviderLoopCalibrationTests {
             reservationForRequest: { _ in 1_024 }, makeSession: { request, cancellation in
                 ModelCalibrationSession(request: request, cancellation: cancellation, gate: selection.next())
             })
-        let bridge = await EngineV2Bridge(engine: engine, modelId: ServeLoopFixture.modelId,
+        let bridge = await EngineV2Bridge(engine: engine, modelId: modelID,
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [], kvBytesPerToken: 1,
             kvBudget: fixture.loop.kvBudget, calibrationPosturePermitsWork: { postureAllows })
-        _ = await fixture.runtime.unregister(modelId: ServeLoopFixture.modelId)
-        await fixture.runtime.register(modelId: ServeLoopFixture.modelId, bridge: bridge)
-        await fixture.loop.installModelSlotForTesting(modelId: ServeLoopFixture.modelId,
+        _ = await fixture.runtime.unregister(modelId: modelID)
+        await fixture.runtime.register(modelId: modelID, bridge: bridge)
+        await fixture.loop.installModelSlotForTesting(modelId: modelID,
             container: cancelledPrefixContainer(tokenizer: CancelledPrefixTokenizer(prompt: [1, 2, 3])),
             tokenizer: TokenizerHandle(tokenizer), engineV2: bridge)
         return bridge
@@ -82,6 +167,35 @@ struct ProviderLoopCalibrationTests {
 }
 
 private extension EngineV2Bridge {
+    func scheduledCalibrationTask() -> Task<Void, Never>? { modelCalibration.task }
+    func completedCalibration() -> Bool { modelCalibration.bootstrapCompleted }
     func hasScheduledCalibration() -> Bool { modelCalibration.task != nil || modelCalibration.bootstrapCompleted }
+}
+private extension ProviderLoop {
+    func completeLoadWithWaitingInference(bridge: EngineV2Bridge) async throws -> Bool {
+        let id = ServeLoopFixture.modelId
+        modelsLoading.insert(id)
+        isLoadingAny = true
+        let activity = kvBudget.serviceBudget.beginUnboundedActivity()
+        defer { activity.finish() }
+        // A real deferred-prefetch actor hop is the suspension that allowed
+        // resumed inference to overtake calibration in the old ordering.
+        // This model is already resident, so the pre-check never downloads.
+        prefetchCoordinator = makePrefetchCoordinator()
+        outboundSend = SendHandle { _ in }
+        reserveDeferredPrefetches.insert(id)
+        let waiter = Task {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                loadingWaiters[id, default: []].append(continuation)
+            }
+            return await bridge.hasScheduledCalibration()
+        }
+        while loadingWaiters[id]?.isEmpty != false { await Task.yield() }
+        await finishOrdinaryModelLoad(modelID: id, deviceActivity: activity)
+        let result = try await waiter.value
+        await prefetchCoordinator?.shutdown(timeout: .seconds(5))
+        prefetchCoordinator = nil
+        return result
+    }
 }
 #endif

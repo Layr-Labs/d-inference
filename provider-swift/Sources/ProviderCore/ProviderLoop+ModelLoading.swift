@@ -823,22 +823,7 @@ extension ProviderLoop {
             recordAutopilotLoadTime(model: modelId, milliseconds: Int64(max(0, loadMs.rounded())))
             logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
 
-            modelsLoading.remove(modelId)
-            isLoadingAny = false
-            for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
-                waiter.resume()
-            }
-            releaseLoadGateWaiters()
-            // The load is installed: desired builds deferred behind it
-            // (advertise-raises are serialized behind in-flight loads) are
-            // re-offered now rather than on their backoff.
-            await retryReserveDeferredPrefetches()
-            // Construction is over: this receipt must not make an otherwise
-            // idle engine ineligible for its first calibration. Startup preloads
-            // schedule after their self-tests; ordinary loads schedule here.
-            deviceActivity.finish()
-            if startupPreloadTask == nil { await refreshModelCalibration() }
-            await updateAggregateCapacity()
+            await finishOrdinaryModelLoad(modelID: modelId, deviceActivity: deviceActivity)
         } catch {
             // Keep the load gate through cleanup and survivor-grant restoration.
             if let nativeLoad {
@@ -873,6 +858,23 @@ extension ProviderLoop {
             await retryReserveDeferredPrefetches()
             throw error
         }
+    }
+
+    /// Publish a completed ordinary load before waking requests parked on it.
+    func finishOrdinaryModelLoad(modelID: String, deviceActivity: WholeMacUnboundedActivity) async {
+        modelsLoading.remove(modelID)
+        isLoadingAny = false
+        // Construction is over. Release its activity receipt before calibration,
+        // then schedule before any parked inference can enter the loaded engine.
+        deviceActivity.finish()
+        if startupPreloadTask == nil { await refreshModelCalibration() }
+        for waiter in loadingWaiters.removeValue(forKey: modelID) ?? [] {
+            waiter.resume()
+        }
+        releaseLoadGateWaiters()
+        // Re-offer desired builds deferred behind this completed load.
+        await retryReserveDeferredPrefetches()
+        await updateAggregateCapacity()
     }
 
     // MARK: - Load-gate arithmetic (pure, unit-tested by SpecDecCapacityTests)

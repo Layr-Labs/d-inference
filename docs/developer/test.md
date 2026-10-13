@@ -65,6 +65,11 @@ normal and timed-out startup preloads. It checks eager scheduling after the
 self-test, before the first capacity tick, while retaining a blocked-posture
 case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
 cannot suppress the unfinished bootstrap.
+The loop suite also checks serial calibration across three resident engines
+without another capacity tick, stops that chain for foreground work or draining,
+and runs the production load-completion epilogue
+with a real activity receipt and parked inference waiter to verify scheduling
+precedes waiter resumption. The epilogue test does not load model weights.
 `ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
 through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
 catalog IDs with both automatic paged selection and explicit contiguous KV.

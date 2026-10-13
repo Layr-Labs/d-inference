@@ -610,7 +610,10 @@ public final class ClusterLinkWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unche
                     guard accepted, !released else { throw ClusterLinkWorkerError.invalid("Repeated release") }
                     released = true; releasedCleanly = (wire.releasedCleanly ?? false) && cleanup
                     terminationValue = wire.ownerTermination; endOwner = true
-                    if let detail = wire.detail { followerDetail = detail }
+                    // The release carries the owner's raw last line; a reason the
+                    // follower already stated (how its owner or worker ended, in
+                    // those words) says more and is kept.
+                    if let detail = wire.detail, followerDetail == nil { followerDetail = detail }
                     // The follower's last message of the session: no cleanup
                     // proof can follow it. A release without one (its owner
                     // ended without proving its worker's exit, e.g. it exited

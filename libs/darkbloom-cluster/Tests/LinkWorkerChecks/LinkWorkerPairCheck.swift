@@ -487,7 +487,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         try require(!second.nativeCleanupObserved && !second.waitForOwnerReleased(deadline: now() + 1_000_000_000),
             "A release without proof was claimed as clean")
         // The follower says why, in its owner's words (S24: "its owner exited with status 0" alone named nothing).
-        try require(second.followerReason == "stage load refused: fixture reason (needs 9 GiB, 3 GiB reclaimable)",
+        try require(second.followerReason?.hasSuffix("stage load refused: fixture reason (needs 9 GiB, 3 GiB reclaimable)") == true,
             "The follower's reason did not reach the leader: \(String(describing: second.followerReason))")
         first.requestNativeCleanup()
         try require(first.waitForOwnerReleased(deadline: now() + 10_000_000_000), "Leader's local owner release missing")

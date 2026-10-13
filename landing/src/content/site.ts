@@ -1,7 +1,9 @@
+import { publicFacts, siteDescription } from "./public-site";
+
 export const prompts = [
   {
     question: "What is Darkbloom?",
-    answer: "Darkbloom is a compute grid that connects idle Macs to real AI demand. Private by construction, attested at the hardware level.",
+    answer: siteDescription,
   },
   {
     question: "How does it work?",
@@ -13,7 +15,7 @@ export const prompts = [
   },
   {
     question: "Are the prompts private?",
-    answer: "Yes. Requests run inside hardware-attested environments, and providers never receive access to your raw conversation or identity.",
+    answer: publicFacts.privacy,
   },
 ] as const;
 

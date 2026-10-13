@@ -24,6 +24,12 @@ Provider-local Swift services,
 HTTP APIs and native execution remain here. Verify `git remote -v`, branch,
 status and the full intended diff before publishing anything.
 
+The latest coordinator source is the default branch of
+https://github.com/Layr-Labs/darkbloom-platform. For coordinator diagnosis, agents
+must fetch that branch and read its `AGENTS.md` and the actual relevant code.
+Do not treat old d-inference copies or pinned documentation as the latest
+implementation; those are historical references, not current source authority.
+
 Source ownership does not grant deployment authority. Retained release/model
 publication scripts call external APIs; they do not authorize building, testing
 or deploying the backend here. Infrastructure and hosting changes require
@@ -118,8 +124,13 @@ runtime state. Preserve other contributors' changes in a dirty worktree.
 Never release without an explicit request. Follow `docs/operations/provider-release.md`:
 sign and notarize the canonical app, compute final hashes after signing, retain
 regular-file verification artifacts and register the exact qualified release.
-Do not bump a release version for an ordinary cleanup. Add user-visible changes
-to a small topic-specific `Unreleased` changelog section without rewriting history.
+Do not bump a release version for an ordinary cleanup. Put user-visible changes
+in one uniquely named `changelog.d/<topic>.md` fragment and update it in place.
+Ordinary PRs must not edit or regenerate `CHANGELOG.md`. Run `make changelog-check`
+and `make changelog-preview`; release preparation alone renders selected
+fragments into the root history. Preserve other PRs' fragments and verify tag
+inclusion before assigning a version. Never claim publication or activation
+from a source merge or version bump.
 
 Production mutations require specific human approval, including release/model
 publication, credentials, infrastructure, hosting and traffic. No approval is

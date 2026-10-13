@@ -17,6 +17,8 @@ read_version() {
     printf '%s' "$value"
 }
 
+# The provider owns this release; the coordinator belongs to the separate
+# platform repository and does not define provider identity.
 PROVIDER_VERSION=$(read_version \
     "$ROOT/provider-swift/Sources/ProviderCore/ProviderCore.swift" \
     'public static let version =')

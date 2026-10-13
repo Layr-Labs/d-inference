@@ -1,10 +1,13 @@
 # Configuration reference
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
 Coordinator and admin settings belong to the [platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/configuration.md).
+Pinned platform links on this page are immutable evidence snapshots, not claims
+about current platform behavior. For current settings and behavior, consult the
+latest default branch of [darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform).
 
 ## Console UI
 
@@ -46,7 +49,7 @@ This setting does not grant sandbox permissions or change snapshot binding check
 
 | Setting | Default / bounds | Consumer |
 |---|---|---|
-| `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom start/stop/restart/update/logout --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
 | `darkbloom switch --timeout` | `600` seconds; 0–3600; `0` means no waiting for unfinished work, with a 30-second barrier allowance when already settled; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelSwitch.swift` (`drainForModelSwitch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
@@ -60,6 +63,29 @@ for recovery and explicit force semantics. Existing loaded launchd jobs must be
 restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
+
+## Provider endpoint resumption and logout
+
+The separate physical diagnostic uses `DARKBLOOM_NATIVE_SERVE_QUALIFICATION`:
+only exact `1` enables it; unset and every other value refuse before any proof
+or model work. `NativeServeQualification.run` in
+`provider-swift/Sources/ProviderCore/Diagnostics/NativeServeQualification.swift`
+accepts no caller-provided signing key, binary hash, hardware or privacy claims.
+It uses normal serving safeguards with private state, target-only contiguous
+inference, no SSD prefix cache and no updater. This opt-in is not forwarded to
+launchd and does not enable production coordinator resumption. See
+[native serving qualification](../developer/test.md#native-serving-qualification).
+
+| Setting | Behavior | Consumer |
+|---|---|---|
+| Endpoint-resumption capability | No new environment variable or config key. Normal serving installs a fixed process-key responder; registration advertises protocol 1 and a fresh nonce per socket. No responder means both fields are omitted. | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` (`registrationMessage`) |
+| `darkbloom logout --config` | Accepted for CLI compatibility, not used to retarget revocation. Logout uses issuer metadata bound to the saved token; missing metadata means local-only logout with a warning. Config parsing cannot block logout. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout.run`, `revokeSavedToken`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore.issuer`) |
+
+The [wire contract](protocol-messages.md#app-attest-endpoint-resumption-candidate)
+does not create local trust or change proof validity. The
+[logout contract](../provider/cli-reference.md#darkbloom-login--darkbloom-logout)
+defines stop-before-delete, force handling and remote confirmation. No worker
+mode or update configuration changes are part of this addition.
 
 ## Provider model selection
 
@@ -96,7 +122,25 @@ causes a reported conflict instead of being overwritten (`stageReplacement`,
 
 ## Provider CLI (`darkbloom`)
 
-Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the LaunchAgent allow-list above reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative values `0`/`false`/`no`/`off`, case-insensitive. Only the variables named in the [LaunchAgent environment passthrough](../provider/cli-reference.md#launchagent-environment-passthrough) reach an installed daemon; everything else applies to `darkbloom start --foreground` and to the benchmark and test binaries.
+
+### App Attest worker qualification
+
+These are internal qualification opt-ins, **not production-ready configuration**.
+They use exact `1`, not the general boolean parsing convention above. Only the
+worker opt-in is forwarded by `darkbloom start` into the installed LaunchAgent;
+native diagnostic and fault-injection flags are not. No `provider.toml` setting enables them.
+
+| Variable | Values / default | Read in | Effect |
+|---|---|---|---|
+| `DARKBLOOM_APP_ATTEST_WORKER_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/ProviderAppAttest/Worker/WorkerProtocol.swift` (`AppAttestWorkerSelection`); `provider-swift/Sources/ProviderCore/ProviderLoop.swift` (`usesAppAttestWorker`); `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`passthroughEnvironment`) | Select the supervised worker candidate in foreground or background serving. Exact `1` is persisted in the provider plist; stop/start without it restores the default in-process path. Candidate failures do not fall back to in-process Apple calls or restart inference for a worker stall |
+| `DARKBLOOM_NATIVE_APP_ATTEST_QUALIFICATION` | Exact `1` enables; unset or anything else is `false` | `provider-swift/Sources/darkbloom/AppAttestQualificationCommand.swift` (`runIfRequested`); `scripts/nativequalification/stage-signed-app.sh` | Opt in to local signed-app staging/the private diagnostic entry; the diagnostic also requires the worker flag, signed resources and isolated loopback inputs. Does not enable serving or approve a build |
+
+The [worker security boundary](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
+and [native qualification status](../../scripts/nativequalification/README.md#qualification-status)
+remain separate from configuration selection. Endpoint-resumption capability is
+[advertised independently](protocol-messages.md#app-attest-endpoint-resumption-candidate);
+setting either flag creates no local trust and changes no proof lifetime.
 
 ### Startup model preload
 
@@ -238,7 +282,7 @@ provider or model command is running. Code:
 | `DARKBLOOM_PID_FILE` | file path | `~/.darkbloom/provider.pid` | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` | Daemon PID file. |
 | `DARKBLOOM_WATCHDOG_STATE` | file path | `~/.darkbloom/watchdog-state.json` | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` | Watchdog arm/disarm state. |
 | `DARKBLOOM_KV_BACKEND_GUARD` | absolute file path | `~/.darkbloom/kv-backend-guard.json` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` | Crash-loop guard record; on the LaunchAgent allow-list so the watchdog and daemon share one file. |
-| `DARKBLOOM_R2_CDN_URL` | URL | `https://models.darkbloom.ai` | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` | Mirror model weights are downloaded from. |
+| `DARKBLOOM_R2_CDN_URL` | URL | build default `BuildEnvironment.current.modelCDNURL`: `https://models.darkbloom.ai` for prod and dev builds | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` (`resolveCDNURL`) | Mirror model weights are downloaded from. On the LaunchAgent allow-list, so the daemon downloads from the same mirror. |
 | `DARKBLOOM_KEYCHAIN_ACCESS_GROUP` | access group | `SLDQ2GJ6TL.io.darkbloom.provider` | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` | Keychain access group for the Secure Enclave key items. |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | `0` quiets | unset (telemetry on) | forwarded only, `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` | MLX resource telemetry switch consumed by `mlx-swift-lm`. |
 
@@ -253,7 +297,9 @@ and rollback are defined in the [provider configuration reference](../provider/c
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
+| `DARKBLOOM_CBV2_KV_QUANTIZATION` | `balanced`, `k8v4`, `k8v8`, `native` (aliases in the [CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)) | `native` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.live`) | Overrides exact-model and global live precision settings. Only explicit live packed precision requires paged execution; native retains the model's automatic backend policy. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_CHECKPOINT_QUANTIZATION` | Same four precision values and aliases | `balanced` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift` (`resolve`, `.checkpoint`) | Overrides exact-model and global checkpoint settings independently. Eligible native paged/contiguous complete stores use lossy older-row encoding and native restore; unsupported cases retain native encoding, and live-packed stores keep their existing format. Does not enable caching, force a backend or grant serving RAM. MiMo resolves native before parsing. Forwarded to the LaunchAgent. |
+| `DARKBLOOM_CBV2_PAGED_KV` | `0`, `false`, `no`, `off` disable paging | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the backend setting. Native live precision can serve contiguous; non-MiMo live-packed precision refuses construction when paging is unavailable. See [backend and precision controls](../provider/cli-reference.md#providertoml-keys-read-by-the-cli). A backend default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
 | `DARKBLOOM_CBV2_MIXED_PREFILL_CAP` | nonnegative tokens | reviewed profile cap; otherwise uncapped | `provider-swift/Sources/ProviderCore/Inference/Performance/MixedPrefillPolicy.swift` (`resolve`) | Caps prompt tokens in steps that also decode. Positive Gemma caps have a 128-token minimum; `0` defers prefill while decode is active. Does not change the pure-prefill stripe. Foreground/local only. |
@@ -451,7 +497,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 1800 | `1800` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `750` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persistent rolling-day write budget; includes serialized cache-file framing. A saved `cache.daily_write_gb` takes precedence. Forwarded to newly installed launchd jobs. See [accounting and limits](ssd-kv-cache.md#size-and-eviction-rules). |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `4000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persistent rolling-day write budget; includes serialized cache-file framing. A saved `cache.daily_write_gb` takes precedence. Forwarded to newly installed launchd jobs. See [accounting and limits](ssd-kv-cache.md#size-and-eviction-rules). |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints use the byte value as a payload-read cap; native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. |
@@ -466,9 +512,10 @@ are forwarded to the LaunchAgent. Backend/model/assistant
 eligibility, measured publication limits, and the conservative reservation after
 a slot shrink are described in
 [`../architecture/prefix-cache.md#resident-tiers`](../architecture/prefix-cache.md#resident-tiers).
-Provider cache enablement does not enable coordinator preference; the independent
-`EIGENINFERENCE_CACHE_ROUTING_MODE` default remains `off`
-([coordinator/registry/config.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/config.go), `ReadConfig`).
+Provider cache enablement does not enable coordinator preference. The pinned
+[coordinator/registry/config.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/registry/config.go)
+snapshot (`ReadConfig`) records an independent `EIGENINFERENCE_CACHE_ROUTING_MODE`
+default of `off`; consult the platform's latest default branch for current policy.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

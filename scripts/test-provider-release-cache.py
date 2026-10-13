@@ -24,8 +24,10 @@ SCRIPT = Path(__file__).resolve().with_name("provider-release-cache.py")
 
 
 def git(root, *arguments):
+    # Also applies to cloned submodules: no writer may outlive fixture cleanup.
     return subprocess.check_output(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+         "-c", "maintenance.auto=false", "-c", "gc.auto=0",
          "-c", "protocol.file.allow=always", "-C", str(root), *arguments],
         stderr=subprocess.PIPE, text=True,
     ).strip()
@@ -78,6 +80,37 @@ class RepositoryFixture(unittest.TestCase):
 
     def keys(self, lane="qualification", metadata=None, root=None):
         return identity.keys(root or self.root, lane, metadata or self.metadata)
+
+
+class FixtureProcessTests(unittest.TestCase):
+    def test_fixture_commits_do_not_launch_background_maintenance(self):
+        with tempfile.TemporaryDirectory(prefix="provider-cache-git-processes-") as directory:
+            root = Path(directory)
+            trace = root / "git-trace.jsonl"
+            global_config = root / "gitconfig"
+            global_config.write_text("[maintenance]\n\tauto = true\n[gc]\n\tautoDetach = true\n")
+            with patch.dict(os.environ, {
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TRACE2_EVENT": str(trace),
+            }):
+                checkout = root / "checkout"
+                init_repo(checkout)
+                (checkout / "tracked.txt").write_text("fixture\n")
+                commit(checkout)
+                cloned = root / "cloned"
+                git(root, "clone", "-q", str(checkout), str(cloned))
+                (cloned / "tracked.txt").write_text("changed fixture\n")
+                git(cloned, "add", ".")
+                git(cloned, "-c", "user.name=Cache Test", "-c",
+                    "user.email=cache-test@example.invalid", "commit", "-qm", "cloned fixture")
+            maintenance = [
+                event["argv"]
+                for line in trace.read_text().splitlines()
+                if (event := json.loads(line)).get("event") == "child_start"
+                and any(argument in {"maintenance", "gc"} for argument in event.get("argv", []))
+            ]
+            self.assertEqual(maintenance, [], "A detached Git writer can race fixture cleanup")
 
 
 class CacheIdentityTests(RepositoryFixture):
@@ -222,6 +255,17 @@ class SelectedToolchainTests(unittest.TestCase):
             metadata = identity.toolchain_metadata(lane)
             self.assertNotIn("rust", metadata)
             self.assertFalse(any(call.args[0] in {"rustc", "cargo"} for call in self.probe.call_args_list))
+
+    def test_release_environment_changes_identity_without_rust_inputs(self):
+        identities = []
+        for environment in ("", "dev", "prod"):
+            with patch.dict(os.environ, {"DARKBLOOM_RELEASE_ENVIRONMENT": environment}):
+                metadata = identity.toolchain_metadata("release")
+            self.assertEqual(metadata["build_env"]["DARKBLOOM_RELEASE_ENVIRONMENT"], environment)
+            self.assertFalse(set(metadata["build_env"]) &
+                             {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"})
+            identities.append(identity.digest(metadata))
+        self.assertEqual(len(set(identities)), 3)
 
     def test_frontend_bytes_are_checked_independently_of_driver(self):
         frontend = self.swift.with_name("swift-frontend")

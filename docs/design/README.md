@@ -1,6 +1,6 @@
 # Provider Design Records
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Retained bodies and evidence remain unchanged; status is historical, not a rollout claim. Retired dependent records are indexed in the [record archive](../reports/README.md#retired-original-records).
 
@@ -11,6 +11,8 @@ Retained bodies and evidence remain unchanged; status is historical, not a rollo
 - [GPT-OSS 20B prefill and decode optimization](gptoss20b-prefill-decode-optimization.md)
 - [KV-cache lookup shadowing on small-window hybrid models](kv-cache-lookup-shadowing.md)
 - [MDM-optional provider authorization](mdm-optional-provider-authorization.md)
+- [Native inference with independently quantized checkpoints](https://github.com/Layr-Labs/d-inference/blob/f35743857cb2fd9d408617e9f9da884ad166e8e2/docs/design/native-inference-quantized-checkpoints.md) (archived original; depends on retired backend documentation)
+- [Runtime KV compression with artifact-qualified precision fallbacks](runtime-kv-compression.md)
 - [Should we move to Paged Attention instead of optimizing AttentionV1?](paged-attention-for-prefill.md)
 - [Migration Plan: Contiguous → Paged KV, and B=4 → B=8](paged-kv-migration.md)
 - [Operator-settable memory limit (`memory_limit_gb`) — design proposal](provider-memory-limit.md)

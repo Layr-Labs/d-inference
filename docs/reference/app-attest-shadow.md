@@ -1,8 +1,15 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
+
+Current backend behavior is owned by the platform's default branch:
+[App Attest](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/app-attest-shadow.md)
+and [serving authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
+Immutable backend links below preserve revision-specific source evidence, not
+current policy. Backend inventory, archive, receipt and dashboard implementation
+remain external; local worker and endpoint-resumption behavior is described below.
 
 ## Wire exchange
 
@@ -35,7 +42,7 @@ The app derives status locally. The server never supplies a replacement endpoint
 
 ### Provider diagnostics
 
-Optional deep diagnostics explain failures that the closed error labels cannot: whether the provider runs outside a GUI session or under changed boot security, whether a key died across a reboot or a process restart, whether accepted APNs pushes reached the Mac and were answered, and what the native error chain underneath a DeviceCheck failure was. Every member is a closed enum, bounded integer, boolean or short version string; none is part of the signed transcript or any authorization, rotation or backoff decision. Admission (`SanitizeRuntimeDiagnostics`) strips each member independently: an out-of-range, unknown, mistyped (wrong JSON type) or misplaced value is removed and never drops the frame, counts as a refused input or fences a lease. A nested object whose members are all stripped is removed. Valid values appear in the shadow observation event (stored and emitted like the other event fields, see [Dashboard and telemetry](#dashboard-and-telemetry)) and in the evidence context of the same exchange; `ready` members are carried through the attempt into later `attestation`/`assertion` events and evidence contexts. They never become metric tags or public API fields. Older coordinators ignore these fields; older providers never send them. Code: [coordinator/protocol/app_attest_deep_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_deep_diagnostic.go), [coordinator/internal/appattest/diagnostics/lifecycle.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/appattest/diagnostics/lifecycle.go).
+Optional deep diagnostics explain failures that the closed error labels cannot: whether the provider runs outside a GUI session or under changed boot security, whether a key died across a reboot or a process restart, whether accepted APNs pushes reached the Mac and were answered, and what the native error chain underneath a DeviceCheck failure was. Every member is a closed enum, bounded integer, boolean or short version string; none is part of the signed transcript or any authorization, rotation or backoff decision. Admission (`SanitizeRuntimeDiagnostics`) strips each member independently: an out-of-range, unknown, mistyped (wrong JSON type) or misplaced value is removed and never drops the frame, counts as a refused input or fences a lease. A nested object whose members are all stripped is removed. Valid values appear in the shadow observation event (stored and emitted like the other event fields, see [Dashboard and telemetry evidence](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/app-attest-shadow.md#dashboard-and-telemetry)) and in the evidence context of the same exchange; `ready` members are carried through the attempt into later `attestation`/`assertion` events and evidence contexts. They never become metric tags or public API fields. Older coordinators ignore these fields; older providers never send them. Code: [coordinator/protocol/app_attest_deep_diagnostic.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/protocol/app_attest_deep_diagnostic.go), [coordinator/internal/appattest/diagnostics/lifecycle.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/appattest/diagnostics/lifecycle.go).
 
 Provider-side computation is summarised in the Source column; a member is omitted whenever the provider cannot compute it. `key_history` is sent only when App Attest availability passed (availability failures never read Keychain) and describes the account key for this `ready`.
 
@@ -87,6 +94,29 @@ serving.
 
 ## Bounds and credential lifecycle
 
+The Apple-callback restart policy below describes the **default in-process
+provider path**. The internal, default-off
+[supervised worker candidate](../architecture/security/identity-binding.md#supervised-app-attest-worker-candidate)
+instead terminates and reaps its owned child before replacement, preserving the
+parent's memory-only endpoint key and existing credential budgets. It does not
+fall back to parent Apple calls or restart inference for a worker stall. The
+[recorded native passes](../../scripts/nativequalification/README.md#qualification-status)
+separate worker components, the loaded-engine callback scenario and Stage C
+resumption. They apply only to the tested signed artifacts, not later rebuilds
+or the remaining physical OS/update/reboot and fleet-rollout matrix.
+Implementation and transport tests alone are not Apple qualification.
+The separate [endpoint-resumption protocol](protocol-messages.md#app-attest-endpoint-resumption-candidate)
+can avoid a new Apple call on same-process reconnect only with its platform
+counterpart. It does not extend the original assertion or proof deadlines.
+Backend policy changes and their canonical docs remain in sibling
+[darkbloom-platform](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/app-attest-shadow.md).
+
+Backend scheduling entries below retain the cited revision's evidence. Current
+assertion cadence, recovery budgets and receipt policy are defined by
+[platform controls](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md#controls),
+not the older ten-minute cadence or receipt-required basic grant below. The
+provider-local Apple callback, retry, key-budget and socket fences remain separate.
+
 | Boundary | Behavior |
 |---|---|
 | Initial spread | Random 0–29 seconds after inventory is ready. |
@@ -103,7 +133,7 @@ serving.
 | Key generation | In the normal single-provider process, a persisted shared five-generations-per-coordinator/environment-per-hour budget across account scopes is checked and saved before the empty-key pre-call marker and every Apple call. A budget storage failure therefore creates no new one-hour marker or Apple key. Only a completed native Apple callback reporting an error with no usable key ID permits a new attempt after a persisted one-minute cooldown; Apple may still have created an inaccessible key internally, so the shared budget bounds normal-process attempts. Busy admission, operation timeout, cancellation, issued/retired keys and a crash before an error response retain the one-hour cooldown. Separate processes that bypass the provider instance lock do not have an atomic cross-process Keychain budget. Code: `provider-swift/Sources/ProviderAppAttest/EnrollmentKeyLifecycle.swift` (`mayGenerateKey`, `mayRetryKeyGeneration`) and `AppAttestShadowClient.swift` (`respond`). |
 | Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Only a stored protocol-3 transaction resumes; one recorded without a version or under protocol 2 is refused as `enrollment_protocol`, which is not retried, and the client starts a fresh protocol-3 enrollment ([coordinator/internal/appattest/transcript/binding.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/appattest/transcript/binding.go), `Prepare`). The server measures the 24-hour limit from its original challenge, before the client caches the completed proof. A matching but expired transaction returns `enrollment_expired` and uses bounded exchange retries so a later prepare can expire the local cache and replace the key; binding mismatches remain terminal. Expired pending proof is replaced under the generation budget. |
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
-| Cancellation | Connection generation prevents late delivery into a different session. |
+| Cancellation | `ProviderLoop` generation invalidation cancels the exchange; `AppAttestShadowReply` additionally checks the originating `NWConnection`, registration, session, protocol and matching reply action immediately before writing. An old reply capability cannot send through the stable router to a new socket (`provider-swift/Sources/ProviderCore/Coordinator/AppAttestShadowReply.swift`, `sendAppAttestShadow`). |
 
 Code: `AppAttestShadowClient.swift`, `CallbackDeadline.swift`, `AppleAppAttestService.swift`, and [coordinator/internal/appattest/transcript/binding.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/appattest/transcript/binding.go) (`Prepare`). Keychain items remain nonsynchronizing and device-local; private App Attest keys remain with Apple's service.
 
@@ -126,6 +156,12 @@ Rotation retires a dead key; it never revokes it, fences serving or changes lega
 Some Macs reject the first `attestKey` call for every freshly generated key with `apple_invalid_key`. Each retry makes the client generate another key and raises Apple's per-device risk metric. When an `attestation` reply fails with `apple_invalid_key` and the machine has at least `recovery.EnrollmentInvalidKeyThreshold = 3` such archived failures in the trailing `recovery.EnrollmentInvalidKeyWindow = 24 * time.Hour` (the current one included), the next attempt waits `recovery.EnrollmentInvalidKeyBackoff = 6 * time.Hour` instead of the normal one-minute, five-minute, one-hour backoff. The machine is the connection's canonical machine; without one, the count covers the account's sessions. Failures come from `app_attest_evidence` rows (action `attestation`, outcome `apple_invalid_key`) joined to `darkbloom_machine_sessions` by `session_id`, capped at `AppAttestRotationCountCap = 100`. A verified attestation does not reset the window. Storage errors keep the normal backoff. The event is stage `recovery`, outcome `enrollment_backoff`. A reconnect, coordinator restart or release starts a new session, which re-derives a running backoff from the same archive before its first exchange: when the latest such failure had at least three in the 24 hours up to it and is less than six hours old, the session first waits until six hours after it (never longer than six hours, whatever the replica clocks), observed as stage `recovery`, outcome `enrollment_backoff_resumed`. That check waits up to 10 seconds for a session storage permit; a storage error starts normally. Both record `app_attest.enrollment_backoff`, tagged `phase:failure` or `phase:session_start`. Code: [coordinator/internal/appattest/recovery/enrollment_timing.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/appattest/recovery/enrollment_timing.go) (constants); [coordinator/internal/appattest/recovery/enrollment.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/appattest/recovery/enrollment.go) (`Enrollment.Due`, `Enrollment.Remaining`); [coordinator/appattest/service/enrollment_backoff.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/service/enrollment_backoff.go) (session wiring); [coordinator/store/postgres/app_attest_rotation.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/postgres/app_attest_rotation.go) (`AppAttestEnrollmentInvalidKeyFailureTimes`).
 
 ## Prospective authorization
+
+This section describes the immutable implementation cited below, not current
+serving policy. In particular, its receipt-required eligibility and receipt-bound
+expiry must not be applied to basic serving today. Current basic serving and
+stricter reward/MDM-removal decisions are separate; consult
+[platform authorization](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/provider-authorization.md).
 
 [coordinator/appattest/authorization.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/appattest/authorization.go) (`EvaluateAuthorization`) is the pure
 eligibility evaluator used for observations and the independently enabled

@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -9,11 +9,15 @@ a bug in the doc. Read this page before editing docs; read
 
 Local documentation covers provider/native behavior, the landing site and the
 retained console snapshot with its build/test/hosting configuration. New backend,
-console and admin development belongs to the sibling platform. Use
-verified immutable platform links at `48a198c71a2d30feec5597bacf1101120f7f955d`
-for external contracts. Original records absent there remain available in
-d-inference at `4230fa03ddbc84e34e2de150c89431744d6f1c55`; never rewrite their
-body, evidence pins or dates to make the new ownership appear historical.
+console and admin development belongs to the sibling platform. For current
+platform behavior, inspect the latest source on the platform's default branch
+(`master`); do not treat a historical revision as the current contract. Cite
+verified immutable source links for the specific evidence inspected, including
+existing links at `48a198c71a2d30feec5597bacf1101120f7f955d`. Recheck them against
+current platform source when updating a behavioral claim. Original records
+absent there remain available in d-inference at
+`4230fa03ddbc84e34e2de150c89431744d6f1c55`; never rewrite their body, evidence pins
+or dates to make the new ownership appear historical.
 
 ## 1. The system in one table
 
@@ -186,12 +190,12 @@ and tests both historical-link handling and date-preserving, idempotent stamping
 | Cache directory, volume or daily write limits | `provider/cache-storage.md`, `architecture/security/encryption.md`; retain cache and CLI mappings |
 | Model manifest, discovery, publication or revision API | `reference/model-registry-format.md`, `architecture/model-registry.md`, relevant model publication runbook |
 | Repository ownership/removal boundary | `developer/navigation.md`; keep external compatibility obligations explicit |
-| Provider version, signing, installation or publication | `operations/provider-release.md`; `CHANGELOG.md` for visible changes |
+| Provider version, signing, installation or publication | `operations/provider-release.md`; a `changelog.d/<topic>.md` fragment for visible changes |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | Public golden vectors / private qualification boundary | `developer/test.md`; never claim vectors alone execute private implementations |
 | New model family or engine capability | `architecture/inference.md`, `provider/hardware-requirements.md` |
 | Landing routes, configuration or hosting instructions | landing README and relevant build/test guidance |
-| Anything user-visible | `CHANGELOG.md` |
+| Anything user-visible | One `changelog.d/<topic>.md` fragment; `CHANGELOG.md` only during release preparation |
 
 CI encodes the high-confidence part of this matrix in
 `scripts/docs-impact-rules.json`. `scripts/docs-impact-check.py` evaluates it

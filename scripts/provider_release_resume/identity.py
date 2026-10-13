@@ -2,7 +2,7 @@
 import base64
 import re
 
-from .api import tag_source
+from .api import tag_source, verify_source
 
 WORKFLOW = ".github/workflows/release-swift.yml"
 BUILD_JOB = "Build optimized SDK 27 provider"
@@ -30,9 +30,7 @@ def select(api, run_id, attempt):
     source, tag = run["head_sha"], run["head_branch"]
     if not re.fullmatch(r"[0-9a-f]{40}", source) or tag_source(api, tag) != source:
         raise ValueError("Retained run and current release tag differ")
-    commit = api.get("commits/" + source)
-    if commit.get("commit", {}).get("verification", {}).get("verified") is not True:
-        raise ValueError("Retained source commit is not verified")
+    verify_source(api, source)
     version = tag[1:]
     file = api.get(f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={source}")
     content = file.get("content") if isinstance(file, dict) else None

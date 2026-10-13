@@ -88,13 +88,37 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(values, {})
 
-    def test_binary_version_must_match_provider_source(self):
-        for reported, accepted in (("darkbloom 0.9.0", True), ("0.9.0", True),
-                                   ("darkbloom 0.9.1", False), ("garbage", False)):
-            with self.subTest(reported=reported):
-                result = subprocess.run(["bash", "scripts/check-release-version.sh", "v0.9.0", reported],
+    def test_retained_coordinator_version_does_not_control_provider_release(self):
+        source = self.root / "coordinator/api/server.go"
+        source.parent.mkdir(parents=True)
+        source.write_text('var LatestProviderVersion = "0.9.1"\n')
+        result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "0.9.0")
+        self.assertEqual(values["publish"], "false")
+        shutil.rmtree(self.root / "coordinator")
+        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
+                                      GITHUB_REF_NAME="v0.9.0", RELEASE_ENVIRONMENT="prod")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "0.9.0")
+        self.assertEqual(values["publish"], "true")
+
+    def test_source_tag_and_binary_versions_must_match(self):
+        cases = [
+            ([], True),
+            (["v0.9.0"], True),
+            (["0.9.0", "darkbloom 0.9.0"], True),
+            (["0.9.0", "0.9.0"], True),
+            (["v0.9.1"], False),
+            (["0.9.0", "darkbloom 0.9.1"], False),
+            (["0.9.0", "unexpected 0.9.0"], False),
+        ]
+        for arguments, succeeds in cases:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(["bash", "scripts/check-release-version.sh", *arguments],
                                         cwd=self.root, capture_output=True, text=True, timeout=10)
-                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+
 
 
 if __name__ == "__main__":

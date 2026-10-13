@@ -1,6 +1,6 @@
 # Darkbloom Provider Documentation
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 This repository documents the Swift provider, local native inference, landing,
 and retained console snapshot. New backend, console and admin development and
@@ -27,7 +27,8 @@ backend operating guides belong to
 - [MiMo public fixtures](developer/mimo-prompt-fixtures.md)
 - [Serving-performance qualification](developer/serving-performance-qualification.md)
 - [PR stacks](developer/pull-requests.md) and [threat-review tooling](developer/threat-model-review.md)
-- [Landing application](../landing/README.md)
+- [Landing application](../landing/README.md) and [public representations](architecture/components/landing.md)
+- [Native KV and checkpoint quantization](architecture/kv-cache-quantization.md)
 - [Retained console architecture and hosting configuration](architecture/components/console-ui.md)
 
 Public golden vectors validate fixed expected behavior. They do not execute the

@@ -24,6 +24,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate changelog fragments
+        run: |
+          python3 scripts/test-changelog.py
+          make changelog-check
       - name: Check provider release and installer integrity
         run: |
           ./scripts/check-release-version.sh
@@ -34,6 +38,7 @@ jobs:
           python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-provider-release-artifact.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py
           python3 scripts/test-stage-test-metallib.py
@@ -57,6 +62,11 @@ jobs:
         run: python3 scripts/test-prepare-mimo-provider-fixtures.py
       - name: Test serving qualification evidence and catalogs without a GPU
         run: python3 -m unittest discover -s scripts/serving_performance -t scripts -p 'test_*.py'
+      - name: Test actual-call and bounded timing receipts without a GPU
+        run: |
+          python3 -m unittest discover -s scripts/benchmarks -p test_radix_forward_shapes.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_curate_runs.py
+          python3 reports/runtime-kv-path-2026-10-09/qualification/test_run_suite.py
 
   docs:
     name: Docs Lint
@@ -99,6 +109,8 @@ jobs:
           echo "LLVM_PROFILE_FILE=$profiles/%p-%m.profraw" >> "$GITHUB_ENV"
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
+      - name: Test SwiftPM resource bundle staging
+        run: python3 scripts/test-stage-swiftpm-resource-bundles.py
       - name: Test profile inventory authentication in a terminal
         run: python3 scripts/test-profile-inventory-auth.py
       - name: Prepare pinned public MiMo metadata and original corpus

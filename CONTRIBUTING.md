@@ -22,6 +22,12 @@ change that ownership. Device-local Swift HTTP APIs are provider code, not
 the centralized backend. Check your remote, branch and intended diff before
 editing or pushing. See the [owner map](docs/developer/navigation.md).
 
+The latest coordinator source is the default branch of
+https://github.com/Layr-Labs/darkbloom-platform. For coordinator diagnosis, agents
+must fetch that branch and read its `AGENTS.md` and the actual relevant code.
+Old d-inference copies and pinned documentation are historical references, not
+the latest implementation.
+
 ## Develop And Test
 
 Install tools with `mise install`, initialize recursive submodules, and follow
@@ -73,10 +79,39 @@ release, native parity or full-model qualification from a source cleanup.
 
 ### Changelog entries with less merge contention
 
-Put user-visible changes in a small topic-specific `Unreleased` section in
-[CHANGELOG.md](CHANGELOG.md); update that section in place. Preserve other
-contributors' sections and all historical entries. Do not assign a release
-version or claim shipment without a requested release operation.
+Ordinary PRs add one uniquely named Markdown file under
+[`changelog.d/`](changelog.d/README.md); they do **not** edit or regenerate
+[`CHANGELOG.md`](CHANGELOG.md). Different files remove the shared insertion
+point that made unrelated PRs conflict. Fragments do not replace the canonical
+documentation required by [`docs/AGENTS.md`](docs/AGENTS.md).
+
+1. Choose a descriptive kebab-case name, optionally prefixed with the issue or
+   PR number, such as `1402-coordinator-env-retirement.md`. Start with
+   `### Coordinator environment retirement`, a blank line, and concise bullets
+   describing observable changes and limitations. Do not put release versions
+   or dates in the fragment.
+2. Keep follow-up edits in that PR's fragment. Do not edit another PR's pending
+   notes, split one change across several files, or use a shared `unreleased.md`.
+   Run `make changelog-check` and `make changelog-preview` before review.
+3. For an open PR based on the old workflow, preserve current `master` history
+   when merging it. Move only that PR's not-yet-released notes into a new
+   fragment and remove its duplicate root-changelog insertion. Never silently
+   drop another change or assign a version solely because a PR was merged.
+4. Release preparation alone renders selected fragments with
+   `python3 scripts/changelog.py render --version X.Y.Z --date YYYY-MM-DD NAME.md ...`.
+   Review the output, insert it above the previous release, and remove exactly
+   those fragment files in the same commit. Omitting the names selects all
+   pending fragments, so first verify that every one belongs in the candidate.
+   The renderer is read-only and refuses an already recorded version.
+5. Record actual publication separately from source preparation. Verify the
+   annotated tag and published release before claiming shipment; coordinator,
+   console, model activation and physical qualification remain independent.
+   Publication failure leaves a prepared candidate, not a shipped release.
+
+Do not configure a union merge driver for the changelog. Combining conflicting
+lines without understanding versions can silently duplicate notes or put a
+change under the wrong release. Existing published sections are historical;
+correct them only with source/tag evidence and explicit authorization.
 
 ## Release And Publication
 

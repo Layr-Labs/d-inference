@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -9,6 +9,20 @@ operator has to plan for. For operators choosing or checking a machine. The
 memory constants and the load-gate arithmetic behind the RAM table are stated
 once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
 and are not repeated here.
+
+Native live inference is the default. Independent checkpoint compression can
+reduce encoded older-row storage, not the native serving allocation or measured
+process RAM. Optional live-packed precision retains native recent, speculative,
+recurrent and assistant state; its actual rows, metadata and transient owners
+determine capacity. Neither mode reduces model-load quotations, OS reserves,
+activation floors or minimum serveable KV headroom. The RAM-tier table remains
+subject to the same load gate. Precision controls and fallback are in the
+[CLI reference](cli-reference.md#providertoml-keys-read-by-the-cli).
+
+Current backend behavior is owned by the
+[platform's latest default branch](https://github.com/Layr-Labs/darkbloom-platform/tree/master).
+Immutable external citations below preserve evidence snapshots, not current
+source or proof of deployed policy.
 
 ## Registering interest for unsupported hardware
 
@@ -261,7 +275,7 @@ the reduction does not lower the load, activation or operating-system reserves.
 | Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
-| When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Exact MiMo IDs default to native contiguous text-only COMPLETE checkpoints; media stays uncached. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+| When it is used at all | [Per-family layouts and reuse gates](../reference/ssd-kv-cache.md#per-family-reuse-capability); [model defaults and resident retention](../architecture/prefix-cache.md#invariants) | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
 
 ## Storage
 

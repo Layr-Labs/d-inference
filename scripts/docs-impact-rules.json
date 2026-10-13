@@ -70,7 +70,7 @@
     },
     {
       "name": "public fixtures and qualification",
-      "source_patterns": ["fixtures/**", "provider-swift/Tests/ProviderCoreTests/Fixtures/**", "scripts/verify*prompt*", "scripts/prepare-mimo*", "scripts/generate*prompt*", "scripts/qualify*", "provider-swift/Tests/test_protocol_fixture_resources.py"],
+      "source_patterns": ["fixtures/**", "provider-swift/Tests/ProviderCoreTests/Fixtures/**", "scripts/verify*prompt*", "scripts/prepare-prompt-fixtures.py", "scripts/prepare-mimo*", "scripts/generate*prompt*", "scripts/qualify*", "provider-swift/Tests/test_protocol_fixture_resources.py"],
       "docs_any_of": ["docs/developer/test.md", "docs/developer/mimo-prompt-fixtures.md", "docs/developer/serving-performance-qualification.md"]
     },
     {

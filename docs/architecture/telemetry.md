@@ -1,10 +1,59 @@
 # Provider telemetry
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Provider diagnostics travel on typed heartbeats and terminal profiles. The Swift event-emitter facade is inert; do not add prompt or completion content to heartbeats or profiles. The [wire schema](../reference/telemetry-schema.md) and [protocol reference](../reference/protocol-messages.md) define the boundary.
 
 ## Mechanism
+
+### Heartbeat telemetry
+
+The provider sends typed `heartbeat` frames at the configured
+`heartbeat_interval_secs`, with event heartbeats bounded to two per second.
+The [platform heartbeat pipeline](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/telemetry.md#heartbeat-telemetry)
+owns validation, clamping, persistence and fleet metrics. Its implementation
+and live configuration are external to this repository.
+
+Optional per-engine performance observations carry an epoch, sample count and
+age independently of heartbeat cadence. Prompt measurements are published before
+terminal accounting, and engine decode capacity stays separate from delivered
+streaming/end-to-end rates. See the exact [capacity protocol](../reference/protocol-messages.md#slotsperformance_measurements)
+and [platform performance validation](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/internal/registry/capacityvalue/performance_measurements.go)
+(`ClampPerformanceMeasurements`, `ValidPerformanceObservation`). These fields belong to
+in-memory routing observations and are excluded from persisted numeric-only
+provider telemetry; they add no client telemetry-ingestion endpoint.
+The first-content design includes coarse numeric workload buckets for
+routing: these reveal bounded workload-size metadata to the coordinator, which
+already processes the request, but contain no prompt text, completion text,
+token IDs, media or cache keys. The protocol accepts only six fixed numeric
+bucket ceilings and closed phase/cache/contention values, with at most 32
+engine-local aggregate buckets. Warm-pool planning retains numeric work means
+in memory; process logs and event emitters omit the measured prompt/output
+means and work rates.
+
+### KV storage and precision attribution
+
+`EngineV2Factory.makeBridge` constructs a once-per-build INFO `engine_health`
+notification with `operation = engine_v2_kv_backend` after successful engine
+construction (`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`,
+`emitKVBackendTelemetry`). `fields.backend` names the inference engine,
+`fields.kv_backend` names its storage, and `fields.kv_quantization` names the
+resolved live attention-cache profile rather than checkpoint or model-weight
+precision. The closed values and operation-specific presence
+rules are in the [canonical field contract](../reference/telemetry-schema.md#provider-kv-backend-and-precision-selection).
+
+This event is available to an injected sink, but the production client facade
+discards it. It is not a live coordinator datum or a fleet inventory: older
+records, refusal/posture operations and direct Diffusion bridge assembly can
+omit the precision observation, and absence never implies `native` precision.
+The recurring posture and heartbeat expose storage backend separately; doctor
+checks explicit live-backend requests and does not certify this precision profile
+(`provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`,
+`KVBackendPosture.backendCheck`).
+The local daemon snapshot separately records effective live/checkpoint
+precision and the active complete-store layout for `status` and `doctor`.
+Those fields are not added to this event or the coordinator heartbeat; see
+[local diagnostics](../provider/cli-reference.md#darkbloom-doctor).
 
 ### Slot posture sampler lifecycle
 

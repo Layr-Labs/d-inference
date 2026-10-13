@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -15,15 +15,18 @@ coordinator's use of cache state in routing see
 ## Context
 
 CBv2 owns one KV cache per running request. Two backends exist; the choice is
-made per slot at load time and fixed for the slot's life. Prefix reuse — seeding
-a new request's KV from blocks computed by an earlier request with the same
-token prefix — is only safe when the cached rows can be restored exactly, which
-depends on the model's layer layout (full attention vs sliding window vs
-recurrent state) and on the backend. Paged reuse shares physical pages within
-the existing pool when opted in. Dense and MoE Qwen restore complete recurrent
-checkpoints streamed from SSD. Loaded historical-attention capabilities also
-allow exact paged window checkpoints for GPT-OSS and Gemma. Optional resident
-banks use the slot KV grant.
+made per slot at load time and fixed for the slot's life. Prefix reuse seeds
+a new request's KV from an earlier request with the same authenticated token
+prefix and compatible model, layout and numerical identity. Native-exact
+checkpoints preserve captured state; independently quantized checkpoints
+reconstruct approximate older attention rows into native state. These are
+distinct contracts, not interchangeable forms of exact replay; see
+[execution and checkpoint precision](kv-cache-quantization.md).
+Paged resident reuse shares physical pages within the existing pool when opted
+in. Dense and MoE Qwen restore complete recurrent checkpoints streamed from
+SSD. Loaded historical-attention capabilities allow full/window checkpoints
+for GPT-OSS and Gemma on eligible native paged or contiguous storage. Optional
+resident banks use the slot KV grant.
 SSD snapshots survive beyond a request without retaining their KV in resident memory
 (`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift`,
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift`).
@@ -31,6 +34,11 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 ## Mechanism
 
 ### KV layouts
+
+This table describes native live execution, now the default. Optional
+[live-packed precision](kv-cache-quantization.md#optional-live-packed-execution)
+still requires paged execution. The independent checkpoint request does not
+change backend selection or native serving-memory charges.
 
 | | Contiguous | Paged |
 |---|---|---|
@@ -92,8 +100,9 @@ must match every observed layer. The probe rejects asymmetric or changing K/V
 types. Dense and MoE Qwen targets require both this table and segmented storage
 (`requiresNativePagedKV`); they no longer have an unconditional paged veto.
 Complete Qwen checkpoints support native contiguous and segmented paged storage.
-Historical attention checkpoints require the resolved paged backend and an exact
-loaded layer/owner/type map; ordinary attention snapshots remain a separate codec.
+Historical attention checkpoints require an exact loaded layer/owner/type map;
+contiguous construction additionally receives the observed
+`completeCheckpointKVDTypes`. Ordinary attention snapshots remain a separate codec.
 
 **Release acceptance remains incomplete.** The [final versioned build](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-07-release090-final-build.md),
 [Qwen 3.5/3.6 concurrency checks](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-07-qwen-concurrency-final.md)
@@ -104,9 +113,10 @@ production-key restart checks remain subject to the
 This selection change is not a release or deployment claim. SSD prefix reuse
 defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
 `gemma-4-26b-qat-4bit`, `gpt-oss-20b` and the exact MiMo identities below.
-GPT-OSS 20B and Gemma QAT use the paged historical-attention complete checkpoint.
-Gemma automatic MTP resolves its catalog assistant through `SpecDecArtifactFunnel`, and a
-contiguous fallback does not reuse that checkpoint. An explicit affirmative
+GPT-OSS 20B and Gemma QAT normally use paged historical-attention checkpoints;
+eligible native contiguous fallback uses a distinct complete layout rather than
+reinterpreting the paged file. Gemma automatic MTP resolves its catalog
+assistant through `SpecDecArtifactFunnel`. An explicit affirmative
 `DARKBLOOM_PREFIX_CACHE` opts other models into their existing cache eligibility
 checks; a non-affirmative nonempty value disables all tiers. Both SSD codecs,
 local/connected load hashing and benchmark expectations use the model-scoped
@@ -366,9 +376,10 @@ flowchart TD
     B -- no --> X[cache disabled]
     B -- yes --> C{complete loaded checkpoint capability?}
     C -- recurrent --> D[native full KV and typed recurrent / MTP codec]
-    C -- historical --> E[segmented paged KV and exact layer / owner map]
-    D --> F{verified artifact / runtime / storage identity?}
-    E --> F
+    C -- historical --> E[native paged or contiguous KV and exact owner map]
+    D --> P[resolve independent checkpoint encoding]
+    E --> P
+    P --> F{verified artifact / runtime / effective storage identity?}
     F -- yes --> G[complete SSD store; metadata while idle]
     F -- no --> X
     C -- neither --> H{ordinary attention reuse and exact backend?}
@@ -381,7 +392,7 @@ flowchart TD
 `prepareCompletePrefixCache` reads the effective loaded serving model, including
 its resolved text tower for a VLM. Qwen requires owning full-attention rows,
 native KV types and a typed persistent MTP checkpoint codec when configured.
-Historical attention requires a loaded capability marker, native segmented
+Historical attention requires a loaded capability marker, observed native
 storage and the exact ordered layer/owner/window/type map. Gemma's stateless
 per-round assistant remains configured normally; unsupported persistent
 assistant state disables this path.
@@ -393,6 +404,10 @@ maximum buffer size, and historical owner/window/attention fields. It enters
 both the compatibility fingerprint and disk namespace. Model weights are not
 rehashed per request (`EngineV2SlotFactory+CompletePrefixCache.swift`,
 `CompleteCheckpointStorageIdentity.swift`, `PrefixCachePolicy+CheckpointIdentity.swift`).
+The effective checkpoint profile is resolved before this identity is built.
+Native exact, lossy-to-native and explicit live-packed files have distinct
+layouts. Unsupported checkpoint compression can retain an eligible native
+codec, not silently acquire new complete-cache eligibility.
 
 Native-precision KV does not require unquantized model weights. Dense Qwen's
 complete checkpoint capability derives activation dtype from a floating
@@ -451,10 +466,14 @@ floor, or a prior local sighting of the tag; fleet-novel checkpoints settle
 `skipped_novel` without touching disk. Older coordinators and local serving
 write unconditionally (`SSDCheckpointDemand.admitsWrite`; policy in the
 [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)). Qwen includes attention KV, recurrent state and normalized typed
-MTP history. Historical attention includes exact owning full rows and the
-window contents at the captured boundary, preserving borrower relationships.
-Capture is chunk-agnostic for both layouts. Recurrent (Qwen, Nemotron,
-Bonsai) checkpoints exist at every contiguous computed-range end inside the
+MTP history. Historical capture includes owning full rows and the window
+contents at the captured boundary, preserving borrower relationships. The
+effective checkpoint encoder may compress older attention rows; native recent
+and recurrent/auxiliary state remain exact. Native checkpoint storage preserves
+all captured bytes. See the
+[payload reference](../reference/ssd-kv-cache.md#complete-checkpoint-payload).
+Checkpoint encoding does not change capture scheduling. Recurrent (Qwen,
+Nemotron, Bonsai) checkpoints exist at every contiguous computed-range end inside the
 prompt that is a multiple of 256 tokens
 (`CBv2RecurrentCheckpointGeometry.recurrentCheckpointStrideTokens`, the
 block-hash size) and query-block aligned, or, equivalently in production, the
@@ -464,36 +483,37 @@ or above the store's 1,024-token floor, so a donor prefilled in 512-token
 chunks retains 1,024 first. The durable path skips the prompt end itself
 because export needs a token after the checkpoint; the resident
 bank keeps that endpoint, since a longer next turn restores it. The rule rests on the
-[chunk-partition parity measurement](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-27-qwen-chunk-partition-parity.md):
+[native-checkpoint chunk-partition parity measurement](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reports/2026-09-27-qwen-chunk-partition-parity.md):
 on dense Qwen3.5-9B the recurrent state at a boundary is bit-identical under
 every partition tried and a restore continues token-exactly under any
 partition; on the MoE Qwen3.6-35B-A3B the state depends on the partition from
 layer 1 on, but so does a cold run's output, so the earlier uniform-chunk rule
-guarded a property serving never had there. Packed rows and preemption still
-disarm capture for the rest of the prompt (a packed disarm is counted once per
+guarded a property serving never had there. Packed prefill cohorts and preemption
+still disarm capture for the rest of the prompt (a packed disarm is counted once per
 request in the heartbeat's `recurrent_capture_disarmed_packed_total`); a
 ragged range end is not a boundary. The manifest records `chunkSize` as the
 chunk that ended at the boundary, provenance only: the adopter resumes at `p`
 under ordinary chunk sizing with `excludesPackedPrefill`;
 `CBv2PrefixReusePlan.recurrentChunkSize` no longer has a producer.
-Measured on Qwen3.5-9B with the MTP head and the live fixture's solo stripe
-pinned at 2,048 (production dense Qwen stripes at 4,096, where the same
+The following measurements used native checkpoint storage; they do not qualify
+the new lossy storage profile. Measured on Qwen3.5-9B with the MTP head and the
+live fixture's solo stripe pinned at 2,048 (production dense Qwen stripes at 4,096, where the same
 donor publishes 4,096 / 8,192 with the first boundary doubling as the
 target), a 9,171-token solo donor with a 5,120 hint publishes 2,048 / 4,096 /
 8,192 (135.4 / 219.3 / 387.1 MB); the
 same prompt prefilled as six 512-token chunks and then 2,048-token chunks
 publishes 1,024 / 5,120 / 7,168 (93.5 / 261.2 / 345.1 MB, `chunkSize` 512 /
-2,048 / 2,048) and the next turn restores 7,168. Historical-attention
-checkpoints (GPT-OSS, Gemma 4) likewise depend on no chunk geometry: a
-checkpoint at `p` is the owning full rows
+2,048 / 2,048) and the next turn restores 7,168. With native live KV,
+historical-attention checkpoints (GPT-OSS, Gemma 4) likewise depend on no chunk
+geometry: a checkpoint at `p` is the owning full rows
 `[0, p)` plus each sliding owner's `[p−W, p)`, so the engine can capture at any
 multiple of 1,024 tokens
 (`CBv2RecurrentCheckpointGeometry.historicalCheckpointStrideTokens`) that a
 computed range covers, whatever chunk size produced the range and including
 positions strictly inside it while the sliding ring still holds the window (the
 ring keeps `max(W + 8, 2,048)` tokens behind the frontier; an evicted window is
-refused, never copied stale). Packed rows, preemption and media still disarm
-capture for the rest of the prompt.
+refused, never copied stale). Packed prefill cohorts, preemption and media still
+disarm capture for the rest of the prompt.
 
 Every donor retains at most three boundaries
 (`CBv2CheckpointRetention`,
@@ -565,8 +585,8 @@ ordinary remaining range. The step plan marks only ranges introduced by this
 clamp; those rows stay outside that step's packed group so the new boundary can
 produce a checkpoint. Ordinary ranges keep their existing packing policy.
 
-An actually launched packed group revokes short-boundary eligibility before
-admission can inspect its in-flight work. Later geometry disarms mirror that
+An actually launched packed prefill group revokes short-boundary eligibility
+before admission can inspect its in-flight work. Later geometry disarms mirror that
 monotonic veto. Pure projection does not predict future ordinary packing and
 can conservatively price a boundary that later becomes unavailable. These gates
 live in `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/DemandedShortCheckpointRange.swift`
@@ -634,6 +654,9 @@ its first assignment, so staged pressure delays or refuses admission of the
 next request rather than preempting a running one; the cap keeps the worst case
 below the previous first-plus-latest rule from five concurrent donors up and on
 every slot under about 10 GB.
+
+These are native-checkpoint layout sizes, not compressed-file or process-RAM
+measurements for the independent checkpoint profile:
 
 | Model | Fixed state per checkpoint (window, or recurrent state) | Full rows per 1,024 tokens | File at 6,144 tokens |
 |---|---:|---:|---:|
@@ -763,8 +786,8 @@ rules applied to these signals.
    (`cbv2RequiredRecompute`), `FrozenReplayFullSequenceKV.swift`.
 5. Vision requests do not reuse resident checkpoints or stage SSD blocks — `EngineV2Bridge+Submission.swift`
    (`submitTokenized`, text-only guard).
-6. `DARKBLOOM_CBV2_PAGED_KV` can only force contiguous; there is no
-   environment variable that turns paged on — `EngineV2KVBackendPolicy.swift`
+6. `DARKBLOOM_CBV2_PAGED_KV` can only force contiguous; that switch cannot
+   enable paging or bypass capability gates — `EngineV2KVBackendPolicy.swift`
    (`killSwitchEnvKey`).
 7. Every `stage()` reservation is released on cancellation, preemption,
    refusal, shutdown or unload; a preempted request restarts cold —

@@ -128,6 +128,8 @@ final class ProviderMTPAssistantHandle: @unchecked Sendable {
 /// One slot's engine and auxiliary ownership. `releaseAssistant()` is explicit
 /// so teardown order is observable and cannot depend on struct temporary scope.
 final class ProviderEngineBundle: @unchecked Sendable {
+    /// Stable diagnostic identity; unlike an address it cannot be reused after a rebuild.
+    let instanceID = UUID()
     let bridge: EngineV2Bridge
     let mtpArtifact: SpecDecArtifact?
     let mtpStatus: MTPActivationStatus

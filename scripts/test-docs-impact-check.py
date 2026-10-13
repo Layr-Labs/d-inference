@@ -92,6 +92,12 @@ class DocsImpactCheckTests(unittest.TestCase):
         self.assertEqual(checker.violations(RULES, changed + [
             "docs/reference/telemetry-schema.md", "docs/architecture/components/console-ui.md"]), [])
 
+    def test_prompt_fixture_provisioner_requires_qualification_documentation(self):
+        source = "scripts/prepare-prompt-fixtures.py"
+        self.assertEqual({rule["name"] for rule, _ in checker.violations(RULES, [source])},
+                         {"public fixtures and qualification"})
+        self.assertEqual(checker.violations(RULES, [source, "docs/developer/test.md"]), [])
+
     def test_cli_fails_closed_and_retains_explicit_maintainer_override(self):
         source = "provider-swift/Sources/ProviderCore/Protocol/Types.swift"
         command = ["python3", str(CHECK), "--changed-file", source]

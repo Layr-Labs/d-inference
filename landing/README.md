@@ -56,3 +56,32 @@ Existing upstream endpoints and environment variables are unchanged.
 Use a budget-capped coordinator key for the public demo. The chat route's
 in-memory rate limiter is per instance; distributed enforcement belongs in
 the deployment's shared limiter or edge controls.
+
+## Public discovery and representations
+
+The public entry points are `/llms.txt`, `/auth.md`, `/openapi.json`,
+`/sitemap.xml`, `/developers`, `/pricing` and `/contact`. The homepage and
+explanatory pages support explicit Markdown twins (`/index.md`,
+`/developers.md`, `/pricing.md`, `/contact.md`) and `Accept: text/markdown`.
+Normal browser requests retain HTML. Read [API-CONTRACT.md](API-CONTRACT.md)
+for the exact reviewed operation subset and its platform source revision.
+
+Pricing reads the public coordinator source server-side, labels USD per million
+tokens and retrieval time, and reports unavailable data without inventing rates.
+Product facts and official links are shared across representations. See the
+[architecture](../docs/architecture/components/landing.md) and the
+[audit disposition](../docs/reports/2026-10-12-agent-readiness.md).
+
+### Next.js Vary header patch
+
+`npm run build` explicitly runs `scripts/preserve-next-vary.mjs` before Next.js
+to preserve proxy `Vary` values in the pinned Next.js 16.2.6 page templates. This is a dependency-free, exact
+replacement for [upstream issue 85999](https://github.com/vercel/next.js/issues/85999),
+following [proposed fix 91039](https://github.com/vercel/next.js/pull/91039).
+The script verifies the version and expected source, is idempotent, and fails
+the build on unexpected code. Both CommonJS/ESM and Node/edge templates
+receive the same merge behavior. Installation with `npm ci --ignore-scripts`
+is supported because the patch is part of the explicit build command.
+On a Next upgrade, remove it only after the production HTTP tests pass without
+it, including HTML `Vary: Accept` plus framework tokens and alternating
+HTML/Markdown requests.

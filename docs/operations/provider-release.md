@@ -1,488 +1,375 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
-Build, qualify, sign and publish an explicitly approved provider artifact. Registration uses the existing external coordinator API; no backend build or deployment runs here. Source ownership changes do not authorize infrastructure or hosting changes.
+Build, sign, notarize and publish an explicitly authorized provider artifact.
+The pipeline registers its exact official identity through the external platform
+API; no backend build or deployment runs here. Source ownership changes do not
+authorize releases, infrastructure or hosting changes.
 
-## Prepare and check release caches
+## When To Use
 
-1. After merging release inputs, let **SDK 27 release preparation** complete on
-   `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
-   `master`. It runs optimized compilation and SDK qualification on separate
-   `blacksmith-12vcpu-macos-27` runners, with no signing secrets or publication steps. This seeds
-   caches in the default branch's scope, which release tags can restore. PR
-   validation caches stay isolated to their PR and do not seed `master`.
-   Pipeline shutdown changes run these lanes on their PR as well; the
-   [shutdown drain regression](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#sdk-27-release-qualification)
-   must pass before retrying a release that failed that assertion.
-2. Inspect each lane's **SDK 27 build cache** summary. It reports exact hits and
-   the actual Swift restore key; a compatible prefix restore is useful even when
-    the exact-hit output is false. Swift caches are toolchain-specific;
-   the Metal helper separately validates source and compiler identity. A compiler,
-   SDK, dependency, checkout-path or build-recipe change requires a cold rebuild.
-   Metal setup must reach a working compiler probe: an asset download may finish
-   before the tool is registered. The bounded setup helper retries discovery and
-   uses Apple's component export/import fallback before failing the job.
-3. Run the authorized release from the reviewed fixed source. Its optimized and
-   qualification jobs run concurrently. Only their successful completion permits
-   the environment-protected signing job to download and validate the unsigned
-   artifact from that same run. Signing, package smoke, notarization, final hashes,
-   upload and coordinator registration remain mandatory.
-4. Compare observed lane durations and cache restore/save time in Actions. The
-   first cache warm is a cold build, and runner concurrency limits can serialize
-   jobs. Cache warming reduces subsequent compilation; it does not make tests,
-   notarization or runner scheduling instantaneous. No fixed release duration is
-   guaranteed by this workflow change.
+Use `.github/workflows/release-swift.yml` for a production version tag, a dev
+publication, or a signed validation bundle. Build, SDK qualification, signing,
+R2 staging and publication are separate jobs. Staging/publication failures retry
+the retained artifact rather than rebuilding or re-signing it.
 
-GitHub caches are immutable and scoped to their branch or tag; one tag cannot
-restore another tag's cache. The previous release cache therefore could exist
-while a new tag still rebuilt everything. See [GitHub's cache access rules](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#restrictions-for-accessing-a-cache).
-The new build cache writes after successful compilation even if later test
-assertions fail, preserving reusable objects for a retry while publication stays
-blocked. A failed compilation does not certify source timestamps for reuse.
-
-Rerunning a failed workflow uses its original source. To include a merged fix,
-start the release from that fixed commit using the existing version/tag policy;
-do not assume **Re-run failed jobs** picks up changes from `master`. This procedure
-never moves an existing tag or retries publication automatically.
-
-Implementation: `.github/actions/provider-release-build/action.yml`,
-`scripts/provider-release-cache.py`, `.github/workflows/release-swift.yml` and
-`scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
-[build cache contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/build.md#sdk-27-release-builds-and-caches) and
-[SDK qualification checks](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md#sdk-27-release-qualification).
-
-## Resume signing from a retained unsigned build
-
-Use this when build and SDK qualification succeeded but signing failed because
-of workflow tooling or runner setup. Keep the release tag on the original
-candidate. After the corrected workflow is merged into current `master`, run:
-
-```bash
-gh workflow run release-swift.yml --ref master \
-  -f environment=prod -f resume_run_id=36750197236 -f resume_run_attempt=1
-```
-
-The example identifies the failed 0.9.13 candidate at `ee46e5f34`. Substitute the
-explicit source run and successful build attempt for another recovery.
-`scripts/provider-release-resume.py` validates repository, workflow, push/tag
-origin, current signed tag, source signature/version, both successful jobs, and
-one unexpired immutable unsigned artifact. It refuses a source run that already
-retained a signed publication artifact. The resolver and download step both
-check identity; download verifies the GitHub artifact ZIP digest before the
-existing archive, file inventory, source/version and entitlement checks.
-
-The recovery skips compilation and SDK qualification and resumes at the normal
-protected signing job. Code signing, notarization, final signed-bundle smoke,
-independent App Attest qualification, R2 staging and publication remain required.
-`release-provenance.json` distinguishes original build source/run from the
-current signing workflow source/run. The tag is rechecked before registration.
-The unsigned artifact expires after three days; missing/expired bytes require a
-new build. Changed candidate source also requires a new build and reviewed tag.
-
-For a failure after a signed artifact was retained, retry only the failed
-staging/publication jobs from that signing run. That existing retry path
-preserves signed bytes and does not need unsigned recovery or re-signing.
-
-## Environment-free signing validation
-
-[`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
-is a separate manual workflow for a reviewed full `source_sha` and its existing
-`version`. It has no GitHub `environment` field or environment selector and no
-coordinator registration, R2 upload, GitHub Release, tag or deployment step.
-Its token has only `contents: read` and `actions: read`.
-
-The build job has no signing secrets. It checks the source's verified commit
-signature and version parity, builds the exact provider and metallib, then stages
-an unsigned app with the existing SwiftPM resource helper. A new runner downloads
-that same run's artifact, verifies its inventory/source/version, rejects unsafe
-archive paths and links, and checks the candidate entitlements against the
-reviewed workflow tooling (`scripts/provider-signing-validation.py`).
-
-Unpacking limits the compressed archive and total declared member bytes to
-2 GiB, each member to 512 MiB, and the archive to 16,384 members. Normalized
-duplicate paths, including case aliases, are refused. The app's bundle ID,
-executable name and both version fields must match the expected source before
-signing and when the final receipt is written.
-
-The signing job uses repository-scoped `APPLE_CERTIFICATE_P12`,
-`APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
-`APPLE_APP_PASSWORD`. It imports an isolated temporary keychain, validates the
-profile's team, keychain group, production APNs grant, expiry and declared
-application identity (`scripts/provider-signing-validation.py`, `profile`). Both
-`com.apple.application-identifier` and `application-identifier` are checked when
-present: each must name the exact provider team/app or a wildcard that covers
-it. Profiles may omit those declarations; conflicting, malformed or unrelated
-declarations fail validation. The job signs the normal app components, then
-checks the signed CLI's keychain group, APNs entitlement and disabled debug-task
-entitlement. It checks Apple notarization and a stapled ticket, and emits
-post-sign file hashes. Keychain material is removed even on failure. Only explicit Actions
-artifacts and non-secret notarization diagnostics are retained for three days.
-
-The normal APNs entitlement retains its required `production` value; this is a
-static signing entitlement, not a GitHub environment or a provider registration.
-The workflow never executes the candidate CLI, helper, model or inference server.
-Signed runtime smoke, installation, model correctness and release approval remain
-separate gates. The original release workflow's `validation_only` option still
-selects a deployment environment and is not this isolated path.
-
-Review and make the new manual workflow available before authorizing a dispatch.
-Source preparation and the CPU helper tests do not claim a completed signing run:
-
-```bash
-python3 scripts/test-provider-signing-validation.py
-```
-
-## When to use
-
-- Shipping a provider release to the fleet (production coordinator
-  `api.darkbloom.dev`).
-- Publishing a dev build to the dev coordinator for testing
-  (`workflow_dispatch` with `environment=dev`).
-- Building a signed, notarized validation bundle for isolated tests
-  (`environment=dev`, `validation_only=true`).
-
-Coordinator deploys are a separate runbook:
-[coordinator-deploy.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md).
+`ProviderCore.version` is prepared as `0.9.20`; preparation does not publish a tag
+or release. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
+from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
+[published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
+from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish
+that every optional feature or environment has been activated.
 
 ## Prerequisites
 
-- Write access to the repo; the release branch is `master` and CI is green.
-- Rights to approve deployments to the `prod` GitHub environment (the `release`
-  job binds `environment: ${{ needs.resolve-env.outputs.environment }}`, so a
-  production tag waits on the environment's protection rules). **A production
-  release is a production mutation; get the approval from a second human.**
-- Repository secrets (repo-level, prefixed per environment; the workflow's
-  "Resolve env-specific secrets" step picks `DEV_*` or `PROD_*` and falls back
-  to the unprefixed legacy names):
+- Explicit human authorization to release reviewed source. Production requires
+  a verified signed annotated version tag in reviewed `master` ancestry; dev,
+  manual and unsigned-build recovery runs use trusted `master`.
+- Green release-integrity, provider, SDK, public-fixture and documentation gates.
+  Private platform compatibility qualification remains separately owned; fixed
+  public vectors do not execute the private implementation.
+- Platform-owner confirmation that the updated `POST /v1/releases` persistence
+  semantics are deployed before publication. All serving/rollback coordinators
+  must preserve durable official identity and revocation. Do not perform the
+  backend deployment here; use the platform's current source/runbooks.
+- Existing repository-scoped signing, notarization, R2 and scoped release
+  credentials. Do not modify shared security settings or provision new keys as
+  part of this procedure without separate approval.
 
-  | Secret | Used for |
-  |---|---|
-  | `DEV_R2_ACCESS_KEY_ID` / `PROD_R2_ACCESS_KEY_ID`, `DEV_R2_SECRET_ACCESS_KEY` / `PROD_R2_SECRET_ACCESS_KEY`, `DEV_R2_ENDPOINT` / `PROD_R2_ENDPOINT`, `DEV_R2_BUCKET` / `PROD_R2_BUCKET` | `aws s3 cp` upload of the bundle to R2 |
-  | `DEV_R2_PUBLIC_URL` / `PROD_R2_PUBLIC_URL` | Public CDN base used in the registered `url`; must equal the coordinator's `EIGENINFERENCE_R2_CDN_URL` |
-  | `DEV_COORDINATOR_URL` / `PROD_COORDINATOR_URL` | Target of `POST /v1/releases` |
-  | `DEV_RELEASE_KEY` / `PROD_RELEASE_KEY` | Bearer token for `POST /v1/releases`; must equal the coordinator's `EIGENINFERENCE_RELEASE_KEY` |
-  | legacy fallbacks `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_PUBLIC_URL`, `COORDINATOR_URL`, `RELEASE_KEY`, variable `R2_BUCKET` | used only when the prefixed secret is empty |
-  | `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate (`Eigen Labs, Inc. (SLDQ2GJ6TL)`) imported into a temporary keychain |
-  | `PROVISIONING_PROFILE_BASE64` | Embedded in `Darkbloom.app`; must grant `aps-environment=production` |
-  | `APPLE_ID`, `APPLE_APP_PASSWORD` | `xcrun notarytool submit … --team-id SLDQ2GJ6TL` |
+Release jobs do **not** attach GitHub `prod` or `dev` environments or wait on
+environment approvals. This does not remove the requirement for human release
+authorization. Resolution executes trusted `master` policy and pins downstream
+checkouts to the verified SHA. Production publication rechecks the signed tag,
+target and current `master` ancestry immediately before registration; a withdrawn
+tag cannot publish after that check.
 
-- The coordinator that will receive the registration has
-  `EIGENINFERENCE_RELEASE_KEY` and `EIGENINFERENCE_R2_CDN_URL` set
-  ([coordinator/api/server_config.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/server_config.go)); without the CDN URL registration fails
-  with `503 not_configured`.
+The pipeline assumes trusted repository writers. YAML checks cannot defend
+against a hostile writer who can change workflows or use repository secrets.
+CI establishes official artifact identity, not proof that runtime Apple APIs work.
+Per-release physical hardware smoke and manual admin build approval are not
+publication prerequisites. Runtime Apple proof, receipt verification, official
+CodeDirectory/runtime hashes, current security evidence and permanent revocation
+remain enforced.
+
+| Secret | Purpose |
+|---|---|
+| `DEV_R2_ACCESS_KEY_ID` / `PROD_R2_ACCESS_KEY_ID`, `DEV_R2_SECRET_ACCESS_KEY` / `PROD_R2_SECRET_ACCESS_KEY`, `DEV_R2_ENDPOINT` / `PROD_R2_ENDPOINT`, `DEV_R2_BUCKET` / `PROD_R2_BUCKET` | Upload the immutable bundle and latest aliases |
+| `DEV_R2_PUBLIC_URL` / `PROD_R2_PUBLIC_URL` | CDN origin; must match the platform's `EIGENINFERENCE_R2_CDN_URL` |
+| `DEV_COORDINATOR_URL` / `PROD_COORDINATOR_URL` | Registration target |
+| `DEV_RELEASE_KEY` / `PROD_RELEASE_KEY` | Scoped `POST /v1/releases` credential matching `EIGENINFERENCE_RELEASE_KEY` |
+| Unprefixed `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_PUBLIC_URL`, `COORDINATOR_URL`, `RELEASE_KEY`; variable `R2_BUCKET` | Legacy fallback only when the prefixed value is empty |
+| `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD` | Developer ID Application certificate, Eigen Labs, Inc. (`SLDQ2GJ6TL`), imported into a temporary keychain |
+| `PROVISIONING_PROFILE_BASE64` | Embedded profile, including `aps-environment=production` |
+| `APPLE_ID`, `APPLE_APP_PASSWORD` | Apple notarization |
+
+The [pinned platform configuration reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/server_config.go)
+documents the release key/CDN contract; a missing CDN configuration returns
+`503 not_configured`. Pinned platform references below preserve historical
+contracts and are not evidence that a live deployment implements the latest
+automatic-registration semantics.
 
 ## Steps
 
-### 1. Check source and artifact version
+### 1. Check Source And Artifact Version
 
-Update `ProviderCore.version` in `provider-swift/Sources/ProviderCore/ProviderCore.swift`
-only for an authorized release. The tag, source version and built binary must
-agree. Coordinate the platform's independently pinned version/installer snapshot
-in a reviewed platform change; do not restore a local backend source dependency.
+Update `ProviderCore.version` in
+`provider-swift/Sources/ProviderCore/ProviderCore.swift` only for an authorized
+release. The tag, source version and built binary must agree. Coordinate any
+platform version/installer snapshot separately; no local backend constant or
+installer-embedding check is a provider release input.
 
 ```bash
 ./scripts/check-release-version.sh
 ```
 
-Preserve exact signed artifact identity, App Attest qualification and post-signing
-hashes. A stale platform snapshot or missing release row is not fixed by silently
-bumping provider source. Public golden vectors do not execute private platform
-code; cross-implementation and actual signed/native qualification remain separate.
+The script accepts an optional expected tag/version and reported binary string;
+both must match the source. Retained-build recovery reads the original provider
+source against its signed tag, not a backend display fallback. A missing latest
+release row or stale platform snapshot is not fixed by silently bumping the CLI.
 
-### 2. Write the changelog entry
+### 2. Compile Selected Changelog Fragments
 
-`CHANGELOG.md` is hand-written, newest first. Convention (from the existing
-headings): while in development the top section is
-`## Unreleased (YYYY-MM-DD) — <theme>`; at release time rename it to
-`## vX.Y.Z (shipped; YYYY-MM-DD)` (or `## Release candidate vX.Y.Z (not
-shipped; YYYY-MM-DD)` for a candidate that was tagged but not promoted).
-Bullets start with a bold lead-in (`- **Per-request profiler** — …`) and name
-exact identifiers (tables, env vars, message fields). Nothing in the pipeline
-reads `CHANGELOG.md`; the release row's `changelog` field comes from the **tag
-message** (step 4), so write the tag message from this entry.
-
-### 3. Merge to `master` and wait for CI
-
-Open the authorized release PR with the version and changelog changes. Require
-the retained release-integrity, provider, SDK, public-golden and documentation
-checks. Coordinate private platform qualification separately, at explicit source
-and artifact revisions. Do not claim public fixed vectors alone prove parity.
-Keep signing, release registration and production activation independently approved.
-
-### 4. Tag and push (production)
+Run `make changelog-check`, then preview selected fragments:
 
 ```bash
-git checkout master && git pull --ff-only
-git tag -a v0.9.10 -m "v0.9.10 — <one-line theme>
-
-<body: the changelog bullets for this release>"
-git push origin v0.9.10
+python3 scripts/changelog.py render --version X.Y.Z --date YYYY-MM-DD NAME.md ...
 ```
 
-Accepted tag pattern (`on.push.tags`): `v*.*.*`.
-Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
-unsupported by the exact-version release contract"); use step 5 for dev.
-The version is the tag with `v` stripped and must equal the source constants,
-so a retired `vX.Y.Z-swift` alias fails resolution. `scripts/resolve-provider-release.sh` checks
-this before writing job outputs or requesting environment approval.
+Names are basenames under `changelog.d/`; omitting them selects all pending
+notes. Review tag-bound source inclusion, insert the rendered section above the
+previous release in `CHANGELOG.md`, and remove only those fragments in the
+release-preparation commit. Rendering itself neither edits history nor consumes
+notes. Ordinary PRs never regenerate the root history; see
+[contribution guidance](../../CONTRIBUTING.md#changelog-entries-with-less-merge-contention).
+The pipeline takes its registered `changelog` from the annotated tag message,
+not `CHANGELOG.md`; derive that message from the reviewed release entry.
 
-### 5. Dev release (manual dispatch)
+### 3. Merge And Verify Release Preparation
+
+Open the authorized release PR and require the retained component gates.
+After merge, let **SDK 27 release preparation** finish on `master`, or dispatch
+`.github/workflows/provider-release-cache.yml` on `master`. It runs optimized
+compilation and SDK qualification on separate `blacksmith-12vcpu-macos-27`
+runners with no signing/publication secrets. PR caches remain PR-scoped and do
+not seed `master`.
+
+Inspect each **SDK 27 build cache** summary and actual restore key. Compatible
+prefix hits are useful even when the exact-hit output is false. Compiler, SDK,
+dependency, checkout-path, environment or recipe changes require new compatible
+products. The Metal compiler must execute successfully; a downloaded but
+unregistered component is insufficient. See the
+[local cache/toolchain contract](../developer/build.md#sdk-27-release-builds-and-caches)
+and [SDK tests](../developer/test.md#sdk-27-release-qualification).
+
+Caches can be saved after successful compilation even when later tests fail;
+that does not authorize publication. GitHub caches are immutable and
+[branch/tag scoped](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#restrictions-for-accessing-a-cache).
+Measure restore/save and full-job times; quotas can serialize the two lanes.
+
+### 4. Tag And Push Production Source
+
+Only after authorization, tag the reviewed merged source with its matching version:
 
 ```bash
-gh workflow run release-swift.yml --ref <branch> -f environment=dev
-# optional: -f version_override=0.9.10
+git switch master
+git pull --ff-only
+git tag -s vX.Y.Z -m "vX.Y.Z - <one-line theme>
+
+<reviewed release notes>"
+git push origin vX.Y.Z
 ```
 
-Without a tag the version is read from `ProviderCore.swift` (or
-`version_override`, which must still match the source). `environment=prod`
-without a tag is refused ("Production publication requires a source-matching
-release tag"). Dev releases use `DEV_*` secrets, register with the dev
-coordinator, and create no GitHub Release.
+Substitute the actual version; `vX.Y.Z` is not a literal tag to publish. The
+workflow accepts `v*.*.*` but rejects `-dev.` tags and retired `-swift` aliases.
+`scripts/resolve-provider-release.sh` checks exact provider version parity before
+job outputs, and trusted-source verification precedes secret-bearing jobs.
+Never move an existing release tag to repair a failed run.
 
-Dev and production builds carry the same version string. A Mac reaches the dev
-release only through the dev installer
-(`curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash`), which writes
-the dev `[coordinator] url` into `provider.toml`
-(`scripts/install.sh`, `bind_provider_coordinator`); updates then come from the
-dev coordinator. See [dev-environment.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md), step 9.
+### 5. Select Dev Or Validation Mode When Needed
 
-### Signed validation bundle
-
-To test a source revision before release registration, dispatch the same signing,
-notarization and final-bundle smoke pipeline in validation mode:
+For an authorized dev publication:
 
 ```bash
-gh workflow run release-swift.yml --ref <branch> -f environment=dev -f validation_only=true
+gh workflow run release-swift.yml --ref master -f environment=dev
+```
+
+`version_override`, if supplied, must equal the source. Production without a
+source-matching tag is refused, except the validated retained-build recovery
+path below. Dev uses `DEV_*` secrets and creates no GitHub Release.
+
+The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
+`provider-swift/Package.swift` compiles `ProviderCore` with `DARKBLOOM_ENV_DEV`;
+defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
+`https://models.darkbloom.ai`
+(`provider-swift/Sources/ProviderCore/Config/BuildEnvironment.swift`). Local
+builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags and
+`DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
+cache keys, and packaged smoke must report the selected build environment.
+
+Dev and prod retain the same version string. The dev installer at
+`https://api.dev.darkbloom.dev/install.sh` binds `[coordinator] url` in
+`provider.toml` (`scripts/install.sh`, `bind_provider_coordinator`), so future
+updates come from dev. The
+[pinned dev operations reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md)
+is historical; verify current endpoints with the platform owner.
+
+For a signed, notarized validation bundle without registration/publication:
+
+```bash
+gh workflow run release-swift.yml --ref master -f environment=dev -f validation_only=true
 gh run download <run-id> --name darkbloom-signed-validation-<commit>-<attempt> --dir <new-directory>
 ```
 
-The branch and recursive submodule commits must be available to CI. Source version
-checks and the dev environment's approval rules still apply. This mode needs the
-Apple signing/profile/notarization secrets; it skips publication-secret resolution,
-R2 uploads, release registration and GitHub Release creation. The default remains
-`validation_only=false` for ordinary releases.
+Trusted-source/version checks and Apple credentials still apply. This mode skips
+publication-secret resolution, R2 upload, registration and GitHub Release
+creation; it does not attach a GitHub environment. The artifact contains the
+final tarball and `darkbloom-validation-identity.json`: source/submodule pins,
+archive/executable/metallib hashes, full SHA-256 CodeDirectory digest and SDK.
+The older-OS job downloads those exact bytes on `blacksmith-12vcpu-macos-26`,
+asserts the host is below macOS 27, verifies hashes/notarization and requires
+the environment line plus all four runtime-smoke markers. Retention is 14 days.
+Verify artifact identity before isolated model/restart tests; build success does
+not establish persistence, real Apple functionality or fleet readiness.
 
-The Actions artifact contains the final signed tarball and
-`darkbloom-validation-identity.json`, with source/submodule revisions and final
-bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build, SDK qualification, signing and signing-validation jobs use
-Blacksmith's pinned `blacksmith-12vcpu-macos-27` image (currently public beta)
-with Xcode 27. The selector resolves the image's default Xcode after checkout,
-requires SDK 27.0 / Apple Swift 6.4, and scopes native SwiftPM through the existing
-wrapper. Python 3.12.10 and the checksum-verified CMake bootstrap are explicit;
-the older-OS validation job pins `blacksmith-12vcpu-macos-26` so it cannot drift
-to macOS 27. Blacksmith hosts the protected signing jobs and receives their
-existing signing credentials after environment approval. Publication remains a
-separate protected Linux job. See the [runner and cache contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/build.md#sdk-27-release-builds-and-caches).
-The workflow obtains Xcode's matching Metal compiler through
-`xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
-checks availability before computing the source-matched metallib cache key.
-`scripts/prepare-provider-release-toolchain.sh` scopes
-`scripts/provider-release-swift.sh` to provider builds/tests while Xcode remains
-the Metal/signing toolchain. The release SDK runs the provider unit suite and
-isolated allocator gates. `SDKROOT` covers compilation/linking, and a final
-executable whose recorded SDK differs from the selected SDK fails qualification.
-The CodeDirectory digest is also printed in production release notes and supplies
-the measurement side of an explicitly qualified App Attest binary/code-hash pair.
-Recording it does not authorize the build. In validation-only mode, a second
-job downloads that exact artifact to the older macOS runner, verifies its
-source/archive hashes and notarization, and requires all four runtime smoke
-markers. It asserts that the host is below macOS 27 so the compatibility lane
-cannot silently become another current-OS run. Retention is 14 days. Verify those hashes
-before an isolated model or persistent-cache restart test, and retain the artifact
-with that test's evidence. A successful artifact build does not establish restart
-durability or authorize rollout.
+### 6. Sign, Stage And Register Exact Bytes
 
-### 6. Approve signing, qualify the exact artifact, then publish
+After `build-provider` and `qualify-sdk` succeed, `build-and-release` consumes
+the source-bound unsigned artifact on `blacksmith-12vcpu-macos-27`. It does not
+wait for an environment approval. Release SDK selection is SDK 27.0 / Apple
+Swift 6.4, with `SDKROOT` covering compilation and linking; the final recorded
+SDK must match. The checksum-pinned GitHub CLI is installed by
+`scripts/install-macos-github-cli.sh` before downloads. Missing `gh` in an old
+run is a tooling failure, not a model or notarization failure.
 
-After `build-provider` and `qualify-sdk` both succeed, approve the pending
-`prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
-(`build-and-release`, `blacksmith-12vcpu-macos-27`). Compilation and SDK tests have already run
-in the parallel jobs; the signing job consumes their source-bound artifact.
-The relevant signing steps run in this order:
+| Order | Operation |
+|---|---|
+| 1 | Verify source version, selected SDK and same-run unsigned artifact inventory/source/version |
+| 2 | Import the temporary Developer ID keychain and validate the embedded profile/entitlements |
+| 3 | Sign the canonical app with hardened runtime and preserve SwiftPM resources |
+| 4 | Copy `darkbloom`, `darkbloom-enclave` and `mlx.metallib` into regular files under `bin/`; these verification copies support current and older updaters, not flat installation |
+| 5 | Notarize, staple, rebuild/extract the final archive, run packaged smoke and compute final binary/archive/metallib and full CodeDirectory SHA-256 hashes |
+| 6 | Run `scripts/provider-release-publication.py prepare` to retain exact registration payload, annotated-tag notes and source/run provenance |
+| 7 | Retain `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days; always remove the signing keychain |
 
-| # | Step | What it does |
-|---|---|---|
-| 1 | Checkout · Validate release version integrity · Select SDK 27 signing toolchain · Ensure matching Metal compiler is available | Verify the source version and exact SDK before signing |
-| 2 | Fetch and verify this run's unsigned build | Download the build job's same-run artifact and validate source SHA, version and SDK |
-| 3 | Import Developer ID certificate · Embed provisioning profile | Prepare the temporary keychain and validate profile-authorized entitlements |
-| 4 | Stage and sign bundle | Build and sign the app with hardened runtime, preserve SwiftPM resources, and copy its `darkbloom`, `darkbloom-enclave` and `mlx.metallib` to regular files under `bin/`. Release hashes are computed from those copies: the coordinator's artifact check reads `bin/darkbloom`, and `install.sh` and self-update verify `bin/darkbloom` and `bin/mlx.metallib` before installing the app. They also keep older updaters working. Current installers never install them as a flat layout |
-| 5 | Notarize bundle | Notarize, staple, rebuild and extract the final archive, run runtime smoke, then calculate final binary/bundle/metallib and full CodeDirectory SHA-256 values |
-| 6 | Prepare signed release qualification evidence | `scripts/provider-release-publication.py prepare` retains the registration payload, annotated-tag changelog and independent operator qualification template |
-| 7 | Retain exact signed publication artifact | Retain the final bundle and metadata in `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |
-| 8 | Cleanup keychain | Always remove the temporary signing keychain |
+All hashes describe final signed bytes. `scripts/install.sh` and self-update
+verify the `bin/` files before installing the app; the external artifact verifier
+also reads the regular-file executable. Keep this layout intact.
 
-After signing succeeds, the independent **Stage retained signed artifact in R2**
-job (`stage-release`, Linux) resolves its R2 credentials, downloads the exact
-`needs.build-and-release.outputs.publication_artifact` from the same run,
-verifies its identity/digest, and uploads only the immutable bundle-digest
-path. It does not compile, sign, notarize, register a release, or update latest
-aliases. The signing job has no R2 upload credentials or AWS CLI step.
-A transient R2/artifact-download failure belongs to this downstream job:
-**Re-run failed jobs** reuses the retained bytes and original metadata even
-when the workflow attempt number changes. Publication explicitly depends on
-successful staging.
+The Linux `stage-release` job downloads the exact artifact named by signing,
+verifies identity/digest and uploads only the immutable bundle-digest R2 path.
+It neither signs nor registers, changes aliases or publishes GitHub releases.
+Signing has no R2 upload credentials. `publish-release` requires successful
+staging and performs these operations in order:
 
-After R2 staging succeeds, review/test these final signed bytes for production, fill in the template's
-actual qualification evidence, and submit it through the admin approval route
-as described in [build qualification](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/app-attest-build-qualification.md#steps).
-Use a verified Privy admin session from `scripts/admin.sh login` or the admin
-key; the publication key and admin-owned inference/provider credentials cannot
-approve builds. A 200 approval response confirms durable/local readiness but
-does not publish the artifact.
+| Order | Operation |
+|---|---|
+| 1 | Download/verify the retained signed artifact with its original producing run/attempt |
+| 2 | Recheck signed tag, source/run/version/origin and bundle digest, then submit the retained `POST /v1/releases` payload |
+| 3 | Wait boundedly for `/v1/releases/latest` to report that committed official build or a newer release, not an older cached response |
+| 4 | Only if still latest, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and the legacy `eigeninference-bundle` alias |
+| 5 | For prod/tag, create or resume a GitHub draft, upload a missing asset, verify downloaded bytes and publish |
 
-Approve the environment-protected **Publish qualified signed release** job
-(`publish-release`, Linux). Its steps are separate from signing:
+The payload contains `version`, `platform=macos-arm64`, `backend=mlx-swift`,
+`binary_hash`, `bundle_hash`, `metallib_hash`, `code_directory_hash`,
+`source_commit`, `ci_run_id`, `require_app_attest_qualification=true`, `url`
+and `changelog`. The URL is the configured CDN followed by
+`releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`.
+Use the retained payload, never hand-reconstruct hashes. The
+[pinned release-handler contract](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/releases/release_handlers.go)
+documents artifact validation; it predates automatic identity registration.
 
-| # | Step / helper phase | What it does |
-|---|---|---|
-| 1 | Checkout · Resolve env-specific secrets | Load the source-matching publication helper and scoped release/R2 credentials |
-| 2 | Download this run's exact signed publication artifact · Install publication tools | Retrieve the retained signed bytes without compiling or notarizing again |
-| 3 | Register release with coordinator and publish aliases: registration | Revalidate source/run/version/origin/bundle digest, then `POST /v1/releases`; the coordinator verifies the artifact and atomically checks the exact independent approval |
-| 4 | Readiness | Wait boundedly for `/v1/releases/latest` to report the committed qualified build, or a newer release; do not treat an older cached response as completed publication |
-| 5 | R2 aliases | Only for the current latest build, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and its legacy `eigeninference-bundle` alias |
-| 6 | GitHub publication | Prod/tag only: create or resume a draft, upload a missing bundle (repair only an incomplete `starter` placeholder), verify the downloaded asset's exact hash, then publish. An already published exact asset is verified without replacement |
+The updated platform verifies the staged archive and records complete native
+identity in its durable `AppAttestBuildQualification` registry before publication
+through the revocation row-lock fence. Partial identity fails closed; conflicting
+identity or permanent revocation returns 409, and unavailable policy returns 503.
+Existing identity/audit records are preserved. No independent hardware report
+or admin approval is needed for this normal path. The coordinator trusts source/run
+provenance from the authenticated pipeline rather than independently verifying
+GitHub. Official registration does not itself authorize a provider to serve.
+Runtime Apple verification and matching official hashes remain required.
 
-If qualification is absent, the publication job stops with 409 before advancing
-the registered/latest release or aliases. Approve the retained artifact and
-**Re-run failed jobs**. Never rerun successful signing to retry publication:
-a new signature changes the artifact identity. A partial GitHub failure also
-resumes from its existing draft/asset state. Completed mismatched assets and
-incomplete already-published releases require operator investigation; retries
-never overwrite them. Code: `scripts/provider_release_github.py`
-(`publish_github_release`). GitHub documents the incomplete `starter` state in its
-[release-asset API reference](https://docs.github.com/en/rest/releases/assets).
+After commit, the platform refreshes binary/runtime policy and release caches.
+Active releases retain their hashes during adoption; deactivation removes them
+from the catalog. See the [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
-The retained production registration payload (`registerReleaseRequest` in
-[coordinator/api/releases/release_handlers.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/releases/release_handlers.go); unknown fields are rejected) contains:
+## Recovery
 
-```json
-{
-  "version": "0.9.10",
-  "platform": "macos-arm64",
-  "backend": "mlx-swift",
-  "binary_hash": "<final binary SHA-256>",
-  "bundle_hash": "<final archive SHA-256>",
-  "metallib_hash": "<final metallib SHA-256>",
-  "code_directory_hash": "<full CodeDirectory SHA-256>",
-  "source_commit": "<40-character source commit>",
-  "ci_run_id": "<original build workflow run ID>",
-  "require_app_attest_qualification": true,
-  "url": "<R2_PUBLIC_URL>/releases/v0.9.10/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz",
-  "changelog": "<tag annotation, or Release v0.9.10 when no tag notes exist>"
-}
+### Resume Signing From A Retained Unsigned Build
+
+Use this only when build and SDK qualification passed but signing failed from
+workflow tooling or runner setup. Keep the tag on its original candidate, merge
+the tooling correction into trusted `master`, then dispatch with the exact source
+run and successful build attempt:
+
+```bash
+gh workflow run release-swift.yml --ref master \
+  -f environment=prod -f resume_run_id=<source-run-id> -f resume_run_attempt=<build-attempt>
 ```
 
-Use the downloaded payload instead of reconstructing signed-artifact hashes
-by hand. `HandleRegisterRelease` authenticates the scoped release key,
-validates semver/platform/digests and the exact configured R2 origin/path,
-then downloads and verifies the final archive and provider binary (2 GiB cap,
-two-minute timeout). New publication uses the bundle-digest path; the original
-version-only path remains accepted for compatibility/importing existing builds.
-`persistReleaseForPublication` refreshes qualification and calls
-`SetQualifiedRelease`, which checks approval under the revocation row lock
-before writing the active release. Missing, mismatched or revoked approval is
-409; unreadable policy is 503. Production workflow requests always require
-qualification; enabled production App Attest serving also enforces it on the
-server even when a caller omits the flag.
+`scripts/provider-release-resume.py` validates repository, workflow, push/tag
+origin, current signed tag, source signature/version/ancestry, both successful
+jobs and one unexpired immutable unsigned artifact. It refuses a run that already
+retained a signed publication artifact. Resolver and downloader both check
+identity; download verifies the GitHub ZIP digest before archive/inventory/source/
+version/entitlement checks.
 
-After the commit, `SyncBinaryHashes` and `SyncRuntimeManifest` converge the live
-policy and invalidate release/version HTTP caches. Response:
-`{"status":"release_registered","release":{…}}`. Cached `/api/version` and
-`/v1/releases/latest` responses also check current qualification and catalog
-readiness while production App Attest serving is enabled.
+Recovery skips compilation and SDK qualification, not signing, notarization,
+packaged smoke, R2 staging or official registration. `release-provenance.json`
+distinguishes original build source/run from current signing workflow source/run.
+The unsigned artifact expires after three days. Missing/expired bytes or changed
+candidate source require a new build and reviewed tag. This path does not move
+tags or infer that a rerun picks up new source.
 
-Runtime policy retains the union of every active release's hashes, preserving
-older qualified releases during adoption. Hashes leave that catalog on release
-deactivation ([Rollback](#rollback)); see
-[runtime manifest](../architecture/security/attestation.md#runtime-manifest).
+### Retry Staging Or Publication
+
+After a signed artifact is retained, rerun only failed downstream jobs from that
+signing run. Preserve original bytes and producing attempt even if the workflow
+attempt increments. Never rerun successful signing to retry publication: a new
+signature changes identity. GitHub retry can repair an incomplete `starter`
+placeholder but never overwrites completed mismatched assets or incomplete
+already-published releases. Investigate those states and identity/revocation
+conflicts rather than bypassing them with admin approval. Implementation:
+`scripts/provider_release_github.py` (`publish_github_release`), with GitHub's
+[release-asset API](https://docs.github.com/en/rest/releases/assets).
+
+## Environment-Free Signing Validation
+
+`.github/workflows/provider-signing-validation.yml` is a separate manual workflow
+for a reviewed full `source_sha` and existing version. It has no environment
+selector, registration, R2 upload, release, tag or deployment step; its token is
+limited to `contents: read` and `actions: read`. The build checks source signature
+and version, and a separate runner verifies the same-run unsigned artifact before
+signing (`scripts/provider-signing-validation.py`).
+
+Unpacking caps compressed and declared total member bytes at 2 GiB, individual
+members at 512 MiB and count at 16,384. Unsafe links/paths, duplicate normalized
+paths including case aliases, mismatched bundle/executable/version identity and
+incorrect entitlements are refused. Profile validation checks team, access group,
+production APNs, expiry and any declared application identifiers; either identifier
+key, when present, must cover the provider. Conflicting/malformed declarations fail.
+
+The signer uses the existing Apple secrets, checks the signed CLI's keychain group,
+APNs and disabled debug-task entitlement, notarizes/staples, emits post-sign hashes
+and always removes its keychain. Only explicit artifacts and non-secret diagnostics
+are retained for three days. The workflow never runs the candidate CLI, helper,
+model or server. Runtime smoke, installation and model correctness are separate
+checks; this is not the release workflow's `validation_only` mode.
 
 ## Verification
 
+After authorized publication, inspect the selected environment read-only:
+
 ```bash
 COORD=https://api.darkbloom.dev
-curl -fsS "$COORD/v1/releases/latest?platform=macos-arm64" | jq .   # version, hashes, url, changelog
-curl -fsS "$COORD/api/version" | jq .                                # same row (falls back to LatestProviderVersion when no release exists)
+curl -fsS "$COORD/v1/releases/latest?platform=macos-arm64" | jq .
+curl -fsS "$COORD/api/version" | jq .
 curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq '.releases[] | {version, active, created_at}'
 ```
 
-- `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`GetLatestRelease` in [coordinator/store/postgres/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store/postgres), ordered by
-  `releaseVersionGreater` in [coordinator/store/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/store)), not the
-  most recently registered row.
-- Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
-  `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
-  hash before installing. `darkbloom --version` must print the new version.
-- Connected providers pick the release up through the background auto-update
-  monitor (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`:
-  initial delay 5 m, interval 30 m, disabled by `auto_update=false` or
-  `DARKBLOOM_NO_UPDATE_CHECK`), which reads
-  `/v1/releases/latest?platform=macos-arm64`
-  (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`). Watch the
-  Datadog gauge `providers.per_version` (tag `version:<x.y.z>`, emitted from
-  [coordinator/api/server.go](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/api/server.go) via `registry.ProviderCountByVersion`) converge
-  over the next hour.
-- If the release-policy gate is enforced, confirm evidence for the new binary
-  hash is accepted: see
-  [release-policy-rollout.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md)
-  ("Verification").
-- Coordinator log line: `release registered` with `version` and a truncated
-  `binary_hash`.
+`/v1/releases/latest` selects the highest active semver for the platform, not the
+last inserted row. No release row means 404; the display fallback on `/api/version`
+does not repair installer/update discovery. Verify URL and all hashes, not version
+alone. For separately authorized clean-Mac installation, verify installer hashes
+and `darkbloom --version`; preserve existing provider workloads.
+
+Auto-update checks the same latest endpoint after an initial five minutes and
+every thirty minutes unless disabled by `auto_update=false` or
+`DARKBLOOM_NO_UPDATE_CHECK`
+(`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`). Monitor
+platform release-policy acceptance and version adoption separately. Optional
+signed-artifact tests should exercise restart/write-budget persistence, encrypted
+inference, lifecycle/worker resumption and relevant model/media behavior without
+claiming that CI/notarization proved those physical outcomes.
 
 ## Rollback
 
-A registered release is immutable (hash-pinned); rollback means **deactivating
-it** so the previous active version becomes "latest" again.
+Rollback needs its own explicit authorization. A registered version is hash-pinned;
+do not replace its bytes or re-register it with a different artifact.
 
-1. Deactivate the bad release (admin key or Privy admin):
+1. Deactivate the bad release through the external admin API. In-use protection
+   can return `409 release_in_use`; force removal can leave connected providers
+   unroutable until downgrade, so it needs an explicit operator decision.
+2. Verify that `/v1/releases/latest` selects the intended remaining active version
+   and that its URL/hashes and current qualification remain valid. Runtime policy
+   must retain needed older official builds during adoption.
+3. Repoint both R2 convenience aliases to that exact verified version's immutable
+   bundle-digest object. Do not assume a hardcoded previous version or use the
+   older version-only object layout. Installers use the API's versioned URL;
+   the aliases still serve legacy clients.
+4. Adjust the GitHub release's public status and record the actual outcome.
+   Fix forward with a new reviewed patch version, never overwritten signed bytes.
 
-   ```bash
-   curl -fsS -X DELETE "$COORD/v1/admin/releases" \
-     -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-     -d '{"version":"0.9.10","platform":"macos-arm64"}'
-   ```
-
-   `HandleAdminDeleteRelease` answers `409 release_in_use` while connected
-   providers still run that `binary_hash` (in-use protection is active when
-   binary-hash enforcement is on **or** a release inventory has ever been
-   published). Add `"force":true` only when the release must be pulled
-   immediately (e.g. compromised); providers on it lose routing until they
-   downgrade.
-2. `GET /v1/releases/latest` now serves the highest remaining active version;
-   `/api/version` follows within its 1-minute cache TTL.
-3. Repoint the convenience objects in R2, which the workflow overwrote:
-
-   Confirm the prior qualified release returned by `GET /v1/releases/latest`
-   after deactivation, then copy its exact version and `bundle_hash` into the
-   variables below. For the planned 0.9.10 rollout, the expected prior version
-   is 0.9.9; stop if the live record differs. Do not use an old version-only
-   object path or assume the previous hash.
-
-   ```bash
-   : "${PREVIOUS_VERSION:?verified active release version}"
-   : "${PREVIOUS_BUNDLE_SHA256:?verified bundle_hash of that release}"
-   [[ "$PREVIOUS_VERSION" == "0.9.9" ]] || { echo "unexpected prior release" >&2; exit 2; }
-   [[ "$PREVIOUS_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 2
-   PREVIOUS_OBJECT="s3://$R2_BUCKET/releases/v${PREVIOUS_VERSION}/artifacts/${PREVIOUS_BUNDLE_SHA256}/darkbloom-bundle-macos-arm64.tar.gz"
-   aws s3 cp "$PREVIOUS_OBJECT" \
-     "s3://$R2_BUCKET/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT"
-   aws s3 cp "$PREVIOUS_OBJECT" \
-     "s3://$R2_BUCKET/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" --endpoint-url "$R2_ENDPOINT"
-   ```
-
-   (`install.sh` uses the versioned URL from `/v1/releases/latest`; the
-   `latest/` objects are for legacy clients.)
-4. Mark the GitHub Release as a pre-release or delete it
-   (`gh release delete v0.9.10`), and record the outcome in `CHANGELOG.md` as
-   `## Release candidate vX.Y.Z (not shipped; …)`.
-5. Do **not** re-register the same version with a different artifact. Fix
-   forward with a new patch version.
+Permanent binary revocation is distinct from release deactivation. An authorized
+platform administrator can use `POST /v1/admin/app-attest/builds/revoke`; registration
+retries cannot undo its tombstone. Recover with another reviewed signed build,
+not a deleted revocation row or relaxed runtime gate. The old admin build-approval
+API remains a compatibility/recovery tool, not a normal release step.
 
 ## Related
 
-- [`../developer/build.md`](../developer/build.md) — building the same artifacts locally.
-- [`../developer/test.md`](../developer/test.md) — the CI gates a release depends on.
-- [coordinator-deploy.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md) — shipping the coordinator half of a version bump.
-- [release-policy-rollout.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md) — how registered releases feed the routing gate.
-- [../reference/api-contracts.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md) — `/v1/releases/latest`, `/api/version` shapes.
+- [Local builds and native resources](../developer/build.md)
+- [Provider and SDK tests](../developer/test.md)
+- [Pinned platform deployment reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/coordinator-deploy.md)
+- [Pinned release-policy reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/release-policy-rollout.md)
+- [Pinned release API reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/reference/api-contracts.md)

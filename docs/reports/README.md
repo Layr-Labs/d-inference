@@ -1,6 +1,6 @@
 # Provider And Native Evidence
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Dated records and raw native evidence retain their original content, revisions and limitations. A record is not a fresh test result or proof of private platform compatibility.
 
@@ -110,9 +110,21 @@ Dated records and raw native evidence retain their original content, revisions a
 - [App Attest enforcement and owner self-routing](security/2026-09-15-app-attest-self-route-enforcement.md)
 - [Security reports](security/README.md)
 
+- [Website agent-readiness branch recheck](2026-10-12-agent-readiness-recheck.md) - original scoring-criteria comparison, direct HTML measurements and the CI fixture cleanup repair.
+- [Website agent-readiness audit](2026-10-12-agent-readiness.md) - full 132-check baseline disposition, implementation coverage and deployment limits.
+- [Native loaded-engine callback recovery](https://github.com/Layr-Labs/darkbloom-platform/blob/7e69b67aa4173e7af021de4f846e4c4667a25aed/docs/reports/2026-10-12-native-loaded-worker-callback-qualification.md) - platform-owned receipt for real callback withholding, worker retirement/replacement and paid encrypted inference with an unchanged loaded provider engine.
+- [Native loaded-engine endpoint resumption](2026-10-11-native-serving-resumption-qualification.md) - real Apple verification, full loopback coordinator, encrypted inference across a 125-second break, unchanged loaded engine and assertion counter, and exactly-one-refund evidence.
+- [Native inference and quantized checkpoint qualification](2026-10-11-native-inference-checkpoint-storage.md) — eight-artifact storage/restore measurements, matched prefill controls, OS-backed process restart, and explicit performance limits.
+- [Runtime KV quantization qualification](2026-10-09-runtime-kv-quantization.md) — exact-artifact paired storage/quality controls, real adaptive MTP and encrypted complete-cache reuse, with latency and qualification limits.
+
 ## Retired Original Records
 
 These originals are preserved at the pre-cleanup source revision. They were retired from this tree because they concern the backend or depend on retired documentation, not because their measurements changed.
+
+The all-model prefix qualification link uses the incoming master revision to
+preserve its later historical-source citation correction. Its frozen body still
+depends on retired routing and investigation pages; its raw evidence remains
+retained in this tree.
 
 - [app-attest-migration.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/app-attest-migration.md)
 - [app-attest-release-observability.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/design/app-attest-release-observability.md)
@@ -236,7 +248,7 @@ These originals are preserved at the pre-cleanup source revision. They were reti
 - [2026-09-26-prefix-cache-hit-rate-analysis.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-26-prefix-cache-hit-rate-analysis.md)
 - [2026-09-27-qwen-chunk-partition-parity.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-27-qwen-chunk-partition-parity.md)
 - [2026-09-28-first-content-performance.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-09-28-first-content-performance.md)
-- [2026-10-03-all-model-prefix-qualification.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-03-all-model-prefix-qualification.md)
+- [2026-10-03-all-model-prefix-qualification.md](https://github.com/Layr-Labs/d-inference/blob/f35743857cb2fd9d408617e9f9da884ad166e8e2/docs/reports/2026-10-03-all-model-prefix-qualification.md)
 - [2026-10-03-openrouter-cache-throughput.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-03-openrouter-cache-throughput.md)
 - [2026-10-03-prefix-cache-qualification.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-03-prefix-cache-qualification.md)
 - [2026-10-04-registry-scan-optimization.md](https://github.com/Layr-Labs/d-inference/blob/4230fa03ddbc84e34e2de150c89431744d6f1c55/docs/reports/2026-10-04-registry-scan-optimization.md)

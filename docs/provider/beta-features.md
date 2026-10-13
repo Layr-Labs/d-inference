@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -79,7 +79,7 @@ so an environment-variable toggle would silently no-op for the normal daemon
 | Variable | Relationship to the toggle | Source |
 |---|---|---|
 | `DARKBLOOM_CBV2_MTP` | Process-wide **kill switch**: `0`, `false`, `no` or `off` disables MTP regardless of `mtp_mode`; any other value, or unset, defers to config. On the LaunchAgent passthrough list | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`killSwitchEnabled`) |
-| `DARKBLOOM_CBV2_PAGED_KV` | Kill switch for the paged KV backend (`0` forces contiguous everywhere) — not a beta feature. Candidate `auto` selects paged only for the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts), with automatic fallback; all other IDs stay contiguous. Explicit global/per-model backend settings remain available. There is no env var that turns paged on. Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`, `preferredBackend`) |
+| `DARKBLOOM_CBV2_PAGED_KV` | Paged-backend kill switch, not a beta feature. See [values and precedence](../reference/configuration.md#provider-cli-darkbloom) and [precision-dependent backend selection, fallback and refusal](cli-reference.md#providertoml-keys-read-by-the-cli). Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`, `preferredBackend`) |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`, `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT`, `MLX_GATHER_QMM_EXPERT_SLICES` | **Outputs**, not inputs: `GemmaOptimizationEnvironment.apply` overwrites them from config at every serve start. The single exception is a shell `MLX_GATHER_QMM_EXPERT_SLICES=1`, which restores the descriptor-retract drain instead of the `trust` default and is copied into the daemon plist for that reason | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` (`projection`, `daemonDrainPassthrough`) |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | Tighten-only cap on MTP verification width; passthrough-listed | [`reference/configuration.md`](../reference/configuration.md) |
 

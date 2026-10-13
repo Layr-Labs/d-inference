@@ -1,6 +1,6 @@
 # Repository Ownership And Navigation
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Use this map to find the provider/native owner before changing code. Centralized
 backend and web-application development belongs to a different repository.
@@ -13,6 +13,10 @@ New backend, Rust sidecar, console and admin code must never be uploaded here.
 The existing console snapshot and its build/test/hosting configuration remain
 local; this retention does not change the platform's development ownership.
 
+For coordinator diagnosis or changes, fetch the platform's current default
+branch and read its `AGENTS.md` and relevant implementation. Old d-inference
+copies and immutable evidence links do not describe the latest coordinator.
+
 | Concern | Owner |
 |---|---|
 | Provider CLI and device-local HTTP APIs | `provider-swift/Sources/darkbloom/`, `provider-swift/Sources/ProviderCore/` |
@@ -22,8 +26,8 @@ local; this retention does not change the platform's development ownership.
 | Marketing app, including local API routes | `landing/` |
 | Retained console snapshot and existing tooling | `console-ui/`; [architecture](../architecture/components/console-ui.md), new development owned by the platform |
 | Shared JSON fixtures used by console tests | `coordinator/tests/protocol/testdata/paged_footprint_wire.json`, `coordinator/tests/protocol/testdata/process_memory_wire.json`; no backend implementation |
-| Coordinator, private integration, consumer console and admin | [Platform](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d) |
-| Backend contracts and deployment runbooks | [Platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/docs) |
+| Coordinator, private integration, consumer console and admin | [Current platform source](https://github.com/Layr-Labs/darkbloom-platform) |
+| Backend contracts and deployment runbooks | [Current platform docs](https://github.com/Layr-Labs/darkbloom-platform/tree/master/docs) |
 
 ## Moving A Boundary
 

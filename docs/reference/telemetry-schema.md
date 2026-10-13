@@ -146,6 +146,36 @@ prompt, completion, media or cache content), enumerated in
 No mirror carries a field filter. To add a field, add it at the call site with a bounded value and
 list it in the inventory.
 
+### Provider KV backend and precision selection
+
+`EngineV2Factory.makeBridge` constructs an INFO `engine_health` event with
+`operation = engine_v2_kv_backend` after a successful build. Its fixed
+`fields` keys separate the inference engine, storage backend and resolved live
+attention-cache precision. This is a producer-side contract: an injected sink
+can observe it, while the production `TelemetryClient` discards it and the
+coordinator has no client event ingestion route.
+
+| Key in `fields` | Values | Presence and meaning | Code |
+|---|---|---|---|
+| `backend` | `engine_v2` | Present on this operation; identifies the inference engine. | `provider-swift/Sources/ProviderCore/Telemetry/EngineHealthEvent.swift`, `EngineHealthEvent.make` |
+| `kv_backend` | `paged`, `contiguous` | Present on this operation; the resolved live storage backend, not the checkpoint layout. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`, `emitKVBackendTelemetry` |
+| `kv_quantization` | `balanced`, `k8v4`, `k8v8`, `native` | Present on every event constructed by the current `emitKVBackendTelemetry`; the resolved live profile from `ProductionBuild.kvQuantization`, not the raw request, checkpoint profile or weight quantization. Default `native` keeps the owners' original dtypes on the resolved backend. Explicit `balanced` selects K4/V4 history, `k8v4` K8/V4 and `k8v8` K8/V8, all requiring paged execution. Native recent/pending bands and exempt owners remain native under packed profiles. | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift`, `emitKVBackendTelemetry`; `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVQuantizationPolicy.swift`, `EngineV2KVQuantizationSelection` |
+
+`EngineV2KVQuantizationPolicy.resolve` applies the environment, exact model
+override and global selection in that order, and normalizes aliases to these
+four values. Exact `mimo_v2` resolves `native` before any override is parsed.
+The key is optional across the generic event envelope: older records and
+other operations, including `engine_v2_refusal` and `engine_v2_slot_posture`,
+can omit it; absence does not mean `native`. Direct Diffusion bridge assembly
+does not call this emitter, so the operation is not a complete slot inventory
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/DiffusionGemmaProviderBridge.swift`,
+`DiffusionGemmaProviderBridge.make`). No new top-level wire enum or heartbeat
+field is implied: Go, Swift and TypeScript retain their generic optional
+`fields` maps, and doctor reads storage posture rather than this precision key.
+The new local `DaemonState.SlotPosture` precision/layout observations are
+separate from this event; they do not imply checkpoint fields in telemetry or
+the coordinator protocol.
+
 ### Provider slot posture acceptance
 
 `EngineV2Bridge.emitSlotPostureTelemetry` constructs this fixed operational key

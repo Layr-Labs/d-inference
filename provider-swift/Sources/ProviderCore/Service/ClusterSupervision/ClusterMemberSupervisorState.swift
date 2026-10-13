@@ -71,8 +71,8 @@ public struct ClusterMemberSupervisorState: Codable, Equatable, Sendable {
     }
 
     /// One line for `darkbloom status`.
-    public func summary(now: Double) -> String {
-        var parts = ["cluster member supervisor: \(phase.rawValue)"]
+    public func summary(now: Double, name: String = "cluster member supervisor") -> String {
+        var parts = ["\(name): \(phase.rawValue)"]
         if let current, phase == .running { parts.append("member pid \(current.pid) up \(Int(now - current.startedAt)) s") }
         if let restartAt, phase == .backoff { parts.append("restart in \(max(0, Int(restartAt - now))) s") }
         parts.append("runs \(runs), quick failures \(budget.quickFailures)/\(budget.limits.maxQuickFailures), "

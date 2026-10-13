@@ -1,11 +1,74 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 Run each Mac of a coordinator-paired cluster as an ordinary background
 service, the way a solo `darkbloom start` runs: it starts at login, waits for
 the Thunderbolt link, restarts the member after a failure with backoff, updates
 together with the other member, and asks for macOS permissions once.
+
+## The cluster service starts at login (`darkbloom cluster`)
+
+The guided onboarding needs none of the steps below: `darkbloom cluster`, on
+the leader and on every member, installs this Mac's cluster service (the
+process that answers the paired Mac over the link and runs this Mac's part)
+as a per-user LaunchAgent, so after a reboot or a log out and in the cluster
+comes back by itself, with no command run on either Mac.
+
+- launchd runs `darkbloom cluster service --supervise`: the same supervisor as
+  below, around `darkbloom cluster service`. A service that ends is restarted
+  after 15 s, doubling to 300 s; three runs in a row each shorter than 120 s
+  park it (nothing runs) until `darkbloom cluster` is run again, which
+  restarts it and resets the budget.
+- `RunAtLoad`, and `KeepAlive` only after an unsuccessful exit (throttled to
+  the budget's first backoff): launchd brings back a supervisor that crashed,
+  never one that was stopped.
+- The label is `io.darkbloom.cluster-service.<12 hex digits>`, a digest of the
+  installed app (`Darkbloom.app`, whether `darkbloom` runs from
+  `Contents/MacOS`, `Contents/Helpers` or the `~/.darkbloom/bin` symlink) or of
+  the folder of a development build. One cluster service runs per user: a
+  newer install's agent replaces an older one's.
+- Running `darkbloom cluster` again is idempotent: an unchanged, running
+  agent is left alone; a changed one (another binary or options) is replaced;
+  a parked one is restarted. A service an earlier version started from a
+  terminal is stopped (SIGTERM, then it releases its part) and replaced by the
+  agent.
+- Nothing is asked: a per-user agent needs no administrator approval. macOS
+  shows its "Background item added" notice once, as for the provider's own
+  agent. The cluster link's one administrator approval stays the only
+  administrator approval. One macOS privacy decision remains, as for every
+  launchd-started member (see [permissions](#permissions-asked-once)): a
+  service started by launchd no longer runs under the terminal's Local Network
+  approval, so the signed release asks once per Mac ("find and connect to
+  devices on your local network") the first time the service uses the link;
+  an ad-hoc development build is refused (`Local network prohibited` in
+  `service.log`) instead of asked.
+- `darkbloom cluster stop` (on the leader, the cluster stops serving first)
+  and unpairing (`darkbloom cluster pair --forget`, once no pairing is left)
+  remove the agent; the service stops this Mac's part first (SIGTERM, up to
+  300 s for a rank to release its model; launchd's exit allowance is 360 s).
+- `darkbloom status` shows it, for example
+  `Cluster service: running; starts at login (launchd io.darkbloom.cluster-service.0123456789ab)`
+  and `  supervisor: running; member pid 1234 up 310 s; runs 1, quick failures 0/3, guard teardowns 0/6`.
+- Logs: `~/.darkbloom/cluster-setup/service.log` (`cluster service supervisor:`
+  and `cluster service:` lines); this Mac's part logs to `rank.log` beside it.
+
+### Check after a reboot (owner)
+
+1. Pair and serve once with `darkbloom cluster` on both Macs (the leader picks
+   the model). On each Mac, `darkbloom status` shows
+   `Cluster service: running; starts at login`.
+2. Restart both Macs (any order). Log in to the desktop on each (or use
+   automatic login); do not run any `darkbloom` command.
+3. Within a few minutes of both being logged in: `darkbloom status` on each Mac
+   shows the service running with `runs 1`; on the leader,
+   `darkbloom cluster` shows the cluster serving the same model, and its
+   test request answers.
+4. Note any macOS prompt or notice that appeared after the restart (expected:
+   none; the "Background item added" notice appears only at install).
+5. To leave it off: `darkbloom cluster stop` on each Mac; after a further
+   restart, `darkbloom status` shows no cluster service line except
+   `not running and not set to start at login` on a paired Mac.
 
 ## Prerequisites
 

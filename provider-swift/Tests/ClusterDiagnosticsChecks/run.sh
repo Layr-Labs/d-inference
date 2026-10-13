@@ -24,7 +24,8 @@ build_module() {
     DarkbloomClusterProcess) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
     DarkbloomClusterSecurity) task_dependencies+=(-lDarkbloomClusterBootstrap) ;;
     DarkbloomClusterRemote) task_dependencies+=(-lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterSecurity) ;;
-    InstalledContract) task_dependencies+=(-D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -lDarkbloomClusterProtocol -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
+    DarkbloomClusterPlacement) task_dependencies+=(-lDarkbloomClusterProtocol) ;;
+    InstalledContract) task_dependencies+=(-D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterProcess -lDarkbloomClusterBootstrap -lDarkbloomClusterRemote -lDarkbloomClusterSecurity -lMLXLMCommon -lProviderCoreFoundation) ;;
   esac
   xcrun swiftc "${task_flags[@]}" -emit-library -emit-module -enable-testing \
     -module-name "$task_name" -emit-module-path "$task_build/$task_name.swiftmodule" \
@@ -34,6 +35,8 @@ build_module() {
 }
 
 build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
+# The pipe owner asks the request router (DarkbloomClusterPlacement) for each request's route.
+build_module DarkbloomClusterPlacement "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift
 build_module DarkbloomClusterBootstrap "$task_cluster"/Sources/DarkbloomClusterBootstrap/*.swift
 build_module DarkbloomClusterSecurity "$task_cluster"/Sources/DarkbloomClusterSecurity/*.swift
 build_module DarkbloomClusterProcess "$task_cluster"/Sources/DarkbloomClusterProcess/*.swift
@@ -59,6 +62,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "$task_sources"/Inference/Distributed/Placement/*.swift \
   "$task_sources"/Inference/Distributed/LinkControl/*.swift \
   "$task_sources/Inference/Distributed/Observability/ClusterObservability.swift" \
   "$task_sources/Inference/Distributed/Observability/ClusterLinkObservability.swift" \
@@ -73,7 +77,7 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift
 
-task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterBootstrap \
+task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)
 for task_name in InstalledProbeFixture InstalledFakeOwner InstalledFakeWorker ClusterDiagnosticsCheck; do
   task_defines=()

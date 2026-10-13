@@ -302,7 +302,7 @@ func shutdown(_ pair: ClusterWorkerPair, seconds: Int = 8, _ context: @autoclosu
         // ranks bind it into the request (dropped, the decoding rank would wait
         // for a hand-off rank 0 never sends).
         let routed = ClusterWorkerCommand.reserve(.init(profileID: "cpu", promptTokenIDs: [7, 8, 9], stopTokenIDs: [2], outputCount: 2,
-            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, route: .decodingRankAlone))
+            chunkSize: 1, deadlineUptimeNanoseconds: 9_000, capacityLimitBytes: 100, sampling: nil, route: .decodingRankAlone))
         let routedLocal = try ClusterLinkWorkerWire.decode(try ClusterLinkWorkerWire.command(routed, requestID: request, epoch: epoch,
             session: session, sequence: 5, now: 8_000, deliveryDeadline: 8_200).encoded()).localCommand(now: 50_000)
         guard case .reserve(let t) = routedLocal.command else { throw ClusterOwnerStateError.invalid("Routed reserve lost") }

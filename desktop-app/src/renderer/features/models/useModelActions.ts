@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Action, NativeModel, Snapshot } from '../../../shared/contracts';
 import { errorMessage, submitAction, unsupported } from '../../actions';
 import { api, type BackendState } from '../../useBackend';
+import { enableAction } from './TurnOnAutopilot';
 
 // A download, or the runtime's drain and restart when the pool is refreshed, can take a while.
 const timeoutMs = 40 * 60_000;
@@ -19,6 +20,7 @@ export function useModelActions(backend: BackendState) {
   const [working, setWorking] = useState<Record<string, string>>({});
   const [downloads, setDownloads] = useState<Record<string, string>>({});
   const [problem, setProblem] = useState('');
+  const running = useRef(new Set<string>());
   const snapshot = backend.state!;
 
   const label = (key: string, text?: string) =>
@@ -40,13 +42,19 @@ export function useModelActions(backend: BackendState) {
   }
   const latest = async (): Promise<Snapshot | undefined> => api?.read<Snapshot>('state');
 
-  async function task(key: string, steps: () => Promise<void>) {
+  // The label is set before any await so the row (and every model control) locks on the first
+  // click; a second click while the task runs is ignored.
+  async function task(key: string, first: string, steps: () => Promise<void>) {
+    if (running.current.has(key)) return;
+    running.current.add(key);
+    label(key, first);
     setProblem('');
     try {
       await steps();
     } catch (error) {
       setProblem(describeFailure(error));
     } finally {
+      running.current.delete(key);
       label(key);
     }
   }
@@ -67,9 +75,21 @@ export function useModelActions(backend: BackendState) {
     downloads,
     problem,
     dismiss: () => setProblem(''),
-    join: (model: NativeModel) => task(model.id, () => intoPool(model)),
+    join: (model: NativeModel) =>
+      task(model.id, model.downloaded ? 'Joining the pool…' : 'Downloading…', () =>
+        intoPool(model),
+      ),
+    // Adding a downloaded model before Autopilot is on starts Autopilot with it in the pool, as
+    // keeping a model in memory does; otherwise it joins the running pool.
+    add: (model: NativeModel) =>
+      task(model.id, 'Joining the pool…', async () => {
+        if (snapshot.autopilot?.enabled) return intoPool(model);
+        const start = enableAction(snapshot);
+        label(model.id, 'Starting…');
+        await run({ ...start, models: [...new Set([...start.models, model.id])] });
+      }),
     pin: (model: NativeModel) =>
-      task(model.id, async () => {
+      task(model.id, 'Pinning…', async () => {
         if (!snapshot.autopilot?.enabled) {
           label(model.id, model.downloaded ? 'Starting…' : 'Downloading…');
           await run({
@@ -86,21 +106,17 @@ export function useModelActions(backend: BackendState) {
         await run({ action: 'autopilot_pin', models: [model.id] });
       }),
     unpin: (model: NativeModel) =>
-      task(model.id, async () => {
+      task(model.id, 'Unpinning…', async () => {
         label(model.id, 'Unpinning…');
         await run({ action: 'autopilot_unpin', models: [model.id] });
       }),
     remove: (model: NativeModel) =>
-      task(model.id, async () => {
+      task(model.id, 'Removing…', async () => {
         label(model.id, 'Removing…');
         await run({ action: 'remove', model: model.id });
       }),
     // Pause, resume, turn off, refresh the pool or turn on.
-    policy: (action: Action, text: string) =>
-      task('autopilot', async () => {
-        label('autopilot', text);
-        await run(action);
-      }),
+    policy: (action: Action, text: string) => task('autopilot', text, () => run(action)),
   };
 }
 export type ModelActions = ReturnType<typeof useModelActions>;

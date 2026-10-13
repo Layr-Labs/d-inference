@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop model action guards
+
+- Lock a model's controls on the first click, so double-clicking Keep in memory, Add to pool or other model actions no longer sends the action twice. Add to pool before Autopilot is set up now turns Autopilot on with that model, as Keep in memory already does, instead of doing nothing. Turn on Autopilot is disabled while another operation runs.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

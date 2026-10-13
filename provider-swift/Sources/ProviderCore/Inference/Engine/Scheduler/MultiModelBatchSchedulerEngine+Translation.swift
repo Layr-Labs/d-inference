@@ -26,6 +26,9 @@ public struct ChatTemplateControls: Sendable, Equatable {
     // Included in synthesized equality: refusal evidence cannot be erased by
     // comparing only the permissively decoded legacy control fields.
     var rawMiMoControls = MiMoV26RawControlEvidence()
+    // Raw disable controls, kept apart from the precedence-merged fields so a
+    // shadowed disable request stays visible to reasoning-only policies.
+    var thinkingDisableEvidence = ThinkingDisableEvidence()
 
     public init(
         reasoningEffort: String? = nil,
@@ -43,6 +46,7 @@ public struct ChatTemplateControls: Sendable, Equatable {
         .init(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
               preserveThinking: preserveThinking, promptDate: date)
             .withRawMiMoControls(rawMiMoControls)
+            .withThinkingDisableEvidence(thinkingDisableEvidence)
     }
 
     func withRawMiMoControls(_ evidence: MiMoV26RawControlEvidence) -> Self {

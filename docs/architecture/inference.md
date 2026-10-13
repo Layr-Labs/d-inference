@@ -559,9 +559,19 @@ LFM2.5 is reasoning-only (its generation prompt ends in `<think>`), so
 pythonic tool parsing, a call written inside reasoning is never invoked, and
 `<|tool_call_start|>`…`<|tool_call_end|>` frames are opaque to reasoning
 markers. This does not admit forced tool choice: `required`/named still fail
-closed and the tool-constraint capability is not advertised. Thinking-disable
-controls do not change its prompt; reasoning is still returned in the
-reasoning field.
+closed and the tool-constraint capability is not advertised. Reasoning cannot
+be disabled: for the exact ids, `LFM2ReasoningControlPolicy` refuses top-level
+`enable_thinking: false`, `chat_template_kwargs.enable_thinking: false`,
+`reasoning.enabled: false`, and `reasoning.effort` / `reasoning_effort` of
+`none`/`off`/`0` (shadowed spellings included, via raw-body
+`ThinkingDisableEvidence`) with `reasoningCannotBeDisabled` before acceptance,
+model load or template render. The coordinator wire carries the closed
+`invalid_request` 400 (`client_error`: terminal, not retried, not charged), so
+coordinator clients see the generic "invalid inference request"; the local HTTP
+server returns a fixed message naming the offending field. Effort hints
+(`low`/`medium`/`high`) and absence are accepted and render the identical
+prompt: the template has no effort control
+(`provider-swift/Sources/ProviderCore/Inference/Prompting/LFM2ReasoningControlPolicy.swift`).
 `ToolChoiceEnforcementPolicy.absorbsStrayThinkClose` gates the behavior by exact
 listing and `nemotron_h` type; `MultiModelBatchSchedulerEngine.makeEventStream`
 passes it through `NativeToolStreamRouter` to the splitter. Other native-channel

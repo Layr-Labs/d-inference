@@ -75,10 +75,12 @@ final class LFM2TemplateParityLiveTests: XCTestCase {
             tokenizer: tokenizer, modelType: "lfm2_moe"))
     }
 
-    /// LFM2.5 has no thinking switch: disable controls are accepted but never
-    /// change the prompt, which still opens `<think>` (reasoning stays on and
-    /// is reported in the reasoning field, never promised off).
-    func testThinkingDisableControlsDoNotChangeThePrompt() async throws {
+    /// LFM2.5 has no thinking switch or effort control: effort hints (and no
+    /// hint) render the identical reference prompt, still opening `<think>`.
+    /// Disable controls are refused before render (owner decision D2; offline
+    /// coverage in LFM2ReasoningDisableRejectionTests), also with the real
+    /// tokenizer.
+    func testEffortHintsDoNotChangeThePromptAndDisableControlsAreRefused() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let modelPath = environment["LFM2_TEMPLATE_MODEL_DIR"],
               let referencePath = environment["LFM2_TEMPLATE_REFERENCE_DIR"]
@@ -88,15 +90,30 @@ final class LFM2TemplateParityLiveTests: XCTestCase {
         let expected = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(
             fileURLWithPath: referencePath).appendingPathComponent("sys_user.ids.json"))) as? [NSNumber]).map(\.intValue)
         let base = try XCTUnwrap(LFM2TemplateCorpus.bodies().first { $0.0 == "sys_user" }?.1)
-        let controls: [[String: Any]] = [
-            ["enable_thinking": false], ["reasoning": ["enabled": false]], ["reasoning_effort": "none"],
-            ["chat_template_kwargs": ["enable_thinking": false]], ["reasoning": ["effort": "high"]],
+        let accepted: [[String: Any]] = [
+            [:], ["reasoning": ["effort": "low"]], ["reasoning": ["effort": "medium"]],
+            ["reasoning": ["effort": "high"]], ["reasoning_effort": "low"], ["reasoning_effort": "medium"],
+            ["reasoning_effort": "high"], ["reasoning": ["enabled": true]],
         ]
-        for control in controls {
+        for control in accepted {
             let body = base.merging(control) { _, new in new }
             let tokens = try ProviderPromptContractPipeline.tokenizeProviderBody(
                 JSONSerialization.data(withJSONObject: body), tokenizer: tokenizer, modelType: "lfm2_moe")
             XCTAssertEqual(tokens, expected, "\(control)")
+        }
+        let refused: [([String: Any], ThinkingDisableField)] = [
+            (["enable_thinking": false], .enableThinking),
+            (["chat_template_kwargs": ["enable_thinking": false]], .chatTemplateKwargsEnableThinking),
+            (["reasoning": ["enabled": false]], .reasoningEnabled),
+            (["reasoning": ["effort": "none"]], .reasoningEffort),
+            (["reasoning_effort": "none"], .topLevelReasoningEffort),
+        ]
+        for (control, field) in refused {
+            let body = base.merging(control) { _, new in new }
+            XCTAssertThrowsError(try ProviderPromptContractPipeline.tokenizeProviderBody(
+                JSONSerialization.data(withJSONObject: body), tokenizer: tokenizer, modelType: "lfm2_moe")) {
+                XCTAssertEqual($0 as? MultiModelBatchSchedulerEngineError, .reasoningCannotBeDisabled(field))
+            }
         }
     }
 

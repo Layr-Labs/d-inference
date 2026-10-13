@@ -167,6 +167,19 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
         direct.count == 1 && direct[0].key.chip == "Apple M5 Ultra" && close(direct[0].rested.prefillTokensPerSecond, 4_000)
             && close(direct[0].rested.speculativeDecodeTokensPerSecond, 250))
 
+    // The same from records as a leader keeps them: one setup per (model, mode, cut, ranks);
+    // a setup without its rank order, or naming a Mac that is not planned, is skipped and said so.
+    let cutText = ClusterServedSpeedRecords.Setup.cut(pair.setup.cuts, layerCount: nine.layerCount)
+    let named = ClusterServedSpeedRecords.Setup(modelID: "m", mode: pair.setup.mode.rawValue, cut: cutText, ranks: ["m3ultra", "m5ultra"])
+    let unnamed = ClusterServedSpeedRecords.Setup(modelID: "m", mode: pair.setup.mode.rawValue, cut: cutText, ranks: nil)
+    let stranger = ClusterServedSpeedRecords.Setup(modelID: "m", mode: pair.setup.mode.rawValue, cut: cutText, ranks: ["m3ultra", "m1"])
+    let fromEntries = try ClusterServedCalibration.measurements(entries: served.map { .init(setup: named, sample: $0) }
+            + [.init(setup: unnamed, sample: alone), .init(setup: stranger, sample: alone)],
+        devices: [r5, r3], layout: nine, link: .unmeasured, measuredUTC: "2026-10-13T00:00:00Z")
+    checks.require("served entries give each ranked Mac its measurement whatever order devices are listed in; unranked or unknown setups are skipped",
+        fromEntries.measurements.count == 2 && close(fromEntries.measurements.first { $0.key.chip == "Apple M5 Ultra" }?.rested.prefillTokensPerSecond, 4_980)
+            && fromEntries.lines.count == 3 && fromEntries.lines.filter { $0.contains("skipped") }.count == 2)
+
     // The records file: bounded per setup and route, its own encoding, invalid samples dropped.
     let setup = ClusterServedSpeedRecords.Setup(modelID: "m", mode: "phase_split_mtp_v1",
         cut: ClusterServedSpeedRecords.Setup.cut([4], layerCount: 32), ranks: ["a", "b"])

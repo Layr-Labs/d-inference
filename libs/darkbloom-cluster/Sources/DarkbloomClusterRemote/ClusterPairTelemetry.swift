@@ -46,11 +46,15 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
     public let route: String?
     /// Why, in plain words, with the two predicted times.
     public let routeReason: String?
+    /// The members in rank order (their setup labels), so that a speed
+    /// record names which Mac held which range. Nil in an older record.
+    public let ranks: [String]?
 
     public init(requestID: String, finishedAt: Double, modelID: String, mode: String, cut: String,
                 promptTokens: Int, cachedTokens: Int, completionTokens: Int, firstTokenMilliseconds: Double?,
                 decodeTokensPerSecond: Double?, handoffMilliseconds: Double?, handoffBytes: Int?,
-                mtpDrafted: Int?, mtpAccepted: Int?, outcome: String, route: String? = nil, routeReason: String? = nil) {
+                mtpDrafted: Int?, mtpAccepted: Int?, outcome: String, route: String? = nil, routeReason: String? = nil,
+                ranks: [String]? = nil) {
         self.requestID = requestID; self.finishedAt = finishedAt; self.modelID = modelID; self.mode = mode
         self.cut = cut; self.promptTokens = promptTokens; self.cachedTokens = cachedTokens
         self.completionTokens = completionTokens; self.firstTokenMilliseconds = firstTokenMilliseconds
@@ -62,6 +66,7 @@ public struct ClusterPairRequestTelemetry: Codable, Sendable, Equatable {
         self.outcome = outcome
         self.route = route.map { String($0.prefix(80)) }
         self.routeReason = routeReason.map { String($0.prefix(240)) }
+        self.ranks = ranks.flatMap { $0.count <= 8 && $0.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 64 }) ? $0 : nil }
     }
 
     /// A speed record: a completed request that computed its whole prompt
@@ -141,7 +146,9 @@ public struct ClusterServedSpeedFile: Codable, Sendable, Equatable {
     public static func adding(_ value: ClusterPairRequestTelemetry, to records: [ClusterPairRequestTelemetry]) -> [ClusterPairRequestTelemetry] {
         guard value.isSpeedRecord else { return records }
         var result = records + [value]
-        func key(_ r: ClusterPairRequestTelemetry) -> String { [r.modelID, r.mode, r.cut, r.route ?? "pair"].joined(separator: "\u{1f}") }
+        func key(_ r: ClusterPairRequestTelemetry) -> String {
+            [r.modelID, r.mode, r.cut, r.route ?? "pair", (r.ranks ?? []).joined(separator: ",")].joined(separator: "\u{1f}")
+        }
         let same = result.indices.filter { key(result[$0]) == key(value) }
         if same.count > keptPerRoute {
             let drop = Set(same.prefix(same.count - keptPerRoute))

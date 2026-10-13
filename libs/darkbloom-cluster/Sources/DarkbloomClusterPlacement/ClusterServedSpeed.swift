@@ -240,4 +240,40 @@ public enum ClusterServedCalibration {
         }
         return result
     }
+
+    /// Measurements from every setup `entries` name whose ranks are all among
+    /// `devices` (labels) and whose cut fits `layout`, with one plain line per
+    /// setup. The plan tool (`plan --served`) and the provider's planning use
+    /// it the same way: the measurements join the others before the speeds
+    /// are estimated, so the next plan starts from what was served.
+    public static func measurements(entries: [ClusterServedSpeedRecords.Entry], devices: [ClusterPlacementDevice],
+                                    layout: ClusterModelLayout, link: ClusterLinkCosts, measuredUTC: String) throws
+        -> (measurements: [ClusterSpeedMeasurement], lines: [String]) {
+        var measurements: [ClusterSpeedMeasurement] = [], lines: [String] = []
+        var setups: [ClusterServedSpeedRecords.Setup] = []
+        for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
+        for setup in setups {
+            guard let ranks = setup.ranks, let mode = ClusterGenerationMode(rawValue: setup.mode),
+                  let cuts = ClusterServedSpeedRecords.Setup.cuts(setup.cut, layerCount: layout.layerCount), ranks.count == cuts.count + 1 else {
+                lines.append("  \(setup.mode) cut \(setup.cut): skipped (no rank order, or not this model's layers)")
+                continue
+            }
+            let ordered = ranks.compactMap { label in devices.first { $0.label == label } }
+            guard ordered.count == ranks.count else { lines.append("  \(setup.mode) cut \(setup.cut): skipped (a rank is not a planned device)"); continue }
+            let samples = entries.filter { $0.setup == setup }.map(\.sample)
+            let schedule: ClusterPrefillSchedule = layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial
+            let derived = try Self.measurements(samples,
+                placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link),
+                runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
+            measurements += derived
+            let pair = samples.filter { $0.route == .pair }.count
+            lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(pair) pair and \(samples.count - pair) alone request(s)"
+                + " -> " + (derived.isEmpty ? "nothing usable" : derived.map { m in
+                    let label = devices.first { $0.profile.chip == m.key.chip && $0.profile.osBuild == m.key.osBuild }?.label ?? m.key.chip
+                    return String(format: "%@ prefill %.0f tok/s, decode %.1f tok/s", label, m.rested.prefillTokensPerSecond,
+                        m.rested.speculativeDecodeTokensPerSecond ?? m.rested.decodeTokensPerSecond)
+                }.joined(separator: "; ")))
+        }
+        return (measurements, lines)
+    }
 }

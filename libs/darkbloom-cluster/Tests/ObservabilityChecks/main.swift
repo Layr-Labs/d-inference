@@ -277,6 +277,18 @@ func telemetryChecks() throws {
     check(routed.lines.contains { $0.contains("route alone:second") } && routed.lines.contains { $0.contains("route: second alone is predicted") }
             && routed.lines.contains { $0.hasPrefix("Speed records from served requests") && $0.contains("alone:second 1") && $0.contains("pair 3") },
           "C14 status shows each request's route and why, and the speed records by route")
+    // The members' rank order travels with each record, and a different order is a different setup.
+    func ranked(_ id: String, _ ranks: [String]?) -> ClusterPairRequestTelemetry {
+        .init(requestID: id, finishedAt: 1, modelID: "m", mode: "phase_split_mtp_v1", cut: "0-4|4-32", promptTokens: 10,
+              cachedTokens: 0, completionTokens: 2, firstTokenMilliseconds: 1, decodeTokensPerSecond: 1, handoffMilliseconds: nil,
+              handoffBytes: nil, mtpDrafted: nil, mtpAccepted: nil, outcome: "stop", ranks: ranks)
+    }
+    var orders: [ClusterPairRequestTelemetry] = []
+    for index in 0..<40 { orders = ClusterServedSpeedFile.adding(ranked("o\(index)", index % 2 == 0 ? ["a", "b"] : ["b", "a"]), to: orders) }
+    let encoded = try? JSONEncoder().encode(ranked("e", ["a", "b"]))
+    check(orders.count == 40 && encoded.flatMap { try? JSONDecoder().decode(ClusterPairRequestTelemetry.self, from: $0) }?.ranks == ["a", "b"]
+            && ranked("bad", ["", "b"]).ranks == nil,
+          "C15 a speed record names its members in rank order; another order is another setup; an empty label is dropped")
 }
 
 // MARK: D. Worker protocol

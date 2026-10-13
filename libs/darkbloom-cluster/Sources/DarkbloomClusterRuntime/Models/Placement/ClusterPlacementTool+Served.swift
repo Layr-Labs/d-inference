@@ -32,6 +32,7 @@ extension ClusterPlacementTool {
             let decodeTokensPerSecond: Double?
             let outcome: String
             let route: String?
+            let ranks: [String]?
         }
         let schema: String
         let records: [Record]
@@ -63,7 +64,8 @@ extension ClusterPlacementTool {
                     promptTokens: record.promptTokens, outputTokens: record.completionTokens,
                     firstTokenSeconds: first / 1_000, decodeTokensPerSecond: record.decodeTokensPerSecond, finishedAt: record.finishedAt)
                 if sample.valid {
-                    result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: ranks), sample: sample))
+                    result.append(.init(setup: .init(modelID: record.modelID, mode: record.mode, cut: record.cut, ranks: record.ranks ?? ranks),
+                                       sample: sample))
                 }
             }
         }
@@ -71,35 +73,11 @@ extension ClusterPlacementTool {
     }
 
     /// Measurements derived from every setup the entries name whose ranks are
-    /// among `devices` and whose cut fits `layout`.
+    /// among `devices` and whose cut fits `layout` (`ClusterServedCalibration.measurements(entries:...)`).
     static func servedMeasurements(_ entries: [ClusterServedSpeedRecords.Entry], devices: [ClusterPlacementDevice],
                                    layout: ClusterModelLayout, link: ClusterLinkCosts) throws -> (measurements: [ClusterSpeedMeasurement], lines: [String]) {
-        var measurements: [ClusterSpeedMeasurement] = [], lines: [String] = []
-        var setups: [ClusterServedSpeedRecords.Setup] = []
-        for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
-        for setup in setups {
-            guard let ranks = setup.ranks, let mode = ClusterGenerationMode(rawValue: setup.mode),
-                  let cuts = ClusterServedSpeedRecords.Setup.cuts(setup.cut, layerCount: layout.layerCount), ranks.count == cuts.count + 1 else {
-                lines.append("  \(setup.mode) cut \(setup.cut): skipped (no rank order, or not this model's layers)")
-                continue
-            }
-            let ordered = ranks.compactMap { label in devices.first { $0.label == label } }
-            guard ordered.count == ranks.count else { lines.append("  \(setup.mode) cut \(setup.cut): skipped (a rank is not a planned device)"); continue }
-            let samples = entries.filter { $0.setup == setup }.map(\.sample)
-            let schedule: ClusterPrefillSchedule = layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial
-            let derived = try ClusterServedCalibration.measurements(samples,
-                placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link),
-                runtimeBinarySHA256: "served", measuredUTC: ISO8601DateFormatter().string(from: Date()))
-            measurements += derived
-            let pair = samples.filter { $0.route == .pair }.count
-            lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(pair) pair and \(samples.count - pair) alone request(s)"
-                + " -> " + derived.map { m in
-                    let label = devices.first { $0.profile.chip == m.key.chip && $0.profile.osBuild == m.key.osBuild }?.label ?? m.key.chip
-                    return String(format: "%@ prefill %.0f tok/s, decode %.1f tok/s", label, m.rested.prefillTokensPerSecond,
-                        m.rested.speculativeDecodeTokensPerSecond ?? m.rested.decodeTokensPerSecond)
-                }.joined(separator: "; "))
-        }
-        return (measurements, lines)
+        try ClusterServedCalibration.measurements(entries: entries, devices: devices, layout: layout, link: link,
+            measuredUTC: ISO8601DateFormatter().string(from: Date()))
     }
 
     struct RouteOutput: Encodable {

@@ -68,6 +68,32 @@ private func child(_ scenario: String) throws -> Never {
     case "clean-finish":
         ProcessForcedExit.install(release: marker)
         ProcessForcedExit.finish(status: 0, reason: "shutdown-complete")
+    case "progress-extends":
+        // A release that completes a write every 50 ms for 1.2 s, past a
+        // 0.8 s dead-man: the one extension lets it finish; the claimed
+        // status is kept.
+        ProcessForcedExit.install(release: {
+            mark("test-release-writing")
+            let end = now() + 1_200_000_000
+            while now() < end { usleep(50_000); ProcessForcedExit.noteProgress() }
+            mark("test-release-done"); return "detail=progressed"
+        }, deadManNanoseconds: 800_000_000)
+        ProcessForcedExit.exit(status: 78, reason: "test")
+    case "progress-stale":
+        // One write at the start, then nothing: no extension, the dead-man
+        // ends the process at its bound.
+        ProcessForcedExit.install(release: {
+            ProcessForcedExit.noteProgress(); mark("test-release-stalls"); sleepForever()
+        }, deadManNanoseconds: 800_000_000)
+        ProcessForcedExit.exit(status: 79, reason: "test")
+    case "progress-forever":
+        // Writes that never stop earn exactly one extension: the process ends
+        // at twice the bound, not later.
+        ProcessForcedExit.install(release: {
+            mark("test-release-never-returns")
+            while true { usleep(50_000); ProcessForcedExit.noteProgress() }
+        }, deadManNanoseconds: 800_000_000)
+        ProcessForcedExit.exit(status: 80, reason: "test")
     default:
         throw Failure(description: "unknown scenario \(scenario)")
     }
@@ -226,7 +252,34 @@ private func parent() throws {
         try require(o.status == 0, "status \(String(describing: o.status)): \(o.stderr)")
         try require(ordered(o.stderr, ["status=0 reason=shutdown-complete phase=claimed", "test-release 1"]), o.stderr)
     }
-    print("{\"passed\":true,\"cases\":\(passed),\"forcedExit\":\"actual-runtime-sources\",\"modelOrGPUExecution\":false}")
+    try check("the-extension-rule-grants-only-a-recent-completed-write") {
+        let bound: UInt64 = 20_000_000_000, deadline: UInt64 = 100_000_000_000
+        try require(ProcessForcedExit.extendedDeadline(progress: 0, deadline: deadline, bound: bound) == nil, "no write ever")
+        try require(ProcessForcedExit.extendedDeadline(progress: deadline - bound / 2 - 1, deadline: deadline, bound: bound) == nil, "write older than half the bound")
+        try require(ProcessForcedExit.extendedDeadline(progress: deadline - bound / 2, deadline: deadline, bound: bound) == deadline + bound, "write at half the bound")
+        try require(ProcessForcedExit.extendedDeadline(progress: deadline, deadline: deadline, bound: bound) == deadline + bound, "write at the deadline")
+        try require(ProcessForcedExit.extendedDeadline(progress: deadline + 1, deadline: deadline, bound: bound) == nil, "a stamp from the future")
+        try require(ProcessForcedExit.extendedDeadline(progress: UInt64.max - 1, deadline: UInt64.max, bound: bound) == UInt64.max, "overflow saturates")
+    }
+    try check("a-progressing-release-gets-one-extension-and-finishes") {
+        let o = try run("progress-extends")
+        try require(o.status == 78, "status \(String(describing: o.status)): \(o.stderr)")
+        try require(o.seconds >= 1.15 && o.seconds < 1.6, "took \(o.seconds) s (dead-man 0.8 s, release 1.2 s)")
+        try require(ordered(o.stderr, ["status=78 reason=test phase=claimed dead_man_ms=800", "test-release-writing", "test-release-done", "phase=released detail=progressed"]), o.stderr)
+    }
+    try check("a-release-whose-writes-stopped-ends-at-the-dead-man") {
+        let o = try run("progress-stale")
+        try require(o.status == 79, "status \(String(describing: o.status)): \(o.stderr)")
+        try require(o.seconds >= 0.75 && o.seconds < 1.2, "took \(o.seconds) s (no extension for a stale write)")
+        try require(!o.stderr.contains("phase=released"), "a stalled release reported done")
+    }
+    try check("endless-writes-earn-exactly-one-extension") {
+        let o = try run("progress-forever")
+        try require(o.status == 80, "status \(String(describing: o.status)): \(o.stderr)")
+        try require(o.seconds >= 1.55 && o.seconds < 2.2, "took \(o.seconds) s (expected twice the 0.8 s bound)")
+        try require(!o.stderr.contains("phase=released"), "an endless release reported done")
+    }
+    print("{\"passed\":true,\"cases\":\(passed),\"forcedExit\":\"actual-runtime-sources\",\"progressExtendedDeadMan\":true,\"modelOrGPUExecution\":false}")
 }
 
 @main struct ExitCheck {

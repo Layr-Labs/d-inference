@@ -1,0 +1,285 @@
+import Darwin
+import Foundation
+import XCTest
+import DarkbloomClusterProcess
+import DarkbloomClusterProtocol
+@testable import DarkbloomClusterRemote
+
+/// The orphan reaper's decisions (pure, on a fake process table), its sweep
+/// (fake signals and clock), and one real orphan: a copy of /bin/sh named as
+/// the worker, started by a shell that exits first, so the kernel reparents
+/// it. No model, no GPU, no network.
+final class ClusterOrphanReaperTests: XCTestCase {
+    private let epoch = UUID().uuidString.lowercased()
+    private func worker(_ pid: Int32, parent: Int32?, epoch: String? = nil) -> ClusterProcessTable.Entry {
+        var arguments = ["/opt/x/darkbloom-cluster-worker", "--model-dir", "/m", "--rank", "1"]
+        if let epoch { arguments += ["--membership-epoch", epoch] }
+        return .init(processIdentifier: pid, arguments: arguments, parentProcessIdentifier: parent,
+                     executableName: "darkbloom-cluster-worker", startedAt: 1_000)
+    }
+    private func owner(_ pid: Int32, parent: Int32?) -> ClusterProcessTable.Entry {
+        .init(processIdentifier: pid, arguments: ["/opt/x/darkbloom", "cluster", "worker-owner", "--stdio"],
+              parentProcessIdentifier: parent, executableName: "darkbloom", startedAt: 1_000)
+    }
+
+    func testPlanKeepsLiveParentsLiveEpochsAndItsOwnLineage() {
+        // Pids far above any real one; the "alive parent" is this test process.
+        let me = getpid(), liveEpoch = UUID().uuidString.lowercased()
+        let processes = [
+            worker(900_001, parent: 1, epoch: epoch),            // parent gone -> candidate
+            worker(900_002, parent: me, epoch: epoch),           // parent alive -> kept
+            worker(900_003, parent: 1, epoch: liveEpoch),        // epoch live -> kept
+            owner(900_004, parent: 1),                           // owner, parent gone -> candidate
+            owner(900_005, parent: me),                          // owner, parent alive -> kept
+            worker(900_006, parent: nil),                        // parent unknown -> kept
+            worker(900_007, parent: 1),                          // protected -> kept
+            .init(processIdentifier: 900_008, arguments: ["/usr/bin/sleep", "60"], parentProcessIdentifier: 1, executableName: "sleep"),
+        ]
+        let plan = ClusterOrphanReaper.plan(processes: processes, liveEpochs: [liveEpoch], protectedProcessIdentifiers: [900_007])
+        XCTAssertEqual(plan.candidates.map(\.processIdentifier), [900_001, 900_004])
+        XCTAssertEqual(plan.candidates.map(\.role), [.worker, .owner])
+        XCTAssertEqual(plan.candidates.first?.membershipEpoch, epoch)
+        XCTAssertEqual(plan.kept.map(\.processIdentifier), [900_002, 900_003, 900_005, 900_006, 900_007])
+        XCTAssertEqual(plan.kept.map(\.reason), ["parent \(me) is alive", "membership epoch is live", "parent \(me) is alive",
+                                                "parent unknown", "this process or one it owns"])
+    }
+
+    func testRoleRecognizesOnlyWorkersAndOwners() {
+        XCTAssertEqual(ClusterOrphanReaper.role(of: worker(1, parent: 1)), .worker)
+        XCTAssertEqual(ClusterOrphanReaper.role(of: owner(1, parent: 1)), .owner)
+        XCTAssertNil(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom", "start"], executableName: "darkbloom")))
+        XCTAssertNil(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom", "cluster", "status"], executableName: "darkbloom")))
+        // Without the executable name the first argument's basename decides.
+        XCTAssertEqual(ClusterOrphanReaper.role(of: .init(processIdentifier: 1, arguments: ["/opt/x/darkbloom-cluster-worker"])), .worker)
+        XCTAssertNil(ClusterOrphanReaper.membershipEpoch(of: worker(1, parent: 1, epoch: "not-a-uuid")))
+    }
+
+    func testSweepWaitsForTheContractThenTermsThenKillsOnlyWhatIgnoredTerm() {
+        let plan = ClusterOrphanReaper.Plan(candidates: [
+            .init(processIdentifier: 11, role: .worker, membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone"),
+            .init(processIdentifier: 12, role: .worker, membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone"),
+            .init(processIdentifier: 13, role: .owner, membershipEpoch: nil, startedAt: 1_000, reason: "parent is gone"),
+            .init(processIdentifier: 14, role: .worker, membershipEpoch: nil, startedAt: nil, reason: "parent is gone"),
+        ], kept: [])
+        final class Fake: @unchecked Sendable {
+            let lock = NSLock()
+            var clock: UInt64 = 0
+            var signals: [(Int32, Int32)] = []
+            // pid -> (dies after TERM, dies after KILL, dies by itself at clock)
+            var endsByItselfAt: [Int32: UInt64] = [11: 3_000_000_000]
+            var diesOnTerm: Set<Int32> = [12]
+            var diesOnKill: Set<Int32> = [13]
+            var dead: Set<Int32> = []
+        }
+        let fake = Fake()
+        var actions = ClusterOrphanReaper.Actions()
+        actions.now = { fake.lock.withLock { fake.clock } }
+        actions.sleep = { n in fake.lock.withLock { fake.clock += n } }
+        actions.wallClock = { 1_000 + 10 } // every candidate started 10 s ago
+        actions.isAlive = { pid in
+            fake.lock.withLock {
+                if fake.dead.contains(pid) { return false }
+                if let at = fake.endsByItselfAt[pid], fake.clock >= at { fake.dead.insert(pid); return false }
+                return true
+            }
+        }
+        actions.signal = { pid, signal in
+            fake.lock.withLock {
+                fake.signals.append((pid, signal))
+                if signal == SIGTERM, fake.diesOnTerm.contains(pid) { fake.dead.insert(pid) }
+                if signal == SIGKILL, fake.diesOnKill.contains(pid) { fake.dead.insert(pid) }
+            }
+        }
+        var limits = ClusterOrphanReaper.Limits()
+        limits.contractGraceNanoseconds = 20_000_000_000 // 10 s used, 10 s remain
+        limits.killMarginNanoseconds = 2_000_000_000
+        limits.reapMarginNanoseconds = 1_000_000_000
+        limits.pollNanoseconds = 500_000_000
+        let results = ClusterOrphanReaper.sweepProcesses(plan, limits: limits, actions: actions)
+        XCTAssertEqual(results.map(\.outcome), [.endedByItself, .endedAfterTerm, .endedAfterKill, .survived])
+        // 11 was never signalled; 12 got TERM only; 13 and 14 got TERM then KILL.
+        XCTAssertEqual(fake.signals.map { "\($0.0):\($0.1)" }, ["12:\(SIGTERM)", "13:\(SIGTERM)", "13:\(SIGKILL)", "14:\(SIGTERM)", "14:\(SIGKILL)"])
+        // 11 waited within its remaining grace (3 s of the 10 s), not the whole grace.
+        XCTAssertEqual(results[0].waitedNanoseconds, 3_000_000_000)
+        // 14 (unknown start) got no grace: TERM at once, KILL after the margin, reported after the reap margin.
+        XCTAssertEqual(results[3].waitedNanoseconds, 3_000_000_000)
+    }
+
+    /// A real reparented process named as the worker: the sweep ends it with
+    /// SIGTERM; one that ignores SIGTERM is ended by SIGKILL after the margin.
+    /// (A copy of a system binary cannot run on this macOS, so the fake worker
+    /// is a four-line C program compiled here.)
+    func testRealOrphansAreEndedTermFirstThenKill() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("reaper-" + UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fake = root.appendingPathComponent("darkbloom-cluster-worker").path
+        let source = root.appendingPathComponent("fake.c")
+        try Data("""
+        #include <signal.h>
+        #include <string.h>
+        #include <unistd.h>
+        int main(int argc, char **argv) { for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--ignore-term")) signal(SIGTERM, SIG_IGN); for (;;) sleep(1); }
+        """.utf8).write(to: source)
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/cc"); compiler.arguments = [source.path, "-o", fake]
+        compiler.standardOutput = FileHandle.nullDevice; compiler.standardError = FileHandle.nullDevice
+        try compiler.run(); compiler.waitUntilExit()
+        XCTAssertEqual(compiler.terminationStatus, 0, "the fake worker compiled")
+        let polite = UUID().uuidString.lowercased(), stubborn = UUID().uuidString.lowercased()
+        // The intermediate shell exits at once; its children are reparented.
+        let script = "'\(fake)' --membership-epoch \(polite) & "
+            + "'\(fake)' --ignore-term --membership-epoch \(stubborn) & exit 0"
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/sh"); launcher.arguments = ["-c", script]
+        launcher.standardOutput = FileHandle.nullDevice; launcher.standardError = FileHandle.nullDevice
+        try launcher.run(); launcher.waitUntilExit()
+        func find() -> [ClusterProcessTable.Entry] {
+            ClusterProcessTable.running().filter { ClusterOrphanReaper.membershipEpoch(of: $0).map { [polite, stubborn].contains($0) } ?? false }
+        }
+        var found: [ClusterProcessTable.Entry] = []
+        for _ in 0..<50 { found = find(); if found.count == 2, found.allSatisfy({ $0.parentProcessIdentifier == 1 }) { break }; usleep(100_000) }
+        defer { for entry in found { kill(entry.processIdentifier, SIGKILL) } }
+        XCTAssertEqual(found.count, 2, "both fake workers running and reparented: \(found)")
+        let plan = ClusterOrphanReaper.plan(processes: found, liveEpochs: [], protectedProcessIdentifiers: ClusterOrphanReaper.ownLineage())
+        XCTAssertEqual(plan.candidates.count, 2, "\(plan)")
+        XCTAssertEqual(plan.candidates.map(\.reason), ["parent is gone", "parent is gone"])
+        // A live epoch is never reaped, whatever its parent.
+        XCTAssertEqual(ClusterOrphanReaper.plan(processes: found, liveEpochs: [polite, stubborn], protectedProcessIdentifiers: []).candidates, [])
+        var limits = ClusterOrphanReaper.Limits()
+        limits.contractGraceNanoseconds = 0; limits.killMarginNanoseconds = 1_500_000_000; limits.reapMarginNanoseconds = 2_000_000_000
+        let results = ClusterOrphanReaper.sweepProcesses(plan, limits: limits)
+        let byEpoch = Dictionary(uniqueKeysWithValues: results.map { ($0.candidate.membershipEpoch!, $0.outcome) })
+        XCTAssertEqual(byEpoch[polite], .endedAfterTerm)
+        XCTAssertEqual(byEpoch[stubborn], .endedAfterKill)
+        XCTAssertEqual(find().count, 0, "nothing left")
+        let report = ClusterTeardownVerification.report(at: 0, processes: ClusterProcessTable.running(), liveEpochs: [],
+            protectedProcessIdentifiers: ClusterOrphanReaper.ownLineage(), wired: nil, journal: "absentOrEmpty", staleBootstrapDirectories: [])
+        XCTAssertFalse(report.processes.contains { [polite, stubborn].contains($0.membershipEpoch ?? "") })
+    }
+
+    func testStaleBootstrapDirectoriesAreThoseWhoseSocketDoesNotAnswer() throws {
+        // A short root: a UNIX socket path is at most 103 bytes.
+        let root = URL(fileURLWithPath: "/private/tmp/orphan-check-" + String(UUID().uuidString.lowercased().prefix(8)), isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A dead listener left its directory and socket file; a directory with no socket at all; a live listener.
+        let dead = root.appendingPathComponent("darkbloom-bootstrap-dead0001").path
+        let empty = root.appendingPathComponent("darkbloom-bootstrap-empty001").path
+        let live = root.appendingPathComponent("darkbloom-bootstrap-live0001").path
+        let other = root.appendingPathComponent("unrelated-dir").path
+        for directory in [dead, empty, live, other] { XCTAssertEqual(mkdir(directory, 0o700), 0) }
+        func bind(_ path: String) -> Int32 {
+            var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutablePointer(to: &address.sun_path) { p in p.withMemoryRebound(to: CChar.self, capacity: 104) { base in _ = path.withCString { strncpy(base, $0, 103) } } }
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+            XCTAssertEqual(bound, 0, "bind \(path): \(errno)")
+            return fd
+        }
+        let deadFD = bind(dead + "/channel"); close(deadFD) // the file stays, nobody listens
+        let liveFD = bind(live + "/channel"); XCTAssertEqual(listen(liveFD, 1), 0)
+        defer { close(liveFD) }
+        XCTAssertEqual(ClusterOrphanReaper.staleBootstrapDirectories(under: root.path), [dead, empty])
+        XCTAssertFalse(ClusterOrphanReaper.removeBootstrapDirectory(dead), "only the product prefix is ever removed")
+    }
+
+    func testStaleStagingEntriesAreOldEpochDirectoriesThatAreNotLive() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("staging-" + UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = UUID().uuidString.lowercased(), fresh = UUID().uuidString.lowercased(), live = UUID().uuidString.lowercased()
+        // (An upper-case spelling is not a canonical epoch either, but the file
+        // system here folds case, so it is not created beside the lower-case one.)
+        for name in [old, fresh, live, "not-an-epoch", "x" + UUID().uuidString.lowercased()] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: false)
+        }
+        let now = Date().timeIntervalSince1970
+        let stale = ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [live], graceSeconds: 60, now: now + 120)
+        XCTAssertEqual(Set(stale.map(\.lastPathComponent)), [old, fresh], "both old enough at now+120; the live one and non-epochs never")
+        XCTAssertEqual(ClusterOrphanReaper.staleStagingEntries(roots: [root], liveEpochs: [live], graceSeconds: 60, now: now), [])
+    }
+
+    func testEnvironmentGuardsYieldToACanonicalPinnedValueOnly() {
+        let base = ["PATH": "/usr/bin:/bin"]
+        let applied = ClusterWorkerEnvironmentGuards.apply(to: base, ownerEnvironment: [:])
+        XCTAssertEqual(applied["MLX_MAX_OPS_PER_BUFFER"], "16")
+        XCTAssertEqual(applied["MLX_MAX_MB_PER_BUFFER"], "512")
+        XCTAssertEqual(applied["PATH"], "/usr/bin:/bin")
+        let pinned = ClusterWorkerEnvironmentGuards.apply(to: base, ownerEnvironment: ["MLX_MAX_OPS_PER_BUFFER": "4", "MLX_MAX_MB_PER_BUFFER": "lots"])
+        XCTAssertEqual(pinned["MLX_MAX_OPS_PER_BUFFER"], "4", "the operator's value is kept")
+        XCTAssertEqual(pinned["MLX_MAX_MB_PER_BUFFER"], "512", "free text never reaches a worker")
+        let fixed = ClusterWorkerEnvironmentGuards.apply(to: ["MLX_MAX_OPS_PER_BUFFER": "8"], ownerEnvironment: ["MLX_MAX_OPS_PER_BUFFER": "4"])
+        XCTAssertEqual(fixed["MLX_MAX_OPS_PER_BUFFER"], "8", "a value the plan already fixed is not replaced")
+        XCTAssertFalse(ClusterWorkerEnvironmentGuards.isCanonical("0"))
+        XCTAssertFalse(ClusterWorkerEnvironmentGuards.isCanonical("-1"))
+        XCTAssertFalse(ClusterWorkerEnvironmentGuards.isCanonical("1234567890123"))
+    }
+}
+
+final class ClusterTeardownVerificationTests: XCTestCase {
+    private let gib: UInt64 = 1 << 30
+
+    func testWiredToleranceAndBaselineAreDerivedFromTheMac() {
+        XCTAssertEqual(ClusterTeardownVerification.toleranceBytes(physicalBytes: 64 * gib), gib)
+        XCTAssertEqual(ClusterTeardownVerification.toleranceBytes(physicalBytes: 256 * gib), 2 * gib)
+        let given = ClusterTeardownVerification.wiredFinding(samples: [12 * gib, 9 * gib, 10 * gib], baselineBytes: 8 * gib, physicalBytes: 256 * gib)!
+        XCTAssertEqual(given.excessBytes, gib); XCTAssertTrue(given.withinTolerance); XCTAssertEqual(given.baseline, "given")
+        let over = ClusterTeardownVerification.wiredFinding(samples: [40 * gib, 30 * gib], baselineBytes: 8 * gib, physicalBytes: 256 * gib)!
+        XCTAssertEqual(over.excessBytes, 22 * gib); XCTAssertFalse(over.withinTolerance)
+        let idle = ClusterTeardownVerification.wiredFinding(samples: [9 * gib], baselineBytes: nil, physicalBytes: 128 * gib)!
+        XCTAssertEqual(idle.baselineBytes, 16 * gib); XCTAssertEqual(idle.excessBytes, 0); XCTAssertEqual(idle.baseline, "idle")
+        XCTAssertNil(ClusterTeardownVerification.wiredFinding(samples: [], baselineBytes: nil, physicalBytes: 128 * gib))
+    }
+
+    func testReportNamesEveryLeftoverAndPassesOnlyWhenThereIsNone() {
+        let epoch = UUID().uuidString.lowercased()
+        let worker = ClusterProcessTable.Entry(processIdentifier: 900_010, arguments: ["/x/darkbloom-cluster-worker", "--membership-epoch", epoch],
+                                               parentProcessIdentifier: 1, executableName: "darkbloom-cluster-worker")
+        let clean = ClusterTeardownVerification.report(at: 1, processes: [], liveEpochs: [], protectedProcessIdentifiers: [],
+            wired: .init(samples: [1], baselineBytes: 2, toleranceBytes: 3, excessBytes: 0, withinTolerance: true, baseline: "given"),
+            journal: "absentOrEmpty", staleBootstrapDirectories: [])
+        XCTAssertTrue(clean.passed); XCTAssertEqual(clean.reasons, [])
+        let dirty = ClusterTeardownVerification.report(at: 1, processes: [worker], liveEpochs: [], protectedProcessIdentifiers: [],
+            wired: .init(samples: [5 << 30], baselineBytes: 1 << 30, toleranceBytes: 1 << 30, excessBytes: 4 << 30, withinTolerance: false, baseline: "given"),
+            journal: "stranded", staleBootstrapDirectories: ["/private/tmp/darkbloom-bootstrap-abc"])
+        XCTAssertFalse(dirty.passed)
+        XCTAssertEqual(dirty.reasons, ["1 cluster process(es) still running", "wired memory 4096 MiB above its baseline (tolerance 1024 MiB)",
+                                       "device journal names a session whose owner is gone", "1 stale bootstrap director(ies)"])
+        XCTAssertEqual(dirty.processes.first?.membershipEpoch, epoch)
+        // A worker of a session this process holds is not a leftover.
+        let serving = ClusterTeardownVerification.report(at: 1, processes: [worker], liveEpochs: [epoch], protectedProcessIdentifiers: [],
+            wired: nil, journal: "heldByLiveOwner", staleBootstrapDirectories: [])
+        XCTAssertTrue(serving.passed, "\(serving.reasons)")
+        let data = try! JSONEncoder().encode(dirty)
+        let object = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(object["schema"] as? String, "darkbloom_cluster_teardown_verification_v1")
+        XCTAssertEqual(object["passed"] as? Bool, false)
+    }
+
+    func testJournalInspectionReadsWithoutChanging() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("journal-" + UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let device = root.appendingPathComponent("device", isDirectory: true)
+        XCTAssertEqual(try ClusterDeviceLeaseRecovery.inspect(directoryURL: device), .absentOrEmpty, "no directory")
+        try FileManager.default.createDirectory(at: device, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        XCTAssertEqual(try ClusterDeviceLeaseRecovery.inspect(directoryURL: device), .absentOrEmpty, "no file")
+        let file = device.appendingPathComponent("native-device.lease")
+        let ids = (0..<4).map { _ in UUID().uuidString.lowercased() }
+        let record = "{\"schema\":\"darkbloom_native_lease_v1\",\"clusterID\":\"c\",\"peerID\":\"p\",\"rank\":1,"
+            + "\"membershipEpoch\":\"\(ids[0])\",\"leaseID\":\"\(ids[1])\",\"ownerIncarnation\":\"\(ids[2])\",\"nativeLaunchID\":\"\(ids[3])\"}"
+        try Data(record.utf8).write(to: file); XCTAssertEqual(chmod(file.path, 0o600), 0)
+        guard case .stranded(let parsed) = try ClusterDeviceLeaseRecovery.inspect(directoryURL: device) else { return XCTFail("stranded expected") }
+        XCTAssertEqual(parsed.membershipEpoch, ids[0]); XCTAssertEqual(parsed.rank, 1)
+        XCTAssertEqual(try Data(contentsOf: file), Data(record.utf8), "inspection changed nothing")
+        // A live owner holds the exclusive lock.
+        let holder = open(file.path, O_RDWR); XCTAssertEqual(flock(holder, LOCK_EX | LOCK_NB), 0)
+        XCTAssertEqual(try ClusterDeviceLeaseRecovery.inspect(directoryURL: device), .heldByLiveOwner)
+        close(holder)
+        try Data("garbage".utf8).write(to: file)
+        XCTAssertEqual(try ClusterDeviceLeaseRecovery.inspect(directoryURL: device), .unreadable)
+        try Data().write(to: file)
+        XCTAssertEqual(try ClusterDeviceLeaseRecovery.inspect(directoryURL: device), .absentOrEmpty)
+    }
+}

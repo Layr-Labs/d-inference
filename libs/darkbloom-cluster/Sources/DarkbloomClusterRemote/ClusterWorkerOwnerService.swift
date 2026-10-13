@@ -59,6 +59,11 @@ public enum ClusterWorkerOwnerService {
                              authorizeNativeStart: (@Sendable (ClusterNativeAuthorizationStart) throws -> Void)? = nil,
                              binding: BindingFactory, native: KeyedNativeFactory) throws {
         let pipe = try ClusterOwnerPipe(input: input, output: output, readingCommands: true)
+        // The force-cancel hook is routed before any child exists; a failure
+        // to route it is noted on standard error and never stops the owner.
+        if let problem = ClusterOwnerForceCancel.route() {
+            FileHandle.standardError.write(Data("darkbloom-force-cancel-v1 role=owner routed=no reason=\(problem)\n".utf8))
+        }
         let begin = DispatchTime.now().uptimeNanoseconds
         guard let bytes = try pipe.read(until: begin + 5_000_000_000) else { throw ClusterWorkerOwnerErrorProxy.deadline }
         let open = try OwnerWire.decode(bytes, commandStream: true)
@@ -124,6 +129,9 @@ public enum ClusterWorkerOwnerService {
             throw error
         }
         context.supervisionDeadline = Self.supervisionDeadline(child)
+        // The owner-side force-cancel hook: SIGUSR1 fences this child.
+        ClusterOwnerForceCancel.register(child)
+        defer { ClusterOwnerForceCancel.register(nil) }
         // The journal names this launch immediately before it can exist.
         do { try lease.record(binding: ownerBinding, launchID: launchID) }
         catch {

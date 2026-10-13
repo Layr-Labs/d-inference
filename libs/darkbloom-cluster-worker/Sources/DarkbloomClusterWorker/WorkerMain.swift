@@ -36,6 +36,9 @@ import Foundation
             signal(SIGPIPE, SIG_IGN)
             ProcessNativeMemoryRelease.installForForcedExit()
             try ProcessForcedExit.routeTerminationSignals()
+            // The rank-side force-cancel hook (SIGUSR1): routed now, before
+            // any other thread; what it does is installed with the coordinator.
+            try WorkerForceCancelSignal.route()
             let beforeAlarm = DispatchTime.now().uptimeNanoseconds
             guard deadline > beforeAlarm else { throw WorkerFailure.invalid("Worker startup exhausted its deadline") }
             let remaining = deadline - beforeAlarm
@@ -69,6 +72,7 @@ import Foundation
                 keepWarm: configuration.keepWarm, exitHooks: .forcedExit,
                 renewal: { ttl in alarm(UInt32((ttl + 999_999_999) / 1_000_000_000) + 1) })
             coordinator.startReading()
+            WorkerForceCancelSignal.install { reason in coordinator.forceCancel(reason: reason) }
             // Nothing is loaded over memory a dead process left wired.
             try ClusterOrphanWiredGuard.check(role: "worker-rank-\(configuration.load.rank)")
             // The registered model's own adapter executes it: GPT-OSS has its

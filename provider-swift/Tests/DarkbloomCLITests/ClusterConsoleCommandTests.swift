@@ -49,6 +49,10 @@ struct ClusterConsoleCommandTests {
         #expect(try Darkbloom.parseAsRoot(["cluster", "status", "--json"]) is Cluster.Status)
         #expect(try Darkbloom.parseAsRoot(["cluster", "doctor"]) is Cluster.Doctor)
         #expect(try Darkbloom.parseAsRoot(["cluster", "recover", "--json"]) is Cluster.Recover)
+        #expect(try Darkbloom.parseAsRoot(["cluster", "reap", "--json", "--no-wait"]) is Cluster.Reap)
+        #expect(try Darkbloom.parseAsRoot(["cluster", "verify-teardown", "--json", "--samples", "3"]) is Cluster.VerifyTeardown)
+        #expect(throws: (any Error).self) { _ = try Darkbloom.parseAsRoot(["cluster", "verify-teardown", "--samples", "0"]) }
+        #expect(try Darkbloom.parseAsRoot(["cluster", "cancel-all", "--json"]) is Cluster.CancelAll)
         #expect(try Darkbloom.parseAsRoot(["cluster", "configure"] + setup) is Cluster.Configure)
         #expect(try Darkbloom.parseAsRoot(["cluster", "worker-owner", "--stdio"]) is Cluster.WorkerOwner)
         // The guided setup keeps its own flags, and the console's do not leak onto it.

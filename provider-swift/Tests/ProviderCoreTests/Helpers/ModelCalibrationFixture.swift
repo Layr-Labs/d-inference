@@ -1,6 +1,25 @@
 import Foundation
 import MLXLMCommon
 
+final class ModelCalibrationSessionGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate: RecoveryStepGate?
+    private let requestNumber: Int?
+    private var requests = 0
+
+    init(gate: RecoveryStepGate?, requestNumber: Int?) {
+        self.gate = gate
+        self.requestNumber = requestNumber
+    }
+
+    func next() -> RecoveryStepGate? {
+        lock.withLock {
+            requests += 1
+            return requestNumber == nil || requestNumber == requests ? gate : nil
+        }
+    }
+}
+
 struct ModelCalibrationTokenizer: Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { Array(repeating: 1, count: text.utf8.count / 4) }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "example" }

@@ -134,7 +134,9 @@ MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
 of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
 prefill/decode evidence before the first customer job and runs once per loaded
 engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
-A replaced engine starts a new measurement epoch.
+An unfinished bootstrap retries when that backoff expires even if its completed
+probes left fresh partial rates. Freshness still gates the first attempt and
+completed native MiMo maintenance. A replaced engine starts a new measurement epoch.
 
 Transaction-owned native MiMo slots retain the wider bootstrap and periodic
 maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,

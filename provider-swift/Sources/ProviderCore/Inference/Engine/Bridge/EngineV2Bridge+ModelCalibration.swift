@@ -9,6 +9,8 @@ extension EngineV2Bridge {
     func startModelCalibrationIfNeeded(requireNominalPosture: Bool = true,
         now: ContinuousClock.Instant = .now) -> Bool {
         let continuous = nativeTransactionID != nil
+        // Partial samples must not postpone a scheduled bootstrap retry.
+        let retryingBootstrap = !modelCalibration.bootstrapCompleted && modelCalibration.nextAttempt != nil
         guard ownedEngine is EngineV2 || ownedEngine is CBv2NativeBlockEngine,
             canSubmitWithNativeOwner(), !slotPostureClosed,
             continuous || !modelCalibration.bootstrapCompleted,
@@ -16,7 +18,7 @@ extension EngineV2Bridge {
             modelCalibration.nextAttempt.map({ now >= $0 }) ?? true,
             (!requireNominalPosture || (!ProcessInfo.processInfo.isLowPowerModeEnabled
                 && ProcessInfo.processInfo.thermalState == .nominal)),
-            performanceMeasurements.freshRate("isolated_prefill", now: now,
+            retryingBootstrap || performanceMeasurements.freshRate("isolated_prefill", now: now,
                 maximumAge: ModelCalibrationPolicy.refreshAge) == nil
                 || performanceMeasurements.freshRate("decode", now: now,
                     maximumAge: ModelCalibrationPolicy.refreshAge) == nil,

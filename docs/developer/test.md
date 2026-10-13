@@ -57,6 +57,9 @@ bridge with deterministic engine receipts: a one-token startup warmup must not
 seed a slow deadline/heartbeat rate, and overlapping customer work must remain
 measurable. `ModelCalibrationTests` exercises bounded native bootstrap, customer
 preemption and actual retirement without customer traffic or model weights.
+Its partial-bootstrap regression holds the second measured request in engine
+work, interrupts it with a real foreground request, and checks rejection just
+before the retry deadline plus acceptance at the deadline despite fresh rates.
 `ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
 through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
 catalog IDs with both automatic paged selection and explicit contiguous KV.

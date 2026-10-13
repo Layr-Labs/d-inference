@@ -5,16 +5,18 @@ import Testing
 
 @Suite("Automatic model calibration", .serialized)
 struct ModelCalibrationTests {
-    private func fixture(budget: GlobalKVCacheBudget? = nil, gate: RecoveryStepGate? = nil)
+    private func fixture(budget: GlobalKVCacheBudget? = nil, gate: RecoveryStepGate? = nil,
+        gateOnRequest: Int? = nil)
         throws -> (EngineV2Bridge, CBv2NativeBlockEngine, GlobalKVCacheBudget) {
         let tokenizer = ModelCalibrationTokenizer()
         let budget = budget ?? GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
             .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: 8 << 30)
         }
+        let sessionGate = ModelCalibrationSessionGate(gate: gate, requestNumber: gateOnRequest)
         let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 4, shutdownGraceSeconds: 0,
             reservationForRequest: { _ in 1_024 }, makeSession: { request, cancellation in
-                ModelCalibrationSession(request: request, cancellation: cancellation, gate: gate)
+                ModelCalibrationSession(request: request, cancellation: cancellation, gate: sessionGate.next())
             })
         let bridge = EngineV2Bridge(engine: engine, modelId: "mimo-calibration-fixture",
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [], maxConcurrentRequests: 4,
@@ -106,6 +108,59 @@ struct ModelCalibrationTests {
         #expect(observed.started)
         #expect(await calibration.calibrationCountersTest() == [0, 0, 0, 0])
         #expect(await foreground.calibrationCountersTest() == [3, 1, 8, 1])
+        await calibration.shutdown()
+        await foreground.shutdown()
+    }
+
+    @Test("an interrupted partial bootstrap retries at its backoff even with fresh rates")
+    func partialBootstrapRetriesWithFreshEvidence() async throws {
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        // Finish the warmup and first measured request, then hold the second
+        // measurement in actual engine work until foreground cancellation.
+        let (calibration, engine, budget) = try fixture(gate: gate, gateOnRequest: 3)
+        #expect(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false))
+        try await waitForEntry(gate)
+        let partial = try #require(await calibration.backendSlotCapacity().performanceMeasurements)
+        #expect(partial.isolatedPrefill?.sampleCount == 1)
+        #expect(partial.decode?.sampleCount == 1)
+
+        let (foreground, _, _) = try fixture(budget: budget)
+        let request = Task {
+            let stream = await foreground.submitTokenized(promptTokens: [1, 2, 3],
+                request: ChatCompletionRequest(model: "other", messages: [], max_tokens: 8),
+                requestId: "interrupt-partial-bootstrap")
+            for await event in stream {
+                if case .error(let error) = event { Issue.record("foreground request failed: \(error)") }
+            }
+        }
+        let until = ContinuousClock.now + .seconds(5)
+        while !(await calibration.wasCalibrationInterruptedTest()), ContinuousClock.now < until {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(await calibration.wasCalibrationInterruptedTest())
+        gate.release()
+        await request.value
+        await calibration.waitForCalibrationTest()
+        let (complete, nextAttempt) = await calibration.calibrationRetryStateTest()
+        #expect(!complete)
+        let retryAt = try #require(nextAttempt)
+        #expect(!(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false,
+            now: retryAt - .nanoseconds(1))))
+        let restarted = await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false,
+            now: retryAt)
+        #expect(restarted, "partial fresh evidence must not postpone the scheduled retry")
+        if restarted {
+            await calibration.waitForCalibrationTest()
+            let finished = try #require(await calibration.backendSlotCapacity().performanceMeasurements)
+            #expect(finished.isolatedPrefill?.sampleCount == 3)
+            #expect(finished.decode?.sampleCount == 3)
+            #expect(await calibration.calibrationRetryStateTest().0)
+            #expect(!(await calibration.startModelCalibrationIfNeeded(requireNominalPosture: false,
+                now: retryAt + .seconds(3_600))), "a completed ordinary bootstrap must not repeat")
+        }
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        #expect(await calibration.calibrationCountersTest() == [0, 0, 0, 0])
         await calibration.shutdown()
         await foreground.shutdown()
     }
@@ -203,6 +258,9 @@ private extension EngineV2Bridge {
     }
     func waitForCalibrationTest() async { await modelCalibration.task?.value }
     func wasCalibrationInterruptedTest() -> Bool { modelCalibration.interrupted }
+    func calibrationRetryStateTest() -> (Bool, ContinuousClock.Instant?) {
+        (modelCalibration.bootstrapCompleted, modelCalibration.nextAttempt)
+    }
     func calibrationCountersTest() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
     }

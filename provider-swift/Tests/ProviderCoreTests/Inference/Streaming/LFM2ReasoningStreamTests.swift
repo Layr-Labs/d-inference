@@ -246,6 +246,25 @@ struct LFM2ReasoningStreamTests {
         }
     }
 
+    /// The template lists every call of a turn in ONE frame; each must reach
+    /// the consumer as its own OpenAI tool call (fork LFM2ToolCallParser).
+    @Test func everyCallOfOneFrameBecomesAToolCall() async throws {
+        let text = "Two lookups.</think><|tool_call_start|>[get_weather(location='Paris, France'), "
+            + "get_weather(location='it\\'s, (odd) [x]')]<|tool_call_end|>"
+        for width in [1, 6, text.count] {
+            let outcome = try await Self.run(Self.split(text, width: width), tools: true)
+            #expect(outcome.reasoning == "Two lookups.")
+            #expect(outcome.content.isEmpty)
+            #expect(outcome.toolCalls.map(\.name) == ["get_weather", "get_weather"])
+            let locations = try outcome.toolCalls.map { call in
+                try #require(JSONSerialization.jsonObject(with: Data(call.arguments.utf8))
+                    as? [String: Any])["location"] as? String
+            }
+            #expect(locations == ["Paris, France", "it's, (odd) [x]"])
+            #expect(outcome.finishReason == "tool_calls")
+        }
+    }
+
     @Test func callWrittenInsideReasoningIsNotInvoked() async throws {
         let text = "Maybe <|tool_call_start|>[get_weather(location='X')]<|tool_call_end|>? No.</think>Answer"
         for width in [1, 4, text.count] {

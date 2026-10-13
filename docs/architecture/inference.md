@@ -601,7 +601,7 @@ Resolution happens before submit so a bad parser name never orphans a request.
 | prefix `qwen3_next` | `.xmlFunction` | `XMLFunctionParser` |
 | prefix `nemotron` | `.nemotron` | Native Nemotron tool-frame parser |
 | `llama` with `vocab_size ≥ 128000` or `rope_scaling.rope_type == "llama3"` | `.llama3` | `Llama3ToolCallParser` |
-| prefix `lfm2` / `glm4` / `mistral3` | `.lfm2` / `.glm4` / `.mistral` | `PythonicToolCallParser` / `GLM4ToolCallParser` / `MistralToolCallParser` |
+| prefix `lfm2` / `glm4` / `mistral3` | `.lfm2` / `.glm4` / `.mistral` | `LFM2ToolCallParser` (every call of one `[f(...), g(...)]` frame; Python literals) / `GLM4ToolCallParser` / `MistralToolCallParser` |
 | anything else, including `qwen3_vl_moe` | `nil` → `.json` | `JSONToolCallParser` (`<tool_call>…</tool_call>`) |
 
 `.kimiK2` and `.minimaxM2` exist but are selectable only explicitly.

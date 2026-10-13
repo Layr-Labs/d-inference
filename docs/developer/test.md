@@ -42,6 +42,14 @@ exercise PCM8 and AAC-video with a small target, not full-model quality or peak
 memory. Release-only builds do not provision test fixtures or opt into native
 qualification.
 
+The MiMo FP32 preflight-refusal fixtures convert both ordinary and router
+weights, so they update `dtype` and `moe_router_dtype` together. This keeps the
+inventory valid until the strict BF16-only load-profile gate rejects it;
+an earlier inventory error does not exercise that gate. The four `testFP32`
+cases in `MiMoV26ManagedSlotTests` and `MiMoV26ServingLoadTests` require
+`MIMO_V26_SERIAL_NATIVE_TESTS=1` and `MIMO_V26_SERIAL_LOAD_FIXTURES` pointing to
+the symmetric synthetic fixture directory.
+
 ## Startup Performance Recovery
 
 `StartupPerformanceEvidenceTests` drives the actual OpenAI serving adapter and

@@ -1,6 +1,6 @@
 # Two Macs as one provider (guided setup)
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-12 (leader-first onboarding)
 
 Two Apple Silicon Macs joined by one Thunderbolt 5 cable serve a model together:
 each Mac holds part of its layers, and the pair serves as one provider. Setting
@@ -19,43 +19,61 @@ Remote Login, no IP address and no network setting is typed anywhere.
 
 ## The steps, once
 
+Start on the Mac you want to control the cluster from: it becomes the
+**leader**. The leader chooses the model and options, sends every member its
+setup over the cable and starts it; you never go back to the other Mac.
+
 | # | Where | What you do | What it asks |
 |---|---|---|---|
-| 1 | each Mac | Run `darkbloom cluster --model-dir <the folder that holds your model folders>`. Later runs need only `darkbloom cluster`. | nothing |
-| 2 | each Mac | Step 2 (the cable): press `f`. Darkbloom gives the cable port its own network service with an address of its own, outside every bridge, no router and no DNS; macOS keeps it across restarts. | one macOS administrator approval per Mac |
-| 3 | both Macs | Step 3 (pair): press `l` on both Macs. They find each other on the cable, and both screens show the same six digits. | `y` on each Mac when the digits match |
-| 4 | the Mac that leads | Step 4 (model and plan): press `enter` (it asks the other Mac over the cable), choose the model with the arrow keys, press `enter`. The plan (which Mac holds which layers, the mode, the speed it expects) comes from both Macs' memory and the model. | `y` to save the plan and send the other Mac its setup |
-| 5 | the other Mac | Step 4: press `a`. | `y` to save the setup it received |
-| 6 | both Macs | Step 6 (serve): press `s` on the Mac that follows, then on the Mac that leads. | `y` on each |
+| 1 | the first Mac | Run `darkbloom cluster --model-dir <the folder that holds your model folders>` (later runs need only `darkbloom cluster`). It checks RDMA, the cable and the cable port's isolation, and verifies the RDMA GID. Nobody waits on the cable yet, so it says **"On your other Mac, run `darkbloom cluster`."** and waits (q cancels). | one macOS administrator approval, only if the port is not isolated yet ("Darkbloom needs network access for the cluster cable") |
+| 2 | the other Mac | Run `darkbloom cluster --model-dir <its model folder>`. The same checks; then it finds the waiting Mac on the cable by itself (no address, no host name). Both screens show the same six-digit code. | its own approval if needed; `y` on each Mac when the codes match |
+| 3 | — | The other Mac says **"Paired with <leader>. Continue on <leader>."** Its cluster service now runs; nothing else is ever asked there. | nothing |
+| 4 | the leader | It shows both Macs' hardware and every model both Macs hold, each with the planner's placement (which Mac holds which layers and which one decodes: the planner's choice, from both Macs' measured hardware and the model's pair-serving grant, not from who leads). Choose the model (enter takes the first). | `y` to start serving |
+| 5 | — | The leader saves the plan, syncs the member's setup to it over the cable (applied there at once), starts the member's part remotely, waits until both parts are loaded, and answers one test request. | nothing |
 
-That is six steps. Counting every question: two macOS approvals (one per Mac)
-and six `y` answers (two for the pairing, one to save the plan, one to accept
-it on the other Mac, two to start). A Mac that already shows a step as done
-skips it.
+Counting every key: `y` on the other Mac, and `y`, enter, `y` on the leader
+(four keys), plus at most one macOS approval per Mac.
 
-After a restart of either Mac nothing is set up again: run `darkbloom cluster`
-on both Macs and press `s`, then `y`, in step 6 (follower first). The pairing,
-the link and both setups are kept.
+Running `darkbloom cluster` again on either Mac shows where it stands: a member
+says which Mac leads it and that nothing is needed there; the leader shows the
+cluster's state and offers a test request (`t`), another model (`m`) or stopping
+(`s`).
 
-To serve another model later: step 4 on the leading Mac, press `r` (both Macs
-are read again and the plans made afresh), choose the model, `enter`, `y`; the
-other Mac accepts with `a`, `y`. Nothing is paired or approved by macOS again.
+If both Macs start waiting at the same moment, the pairing's own rule picks one
+to keep waiting (it leads) and the other says so and joins it.
+
+The older six-step wizard is still there as `darkbloom cluster --wizard`.
+
+### After a restart
+
+Each Mac's cluster service runs that Mac's part while the leader has the
+cluster serving: when a part ends (a member restarted, a session lost a member)
+it starts it again, and the leader's session re-forms once the member is back,
+with no question. The leader's service also checks the member every 15 seconds:
+a member that missed a start or a stop (asleep, restarting, cable out) is
+started or stopped as soon as it answers again. The serving API listens on
+127.0.0.1 of the Mac that runs rank 0, which the planner chooses; the leader's
+screen names that Mac. In this build the service itself is started by
+`darkbloom cluster` (on either Mac, no key needed); starting it at login with
+the always-on LaunchAgent (S18) is not in this build yet.
 
 ## When something is in the way
 
 - **No macOS prompt can be shown** (for example over SSH without a desktop):
-  step 2 writes the exact commands the prompt would run to an owner-only script
-  and prints one line to run once as an administrator:
-  `sudo sh ~/.darkbloom/cluster-device/link-fix.sh`.
-- **Internet Sharing shares to the cluster port itself**: step 2 says so and
+  the check writes the exact commands the prompt would run to an owner-only
+  script and prints one line to run once as an administrator:
+  `sudo sh ~/.darkbloom/cluster-device/link-fix.sh`; then run
+  `darkbloom cluster` again. A port an administrator already isolated this way
+  is recognised and recorded (no change, no prompt), so
+  `darkbloom cluster link --remove` can restore it later.
+- **Internet Sharing shares to the cluster port itself**: the check says so and
   stops before any prompt. Turn the cluster port off under System Settings →
-  General → Sharing → Internet Sharing → “To devices using”, then press `f`
-  again.
-- **The other Mac does not answer in step 4**: open `darkbloom cluster` on the
-  other Mac too; its open wizard answers over the cable.
+  General → Sharing → Internet Sharing → “To devices using”, then run
+  `darkbloom cluster` again.
+- **The leader cannot reach the other Mac**: run `darkbloom cluster` on the
+  other Mac (no key needed); that starts its cluster service again.
 - **A model is not offered for this pair of chips**: a pair serves a model only
-  on chip classes whose cross-cable check passed; the reason is shown in step 4
-  and when serving starts.
+  on chip classes whose cross-cable check passed; the reason is shown beside it.
 
 ## Undo
 
@@ -68,8 +86,9 @@ a pairing.
 - A release build signed with Darkbloom's identity is needed for the pairing
   keys to live in the keychain across restarts; a development build uses a key
   file (`DARKBLOOM_DEBUG_SE_KEY_FILE`).
-- Starting the members at login (LaunchAgent) instead of step 6, and macOS's
-  Local Network permission for a member started outside Terminal, come with the
-  signed build.
+- Starting each Mac's cluster service at login (the S18 LaunchAgent) instead of
+  running `darkbloom cluster` once after a restart, and macOS's Local Network
+  permission for a service started outside Terminal, come with the signed build.
+- Public serving through Darkbloom is not offered by the onboarding yet.
 - The installer does not yet place cluster model folders or the cluster worker;
   `--model-dir` and `--worker` say where they are.

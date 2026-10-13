@@ -61,16 +61,50 @@ extension Cluster.Setup {
 
     func wizardOperations(pair: ClusterSetupRecord.Pair?) throws -> (operations: ClusterSetupOperations, providerPath: URL) {
         try Self.requireDeveloperForPair(pair, environment: ProcessInfo.processInfo.environment)
-        let providerPath = URL(fileURLWithPath: try configOptions.config ?? ConfigManager.defaultConfigPath().path)
+        let settings = try Self.liveSettings(config: configOptions.config, pair: pair, dryRun: dryRun, modelDir: modelDir, worker: worker)
+        let operations = try ClusterSetupOperations.live(settings)
+        return (operations, settings.providerConfiguration)
+    }
+
+    static func liveSettings(config: String?, pair: ClusterSetupRecord.Pair?, dryRun: Bool, modelDir: String?, worker: String?) throws
+        -> ClusterSetupOperations.LiveSettings {
+        let providerPath = URL(fileURLWithPath: try config ?? ConfigManager.defaultConfigPath().path)
         var settings = ClusterSetupOperations.LiveSettings(providerConfiguration: providerPath,
             darkbloomExecutable: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]),
-            sessionArguments: ["start", "--local", "--distributed"] + (configOptions.config.map { ["--config", $0] } ?? []),
+            sessionArguments: ["start", "--local", "--distributed"] + (config.map { ["--config", $0] } ?? []),
             pair: pair, dryRun: dryRun, version: ProviderCore.version)
-        settings.followerSessionArguments = ["cluster", "link-follower"] + (configOptions.config.map { ["--config", $0] } ?? [])
+        settings.followerSessionArguments = ["cluster", "link-follower"] + (config.map { ["--config", $0] } ?? [])
         settings.modelsDirectory = modelDir
         settings.workerExecutable = worker
-        let operations = try ClusterSetupOperations.live(settings)
-        return (operations, providerPath)
+        return settings
+    }
+
+    /// The service settings both the onboarding and `darkbloom cluster service` use.
+    static func serviceSettings(config: String?, modelDir: String?, worker: String?) throws -> ClusterService.Settings {
+        let wizard = try liveSettings(config: config, pair: nil, dryRun: false, modelDir: modelDir, worker: worker)
+        return ClusterService.Settings(wizard: wizard, leaderArguments: wizard.sessionArguments, followerArguments: wizard.followerSessionArguments)
+    }
+
+    /// Bare `darkbloom cluster` on a terminal: the leader-first onboarding.
+    /// Run again, it shows where this Mac stands and the next step.
+    func runOnboarding() async throws {
+        Darkbloom.ensureLogging()
+        let service = try Self.serviceSettings(config: configOptions.config, modelDir: modelDir, worker: worker)
+        let serviceArguments = ["cluster", "service"] + (configOptions.config.map { ["--config", $0] } ?? [])
+            + (worker.map { ["--worker", $0] } ?? [])
+        let operations = try ClusterOnboardingOperations.live(.init(service: service, serviceArguments: serviceArguments))
+        let instance: ClusterConsoleInstanceLock
+        do { instance = try ClusterConsoleInstanceLock.acquire() } catch let held as ClusterConsoleInstanceLock.Held {
+            fputs(held.description + "\n", stderr)
+            throw ExitCode.failure
+        }
+        let code = await Task.detached {
+            let console = ClusterOnboardingTerminal(input: STDIN_FILENO, output: STDOUT_FILENO)
+            defer { console.restore() }
+            return ClusterOnboardingDriver.run(operations, console: console)
+        }.value
+        withExtendedLifetime(instance) {}
+        if code != 0 { throw ExitCode(code) }
     }
 
     /// `darkbloom cluster --plain`: the six steps as text, and nothing started or asked.

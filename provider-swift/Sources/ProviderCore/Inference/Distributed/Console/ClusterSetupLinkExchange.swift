@@ -71,6 +71,9 @@ public enum ClusterSetupLinkExchange {
     static let answerTag: UInt16 = 0x5E02
     static let deliverTag: UInt16 = 0x5E03
     static let receiptTag: UInt16 = 0x5E04
+    /// A command from the cluster's leader to a member's cluster service (serve, stop, status, a test request).
+    static let commandTag: UInt16 = 0x5E05
+    static let commandReplyTag: UInt16 = 0x5E06
     static let maximumBytes = 1 << 20
 
     /// The one pairing this Mac uses, with its edge secret.
@@ -135,7 +138,8 @@ public enum ClusterSetupLinkExchange {
         public init(pairing: Pairing, selection: ClusterLinkInterfaceSelection,
                     port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
                     answer: @escaping @Sendable () throws -> ClusterSetupLinkAnswer,
-                    receive: @escaping @Sendable (Data) throws -> String) throws {
+                    receive: @escaping @Sendable (Data) throws -> String,
+                    command: (@Sendable (Data) throws -> Data)? = nil) throws {
             let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil)
             edgeID = edge.edgeID
             let work = DispatchQueue(label: "darkbloom.cluster-setup.exchange")
@@ -157,6 +161,18 @@ public enum ClusterSetupLinkExchange {
                             reply = "error:" + ClusterConsoleText.bounded(String(describing: error), maximum: 200)
                         }
                         _ = try? peer.sendOpaque(tag: ClusterSetupLinkExchange.receiptTag, Data(reply.utf8), timeout: .seconds(10))
+                    case ClusterSetupLinkExchange.commandTag:
+                        // Only a cluster service takes commands; an open wizard answers that it does not.
+                        var reply: Data
+                        if let command {
+                            do { reply = Data("ok:".utf8) + (try command(data)) } catch {
+                                reply = Data(("error:" + ClusterConsoleText.bounded(String(describing: error), maximum: 300)).utf8)
+                            }
+                        } else {
+                            reply = Data("error:this Mac's wizard takes no commands; its cluster service does".utf8)
+                        }
+                        if reply.count > ClusterSetupLinkExchange.maximumBytes { reply = Data("error:the answer is too large".utf8) }
+                        _ = try? peer.sendOpaque(tag: ClusterSetupLinkExchange.commandReplyTag, reply, timeout: .seconds(10))
                     default:
                         break
                     }
@@ -177,6 +193,23 @@ public enum ClusterSetupLinkExchange {
     }
 
     // MARK: - Asking (the Mac that plans)
+
+    static let requestLockName = "darkbloom-cluster-exchange.lock"
+
+    /// One request at a time from this user to the paired Mac. Its listener keeps one live session per edge and a
+    /// newer session supersedes the older, whose answer then goes to the newer one and is lost: two processes on
+    /// this Mac asking at once (the onboarding and the leader's cluster service) would take each other's answers
+    /// away. Each request waits for the one under way (its own time and 30 s more) and then has the edge alone.
+    static func oneAtATime<Value>(seconds: Double, _ request: () throws -> Value) throws -> Value {
+        let held: ClusterConsoleInstanceLock
+        do {
+            held = try ClusterConsoleInstanceLock.acquire(directory: ClusterConsoleInstanceLock.userTemporaryDirectory(),
+                fileName: requestLockName, waitSeconds: seconds + 30)
+        } catch is ClusterConsoleInstanceLock.Held {
+            throw ClusterSetupFailure("another request to the other Mac did not finish within \(Int(seconds + 30)) s")
+        }
+        return try withExtendedLifetime(held) { try request() }
+    }
 
     /// One connected session to the other Mac's exchange, found on the cable.
     final class Session: @unchecked Sendable {
@@ -232,6 +265,11 @@ public enum ClusterSetupLinkExchange {
     public static func ask(pairing: Pairing, selection: ClusterLinkInterfaceSelection, seconds: Double,
                            port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly)
         throws -> (answer: ClusterSetupLinkAnswer, peerAddress: ClusterLinkIPv4Address) {
+        try oneAtATime(seconds: seconds) { try askNow(pairing: pairing, selection: selection, seconds: seconds, port: port, policy: policy) }
+    }
+
+    private static func askNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, seconds: Double, port: UInt16,
+                               policy: ClusterLinkInterfacePolicy) throws -> (answer: ClusterSetupLinkAnswer, peerAddress: ClusterLinkIPv4Address) {
         let found = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8))
         guard let peer = found.first else {
             throw ClusterSetupFailure("the other Mac's wizard did not answer on the cable: open `darkbloom cluster` on the other Mac too")
@@ -254,10 +292,42 @@ public enum ClusterSetupLinkExchange {
         return (answer, peer.address)
     }
 
+    /// Sends one command to the other Mac's cluster service and returns its answer.
+    public static func command(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                               body: Data, seconds: Double, port: UInt16 = ClusterSetupLinkExchange.port,
+                               policy: ClusterLinkInterfacePolicy = .thunderboltOnly) throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
+        try oneAtATime(seconds: seconds) {
+            try commandNow(pairing: pairing, selection: selection, peerAddress: peerAddress, body: body, seconds: seconds, port: port, policy: policy)
+        }
+    }
+
+    private static func commandNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                                   body: Data, seconds: Double, port: UInt16,
+                                   policy: ClusterLinkInterfacePolicy) throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
+        var address = peerAddress
+        if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8)).first?.address }
+        guard let address else {
+            throw ClusterSetupFailure("the other Mac's cluster service did not answer on the cable")
+        }
+        let session = try Session(pairing: pairing, selection: selection, peerAddress: address, port: port, policy: policy)
+        defer { session.close() }
+        let data = try session.request(tag: commandTag, body, reply: commandReplyTag, seconds: seconds)
+        if data.starts(with: Data("ok:".utf8)) { return (data.dropFirst(3), address) }
+        let text = String(decoding: data, as: UTF8.self)
+        throw ClusterSetupFailure("the other Mac refused: " + String(text.dropFirst(text.hasPrefix("error:") ? 6 : 0)))
+    }
+
     /// Hands the other Mac its setup for its inbox. Returns the digest it says saving would give.
     public static func deliver(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
                                delivery: Data, seconds: Double, port: UInt16 = ClusterSetupLinkExchange.port,
                                policy: ClusterLinkInterfacePolicy = .thunderboltOnly) throws -> String {
+        try oneAtATime(seconds: seconds) {
+            try deliverNow(pairing: pairing, selection: selection, peerAddress: peerAddress, delivery: delivery, seconds: seconds, port: port, policy: policy)
+        }
+    }
+
+    private static func deliverNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                                   delivery: Data, seconds: Double, port: UInt16, policy: ClusterLinkInterfacePolicy) throws -> String {
         var address = peerAddress
         if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8)).first?.address }
         guard let address else {

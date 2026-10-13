@@ -464,6 +464,30 @@ import Foundation
             runtimeModelID: "registered_qwen35_9b", publicModelID: "p")
         require("a chip name with no class decides nothing at plan time", unknown.leader == "b" && unknown.note == nil)
         syntheticQualificationRecords()
+        // Leader-first onboarding: the Mac where `darkbloom cluster` started leads the cluster (model, sync, start),
+        // but which Mac runs rank 0 and which decodes is the planner's, from detected hardware and the model's grant.
+        // Synthetic hardware, each pair planned from both Macs: the placement must not follow who asks.
+        let m5u = try chip(slowTwo[1], "Apple M5 Ultra"), m3u = try chip(slowTwo[0], "Apple M3 Ultra")
+        let fromM3 = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: m3u, peerProfile: m5u, layout: layout)
+        let fromM5 = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-two",
+            localProfile: m5u, peerProfile: m3u, layout: layout)
+        require("onboarding on an M3 Ultra and an M5 Ultra: the 9B's rank 0 is the M3 Ultra and the M5 Ultra decodes, whichever Mac leads",
+            fromM3.setup == fromM5.setup && fromM3.setup?.leaderID == "mac-one" && fromM3.result.chosen?.ranks.last?.device == "mac-two")
+        let shapes: [(String, [ClusterPlacementDevice])] = [
+            ("two 64 GB Macs", [try device("mac-one", physicalGiB: 64, freeGiB: 40, prefill: 1500, decode: 50),
+                                 try device("mac-two", physicalGiB: 64, freeGiB: 40, prefill: 1500, decode: 50)]),
+            ("a 48 GB and a 256 GB Mac", [try device("mac-one", physicalGiB: 48, freeGiB: 24, prefill: 900, decode: 40),
+                                           try device("mac-two", physicalGiB: 256, freeGiB: 200, prefill: 1000, decode: 62)]),
+            ("a 128 GB and a 256 GB Mac of other speeds", slowOne)]
+        for (name, devices) in shapes {
+            let a = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: devices[0].profile, peerProfile: devices[1].profile, layout: layout)
+            let b = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-two",
+                localProfile: devices[1].profile, peerProfile: devices[0].profile, layout: layout)
+            require("onboarding on \(name): the same placement whichever Mac leads", a.setup != nil && a.setup == b.setup
+                && a.result.chosen?.ranks.allSatisfy { $0.fit == .now } == true)
+        }
         guard failures.isEmpty else {
             for failure in failures { FileHandle.standardError.write(Data("FAIL: \(failure)\n".utf8)) }
             exit(1)

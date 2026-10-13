@@ -7,15 +7,16 @@ extension Cluster {
     /// terminal, the guided link setup line by line everywhere else.
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "setup",
-            abstract: "Set up a two-Mac cluster step by step: this Mac, the cable, pairing, the model and plan, a check, and serving.",
+            abstract: "Set up a cluster: the Mac you start on leads; run it on the other Mac too and confirm the code.",
             discussion: """
-                On a terminal, bare `darkbloom cluster` opens the setup wizard: six steps, each showing what was \
-                detected, what is wrong in plain words and the one action that fixes it. Nothing is changed, \
-                trusted or started without a key and a confirmation; the link fix shows its exact commands first \
-                and then asks macOS for one approval. Running it again opens at the first unfinished step. The \
-                leader is given its pair once with --pair, --capability, --capability-sha256 and --member; the \
-                other Mac receives its setup from the leader and approves it on its own screen. --dry-run limits \
-                the link fix to its preview. --plain prints the six steps and exits.
+                On a terminal, bare `darkbloom cluster` is the onboarding. It checks RDMA, the cable and the \
+                cable port's isolation (one macOS approval when needed) and the RDMA GID. When no other Mac waits \
+                on the cable, this Mac becomes the leader and says "On your other Mac, run `darkbloom cluster`"; \
+                the other Mac then finds it by itself, both show the same code, y on each pairs them, and the \
+                other Mac is told where to continue. The leader shows both Macs' hardware, the models both hold \
+                with the planner's placement, and on y saves the plan, syncs the member's setup over the cable, \
+                starts both Macs' parts and serves. Run again, it shows where this Mac stands and the next step. \
+                --wizard opens the earlier six-step wizard instead; --plain prints its six steps.
 
                 As `darkbloom cluster setup`, with --json, --yes or --temporary, or when not run in a terminal, \
                 it is the guided link setup: it checks that RDMA is enabled, waits for a Thunderbolt 5 connection \
@@ -46,6 +47,8 @@ extension Cluster {
         var modelDir: String?
         @Option(help: "Absolute path of this Mac's cluster worker, when it is not installed beside darkbloom.")
         var worker: String?
+        @Flag(help: "Open the six-step setup wizard instead of the leader-first onboarding.")
+        var wizard = false
 
         func validate() throws { try validateWizardOptions() }
 
@@ -54,7 +57,7 @@ extension Cluster {
             if Self.opensWizard(arguments: CommandLine.arguments, json: json, yes: yes, temporary: temporary, plain: plain,
                 inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
                 terminalType: ProcessInfo.processInfo.environment["TERM"]) {
-                return try await runWizard()
+                return try await (wizard ? runWizard() : runOnboarding())
             }
             Darkbloom.ensureLogging()
             let mode = temporary ? ClusterLinkRepair.Mode.temporary : .durable, dryRun = dryRun

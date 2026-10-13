@@ -63,6 +63,81 @@ extension ClusterConsoleCheck {
         expectEqual(digest, String(repeating: "d", count: 64), "the inbox's digest is returned")
         expectEqual(inbox.lock.withLock { inbox.received }, [delivery], "the inbox received exactly the delivery")
 
+        // Commands (the onboarding's leader to a member's cluster service): an open wizard takes none.
+        do {
+            _ = try X.command(pairing: pairing(local: pinA, peer: pinB), selection: selection, peerAddress: asked.peerAddress,
+                body: Data("{\"op\":\"status\"}".utf8), seconds: 10, port: port, policy: .loopbackForTests)
+            expect(false, "a wizard must not take a command")
+        } catch let failure as ClusterSetupFailure {
+            expect(failure.text.contains("takes no commands"), "a wizard refuses commands: \(failure.text)")
+        }
+        // A cluster service answers each command over the same authenticated channel, and its refusal is named.
+        let servicePort: UInt16 = 45_879
+        let service = try X.Responder(pairing: pairing(local: pinB, peer: pinA), selection: selection, port: servicePort,
+            policy: .loopbackForTests, answer: { .init(report: F.reportB(), facts: facts(pinB)) }, receive: { _ in String(repeating: "e", count: 64) },
+            command: { data in
+                guard String(decoding: data, as: UTF8.self).contains("serve") else { throw ClusterSetupFailure("this Mac does not follow the Mac that asked") }
+                return Data("{\"serving\":true}".utf8)
+            })
+        try service.start()
+        let served = try X.command(pairing: pairing(local: pinA, peer: pinB), selection: selection, peerAddress: nil,
+            body: Data("{\"op\":\"serve\"}".utf8), seconds: 10, port: servicePort, policy: .loopbackForTests)
+        expectEqual(String(decoding: served.reply, as: UTF8.self), "{\"serving\":true}", "a service's answer arrives whole, found by discovery")
+        do {
+            _ = try X.command(pairing: pairing(local: pinA, peer: pinB), selection: selection, peerAddress: nil,
+                body: Data("{\"op\":\"stop\"}".utf8), seconds: 10, port: servicePort, policy: .loopbackForTests)
+            expect(false, "a refused command must fail")
+        } catch let failure as ClusterSetupFailure {
+            expect(failure.text.contains("does not follow"), "the service's refusal is shown: \(failure.text)")
+        }
+        do {
+            _ = try X.command(pairing: pairing(local: pinA, peer: pinB, secret: Data(repeating: 7, count: 32)), selection: selection, peerAddress: nil,
+                body: Data("{\"op\":\"serve\"}".utf8), seconds: 3, port: servicePort, policy: .loopbackForTests)
+            expect(false, "a command without the pairing's secret must not be taken")
+        } catch {
+            expect(true, "a command without the pairing's secret is refused")
+        }
+        service.stop()
+
+        // Two processes on one Mac asking the same paired Mac at once (the onboarding and the leader's cluster service):
+        // the other Mac keeps one live session per edge and a newer one supersedes the older, so each request must wait
+        // for the other instead of taking its session away. Both answers arrive.
+        let busyPort: UInt16 = 45_881
+        let busy = try X.Responder(pairing: pairing(local: pinB, peer: pinA), selection: selection, port: busyPort,
+            policy: .loopbackForTests, answer: { usleep(1_500_000); return .init(report: F.reportB(), facts: facts(pinB)) },
+            receive: { _ in String(repeating: "e", count: 64) }, command: { data in data })
+        try busy.start()
+        final class Replies: @unchecked Sendable { let lock = NSLock(); var texts: [String] = []; var failures: [String] = [] }
+        let replies = Replies()
+        let group = DispatchGroup()
+        let asking = pairing(local: pinA, peer: pinB)
+        group.enter()
+        Thread.detachNewThread {
+            defer { group.leave() }
+            do {
+                let asked = try X.ask(pairing: asking, selection: selection, seconds: 8, port: busyPort, policy: .loopbackForTests)
+                replies.lock.withLock { replies.texts.append("report from \(asked.answer.facts.memberID)") }
+            } catch {
+                replies.lock.withLock { replies.failures.append("the onboarding's ask: \(error)") }
+            }
+        }
+        usleep(300_000)
+        group.enter()
+        Thread.detachNewThread {
+            defer { group.leave() }
+            do {
+                let reply = try X.command(pairing: asking, selection: selection, peerAddress: nil, body: Data("status".utf8),
+                    seconds: 8, port: busyPort, policy: .loopbackForTests)
+                replies.lock.withLock { replies.texts.append(String(decoding: reply.reply, as: UTF8.self)) }
+            } catch {
+                replies.lock.withLock { replies.failures.append("the service's status: \(error)") }
+            }
+        }
+        _ = group.wait(timeout: .now() + 60)
+        busy.stop()
+        expectEqual(replies.lock.withLock { replies.texts.sorted() }, ["report from \(ClusterSetupMemberFacts.memberID(pin: pinB))", "status"],
+            "two requests at once from this Mac both get their answers: \(replies.lock.withLock { replies.failures })")
+
         // A Mac without the pairing's secret is not answered.
         do {
             _ = try X.ask(pairing: pairing(local: pinA, peer: pinB, secret: Data(repeating: 9, count: 32)), selection: selection,

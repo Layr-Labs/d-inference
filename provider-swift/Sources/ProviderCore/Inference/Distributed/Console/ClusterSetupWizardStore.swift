@@ -70,6 +70,9 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// The folder that holds this Mac's model folders, as the guided flow was
     /// told once (`--model-dir`); nil until then.
     public var modelsDirectory: String? = nil
+    /// Who leads this cluster, as `darkbloom cluster` settled it at pairing:
+    /// the Mac where onboarding started leads. Nil before pairing.
+    public var leadership: ClusterOnboardingLeadership? = nil
 
     public init(pair: Pair? = nil) { self.pair = pair }
 
@@ -98,6 +101,28 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     mutating func add(_ value: CheckPass) {
         checks.removeAll { $0.configurationSHA256 == value.configurationSHA256 }
         checks = Array((checks + [value]).suffix(Self.kept))
+    }
+}
+
+/// Who leads the cluster, settled once at pairing by `darkbloom cluster`: the
+/// Mac where onboarding started (it waited on the cable) leads; the Mac that
+/// joined it is a member. Kept until an explicit transfer or a new pairing.
+public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
+    /// "leader" or "member".
+    public var role: String
+    /// The leader's pairing pin (this Mac's own on the leader).
+    public var leaderPin: String
+    /// The other Mac's pin and the name it showed at pairing (its chip and memory, never a host name).
+    public var peerPin: String
+    public var peerName: String
+    public var since: String
+    /// The leader asked the cluster to serve: each Mac's cluster service runs its part while this is set.
+    public var serving: Bool = false
+    /// The model the leader chose, for the screen.
+    public var modelName: String?
+
+    public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
+        self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since
     }
 }
 

@@ -985,8 +985,9 @@ The hosting root is `landing`, with the Next.js preset; its API routes
 require a server runtime rather than a static export. See the
 [marketing README](../../landing/README.md) for deployment handoff.
 
-`npm ci` applies the version-pinned Next.js header patch before building. Do
-not bypass install scripts: the page templates must preserve `Vary: Accept`
+`npm run build` explicitly applies the version-pinned Next.js header patch
+before compiling. `npm ci --ignore-scripts` is supported: the patch does not
+depend on install lifecycle hooks. The page templates preserve `Vary: Accept`
 for HTML/Markdown negotiation. The [landing README](../../landing/README.md)
 records the upstream issue and patch removal condition. Turbopack's root is
 the landing directory; install dependencies there rather than sharing a

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { siteOrigin } from "./content/public-site";
+import { publicPagePaths, siteOrigin } from "./content/public-site";
 import { markdownDocuments, agentIndex, authenticationMarkdown, missingDocumentMarkdown } from "./content/agent-resources";
 
 // Resolve each representation against its most specific matching media range.
@@ -80,7 +80,7 @@ export async function proxy(request: NextRequest) {
   // Static files and protocol endpoints retain their own routing and errors.
   // /docs must reach its existing query-preserving redirect.
   const protectedPath = /^\/(?:api|_next|assets|fonts|images|videos|media|icons|docs)(?:\/|$)/.test(path) || path.startsWith("/.");
-  const existingPage = ["/", "/about", "/privacy", "/terms", "/contact", "/developers", "/pricing"].includes(path);
+  const existingPage = publicPagePaths.some((publicPath) => publicPath === path);
   const isDocumentPath = !path.includes(".") || path.endsWith(".md");
   if (!protectedPath && !existingPage && isDocumentPath) {
     if (markdown) return markdownResponse(missingDocumentMarkdown, 404);

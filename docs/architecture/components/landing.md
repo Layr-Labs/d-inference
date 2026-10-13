@@ -42,7 +42,7 @@ flowchart LR
 
 Unavailable pricing remains readable with a link to the authoritative source. Broken links yield recoverable errors rather than a successful homepage rewrite. Authentication and paid inference remain platform concerns. Optional MCP, OAuth, A2A and payment manifests are not advertised without an implemented service.
 
-Next.js 16.2.6 overwrites custom `Vary` tokens in page response templates. The version-pinned patch preserves existing tokens; clean installs apply it before builds. A dependency upgrade must retain the HTTP regression and remove the patch only once the upstream fix is present.
+Next.js 16.2.6 overwrites custom `Vary` tokens in page response templates. The version-pinned patch preserves existing tokens; the explicit build command applies it before compilation, including after installs that disable lifecycle scripts. A dependency upgrade must retain the HTTP regression and remove the patch only once the upstream fix is present.
 
 ## Code map
 

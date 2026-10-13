@@ -32,7 +32,7 @@ Read-only baseline requests confirmed missing landing `llms.txt`, sitemap and Op
 
 The implementation uses production-build HTTP tests for representations, negotiation, recovery, metadata, sitemap, discovery, API schema and existing route behavior. Pricing tests use a loopback HTTP source; no automated test sends paid production inference or uses production credentials. Desktop/mobile review covers new public pages and navigation. The [test guide](../developer/test.md) describes the shared HTTP seam.
 
-Next.js 16.2.6 discarded proxy `Vary` tokens in generated page handlers. A narrow version-checked install patch preserves the tokens, following [upstream issue 85999](https://github.com/vercel/next.js/issues/85999) and [proposed fix 91039](https://github.com/vercel/next.js/pull/91039). The HTTP regression verifies actual responses, not patch text. Remove the patch only with a framework version that passes the same test unpatched.
+Next.js 16.2.6 discarded proxy `Vary` tokens in generated page handlers. A narrow version-checked patch runs explicitly before each build and preserves the tokens, following [upstream issue 85999](https://github.com/vercel/next.js/issues/85999) and [proposed fix 91039](https://github.com/vercel/next.js/pull/91039). The HTTP regression verifies actual responses, not patch text. Remove the patch only with a framework version that passes the same test unpatched.
 
 The API artifact is tied to platform revision `baca977134a63678ab12979038d3618901d852ee`; [contract provenance](../../landing/API-CONTRACT.md) documents coverage and maintenance. The provider repository contains documentation only for those operations.
 

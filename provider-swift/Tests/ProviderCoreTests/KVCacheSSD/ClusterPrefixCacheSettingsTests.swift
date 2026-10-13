@@ -55,9 +55,10 @@ struct ClusterPrefixCacheSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let missing = directory.appendingPathComponent("absent.json")
         #expect(try ClusterPrefixCacheSettings.savedCacheSettings(providerConfiguration: missing) == CacheSettings())
-        // The provider configuration is TOML (`ConfigManager.parseValidating`).
+        // The provider configuration is TOML (`ConfigManager.parseValidating`); `darkbloom cache set` writes
+        // `daily_write_gb` as a float (an integer literal does not decode: product finding, single-Mac code).
         let file = directory.appendingPathComponent("provider.toml")
-        try Data("[cache]\ndaily_write_gb = 42\n".utf8).write(to: file)
+        try Data("[cache]\ndaily_write_gb = 42.0\n".utf8).write(to: file)
         chmod(file.path, 0o600)
         #expect(try ClusterPrefixCacheSettings.savedCacheSettings(providerConfiguration: file).dailyWriteGB == 42)
     }

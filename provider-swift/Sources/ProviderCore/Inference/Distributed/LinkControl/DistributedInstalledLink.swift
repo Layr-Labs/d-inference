@@ -85,9 +85,9 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
         // A follower whose link closed or went silent and did not resume in
         // the edge's own re-dial time is lost: its sessions fail at once with
         // this reason instead of waiting for proofs that cannot arrive.
-        let router = ClusterLinkWorkerRouter(limits: edge.limits) { reason in
+        let router = ClusterLinkWorkerRouter(limits: edge.limits, lost: { reason in
             clusterLinkMemberLog.warning("link edge: follower lost: \(reason)")
-        }
+        })
         self.router = router
         let monitor = ClusterFollowerStatusMonitor(observability: observability, clusterID: configuration.clusterID,
                                                    modelID: configuration.publicModelID)

@@ -2,57 +2,6 @@ import Foundation
 import Darwin
 import DarkbloomClusterRemote
 
-/// What one Mac's cluster service reports to its leader.
-public struct ClusterServiceStatus: Codable, Sendable, Equatable {
-    public struct Child: Codable, Sendable, Equatable {
-        public var running: Bool
-        public var starts: Int
-        /// How the last run ended ("exit 1", "signal 15"), nil before the first end.
-        public var lastEnd: String?
-        /// Seconds until the next start while it waits after an end.
-        public var restartInSeconds: Int?
-        /// The last error line this Mac's part printed (its log), when its last run ended.
-        public var lastError: String?
-    }
-    public struct Session: Codable, Sendable, Equatable {
-        public var observed: Bool
-        public var ready: Bool
-        public var readyRanks: Int
-        public var ranks: Int
-        public var port: Int?
-        public var detail: String?
-    }
-    public var role: String?
-    public var serving: Bool
-    public var modelName: String?
-    /// This Mac's saved setup runs rank 0 and the serving API.
-    public var sessionLeader: Bool
-    public var localRank: Int?
-    public var setup: String?
-    public var child: Child
-    /// Only on the Mac that runs rank 0.
-    public var session: Session?
-}
-
-/// One command from the leader to a member's cluster service.
-public struct ClusterServiceCommand: Codable, Sendable, Equatable {
-    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt }
-    public var op: Operation
-    public var model: String?
-    public var text: String?
-    public init(op: Operation, model: String? = nil, text: String? = nil) { self.op = op; self.model = model; self.text = text }
-}
-
-/// A test request's answer, sent back over the link.
-public struct ClusterServicePromptAnswer: Codable, Sendable, Equatable {
-    public var text: String
-    public var tokens: Int
-    public var firstTokenMilliseconds: Int?
-    public var tokensPerSecond: Double?
-    public var finishReason: String?
-    public var error: String?
-}
-
 /// The cluster service: one per Mac (`darkbloom cluster service`), started by
 /// `darkbloom cluster` once the Mac is paired and meant to run at login (the
 /// S18 LaunchAgent is not in this build: until then the onboarding starts it,
@@ -241,6 +190,13 @@ public final class ClusterService: @unchecked Sendable {
                 return try? JSONDecoder().decode(ClusterServiceStatus.self, from: reply)
             }
             let member = send(.init(op: .status), seconds: 10)
+            // The leader's cache choices first, so a member it starts runs with them.
+            if let member, let cache = ClusterMemberCacheControl.settingsToSend(
+                leader: ClusterCacheSettingsSync.leaderChoices(cacheSettings: (try? ClusterPrefixCacheSettings.savedCacheSettings(
+                    providerConfiguration: context.settings.providerConfiguration)) ?? CacheSettings()),
+                memberDigest: member.cacheSync), send(.init(op: .cacheSettings, cache: cache), seconds: 10) != nil {
+                say("synced this Mac's cache settings to the member (\(String(ClusterMemberCacheControl.digest(cache).prefix(12))))")
+            }
             switch ClusterOnboardingSync.action(leaderServing: leadership.serving, leaderModel: leadership.modelName,
                                                 memberServing: member?.serving, memberModel: member?.modelName) {
             case .none: return
@@ -288,8 +244,49 @@ public final class ClusterService: @unchecked Sendable {
             return try encoder.encode(status())
         case .prompt:
             return try encoder.encode(Self.prompt(context, text: command.text ?? "Name three colors."))
+        case .cacheSettings, .unpair:
+            let configuration = settings.wizard.providerConfiguration
+            let reply = try ClusterMemberCacheControl.handle(command, follows: followsPeer(pairing), leaderPin: pairing.peerPin,
+                pairClusterID: pairing.clusterID,
+                memberSettings: { try ClusterPrefixCacheSettings.resolved(providerConfiguration: configuration) },
+                store: cacheStore, status: { status() })
+            if command.op == .unpair {
+                // The leader left: this Mac's part stops (its rank releases its plan, then the reclaim finishes).
+                try store.updateRecord { $0.leadership?.serving = false }
+                say("the leader left the pair: reclaimed this Mac's pair cache and stopped its part")
+            } else {
+                say("applied the cache settings the leader synced")
+            }
+            return reply ?? Data()
         }
     }
+
+    /// The leader leaving the pair with `peerPin` tells that member first,
+    /// while the pairing's edge secret still keys the link: the member then
+    /// reclaims the pair's prefix-tier records (and forgets the leader's
+    /// cache settings). Nil when this Mac does not lead a pair with that pin;
+    /// otherwise one line for the screen, also when the member was not reached.
+    public static func tellMemberOfUnpair(peerPin: String, seconds: Double = 10) -> String? {
+        guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == peerPin,
+              let paths = try? ClusterUserPaths(),
+              let leadership = try? ClusterSetupStore(paths: .init(paths: paths)).readRecord().leadership,
+              leadership.role == ClusterOnboardingRole.leader.rawValue, leadership.peerPin == peerPin else { return nil }
+        do {
+            let body = try JSONEncoder().encode(ClusterServiceCommand(op: .unpair, clusterID: pairing.clusterID))
+            let selection = try LiveContext.defaultLinkSelection()
+            let answer = try ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
+                                                              body: body, seconds: seconds)
+            let reply = try JSONDecoder().decode(ClusterMemberCacheControl.UnpairReply.self, from: answer.reply)
+            return "The other Mac reclaimed its pair cache: removed \(reply.removedPlans) plan\(reply.removedPlans == 1 ? "" : "s")"
+                + (reply.keptLive > 0 ? ", \(reply.keptLive) still in use (removed when its part stops)" : "") + "."
+        } catch {
+            return "The other Mac was not reached (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))): "
+                + "its pair cache stays until it unpairs too (`darkbloom cluster pair --forget \(pairing.localPin)` there)."
+        }
+    }
+
+    /// Where this Mac keeps the cache settings its leader synced.
+    var cacheStore: ClusterMemberCacheControl.Store { .init(directory: store.paths.directory) }
 
     /// One test request through this Mac's serving API, collected.
     static func prompt(_ context: LiveContext, text: String) -> ClusterServicePromptAnswer {
@@ -328,7 +325,9 @@ public final class ClusterService: @unchecked Sendable {
                 child: .init(running: child?.isRunning ?? false, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
                     lastError: child?.isRunning == true ? nil : Self.lastError()),
-                session: session)
+                session: session,
+                cacheSync: record?.leadership.flatMap { $0.role == ClusterOnboardingRole.member.rawValue
+                    ? cacheStore.digest(leaderPin: $0.leaderPin) : nil })
         }
     }
 
@@ -383,6 +382,11 @@ public final class ClusterService: @unchecked Sendable {
             _ = running
             _ = stopChild(say: say, seconds: 300)
             return
+        }
+        if running == nil, cacheStore.reclaimPending,
+           let root = try? ClusterPrefixCacheSettings.resolved(providerConfiguration: settings.wizard.providerConfiguration).root,
+           let report = ClusterMemberCacheControl.finishPendingReclaim(root: root, store: cacheStore), report.keptLive == 0 {
+            say("reclaimed the pair cache the leader's unpair left in use (\(report.removedPlans) plan\(report.removedPlans == 1 ? "" : "s"))")
         }
         guard running == nil, desired, let configuration = saved.configuration, let reference,
               lock.withLock({ !stopping && Date() >= nextStart }) else { return }

@@ -147,15 +147,15 @@ public enum ClusterRequestRoutingBasis {
         let samples = served.filter { $0.setup == setupKey }.map(\.sample)
         let outputs = ClusterRequestRouter.expectedOutputTokens(maximum: 256, served: samples)
         let alone = setup.membersHoldingWholeModel.first?.label ?? "-"
-        let crossover = try? ClusterRequestRouter.crossoverPromptTokens(setup, outputTokens: outputs,
-            maximumPrompt: plan.capability.profile.maximumPromptTokens, served: samples)
         let note: String
-        switch crossover {
-        case .some(.some(1)): note = "every request uses the pair: it is predicted faster than \(alone) alone at every prompt length"
-        case .some(.some(let tokens)): note = "prompts of \(tokens) tokens or more use the pair; shorter ones \(alone) alone"
-        case .some(.none): note = "every request is served by \(alone) alone: the pair is never predicted faster"
-        case .none: note = "routes are decided per request"
-        }
+        do {
+            switch try ClusterRequestRouter.crossoverPromptTokens(setup, outputTokens: outputs,
+                                                                  maximumPrompt: plan.capability.profile.maximumPromptTokens, served: samples) {
+            case 1?: note = "every request uses the pair: it is predicted faster than \(alone) alone at every prompt length"
+            case let tokens?: note = "prompts of \(tokens) tokens or more use the pair; shorter ones \(alone) alone"
+            case nil: note = "every request is served by \(alone) alone: the pair is never predicted faster"
+            }
+        } catch { note = "routes are decided per request" }
         return .init(routing: routing, note: note + " (\(samples.count) speed record(s) of this setup; "
             + (placed.allSatisfy(\.speed.absolute) ? "measured speeds" : "speed index ratios") + ")")
     }

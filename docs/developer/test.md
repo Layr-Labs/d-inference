@@ -1172,7 +1172,11 @@ python3 scripts/test-provider-signing-validation.py
 ```
 
 The cache tests cover compatibility boundaries and content-checked source
-mtime replay. Metal setup tests simulate delayed registration, explicit import,
+mtime replay. Their disposable repositories disable automatic Git maintenance
+and garbage collection so detached writers cannot race temporary-directory
+cleanup. `FixtureProcessTests` verifies the real commit process through Git's
+Trace2 events even when inherited configuration enables maintenance.
+Metal setup tests simulate delayed registration, explicit import,
 command failure and timeout without installing components. The pipeline checks pin independent build/test dependencies,
 signing approval, same-run source-bound artifact transfer, and checks that still
 run on cache hits. The existing archive tests reject changed inventory, wrong
@@ -3504,9 +3508,15 @@ make landing                    # standalone install, lint, build and HTTP route
 
 The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
 lint, the production build (including TypeScript checks), and `npm test`.
-The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
-production server to verify pages, legacy redirects, assets and unconfigured
-API responses without production credentials or upstream requests.
+The Node suites in `landing/tests/` use `helpers/site-server.mjs`
+(`startSiteServer`) to start isolated production servers. They verify existing
+routes, negotiated HTML/Markdown preferences, real 404s, discovery links,
+canonical/structured metadata, sitemap entries and the public OpenAPI schema.
+`@apidevtools/swagger-parser` validates the served schema. Pricing cases use a
+local HTTP upstream with real responses, including unavailable/malformed data;
+no test needs production credentials or production inference. The representation
+suite checks preserved framework `Vary` tokens as well as `Accept`, including
+alternating HTML/Markdown requests. Preserve that regression across Next upgrades.
 
 For story interaction changes, `landing/tests/story-gestures.test.mjs` dispatches
 DOM pointer, wheel and keyboard events through the same gesture binding used
@@ -3516,7 +3526,9 @@ with `cd landing && node --test tests/story-gestures.test.mjs`; no server is
 needed. These DOM tests do not replace browser checks for native pointer
 capture, touch scrolling or carousel layout.
 
-For a migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
+Search results and cross-domain discovery require separate read-only inspection
+after an authorized deployment. A passing local suite is not live verification. For a
+migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
 `/docs` redirect, fonts/media, desktop and mobile scrolling, and chat states.
 Verify `/api/network` and `/api/about` against the configured upstreams;
 without a key, `/api/chat` should return `503`. Exercise story delivery with

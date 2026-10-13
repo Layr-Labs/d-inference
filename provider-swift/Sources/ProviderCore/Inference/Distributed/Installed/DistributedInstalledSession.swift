@@ -138,12 +138,16 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         let values = lock.withLock { (endpoints, observedMembershipEpoch ?? wireIdentity.membershipEpoch) }
         let ordered = values.0.sorted { $0.rank < $1.rank }
         let terminations = ordered.compactMap { endpoint -> String? in
+            let ended: String?
             switch endpoint.ownerTermination {
-            case .launchFailed?: "rank \(endpoint.rank) ended: its owner could not be launched"
-            case .exited(let status)?: "rank \(endpoint.rank) ended: its owner exited with status \(status)"
-            case .signalled(let signal)?: "rank \(endpoint.rank) ended: its owner was terminated by signal \(signal)"
-            case nil: nil
+            case .launchFailed?: ended = "rank \(endpoint.rank) ended: its owner could not be launched"
+            case .exited(let status)?: ended = "rank \(endpoint.rank) ended: its owner exited with status \(status)"
+            case .signalled(let signal)?: ended = "rank \(endpoint.rank) ended: its owner was terminated by signal \(signal)"
+            case nil: ended = nil
             }
+            // The follower's own words on the same line, so the incident names why.
+            guard let ended, let said = (endpoint as? ClusterLinkWorkerEndpoint)?.followerReason else { return ended }
+            return ended + " (the follower said: " + said + ")"
         }
         return .init(clusterID: configuration.clusterID, memberID: configuration.memberID, modelID: model.publicModelID,
             mode: configuration.selectedGenerationMode.rawValue,

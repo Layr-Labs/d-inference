@@ -189,6 +189,8 @@ public final class ClusterPairTelemetryLog: @unchecked Sendable {
     private let lock = NSLock()
     private var records: [ClusterPairRequestTelemetry] = []
     private var failures = 0
+    /// Routes this session already served a completed cold request on.
+    private var warmedRoutes: Set<String> = []
 
     /// `file` nil keeps the records in memory only (tests).
     public init(file: URL?, sessionID: String = UUID().uuidString.lowercased(), capacity: Int = defaultCapacity,
@@ -213,7 +215,12 @@ public final class ClusterPairTelemetryLog: @unchecked Sendable {
                 try ClusterIncidentLog.writeAtomically(bytes, to: file)
             } catch { failures += 1 }
             // The speed records outlive the session: read, add, write back.
+            // The first request a session serves on a route pays that path's
+            // one-time costs (kernel builds, first allocations at its shapes):
+            // seconds on the pair, which would make the route look slower than
+            // it serves. It stays in the telemetry, not in the speed records.
             guard value.isSpeedRecord else { return }
+            guard warmedRoutes.insert(value.route ?? "pair").inserted == false else { return }
             let history = file.deletingLastPathComponent().appendingPathComponent("served-speed.json")
             let kept = ClusterServedSpeedFile.read(history)?.records ?? []
             let updated = ClusterServedSpeedFile(schema: ClusterServedSpeedFile.schemaName, updatedAt: clock(),

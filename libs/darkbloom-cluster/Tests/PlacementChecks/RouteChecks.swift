@@ -167,6 +167,23 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
         direct.count == 1 && direct[0].key.chip == "Apple M5 Ultra" && close(direct[0].rested.prefillTokensPerSecond, 4_000)
             && close(direct[0].rested.speculativeDecodeTokensPerSecond, 250))
 
+    // Index-only speeds are relative units; a served route is in seconds. With only one route served,
+    // the other takes its scale, so the decision stays the planner's ratio (units never decide).
+    let relativeSetup = ClusterRequestRouter.Setup(devices: [r3, r5], cuts: pair.setup.cuts, mode: pair.setup.mode,
+        schedule: pair.setup.schedule, layout: nine)
+    for prompt in [chunk, 16 * chunk] {
+        let predictedRoute = try ClusterRequestRouter.decide(relativeSetup, promptTokens: prompt, outputTokens: 128)
+        var alonePolicy = ClusterPlacementPolicy(); alonePolicy.promptTokens = prompt; alonePolicy.outputTokens = 128
+        let units = ClusterPlacementPlanner.evaluateAlone(device: r5, layout: nine, speculativeHead: relativeSetup.mode.usesSpeculativeHead,
+            policy: alonePolicy)
+        let seconds = ClusterServedSample(route: .alone, member: "m5ultra", promptTokens: prompt, outputTokens: 128,
+            firstTokenSeconds: units.firstTokenSeconds / 1_000, decodeTokensPerSecond: units.decodeTokensPerSecond * 1_000, finishedAt: 9)
+        let servedRoute = try ClusterRequestRouter.decide(relativeSetup, promptTokens: prompt, outputTokens: 128, served: [seconds])
+        checks.require("index units and served seconds are never compared: one served route lends its scale to the other (prompt \(prompt))",
+            servedRoute.path == predictedRoute.path && servedRoute.aloneBasis == .served && servedRoute.pairBasis == .predicted
+                && abs(servedRoute.pairSeconds / servedRoute.aloneSeconds! - predictedRoute.pairSeconds / predictedRoute.aloneSeconds!) < 0.01)
+    }
+
     // The same from records as a leader keeps them: one setup per (model, mode, cut, ranks);
     // a setup without its rank order, or naming a Mac that is not planned, is skipped and said so.
     let cutText = ClusterServedSpeedRecords.Setup.cut(pair.setup.cuts, layerCount: nine.layerCount)

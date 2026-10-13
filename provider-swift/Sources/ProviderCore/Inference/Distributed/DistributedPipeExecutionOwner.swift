@@ -70,8 +70,10 @@ public final class DistributedPipeExecutionOwner: DistributedDeadlineExecutionOw
         let decided = routing?.route(promptTokens: request.promptTokens.count, maximumOutputTokens: request.maxTokens)
         let route = decided.map { value in
             let served = value.pairBasis == .served || value.aloneBasis == .served
-            return DistributedRequestRouteNote(label: value.label, reason: value.reason + String(format: " (pair %.2f s, alone %@; %@)",
-                value.pairSeconds, value.aloneSeconds.map { String(format: "%.2f s", $0) } ?? "-",
+            // Without a measured speed for every Mac and no served route, times are the speed index's relative units.
+            let unit = served || routing?.setup.devices.allSatisfy(\.speed.absolute) == true ? " s" : " index units"
+            return DistributedRequestRouteNote(label: value.label, reason: value.reason + String(format: " (pair %.2f%@, alone %@; %@)",
+                value.pairSeconds, unit, value.aloneSeconds.map { String(format: "%.2f", $0) + unit } ?? "-",
                 served ? "corrected by this pair's speed records" : "predicted from the plan"))
         }
         let value = ClusterWorkerReservation(profileID: profileID, promptTokenIDs: request.promptTokens,

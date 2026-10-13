@@ -109,14 +109,14 @@ public enum ClusterRequestRouter {
     struct Priced { let seconds: Double; let firstToken: Double; let basis: ClusterRequestRoute.Basis }
 
     static func price(_ prediction: ClusterPlacementPrediction, outputs: Int,
-                      correction: (firstToken: Double, decode: Double?)?) -> Priced {
+                      correction: (firstToken: Double, decode: Double?)?, borrowed: Bool = false) -> Priced {
         let first = prediction.firstTokenSeconds * (correction?.firstToken ?? 1)
         let rate = prediction.decodeTokensPerSecond * (correction?.decode ?? 1)
         // The first token's own time includes a phase split's hand-off; the planner adds it to the request.
         let handoff = max(0, prediction.requestSeconds - prediction.firstTokenSeconds
             - Double(max(0, outputs - 1)) / prediction.decodeTokensPerSecond)
         return .init(seconds: first + handoff * (correction?.firstToken ?? 1) + Double(max(0, outputs - 1)) / rate,
-                     firstToken: first, basis: correction == nil ? .predicted : .served)
+                     firstToken: first, basis: correction == nil || borrowed ? .predicted : .served)
     }
 
     public static func decide(_ setup: Setup, promptTokens: Int, outputTokens: Int,
@@ -131,23 +131,36 @@ public enum ClusterRequestRouter {
         }
         let samples = served.filter(\.valid)
         let pairSamples = samples.filter { $0.route == .pair }
-        let pair = price(try pairPrediction(prompt: promptTokens, outputs: outputTokens), outputs: outputTokens,
-            correction: try correction(pairSamples, promptTokens: promptTokens) {
-                try pairPrediction(prompt: $0.promptTokens, outputs: $0.outputTokens)
-            })
-        // The fastest member holding the whole model, priced as it would serve alone.
-        var best: (device: ClusterPlacementDevice, priced: Priced)?
-        for device in setup.membersHoldingWholeModel {
+        let pairCorrection = try correction(pairSamples, promptTokens: promptTokens) {
+            try pairPrediction(prompt: $0.promptTokens, outputs: $0.outputTokens)
+        }
+        // Each member holding the whole model, priced as it would serve alone.
+        struct Alone { let device: ClusterPlacementDevice; let prediction: (Int, Int) -> ClusterPlacementPrediction
+                       let correction: (firstToken: Double, decode: Double?)? }
+        let alones = setup.membersHoldingWholeModel.map { device -> Alone in
             func alonePrediction(prompt: Int, outputs: Int) -> ClusterPlacementPrediction {
-                policy.promptTokens = prompt; policy.outputTokens = outputs
+                var p = policy; p.promptTokens = prompt; p.outputTokens = outputs
                 // It holds the head only when the placement's mode loads one on it.
                 return ClusterPlacementPlanner.evaluateAlone(device: device, layout: setup.layout,
-                    speculativeHead: setup.mode.usesSpeculativeHead, policy: policy)
+                    speculativeHead: setup.mode.usesSpeculativeHead, policy: p)
             }
             let own = samples.filter { $0.route == .alone && $0.member == device.label }
-            let priced = price(alonePrediction(prompt: promptTokens, outputs: outputTokens), outputs: outputTokens,
+            return .init(device: device, prediction: alonePrediction,
                 correction: correction(own, promptTokens: promptTokens) { alonePrediction(prompt: $0.promptTokens, outputs: $0.outputTokens) })
-            if best == nil || priced.seconds < best!.priced.seconds { best = (device, priced) }
+        }
+        // Without a measured speed for every member, predictions are in the
+        // speed index's relative units and only a served route is in seconds:
+        // a route without samples then takes the served route's scale, so the
+        // two are compared in the same units (the ratio stays the planner's).
+        let relative = !setup.devices.allSatisfy(\.speed.absolute)
+        let shared = pairCorrection ?? alones.compactMap(\.correction).first
+        let pair = price(try pairPrediction(prompt: promptTokens, outputs: outputTokens), outputs: outputTokens,
+            correction: pairCorrection ?? (relative ? shared : nil), borrowed: pairCorrection == nil)
+        var best: (device: ClusterPlacementDevice, priced: Priced)?
+        for alone in alones {
+            let priced = price(alone.prediction(promptTokens, outputTokens), outputs: outputTokens,
+                correction: alone.correction ?? (relative ? shared : nil), borrowed: alone.correction == nil)
+            if best == nil || priced.seconds < best!.priced.seconds { best = (alone.device, priced) }
         }
         func make(_ path: ClusterServedSample.Route, _ reason: String) -> ClusterRequestRoute {
             .init(path: path, member: path == .alone ? best?.device.label : nil, aloneCandidate: best?.device.label,

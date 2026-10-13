@@ -324,11 +324,22 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     private func evictLocked(reserving: Int) {
-        while entries.count > entryLimit || prompts.count > promptLimit
-                || (held > 0 && held > budget - min(budget, reserving)),
+        // Over the prompt count: the least recently used prompt goes whole
+        // (thinning other prompts' grids would not lower the count).
+        while prompts.count > promptLimit, let prompt = leastRecentlyUsedPromptLocked() {
+            for entry in entries.values where entry.prompt == prompt { remove(entry); evictions += 1 }
+        }
+        while entries.count > entryLimit || (held > 0 && held > budget - min(budget, reserving)),
               let victim = victimLocked() {
             remove(victim); evictions += 1
         }
+    }
+
+    /// The prompt whose most recent use is the oldest.
+    private func leastRecentlyUsedPromptLocked() -> UInt64? {
+        var latest: [UInt64: UInt64] = [:]
+        for entry in entries.values { latest[entry.prompt] = max(latest[entry.prompt] ?? 0, entry.lastUse) }
+        return latest.min(by: { ($0.value, $0.key) < ($1.value, $1.key) })?.key
     }
 
     /// The next entry to evict: the least recently used grid frontier of a

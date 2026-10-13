@@ -412,6 +412,9 @@ struct PrefixCacheContractTests {
         #expect(counted.promptCount == 3)
         #expect(counted.frontiers(scope: "s", tokens: document(0), maximumFrontier: 8_191).isEmpty)
         #expect(counted.frontiers(scope: "s", tokens: document(1), maximumFrontier: 8_191).first == 8_191)
+        // The oldest prompt went whole; the others kept their grid (count pressure never thins them).
+        #expect(counted.frontiers(scope: "s", tokens: document(1), maximumFrontier: 8_191).count == 16)
+        #expect(counted.count == 48)
         // One request still captures at most `frontiersPerPrompt` frontiers.
         #expect(QwenStagePrefixCache().frontiersPerPrompt == QwenStagePrefixCache.defaultFrontiersPerPrompt)
         #expect(QwenStagePrefixCache(entryLimit: 4).frontiersPerPrompt == 4)

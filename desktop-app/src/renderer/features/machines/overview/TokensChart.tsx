@@ -15,7 +15,8 @@ const keyTargets = (index: number): Record<string, number> => ({
 
 function describe(bucket: HourBucket, now: number, until: string) {
   const end = Math.min(now, bucket.start + HOUR);
-  const range = `${hourLabel(bucket.start)} – ${end < bucket.start + HOUR ? until.toLowerCase() : hourLabel(end)}`;
+  const open = until === 'Now' ? 'now' : until;
+  const range = `${hourLabel(bucket.start)} – ${end < bucket.start + HOUR ? open : hourLabel(end)}`;
   if (bucket.tokens === null) return { range, value: 'No data' };
   const span = end - bucket.start;
   const partial =

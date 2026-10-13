@@ -38,7 +38,12 @@ export function RemoteStats({
   updateRequired: boolean;
 }) {
   const tokens = machine.tokens_24h;
-  const total = tokens && tokens.output + (tokens.input ?? 0) + (tokens.cached_input ?? 0);
+  // Input and cached input are optional; a total missing either would undercount, so it is
+  // shown only when every part is reported.
+  const total =
+    tokens && tokens.input != null && tokens.cached_input != null
+      ? tokens.output + tokens.input + tokens.cached_input
+      : undefined;
   return (
     <>
       <Tiles

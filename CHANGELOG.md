@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop view-only Mac status and totals
+
+- Show a view-only Mac's reported status (Starting, Finishing requests, Verification needed, Ready) instead of Offline whenever it is not online. Show its 24-hour Tokens served as unavailable when the input or cached-input breakdown is missing instead of undercounting, say "Not observed yet" rather than "Last observed not observed", hide the hourly chart when there is no observation to anchor it, and keep the month's capitalization in older observations' chart ranges.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

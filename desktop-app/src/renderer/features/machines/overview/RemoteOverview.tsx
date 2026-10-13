@@ -14,9 +14,13 @@ export function RemoteOverview({ machine, backend }: { machine: Machine; backend
   const state = backend.state!;
   const now = state.observed_at;
   const presence = remotePresence(machine, now);
-  const observed = machine.observed_at ?? now;
+  // Hourly totals are aligned to the Mac's last observation; without one there is no anchor.
+  const observed = machine.observed_at;
   const buckets = useMemo(
-    () => machine.hourly_tokens && reportedHours(machine.hourly_tokens, observed),
+    () =>
+      observed != null && machine.hourly_tokens
+        ? reportedHours(machine.hourly_tokens, observed)
+        : undefined,
     [machine.hourly_tokens, observed],
   );
   const { minimum } = publishedVersions(backend);
@@ -31,7 +35,7 @@ export function RemoteOverview({ machine, backend }: { machine: Machine; backend
         now={now}
         updateRequired={updateRequired}
       />
-      {buckets && (
+      {buckets && observed != null && (
         <TokensChart
           buckets={buckets}
           now={observed}

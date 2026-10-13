@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop preview API recovery
+
+- Let Darkbloom Preview relaunch after a crash or force quit. The bundled API it left running held the native service lock, so every new API exited and the app stayed on "Could not connect" until the leftover process was killed by hand. The next launch now stops that API, verified by recorded pid and exact bundled command, before starting a new one. Startup failures show the API's last error line instead of a generic message.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

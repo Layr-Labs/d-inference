@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -112,7 +112,10 @@ installation, build **Darkbloom Preview** with your own Developer ID. It has a
 separate bundle ID and application-data directory. Opening it starts the
 bundled API in native attach-only mode; provider operations continue to use the
 verified installed runtime. Quitting stops the API while preserving sign-in and
-dashboard state. It does not install a login item or configure an update feed.
+dashboard state. If the app exits without quitting (a crash or force quit), the
+next launch stops the API it left running, verified by its recorded pid and exact
+bundled command, before starting a new one. A startup failure reports the API's
+last stderr line. It does not install a login item or configure an update feed.
 
 Initialize the Swift submodules, install the frontend dependencies, then run:
 

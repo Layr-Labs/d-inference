@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Backend } from '../src/main/backend';
@@ -82,4 +82,63 @@ it('keeps release identity and trust unchanged unless both build settings are pr
   expect(config.productName).toBe('Darkbloom Preview');
   expect(config.appId).toBe('io.darkbloom.desktop.preview');
   expect(config.publish).toBeNull();
+});
+
+// Mirrors the native API's exclusive service lock: a second API exits while the first holds it.
+const locked = `
+const fs = require('node:fs');
+const dir = process.env.DARKBLOOM_DESKTOP_DIR;
+const lock = dir + '/service.pid';
+try {
+  process.kill(Number(fs.readFileSync(lock, 'utf8')), 0);
+  console.error('Error: Desktop API is already running');
+  process.exit(64);
+} catch {}
+fs.writeFileSync(lock, String(process.pid));
+fs.writeFileSync(dir + '/connection.json', JSON.stringify({pid: process.pid}), {mode: 0o600});
+setInterval(() => {}, 1000);
+`;
+
+it('replaces an API left running by a crashed app instead of failing every relaunch', async () => {
+  const crashed = await fixture(locked);
+  await crashed.ensure();
+  const orphan = JSON.parse(
+    await readFile(path.join(crashed.directory, 'connection.json'), 'utf8'),
+  ).pid;
+  // The crashed app never ran stop(); a relaunch gets a fresh runtime for the same directory.
+  const relaunched = new PreviewRuntime(crashed.binary, crashed.directory, 'ABCDEFGHIJ', 2000);
+  runtimes.push(relaunched);
+  await relaunched.ensure();
+  const current = JSON.parse(
+    await readFile(path.join(crashed.directory, 'connection.json'), 'utf8'),
+  ).pid;
+  expect(current).not.toBe(orphan);
+  expect(() => process.kill(orphan, 0)).toThrow();
+});
+
+it('leaves an unrelated process recorded in discovery untouched', async () => {
+  const runtime = await fixture(ready);
+  await mkdir(runtime.directory, { recursive: true });
+  // A stale record whose pid now belongs to another program (here, this test process).
+  await writeFile(
+    path.join(runtime.directory, 'connection.json'),
+    JSON.stringify({ pid: process.pid }),
+  );
+  await runtime.ensure();
+  expect(() => process.kill(process.pid, 0)).not.toThrow();
+});
+
+it('reports the API’s own startup error instead of discarding it', async () => {
+  const runtime = await fixture(
+    "console.error('Cannot publish desktop API discovery: disk full'); process.exit(1);",
+  );
+  await expect(runtime.ensure()).rejects.toThrow(
+    'The bundled preview API did not start: Cannot publish desktop API discovery: disk full',
+  );
+  const backend = new Backend(false, runtime);
+  await backend.connect();
+  expect(backend.current).toMatchObject({
+    state: 'error',
+    message: expect.stringContaining('disk full'),
+  });
 });

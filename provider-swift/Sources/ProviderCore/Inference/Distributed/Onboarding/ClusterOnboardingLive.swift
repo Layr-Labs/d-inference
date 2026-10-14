@@ -53,6 +53,13 @@ final class OnboardingLive: @unchecked Sendable {
     private var peerReport: ClusterSetupReport?
     private var choices: [(folder: String, key: String, title: String, alone: [String])] = []
     private var chosenTitle: String?
+    /// Set while this (leader) Mac answers a command forwarded from another member: its lines name this Mac by its
+    /// name instead of "this Mac", which would mean the Mac that shows them.
+    private var answeringForward = false
+    private lazy var ownName: String = ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
+
+    /// "this Mac", or this Mac's name in an answer shown on another member.
+    var here: String { lock.withLock { answeringForward } ? ownName : "this Mac" }
 
     init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings) {
         self.context = context; self.store = store; self.settings = settings
@@ -114,6 +121,8 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The leader's half: one forwarded command, run here as `darkbloom cluster` would run it on this Mac.
     func execute(_ request: ClusterControlRequest, leaderID: String) -> ClusterControlReply {
+        lock.withLock { answeringForward = true }
+        defer { lock.withLock { answeringForward = false } }
         func lines(_ result: Result<[String], ClusterOnboardingFailure>) -> ClusterControlReply {
             switch result {
             case .success(let lines): return .init(lines: lines, failed: false, leaderID: leaderID)
@@ -340,7 +349,7 @@ final class OnboardingLive: @unchecked Sendable {
                 keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), title, plan.alone.filter(\.holds).map(\.memberID)))
                 let last = plan.ranks.map(\.rank).max() ?? 0
                 var lines = plan.ranks.map { rank in
-                    let name = rank.local ? "\(localName) (this Mac)" : peerName
+                    let name = rank.local ? (lock.withLock { answeringForward } ? localName : "\(localName) (this Mac)") : peerName
                     return "rank \(rank.rank)\(rank.rank == last ? " (decodes)" : rank.rank == 0 ? " (serving API)" : ""): \(name), layers \(rank.firstLayer)-\(rank.endLayer - 1)"
                 }
                 let speed = plan.absolute ? "about \(Int(plan.decodeTokensPerSecond.rounded())) tokens/s" : "speed not yet measured on these Macs"
@@ -441,14 +450,14 @@ final class OnboardingLive: @unchecked Sendable {
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
     func readinessOnce() -> (ready: ClusterOnboardingReady?, line: String) {
         if let control = ClusterService.published()?.control, control.mode == "alone" {
-            if ClusterService.soloAnswers() { return (.init(servedBy: "this Mac", port: ClusterService.soloPort), control.line) }
+            if ClusterService.soloAnswers() { return (.init(servedBy: here, port: ClusterService.soloPort), control.line) }
             return (nil, control.line + " (loading)")
         }
         let now = session()
         var line: String
         if let session = now.session, session.observed {
             if session.ready, let port = session.port {
-                return (.init(servedBy: now.local ? "this Mac" : peerName, port: port), "ready")
+                return (.init(servedBy: now.local ? here : peerName, port: port), "ready")
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
         } else if let child = now.child, let end = child.lastEnd, !child.running {
@@ -513,14 +522,16 @@ final class OnboardingLive: @unchecked Sendable {
     func localStatus() -> [String] {
         var lines = [String]()
         if let control = ClusterService.published()?.control, control.mode == "alone" || control.mode == "cannotServe" {
-            lines.append(control.line + ".")
-            lines.append("Control leader: this Mac (term \(control.term): \(control.reason)).")
+            lines.append((here == "this Mac" ? "" : here + ": ") + control.line + ".")
+            lines.append("Control leader: \(here) (term \(control.term): \(control.reason)).")
             return lines
         }
         let model = leadership?.modelName ?? "the chosen model"
         let now = session()
-        if let session = now.session, session.observed {
-            lines.append(session.ready ? ClusterOnboardingReady(servedBy: now.local ? "this Mac" : peerName, port: session.port ?? 0).servingLine(model: model)
+        if leadership?.serving != true {
+            lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + $0 } ?? "").")
+        } else if let session = now.session, session.observed {
+            lines.append(session.ready ? ClusterOnboardingReady(servedBy: now.local ? here : peerName, port: session.port ?? 0).servingLine(model: model)
                 + " (\(session.readyRanks) of \(session.ranks) parts ready)."
                 : "\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
         } else if let error = now.error {
@@ -528,9 +539,9 @@ final class OnboardingLive: @unchecked Sendable {
         } else {
             lines.append("\(model) is starting (both Macs keep trying by themselves).")
         }
-        lines.append("Member: \(peerName). This Mac leads.")
+        lines.append(here == "this Mac" ? "Member: \(peerName). This Mac leads." : "Members: \(here) (leads), \(peerName).")
         if let control = ClusterService.published()?.control, control.leads {
-            lines.append("Control leader: \(ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)) (term \(control.term): \(control.reason)).")
+            lines.append("Control leader: \(ownName) (term \(control.term): \(control.reason)).")
         }
         return lines
     }

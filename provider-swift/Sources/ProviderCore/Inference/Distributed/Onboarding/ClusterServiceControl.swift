@@ -24,9 +24,9 @@ extension ClusterService {
 
     func partWanted(serving: Bool, hasSetup: Bool, model: String?) -> PartWant {
         let now = Self.monotonicSeconds()
-        guard let mode = lock.withLock({ control?.mode(now: now) }), let node = lock.withLock({ control }) else {
-            return serving && hasSetup ? .cluster : .none
-        }
+        // Until this Mac's control is derived (the first ticks after a start) nothing starts: a restarted leader
+        // whose claim was superseded while it was away must not start its part before it learns so.
+        guard let mode = lock.withLock({ control?.mode(now: now) }), let node = lock.withLock({ control }) else { return .keep }
         switch mode {
         case .following: return serving && hasSetup && node.leaderRunsCluster ? .cluster : .none
         case .cluster: return serving && hasSetup ? .cluster : .none

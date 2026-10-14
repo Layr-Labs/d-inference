@@ -3,10 +3,11 @@ import Testing
 import DarkbloomClusterProtocol
 @testable import ProviderCore
 
-/// A pair is served under a per-model grant of mode families, on any Apple
-/// silicon (owner, 2026-10-14: chips and memory do not gate what is offered);
-/// the single-Mac requirements of a model are for solo serving and stay
-/// unchanged.
+/// A pair serves its owner any model a cluster stage adapter runs, on any
+/// Apple silicon, in any sharded mode (owner, 2026-10-14 08:45: records never
+/// block owner serving; chips and memory do not gate what is offered); public
+/// traffic needs a per-model grant of mode families from passing records. The
+/// single-Mac requirements of a model are for solo serving and stay unchanged.
 @Suite struct DistributedServingEligibilityTests {
     private let families: [ChipFamily] = [.m1, .m2, .m3, .m4, .m5, .m6, .unknown]
     private let q27 = "registered_qwen38_27b", q27Public = "EigenLabs/Qwen3.8-27B-4bit-mtp"
@@ -61,10 +62,10 @@ import DarkbloomClusterProtocol
             try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, chipClass], runtimeModelID: q27, publicModelID: q27Public, mode: .phaseSplit)
             try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B",
                                                           cuts: [16], mode: .pipeline)
-            // A family no check of the model passed is refused on every chip.
-            let tensor = refusal { try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: q27, publicModelID: q27Public,
-                                                                                mode: .tensorParallel) }
-            #expect(tensor?.reason == .modeNotQualified(rank: 0, mode: .tensorParallel, granted: [.pipeline, .handOff]), "\(chip)")
+            // A family no check of the model passed is served for the owner on every chip, and not qualified for public traffic.
+            try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: q27, publicModelID: q27Public,
+                                                          cuts: [], mode: .tensorParallel)
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: q27, mode: .tensorParallel) == ClusterPairOwnerServing.notYetQualified)
         }
         // The rank order is free too: the M5 Ultra leads the 9B and the 27B.
         for model in [("registered_qwen35_9b", "Qwen3.5-9B"), (q27, q27Public)] {
@@ -105,12 +106,12 @@ import DarkbloomClusterProtocol
     @Test func renamingTheModelChangesNothing() throws {
         try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: q27, publicModelID: "renamed/public-id", mode: .phaseSplit)
         let renamed = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: self.cls("Apple M4 Max"),
-            runtimeModelID: q27, publicModelID: "renamed/public-id", mode: .tensorParallel) }
+            runtimeModelID: q27, publicModelID: "renamed/public-id", mode: nil) }
         #expect(renamed?.description.contains("renamed/public-id") == true && renamed?.description.contains(q27) == true)
         // The 27B's public name on another runtime model gets that model's decision.
         let future = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM5Max,
             runtimeModelID: "registered_future", publicModelID: q27Public) }
-        #expect(future?.reason == .noGrant && future?.description.contains("has no grant") == true)
+        #expect(future?.reason == .noStageAdapter && future?.description.contains("no cluster stage adapter") == true)
         try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM3Ultra,
             runtimeModelID: "registered_qwen35_9b", publicModelID: q27Public, mode: .phaseSplit)
     }
@@ -140,9 +141,12 @@ import DarkbloomClusterProtocol
         // Every decision is about a registered model, and none is both granted and withheld.
         #expect(Set(decided).isSubset(of: Set(registered)))
         #expect(decided.count == Set(decided).count)
-        // A registered model with no decision has no record that passed or diverged: refused as having no grant.
+        // A registered model with no decision has no record that passed or diverged: served for its owner, with no
+        // public grant.
         for model in Set(registered).subtracting(decided) {
-            #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p") }?.reason == .noGrant)
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p",
+                                                          cuts: [8], mode: .pipeline)
+            #expect(refusal { _ = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p") }?.reason == .noGrant)
         }
         for grant in ClusterPairServingGrants.granted {
             #expect(!grant.qualifiedChipClasses.isEmpty && !grant.evidence.isEmpty)
@@ -156,9 +160,12 @@ import DarkbloomClusterProtocol
             }
         }
         for (model, reason) in ClusterPairServingGrants.withheld {
-            let refused = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p") }
+            let refused = refusal { _ = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p") }
             #expect(refused?.reason == .withheld(reason))
-            #expect(refused?.description.contains("not granted pair serving") == true)
+            #expect(refused?.description.contains("not qualified for public traffic") == true)
+            // Its owner is served away from the shapes that diverged.
+            try ClusterPairServingGrants.requirePlacement([cls("Apple M4 Max"), cls("Apple M4 Max")], runtimeModelID: model, publicModelID: "p",
+                                                          cuts: [6], mode: .pipeline)
         }
         #expect(ClusterPairServingGrants.acceptedCrossClassVerdicts == ["exact", "tokensEqualLogitsDiffer", "divergedAtNearTie"])
         // The records this build ships: every one is used, and they decide the models the runs decided.
@@ -208,27 +215,21 @@ import DarkbloomClusterProtocol
                                                          qualified: ["2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034"]))
     }
 
-    /// The product serves a model on a pair only with both halves: the grant
-    /// (permission, on any Apple silicon) and a row of time budgets. Every
-    /// row's model is granted; a granted model without a row (GPT-OSS and
-    /// Gemma 4 QAT4) is refused at the start and not offered; and the
-    /// runtime's model, not the public name, selects both.
-    @Test func everyServedModelHasItsGrantAndItsTimeBudgets() throws {
-        typealias Table = DistributedInstalledPairServingTable
-        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID))
-        #expect(Set(Table.rows.map(\.runtimeModelID)).isSubset(of: granted))
-        #expect(granted.subtracting(Table.rows.map(\.runtimeModelID))
-            == ["registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit"])
-        for row in Table.rows {
-            let budgets = try Table.servingBudgets(runtimeModelID: row.runtimeModelID, publicModelID: "renamed/public-id")
+    /// Every model a stage adapter runs is served for its owner, with time
+    /// budgets derived from its setup and its artifact's size (no per-model
+    /// row): GPT-OSS and Gemma 4 QAT4 included. The runtime's model, not the
+    /// public name, selects the decision.
+    @Test func everyRegisteredModelIsServedForItsOwnerWithDerivedBudgets() throws {
+        let registered = Set(ClusterRuntimeAdapter.allCases.flatMap { $0.registeredProfiles.map(\.runtimeModelID) })
+        #expect(registered.isSuperset(of: ["registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit"]))
+        for model in registered {
+            let owner = try ClusterPairServingGrants.ownerServing(runtimeModelID: model, publicModelID: "renamed/public-id")
+            #expect(owner.runtimeModelID == model)
+            let budgets = DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds: 600, maximumPromptTokens: 8192,
+                artifactBytes: 16_000_000_000, largestStageShare: 0.5, lastRankLoadsEverything: false).budgets
             #expect(budgets.startupAllowanceNanoseconds >= 90_000_000_000 && budgets.firstTokenMillisecondsPerPromptToken >= 1)
         }
-        for model in granted.subtracting(Table.rows.map(\.runtimeModelID)) {
-            #expect(throws: DistributedInstalledServingRefusal.self) {
-                _ = try Table.servingBudgets(runtimeModelID: model, publicModelID: q27Public)
-            }
-        }
-        // Each served family is granted in both orders on the bench pair and on Macs no check ran.
+        // Each served family is served in both orders on the bench pair and on Macs no check ran.
         for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning",
                       "registered_qwen35_9b", q27] {
             for order in [[ClusterChipClass.appleM3Ultra, .appleM5Ultra], [.appleM5Ultra, .appleM3Ultra], [cls("Apple M4 Max"), cls("Apple M4 Max")]] {

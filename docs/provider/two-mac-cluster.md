@@ -100,27 +100,46 @@ to keep waiting (it leads) and the other says so and joins it.
 
 ## Which models a pair serves, and in which mode
 
-A pair serves a model only under the grant this build derives from its
-cross-cable qualification records (each a run of both Macs compared with
-single-Mac references under the near-tie rule). A grant is bound to the model,
-its artifact and the mode family its records ran: the pipeline (with its
-compact-decode variant), the pipeline with speculative rounds, tensor parallel,
-and the hand-off modes (phase split and the prefill/decode hybrids, kept but off
-by default) are four families, and a passing record of one opens no other.
+For your own use, a pair serves any model Darkbloom has a cluster stage adapter
+for. `darkbloom cluster` detects both Macs, you pick a model, and the planner
+checks memory and picks tensor parallel or pipeline. A model is refused only
+for one of two reasons, each said in one line:
 
-Chips and memory do not decide what is offered. A passing record on any two
-Macs approves its family on any Apple silicon (M1 to M5, Pro, Max or Ultra, in
-either order): the planner reads each Mac's chip and memory and decides whether
-and how the model fits, and each Mac's memory gate decides every load. A record
-that diverged withholds only what it ran: on that chip combination the model is
-served only at shapes a check passed in, and a Mac that ran a diverged shape at
-its rank refuses that exact shape with any partner (it checks its rank with its
-own chip and cannot see its partner's). A pass contradicted by a divergence of
-the same shape is no evidence. A family with only diverged records is withheld
-everywhere; an inconclusive record neither grants nor withholds. The planner,
-the onboarding offer and every Mac's start apply the same rule, and a model
-also needs the installed path's time budgets for it (GPT-OSS 20B and Gemma 4
-26B QAT4 are granted but have none yet, so they are not offered).
+- the two Macs together cannot hold it in any sharded layout (pipeline or
+  tensor parallel);
+- this build has no cluster stage adapter for it.
+
+Chips never decide. Each Mac's memory gate still decides every load.
+
+Qualification records (cross-cable runs compared with single-Mac references
+under the near-tie rule) do two things only:
+
+- They steer the planner. A shape that diverged on a chip combination (each
+  rank's chip in rank order, the cut, the mode family) is not planned or
+  started there. Every other shape is, whether or not a check passed in it.
+  A Mac checks its own rank with its own chip, so it refuses a rank-shape its
+  chip diverged at with any partner; the planner applies the same rule and
+  picks another cut. The planner refuses only when every placement the Macs can
+  hold diverged there.
+- They decide public traffic. A passing record qualifies its model, artifact
+  and mode family for public traffic on any Apple silicon. The families are the
+  pipeline (with compact decode), the pipeline with speculative rounds, tensor
+  parallel, and the hand-off modes (kept, but off by default); a record of one
+  qualifies no other. A pass contradicted by a divergence of the same shape
+  counts for nothing. The coordinator's parity qualification still decides each
+  public placement.
+
+A model or mode with no passing record is served for you, and the plan and the
+onboarding say in one line: "not yet qualified for public traffic".
+
+Time budgets (startup, first token, stop) are derived from the setup and the
+installed artifact, not from a per-model table:
+
+- The first-token allowance reaches the setup's request deadline at the
+  longest prompt. The planner derived that deadline from the chosen placement's
+  predicted speed on your Macs: three times the prediction, plus 30 s.
+- The startup allowance comes from the artifact's size, at load rates below the
+  slowest any Mac has recorded.
 
 ## If a Mac goes away
 

@@ -13,10 +13,11 @@ public struct ClusterMemberPreparation: Sendable {
     let validation: DistributedInstalledValidation
 
     /// `localChipClass` is this Mac's own class
-    /// (`ClusterChipClass.local()`): the model's pair-serving grant must
-    /// list it for the rank this Mac runs (owner decision D4). The single-Mac
+    /// (`ClusterChipClass.local()`): the rank this Mac runs must not be a
+    /// rank-shape that diverged on that class, and the model must have a
+    /// cluster stage adapter (owner, 2026-10-14 08:45). The single-Mac
     /// requirements of the model are not applied to a member: see
-    /// DistributedServingEligibility. The grant is decided from the verified
+    /// DistributedServingEligibility. This is decided from the verified
     /// metadata, before the model's weights are read: a start that policy
     /// refuses costs no pass over tens of gigabytes.
     public static func prepare(reference: ClusterConfigurationReference,

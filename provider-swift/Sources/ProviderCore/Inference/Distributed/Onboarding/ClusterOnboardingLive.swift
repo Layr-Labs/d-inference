@@ -523,7 +523,9 @@ final class OnboardingLive: @unchecked Sendable {
                              deployment, plan))
                 // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here.
                 let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, localName: localName, peerName: peerName)
-                return .init(title: title, lines: [line], blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID)
+                // Served for the owner either way; one line says whether public traffic may reach it yet.
+                return .init(title: title, lines: [line] + (plan.publicTraffic.map { [$0] } ?? []), blocker: option.blocker,
+                             provision: offer, fitRemedy: remedy, modelID: modelID)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?))]()

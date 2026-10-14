@@ -144,7 +144,7 @@ extension ClusterPlacementPlanner {
                     ? option(kind, .chosen, "the fastest sharded deployment that fits, cut from each Mac's memory and speed", best, regime: regime, layerCount: layers)
                     : option(kind, .slower, versus(best, chosen, regime: regime), best, regime: regime, layerCount: layers))
             } else if let refused = context.ordered(admitted.filter { $0.mode == mode && $0.possible }, regime: regime).first {
-                options.append(option(kind, .failedQualification, "no passed qualification covers its shape on these Macs (each rank's chip, "
+                options.append(option(kind, .failedQualification, "a cross-cable check diverged at its shape on these Macs (each rank's chip, "
                     + "the cut, the mode), so it is never planned here", refused, regime: regime, layerCount: layers))
             } else {
                 options.append(option(kind, .doesNotFit, "no cut of this model fits these Macs in this mode",

@@ -158,9 +158,10 @@ public struct ClusterPairServingQualification: Sendable, Equatable {
     }
 }
 
-/// One registered model's grant to be served by a pair: the mode families its
-/// passing cross-cable checks ran, each approved for any detected Apple
-/// silicon the planner can place it on. No chip class is listed for any role:
+/// One registered model's PUBLIC grant: the mode families its passing
+/// cross-cable checks ran, each qualified for public traffic on any detected
+/// Apple silicon the planner can place it on. The owner's own serving never
+/// needs it (`ClusterPairOwnerServing`). No chip class is listed for any role:
 /// a chip decides nothing here except through a diverged record of its exact
 /// combination (`ClusterPairQualificationRecords`), and memory decides only
 /// what fits (the planner and each Mac's load gate). Keyed by the runtime's
@@ -201,18 +202,22 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
 /// in the shape of a parity qualification (each rank's chip class in rank
 /// order, the cuts, the mode).
 ///
-/// The universal rule these records carry (owner, 2026-10-14): a model whose
-/// numerics depend on the shape of its placement shows it by failing a check
-/// at some shape on some chips. What diverged is then withheld exactly:
+/// What a diverged record does (owner, 2026-10-14 08:45): it steers the
+/// planner and the start away from the exact shape that diverged, on the chips
+/// that ran it, and nothing else. Records never decide whether the owner may
+/// serve a model; they decide public traffic (`ClusterPairServingGrant`, the
+/// coordinator's parity qualification) and these shapes:
 ///
-/// - on the chip combination that diverged (its classes in any rank order),
-///   a placement of that mode family is served only at a shape a passed check
-///   ran exactly (classes in rank order, cuts, mode) and that no check of the
-///   family diverged at;
-/// - on any combination, a rank whose own class ran a diverged shape at that
-///   rank refuses that exact shape (rank count, cuts, family): a Mac checks
-///   its rank with its own class only and cannot see its partner's;
-/// - every other placement is left to the grant (any Apple silicon).
+/// - a placement is refused only when it IS a shape that diverged (each rank's
+///   class in rank order, the cuts, the mode family); on that same chip
+///   combination every other shape is admitted, whether or not a check passed
+///   in it;
+/// - a Mac checks its rank with its own class only (it cannot see its
+///   partner's), so a rank whose class ran a diverged shape at that rank
+///   refuses that exact rank-shape (rank count, cuts, family) with any partner;
+///   the planner and the offer apply the same half, so they pick another cut;
+/// - the planner refuses a model on these grounds only when every shape these
+///   Macs can hold diverged.
 ///
 /// Records decide; no model or chip is named by the rule.
 public struct ClusterPairQualificationRecords: Sendable, Equatable {
@@ -234,27 +239,23 @@ public struct ClusterPairQualificationRecords: Sendable, Equatable {
         return failed.contains { $0.family == family && $0.combination == combination }
     }
 
-    /// A whole placement: every classed rank's own half (`admitsRank`) and, on
-    /// a chip combination that diverged, a passed check of exactly this shape
-    /// that no failed check shares. A rank with no class (a test profile, a
-    /// virtual machine) is left to its own start, which refuses it, unless the
-    /// classed ranks could be a combination that diverged.
+    /// A whole placement: every classed rank's own half (`admitsRank`). With
+    /// every class known that refuses exactly the shapes that diverged (and the
+    /// rank-shapes a class diverged at); any other shape on the same chips is
+    /// admitted. A rank with no class (a test profile, a virtual machine) is
+    /// left to its own start, which refuses it, unless the classed ranks could
+    /// be a shape that diverged at these cuts.
     public func admits(chipClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode) -> Bool {
         let family = mode.servingFamily
         guard restricts(family) else { return true }
         for (rank, chipClass) in chipClasses.enumerated() {
             if let chipClass, !admitsRank(rank, of: chipClasses.count, chipClass: chipClass, cuts: cuts, mode: mode) { return false }
         }
-        let classes = chipClasses.compactMap { $0 }
-        guard classes.count == chipClasses.count else {
-            // Unknown ranks: refuse when the known ones fit inside a combination that diverged.
-            return !failed.contains { q in
-                q.family == family && q.chipClasses.count == chipClasses.count && Self.isSubMultiset(classes, of: q.chipClasses)
-            }
+        guard chipClasses.contains(where: { $0 == nil }) else { return true }
+        return !failed.contains { q in
+            q.family == family && q.chipClasses.count == chipClasses.count && q.cuts == cuts
+                && zip(q.chipClasses, chipClasses).allSatisfy { ran, here in here.map { $0 == ran } ?? true }
         }
-        guard restrictsCombination(classes, family: family) else { return true }
-        let divergedHere = failed.contains { $0.family == family && $0.chipClasses == classes && $0.cuts == cuts }
-        return !divergedHere && passed.contains { $0.chipClasses == classes && $0.cuts == cuts && $0.mode == mode }
     }
 
     /// One rank's half of `admits`, decided on the Mac that runs the rank with
@@ -267,15 +268,6 @@ public struct ClusterPairQualificationRecords: Sendable, Equatable {
             q.family == family && q.chipClasses.count == rankCount && q.chipClasses.indices.contains(rank)
                 && q.chipClasses[rank] == chipClass && q.cuts == cuts
         }
-    }
-
-    static func isSubMultiset(_ part: [ClusterChipClass], of whole: [ClusterChipClass]) -> Bool {
-        var left = whole
-        for item in part {
-            guard let index = left.firstIndex(of: item) else { return false }
-            left.remove(at: index)
-        }
-        return true
     }
 
     /// The passed shapes in plain words.
@@ -291,27 +283,39 @@ public struct ClusterPairQualificationRecords: Sendable, Equatable {
     }
 }
 
-/// Why a pair may not serve a placement.
+/// Why a pair may not serve a placement, or why a model has no public grant.
+///
+/// For the owner's own use (owner, 2026-10-14 08:45) a pair refuses a model
+/// only when no cluster stage adapter runs it (`noStageAdapter`) or when the
+/// two Macs cannot hold it in any sharded layout (the planner's memory
+/// refusal, not a value here); a rank is refused only when it cannot be
+/// checked (`placementShape`, `unknownChip`, `modeMissing`) or when it is a
+/// shape that diverged on its chips (`shapeDiverged`). `noGrant`, `withheld`
+/// and `artifactNotQualified` say why a model has no PUBLIC grant
+/// (`ClusterPairServingGrants.grant`); they never stop the owner's serving.
 public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertible, LocalizedError, Sendable {
     public enum Reason: Equatable, Sendable {
-        /// This build has no grant and no decision for the model.
+        /// Public traffic: this build has no passing record of the model.
         case noGrant
-        /// A grant was considered and withheld, for this reason.
+        /// Public traffic: the model's records diverged and none passed, for this reason.
         case withheld(String)
+        /// Owner and public: no cluster stage adapter of this build runs the
+        /// model, in any sharded mode.
+        case noStageAdapter
         /// The placement has fewer than two ranks, or the rank is outside it.
         case placementShape(rank: Int, rankCount: Int)
         /// The Mac that runs this rank has a chip with no chip class (not
         /// Apple silicon as the system names it, or a virtual machine).
         case unknownChip(rank: Int, role: ClusterPairServingRole)
-        /// The model diverged at some placement, and this rank's class at this
-        /// rank with these cuts in this mode is a placement that diverged, or
-        /// the combination that diverged at a shape no passed check ran.
-        case shapeNotQualified(rank: Int, chipClass: ClusterChipClass, cuts: [Int], mode: ClusterGenerationMode, qualified: String)
-        /// The model has records, but none of them ran the installed artifact.
+        /// The rank was checked without its generation mode.
+        case modeMissing(rank: Int)
+        /// This rank's class at this rank, with these cuts, in this mode
+        /// family, is a shape that diverged from the single-Mac reference in a
+        /// cross-cable check (`diverged` lists every shape that did).
+        case shapeDiverged(rank: Int, chipClass: ClusterChipClass, cuts: [Int], mode: ClusterGenerationMode, diverged: String)
+        /// Public traffic: the model has records, but none of them ran the
+        /// installed artifact.
         case artifactNotQualified(installed: String, qualified: [String])
-        /// The placement's mode is in a family no passed check of this model
-        /// ran (or no mode was given): a grant opens only its own families.
-        case modeNotQualified(rank: Int, mode: ClusterGenerationMode?, granted: [ClusterPairServingModeFamily])
     }
     public let runtimeModelID: String
     public let publicModelID: String
@@ -321,15 +325,18 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
     public var description: String {
         let model = "This cluster's model, \(publicModelID) (registered as \(runtimeModelID)),"
         let policy = " That is a policy decision about this model, not a fault in the setup, and no cluster setting changes it."
+        let owner = " Its owner may still serve it on a pair; public traffic needs a passing cross-cable check."
         switch reason {
         case .noGrant:
-            return model + " has no grant to be served by a pair in this darkbloom: no cross-cable qualification record of it has passed. "
-                + "A pair serves a model only under a grant derived from the records of passing runs; a passing run on any Macs approves "
-                + "its mode family on any Apple silicon." + policy
+            return model + " is not yet qualified for public traffic: no cross-cable qualification record of it has passed. "
+                + "A passing run on any Macs qualifies its mode family on any Apple silicon." + owner
         case .withheld(let why):
-            return model + " is not granted pair serving: \(why)." + policy
+            return model + " is not qualified for public traffic: \(why)." + owner
+        case .noStageAdapter:
+            return model + " has no cluster stage adapter in this darkbloom, so no sharded layout (pipeline or tensor parallel) "
+                + "can run it across Macs. A Mac that holds it alone serves it with single-Mac Darkbloom." + policy
         case .placementShape(let rank, let rankCount):
-            return model + " cannot be placed: rank \(rank) of a placement of \(rankCount) ranks. A pair-serving grant applies to two or more ranks in order."
+            return model + " cannot be placed: rank \(rank) of a placement of \(rankCount) ranks. A pair placement has two or more ranks in order."
         case .unknownChip(let rank, let role):
             return model + " cannot run rank \(rank) (the \(role.words)) on this Mac: its chip is not Apple silicon as the system names it "
                 + "(a virtual machine's chip is not), so this build cannot check the rank. "
@@ -337,22 +344,15 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         case .artifactNotQualified(let installed, let qualified):
             return model + " is installed as artifact \(installed.prefix(12)), and its cross-cable qualification records ran "
                 + (qualified.isEmpty ? "no artifact" : "only " + qualified.map { String($0.prefix(12)) }.joined(separator: ", "))
-                + ". A grant rests on runs of the very artifact a pair serves; another artifact of the same model (another "
-                + "quantization, a re-upload) needs its own passing check." + policy
-        case .modeNotQualified(let rank, let mode, let granted):
-            let families = granted.map(\.description).joined(separator: " and ")
-            return model + " is granted pair serving only in the mode famil\(granted.count == 1 ? "y" : "ies") its passing cross-cable checks ran: "
-                + "\(families.isEmpty ? "none" : families). "
-                + (mode.map { "Rank \(rank) of this placement runs \($0.rawValue), a \($0.servingFamily.description) mode, which no passing check of this model ran. " }
-                    ?? "Rank \(rank) was checked without its generation mode, and a grant opens a mode family only with the mode named. ")
-                + "A check of one mode family is no evidence for another (a phase split hands the request to one Mac; a pipeline, a speculative "
-                + "round and a tensor-parallel split each compute differently); a family is added only after a cross-cable check in it passes." + policy
-        case .shapeNotQualified(let rank, let chipClass, let cuts, let mode, let qualified):
-            return model + " diverged from its single-Mac reference in a cross-cable check, so the chips and shapes that diverged are withheld; "
-                + "on that chip combination a pair serves it only at placements a check passed in: \(qualified). "
-                + "Rank \(rank) of this placement runs on \(chipClass.rawValue) at cut \(cuts.map(String.init).joined(separator: "/")) "
-                + "in \(mode.rawValue), which is one of them or no passed check covers; other Macs, or another cut, are served."
-                + policy
+                + ", so this artifact is not yet qualified for public traffic; another artifact of the same model (another "
+                + "quantization, a re-upload) needs its own passing check." + owner
+        case .modeMissing(let rank):
+            return model + ": rank \(rank) was checked without its generation mode, and a rank is started only with its mode named." + policy
+        case .shapeDiverged(let rank, let chipClass, let cuts, let mode, let diverged):
+            return model + " diverged from its single-Mac reference in a cross-cable check at some placements (\(diverged)), and those "
+                + "exact shapes are not served. Rank \(rank) of this placement runs on \(chipClass.rawValue) at cut "
+                + "\(cuts.map(String.init).joined(separator: "/")) in \(mode.rawValue), which is one of them; the planner picks another cut "
+                + "or order on these Macs." + policy
         }
     }
 }
@@ -507,14 +507,19 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
     }
 }
 
-/// The grants this darkbloom carries, derived from the qualification records
-/// it ships (`ClusterPairQualificationRecordsBundled`, written by
+/// What a pair serves (owner, 2026-10-14 08:45). For the owner: any model a
+/// cluster stage adapter runs, in any sharded mode the runtime has, on any
+/// Apple silicon (`ownerServing`, `requireRank`, `plannable`,
+/// `startRefusal`), away from the exact shapes a record diverged at; memory
+/// is the planner's and each Mac's load gate's. For public traffic: the
+/// grants this darkbloom derives from the qualification records it ships
+/// (`grant`; `ClusterPairQualificationRecordsBundled`, written by
 /// `darkbloom-cluster-pair-check record` from cross-cable runs and their
-/// single-Mac references): the near-tie rule decides each record
+/// single-Mac references), with the coordinator's parity qualification
+/// deciding each placement. The near-tie rule decides each record
 /// (`acceptedCrossClassVerdicts`), `ClusterPairServingDecisions` decides each
 /// model. Single-Mac serving requirements (`ModelRuntimeRequirements`) are
-/// separate and unchanged. Adding a model or a mode family is adding the
-/// runner's record of a passing run, not editing a table; no chip is listed.
+/// separate and unchanged. No chip is listed anywhere.
 public enum ClusterPairServingGrants {
     /// The comparator verdicts a cross-cable check may have and pass.
     /// `diverged` and `incomparable` fail it.
@@ -566,10 +571,12 @@ public enum ClusterPairServingGrants {
         Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID).shapes(runtimeModelID: runtimeModelID)
     }
 
-    /// The grant for a model a pair may serve; a refusal for every other
-    /// model. With `artifactSHA256` (the installed capability's), only the
-    /// records of that artifact count: a model whose records ran another
-    /// artifact is refused for it.
+    /// The PUBLIC grant: the mode families a model's passing records qualify
+    /// for public traffic (the coordinator's parity qualification still decides
+    /// each placement); a refusal for every other model. With `artifactSHA256`
+    /// (the installed capability's), only the records of that artifact count.
+    /// This never decides whether the owner may serve the model
+    /// (`ownerServing`).
     public static func grant(runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
                              decisions: ClusterPairServingDecisions = decisions) throws -> ClusterPairServingGrant {
         let scoped = Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID)
@@ -585,17 +592,52 @@ public enum ClusterPairServingGrants {
         throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noGrant)
     }
 
+    /// Whether a cluster stage adapter of this build runs the model: every
+    /// adapter runs the pipeline (a capability record lists it first), so a
+    /// registered model always has a sharded mode.
+    public static func hasStageAdapter(runtimeModelID: String) -> Bool {
+        ClusterRuntimeAdapter.registering(runtimeModelID: runtimeModelID) != nil
+    }
+
+    static func requireStageAdapter(runtimeModelID: String, publicModelID: String) throws {
+        guard hasStageAdapter(runtimeModelID: runtimeModelID) else {
+            throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noStageAdapter)
+        }
+    }
+
+    /// The owner's own serving of a model (owner, 2026-10-14 08:45): refused
+    /// only when no cluster stage adapter runs it; memory is the planner's and
+    /// each Mac's load gate's. Records add the public grant, if any, and the
+    /// shapes the planner steers away from.
+    public static func ownerServing(runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
+                                    decisions: ClusterPairServingDecisions = decisions) throws -> ClusterPairOwnerServing {
+        try requireStageAdapter(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
+        return .init(runtimeModelID: runtimeModelID,
+            publicGrant: try? grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, artifactSHA256: artifactSHA256,
+                                    decisions: decisions),
+            records: records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions))
+    }
+
+    /// The one line a plan or the onboarding shows about public traffic for a
+    /// model served in `mode`.
+    public static func publicTrafficLine(runtimeModelID: String, artifactSHA256: String? = nil, mode: ClusterGenerationMode?,
+                                         decisions: ClusterPairServingDecisions = decisions) -> String {
+        let grant = try? grant(runtimeModelID: runtimeModelID, publicModelID: runtimeModelID, artifactSHA256: artifactSHA256,
+                               decisions: decisions)
+        return ClusterPairOwnerServing.publicTrafficLine(grant: grant, mode: mode)
+    }
+
     /// One rank of a placement, checked on the Mac that runs it with that
-    /// Mac's own chip class. Any Apple silicon may run any rank of a granted
-    /// family; a rank whose class ran a diverged shape at this rank refuses
-    /// that exact shape. The chip combination is checked where every rank's
+    /// Mac's own chip class, for the owner's serving: any Apple silicon runs
+    /// any rank of any sharded mode the model's stage adapter has, with or
+    /// without a record; a rank whose class ran a diverged shape at this rank
+    /// refuses that exact shape. Unknown ranks are checked where every rank's
     /// class is known (`startRefusal`, `plannable`, `requirePlacement`).
     public static func requireRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass?,
                                    runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
                                    cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil,
                                    decisions: ClusterPairServingDecisions = decisions) throws {
-        let grant = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, artifactSHA256: artifactSHA256,
-                              decisions: decisions)
+        try requireStageAdapter(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
         func refuse(_ reason: ClusterPairServingRefusal.Reason) -> ClusterPairServingRefusal {
             .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: reason)
         }
@@ -603,31 +645,21 @@ public enum ClusterPairServingGrants {
             throw refuse(.placementShape(rank: rank, rankCount: rankCount))
         }
         guard let chipClass else { throw refuse(.unknownChip(rank: rank, role: role)) }
-        // A grant opens only the mode families its passing checks ran, so the
-        // mode is required: a caller that does not give it is refused rather
-        // than admitted in any family.
-        guard let mode else { throw refuse(.modeNotQualified(rank: rank, mode: nil, granted: grant.families)) }
-        let family = mode.servingFamily
-        if let why = grant.withheldFamilies[family] {
-            throw refuse(.withheld("its \(family.description) mode family is withheld: " + why))
-        }
-        guard grant.families.contains(family) else {
-            throw refuse(.modeNotQualified(rank: rank, mode: mode, granted: grant.families))
-        }
-        // A family with a diverged record needs the placement's shape: a
-        // caller that does not give it is refused rather than admitted at any cut.
+        // A family with a diverged record needs the mode and the placement's
+        // shape: a caller that does not give them is refused rather than
+        // admitted at a shape that diverged.
+        guard let mode else { throw refuse(.modeMissing(rank: rank)) }
         let checks = records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions)
-        if checks.restricts(family) {
+        if checks.restricts(mode.servingFamily) {
             guard let cuts, checks.admitsRank(rank, of: rankCount, chipClass: chipClass, cuts: cuts, mode: mode) else {
-                throw refuse(.shapeNotQualified(rank: rank, chipClass: chipClass, cuts: cuts ?? [], mode: mode,
-                    qualified: checks.passedShapesText))
+                throw refuse(.shapeDiverged(rank: rank, chipClass: chipClass, cuts: cuts ?? [], mode: mode, diverged: checks.failedShapesText))
             }
         }
     }
 
-    /// The combination half of a placement, where every rank's class is known:
-    /// nil, or the refusal for a chip combination that diverged at a shape no
-    /// passed check ran.
+    /// The half of a placement no single rank can check (a rank with no
+    /// class): nil, or the refusal for a placement that could be a shape that
+    /// diverged.
     static func combinationRefusal(_ rankClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode,
                                    runtimeModelID: String, publicModelID: String, artifactSHA256: String?,
                                    decisions: ClusterPairServingDecisions) -> ClusterPairServingRefusal? {
@@ -636,38 +668,34 @@ public enum ClusterPairServingGrants {
         let rank = rankClasses.count - 1
         guard let last = rankClasses.compactMap({ $0 }).last else { return nil }
         return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-            reason: .shapeNotQualified(rank: rank, chipClass: rankClasses[rank] ?? last, cuts: cuts, mode: mode, qualified: checks.passedShapesText))
+            reason: .shapeDiverged(rank: rank, chipClass: rankClasses[rank] ?? last, cuts: cuts, mode: mode, diverged: checks.failedShapesText))
     }
 
     /// Whether the planner may consider a placement of this model: the rule a
-    /// start applies, from the chip names the profiles carry. A model with a
-    /// grant is planned only in a granted family; a family with a diverged
-    /// record keeps to `ClusterPairQualificationRecords.admits`; a rank with
-    /// no class (a test profile, a virtual machine) and a model with no grant
-    /// at all are left to the start, which refuses them.
+    /// start applies, from the chip names the profiles carry. Any sharded mode
+    /// the runtime lists is planned with or without a record (tensor parallel
+    /// included); only a shape that diverged on these chips is left out
+    /// (`ClusterPairQualificationRecords.admits`). A model no stage adapter
+    /// runs is never planned.
     public static func plannable(_ rankClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode,
                                  runtimeModelID: String, artifactSHA256: String? = nil,
                                  decisions: ClusterPairServingDecisions = decisions) -> Bool {
+        guard hasStageAdapter(runtimeModelID: runtimeModelID) else { return false }
         let checks = records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions)
-        if checks.restricts(mode.servingFamily), !checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode) { return false }
-        let scoped = Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID)
-        guard let grant = scoped.granted.first(where: { $0.runtimeModelID == runtimeModelID }) else { return true }
-        return grant.families.contains(mode.servingFamily)
+        return !checks.restricts(mode.servingFamily) || checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode)
     }
 
-    /// What the start would refuse of a planned placement (each rank's chip
-    /// class in rank order, its cuts and mode), nil when every rank's own
-    /// check and the combination check admit it: the model's grant, its mode
-    /// family and, for a family with a diverged record, the shape. The
-    /// onboarding offers a model only when this is nil, so it offers exactly
-    /// what a start serves. A rank whose chip has no class (a test profile, a
-    /// virtual machine) is left to its own start, as in `plannable`.
+    /// What the owner's start would refuse of a planned placement (each rank's
+    /// chip class in rank order, its cuts and mode), nil when every rank's own
+    /// check and the combination check admit it. The onboarding offers a model
+    /// only when this is nil, so it offers exactly what a start serves. A rank
+    /// whose chip has no class (a test profile, a virtual machine) is left to
+    /// its own start, as in `plannable`.
     public static func startRefusal(_ rankClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode,
                                     runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
                                     decisions: ClusterPairServingDecisions = decisions) -> ClusterPairServingRefusal? {
         do {
-            _ = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, artifactSHA256: artifactSHA256,
-                          decisions: decisions)
+            try requireStageAdapter(runtimeModelID: runtimeModelID, publicModelID: publicModelID)
             for (rank, chipClass) in rankClasses.enumerated() where chipClass != nil {
                 try requireRank(rank, of: rankClasses.count, chipClass: chipClass, runtimeModelID: runtimeModelID,
                                 publicModelID: publicModelID, artifactSHA256: artifactSHA256, cuts: cuts, mode: mode,
@@ -678,11 +706,11 @@ public enum ClusterPairServingGrants {
         } catch let refusal as ClusterPairServingRefusal {
             return refusal
         } catch {
-            return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noGrant)
+            return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noStageAdapter)
         }
     }
 
-    /// A whole placement: each rank's chip class in rank order.
+    /// A whole placement for the owner: each rank's chip class in rank order.
     public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String,
                                         cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil,
                                         decisions: ClusterPairServingDecisions = decisions) throws {
@@ -695,11 +723,41 @@ public enum ClusterPairServingGrants {
                             runtimeModelID: runtimeModelID, publicModelID: publicModelID, cuts: cuts, mode: mode,
                             decisions: decisions)
         }
-        // Each rank's half holds; on a chip combination that diverged the
-        // classes must also come from one passed check together.
         if let cuts, let mode, let refusal = combinationRefusal(rankClasses, cuts: cuts, mode: mode, runtimeModelID: runtimeModelID,
                                                                 publicModelID: publicModelID, artifactSHA256: nil, decisions: decisions) {
             throw refusal
         }
+    }
+}
+
+/// A model its owner may serve on a pair (owner, 2026-10-14 08:45: detect ->
+/// pick a model -> memory check -> the planner picks tensor parallel or
+/// pipeline). Whether the two Macs can hold it is the planner's; this carries
+/// what the records add: the public grant, if any (the coordinator still
+/// requires its parity qualification for each placement), and the shapes
+/// that diverged, which the planner steers away from.
+public struct ClusterPairOwnerServing: Sendable, Equatable {
+    /// The one line shown for a model or placement with no public grant.
+    public static let notYetQualified = "not yet qualified for public traffic"
+
+    public let runtimeModelID: String
+    /// The records' public grant; nil when no passing record of the installed
+    /// artifact stands.
+    public let publicGrant: ClusterPairServingGrant?
+    /// Every check on record, for the shapes they steer away from.
+    public let records: ClusterPairQualificationRecords
+
+    /// The model's public status in one line, whatever the mode.
+    public var publicTrafficLine: String { Self.publicTrafficLine(grant: publicGrant, mode: nil) }
+
+    /// The public status of serving it in `mode`, in one line.
+    public func publicTrafficLine(mode: ClusterGenerationMode?) -> String { Self.publicTrafficLine(grant: publicGrant, mode: mode) }
+
+    static func publicTrafficLine(grant: ClusterPairServingGrant?, mode: ClusterGenerationMode?) -> String {
+        guard let grant, !grant.families.isEmpty, mode.map({ grant.families.contains($0.servingFamily) }) ?? true else {
+            return notYetQualified
+        }
+        let families = (mode.map { [$0.servingFamily] } ?? grant.families).map(\.description).joined(separator: " and ")
+        return "qualified for public traffic in \(families) mode (the coordinator's parity qualification decides each placement)"
     }
 }

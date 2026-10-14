@@ -28,8 +28,8 @@ func checkQualifiedShapes(_ big: ClusterModelLayout, _ checks: PlacementChecks) 
     checks.require("qualified shapes: the possible placements left out are counted",
         (gated.unqualifiedPossible ?? 0) > 0 && gated.candidatesConsidered == free.candidatesConsidered)
     let gatedLines = ClusterPlacementExplanation.describe(gated, devices: [a, b], layout: big)
-    checks.require("qualified shapes: the plan says placements were left out for want of a passed check",
-        gatedLines.contains { $0.contains("were left out: no passed cross-cable check covers their shape") })
+    checks.require("qualified shapes: the plan says placements were left out because a check diverged at their shape",
+        gatedLines.contains { $0.contains("were left out: a cross-cable check diverged at their shape on these chips") })
     // The order matters: the same cut led by the other Mac is not admitted.
     policy.admitsShape = { chips, cuts, _ in chips == ["Chip Two Max", "Chip One Ultra"] && cuts == [only] }
     let mirrored = try ClusterPlacementPlanner.plan(devices: [a, b], layout: big, policy: policy)
@@ -43,8 +43,8 @@ func checkQualifiedShapes(_ big: ClusterModelLayout, _ checks: PlacementChecks) 
     checks.require("qualified shapes: and it is not reported as a memory refusal",
         none.refusal == nil && (none.unqualifiedPossible ?? 0) > 0 && none.bestStructural != nil)
     let noneLines = ClusterPlacementExplanation.describe(none, devices: [a, b], layout: big)
-    checks.require("qualified shapes: the refusal says no placement that fits is qualified",
-        noneLines.contains("Refused: no placement these Macs can hold is qualified for this model")
+    checks.require("qualified shapes: the refusal says every placement that fits diverged on these chips",
+        noneLines.contains("Refused: every placement these Macs can hold diverged in a cross-cable check on these chips")
             && !noneLines.contains { $0.hasPrefix("Refused: no division of this model") })
     // Three members of three sizes: a gate admitting a pair of two of them keeps the planner to that pair.
     policy.admitsShape = { chips, cuts, _ in chips == ["Chip Three Pro", "Chip One Ultra"] && cuts == [8] }

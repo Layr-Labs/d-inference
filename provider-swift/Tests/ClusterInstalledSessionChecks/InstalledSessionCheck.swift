@@ -118,7 +118,7 @@ final class EndpointBox: @unchecked Sendable {
         try await outlivesFirstGrant(fixture)
         try await stopNotice(fixture,prepared)
         try await stopBoundAfterGracefulThenUnrequested()
-        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, per-model budgets, long prompts within the request budgets, per-model pair-serving grants by chip class, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
+        print("Installed owner/session: metadata, bootstrap selection, progress guard, provider exclusion, generation mode, budgets derived from the setup, long prompts within them, owner serving with public grants from records, the developer-only SSH route, bounded IO and 9 lifecycle scenarios passed; no native model, SSH or network")
     }
     /// Round-4 finding 1: the prefix-SSD key never reaches a native rank's environment, which any process of
     /// the same user can read for the rank's whole life. A real child is started with exactly the environment
@@ -534,60 +534,55 @@ final class EndpointBox: @unchecked Sendable {
         let foreign=try refusal{try ClusterGenerationSelection.requireSupport(for:.pipeline,peers:[other],capability:split.capability)}
         try require(foreign.contains("member peer-9") && foreign.contains("nothing in the saved record"),"foreign worker refusal: \(foreign)")
     }
-    /// The model-dependent waits come from the selected registered model's
-    /// row. The 9B's are the figures the path has always used.
+    /// The waits come from the setup and the verified artifact, not a per-model
+    /// row (owner, 2026-10-14): the request deadline the planner derived, the
+    /// longest prompt the worker admits, the artifact's size and the largest
+    /// stage. The fixture (a 10 s deadline, a few hundred bytes) gets exactly
+    /// the figures the path has always used for the 9B.
     static func perModelBudgets(_ f:InstalledFixture,_ prepared:DistributedInstalledPreparation) throws {
-        typealias Table=DistributedInstalledPairServingTable
         let nine=DistributedInstalledTimeBudgets(startupAllowanceNanoseconds:90_000_000_000,firstTokenBaseMilliseconds:10_000,firstTokenMillisecondsPerPromptToken:1,
             admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,stopMarginNanoseconds:15_000_000_000,
             cleanStopWaitNanoseconds:10_000_000_000)
-        try require(Table.qwen35.budgets == nine,"the 9B's budgets changed")
-        try require(prepared.plan.budgets==nine,"the plan did not take its budgets from the selected model's row")
-        try require(nine.pairTiming == ClusterWorkerPairTiming(admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,cleanStopWaitNanoseconds:10_000_000_000),"the 9B's pair timing differs from its row")
+        let derived=DistributedInstalledPlan.budgets(configuration:prepared.plan.configuration,capability:prepared.plan.capability,
+            partition:prepared.plan.partition,artifactBytes:prepared.manifest.totalSizeBytes)
+        try require(prepared.plan.budgets==derived.0 && prepared.plan.budgetBasis==derived.1,"the plan's budgets are not the ones its setup and artifact derive")
+        try require(prepared.plan.budgets==nine,"the fixture's derived budgets moved from the 9B's figures: \(prepared.plan.budgets)")
+        try require(prepared.plan.budgetBasis.count==3 && prepared.plan.budgetBasis[1].contains("request deadline"),"the budgets say how they were derived")
+        try require(nine.pairTiming == ClusterWorkerPairTiming(admissionWaitNanoseconds:5_000_000_000,shutdownAcknowledgementNanoseconds:2_000_000_000,cleanStopWaitNanoseconds:10_000_000_000),"the 9B's pair timing differs")
         let (session,_)=try session(f,prepared)
         try require(try session.firstTokenBudgetPolicy() == DistributedFirstTokenBudgetPolicy(baseMilliseconds:10_000,millisecondsPerInputToken:1),"9B first-token budget changed")
         try require(session.cooperativeStopAllowanceNanoseconds==85_000_000_000,"9B stop allowance changed")
-        // The mode does not enter the budgets: a phase-split setup of the same model gets the same row.
+        // A phase split of the same tiny artifact stays at the startup floor.
         let split=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-split"),probe:f.probe,owner:f.owner,worker:f.worker,
             generationMode:"phase_split_v1",advertisedModes:allModes).prepare()
-        try require(split.plan.budgets==nine,"the generation mode changed a time budget")
-        // The 27B's row is open (S08); its figures follow from its own measurements.
-        let big=Table.qwen38.budgets
-        let slowestStageLoad=13.7,phaseSplitFactor=12.3/7.3,slowPrefillTokensPerSecond=300.0
-        try require(Double(big.startupAllowanceNanoseconds)/1e9 >= 5*slowestStageLoad*phaseSplitFactor
-            && big.startupAllowanceNanoseconds <= 150_000_000_000,"27B startup allowance is not five whole-model loads inside half a session")
-        try require(Double(big.firstTokenMillisecondsPerPromptToken) >= 1000/slowPrefillTokensPerSecond
-            && big.firstTokenMillisecondsPerPromptToken > nine.firstTokenMillisecondsPerPromptToken,"27B first-token rate is faster than its slower Mac alone")
-        try require(big.firstTokenBaseMilliseconds+8192*big.firstTokenMillisecondsPerPromptToken==42_768,"27B first-token budget at 8,192 tokens")
-        try require(nine.firstTokenBaseMilliseconds+8192*nine.firstTokenMillisecondsPerPromptToken==18_192,"9B first-token budget at 8,192 tokens")
-        try require(big.shutdownAcknowledgementNanoseconds==3*nine.shutdownAcknowledgementNanoseconds
-            && big.stopMarginNanoseconds>nine.stopMarginNanoseconds && big.admissionWaitNanoseconds==nine.admissionWaitNanoseconds,"27B release and admission waits")
-        // Every row's model has a pair-serving grant; a granted model without a row (GPT-OSS, Gemma 4 QAT4 since grants
-        // are chip-agnostic) and a withheld model have none, so neither half alone can open a model.
-        try require(Set(Table.rows.map(\.runtimeModelID)).isSubset(of:Set(ClusterPairServingGrants.granted.map(\.runtimeModelID))),"a row's model has no grant")
-        for model in ClusterPairServingGrants.withheld.keys {
-            let none=try refusal{_ = try Table.servingBudgets(runtimeModelID:model,publicModelID:"p")}
-            try require(none.contains("no row for the registered model \(model)"),"a withheld model has a row: \(model)")
-        }
-        // The rows opened with the other granted families: each allowance covers what the pair measured
-        // across the cable (seconds: slowest start in any mode, the slower Mac's prefill rate alone).
-        let family:[(DistributedInstalledPairServingTable.Row,slowestStart:Double,slowPrefillTokensPerSecond:Double)]=[
-            (Table.qwen35A3B,29.0,1460),(Table.qwen36A3B,30.6,1730),(Table.bonsai2,11.8,278),(Table.nemotron35,19.7,1749)]
-        for (row,slowestStart,slowPrefill) in family {
-            let b=row.budgets
-            try require(Double(b.startupAllowanceNanoseconds)/1e9 >= 4.9*slowestStart && b.startupAllowanceNanoseconds<=150_000_000_000,"\(row.runtimeModelID): startup allowance")
-            try require(Double(b.firstTokenMillisecondsPerPromptToken) >= 1000/slowPrefill,"\(row.runtimeModelID): first-token rate is faster than its slower Mac alone")
-            try require(b.firstTokenBaseMilliseconds==nine.firstTokenBaseMilliseconds && b.admissionWaitNanoseconds==nine.admissionWaitNanoseconds
-                && b.shutdownAcknowledgementNanoseconds>=nine.shutdownAcknowledgementNanoseconds && b.stopMarginNanoseconds>=nine.stopMarginNanoseconds,"\(row.runtimeModelID): release and admission waits")
+        try require(split.plan.budgets==nine,"a phase split of a tiny artifact changed a time budget")
+        // A longer planned deadline gives a larger first-token share; the setup, not the model, decides.
+        let longer=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-long"),probe:f.probe,owner:f.owner,worker:f.worker,
+            lifetimeSeconds:330).prepare()
+        try require(longer.plan.budgets.firstTokenMillisecondsPerPromptToken==40 && longer.plan.budgets.cleanStopWaitNanoseconds==120_000_000_000,
+            "a 330 s planned deadline: \(longer.plan.budgets)")
+        // Real artifact sizes: the startup allowance covers three times every ready time the pair recorded (pipeline and
+        // phase split; seconds), and stays inside the protocol's hour.
+        let sizes:[(String,Double,Double,Double)]=[("9B",5.0,7.3,12.3),("27B",15.1,13.7,23.0),("35B A3B",20.9,25.8,29.0),("36 A3B",21.3,25.1,30.6),
+            ("Bonsai",8.6,9.4,11.8),("Nemotron",19.1,16.8,19.7),("MiMo",172.9,63.7,63.7),("GPT-OSS",13.8,0,0),("Gemma 4 QAT4",15.6,0,0)]
+        for (name,gigabytes,pipelineReady,splitReady) in sizes {
+            let bytes=Int64(gigabytes*1e9)
+            let pipeline=DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds:300,maximumPromptTokens:8192,artifactBytes:bytes,
+                largestStageShare:0.75,lastRankLoadsEverything:false).budgets
+            let whole=DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds:300,maximumPromptTokens:8192,artifactBytes:bytes,
+                largestStageShare:0.75,lastRankLoadsEverything:true).budgets
+            try require(Double(pipeline.startupAllowanceNanoseconds)/1e9>=3*pipelineReady && Double(whole.startupAllowanceNanoseconds)/1e9>=3*splitReady
+                && whole.startupAllowanceNanoseconds<ClusterWorkerLimits.deadlineNanoseconds,"\(name): startup allowance")
+            try require(pipeline.shutdownAcknowledgementNanoseconds>=2_000_000_000 && pipeline.stopMarginNanoseconds>=15_000_000_000
+                && pipeline.admissionWaitNanoseconds==5_000_000_000,"\(name): release and admission waits")
         }
     }
     /// No session lifetime (handoff/DESIGN-no-fixed-lifetime.md): a long
-    /// prompt with 128 outputs is bounded only by each row's own request
-    /// budgets. The pair's measured first token at the longest prompt each
-    /// model has run across the cable (both Macs, normal order) is inside its
-    /// row's first-token budget.
+    /// prompt with 128 outputs is bounded only by the setup's request budgets.
+    /// The pair's measured first token at the longest prompt each model has
+    /// run across the cable (both Macs, normal order) is inside the allowance a
+    /// setup gets when the planner predicted exactly what was measured.
     static func longPromptsFitTheInstalledSession(_ f:InstalledFixture) throws {
-        typealias Table=DistributedInstalledPairServingTable
         // 9B and 27B at 30,720 prompt tokens, medians after one warm-up (evidence/longctx-20261009, hw-9b
         // and hw-27b TABLE.txt): the slower Mac decoding alone, tokens a second (9B 67.6, 27B 23.3, both
         // Mac B), rounded down; the pair's first token in the pipeline mode, seconds, rounded up. The
@@ -599,70 +594,73 @@ final class EndpointBox: @unchecked Sendable {
             // MiMo at the planner's cut 14 (M5 Ultra rank 0 with 14 layers, M3 Ultra rank 1 with 34 and the head: the slower
             // of its two qualified placements), 2026-10-13 (evidence/mimo-qual-20261013/qual/mimo-c14/p16k-*; cut 47: 17.40 s).
             "registered_mimo_v26_flash_mopd":(16_384,28,37.66)]
-        for row in Table.rows {
-            let budgets=row.budgets
-            guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }
+        for (model,rates) in measured {
+            // `ClusterPlacementRequestLimits.requestTimeoutSeconds` for a prediction exactly as fast as measured.
+            let deadline=min(3600,max(60,Int((3*(rates.pairFirstToken+128/rates.decode)+30).rounded(.up))))
+            let budgets=DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds:deadline,maximumPromptTokens:rates.prompt,
+                artifactBytes:nil,largestStageShare:0.75,lastRankLoadsEverything:false).budgets
             let firstToken=Double(budgets.firstTokenBaseMilliseconds+Int64(rates.prompt)*budgets.firstTokenMillisecondsPerPromptToken)/1000
-            try require(rates.pairFirstToken<firstToken,"\(row.runtimeModelID): measured first token \(rates.pairFirstToken) s exceeds its \(firstToken) s budget")
+            try require(3*rates.pairFirstToken<=firstToken,"\(model): measured first token \(rates.pairFirstToken) s is not a third of its \(firstToken) s allowance")
         }
     }
-    /// Pair serving is granted per registered model with the chip classes each
-    /// role may run on (owner decision D4). The 27B is granted on the M3 Ultra
-    /// and the M5 Max for either role: its setups prepare in every mode, under
-    /// its own budgets, whatever the public name, and the plan admits exactly
-    /// the listed classes for the rank it runs. A registered model without a
-    /// row is still refused.
+    /// The owner's serving (2026-10-14 08:45): any model a cluster stage
+    /// adapter runs is prepared on any Apple silicon, whatever its records; the
+    /// records add only its public grant and the shapes that diverged. The 27B
+    /// prepares in every mode, whatever the public name; a model no adapter
+    /// runs is refused; an artifact no record ran is prepared with no public grant.
     static func pairServingGrant(_ f:InstalledFixture) throws {
-        typealias Table=DistributedInstalledPairServingTable
         let model=("registered_qwen38_27b","registered_qwen38_27b_greedy_generation_v1","EigenLabs/Qwen3.8-27B-4bit-mtp")
         for (name,mode) in [("q27",nil),("q27-split","phase_split_v1")] as [(String,String?)] {
             let big=try InstalledFixture.make(root:f.root.appendingPathComponent(name),probe:f.probe,owner:f.owner,worker:f.worker,
                 generationMode:mode,advertisedModes:allModes,registered:model)
             let prepared=try big.prepare()
-            try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
-            try require(prepared.plan.grant==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"),"the 27B was prepared under another model's grant")
-            // The fixture is the leader: rank 0 of two. Any Apple silicon runs it (chip-agnostic grants); a chip with no class does not.
+            try require(prepared.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"))
+                && prepared.plan.serving.publicGrant != nil,"the 27B was prepared under another model's public grant")
+            // The fixture is the leader: rank 0 of two. Any Apple silicon runs it; a chip with no class does not.
             for chip in ["Apple M3 Ultra","Apple M5 Max","Apple M4 Max","Apple M5 Pro"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
             let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:"Apple M1 (Virtual)"))}
             try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
                 && refused.contains("not Apple silicon") && refused.contains("policy decision"),"a classless chip was not refused for the 27B's rank 0: \(refused)")
         }
-        // The 9B runs on any Apple silicon in either order: an M5 Max or an M4 Max may run its rank 0.
         let nine=try f.prepare()
-        try require(nine.plan.grant==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen35_9b",publicModelID:"p"),"the 9B was prepared under another model's grant")
+        try require(nine.plan.serving.publicGrant==(try? ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen35_9b",publicModelID:"p")),"the 9B was prepared under another model's public grant")
         for chipClass in [ClusterChipClass.appleM3Ultra, .appleM5Max, ClusterChipClass(chipName:"Apple M4 Max")!] { try nine.plan.requireLocalRankGranted(chipClass:chipClass) }
-        // Budgets and grant are keyed on the runtime's model, whatever the public name.
-        let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
-        try require(renamed==Table.qwen38.budgets,"renamed 27B budgets differ")
-        try require(try ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"),
-            "renamed 27B grant differs")
-        let unknown=try refusal{_ = try Table.servingBudgets(runtimeModelID:"registered_future",publicModelID:"future/model")}
-        try require(unknown.contains("no row for the registered model registered_future"),"a model without a row must be refused: \(unknown)")
+        // Keyed on the runtime's model, whatever the public name.
+        let renamed=try ClusterPairServingGrants.ownerServing(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
+        try require(try renamed==ClusterPairServingGrants.ownerServing(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"),"renamed 27B serving differs")
+        let unknown=try refusal{_ = try ClusterPairServingGrants.ownerServing(runtimeModelID:"registered_future",publicModelID:"future/model")}
+        try require(unknown.contains("no cluster stage adapter") && unknown.contains("registered_future"),"a model no adapter runs must be refused: \(unknown)")
         let ungranted=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_future",publicModelID:"EigenLabs/Qwen3.8-27B-4bit-mtp")}
-        try require(ungranted.contains("has no grant") && ungranted.contains("registered_future"),"a model without a grant must be refused: \(ungranted)")
-        // A grant rests on records of the installed artifact: the 27B's records ran its registered artifact, and an
-        // installed capability with any other artifact (here the fixture's own files) is refused before anything starts.
+        try require(ungranted.contains("not yet qualified for public traffic") && ungranted.contains("registered_future"),"a model without records has no public grant: \(ungranted)")
+        // An artifact no record ran (here the fixture's own files) is prepared for its owner, with no public grant.
         let foreign=try InstalledFixture.make(root:f.root.appendingPathComponent("q27-foreign"),probe:f.probe,owner:f.owner,worker:f.worker,
             advertisedModes:allModes,registered:model,standsForRegisteredArtifact:false)
-        let other=try refusal{_ = try foreign.prepare()}
-        try require(other.contains("registered_qwen38_27b") && other.contains("artifact") && other.contains(String(foreign.capability.artifactSHA256.prefix(12)))
-            && other.contains("policy decision"),"a capability whose artifact no record ran was not refused: \(other)")
+        let other=try foreign.prepare()
+        try require(other.plan.serving.publicGrant==nil && other.plan.serving.publicTrafficLine==ClusterPairOwnerServing.notYetQualified,
+            "a capability whose artifact no record ran: \(other.plan.serving.publicTrafficLine)")
+        let publicRefusal=try refusal{_ = try ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p",
+            artifactSHA256:foreign.capability.artifactSHA256)}
+        try require(publicRefusal.contains("artifact") && publicRefusal.contains(String(foreign.capability.artifactSHA256.prefix(12))),
+            "the foreign artifact's public refusal: \(publicRefusal)")
     }
-    /// The installed path starts workers for the adapter of every granted
-    /// model, each with the rank environment its arithmetic policy requires
-    /// beside the values every rank is given, under that model's own budgets
-    /// and grant; and for no other adapter.
+    /// The installed path starts workers for every cluster stage adapter, each
+    /// with the rank environment its arithmetic policy requires beside the
+    /// values every rank is given (the pair driver's own values), under budgets
+    /// derived from the setup; GPT-OSS and Gemma 4 included.
     static func adaptersOnTheInstalledPath(_ f:InstalledFixture) throws {
-        typealias Table=DistributedInstalledPairServingTable
-        let cases:[(String,ClusterRuntimeAdapter,String,[String:String],DistributedInstalledTimeBudgets)]=[
-            ("a35",.qwen35RoutedExperts,"registered_qwen35_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],Table.qwen35A3B.budgets),
-            ("a36",.qwen35RoutedExperts,"registered_qwen36_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],Table.qwen36A3B.budgets),
+        let gemma=["MLX_GATHER_QMM_EXPERT_SLICES":"trust","MLX_GEMMA4_FUSED_WEIGHTED_UNSORT":"1"]
+        let cases:[(String,ClusterRuntimeAdapter,String,[String:String],String?)]=[
+            ("a35",.qwen35RoutedExperts,"registered_qwen35_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],"phase_split_v1"),
+            ("a36",.qwen35RoutedExperts,"registered_qwen36_35b_a3b",["MLX_GATHER_QMM_EXPERT_SLICES":"trust"],"phase_split_v1"),
             ("bonsai",.qwen35PrismHadamard,"registered_ternary_bonsai_2_27b",
-                ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC":"1","DARKBLOOM_BONSAI_F16_CONSTANT_CACHE":"1"],Table.bonsai2.budgets),
-            ("nemotron",.nemotronH,"registered_nemotron35_lightning",[:],Table.nemotron35.budgets)]
-        for (name,adapter,model,extra,budgets) in cases {
+                ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC":"1","DARKBLOOM_BONSAI_F16_CONSTANT_CACHE":"1"],"phase_split_v1"),
+            ("nemotron",.nemotronH,"registered_nemotron35_lightning",[:],"phase_split_v1"),
+            ("gptoss",.gptossLayerStage,"registered_gpt_oss_20b",[:],nil),
+            ("gemma-qat4",.gemma4LayerStage,"registered_gemma4_26b_qat_4bit",gemma,nil),
+            ("gemma-8bit",.gemma4LayerStage,"registered_gemma4_26b_8bit",gemma,nil)]
+        for (name,adapter,model,extra,mode) in cases {
             let fixture=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-"+name),probe:f.probe,owner:f.owner,worker:f.worker,
-                generationMode:"phase_split_v1",advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
+                generationMode:mode,advertisedModes:allModes,registered:(model,model+"_greedy_generation_v1","fixture/"+name),adapter:adapter)
             let prepared=try fixture.prepare()
             let environment=prepared.plan.nativeEnvironment(matrix:prepared.matrixURL)
             // Plus exactly MLX's command-buffer operation guard every rank gets (orphan port #5; the megabyte cap is MLX's
@@ -673,10 +671,23 @@ final class EndpointBox: @unchecked Sendable {
                 && environment["MLX_MAX_OPS_PER_BUFFER"]=="16"
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
-            try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")
-            // The fixture is the leader: rank 0, which any Apple silicon may run (chip-agnostic grants).
+            let derived=DistributedInstalledPlan.budgets(configuration:prepared.plan.configuration,capability:prepared.plan.capability,
+                partition:prepared.plan.partition,artifactBytes:prepared.manifest.totalSizeBytes).0
+            try require(prepared.plan.budgets==derived && prepared.plan.serving.runtimeModelID==model,"\(name) was prepared under another model's budgets or serving")
+            // The fixture is the leader: rank 0 at cut 4, which any Apple silicon may run unless that Mac's class ran rank 0
+            // at cut 4 in a check that diverged (GPT-OSS on the M3 Ultra): then the start refuses it, as the planner does.
+            let records=ClusterPairServingGrants.records(runtimeModelID:model)
             for chipClass in [ClusterChipClass.appleM3Ultra, .appleM5Max, ClusterChipClass(chipName:"Apple M4 Max")!] {
-                try prepared.plan.requireLocalRankGranted(chipClass:chipClass)
+                let mode=prepared.plan.configuration.selectedGenerationMode
+                if records.admitsRank(0,of:2,chipClass:chipClass,cuts:[4],mode:mode) {
+                    try prepared.plan.requireLocalRankGranted(chipClass:chipClass)
+                } else {
+                    let steered=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:chipClass)}
+                    try require(steered.contains("diverged from its single-Mac reference") && steered.contains("cut 4"),"\(name) on \(chipClass): \(steered)")
+                }
+            }
+            if model=="registered_gpt_oss_20b" {
+                try require(!records.admitsRank(0,of:2,chipClass:.appleM3Ultra,cuts:[4],mode:.pipeline),"GPT-OSS's diverged rank-shape is steered away from at start")
             }
         }
         // The dense adapter's environment is the ten values it always had.
@@ -685,15 +696,9 @@ final class EndpointBox: @unchecked Sendable {
         try require(DistributedInstalledPlan.adapterArithmeticEnvironment.values.allSatisfy{$0.keys.allSatisfy{key in
             !["PATH","LANG","LC_ALL","DARKBLOOM_CBV2_ATTN_QUERY_BLOCK","DARKBLOOM_BF16_WEIGHTS","MLX_ENABLE_TF32","JACCL_RANK","JACCL_IBV_DEVICES",
               "JACCL_COORDINATOR","JACCL_PROGRESS_TIMEOUT_MS"].contains(key)}},"an adapter names a fixed environment value")
-        // The adapters this path starts are exactly the adapters of the granted models the table has budgets for.
-        let rows=Set(Table.rows.map(\.runtimeModelID))
-        let granted=Set(ClusterPairServingGrants.granted.filter{rows.contains($0.runtimeModelID)}.compactMap{ClusterRuntimeAdapter.registering(runtimeModelID:$0.runtimeModelID)})
-        try require(Set(DistributedInstalledPlan.adapterArithmeticEnvironment.keys)==granted,"the installed path's adapters and the served models' adapters differ")
-        // GPT-OSS is granted on chips other than the shapes that diverged, but has no budgets: refused before its adapter is looked at.
-        let unbudgeted=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-gptoss"),probe:f.probe,owner:f.owner,worker:f.worker,
-            registered:("registered_gpt_oss_20b","registered_gpt_oss_20b_greedy_generation_v1","fixture/gptoss"),adapter:.gptossLayerStage)
-        let refused=try refusal{_ = try unbudgeted.prepare()}
-        try require(refused.contains("no row for the registered model registered_gpt_oss_20b"),"a model without budgets on its own adapter: \(refused)")
+        // The adapters this path starts are every cluster stage adapter this build has.
+        try require(Set(DistributedInstalledPlan.adapterArithmeticEnvironment.keys)==Set(ClusterRuntimeAdapter.allCases),
+            "the installed path's adapters and the runtime's adapters differ")
     }
     /// A worker whose description this build cannot read is a mixed install,
     /// and the refusal says so instead of reporting a difference.

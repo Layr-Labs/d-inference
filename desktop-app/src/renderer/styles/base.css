@@ -115,3 +115,9 @@ a {
 svg {
   flex-shrink: 0;
 }
+
+/* Headings take focus only programmatically, after the control that had it disappears. */
+h1[tabindex='-1']:focus,
+h2[tabindex='-1']:focus {
+  outline: none;
+}

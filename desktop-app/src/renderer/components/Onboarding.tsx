@@ -8,6 +8,7 @@ import { scanTiming } from './onboarding/scanScript';
 import { StartServing } from './onboarding/StartServing';
 import { useMacScan } from './onboarding/useMacScan';
 import { Welcome } from './onboarding/Welcome';
+import { useFocusRecovery } from '../useFocusRecovery';
 
 type Step = 'welcome' | 'scan' | 'start';
 
@@ -16,6 +17,7 @@ export function Onboarding({ backend, done }: { backend: BackendState; done: () 
   const scan = useMacScan(backend, step === 'scan', () => setStep('start'));
   const joined = step === 'start' || (scan.settled && scan.result?.verdict === 'eligible');
   const leaving = step === 'scan' && scan.frame.phase === 'leaving';
+  useFocusRecovery(step, () => document.querySelector<HTMLElement>('.onboarding-step h2'));
   const grid =
     step === 'welcome'
       ? 'idle'

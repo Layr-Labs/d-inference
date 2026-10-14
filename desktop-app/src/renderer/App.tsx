@@ -15,6 +15,7 @@ import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
 import { AccountControl } from './components/AccountControl';
 import { SocialLinks } from './components/SocialLinks';
+import { useFocusRecovery } from './useFocusRecovery';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
   { id: 'machines', label: 'My Macs', icon: Monitor },
@@ -47,6 +48,16 @@ export default function App() {
   useLayoutEffect(() => {
     document.documentElement.scrollTop = 0;
   }, [route, machine]);
+  useFocusRecovery(`${route}:${machine ?? ''}`, () =>
+    document.querySelector<HTMLElement>('main h1'),
+  );
+  // Initial data and account updates can change the rendered page without navigation. Keep
+  // its title current after every render without re-running navigation's focus recovery.
+  useEffect(() => {
+    const heading = document.querySelector('main h1')?.textContent?.trim();
+    const title = heading ? `${heading} · Darkbloom` : 'Darkbloom';
+    if (document.title !== title) document.title = title;
+  });
   if (!backend.state || onboarding)
     return (
       <>

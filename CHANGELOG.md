@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop keyboard focus after navigation
+
+- Keep keyboard and screen-reader users in place after changing pages, Macs or onboarding steps: when the control they used disappears, focus moves to the new page's or step's heading instead of falling back to the top of the window. Controls that survive navigation keep focus. The window title follows the rendered page heading, including delayed initial data and account changes, without moving focus on ordinary state refreshes.
 ## Unreleased — desktop Home screen-reader announcements
 
 - Stop Home's chip from re-announcing a 20-word activity summary to screen readers every five seconds. The live region now speaks only when the chip's state changes (for example stopped to serving); the full summary with current numbers stays available to screen readers without interrupting.

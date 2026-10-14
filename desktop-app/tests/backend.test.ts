@@ -82,6 +82,29 @@ it('streams runtime state from event frames split across chunks', async () => {
   expect(backend.current.state).toBe('ready');
 });
 
+it('reports a runtime that answers in another protocol as incompatible, not unreachable', async () => {
+  const server = createServer((_, response) =>
+    response.end(JSON.stringify({ protocol: 2, models: [], machine: {} })),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dir = path.join(home, 'desktop');
+  await mkdir(dir);
+  const record = path.join(dir, 'connection.json');
+  const port = (server.address() as AddressInfo).port;
+  await writeFile(
+    record,
+    JSON.stringify({ version: 1, port, pid: process.pid, token: 't'.repeat(40) }),
+  );
+  await chmod(record, 0o600);
+  process.env.DARKBLOOM_DESKTOP_DIR = dir;
+  process.env.DARKBLOOM_DESKTOP_ATTACH_ONLY = '1';
+
+  const backend = new Backend(false);
+  await backend.connect();
+  server.close();
+  expect(backend.current.state).toBe('incompatible');
+});
+
 it('refuses to run an existing runtime that fails the packaged code requirement', async () => {
   const backend = new Backend(true);
   await expect(backend.install(path.join(home, 'unused-install.sh'))).rejects.toThrow(

@@ -5,7 +5,7 @@ import { evaluateEligibility, type EligibilityResult } from './eligibility';
 import { scanScript } from './scanScript';
 import { useScanTimeline } from './useScanTimeline';
 
-const unreachable: BackendState['status']['state'][] = ['missing', 'error', 'incompatible'];
+export const unreachable: BackendState['status']['state'][] = ['missing', 'error', 'incompatible'];
 
 // Each run decides from the first snapshot it sees once active, so a later snapshot never
 // changes a verdict mid-scan. Checking again starts a new run from a fresh read.

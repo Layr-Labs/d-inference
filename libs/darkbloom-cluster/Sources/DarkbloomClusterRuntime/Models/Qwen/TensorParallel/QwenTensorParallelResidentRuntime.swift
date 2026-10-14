@@ -309,8 +309,8 @@ public final class QwenTensorParallelResidentRuntime {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
                     prefix.sweep()
-                    weak var released = model
-                    reservation = nil; model = nil
+                    weak var released: QwenTensorParallelModel?
+                    released = model; reservation = nil; model = nil
                     guard released == nil else { throw ProbeError("Tensor-parallel model remains retained") }
                     Memory.clearCache(); try error.check()
                 }

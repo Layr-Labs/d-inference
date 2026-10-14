@@ -69,6 +69,13 @@ check retired-mode-name-refused-even-with-the-flag 1 "$retired is no longer read
 check unknown-generation-mode-refused 1 "generation mode must be one the registered model lists" "" -- --generation-mode phase-split
 check declared-generation-mode-reaches-the-model 1 "" "generation mode must be" -- --generation-mode phase_split_v1
 check declared-compact-mode-reaches-the-model 1 "" "generation mode must be" -- --generation-mode pipeline_compact_decode_v1
+# Tensor parallel on the dense rows; its shares only with it, two canonical weights of 1...64.
+check declared-tensor-parallel-reaches-the-model 1 "" "generation mode must be" -- --generation-mode tensor_parallel_v1
+check tensor-shares-reach-the-model 1 "" "tensor-shares" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:3
+check tensor-shares-refused-without-tensor-parallel 1 "--tensor-shares takes two canonical weights" "" -- --tensor-shares 1:3
+check tensor-shares-refused-malformed 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:03
+check tensor-shares-refused-out-of-range 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 0:3
+check tensor-shares-refused-three-ranks 1 "--tensor-shares takes two canonical weights" "" -- --generation-mode tensor_parallel_v1 --tensor-shares 1:1:2
 # A second registered model: MiMo's own row decides its cuts, its modes and its qualification switch.
 mimo() { # NAME EXPECTED_STATUS MUST_CONTAIN MUST_NOT_CONTAIN [ENV=VALUE ...] -- [extra worker arguments]
   local name="$1" status="$2" must="$3" mustnot="$4"; shift 4

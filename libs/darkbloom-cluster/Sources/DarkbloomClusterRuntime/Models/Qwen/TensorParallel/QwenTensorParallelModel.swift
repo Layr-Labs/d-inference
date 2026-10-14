@@ -483,7 +483,7 @@ extension QwenTensorParallelModel {
         let configurationData = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .prettyPrinted])
         let configuration = try JSONDecoder().decode(Qwen35Configuration.self,
             from: JSONSerialization.data(withJSONObject: ["model_type": "qwen3_5", "text_config": text], options: [.sortedKeys]))
-        let arrays: [String: MLXArray] = try withRandomState(MLXRandom.RandomState(seed: seed)) {
+        let arrays: [String: MLXArray] = withRandomState(MLXRandom.RandomState(seed: seed)) {
             let model = Qwen35Model(configuration)
             quantize(model: model, groupSize: 64, bits: 4)
             var flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened())

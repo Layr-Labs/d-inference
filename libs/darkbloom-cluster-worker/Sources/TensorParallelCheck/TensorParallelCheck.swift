@@ -210,6 +210,10 @@ struct Options {
             if Set(shares).count > 1 && ["full", "simulated", "hybrid"].contains(mode) {
                 throw Failure("unequal --shares apply to tp and shard-local only")
             }
+        } else if command == "synthesize" {
+            guard output.hasPrefix("/"), !FileManager.default.fileExists(atPath: output) else {
+                throw Failure("synthesize needs --output /NEW/DIR")
+            }
         } else if command == "record" {
             guard !rank0.isEmpty, !rank1.isEmpty, !references.isEmpty, !modelDirectory.isEmpty, !output.isEmpty,
                   nearTieULPs >= 0, ["float32", "bfloat16"].contains(partials) else {

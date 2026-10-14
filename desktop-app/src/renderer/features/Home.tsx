@@ -51,8 +51,19 @@ export function Home({
       />
       {(!state.linked || state.link) && (
         <footer className={styles.footer}>
-          {!state.linked && (
-            <button onClick={() => void backend.act({ action: 'link' })}>Link account</button>
+          {/* Once a link code exists the next step is the code itself, not another request. */}
+          {!state.linked && !state.link && (
+            <button
+              disabled={
+                backend.busy ||
+                state.operations.some(
+                  (operation) => operation.action === 'link' && operation.state === 'running',
+                )
+              }
+              onClick={() => void backend.act({ action: 'link' })}
+            >
+              Link account
+            </button>
           )}
           {state.link && (
             <button onClick={() => void api?.openExternal('link')}>

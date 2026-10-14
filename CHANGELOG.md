@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop account link actions
+
+- Ask before unlinking this Mac from Settings, like other removals; unlinking previously happened on a single click. On Home, stop offering Link account again while a link is in progress or its code is shown, so repeated clicks no longer start new link requests.
 ## Unreleased — desktop light and dark theme contrast
 
 - Make light- and dark-theme text and controls readable: selected schedule days and text selection (dark text on blue in light theme), the Home fan status (dark blue on dark in dark theme), the fan heat warning in light theme, progress bars, the fan-speed slider track, and off switches in light theme. Show a focus ring on the Macs search field and complete (unclipped) rings on My Macs tabs and Home's Mac rows, and follow macOS appearance changes on onboarding and the startup screen too.

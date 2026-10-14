@@ -58,7 +58,8 @@ enum ClusterSetupPlanning {
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
-                       served: [ClusterServedSpeedRecords.Entry] = [], peerMayReceive: Bool = false) -> [Decision] {
+                       served: [ClusterServedSpeedRecords.Entry] = [], link: ClusterLinkCosts = .unmeasured,
+                       peerMayReceive: Bool = false) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
         let sessionLeader: String? = leader ?? localMemberID
@@ -92,12 +93,12 @@ enum ClusterSetupPlanning {
             do {
                 var decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
                     localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: sessionLeader,
-                    served: served)
+                    served: served, link: link)
                 // Ports chosen on this Mac hold only when it leads; a plan the other Mac leads names the conventional ones.
                 if let setup = decided.setup, setup.leaderID != localMemberID, pair.ports != ClusterSetupPorts.Choice.conventional {
                     decided = try ClusterPlacementFlow.decide(description: pair.withPorts(.conventional), capability: capability.record,
                         localMemberID: localMemberID, localProfile: localProfile, peerProfile: peerProfile, layout: layout,
-                        measurements: measurements, leader: sessionLeader, served: served)
+                        measurements: measurements, leader: sessionLeader, served: served, link: link)
                 }
                 guard let chosen = decided.result.chosen else {
                     // Macs by chip and memory, as pairing shows them, never by member ID.

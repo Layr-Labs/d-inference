@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import CryptoKit
+import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import DarkbloomClusterProcess
 @testable import DarkbloomClusterRemote
@@ -59,6 +60,28 @@ final class EndpointBox: @unchecked Sendable {
         try require(Array(arguments.suffix(attachment.workerArguments.count))==attachment.workerArguments,"bootstrap arguments are not last")
         return Array(arguments.dropLast(attachment.workerArguments.count))
     }
+    /// The link the pair's last load measured: kept per pair (either order),
+    /// read back as the planner's link costs, never another pair's, never stale.
+    static func linkProbeHistory() throws {
+        let probeHome = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("link-probe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: probeHome) }
+        for path in ["", ".darkbloom", ".darkbloom/cluster"] {
+            try FileManager.default.createDirectory(at: probeHome.appendingPathComponent(path), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        }
+        let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 20,
+            pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 1_100, allSumSmallBytes: 20_480, allSumSmallMicroseconds: 33,
+            allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_100)
+        try require(ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "b"]) == nil, "No probe: no link costs")
+        try require(ClusterLinkProbeHistory.record(probe, members: ["b", "a"], homeDirectory: probeHome, now: 1_000), "Probe not kept")
+        let costs = ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "b"], now: 2_000)
+        try require(costs?.measured == true && costs?.reduction?.keyed == true
+            && abs((costs?.reduction?.seconds(bytes: 20_480) ?? 0) - 33e-6) < 1e-9, "Probe costs not read back for the pair in either order")
+        try require(ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "c"], now: 2_000) == nil, "Another pair read this pair's probe")
+        try require(ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "b"],
+            now: 1_000 + ClusterLinkProbeHistory.maximumAgeSeconds + 1) == nil, "A stale probe was used")
+    }
     static func main() async throws {
         signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}
         let root=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("installed-check-"+UUID().uuidString)
@@ -72,6 +95,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(try prepared.model.stopTokenIDs(tokenizerEOS:9)==[7,9],"loaded tokenizer EOS union differs")
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
+        try linkProbeHistory()
         try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)

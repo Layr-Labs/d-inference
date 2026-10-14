@@ -13,7 +13,8 @@ enum DistributedInstalledGenerationSelection {
                                 capability: ClusterRuntimeCapability) throws -> [String] {
         let mode = configuration.selectedGenerationMode
         try ClusterGenerationSelection.requireSupport(for: mode, peers: configuration.peers, capability: capability)
-        return mode == .pipeline ? [] : ["--generation-mode", mode.rawValue]
+        let shares = configuration.tensorShares.map { ["--tensor-shares", $0.map(String.init).joined(separator: ":")] } ?? []
+        return mode == .pipeline ? [] : ["--generation-mode", mode.rawValue] + (mode == .tensorParallel ? shares : [])
     }
 }
 

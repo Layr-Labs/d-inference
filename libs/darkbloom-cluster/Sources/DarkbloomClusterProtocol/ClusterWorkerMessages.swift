@@ -178,7 +178,7 @@ public struct ClusterWorkerDataPlane: Equatable, Sendable {
 /// all-sum at a decode step's width and at a prefill chunk's. Medians, in
 /// microseconds. The pair's owner keeps the latest per pair; a placement
 /// planner derives the link's costs from it.
-public struct ClusterWorkerLinkProbe: Equatable, Sendable {
+public struct ClusterWorkerLinkProbe: Codable, Equatable, Sendable {
     public static let transports: Set<String> = ["jaccl"]
     public let transport: String
     public let keyed: Bool

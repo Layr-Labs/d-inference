@@ -167,6 +167,8 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
             }
             // The pipeline has one saved spelling, the omitted one.
             if chosen.mode != .pipeline { object["generationMode"] = chosen.mode.rawValue }
+            // Unequal tensor-parallel shares, as the planner chose them; equal shares are the omitted spelling.
+            if chosen.mode == .tensorParallel, let shares = chosen.tensorShares { object["tensorShares"] = shares }
             let input = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
             let configuration = try ClusterConfigurationCodec.decode(input, capability: capability,
                                                                      capabilitySHA256: description.capabilitySHA256)

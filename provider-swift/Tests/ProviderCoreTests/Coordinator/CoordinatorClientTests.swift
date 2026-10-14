@@ -19,7 +19,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
 @Test func coordinatorRegistrationEncodingUsesProtocolCodec() throws {
     let rawAttestation = #"{"signature":"sig","attestation":{"hardwareModel":"Mac16,5","sipEnabled":true}}"#
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",
@@ -94,7 +94,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     // so the config carries none. A token that arrives later must override the
     // config so a reconnect re-registers WITH it (environment=production).
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",
@@ -163,7 +163,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         sizeBytes: 1,
         estimatedMemoryGb: 1)
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [
             clientSampleModel(), gemma, typeOnlyGemma, misleadingID,
@@ -235,7 +235,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     var staleModel = clientSampleModel()
     staleModel.weightHash = "stale-hash-from-daemon-start"
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [staleModel],
         backendName: "mlx_swift_lm",
@@ -402,7 +402,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     // code-attestation WITHOUT waiting for a reconnect.
     let live = LiveTokenBox("tok-startup")
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",
@@ -436,7 +436,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     // No live bridge token (token not yet observed by the bridge in this path):
     // the heartbeat falls back to the startup config token — prior behavior.
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",
@@ -460,7 +460,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     // No live token and no config token (headless / token-less provider): the
     // APNs fields are omitted so the wire shape is unchanged.
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",
@@ -479,7 +479,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
 
 @Test func shutdownRequestedIsNonisolatedAndIdempotent() async {
     let config = CoordinatorClientConfig(
-        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        url: "wss://api.dev.darkbloom.dev/v1/providers/ws",
         hardware: clientSampleHardware(),
         models: [clientSampleModel()],
         backendName: "mlx_swift_lm",

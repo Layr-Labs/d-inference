@@ -170,11 +170,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" follows the exact-model policy in
-    /// `EngineV2KVBackendPolicy.preferredBackend`; "paged" and "contiguous"
+    /// `[backend]`): quantized "auto" requires paged; native "auto" follows
+    /// `EngineV2KVBackendPolicy.preferredBackend`. "paged" and "contiguous"
     /// are explicit selections. `DARKBLOOM_CBV2_PAGED_KV` is a
     /// negative-polarity kill switch and cannot turn paged on.
-    /// Automatic paged failures may fall back, but a box that cannot
+    /// Native automatic paged failures may fall back, but a box that cannot
     /// construct an explicitly requested paged backend REFUSES the load
     /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
     /// reroutes) rather than degrading, because refusal is reserved for a
@@ -186,15 +186,24 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
     /// `EngineV2SlotFactory` passes — is `true`, so the veto is inert and
     /// an explicit "paged" VLM slot gets paged like any other.
-    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` always degrades,
-    /// never refuses. A resolved-contiguous slot also gets NO SSD prefix
-    /// cache (`PrefixCachePolicy.adoptionIsExact`).
+    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` forces contiguous;
+    /// live quantization then refuses until native precision is selected.
+    /// Eligible complete checkpoints keep their independent storage codec
+    /// when live execution resolves to contiguous.
     /// See `EngineV2KVBackendPolicy`.
     public var engineV2KVBackend: String
     /// Optional per-model override map (`engine_v2_kv_backend_by_model`
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
+    /// Live attention precision; native is the default. MiMo stays native.
+    /// Explicit contiguous storage requires native precision.
+    public var engineV2KVQuantization: String
+    public var engineV2KVQuantizationByModel: [String: String]
+    /// Requested precision for eligible complete checkpoints; balanced K4/V4
+    /// is the default, independent of live attention. MiMo stays native.
+    public var engineV2KVCheckpointQuantization: String
+    public var engineV2KVCheckpointQuantizationByModel: [String: String]
     /// Startup model preload (default true) for coordinator and standalone
     /// serving. An explicit `preload_models` list takes precedence; otherwise
     /// previously loaded models go first, then the selected models. The
@@ -298,6 +307,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        engineV2KVQuantization: String = "native",
+        engineV2KVQuantizationByModel: [String: String] = [:],
+        engineV2KVCheckpointQuantization: String = "balanced",
+        engineV2KVCheckpointQuantizationByModel: [String: String] = [:],
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -321,6 +334,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.engineV2KVQuantization = engineV2KVQuantization
+        self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
+        self.engineV2KVCheckpointQuantization = engineV2KVCheckpointQuantization
+        self.engineV2KVCheckpointQuantizationByModel = engineV2KVCheckpointQuantizationByModel
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -346,6 +363,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
         case engineV2KVBackendByModel = "engine_v2_kv_backend_by_model"
+        case engineV2KVQuantization = "engine_v2_kv_quantization"
+        case engineV2KVQuantizationByModel = "engine_v2_kv_quantization_by_model"
+        case engineV2KVCheckpointQuantization = "engine_v2_kv_checkpoint_quantization"
+        case engineV2KVCheckpointQuantizationByModel = "engine_v2_kv_checkpoint_quantization_by_model"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -393,6 +414,14 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2KVBackendByModel =
             try container.decodeIfPresent(
                 [String: String].self, forKey: .engineV2KVBackendByModel) ?? [:]
+        self.engineV2KVQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVQuantization) ?? "native"
+        self.engineV2KVQuantizationByModel =
+            try container.decodeIfPresent([String: String].self, forKey: .engineV2KVQuantizationByModel) ?? [:]
+        self.engineV2KVCheckpointQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVCheckpointQuantization) ?? "balanced"
+        self.engineV2KVCheckpointQuantizationByModel =
+            try container.decodeIfPresent([String: String].self, forKey: .engineV2KVCheckpointQuantizationByModel) ?? [:]
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =
@@ -433,6 +462,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
+        try container.encode(engineV2KVQuantization, forKey: .engineV2KVQuantization)
+        try container.encode(engineV2KVQuantizationByModel, forKey: .engineV2KVQuantizationByModel)
+        try container.encode(engineV2KVCheckpointQuantization, forKey: .engineV2KVCheckpointQuantization)
+        try container.encode(engineV2KVCheckpointQuantizationByModel, forKey: .engineV2KVCheckpointQuantizationByModel)
         try container.encode(startupPreload, forKey: .startupPreload)
         try container.encode(preloadModels, forKey: .preloadModels)
         try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)
@@ -454,7 +487,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
     /// public fleet. Set `private_only = true` under `[coordinator]` in config.
     public var privateOnly: Bool
 
-    public init(url: String = "wss://api.darkbloom.dev/ws/provider", heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
+    public init(url: String = BuildEnvironment.current.coordinatorWebSocketURL, heartbeatIntervalSecs: UInt64 = 5, privateOnly: Bool = false) {
         self.url = url
         self.heartbeatIntervalSecs = heartbeatIntervalSecs
         self.privateOnly = privateOnly
@@ -468,7 +501,7 @@ public struct CoordinatorSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? "wss://api.darkbloom.dev/ws/provider"
+        self.url = try container.decodeIfPresent(String.self, forKey: .url) ?? BuildEnvironment.current.coordinatorWebSocketURL
         self.heartbeatIntervalSecs = try container.decodeIfPresent(UInt64.self, forKey: .heartbeatIntervalSecs) ?? 5
         self.privateOnly = try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false
     }
@@ -550,7 +583,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 maxModelSlots: 3
             ),
             coordinator: CoordinatorSettings(
-                url: "wss://api.darkbloom.dev/ws/provider",
+                url: BuildEnvironment.current.coordinatorWebSocketURL,
                 heartbeatIntervalSecs: 5
             ),
             schedule: nil

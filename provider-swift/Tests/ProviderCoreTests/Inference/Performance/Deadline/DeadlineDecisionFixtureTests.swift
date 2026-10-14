@@ -26,13 +26,9 @@ private struct DeadlineDecisionFixture {
 }
 
 @Test func sharedCoordinatorDeadlineDecisions() throws {
-    var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    while !FileManager.default.fileExists(atPath: root.appendingPathComponent("coordinator/protocol").path) {
-        let parent = root.deletingLastPathComponent()
-        guard parent != root else { throw CocoaError(.fileNoSuchFile) }
-        root = parent
-    }
-    let data = try Data(contentsOf: root.appendingPathComponent("coordinator/tests/protocol/testdata/calibrated_deadline_decisions.json"))
+    let fixture = try #require(Bundle.module.url(
+        forResource: "calibrated_deadline_decisions", withExtension: "json", subdirectory: "Fixtures/Protocol"))
+    let data = try Data(contentsOf: fixture)
     // The calibration uses explicit canonical wire keys; the case inputs use
     // ordinary snake-case conversion, independently of the release schema.
     let container = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])

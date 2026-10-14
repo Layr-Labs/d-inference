@@ -54,18 +54,12 @@ jobs:
           python-version: '3.12.10'
       - name: Validate packaging and workflow isolation guards
         run: python3 tooling/scripts/test-provider-signing-validation.py
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
-        with:
-          go-version-file: candidate/go.mod
-      - name: Install pinned Rust toolchain
-        run: bash tooling/scripts/install-release-rust.sh
       - name: Install pinned CMake for Metal build
         run: bash tooling/scripts/install-release-cmake.sh
       - name: Build exact source and stage unsigned app
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
           EXPECTED_SOURCE: ${{ inputs.source_sha }}
-          RUSTUP_TOOLCHAIN: 1.88.0
           MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
         run: |
           set -euo pipefail

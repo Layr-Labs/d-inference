@@ -130,6 +130,8 @@ enum SchedulerPrefillDecisionMetadata {
     static func finish(
         _ start: SchedulerPrefillDecisionRunStart,
         sourceSHA: String?,
+        resolvedKVQuantization: String?,
+        resolvedKVCheckpointQuantization: String?,
         signedIdentity: SignedReleaseIdentity.Verified? = nil
     ) throws -> SchedulerPrefillDecisionReport.Reproducibility {
         let hardware = try HardwareDetector.detect()
@@ -164,7 +166,9 @@ enum SchedulerPrefillDecisionMetadata {
                 memoryGB: hardware.memoryGb,
                 gpuCores: hardware.gpuCores),
             postureAtStart: start.posture,
-            postureAtEnd: capturePosture())
+            postureAtEnd: capturePosture(),
+            resolvedKVQuantization: resolvedKVQuantization,
+            resolvedKVCheckpointQuantization: resolvedKVCheckpointQuantization)
     }
 
     private static var buildConfiguration: String {

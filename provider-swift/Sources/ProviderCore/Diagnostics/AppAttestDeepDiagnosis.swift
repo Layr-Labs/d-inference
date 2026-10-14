@@ -99,7 +99,7 @@ public enum AppAttestDeepDiagnosis {
         if !problems.isEmpty {
             return Diagnostic(section: .appAttest, name: "app signing", level: .fail,
                               message: problems.joined(separator: "; ") + ".",
-                              fix: "reinstall the signed release: `curl -fsSL https://api.darkbloom.dev/install.sh | bash`, then `darkbloom restart`.")
+                              fix: "reinstall the signed release: `curl -fsSL \(BuildEnvironment.current.coordinatorHTTPURL)/install.sh | bash`, then `darkbloom restart`.")
         }
         guard p.optInEntitlement != nil || p.environmentEntitlement != nil
             || p.profilePresent != nil || p.profileExpired != nil else { return nil }
@@ -129,18 +129,18 @@ public enum AppAttestDeepDiagnosis {
 
     static func keyHistory(_ h: AppAttestKeyHistory, lastFailure: AppAttestLastAppleFailure?) -> Diagnostic {
         var facts: [String] = []
-        if let n = h.generationsLast24h { facts.append("\(n) key generation(s) in 24 h") }
+        if let n = h.generationsLast24h { facts.append("\(n) key generation attempt(s) in 24 h") }
         if let age = h.keyAgeSeconds { facts.append("current key \(duration(age)) old") }
         if let v = h.createdAppVersion { facts.append("created by v\(v)") }
         if let same = h.createdBootMatches { facts.append(same ? "created this boot" : "created in an earlier boot") }
         if let age = h.lastSuccessAgeSeconds { facts.append("last Apple success \(duration(age)) ago") }
         if let n = h.consecutiveAssertionFailures, n > 0 { facts.append("\(n) consecutive assertion failure(s)") }
-        let freshKeyInvalid = (h.generationsLast24h ?? 0) >= 3 && lastFailure?.result == "apple_invalid_key"
+        let generationHistoryNeedsReport = (h.generationsLast24h ?? 0) >= 3 && lastFailure?.result == "apple_invalid_key"
             && lastFailure?.action == .attestation
         let repeatedFailures = (h.consecutiveAssertionFailures ?? 0) >= 2
-        if freshKeyInvalid {
+        if generationHistoryNeedsReport {
             return Diagnostic(section: .appAttest, name: "key history", level: .warn,
-                              message: facts.joined(separator: "; ") + ". Apple rejects even brand-new keys (invalidKey on first attestation).",
+                              message: facts.joined(separator: "; ") + ". The last recorded Apple failure was an attestation with `apple_invalid_key`. The generation count does not show earlier attestation outcomes.",
                               fix: reportAdvice)
         }
         // This aggregate includes timeouts and serverUnavailable. Even an

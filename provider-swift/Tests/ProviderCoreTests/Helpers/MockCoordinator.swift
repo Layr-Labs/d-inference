@@ -33,6 +33,7 @@ import NIOCore
 public struct CapturedMessages: Sendable {
     public var drainBarriers: [String] = []
     public var appAttestShadow: [AppAttestShadowPayload] = []
+    public var appAttestResume: [AppAttestResumeResponse] = []
     public var registers: [ProviderMessage.Register] = []
     /// The exact bytes of each `register` frame, in arrival order.
     public var registerFrames: [Data] = []
@@ -364,6 +365,22 @@ public final class MockCoordinator: @unchecked Sendable {
 
     // MARK: Push helpers
 
+    public func pushAppAttestResume(_ challenge: AppAttestResumeChallenge) async throws {
+        try await sendCoordinatorMessage(.appAttestResume(challenge))
+    }
+
+    public func pushAppAttestShadow(_ payload: AppAttestShadowPayload) async throws {
+        try await sendCoordinatorMessage(.appAttestShadow(payload))
+    }
+
+    public func pushCapacityProbe(_ probe: CoordinatorMessage.CapacityProbe) async throws {
+        try await sendCoordinatorMessage(.capacityProbe(probe))
+    }
+
+    public func pushTrustStatus(_ status: CoordinatorMessage.TrustStatus) async throws {
+        try await sendCoordinatorMessage(.trustStatus(status))
+    }
+
     public func pushAttestationChallenge(
         nonce: String,
         timestamp: String
@@ -668,6 +685,7 @@ public final class MockCoordinator: @unchecked Sendable {
             switch parsed {
             case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
+            case .appAttestResume(let p): captured.appAttestResume.append(p)
             case .register(let r):
                 captured.registers.append(r)
                 captured.registerFrames.append(data)

@@ -20,7 +20,8 @@ public enum CoordinatorClientCodec {
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
         memberRegistrationNonce: String? = nil,
-        clusterResume: ClusterMembership.Resume? = nil
+        clusterResume: ClusterMembership.Resume? = nil,
+        appAttestResumeNonce: String? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -88,6 +89,8 @@ public enum CoordinatorClientCodec {
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
             appAttestProtocol: 3,
+            appAttestResumeProtocol: appAttestResumeNonce == nil ? nil : 1,
+            appAttestResumeNonce: appAttestResumeNonce,
             modelAutopilot: modelAutopilot,
             autopilotInventory: inventory.isEmpty ? nil : inventory,
             executionRole: config.executionRole,
@@ -114,7 +117,8 @@ public enum CoordinatorClientCodec {
         ordinaryServingModelIDs: Set<String>? = nil,
         autopilotInventory: [ModelInfo]? = nil,
         memberRegistrationNonce: String? = nil,
-        clusterResume: ClusterMembership.Resume? = nil
+        clusterResume: ClusterMembership.Resume? = nil,
+        appAttestResumeNonce: String? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -133,7 +137,8 @@ public enum CoordinatorClientCodec {
                 ordinaryServingModelIDs: ordinaryServingModelIDs,
                 autopilotInventory: autopilotInventory,
                 memberRegistrationNonce: memberRegistrationNonce,
-                clusterResume: clusterResume
+                clusterResume: clusterResume,
+                appAttestResumeNonce: appAttestResumeNonce
             )
         )
     }
@@ -233,9 +238,6 @@ public enum CoordinatorClientCodec {
                 templateHashes: payload.templateHashes,
                 modelHashes: payload.modelHashes
             ))
-
-        case .appAttestShadow(let payload):
-            return .appAttestShadow(payload)
 
         case .codeAttestationResponse(let nonce, let signature, _):
             return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(

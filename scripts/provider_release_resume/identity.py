@@ -2,7 +2,7 @@
 import base64
 import re
 
-from .api import tag_source
+from .api import tag_source, verify_source
 
 WORKFLOW = ".github/workflows/release-swift.yml"
 BUILD_JOB = "Build optimized SDK 27 provider"
@@ -30,18 +30,16 @@ def select(api, run_id, attempt):
     source, tag = run["head_sha"], run["head_branch"]
     if not re.fullmatch(r"[0-9a-f]{40}", source) or tag_source(api, tag) != source:
         raise ValueError("Retained run and current release tag differ")
-    commit = api.get("commits/" + source)
-    if commit.get("commit", {}).get("verification", {}).get("verified") is not True:
-        raise ValueError("Retained source commit is not verified")
+    verify_source(api, source)
     version = tag[1:]
-    for path, pattern in [
-        ("provider-swift/Sources/ProviderCore/ProviderCore.swift", r'public static let version = "([^"]+)"'),
-        ("coordinator/api/server.go", r'var LatestProviderVersion = "([^"]+)"'),
-    ]:
-        file = api.get(f"contents/{path}?ref={source}")
-        values = re.findall(pattern, base64.b64decode(file["content"]).decode())
-        if values != [version]:
-            raise ValueError("Retained source version differs from release tag")
+    file = api.get(f"contents/provider-swift/Sources/ProviderCore/ProviderCore.swift?ref={source}")
+    content = file.get("content") if isinstance(file, dict) else None
+    if not isinstance(content, str):
+        raise ValueError("Retained provider source is missing")
+    values = re.findall(r'public static let version = "([^"]+)"',
+                        base64.b64decode("".join(content.split()), validate=True).decode())
+    if values != [version]:
+        raise ValueError("Retained source version differs from release tag")
     jobs = api.pages(f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
     for name in [BUILD_JOB, QUALIFY_JOB]:
         matches = [job for job in jobs if job.get("name") == name]

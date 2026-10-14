@@ -19,7 +19,7 @@ enum ServiceDrain {
     static func prepare(options: DrainOptions,
                         withConfigurationChange: (_ setup: () throws -> Void) throws -> Void = { try $0() }) async throws -> SelfUpdater.UpdateSession {
         let state = DaemonStateFile.read()
-        let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? "https://api.darkbloom.dev")
+        let updater = SelfUpdater(coordinatorBaseURL: state?.coordinatorUrl ?? BuildEnvironment.current.coordinatorHTTPURL)
         let session = try updater.beginUpdateSession(operation: "provider-lifecycle", timeout: 0)
         do {
             let identity = WatchdogProbe.providerIdentity(daemonState: state, launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)

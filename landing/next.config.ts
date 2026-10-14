@@ -43,6 +43,7 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  turbopack: { root: import.meta.dirname },
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
   async redirects() {
     return [

@@ -18,13 +18,14 @@ name: Release Provider Bundle (Swift)
 # committed to a CLI-only migration.
 #
 # Tag convention:
-#   - vX.Y.Z           -> prod Swift release (reviewer approval required)
+#   - vX.Y.Z           -> prod Swift release (signed tag on reviewed master)
 # Dev releases use workflow_dispatch so the requested version can remain
-# byte-identical to the checked-in provider and coordinator source constants.
+# byte-identical to the checked-in ProviderCore.version.
 #
-# Repo secrets use DEV_/PROD_ prefixes so both environments can remain at
-# repo level. The release job still binds the resolved GitHub environment so
-# production tags must pass the environment's deployment protection rules:
+# Repo secrets use DEV_/PROD_ prefixes. Source verification gates every
+# credential-consuming job; release jobs do not need environment approvals.
+# This assumes trusted repository writers: YAML cannot constrain a hostile
+# writer who can change workflows and access repository secrets.
 #   DEV_R2_ACCESS_KEY_ID  / PROD_R2_ACCESS_KEY_ID
 #   DEV_R2_SECRET_ACCESS_KEY / PROD_R2_SECRET_ACCESS_KEY
 #   DEV_R2_ENDPOINT       / PROD_R2_ENDPOINT
@@ -41,11 +42,11 @@ on:
   workflow_dispatch:
     inputs:
       resume_run_id:
-        description: 'Optional failed tag run with successful build and qualification; resume signing without rebuilding'
+        description: 'Optional failed tag run with successful build and SDK tests; resume signing without rebuilding'
         required: false
         type: string
       resume_run_attempt:
-        description: 'Attempt containing the successful retained build and qualification'
+        description: 'Attempt containing the successful retained build and SDK tests'
         required: false
         type: string
         default: '1'
@@ -94,6 +95,7 @@ jobs:
       actions: read
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
+      workflow_sha: ${{ steps.trust.outputs.source_sha }}
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
@@ -109,6 +111,17 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          # Never execute a candidate branch's policy to authorize credentials.
+          ref: master
+          persist-credentials: false
+      - name: Verify reviewed workflow source before any release credentials
+        id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/provider-release-resume.py verify-source
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ steps.trust.outputs.source_sha }}
           persist-credentials: false
       - id: pick
         env:
@@ -134,9 +147,13 @@ jobs:
       mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
+      # Package.swift compiles ProviderCore with this environment's defaults.
+      # qualify-sdk does not set it: tests must see production defaults.
+      DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           submodules: recursive
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -183,6 +200,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           submodules: recursive
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -201,10 +219,14 @@ jobs:
            (needs.resolve-env.outputs.resume == 'false' && needs.build-provider.result == 'success' && needs.qualify-sdk.result == 'success')) }}
     # The signed artifact and its unsigned inputs are all built on Blacksmith.
     runs-on: blacksmith-12vcpu-macos-27
-    environment: ${{ needs.resolve-env.outputs.environment }}
     outputs:
       validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
       publication_artifact: ${{ steps.publication_identity.outputs.artifact_name }}
+      publication_artifact_id: ${{ steps.publication_retention.outputs.artifact-id }}
+      publication_artifact_digest: ${{ steps.publication_retention.outputs.artifact-digest }}
+      payload_sha256: ${{ steps.publication_identity.outputs.payload_sha256 }}
+      provenance_sha256: ${{ steps.publication_identity.outputs.provenance_sha256 }}
+      signing_run_id: ${{ github.run_id }}
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
@@ -256,6 +278,7 @@ jobs:
       - name: Checkout (with submodules)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           persist-credentials: false
           submodules: recursive
           fetch-depth: 0   # gh release --generate-notes wants full history
@@ -320,7 +343,12 @@ jobs:
           security create-keychain -p "build" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "build" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          KEYCHAINS=("$KEYCHAIN_PATH")
+          while read -r keychain; do
+            keychain="${keychain#\"}"
+            KEYCHAINS+=("${keychain%\"}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${KEYCHAINS[@]}"
           security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
           security set-key-partition-list -S apple-tool:,apple: \
@@ -485,6 +513,8 @@ jobs:
             | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -786,6 +816,8 @@ jobs:
             | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -814,10 +846,12 @@ jobs:
           PY
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
-          echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
-          echo "CODE_DIRECTORY_HASH=$CODE_DIRECTORY_HASH" >> "$GITHUB_ENV"
-          echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
-          echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
+          {
+            echo "BINARY_HASH=$BINARY_HASH"
+            echo "CODE_DIRECTORY_HASH=$CODE_DIRECTORY_HASH"
+            echo "BUNDLE_HASH=$BUNDLE_HASH"
+            echo "METALLIB_HASH=$METALLIB_HASH"
+          } >> "$GITHUB_ENV"
           echo "Binary hash:   $BINARY_HASH"
           echo "CodeDirectory SHA256: $CODE_DIRECTORY_HASH"
           echo "Bundle hash:   $BUNDLE_HASH"
@@ -869,7 +903,7 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-      - name: Prepare signed release qualification evidence
+      - name: Prepare exact signed release identity
         id: publication_identity
         if: needs.resolve-env.outputs.publish == 'true'
         env:
@@ -879,18 +913,20 @@ jobs:
           set -euo pipefail
           python3 scripts/provider-release-publication.py prepare \
             --directory "$RUNNER_TEMP/provider-publication" --bundle /tmp/darkbloom-bundle-macos-arm64.tar.gz
-          echo "artifact_name=provider-publication-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           {
-            echo '### Exact signed release awaiting qualification'
-            echo 'After the R2 staging job succeeds, review qualification-request.json and supply test evidence to POST /v1/admin/app-attest/builds.'
-            echo 'The release key cannot approve builds. Retry failed staging/publication jobs to reuse this artifact; qualification remains an independent operator step.'
+            echo "artifact_name=provider-publication-${RELEASE_SOURCE_SHA}-${GITHUB_RUN_ATTEMPT}"
+            echo "payload_sha256=$(shasum -a 256 "$RUNNER_TEMP/provider-publication/release-payload.json" | cut -d' ' -f1)"
+            echo "provenance_sha256=$(shasum -a 256 "$RUNNER_TEMP/provider-publication/release-provenance.json" | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '### Exact signed release ready for registration'
+            echo 'After R2 staging, the existing release endpoint validates and registers this exact official build before publication.'
+            echo 'Conflicts or revoked artifacts block publication without advancing latest aliases.'
             echo 'Do not rerun signing: that changes the signed artifact.'
-            echo '```json'
-            cat "$RUNNER_TEMP/provider-publication/qualification-request.json"
-            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Retain exact signed publication artifact
+        id: publication_retention
         if: needs.resolve-env.outputs.publish == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -911,7 +947,6 @@ jobs:
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
-    environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
       contents: read
       actions: read
@@ -926,9 +961,13 @@ jobs:
       RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
       RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
       RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
+      RELEASE_PAYLOAD_SHA256: ${{ needs.build-and-release.outputs.payload_sha256 }}
+      RELEASE_PROVENANCE_SHA256: ${{ needs.build-and-release.outputs.provenance_sha256 }}
+      RELEASE_SIGNING_RUN_ID: ${{ needs.build-and-release.outputs.signing_run_id }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           persist-credentials: false
       - name: Resolve env-specific secrets
         if: needs.resolve-env.outputs.publish == 'true'
@@ -977,10 +1016,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
+          PUBLICATION_ARTIFACT_ID: ${{ needs.build-and-release.outputs.publication_artifact_id }}
+          PUBLICATION_ARTIFACT_DIGEST: ${{ needs.build-and-release.outputs.publication_artifact_digest }}
         run: |
           set -euo pipefail
           test -n "$PUBLICATION_ARTIFACT"
-          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$PUBLICATION_ARTIFACT_ID" --artifact-digest "$PUBLICATION_ARTIFACT_DIGEST" \
+            --run-id "$RELEASE_SIGNING_RUN_ID" --directory "$RUNNER_TEMP/provider-publication"
       - name: Install publication tools
         run: |
           set -euo pipefail
@@ -998,12 +1041,11 @@ jobs:
         run: python3 scripts/provider-release-publication.py stage --directory "$RUNNER_TEMP/provider-publication"
 
   publish-release:
-    name: Publish qualified signed release
+    name: Register and publish exact signed release
     needs: [resolve-env, build-and-release, stage-release]
     if: ${{ !cancelled() && needs.resolve-env.result == 'success' && needs.build-and-release.result == 'success' && needs.stage-release.result == 'success' && needs.resolve-env.outputs.publish == 'true' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
-    environment: ${{ needs.resolve-env.outputs.environment }}
     concurrency:
       group: provider-publication-${{ needs.resolve-env.outputs.environment }}
       cancel-in-progress: false
@@ -1018,9 +1060,13 @@ jobs:
       RELEASE_UNSIGNED_ARTIFACT_DIGEST: ${{ needs.resolve-env.outputs.unsigned_artifact_digest }}
       RELEASE_BUILD_RUN_ID: ${{ needs.resolve-env.outputs.build_run_id }}
       RELEASE_BUILD_RUN_ATTEMPT: ${{ needs.resolve-env.outputs.build_run_attempt }}
+      RELEASE_PAYLOAD_SHA256: ${{ needs.build-and-release.outputs.payload_sha256 }}
+      RELEASE_PROVENANCE_SHA256: ${{ needs.build-and-release.outputs.provenance_sha256 }}
+      RELEASE_SIGNING_RUN_ID: ${{ needs.build-and-release.outputs.signing_run_id }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Resolve env-specific secrets
@@ -1076,10 +1122,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
+          PUBLICATION_ARTIFACT_ID: ${{ needs.build-and-release.outputs.publication_artifact_id }}
+          PUBLICATION_ARTIFACT_DIGEST: ${{ needs.build-and-release.outputs.publication_artifact_digest }}
         run: |
           set -euo pipefail
           test -n "$PUBLICATION_ARTIFACT"
-          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+          python3 scripts/provider-release-publication.py download \
+            --artifact-id "$PUBLICATION_ARTIFACT_ID" --artifact-digest "$PUBLICATION_ARTIFACT_DIGEST" \
+            --run-id "$RELEASE_SIGNING_RUN_ID" --directory "$RUNNER_TEMP/provider-publication"
       - name: Install publication tools
         run: |
           set -euo pipefail
@@ -1110,6 +1160,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ needs.resolve-env.outputs.workflow_sha }}
           persist-credentials: false
       - name: Install pinned GitHub CLI
         run: ./scripts/install-macos-github-cli.sh

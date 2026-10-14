@@ -520,8 +520,13 @@ import Foundation
             }
             return verdict
         }
-        let reference = try QualificationReportFiles.subject(URL(fileURLWithPath: referencePath))
         let candidate = try QualificationReportFiles.subject(URL(fileURLWithPath: candidatePath))
+        let referenceData = try QualificationFiles.read(URL(fileURLWithPath: referencePath), maximumBytes: QualificationReportFiles.maximumBytes)
+        // A MiMo reference names its request by ID; the comparison reads the
+        // request fields it does not carry from the candidate.
+        let reference = MiMoQualificationEvidence.isReference(referenceData)
+            ? try MiMoQualificationEvidence.reference(referenceData, comparableWith: candidate.identity).subject
+            : try QualificationReportFiles.subject(URL(fileURLWithPath: referencePath))
         let comparison = try QualificationComparator(nearTieULPs: threshold,
             allowCutDifference: fields["--allow-cut-difference"]?.first == "yes",
             allowScheduleDifference: fields["--allow-schedule-difference"]?.first == "yes",

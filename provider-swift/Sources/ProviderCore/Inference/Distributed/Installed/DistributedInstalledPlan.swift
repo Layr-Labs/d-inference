@@ -31,6 +31,9 @@ struct DistributedInstalledPlan: Sendable {
         .qwen35RoutedExperts: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust"],
         .qwen35PrismHadamard: ["DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC": "1", "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE": "1"],
         .nemotronH: [:],
+        // MiMo's contract is the product's defaults with no `DARKBLOOM_MIMO_*`
+        // switch (`MiMoArithmeticEnvironment`): nothing beyond the three values.
+        .mimoV26LayerStage: [:],
     ]
 
     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {

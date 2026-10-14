@@ -1,4 +1,5 @@
-import type { Action, Operation } from '../../../shared/contracts';
+import type { Action, NativeModel, Operation } from '../../../shared/contracts';
+import { modelName } from '../../models/facts';
 
 const actions: Record<Action['action'], { name: string; running: string }> = {
   start: { name: 'Provider start', running: 'Starting provider' },
@@ -39,4 +40,14 @@ export function operationLabel(operation: Pick<Operation, 'action' | 'state'>): 
   return operation.state === 'running'
     ? action.running
     : `${action.name} · ${states[operation.state]}`;
+}
+
+// A download the runtime attributes names its model, with the progress its row shows.
+export function operationTitle(operation: Operation, models: NativeModel[]): string {
+  if (operation.action !== 'download' || !operation.model) return operationLabel(operation);
+  const name = modelName(models, operation.model);
+  if (operation.state !== 'running') return `${name} download · ${states[operation.state]}`;
+  return operation.progress === undefined
+    ? `Downloading ${name}`
+    : `Downloading ${name} · ${Math.round(operation.progress * 100)}%`;
 }

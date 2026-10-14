@@ -78,6 +78,33 @@ it('keeps a failure until Close and remembers dismissal across remounts', () => 
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
+it('names a downloading model and shows the progress its row shows', () => {
+  const download = (state: Parameters<typeof operation>[0], progress?: number) =>
+    backendWith(
+      snapshot({
+        operations: [
+          {
+            ...operation(state, 'Downloading qwen-3.5-9b…', 'download'),
+            model: 'qwen-3.5-9b',
+            progress,
+          },
+        ],
+      }),
+    );
+  const { rerender } = render(<OperationFeed backend={download('running', 0.42)} />);
+  expect(screen.getByText('Downloading Qwen 3.5 9B · 42%')).toBeInTheDocument();
+  rerender(<OperationFeed backend={download('running')} />);
+  expect(screen.getByText('Downloading Qwen 3.5 9B')).toBeInTheDocument();
+  rerender(<OperationFeed backend={download('failed')} />);
+  expect(screen.getByText('Qwen 3.5 9B download · Failed')).toBeInTheDocument();
+  rerender(
+    <OperationFeed
+      backend={backendWith(snapshot({ operations: [operation('running', '', 'download')] }))}
+    />,
+  );
+  expect(screen.getByText('Downloading model')).toBeInTheDocument();
+});
+
 it('does not revive an old completed operation when the app reopens', () => {
   vi.useFakeTimers();
   const previous = backend();

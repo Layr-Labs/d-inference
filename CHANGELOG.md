@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop download notifications
+
+- Name the model in download notifications, with the same progress its row on Models shows (for example “Downloading Qwen 3.5 9B · 42%”), and in their outcome (“Qwen 3.5 9B download · Failed”). Downloads the runtime doesn't attribute to a model still read “Downloading model”.
 ## Unreleased — desktop required update in progress
 
 - While Darkbloom updates on a runtime below the supported version, This Mac's Overview shows a single “Updating Darkbloom” step and headline instead of also offering the required update again.

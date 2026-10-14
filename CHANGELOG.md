@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop preview with an older installed runtime
 
-- Report the installed Darkbloom runtime's version as the provider version in the signed desktop preview, instead of the bundled desktop API's own build version, so Updates no longer offers an update that is already installed (clicking Update now ran `darkbloom update`, which reported "Already up to date", and the offer stayed). Refuse actions that need desktop commands the installed runtime does not have yet (provider cooling, Studio's local-only serving) with an explanation, and show its cooling controls as unavailable, instead of failing with the runtime's usage text.
+- Report the installed Darkbloom runtime's version as the provider version in the signed desktop preview, instead of the bundled desktop API's own build version, so Updates no longer offers an update that is already installed (a state file left behind by an older provider process no longer sets the stopped provider's version either) (clicking Update now ran `darkbloom update`, which reported "Already up to date", and the offer stayed). Refuse actions that need desktop commands the installed runtime does not have yet (provider cooling, Studio's local-only serving) with an explanation, and show its cooling controls as unavailable, instead of failing with the runtime's usage text.
 
 ## Unreleased — desktop hardware load
 

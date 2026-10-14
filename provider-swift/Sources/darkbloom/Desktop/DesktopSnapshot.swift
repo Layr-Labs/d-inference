@@ -100,7 +100,7 @@ extension DesktopBackend {
     let machine: JSONValue = .dict([
       "id": .string("this-mac"), "name": .string(loaded.config.provider.name),
       "chip": .string(loaded.hardware?.chipName ?? "Unknown hardware"), "memory_gb": .number(total),
-      "status": .string(phase), "version": .string(daemon?.version ?? runtimeVersion),
+      "status": .string(phase), "version": .string((fresh ? daemon?.version : nil) ?? runtimeVersion),
       "models": .array(selected.map(DV.string)),
       "observed_at": .number(fresh ? daemon?.writtenAt : nil),
     ])

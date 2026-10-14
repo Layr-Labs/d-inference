@@ -149,6 +149,13 @@ url = "http://127.0.0.1:{server.server_port}"
 model_cache_directory = "{cache}"
 idle_timeout_mins = 60
 ''')
+        # A state file left behind by an older provider that has since exited.
+        (root / "state.json").write_text(json.dumps({
+            "schema": 1, "pid": 999999, "written_at": 1, "started_at": 1, "version": "0.0.1",
+            "process_identity": {"pid": 999999, "start_time_micros": 1000000},
+            "lifecycle": {"coordinator_acknowledged": False, "remaining": 0, "outcome": "serving"},
+            "warm_models": [], "inference_active": False,
+            "stats": {"requests_served": 0, "tokens_generated": 0, "usage_gaps": 0}}))
         env = dict(os.environ, DARKBLOOM_DESKTOP_DIR=str(root / "desktop"),
                    DARKBLOOM_AUTH_TOKEN_PATH=str(root / "auth"),
                    DARKBLOOM_STATE_FILE=str(root / "state.json"),
@@ -186,6 +193,7 @@ idle_timeout_mins = 60
                 code, snapshot = request()
                 assert code == 200 and snapshot["machine"]["name"] == "Desktop fixture", snapshot
                 assert snapshot["state"] == "stopped" and not snapshot["linked"]
+                assert snapshot["machine"]["version"] == snapshot["version"] != "0.0.1", snapshot["machine"]
                 code, release_history = request("release-history")
                 assert code == 200 and "minimum_provider_version" not in release_history, release_history
                 assert release_history["history"][0]["notes"] == "Faster recovery", release_history

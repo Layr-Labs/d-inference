@@ -318,10 +318,15 @@ enum QwenStagePrefixDiskIO {
 
     /// The state at `frontier` (one of the record's frontiers): attention rows
     /// `[0, frontier)` from the units that hold them, and that frontier's
-    /// recurrent state. Units are read and opened in parallel; arrays are
-    /// created on the calling (serving) thread. `stallMilliseconds`
-    /// (qualification only) stops halfway, still calling `check`.
+    /// recurrent state. Units are read and opened in parallel, one pass, each
+    /// unit read through its page-aligned superset (`readUnit`) and its
+    /// plaintext placed in page-aligned buffers that the arrays then own
+    /// without a copy (`QwenStagePrefixRestoreBuffer`); arrays are created on
+    /// the calling (serving) thread. `stallMilliseconds` (qualification only)
+    /// stops halfway, still calling `check`. `readCall` is `pread` (tests
+    /// observe the reads).
     static func restore(url: URL, opened: Opened, frontier: Int, stallMilliseconds: Int? = nil,
+                        readCall: @escaping ReadCall = { Darwin.pread($0, $1, $2, $3) },
                         check: () throws -> Void) throws -> QwenStagePrefixState {
         let header = opened.header, b = header.blockTokens
         guard frontier > 0, frontier <= header.committedTokens,
@@ -333,28 +338,31 @@ enum QwenStagePrefixDiskIO {
         guard fd >= 0 else { throw QwenStagePrefixDiskPolicy.IOFailure("open", code: errno) }
         defer { close(fd) }
         _ = fcntl(fd, F_NOCACHE, 1)
-        let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier)
+        let work = try QwenStagePrefixDiskRestoreWork(fd: fd, opened: opened, frontier: frontier, readCall: readCall)
         try check()
-        // First half, an optional qualification stall (the rank is checked
-        // while it waits, as a stalled disk would be), then the rest.
-        let halfway = work.total / 2
-        DispatchQueue.concurrentPerform(iterations: halfway) { work.run($0) }
-        try work.requireNoError()
         if let stallMilliseconds {
+            // Qualification: the first half, a stall (the rank is checked while
+            // it waits, as a stalled disk would be), then the rest.
+            let halfway = work.total / 2
+            DispatchQueue.concurrentPerform(iterations: halfway) { work.run($0) }
+            try work.requireNoError()
             log("darkbloom-prefix-ssd-v1 event=qualification-stall ms=\(stallMilliseconds)")
             let end = DispatchTime.now().uptimeNanoseconds + UInt64(stallMilliseconds) * 1_000_000
             while DispatchTime.now().uptimeNanoseconds < end { try check(); usleep(20_000) }
+            try check()
+            DispatchQueue.concurrentPerform(iterations: work.total - halfway) { work.run(halfway + $0) }
+        } else {
+            DispatchQueue.concurrentPerform(iterations: work.total) { work.run($0) }
         }
-        try check()
-        DispatchQueue.concurrentPerform(iterations: work.total - halfway) { work.run(halfway + $0) }
         try work.requireNoError()
         try check()
         var attention: [Int: (keys: MLXArray, values: MLXArray)] = [:]
         var pending: [Int: MLXArray] = [:]
         for (entry, item) in header.attention.enumerated() {
             let target = work.targets[entry], dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype]!
-            let array = MLXArray(Data(bytesNoCopy: target.pointer, count: target.bytes, deallocator: .none),
-                [1, item.heads, frontier, item.headDim], dtype: dtype)
+            // The array owns the decrypted rows in place (finding R3: the
+            // former MLXArray(Data) copied every restored byte once more).
+            let array = target.buffer.array([1, item.heads, frontier, item.headDim], dtype: dtype)
             if item.kind == "keys" { pending[item.layer] = array }
             else if item.kind == "values", let keys = pending.removeValue(forKey: item.layer) {
                 attention[item.layer] = (keys: keys, values: array)
@@ -364,10 +372,10 @@ enum QwenStagePrefixDiskIO {
         var recurrent: [Int: (conv: MLXArray, ssm: MLXArray)] = [:]
         var convs: [Int: MLXArray] = [:]
         for (slot, item) in work.recurrentItems.enumerated() {
-            guard let plain = work.recurrentPlain(slot), let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype] else {
+            guard work.recurrentFilled(slot), let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype] else {
                 throw ProbeError("Prefix record recurrent unit missing")
             }
-            let array = MLXArray(plain, item.shape, dtype: dtype)
+            let array = work.recurrentBuffers[slot].array(item.shape, dtype: dtype)
             if item.kind == "conv" { convs[item.layer] = array }
             else if item.kind == "ssm", let conv = convs.removeValue(forKey: item.layer) {
                 recurrent[item.layer] = (conv: conv, ssm: array)
@@ -376,10 +384,10 @@ enum QwenStagePrefixDiskIO {
         guard convs.isEmpty else { throw ProbeError("Prefix record recurrent entries are not paired") }
         var historyArrays: [String: MLXArray] = [:]
         for (slot, item) in work.historyItems.enumerated() {
-            guard let plain = work.historyPlain(slot), let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype] else {
+            guard work.historyFilled(slot), let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype] else {
                 throw ProbeError("Prefix record history unit missing")
             }
-            historyArrays[item.kind] = MLXArray(plain, item.shape, dtype: dtype)
+            historyArrays[item.kind] = work.historyBuffers[slot].array(item.shape, dtype: dtype)
         }
         var history: QwenMTPPrefixHistory?
         if !historyArrays.isEmpty {
@@ -397,13 +405,46 @@ enum QwenStagePrefixDiskIO {
         return state
     }
 
-    static func openUnit(_ fd: Int32, _ unit: QwenStagePrefixDiskHeader.Unit, dataStart: Int,
-                                 key: SymmetricKey) throws -> Data {
-        let sealed = try readAll(fd, count: unit.length, at: dataStart + unit.offset)
+    typealias ReadCall = (Int32, UnsafeMutableRawPointer, Int, off_t) -> Int
+
+    /// File offsets and buffers of a restore's unit reads are multiples of
+    /// this (the page size on Apple silicon).
+    static let readAlignment = 16_384
+
+    /// The page-aligned superset `[offset, offset + count)` of the file range
+    /// `[start, start + length)`, clipped at the file's end.
+    static func alignedExtent(start: Int, length: Int, fileSize: Int) -> (offset: Int, count: Int) {
+        let a = readAlignment
+        let lower = start / a * a, upper = min(fileSize, (start + length + a - 1) / a * a)
+        return (lower, max(0, upper - lower))
+    }
+
+    /// One sealed unit, authenticated and decrypted. Read through its
+    /// page-aligned superset into a page-aligned scratch buffer (finding R2:
+    /// an F_NOCACHE read of more than about 1 MiB at an offset or into a
+    /// buffer not 4 KiB aligned left its pages in the unified page cache,
+    /// about a quarter of every restored Qwen record).
+    static func readUnit(_ fd: Int32, _ unit: QwenStagePrefixDiskHeader.Unit, dataStart: Int, fileSize: Int,
+                         key: SymmetricKey, readCall: ReadCall) throws -> Data {
+        let start = dataStart + unit.offset
+        guard unit.length >= QwenStagePrefixDiskFormat.tagBytes, start >= 0, start + unit.length <= fileSize else {
+            throw ProbeError("Prefix record unit lies outside its file")
+        }
+        let extent = alignedExtent(start: start, length: unit.length, fileSize: fileSize)
+        let scratch = try QwenStagePrefixRestoreBuffer(bytes: extent.count)
+        var done = 0
+        while done < extent.count {
+            let n = readCall(fd, scratch.pointer.advanced(by: done), extent.count - done, off_t(extent.offset + done))
+            if n < 0 { if errno == EINTR { continue }; throw QwenStagePrefixDiskPolicy.IOFailure("read", code: errno) }
+            if n == 0 { throw ProbeError("Prefix record is shorter than its header says") }
+            done += n
+        }
+        let sealed = scratch.pointer.advanced(by: start - extent.offset)
+        let cipher = unit.length - QwenStagePrefixDiskFormat.tagBytes
         let box = try AES.GCM.SealedBox(nonce: QwenStagePrefixDiskFormat.unitNonce(unit.index),
-            ciphertext: sealed.prefix(unit.length - QwenStagePrefixDiskFormat.tagBytes),
-            tag: sealed.suffix(QwenStagePrefixDiskFormat.tagBytes))
-        return try AES.GCM.open(box, using: key)
+            ciphertext: Data(bytesNoCopy: sealed, count: cipher, deallocator: .none),
+            tag: Data(bytesNoCopy: sealed.advanced(by: cipher), count: QwenStagePrefixDiskFormat.tagBytes, deallocator: .none))
+        return try withExtendedLifetime(scratch) { try AES.GCM.open(box, using: key) }
     }
 
     static func writeAll(_ fd: Int32, _ data: Data, at offset: Int) throws {
@@ -432,62 +473,109 @@ enum QwenStagePrefixDiskIO {
     }
 }
 
+/// Page-aligned anonymous memory for one restored array (or one unit read):
+/// unmapped when released, unless an array took it over (`array`), which then
+/// owns it without a copy and unmaps it when MLX frees the array.
+final class QwenStagePrefixRestoreBuffer: @unchecked Sendable {
+    let pointer: UnsafeMutableRawPointer
+    let bytes: Int
+    let mapped: Int
+    private var handedOver = false
+
+    init(bytes: Int) throws {
+        let a = QwenStagePrefixDiskIO.readAlignment
+        let mapped = max(1, (bytes + a - 1) / a) * a
+        let allocation = mmap(nil, mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+        guard allocation != MAP_FAILED, let allocation, UInt(bitPattern: allocation) % UInt(a) == 0 else {
+            if let allocation, allocation != MAP_FAILED { munmap(allocation, mapped) }
+            throw ProbeError("Prefix restore buffer could not be allocated")
+        }
+        pointer = allocation; self.bytes = bytes; self.mapped = mapped
+    }
+
+    /// An array over these bytes that owns them from now on (MLX wraps the
+    /// page-aligned memory without copying; if it cannot, it copies and
+    /// releases them at once). Called once.
+    func array(_ shape: [Int], dtype: DType) -> MLXArray {
+        precondition(!handedOver, "Prefix restore buffer handed over twice")
+        handedOver = true
+        let pointer = self.pointer, mapped = self.mapped
+        return MLXArray(rawPointer: pointer, shape, dtype: dtype, finalizer: { _ = munmap(pointer, mapped) })
+    }
+
+    deinit { if !handedOver { munmap(pointer, mapped) } }
+}
+
 /// The parallel part of one restore: every unit is read, authenticated and
 /// copied into its place by whichever thread takes it. Output buffers are
-/// disjoint per unit; the recurrent plaintexts and the first error are kept
+/// disjoint per unit; which units finished and the first error are kept
 /// under a lock. Nothing here calls MLX.
 final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
-    struct Target { let pointer: UnsafeMutableRawPointer; let bytes: Int; let rowBytes: Int; let heads: Int }
+    struct Target { let buffer: QwenStagePrefixRestoreBuffer; let rowBytes: Int; let heads: Int }
     let fd: Int32
     let header: QwenStagePrefixDiskHeader
     let frontier: Int
     let dataStart: Int
+    let fileSize: Int
     let key: SymmetricKey
+    let readCall: QwenStagePrefixDiskIO.ReadCall
     let targets: [Target]
     let attentionWork: [(entry: Int, block: Int)]
     let recurrentItems: [QwenStagePrefixDiskHeader.Recurrent]
     let historyItems: [QwenStagePrefixDiskHeader.Recurrent]
+    let recurrentBuffers: [QwenStagePrefixRestoreBuffer]
+    let historyBuffers: [QwenStagePrefixRestoreBuffer]
     private let lock = NSLock()
-    private var plains: [Data?]
-    private var historyPlains: [Data?]
+    private var recurrentDone: [Bool]
+    private var historyDone: [Bool]
     private var firstError: Error?
 
     var total: Int { attentionWork.count + recurrentItems.count + historyItems.count }
 
-    init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int) throws {
+    init(fd: Int32, opened: QwenStagePrefixDiskIO.Opened, frontier: Int,
+         readCall: @escaping QwenStagePrefixDiskIO.ReadCall = { Darwin.pread($0, $1, $2, $3) }) throws {
         let header = opened.header, b = header.blockTokens
-        self.fd = fd; self.header = header; self.frontier = frontier
-        dataStart = opened.dataStart; key = opened.key
+        self.fd = fd; self.header = header; self.frontier = frontier; self.readCall = readCall
+        dataStart = opened.dataStart; fileSize = opened.fileBytes; key = opened.key
         var targets: [Target] = []
         for item in header.attention {
             guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype], item.units.count == (header.committedTokens + b - 1) / b,
                   item.heads > 0, item.headDim > 0 else {
-                for target in targets { target.pointer.deallocate() }
                 throw ProbeError("Prefix record attention entry is malformed")
             }
             let rowBytes = item.headDim * dtype.size, bytes = item.heads * frontier * rowBytes
-            targets.append(.init(pointer: UnsafeMutableRawPointer.allocate(byteCount: max(1, bytes), alignment: 64),
-                bytes: bytes, rowBytes: rowBytes, heads: item.heads))
+            targets.append(.init(buffer: try QwenStagePrefixRestoreBuffer(bytes: bytes), rowBytes: rowBytes, heads: item.heads))
         }
         self.targets = targets
         let blocks = (frontier + b - 1) / b
         attentionWork = header.attention.indices.flatMap { entry in (0..<blocks).map { (entry: entry, block: $0) } }
         recurrentItems = header.recurrent.filter { $0.frontier == frontier }
-        plains = Array(repeating: nil, count: recurrentItems.count)
         historyItems = header.historyEntries.filter { $0.frontier == frontier }
-        historyPlains = Array(repeating: nil, count: historyItems.count)
         guard !recurrentItems.isEmpty || header.recurrent.isEmpty else {
             throw ProbeError("Prefix record lacks the frontier's recurrent state")
         }
+        func buffer(_ item: QwenStagePrefixDiskHeader.Recurrent) throws -> QwenStagePrefixRestoreBuffer {
+            guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype], item.shape.allSatisfy({ $0 >= 0 }),
+                  item.unit.length == item.shape.reduce(1, *) * dtype.size + QwenStagePrefixDiskFormat.tagBytes else {
+                throw ProbeError("Prefix record recurrent or history unit size differs")
+            }
+            return try QwenStagePrefixRestoreBuffer(bytes: item.unit.length - QwenStagePrefixDiskFormat.tagBytes)
+        }
+        recurrentBuffers = try recurrentItems.map(buffer)
+        historyBuffers = try historyItems.map(buffer)
+        recurrentDone = Array(repeating: false, count: recurrentItems.count)
+        historyDone = Array(repeating: false, count: historyItems.count)
     }
 
-    deinit { for target in targets { target.pointer.deallocate() } }
-
-    func recurrentPlain(_ slot: Int) -> Data? { lock.withLock { plains[slot] } }
-    func historyPlain(_ slot: Int) -> Data? { lock.withLock { historyPlains[slot] } }
+    func recurrentFilled(_ slot: Int) -> Bool { lock.withLock { recurrentDone[slot] } }
+    func historyFilled(_ slot: Int) -> Bool { lock.withLock { historyDone[slot] } }
 
     func requireNoError() throws {
         if let error = lock.withLock({ firstError }) { throw error }
+    }
+
+    private func open(_ unit: QwenStagePrefixDiskHeader.Unit) throws -> Data {
+        try QwenStagePrefixDiskIO.readUnit(fd, unit, dataStart: dataStart, fileSize: fileSize, key: key, readCall: readCall)
     }
 
     func run(_ index: Int) {
@@ -499,32 +587,28 @@ final class QwenStagePrefixDiskRestoreWork: @unchecked Sendable {
                 let rows = min(b, header.committedTokens - block * b)
                 guard unit.length == target.heads * rows * target.rowBytes + QwenStagePrefixDiskFormat.tagBytes,
                       rows == min(b, frontier - block * b) else { throw ProbeError("Prefix record unit size differs") }
-                let plain = try QwenStagePrefixDiskIO.openUnit(fd, unit, dataStart: dataStart, key: key)
+                let plain = try open(unit)
                 let run = rows * target.rowBytes
                 plain.withUnsafeBytes { source in
                     for head in 0..<target.heads {
-                        target.pointer.advanced(by: (head * frontier + block * b) * target.rowBytes)
+                        target.buffer.pointer.advanced(by: (head * frontier + block * b) * target.rowBytes)
                             .copyMemory(from: source.baseAddress!.advanced(by: head * run), byteCount: run)
                     }
                 }
             } else if index < attentionWork.count + recurrentItems.count {
                 let slot = index - attentionWork.count
-                let item = recurrentItems[slot]
-                guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype],
-                      item.unit.length == item.shape.reduce(1, *) * dtype.size + QwenStagePrefixDiskFormat.tagBytes else {
-                    throw ProbeError("Prefix record recurrent unit size differs")
-                }
-                let plain = try QwenStagePrefixDiskIO.openUnit(fd, item.unit, dataStart: dataStart, key: key)
-                lock.withLock { plains[slot] = plain }
+                let plain = try open(recurrentItems[slot].unit)
+                let target = recurrentBuffers[slot]
+                guard plain.count == target.bytes else { throw ProbeError("Prefix record recurrent unit size differs") }
+                if target.bytes > 0 { plain.withUnsafeBytes { target.pointer.copyMemory(from: $0.baseAddress!, byteCount: target.bytes) } }
+                lock.withLock { recurrentDone[slot] = true }
             } else {
                 let slot = index - attentionWork.count - recurrentItems.count
-                let item = historyItems[slot]
-                guard let dtype = QwenStagePrefixDiskFormat.dtypes[item.dtype],
-                      item.unit.length == item.shape.reduce(1, *) * dtype.size + QwenStagePrefixDiskFormat.tagBytes else {
-                    throw ProbeError("Prefix record history unit size differs")
-                }
-                let plain = try QwenStagePrefixDiskIO.openUnit(fd, item.unit, dataStart: dataStart, key: key)
-                lock.withLock { historyPlains[slot] = plain }
+                let plain = try open(historyItems[slot].unit)
+                let target = historyBuffers[slot]
+                guard plain.count == target.bytes else { throw ProbeError("Prefix record history unit size differs") }
+                if target.bytes > 0 { plain.withUnsafeBytes { target.pointer.copyMemory(from: $0.baseAddress!, byteCount: target.bytes) } }
+                lock.withLock { historyDone[slot] = true }
             }
         } catch {
             lock.withLock { if firstError == nil { firstError = error } }

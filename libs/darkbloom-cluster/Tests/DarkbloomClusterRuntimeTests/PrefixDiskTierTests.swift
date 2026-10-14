@@ -530,4 +530,46 @@ struct PrefixDiskTierTests {
         #expect(Double(after[0]) == start && Int(after[1]) == bytes + roomy.stats.persistedBytes)
         roomy.close()
     }
+
+    /// Finding R2: unit reads were F_NOCACHE preads at misaligned offsets into
+    /// unaligned buffers, which leaves larger units in the page cache. Every
+    /// unit is now read through its page-aligned superset into page-aligned
+    /// memory, and the restored state is unchanged.
+    @Test func restoreReadsArePageAlignedAndExact() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(400..<440), scope = "s"
+        var captured = states(committed: 39, frontiers: [16, 32], seed: 8)
+        for index in captured.indices where captured[index].committedTokens == 39 {
+            captured[index].speculativeHistory = history(frontier: 39, seed: 4)
+        }
+        let tier = try openTier(configuration(root))
+        tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 1)
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).first { $0.hasSuffix(".dbpx") })
+        let url = tier.directory.appendingPathComponent(name)
+        let opened = try QwenStagePrefixDiskIO.open(url: url, keys: QwenStagePrefixDiskKeys(master: Data(repeating: 7, count: 32)))
+        #expect(opened.dataStart % QwenStagePrefixDiskIO.readAlignment != 0)
+        final class Reads: @unchecked Sendable {
+            let lock = NSLock(); var calls: [(offset: Int, buffer: UInt)] = []
+        }
+        for frontier in [39, 32, 16] {
+            let reads = Reads()
+            let restored = try QwenStagePrefixDiskIO.restore(url: url, opened: opened, frontier: frontier,
+                readCall: { fd, buffer, count, offset in
+                    reads.lock.withLock { reads.calls.append((Int(offset), UInt(bitPattern: buffer))) }
+                    return Darwin.pread(fd, buffer, count, offset)
+                }, check: {})
+            let original = captured.first { $0.committedTokens == frontier }!
+            #expect(same(restored, original) && sameHistory(restored.speculativeHistory, original.speculativeHistory))
+            #expect(!reads.calls.isEmpty)
+            #expect(reads.calls.allSatisfy { $0.offset % QwenStagePrefixDiskIO.readAlignment == 0
+                && $0.buffer % UInt(QwenStagePrefixDiskIO.readAlignment) == 0 })
+        }
+        // The superset of a range: aligned down and up, clipped at the end of the file.
+        #expect(QwenStagePrefixDiskIO.alignedExtent(start: 37_982, length: 1_048_592, fileSize: 2_000_000) == (32_768, 1_064_960))
+        #expect(QwenStagePrefixDiskIO.alignedExtent(start: 16_384, length: 16_384, fileSize: 40_000) == (16_384, 16_384))
+        #expect(QwenStagePrefixDiskIO.alignedExtent(start: 30_000, length: 9_000, fileSize: 39_000) == (16_384, 22_616))
+        tier.close()
+    }
 }

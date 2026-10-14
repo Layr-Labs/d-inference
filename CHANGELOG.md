@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Cooling readings and thresholds
+
+- Stop showing a cooling reading older than a minute as the current GPU temperature and spinning fans; the Cooling page now shows them as unavailable, matching its status and Home's fan indicator. Show a threshold set from the CLI between the 5 °C presets as itself, so the selected value is exactly what Enable provider cooling submits, and keep CLI-set speed and threshold within the whole-number ranges the desktop action accepts.
 ## Unreleased — desktop model action guards
 
 - Lock a model's controls on the first click, so double-clicking Keep in memory, Add to pool or other model actions no longer sends the action twice. Add to pool before Autopilot is set up now turns Autopilot on with the cached pool instead of doing nothing, preserving the serving selection or starting one model when none serve. Turn on Autopilot is disabled while another operation runs.

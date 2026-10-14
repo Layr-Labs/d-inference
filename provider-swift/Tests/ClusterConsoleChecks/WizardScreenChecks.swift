@@ -242,6 +242,13 @@ extension ClusterConsoleCheck {
                     "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
                 continue
             }
+            // A model its records withhold (GPT-OSS: its pipeline checks diverged at cuts 4, 8 and 10) is planned
+            // only at a shape a check passed in, and a start refuses it: the onboarding does not offer it, and says why.
+            if reading.model.modelID == "gpt-oss-20b" {
+                expect(option?.plan == nil && option?.blocker?.contains("not granted pair serving") == true,
+                    "GPT-OSS is not offered while its records withhold it: \(option?.blocker ?? "offered")")
+                continue
+            }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",

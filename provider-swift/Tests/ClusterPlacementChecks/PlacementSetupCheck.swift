@@ -618,6 +618,26 @@ import Foundation
             require("shipped: \(model) stays withheld", !servesPipeline(model, [m3, m5u]) && !servesPipeline(model, [m5u, m3])
                 && ClusterPairServingGrants.withheld[model] != nil)
         }
+        // What the onboarding offers is what a start serves: at the planner's sharded shape on this pair, each
+        // granted model starts, and a withheld one is refused although its passed shape is still plannable
+        // (GPT-OSS passed at cut 20, the planner's cut, after diverging at 4, 8 and 10).
+        func startRefusal(_ model: String, _ order: [ClusterChipClass?], _ cut: Int) -> ClusterPairServingRefusal? {
+            ClusterPairServingGrants.startRefusal(order, cuts: [cut], mode: .pipeline, runtimeModelID: model, publicModelID: "p")
+        }
+        for (model, order, cut) in [("registered_qwen38_27b", [m3, m5u], 8), ("registered_qwen35_9b", [m3, m5u], 4),
+                                    ("registered_nemotron35_lightning", [m3, m5u], 8), ("registered_qwen35_35b_a3b", [m5u, m3], 36),
+                                    ("registered_qwen36_35b_a3b", [m5u, m3], 36), ("registered_ternary_bonsai_2_27b", [m5u, m3], 56),
+                                    ("registered_mimo_v26_flash_mopd", [m5u, m3], 47)] {
+            require("offered: \(model) starts at the planner's cut \(cut)", startRefusal(model, order, cut) == nil)
+        }
+        require("not offered: GPT-OSS at cut 20 is plannable but its start is refused",
+            ClusterPairServingGrants.plannable([m5u, m3], cuts: [20], mode: .pipeline, runtimeModelID: "registered_gpt_oss_20b")
+                && startRefusal("registered_gpt_oss_20b", [m5u, m3], 20) != nil)
+        require("not offered: Gemma 4 QAT4 at the planner's cut 25", startRefusal("registered_gemma4_26b_qat_4bit", [m5u, m3], 25) != nil)
+        require("not offered: the 27B's start refused in an order its pipeline checks never ran",
+            startRefusal("registered_qwen38_27b", [m5u, m3], 56) != nil)
+        require("not offered: a model with no record", startRefusal("registered_unknown_model", [m3, m5u], 8) != nil)
+        require("a rank with no class is left to its own start", startRefusal("registered_qwen38_27b", [m3, nil], 8) == nil)
     }
 
     /// Grants come from qualification records only, for any chips and any

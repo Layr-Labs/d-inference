@@ -86,8 +86,10 @@ of that family ran it in that role; a record from a Mac generation no longer
 on hand still grants that chip, and only it. A record that diverged withholds
 its own family at every cut (that family is then planned only at shapes a
 check passed in, and never started); an inconclusive record neither grants nor
-withholds. The planner and every Mac's start apply the same rule, so the
-onboarding never offers a placement a start would refuse.
+withholds. The planner and every Mac's start apply the same rule, and the
+onboarding offers a model only when every rank of its chosen placement would
+pass that start check: a model its records withhold (a withheld family still
+has a plan at a passed shape) is listed as not served, with the reason.
 
 ## Control leader and failover
 

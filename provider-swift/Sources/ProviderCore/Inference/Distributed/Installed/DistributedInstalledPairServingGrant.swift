@@ -632,6 +632,34 @@ public enum ClusterPairServingGrants {
         }
     }
 
+    /// What the start would refuse of a planned placement (each rank's chip
+    /// class in rank order, its cuts and mode), nil when every rank's own
+    /// check would admit it: the model's grant (a model withheld as a whole is
+    /// refused here, as at the start), its mode family, each rank's class for
+    /// its role and, for a shape-restricted family, the shape. A plan may
+    /// exist where `plannable` admits a passed shape of a withheld family; the
+    /// onboarding offers a model only when this is nil, so it offers exactly
+    /// what a start serves. A rank whose chip has no class (a test profile, a
+    /// virtual machine) is left to its own start, as in `plannable`.
+    public static func startRefusal(_ rankClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode,
+                                    runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
+                                    decisions: ClusterPairServingDecisions = decisions) -> ClusterPairServingRefusal? {
+        do {
+            _ = try grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID, artifactSHA256: artifactSHA256,
+                          decisions: decisions)
+            for (rank, chipClass) in rankClasses.enumerated() where chipClass != nil {
+                try requireRank(rank, of: rankClasses.count, chipClass: chipClass, runtimeModelID: runtimeModelID,
+                                publicModelID: publicModelID, artifactSHA256: artifactSHA256, cuts: cuts, mode: mode,
+                                decisions: decisions)
+            }
+            return nil
+        } catch let refusal as ClusterPairServingRefusal {
+            return refusal
+        } catch {
+            return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID, reason: .noGrant)
+        }
+    }
+
     /// A whole placement: each rank's chip class in rank order.
     public static func requirePlacement(_ rankClasses: [ClusterChipClass?], runtimeModelID: String, publicModelID: String,
                                         cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil,

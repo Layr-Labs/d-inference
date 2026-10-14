@@ -7,7 +7,7 @@ extension Cluster {
     /// terminal, the guided link setup line by line everywhere else.
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "setup",
-            abstract: "Set up a cluster: the Mac you start on leads; run it on the other Mac too and confirm the code.",
+            abstract: "Set up a cluster: start on any Mac, run it on the other Mac too and confirm the code; afterwards it works on every member.",
             discussion: """
                 On a terminal, bare `darkbloom cluster` is the onboarding. It checks RDMA, the cable and the \
                 cable port's isolation (one macOS approval when needed) and the RDMA GID. When no other Mac waits \
@@ -15,7 +15,10 @@ extension Cluster {
                 the other Mac then finds it by itself, both show the same code, y on each pairs them, and the \
                 other Mac is told where to continue. The leader shows both Macs' hardware, the models both hold \
                 with the planner's placement, and on y saves the plan, syncs the member's setup over the cable, \
-                starts both Macs' parts and serves. Run again, it shows where this Mac stands and the next step. \
+                starts both Macs' parts and serves. Afterwards the cluster's control leader is derived (the \
+                plan's rank 0, where requests enter) and fails over when it disappears; `darkbloom cluster` on any \
+                member shows the status and changes the model, stops or starts it, forwarding to the leader. \
+                Run again, it shows where this Mac stands and the next step. \
                 --wizard opens the earlier six-step wizard instead; --plain prints its six steps.
 
                 As `darkbloom cluster setup`, with --json, --yes or --temporary, or when not run in a terminal, \

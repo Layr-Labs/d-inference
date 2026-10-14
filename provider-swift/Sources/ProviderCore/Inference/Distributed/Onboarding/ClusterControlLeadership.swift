@@ -259,7 +259,10 @@ public struct ClusterControlNode: Sendable, Equatable {
         if leads {
             let others = claim.members.filter { $0 != localID }
             var actions: [Action] = others.isEmpty ? [] : [.lease(claim, to: others)]
-            if let choice = ClusterControlDerivation.derive(members: Array(members.values), present: present(now: now), rankOrder: rankOrder),
+            // Leadership moves by derivation once a plan exists (before it, the Mac that drives the onboarding keeps
+            // the screens and the claim; a failover's survivor keeps it until the plan's rank 0 is back).
+            if let plan = rankOrder, !plan.isEmpty,
+               let choice = ClusterControlDerivation.derive(members: Array(members.values), present: present(now: now), rankOrder: plan),
                choice.memberID != localID, confirmed.contains(choice.memberID) {
                 let offer = ClusterControlClaim(term: claim.term + 1, leaderID: choice.memberID, members: claim.members, reason: choice.reason)
                 pendingHandOver = offer

@@ -147,7 +147,13 @@ extension ClusterService {
             let names = node.members.mapValues(\.name)
             let line = ClusterControlWords.line(node.mode(now: now), names: names, model: record?.leadership?.modelName)
             let running = node.leads && node.mode(now: now) == .cluster && (record?.leadership?.serving ?? false)
-            return (actions, node.claim, Array(node.members.values), running, line)
+            // Each member's fit for the model alone, as the plan's adopter recorded it, travels with the lease.
+            let facts = node.members.values.map { fact -> ClusterControlMember in
+                var fact = fact
+                if let holders = record?.aloneHolders { fact.holdsModelAlone = holders.contains(fact.memberID) }
+                return fact
+            }
+            return (actions, node.claim, facts, running, line)
         }
         guard let due else { return }
         if due.line != lock.withLock({ lastModeLine }) {

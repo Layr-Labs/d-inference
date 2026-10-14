@@ -10,7 +10,7 @@ extension ProviderLoop {
         refreshAutopilotSettings()
         guard !autopilotConsented, autopilotCommand == nil else {
             let busy = ProviderModelSwitchStatus(requestID: request.id, outcome: .busy,
-                message: "Autopilot owns model selection. Use darkbloom autopilot models, or disable Autopilot before darkbloom switch.")
+                message: "Autopilot owns model selection. Use \(BuildEnvironment.current.cliName) autopilot models, or disable Autopilot before \(BuildEnvironment.current.cliName) switch.")
             writeModelSwitchReceipt(busy)
             return busy
         }
@@ -100,7 +100,7 @@ extension ProviderLoop {
             modelSwitchStatus.remaining = lifecycleRemaining
             modelSwitchStatus.message = "\(error)"
             if servingDrain.owner == .modelSwitch {
-                modelSwitchStatus.message? += " Admission remains closed; repeat darkbloom switch to reconcile, or use darkbloom restart."
+                modelSwitchStatus.message? += " Admission remains closed; repeat \(BuildEnvironment.current.cliName) switch to reconcile, or use \(BuildEnvironment.current.cliName) restart."
             }
         }
         publishModelSwitchStatus()

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Provider CLI, native-runtime and retained-console environment variables, compiled defaults and reading symbols. Secrets are named, never valued. Unless specified otherwise, values are read at process start.
 
@@ -480,7 +480,7 @@ capability or alter the TTL, encryption or memory safeguards.
 | Key | Type / default | Effect | Source |
 |---|---|---|---|
 | `cache.daily_write_gb` | Optional nonnegative finite decimal GB; absent uses environment/default below | `0` explicitly means unlimited. A positive value must represent at least one byte and fit in `Int`; saved values win over the environment after restart | `provider-swift/Sources/ProviderCore/Config/CacheSettings.swift` (`validate`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheStorage.swift` (`dailyWriteBytes`) |
-| `cache.directory` | Optional absolute existing directory | Payloads use its `darkbloom/kv3` child; absent retains the built-in cache directory. No automatic migration or fallback when configured storage is unavailable | `CacheStorage.swift` (`root`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift` (`inspect`) |
+| `cache.directory` | Optional absolute existing directory | Payloads use its `darkbloom/kv3` child (a dev build: its own namespace); absent retains the built-in cache directory. No automatic migration or fallback when configured storage is unavailable | `CacheStorage.swift` (`root`), `provider-swift/Sources/ProviderCore/KVCacheSSD/CacheVolume.swift` (`inspect`) |
 | `cache.volume_uuid` | Optional UUID, required with `cache.directory` | Written by the CLI and checked against opened directories; a different filesystem at the same path is refused | `CacheStorage.swift` (`validateOpenedDirectory`) |
 
 Preparation and commands: [provider cache storage](../provider/cache-storage.md).

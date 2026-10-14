@@ -9,15 +9,26 @@ name: Release Provider Bundle (Swift)
 #   - bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib: regular-file
 #     copies of the app's CLI, Secure Enclave helper and Metal kernels. Release
 #     hashes are computed from them; installers verify them, then install the app.
+# A dev release is packaged with the dev app and executable names from
+# provider-swift/identity/provider-identity.json, so it installs beside
+# production. scripts/provider_release_identity.py exports them. The bundle
+# identifier, the signing identity, the flat bin/ names (the SwiftPM product
+# names) and the bundle file name are the same for both; the coordinator's
+# release registration requires the last two.
 #
 # No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
 # build. The legacy `release.yml` was deleted alongside `app/` once we
 # committed to a CLI-only migration.
 #
-# Tag convention:
-#   - vX.Y.Z           -> prod Swift release (signed tag on reviewed master)
-# Dev releases use workflow_dispatch so the requested version can remain
-# byte-identical to the checked-in ProviderCore.version.
+# Triggers:
+#   - tag vX.Y.Z       -> prod release of ProviderCore.version (signed tag on
+#                         reviewed master). Path filters do not apply to tags.
+#   - push to master   -> dev release X.Y.Z-dev.<run number> when the push
+#                         changes the provider or this release tooling.
+#   - workflow_dispatch -> manual dev release, signed validation build, or
+#                         prod recovery of a retained build.
+# Every dev build carries the -dev.<run number> suffix: the build stamps it
+# into ProviderCore.version, so `darkbloom --version` shows it.
 #
 # Repo secrets use DEV_/PROD_ prefixes. Source verification gates every
 # credential-consuming job; release jobs do not need environment approvals.
@@ -32,10 +43,52 @@ name: Release Provider Bundle (Swift)
 #   DEV_RELEASE_KEY       / PROD_RELEASE_KEY
 # Apple signing secrets are shared (same cert for both envs).
 
+run-name: >-
+  ${{ (github.ref_type == 'tag' && format('prod provider release {0}', github.ref_name)) ||
+      (github.event_name == 'push' && format('dev provider release -dev.{0} (master push)', github.run_number)) ||
+      (inputs.resume_run_id && format('prod provider release (resume run {0})', inputs.resume_run_id)) ||
+      (inputs.validation_only && format('dev provider validation build -dev.{0} (not published)', github.run_number)) ||
+      (inputs.environment == 'dev' && format('dev provider release -dev.{0} (manual)', github.run_number)) ||
+      'prod provider release (manual)' }}
+
 on:
   push:
     tags:
       - 'v*.*.*'
+    # A master push publishes a dev release. These paths are the provider
+    # sources, its submodule pins, and every script this workflow and
+    # .github/actions/provider-release-build run.
+    branches: [master]
+    paths:
+      - 'provider-swift/**'
+      - 'libs/**'
+      - '.gitmodules'
+      - '.github/workflows/release-swift.yml'
+      - '.github/actions/provider-release-build/**'
+      - 'scripts/check-release-version.sh'
+      - 'scripts/resolve-provider-release.sh'
+      - 'scripts/provider-release-resume.py'
+      - 'scripts/provider_release_resume/**'
+      - 'scripts/provider-release-cache.py'
+      - 'scripts/provider_release_cache/**'
+      - 'scripts/provider-release-publication.py'
+      - 'scripts/provider_release_artifact.py'
+      - 'scripts/provider_release_github.py'
+      - 'scripts/provider_release_identity.py'
+      - 'scripts/provider-signing-validation.py'
+      - 'scripts/stage-swiftpm-resource-bundles.sh'
+      - 'scripts/prepare-provider-release-toolchain.sh'
+      - 'scripts/prepare-metal-toolchain.py'
+      - 'scripts/prepare-app-attest-entitlements.py'
+      - 'scripts/install-macos-github-cli.sh'
+      - 'scripts/install-release-cmake.sh'
+      - 'scripts/fetch-metallib.sh'
+      - 'scripts/test-qwen4-packaged-resources.py'
+      - 'scripts/verify-prompt-parity.sh'
+      - 'scripts/prepare-mimo-*-fixtures.py'
+      - 'scripts/run-provider-tests.sh'
+      - 'scripts/run-nested-suite.sh'
+      - 'scripts/run-provider-test-watchdog.py'
   workflow_dispatch:
     inputs:
       resume_run_id:
@@ -63,6 +116,19 @@ on:
         type: boolean
         default: false
 
+# One dev publication at a time (master pushes and manual dev releases). A
+# running dev release always completes: cancelling it during notarization or
+# registration wastes the Apple submission and can leave a registered release
+# without its latest aliases. GitHub keeps only the newest pending run, so a
+# burst of merges produces one release of the newest commit. Tags, signed
+# validation builds and prod recovery keep one group per run, as before.
+concurrency:
+  group: >-
+    ${{ ((github.event_name == 'push' && github.ref_type == 'branch') ||
+         (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev' && !inputs.validation_only))
+        && 'release-dev' || format('release-swift-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 permissions:
   contents: write   # gh release create
   actions: read     # download the unsigned artifact from this run
@@ -70,8 +136,6 @@ permissions:
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
-  CLI_NAME: 'darkbloom'
-  ENCLAVE_NAME: 'darkbloom-enclave'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
@@ -125,6 +189,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
           RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
+          # Inputs exist only on workflow_dispatch. The script maps a master
+          # push to dev from GITHUB_EVENT_NAME and GITHUB_REF, not from inputs.
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
@@ -161,6 +227,7 @@ jobs:
         id: build
         with:
           lane: release
+          version: ${{ needs.resolve-env.outputs.version }}
       - name: Bind unsigned bundle to this source and version
         id: input
         env:
@@ -168,7 +235,7 @@ jobs:
           METALLIB: ${{ steps.build.outputs.metallib }}
         run: |
           set -euo pipefail
-          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$CLI_NAME" --version)"
+          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$PRODUCT_CLI_NAME" --version)"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
@@ -241,14 +308,16 @@ jobs:
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
-          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_COORDINATOR_URL || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          # PROD_* and legacy values are empty unless the resolved environment
+          # is prod, so a dev run never receives them.
+          LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
+          LEGACY_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.COORDINATOR_URL || '' }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
@@ -284,6 +353,9 @@ jobs:
 
       - name: Install pinned GitHub CLI
         run: ./scripts/install-macos-github-cli.sh
+
+      - name: Resolve packaged app names
+        run: python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"
 
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
@@ -446,9 +518,9 @@ jobs:
 
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
-          APP="$STAGE/Darkbloom.app"
+          APP="$STAGE/$APP_NAME"
           mkdir -p "$STAGE"
-          cp -R "$UNSIGNED_ROOT/Darkbloom.app" "$APP"
+          cp -R "$UNSIGNED_ROOT/$APP_NAME" "$APP"
           printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
@@ -461,7 +533,7 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>${CLI_NAME}</string>
               <key>CFBundleName</key>
-              <string>Darkbloom</string>
+              <string>${APP_DISPLAY_NAME}</string>
               <key>CFBundleVersion</key>
               <string>${VERSION}</string>
               <key>CFBundleShortVersionString</key>
@@ -507,7 +579,7 @@ jobs:
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
-            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -619,8 +691,9 @@ jobs:
           # requires bin/darkbloom to be a regular file — symlinks fail the
           # tar.TypeReg check.
           mkdir -p "$STAGE/bin"
-          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
-          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
+          # The flat copies keep the SwiftPM product names for both identities.
+          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$PRODUCT_CLI_NAME"
+          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$PRODUCT_ENCLAVE_NAME"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
           # Notarize only the canonical app. The flat bin/ copies exist solely
@@ -678,7 +751,7 @@ jobs:
           # Require an attached ticket and a local Gatekeeper acceptance before
           # the distribution artifact can be rebuilt or uploaded.
           STAGE="${{ steps.bundle.outputs.stage }}"
-          APP="$STAGE/Darkbloom.app"
+          APP="$STAGE/$APP_NAME"
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
@@ -686,35 +759,37 @@ jobs:
 
           # Stapling the bundle must not change the executable bytes registered
           # with the coordinator and verified by provider self-update.
-          cmp "$STAGE/bin/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
-          cmp "$STAGE/bin/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          cmp "$STAGE/bin/$PRODUCT_CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
+          cmp "$STAGE/bin/$PRODUCT_ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
           cmp "$STAGE/bin/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
 
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx "./bin/$PRODUCT_CLI_NAME" /tmp/darkbloom-bundle-files.txt
+          grep -qx "./bin/$PRODUCT_ENCLAVE_NAME" /tmp/darkbloom-bundle-files.txt
+          grep -qx "./$APP_NAME/Contents/MacOS/$CLI_NAME" /tmp/darkbloom-bundle-files.txt
+          grep -qx "./$APP_NAME/Contents/MacOS/$ENCLAVE_NAME" /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
           if grep -qx './bin/darkbloom-fan-helper' /tmp/darkbloom-bundle-files.txt; then
             echo "::error::fan helper must not be present in the flat verifier layout"
             exit 1
           fi
           grep -qx \
-            './Darkbloom.app/Contents/Helpers/darkbloom-fan-helper' \
+            "./$APP_NAME/Contents/Helpers/darkbloom-fan-helper" \
             /tmp/darkbloom-bundle-files.txt
           grep -qx \
-            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1' \
+            "./$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1" \
             /tmp/darkbloom-bundle-files.txt
           while IFS= read -r bundle_name; do
             grep -qx \
-              "./Darkbloom.app/Contents/Resources/${bundle_name}/" \
+              "./$APP_NAME/Contents/Resources/${bundle_name}/" \
               /tmp/darkbloom-bundle-files.txt
           done < /tmp/darkbloom-swiftpm-resource-bundles.txt
           grep -qx \
-            './Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal' \
+            "./$APP_NAME/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal" \
             /tmp/darkbloom-bundle-files.txt
           grep -qx \
-            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1' \
+            "./$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1" \
             /tmp/darkbloom-bundle-files.txt
 
           # Verify the FINAL archived layout, not merely the staging tree.
@@ -724,7 +799,7 @@ jobs:
           rm -rf "$SMOKE_ROOT"
           mkdir -p "$SMOKE_ROOT"
           tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
-          FINAL_APP_METALLIB="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
+          FINAL_APP_METALLIB="$SMOKE_ROOT/$APP_NAME/Contents/MacOS/mlx.metallib"
           FINAL_FLAT_METALLIB="$SMOKE_ROOT/bin/mlx.metallib"
           test -s "$FINAL_APP_METALLIB"
           test -s "$FINAL_FLAT_METALLIB"
@@ -757,9 +832,9 @@ jobs:
               exit 1
             fi
           done
-          FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
-          test -f "$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
-          FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+          FINAL_FAN_HELPER="$SMOKE_ROOT/$APP_NAME/Contents/Helpers/$FAN_HELPER_NAME"
+          test -f "$SMOKE_ROOT/$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
+          FINAL_FAN_MARKER="$SMOKE_ROOT/$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
           test -f "$FINAL_FAN_HELPER"
           test ! -L "$FINAL_FAN_HELPER"
           test -x "$FINAL_FAN_HELPER"
@@ -768,17 +843,17 @@ jobs:
           test ! -L "$FINAL_FAN_MARKER"
           test "$(tr -d '[:space:]' < "$FINAL_FAN_MARKER")" = "1"
           LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME"
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME"
           FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
           codesign --verify --deep --strict --verbose=2 \
-            "$SMOKE_ROOT/Darkbloom.app"
+            "$SMOKE_ROOT/$APP_NAME"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
             DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
             MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
             MLX_GATHER_QMM_EXPERT_SLICES=1 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -787,24 +862,24 @@ jobs:
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
-            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
-          REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "
+          REPORTED=$("$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+            "$SMOKE_ROOT/$APP_NAME/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+            "$SMOKE_ROOT/$APP_NAME/Contents/Info.plist")" = "$VERSION"
 
-          BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
+          BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$PRODUCT_CLI_NAME" | cut -d' ' -f1)
           CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" 2>&1 \
             | sed -n 's/^CandidateCDHashFull sha256=//p')
           if [[ ! "$CODE_DIRECTORY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::Expected one full SHA-256 CodeDirectory hash from the final signed provider"
             exit 1
           fi
           LINKED_SDK=$(codesign -d --verbose=4 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" 2>&1 \
             | sed -n 's/^VersionSDK=//p')
           python3 - "$LINKED_SDK" "$BUILD_SDK_VERSION" <<'PY'
           import sys
@@ -944,23 +1019,25 @@ jobs:
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ACCESS_KEY_ID || '' }}
           DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_SECRET_ACCESS_KEY || '' }}
           DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ENDPOINT || '' }}
           DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_BUCKET || '' }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
-          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          # PROD_* and legacy values are empty unless the resolved environment
+          # is prod, so a dev run never receives them.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ACCESS_KEY_ID || '' }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_SECRET_ACCESS_KEY || '' }}
+          LEGACY_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ENDPOINT || '' }}
+          LEGACY_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && vars.R2_BUCKET || '' }}
+          LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
@@ -1044,29 +1121,31 @@ jobs:
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ACCESS_KEY_ID || '' }}
           DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_SECRET_ACCESS_KEY || '' }}
           DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ENDPOINT || '' }}
           DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_BUCKET || '' }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
-          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_COORDINATOR_URL || '' }}
           DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
-          PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
+          PROD_RELEASE_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_RELEASE_KEY || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
-          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
-          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+          # PROD_* and legacy values are empty unless the resolved environment
+          # is prod, so a dev run never receives them.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ACCESS_KEY_ID || '' }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_SECRET_ACCESS_KEY || '' }}
+          LEGACY_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ENDPOINT || '' }}
+          LEGACY_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && vars.R2_BUCKET || '' }}
+          LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
+          LEGACY_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.COORDINATOR_URL || '' }}
+          LEGACY_RELEASE_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.RELEASE_KEY || '' }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
@@ -1134,6 +1213,10 @@ jobs:
           persist-credentials: false
       - name: Install pinned GitHub CLI
         run: ./scripts/install-macos-github-cli.sh
+      - name: Resolve packaged app names
+        env:
+          VERSION: ${{ needs.resolve-env.outputs.version }}
+        run: python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1159,7 +1242,7 @@ jobs:
           mkdir "$ARTIFACT/extracted"
           # Native tar restores the non-Mach-O signing extended attributes.
           /usr/bin/tar -xzf "$ARTIFACT/darkbloom-bundle-macos-arm64.tar.gz" -C "$ARTIFACT/extracted"
-          APP="$ARTIFACT/extracted/Darkbloom.app"
+          APP="$ARTIFACT/extracted/$APP_NAME"
           codesign --verify --deep --strict "$APP"
           xcrun stapler validate "$APP"
           # The child validates the retained Gemma latches, which MLX reads at

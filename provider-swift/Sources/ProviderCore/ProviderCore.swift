@@ -1,4 +1,5 @@
 @_exported import ProviderCoreFoundation
+@_exported import ProviderBuildEnvironment
 
 public enum ProviderCore {
     /// Release identity consumed by CLI output, registration and packaging.

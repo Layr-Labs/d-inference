@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -13,6 +13,10 @@ Use `.github/workflows/release-swift.yml` for a production version tag, a dev
 publication, or a signed validation bundle. Build, SDK qualification, signing,
 R2 staging and publication are separate jobs. Staging/publication failures retry
 the retained artifact rather than rebuilding or re-signing it.
+
+A push to `master` that changes the provider or its release tooling publishes a
+dev release automatically. A `vX.Y.Z` tag publishes production. To find the
+newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
 `ProviderCore.version` is prepared as `0.9.21`. This candidate excludes startup
 health-check timings from throughput learning and enables bounded calibration
@@ -155,7 +159,14 @@ Never move an existing release tag to repair a failed run.
 
 ### 5. Select Dev Or Validation Mode When Needed
 
-For an authorized dev publication:
+A push to `master` starts a dev release when it changes a path in the workflow's
+`on.push.paths` list: `provider-swift/**`, `libs/**`, the release workflow, the
+build action, or a script that the release runs. The trigger, not an input,
+selects dev. Path filters do not apply to tags, so tags publish as before. One
+dev release runs at a time. A running dev release always completes; when more
+merges arrive, only the newest waiting run continues.
+
+To publish a dev release by hand:
 
 ```bash
 gh workflow run release-swift.yml --ref master -f environment=dev
@@ -163,23 +174,137 @@ gh workflow run release-swift.yml --ref master -f environment=dev
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
-path below. Dev uses `DEV_*` secrets and creates no GitHub Release.
+path below. Dev uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
+are empty in every job unless the resolved environment is `prod`. Dev creates no
+GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
+the `DEV_R2_PUBLIC_URL` origin.
 
 The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
-`provider-swift/Package.swift` compiles `ProviderCore` with `DARKBLOOM_ENV_DEV`;
-defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
+`provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
+`DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
-(`provider-swift/Sources/ProviderCore/Config/BuildEnvironment.swift`). Local
+(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`). Local
 builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
-Dev and prod retain the same version string. The dev installer at
-`https://api.dev.darkbloom.dev/install.sh` binds `[coordinator] url` in
-`provider.toml` (`scripts/install.sh`, `bind_provider_coordinator`), so future
-updates come from dev. The
+Every dev build has the version `X.Y.Z-dev.N`. `X.Y.Z` is the source
+`ProviderCore.version` and `N` is the workflow run number. The release lane
+writes this version into `ProviderCore.version` before it compiles, so
+`darkbloom --version`, the app `Info.plist`, the registration and the R2 path all
+show the `-dev.N` marker. SemVer puts `X.Y.Z-dev.N` below `X.Y.Z` and orders dev
+builds by `N`, so a dev provider updates to each newer dev build. Production
+versions never have a suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
+use the dev form, for example `0.9.20-dev.0`, because `0.9.20` excludes every
+`0.9.20-dev.N` build.
+
+Install a dev provider only with `https://api.dev.darkbloom.dev/install.sh`. A
+dev build uses the dev coordinator by default, and this installer binds
+`[coordinator] url` in `provider.toml` (`scripts/install.sh`,
+`bind_provider_coordinator`), so the provider and its updates use only the dev
+coordinator. The
 [pinned dev operations reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md)
 is historical; verify current endpoints with the platform owner.
+
+#### Dev Build Identity
+
+A dev build installs and runs beside a production provider on the same Mac.
+The two installs do not share a path, a port, a launchd label or a keychain
+item, and each command prints its own name in its help text. The table is a
+generated copy of `provider-swift/identity/provider-identity.json`, the only
+declaration of these values:
+
+<!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
+
+| Field | Production | Dev |
+|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
+| `defaultLocalPort` | `8000` | `8001` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` |
+| `releaseVersionMarker` | versions without it | `-dev.` |
+
+<!-- END provider identity -->
+
+`scripts/generate-provider-identity.py` generates
+`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift` (the
+`BuildEnvironment` properties) and this table from the JSON.
+`scripts/test-provider-identity.py` fails when a generated file, the Python
+release tooling or the installer differs from the JSON. The release lane reads
+the packaged names from the JSON through `scripts/provider_release_identity.py`.
+It renames the SwiftPM products (`swiftProducts` in the JSON) when it packages a
+dev app. The installer
+selects the same names from the version that `/v1/releases/latest` returns
+(`scripts/install.sh`, `select_provider_identity`). The installer must work as
+`curl | bash`, so it keeps its own copy of the names; the test compares that copy
+with the JSON.
+
+These values are the same for both builds:
+
+- The bundle identifier and code-signing identifier `io.darkbloom.provider`,
+  and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
+  Developer ID signature, the provisioning profile, notarization and App Attest
+  check them. A different dev value does not match the signed bundle.
+- The MDM profile identifiers. Each install accepts as its own only the profile
+  from its own coordinator host (or its configured coordinator). It names the
+  other install's profile and does not claim or remove it.
+- The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
+  keeps one lease for each provider session and returns the fans to Auto only
+  when no lease is live. `fan disable` and `fan uninstall` affect both installs
+  and say so before they act. This is helper version 2 (`FanIPC.helperVersion`).
+  A version 1 helper keeps one lease for the Mac, so the last provider to renew
+  owns it. `fan status` and `doctor` report an older helper with the command
+  that updates it, and `fan enable` does not replace a newer running helper
+  with an older one. A provider built before this change does not have that
+  check.
+- The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
+  bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
+  registration requires these names. Dev uploads go to the dev bucket under the
+  `-dev.N` version.
+
+These surfaces are shared, and an operator must know about them:
+
+- Downloaded model weights (the Hugging Face hub cache) are shared on purpose.
+  Each install selects its active revision with its own ref (`modelRevisionRef`):
+  production uses `refs/main`, and a dev install without its own ref uses
+  production's selection. `models remove` deletes the shared weights, so the
+  other install loses them too. The encrypted KV cache is not shared
+  (`encryptedCacheNamespace`).
+- `DARKBLOOM_*` shell overrides. `start` copies the allowlisted variables
+  (`LaunchAgent.passthroughEnvKeys`) from the shell that runs it into that
+  install's LaunchAgent. Both installs read the same shell exports, so an export
+  that is meant for one install also reaches the other the next time it is
+  started from that shell.
+- APNs (known limitation, pending a test with two installs on one Mac). Both
+  installs have the bundle identifier `io.darkbloom.provider`, so they register
+  the same push topic and receive the same device token
+  (`provider-swift/Sources/darkbloom/ProviderAppKitHost.swift`,
+  `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift`). apsd delivers each push to
+  one process. A production code-identity challenge can therefore reach the dev
+  process on the legacy path without App Attest. A separate dev bundle
+  identifier and provisioning profile are necessary to remove this limitation.
+- Unified memory. `doctor` warns when the other install's provider process is
+  running, from that install's daemon state file. Model-fit estimates do not
+  include the other install's models, so two serving providers can cause jetsam.
+
+An install of an earlier dev build in `~/.darkbloom` does not move to the new
+names. Its updater expects `Darkbloom.app`, so it cannot install a
+`Darkbloom Dev.app` release. Install the dev provider again with the dev
+`install.sh`.
 
 For a signed, notarized validation bundle without registration/publication:
 

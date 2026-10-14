@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pin release safety/DAG boundaries without credentials, runners or downloads."""
+from fnmatch import fnmatchcase
 from pathlib import Path
 import re
 import unittest
@@ -20,6 +21,56 @@ def job(workflow, name):
 
 class ReleasePipelineTests(unittest.TestCase):
     maxDiff = 1000
+    def test_master_push_publishes_dev_and_tags_still_publish_production(self):
+        trigger = RELEASE.split('\non:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
+        self.assertIn("    tags:\n      - 'v*.*.*'\n", trigger)
+        self.assertIn('    branches: [master]\n', trigger)
+        paths = re.findall(r"(?m)^      - '([^']+)'$", trigger.split('    paths:\n', 1)[1])
+        for required in ['provider-swift/**', 'libs/**', '.github/workflows/release-swift.yml',
+                         '.github/actions/provider-release-build/**']:
+            self.assertIn(required, paths)
+        # Every script the release runs must start a dev release when it changes.
+        scripts = set(re.findall(r'scripts/[A-Za-z0-9_.*-]+\.(?:sh|py)', RELEASE + ACTION))
+        scripts |= {'scripts/provider_release_resume/api.py', 'scripts/provider_release_artifact.py',
+                    'scripts/provider_release_github.py', 'scripts/provider_release_cache/mtimes.py',
+                    'scripts/stage-swiftpm-resource-bundles.sh'}
+        for script in sorted(scripts):
+            with self.subTest(script=script):
+                self.assertTrue(any(fnmatchcase(script, pattern) for pattern in paths), script)
+        self.assertNotIn('branches-ignore', trigger)
+        self.assertNotIn('pull_request', trigger)
+
+    def test_dev_publication_is_serialized_and_never_cancelled_in_progress(self):
+        header = RELEASE.split('\njobs:\n', 1)[0]
+        concurrency = header.split('\nconcurrency:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertIn("(github.event_name == 'push' && github.ref_type == 'branch')", concurrency)
+        self.assertIn("&& 'release-dev' || format('release-swift-{0}', github.run_id)", concurrency)
+        self.assertIn('cancel-in-progress: false', concurrency)
+        self.assertIn("format('dev provider release -dev.{0} (master push)', github.run_number)", header)
+
+    def test_production_secrets_require_the_resolved_production_environment(self):
+        references = re.findall(r'(?m)^\s+((?:DEV|PROD|LEGACY)_[A-Z0-9_]+): (.*)$', RELEASE)
+        self.assertEqual(len(references), 42)
+        for name, value in references:
+            with self.subTest(name=name):
+                if name.startswith('DEV_'):
+                    self.assertEqual(value, '${{ secrets.%s }}' % name)
+                else:
+                    self.assertRegex(value, r"^\$\{\{ needs\.resolve-env\.outputs\.environment == 'prod' && "
+                                            r"(secrets|vars)\.[A-Z0-9_]+ \|\| '' \}\}$")
+        self.assertNotRegex(RELEASE, r'secrets\[')
+
+    def test_release_lane_stamps_only_a_resolved_dev_version_after_clean_source_check(self):
+        self.assertIn('version: ${{ needs.resolve-env.outputs.version }}', job(RELEASE, 'build-provider'))
+        self.assertNotIn('version:', job(RELEASE, 'qualify-sdk').split('lane: qualification', 1)[1])
+        stamp = ACTION.split('- name: Stamp dev release version\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertLess(ACTION.index('- name: Verify checked-out source'), ACTION.index('- name: Stamp dev release version'))
+        self.assertLess(ACTION.index('- name: Stamp dev release version'), ACTION.index('- name: Build optimized provider products'))
+        self.assertIn("if: inputs.lane == 'release' && inputs.version != ''", stamp)
+        self.assertEqual(stamp.count('./scripts/check-release-version.sh "$VERSION"'), 2)
+        self.assertIn('test "$(git diff --name-only)" = "$SOURCE"', stamp)
+        self.assertNotIn('version:', WARM.split('uses: ./.github/actions/provider-release-build', 1)[1].split('\n      - ', 1)[0])
+
     def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
         for name, lane in [('build-provider', 'release'), ('qualify-sdk', 'qualification')]:
             content = job(RELEASE, name)
@@ -37,7 +88,11 @@ class ReleasePipelineTests(unittest.TestCase):
         signing = job(RELEASE, 'build-and-release')
         for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
-                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
+                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "', signing)
+        # The packaged names follow the version; the compiled names must agree.
+        resolve = 'python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"'
+        for name in ['build-and-release', 'validate-older-macos']:
+            self.assertIn(resolve, job(RELEASE, name))
 
     def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')

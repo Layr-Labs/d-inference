@@ -68,9 +68,14 @@ def verify_workflow_source(api, env):
         if env.get("GITHUB_REF") != "refs/tags/" + tag:
             raise ValueError("Release tag ref mismatch")
         verify_tag(api, tag, source)
+    elif env.get("GITHUB_EVENT_NAME") == "push" and env.get("GITHUB_REF_TYPE") == "branch":
+        # A master push publishes dev only. verify_source proved the commit is
+        # verified and on master ancestry; master may already have moved on.
+        if env.get("GITHUB_REF") != "refs/heads/master":
+            raise ValueError("Branch push releases require master")
     elif env.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
         if env.get("GITHUB_REF") != "refs/heads/master" or source != master:
             raise ValueError("Manual release tooling must be the current reviewed master commit")
     else:
-        raise ValueError("Release requires a trusted tag push or a manual dispatch on master")
+        raise ValueError("Release requires a trusted tag push, a master push or a manual dispatch on master")
     return source

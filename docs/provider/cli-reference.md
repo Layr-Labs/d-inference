@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -28,7 +28,7 @@ format or mount a disk (`provider-swift/Sources/darkbloom/Cache/CacheCommand.swi
 | `cache status` | Read saved settings and inspect the selected volume without loading keys or creating cache directories |
 | `cache status --json` | Emit directory, saved daily byte limit and unlimited flag (omitted when unset), limit source, selected volume details, storage problem and `saved_settings` scope |
 | `cache set --daily-write-gb <number>` | Save the rolling-day write ceiling in decimal GB; `0` explicitly selects unlimited writes |
-| `cache set --directory <absolute-path>` | Select an existing private directory and pin its volume UUID. Payloads live in its `darkbloom/kv3` subtree |
+| `cache set --directory <absolute-path>` | Select an existing private directory and pin its volume UUID. Payloads live in its `darkbloom/kv3` subtree (a dev build: its own namespace) |
 | `cache set --reset-directory` | Return to the built-in directory; preserve the daily write choice and existing cache files |
 
 Both setting flags can be combined. The saved daily choice takes precedence over
@@ -1522,7 +1522,7 @@ override `provider.toml` for one process, are in
 | `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence before Autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
 | `[backend.model_autopilot] pinned_models` | `[]` | Models autopilot must retain; configured `[backend] model` is additionally pinned (`provider-swift/Sources/ProviderCore/Autopilot/ProviderLoop+Autopilot.swift`, `autopilotPinnedModels`) |
 | `[backend] startup_preload` | `true` | Preload `preload_models` when set, otherwise selected models (previously loaded first on coordinator starts), within slot and memory limits |
-| `[coordinator] url` | Build default: `"wss://api.darkbloom.dev/ws/provider"` for prod builds, `"wss://api.dev.darkbloom.dev/ws/provider"` for dev release builds (`provider-swift/Sources/ProviderCore/Config/BuildEnvironment.swift`) | The installer binds it to the coordinator that served it: another coordinator, such as dev, writes its URL; the production installer removes the line so this default applies (`scripts/install.sh`, `bind_provider_coordinator`) |
+| `[coordinator] url` | Build default: `"wss://api.darkbloom.dev/ws/provider"` for prod builds, `"wss://api.dev.darkbloom.dev/ws/provider"` for dev release builds (`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`) | The installer binds it to the coordinator that served it: another coordinator, such as dev, writes its URL; the production installer removes the line so this default applies (`scripts/install.sh`, `bind_provider_coordinator`) |
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |
 | `[coordinator] private_only` | `false` | Serve only the owner's [self-route](./self-route.md) traffic |
 | `[gemma_optimizations] prefill_layer18`, `weighted_r1` | `true` | See [beta features](./beta-features.md) |

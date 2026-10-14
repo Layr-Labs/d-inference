@@ -94,7 +94,7 @@ public struct StandaloneServerConfig: Sendable {
     public let coordinatorURL: String
 
     public init(
-        port: UInt16 = 8000,
+        port: UInt16 = BuildEnvironment.current.defaultLocalPort,
         host: String = "127.0.0.1",
         maxCachedModels: Int = 3,
         authToken: String? = nil,
@@ -138,7 +138,7 @@ public struct StandaloneServerConfig: Sendable {
 }
 
 let standaloneLogger = Logger(
-    subsystem: "dev.darkbloom.provider",
+    subsystem: BuildEnvironment.current.serviceLogSubsystem,
     category: "StandaloneServer"
 )
 

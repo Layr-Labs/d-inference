@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -105,6 +105,50 @@ the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
 
+## Dev Build Identity
+
+A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install
+identity, so it runs beside a production provider on the same Mac. The only
+declaration of the values is `provider-swift/identity/provider-identity.json`.
+`scripts/generate-provider-identity.py` generates the Swift `BuildEnvironment`
+properties (`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift`)
+and the table below from it; run the script after you change the JSON.
+`scripts/test-provider-identity.py` fails when they differ. Local builds and
+tests use the production values.
+
+<!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
+
+| Field | Production | Dev |
+|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
+| `defaultLocalPort` | `8000` | `8001` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` |
+| `releaseVersionMarker` | versions without it | `-dev.` |
+
+<!-- END provider identity -->
+
+The code-signing identifier `io.darkbloom.provider` and the keychain access
+group `SLDQ2GJ6TL.io.darkbloom.provider` are the same for both builds. The
+Developer ID signature and the provisioning profile bind them, and notarization
+and App Attest check them. Do not make them depend on the environment. The full
+list is in
+[Dev build identity](../operations/provider-release.md#dev-build-identity).
+
 ## App Attest Release Qualification
 
 Build the local dispatch, worker and endpoint-resumption test targets through
@@ -140,8 +184,9 @@ MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 \
 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke
 ```
 
-Require the environment line
-`build-environment-runtime-smoke: <prod|dev> coordinator=<url> cdn=<url>`
+A dev release packages `Darkbloom Dev.app/Contents/MacOS/darkbloom-dev`. Require
+the environment line
+`build-environment-runtime-smoke: <prod|dev> cli=<darkbloom|darkbloom-dev> coordinator=<url> cdn=<url>`
 to match the release environment, plus all four markers:
 `app-attest-callback-runtime-smoke: ok`,
 `gemma-optimizations-runtime-smoke: ok`, `paged-kernel-runtime-smoke: ok`, and

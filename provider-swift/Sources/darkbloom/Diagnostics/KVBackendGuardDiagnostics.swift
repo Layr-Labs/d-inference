@@ -23,7 +23,7 @@ enum KVBackendGuardDiagnostics {
 
     private static let activeSelectionGuidance =
         "packed autoregressive `.auto` (`balanced`/`k8v4`/`k8v8`) requires paged and is refused while guarded; "
-        + "clear with `darkbloom doctor --clear-backend-guard` to permit a paged retry; "
+        + "clear with `\(BuildEnvironment.current.cliName) doctor --clear-backend-guard` to permit a paged retry; "
         + "default live `native` precision permits contiguous `.auto`"
 
     /// The `darkbloom status` block: empty when no guard record exists

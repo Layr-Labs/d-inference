@@ -56,7 +56,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "darkbloom"
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? BuildEnvironment.current.cliName
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
@@ -542,7 +542,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+        self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: BuildEnvironment.current.cliName)
         self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
@@ -558,7 +558,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// The provider name is derived from the machine model identifier
     /// (e.g. "Mac16,1" -> "darkbloom-mac16-1").
     public static func defaultForHardware(_ hw: HardwareInfo) -> ProviderConfig {
-        let name = "darkbloom-" + hw.machineModel
+        let name = BuildEnvironment.current.cliName + "-" + hw.machineModel
             .replacingOccurrences(of: ",", with: "-")
             .lowercased()
 
@@ -616,9 +616,7 @@ public enum ConfigManager: Sendable {
     /// The same path for another account's home, such as the invoking user
     /// of `sudo darkbloom report`.
     public static func defaultConfigPath(home: URL) -> URL {
-        home
-            .appendingPathComponent(".config")
-            .appendingPathComponent("darkbloom")
+        BuildEnvironment.current.configDirectory(home: home)
             .appendingPathComponent("provider.toml")
     }
 
@@ -648,7 +646,7 @@ public enum ConfigManager: Sendable {
         else {
             // Return a minimal default if we can't load
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )
@@ -698,7 +696,7 @@ public enum ConfigManager: Sendable {
         } catch {
             // Fall back to defaults on malformed TOML (matches previous behavior)
             return ProviderConfig(
-                provider: ProviderSettings(name: "darkbloom"),
+                provider: ProviderSettings(name: BuildEnvironment.current.cliName),
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )

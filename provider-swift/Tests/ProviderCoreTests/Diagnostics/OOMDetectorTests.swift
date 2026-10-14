@@ -238,3 +238,40 @@ private final class LockedBox: @unchecked Sendable {
     func set(_ x: MemoryPressureLevel) { lock.lock(); v = x; lock.unlock() }
     var value: MemoryPressureLevel? { lock.lock(); defer { lock.unlock() }; return v }
 }
+
+@Test func crashReportsMatchOnlyThisInstallsProcessName() {
+    let prod = BuildEnvironment.prod.cliName
+    let dev = BuildEnvironment.dev.cliName
+    let jetsam = """
+    {"bug_type":"298"}
+    {"pageSize":16384,"largestProcess":"\(dev)","processes":[{"name":"\(dev)","pid":456,"rpages":1000,"reason":"per-process-limit"}]}
+    """
+    #expect(OOMDetector.parseJetsamReport(contents: jetsam, processName: prod) == nil)
+    #expect(OOMDetector.parseJetsamReport(contents: jetsam, processName: dev)?.source == .jetsamReport)
+    let crash = """
+    {"app_name":"\(dev)","bug_type":"309"}
+    {"exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: crash, processName: prod) == nil)
+    #expect(OOMDetector.parseMemoryCrashReport(contents: crash, processName: dev) != nil)
+}
+
+@Test func crashReportMatchesTheExecutableWhenAppNameIsTheBundleName() {
+    let dev = BuildEnvironment.dev
+    let report = """
+    {"app_name":"\(dev.appDisplayName)","name":"\(dev.cliName)","bug_type":"309"}
+    {"procName":"\(dev.cliName)","exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: report, processName: dev.cliName)?.source == .memoryCrashReport)
+    #expect(OOMDetector.parseMemoryCrashReport(contents: report, processName: BuildEnvironment.prod.cliName) == nil)
+    let bodyOnly = """
+    {"app_name":"\(dev.appDisplayName)","bug_type":"309"}
+    {"procName":"\(dev.cliName)","exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: bodyOnly, processName: dev.cliName) != nil)
+    let enclave = """
+    {"app_name":"\(BuildEnvironment.prod.enclaveName)","bug_type":"309"}
+    {"exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: enclave, processName: BuildEnvironment.prod.cliName) == nil)
+}

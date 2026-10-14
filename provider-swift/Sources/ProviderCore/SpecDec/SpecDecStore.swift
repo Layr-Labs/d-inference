@@ -39,8 +39,7 @@ enum SpecDecStore {
     }
 
     static func defaultRoot() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom", isDirectory: true)
+        BuildEnvironment.current.installDirectory()
             .appendingPathComponent("spec-dec", isDirectory: true)
     }
 

@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop preview API recovery
+
+- Let Darkbloom Preview relaunch after a crash or force quit. The bundled API it left running held the native service lock, so every new API exited and the app stayed on "Could not connect" until the leftover process was killed by hand. The next launch now stops that API, verified by recorded pid and exact bundled command, before starting a new one. Startup failures show the API's last error line instead of a generic message.
 ## Unreleased — desktop cold launch for returning users
 
 - Show returning users "Connecting to this Mac…" while the desktop app waits for its first runtime snapshot, instead of first-run onboarding's Welcome and Start. When the runtime is missing or unreachable, offer Install or Repair directly. First-run onboarding is unchanged.

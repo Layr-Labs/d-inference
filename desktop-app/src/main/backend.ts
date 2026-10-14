@@ -13,7 +13,7 @@ import {
   type Snapshot,
 } from '../shared/contracts';
 import { frameData, splitFrames } from './sse';
-import type { PreviewRuntime } from './previewRuntime';
+import { PreviewStartError, type PreviewRuntime } from './previewRuntime';
 
 const execute = promisify(execFile);
 const runtimeRequirement =
@@ -122,7 +122,9 @@ export class Backend extends EventEmitter {
         message:
           code === 'ENOENT'
             ? 'Install the Darkbloom runtime to connect this Mac.'
-            : 'Could not connect to the runtime. Update or repair the installation.',
+            : error instanceof PreviewStartError
+              ? error.message
+              : 'Could not connect to the runtime. Update or repair the installation.',
       });
     }
   }

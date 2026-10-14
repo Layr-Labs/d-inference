@@ -46,13 +46,28 @@ struct MiMoMTPTerms: Equatable, Sendable, Encodable {
     private enum CodingKeys: String, CodingKey { case schema, depth, verification }
 }
 
+/// What the wire of a pipeline's speculative rounds needs from a family's
+/// terms: the session's fixed draft depth and the family tag its packets'
+/// schemas carry (`<family>_pipeline_speculative_round_v1`, ...), so a round
+/// of one family is never read as another's. The round, result and decision
+/// packets below are the same contract for every family that runs
+/// `pipeline_mtp_v1`.
+protocol PipelineSpeculativeRoundTerms {
+    var depth: Int { get }
+    static var roundFamily: String { get }
+}
+
+extension MiMoMTPTerms: PipelineSpeculativeRoundTerms {
+    static var roundFamily: String { "mimo" }
+}
+
 /// Rank 1 to rank 0, once per decode step: the window rank 0 is to run. The
 /// first row is the last selected token at the committed frontier; the drafts
 /// follow (none for a plain step). Every field but the drafts must equal rank
 /// 0's own state exactly.
 struct MiMoMTPRoundPacket {
     struct Content: Encodable, Equatable {
-        let schema = "mimo_pipeline_speculative_round_v1"
+        let schema: String
         let agreementFingerprint: String
         let membershipEpoch: String
         let requestFingerprint: String
@@ -67,8 +82,11 @@ struct MiMoMTPRoundPacket {
     let fingerprint: String
     var window: [Int] { [content.lastTokenID] + content.draftTokenIDs }
 
-    init(agreement: QwenLayerStageGenerationAgreement, terms: MiMoMTPTerms, firstOrdinal: Int,
-         previousTokenChainSHA256: String, lastTokenID: Int, draftTokenIDs: [Int]) throws {
+    /// The family tag of this round (`PipelineSpeculativeRoundTerms.roundFamily`).
+    var family: String { String(content.schema.prefix { $0 != "_" }) }
+
+    init<Terms: PipelineSpeculativeRoundTerms>(agreement: QwenLayerStageGenerationAgreement, terms: Terms,
+         firstOrdinal: Int, previousTokenChainSHA256: String, lastTokenID: Int, draftTokenIDs: [Int]) throws {
         let request = agreement.request
         let committed = request.promptCount + firstOrdinal - 1
         guard (1..<request.outputCount).contains(firstOrdinal), qwenStageWireIsSHA256(previousTokenChainSHA256),
@@ -80,7 +98,8 @@ struct MiMoMTPRoundPacket {
               !request.stopTokenIDs.contains(lastTokenID) else {
             throw ProbeError("Speculative round differs from the agreed depth, ordinals or vocabulary")
         }
-        content = .init(agreementFingerprint: agreement.fingerprint, membershipEpoch: agreement.descriptor.membershipEpoch,
+        content = .init(schema: Terms.roundFamily + "_pipeline_speculative_round_v1",
+            agreementFingerprint: agreement.fingerprint, membershipEpoch: agreement.descriptor.membershipEpoch,
             requestFingerprint: request.fingerprint, firstOrdinal: firstOrdinal,
             previousTokenChainSHA256: previousTokenChainSHA256, committedTokens: committed,
             lastTokenID: lastTokenID, draftTokenIDs: draftTokenIDs)
@@ -96,8 +115,8 @@ struct MiMoMTPRoundPacket {
     }
 
     /// Only the drafts are read from the wire; everything else is rank 0's own.
-    static func decode(_ data: Data, agreement: QwenLayerStageGenerationAgreement, terms: MiMoMTPTerms,
-                       firstOrdinal: Int, previousTokenChainSHA256: String, lastTokenID: Int) throws -> Self {
+    static func decode<Terms: PipelineSpeculativeRoundTerms>(_ data: Data, agreement: QwenLayerStageGenerationAgreement,
+                       terms: Terms, firstOrdinal: Int, previousTokenChainSHA256: String, lastTokenID: Int) throws -> Self {
         let object = try QwenLayerStageGenerationWireJSON.object(data, maximumBytes: frameBytes)
         guard let raw = object["draftTokenIDs"] as? [Any] else { throw ProbeError("Speculative round lists no drafts") }
         let drafts = try raw.map { value -> Int in
@@ -117,7 +136,7 @@ struct MiMoMTPRoundPacket {
 /// its own window.
 struct MiMoMTPRoundResultPacket {
     struct Content: Encodable, Equatable {
-        let schema = "mimo_pipeline_speculative_result_v1"
+        let schema: String
         let agreementFingerprint: String
         let roundFingerprint: String
         let firstOrdinal: Int
@@ -141,7 +160,8 @@ struct MiMoMTPRoundResultPacket {
               !tokenIDs.dropLast().contains(where: request.stopTokenIDs.contains) else {
             throw ProbeError("Speculative round result differs from its window")
         }
-        content = .init(agreementFingerprint: agreement.fingerprint, roundFingerprint: round.fingerprint,
+        content = .init(schema: round.family + "_pipeline_speculative_result_v1",
+            agreementFingerprint: agreement.fingerprint, roundFingerprint: round.fingerprint,
             firstOrdinal: round.content.firstOrdinal, tokenIDs: tokenIDs, payloadSHA256: payloadSHA256)
         fingerprint = try qwenGenerationFingerprint("mimo-speculative-result", content)
     }
@@ -175,7 +195,7 @@ struct MiMoMTPRoundResultPacket {
 /// unpublished.
 struct MiMoMTPRoundDecisionPacket {
     struct Content: Encodable, Equatable {
-        let schema = "mimo_pipeline_speculative_decision_v1"
+        let schema: String
         let agreementFingerprint: String
         let resultFingerprint: String
         let acceptedCount: Int
@@ -195,7 +215,8 @@ struct MiMoMTPRoundDecisionPacket {
               qwenStageWireIsSHA256(tokenChainSHA256), acceptedCount == count || decision != .proceed else {
             throw ProbeError("Speculative round decision differs from its result")
         }
-        content = .init(agreementFingerprint: agreement.fingerprint, resultFingerprint: result.fingerprint,
+        content = .init(schema: String(result.content.schema.prefix { $0 != "_" }) + "_pipeline_speculative_decision_v1",
+            agreementFingerprint: agreement.fingerprint, resultFingerprint: result.fingerprint,
             acceptedCount: acceptedCount, selectedTokenCount: selectedTokenCount,
             tokenChainSHA256: tokenChainSHA256, decision: decision)
         fingerprint = try qwenGenerationFingerprint("mimo-speculative-decision", content)

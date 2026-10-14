@@ -226,7 +226,7 @@ struct PhaseSplitContractTests {
             // 27B and both 35B A3B artifacts ship the product's speculative head, so their rows also list it.
             let head = [.qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model)
             #expect(definition.supportedGenerationModes
-                == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP] : []))
+                == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP, .pipelineMTP] : []))
             #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model.rawValue)?.supportedGenerationModes
                 == definition.supportedGenerationModes)
         }

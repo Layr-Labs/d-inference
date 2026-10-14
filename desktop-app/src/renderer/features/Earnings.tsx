@@ -36,6 +36,7 @@ export function Earnings({ backend }: { backend: BackendState }) {
     try {
       await api?.copy(rows.join('\n'));
       setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
     } catch {
       backend.setError('Could not copy earnings history.');
     }
@@ -130,7 +131,7 @@ export function Earnings({ backend }: { backend: BackendState }) {
             </button>
           </div>
           <EarningsTimeline days={data.days} metric={metric} partial={!data.history_complete} />
-          <EarningsBreakdown data={data} metric={metric} />
+          <EarningsBreakdown data={data} metric={metric} models={backend.state!.models} />
           {data.lifetime.completion_tokens !== null && (
             <TokenMilestones tokens={data.lifetime.completion_tokens} />
           )}

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop Earnings labels
+
+- Name models in the Earnings breakdown by their catalog names (for example “GPT-OSS 20B”), falling back to the settled ID for models no longer in the catalog; say “Show all N Macs” in the By Mac view; and clear Copy CSV's “Copied” confirmation after a moment instead of keeping it until the period changes.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

@@ -43,6 +43,10 @@
   margin-bottom: 18px;
 }
 
+.setting-row:last-child {
+  border-bottom: 0;
+}
+
 .setting-row {
   display: flex;
   align-items: center;

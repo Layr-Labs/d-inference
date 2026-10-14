@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop layout fit at narrow widths
+
+- Fix layout defects found at the desktop window's smaller sizes: 30-day earnings bars and Stats chart hover targets lost width to default button padding, a long waitlist email widened the onboarding page past the window, the Stats Activity table hid its Earned column below about 1000 px, Settings drew a double rule between sections, and chart times used a leading zero ("06:39 PM") unlike the rest of the app.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

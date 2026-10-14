@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clockTime, compact, count, money } from '../src/renderer/format';
+import { clockTime, compact, count, money, timeOfDay } from '../src/renderer/format';
 import { validateDiscovery } from '../src/main/backend';
 describe('count presentation', () => {
   it('groups whole numbers and keeps decimal-string counters exact past 2^53', () => {
@@ -58,4 +58,9 @@ describe('backend discovery boundary', () => {
   ])('rejects malformed discovery %j', (value) => {
     expect(() => validateDiscovery(value)).toThrow();
   });
+});
+
+it('formats times of day without a leading zero, like the rest of the app', () => {
+  const nine = new Date(2026, 9, 13, 9, 5).getTime() / 1000;
+  expect(timeOfDay(nine)).toMatch(/^9:05\s?AM$/);
 });

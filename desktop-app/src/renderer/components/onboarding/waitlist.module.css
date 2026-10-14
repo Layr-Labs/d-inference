@@ -70,6 +70,12 @@
   font-weight: 500;
 }
 
+/* A long email address wraps inside the card instead of widening the page. */
+.joined p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @keyframes rise {
   from {
     opacity: 0;

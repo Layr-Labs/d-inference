@@ -16,7 +16,7 @@ public final class ClusterControlCommandLock: @unchecked Sendable {
     /// Nil when it could not be taken within `seconds` (0: one try).
     public static func acquire(seconds: Double, file: URL? = nil) -> ClusterControlCommandLock? {
         guard let path = file ?? (try? ClusterService.paths().lock.deletingLastPathComponent().appendingPathComponent("control.lock")) else { return nil }
-        _ = try? ClusterConfigurationFiles.directory(path.deletingLastPathComponent(), create: true, privateMode: true)
+        try? ClusterConfigurationFiles.ensureDirectory(path.deletingLastPathComponent(), create: true, privateMode: true)
         let fd = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return nil }
         let deadline = Date().addingTimeInterval(seconds)
@@ -92,6 +92,9 @@ public final class ClusterService: @unchecked Sendable {
     var leaseInFlight = false
     var nextLease: Double = 0
     var lastModeLine: String?
+    /// The last lease failure said (leader) and the last setup record read failure said (supervise), each said once.
+    var lastLeaseProblem: String?
+    var recordProblem: String?
     var localHardware: (name: String, memoryBytes: UInt64, gpuCores: Int)?
     lazy var controlLive: OnboardingLive = OnboardingLive(context: context, store: store,
         settings: .init(service: settings, serviceArguments: []))
@@ -131,7 +134,7 @@ public final class ClusterService: @unchecked Sendable {
     public static func ensureRunning(executable: URL, arguments: [String]) throws -> Bool {
         if running() { return false }
         let files = try paths()
-        _ = try ClusterConfigurationFiles.directory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
+        try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -163,7 +166,7 @@ public final class ClusterService: @unchecked Sendable {
     /// Runs until `stop` is signalled; returns false when a rank had to be left running.
     public func run(stop: DispatchSemaphore, say: @escaping @Sendable (String) -> Void) throws -> Bool {
         let files = try Self.paths()
-        _ = try ClusterConfigurationFiles.directory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
+        try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
         let fd = open(files.lock.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw ClusterOnboardingFailure("the service lock cannot be opened") }
         defer { close(fd) }
@@ -619,13 +622,29 @@ public final class ClusterService: @unchecked Sendable {
     // MARK: - This Mac's part
 
     private func supervise(say: @Sendable (String) -> Void) {
-        let record = try? store.readRecord()
+        // A record that cannot be read is not "the leader stopped serving" (F17: a service out of descriptors stopped its
+        // part on the failed read): this Mac's part is kept as it is, and the failure is said once, until a read works.
+        let record: ClusterSetupRecord
+        switch Self.supervisedRecord({ try store.readRecord() }) {
+        case .failure(let failure):
+            if lock.withLock({ recordProblem }) != failure.text {
+                lock.withLock { recordProblem = failure.text }
+                say(failure.text + ": keeping this Mac's part as it is until it can")
+            }
+            return
+        case .success(let value):
+            record = value
+            if lock.withLock({ recordProblem }) != nil {
+                lock.withLock { recordProblem = nil }
+                say("this Mac's setup record reads again")
+            }
+        }
         let saved = context.savedConfiguration()
         let reference = try? saved.reference.get()
-        let serving = record?.leadership?.serving ?? false
+        let serving = record.leadership?.serving ?? false
         let runningSolo = lock.withLock { child != nil && childSetup?.hasPrefix("solo:") == true }
         let want = partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
-                              model: saved.configuration?.publicModelID ?? record?.leadership?.modelName, runningSolo: runningSolo)
+                              model: saved.configuration?.publicModelID ?? record.leadership?.modelName, runningSolo: runningSolo)
         // What runs is keyed: "cluster:<setup digest>" (this Mac's part of the saved setup) or "solo:<model>"
         // (degraded serving on this Mac alone). A part of another key is stopped before the wanted one starts.
         let key: String?
@@ -695,6 +714,13 @@ public final class ClusterService: @unchecked Sendable {
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
         lock.withLock { child = process; childSetup = key; childStarted = Date(); childStartedAt = startedAt; starts += 1 }
         say("started \(what) (pid \(process.processIdentifier))")
+    }
+
+    /// The setup record supervise acts on, or why it could not be read (a missing record reads as an empty one).
+    static func supervisedRecord(_ read: () throws -> ClusterSetupRecord) -> Result<ClusterSetupRecord, ClusterSetupFailure> {
+        do { return .success(try read()) } catch {
+            return .failure(ClusterSetupFailure("cannot read this Mac's setup record (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160)))"))
+        }
     }
 
     /// SIGTERM, then wait: a rank that holds a model releases it itself.

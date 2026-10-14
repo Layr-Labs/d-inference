@@ -81,4 +81,29 @@ import Testing
         #expect(scanned > 100, "the provider sources were found (\(scanned) files)")
         #expect(offenders.isEmpty, "opened directory descriptors discarded at \(offenders.joined(separator: ", "))")
     }
+
+    // MARK: - A failed write or read is said and acted on, never swallowed
+
+    @Test func aFailedIntentWriteIsAStatedFailureNotRecorded() {
+        var said: [String] = []
+        let failure = ClusterLeaseIntentRecording.record(true, write: { throw ClusterConfigurationError.invalid("Cannot open configuration root") },
+                                                         say: { said.append($0) })
+        #expect(failure != nil, "the lease is refused with the reason")
+        #expect(failure?.text.contains("Cannot open configuration root") == true, "\(failure?.text ?? "")")
+        #expect(said == ["the leader serves: could not record it (Cannot open configuration root)"], "\(said)")
+        said.removeAll()
+        #expect(ClusterLeaseIntentRecording.record(false, write: {}, say: { said.append($0) }) == nil)
+        #expect(said == ["the leader stopped serving: recorded"], "\(said)")
+    }
+
+    @Test func aFailedRecordReadKeepsThePartInsteadOfStoppingIt() {
+        switch ClusterService.supervisedRecord({ throw ClusterConfigurationError.invalid("Cannot open configuration root") }) {
+        case .success: Issue.record("a failed read must not read as a record (whose leader does not serve)")
+        case .failure(let failure): #expect(failure.text == "cannot read this Mac's setup record (Cannot open configuration root)", "\(failure.text)")
+        }
+        var record = ClusterSetupRecord()
+        record.aloneHoldersPlan = "p"
+        let read = ClusterService.supervisedRecord({ record })
+        #expect((try? read.get())?.aloneHoldersPlan == "p")
+    }
 }

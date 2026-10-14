@@ -108,10 +108,13 @@ extension ClusterService {
         guard let result else { throw ClusterSetupFailure("this Mac's control is not ready") }
         // The leader's serving intent, from an accepted lease only: a start or stop typed on the leader while this Mac
         // was away is what this Mac leads with if control moves here (e.g. handed back to rank 0).
+        // A write that fails is a stated failure, never "recorded": the lease is refused at the end, so the leader stops
+        // counting this Mac as present (its status says so) instead of both Macs waiting for a part that never starts (F17).
+        var unrecorded: ClusterSetupFailure?
         if let intent = ClusterControlIntent.toRecord(answer: result.answer, leaderServing: command.serving,
                                                       recorded: (try? store.readRecord())?.leadership?.serving) {
-            try? store.updateRecord { $0.leadership?.serving = intent }
-            say(intent ? "the leader serves: recorded" : "the leader stopped serving: recorded")
+            unrecorded = ClusterLeaseIntentRecording.record(intent, write: { _ = try store.updateRecord { $0.leadership?.serving = intent } },
+                                                            say: say)
         }
         // Recorded only from an accepted lease: a refused (stale) leader never rewrites what this Mac may serve alone.
         if let verdicts = ClusterControlAloneVerdicts.toRecord(answer: result.answer, facts: facts, forPlan: command.alonePlan, savedPlan: savedPlan) {
@@ -125,6 +128,7 @@ extension ClusterService {
         }
         report(result.actions, say: say)
         persistControl()
+        if let unrecorded { throw unrecorded }
         return try JSONEncoder().encode(result.answer)
     }
 
@@ -233,10 +237,26 @@ extension ClusterService {
             // changes it meanwhile): the Mac that accepts records it, and leads with it if control moves there.
             let intent = (try? self.store.readRecord())?.leadership?.serving
             let command = ClusterServiceCommand(op: .lease, claim: claim, running: running, facts: facts, alonePlan: alonePlan, serving: intent)
-            guard let body = try? JSONEncoder().encode(command),
-                  let reply = try? ClusterSetupLinkExchange.lease(pairing: pairing, selection: selection, peerAddress: nil, body: body,
-                      seconds: min(4, Self.leaseRenewSeconds)).reply,
-                  let answer = try? JSONDecoder().decode(ClusterControlNode.LeaseAnswer.self, from: reply) else { return }
+            let answer: ClusterControlNode.LeaseAnswer
+            do {
+                let body = try JSONEncoder().encode(command)
+                let reply = try ClusterSetupLinkExchange.lease(pairing: pairing, selection: selection, peerAddress: nil, body: body,
+                                                               seconds: min(4, Self.leaseRenewSeconds)).reply
+                answer = try JSONDecoder().decode(ClusterControlNode.LeaseAnswer.self, from: reply)
+            } catch {
+                // Said once per distinct reason (a member that refuses every lease would otherwise fill the log).
+                let reason = ClusterConsoleText.bounded(String(describing: (error as? ClusterSetupFailure)?.text ?? String(describing: error)),
+                                                        maximum: 200)
+                if self.lock.withLock({ self.lastLeaseProblem }) != reason {
+                    self.lock.withLock { self.lastLeaseProblem = reason }
+                    say("control: the lease to the other Mac did not go through: \(reason)")
+                }
+                return
+            }
+            if self.lock.withLock({ self.lastLeaseProblem }) != nil {
+                self.lock.withLock { self.lastLeaseProblem = nil }
+                say("control: the other Mac takes the lease again")
+            }
             let now = Self.monotonicSeconds()
             let actions = self.lock.withLock { self.control?.receiveAnswer(from: target, sent: claim, answer: answer, now: now) } ?? []
             self.report(actions, say: say)
@@ -366,5 +386,20 @@ extension ClusterService {
         } catch {
             return ["\(name): could not check what is left running (\(ClusterConsoleText.bounded(String(describing: error), maximum: 120)))"]
         }
+    }
+}
+
+/// What the lease handler does with the leader's serving intent (F17): write it and say "recorded" only when the write
+/// went through. A failed write is said with its reason and returned, and the caller refuses the lease with it.
+enum ClusterLeaseIntentRecording {
+    static func record(_ intent: Bool, write: () throws -> Void, say: (String) -> Void) -> ClusterSetupFailure? {
+        let what = intent ? "the leader serves" : "the leader stopped serving"
+        do { try write() } catch {
+            let reason = ClusterConsoleText.bounded(String(describing: error), maximum: 160)
+            say("\(what): could not record it (\(reason))")
+            return ClusterSetupFailure("this Mac could not record that \(what) (\(reason))")
+        }
+        say("\(what): recorded")
+        return nil
     }
 }

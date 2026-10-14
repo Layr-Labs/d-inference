@@ -81,7 +81,7 @@ public enum ClusterMemberCacheControl {
         public func digest(leaderPin: String) -> String? { load(leaderPin: leaderPin).map(ClusterMemberCacheControl.digest) }
 
         func save(_ stored: Stored) throws {
-            _ = try ClusterConfigurationFiles.directory(directory, create: true, privateMode: true)
+            try ClusterConfigurationFiles.ensureDirectory(directory, create: true, privateMode: true)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(stored)
             try ClusterConfigurationFiles.update(file, maximum: ClusterMemberCacheControl.maximumBytes) { _ in data }
@@ -95,7 +95,7 @@ public enum ClusterMemberCacheControl {
 
         func setReclaimPending(_ pending: Bool) {
             if pending {
-                _ = try? ClusterConfigurationFiles.directory(directory, create: true, privateMode: true)
+                try? ClusterConfigurationFiles.ensureDirectory(directory, create: true, privateMode: true)
                 _ = try? ClusterConfigurationFiles.update(pendingFile, maximum: 64) { _ in Data("1\n".utf8) }
             } else {
                 unlink(pendingFile.path)

@@ -587,7 +587,8 @@ public enum ClusterOnboardingDriver {
         }
         let progress = ClusterOnboardingMailbox<String>()
         let finished = ClusterOnboardingMailbox<Result<[String], ClusterOnboardingFailure>>()
-        Thread.detachNewThread { finished.post(operations.provision(index, download) { progress.post($0) }) }
+        let chosenDownload = download
+        Thread.detachNewThread { finished.post(operations.provision(index, chosenDownload) { progress.post($0) }) }
         var result: Result<[String], ClusterOnboardingFailure>?
         while result == nil {
             for line in progress.take() { console.say("  " + line) }

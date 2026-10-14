@@ -102,10 +102,14 @@ import Foundation
             _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
                 localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one", environment: handOff)
         }
-        // Two Macs of no known generation: nothing prefers the head, the setup is what it was.
+        // Two Macs of no known generation: nothing prefers the phase split's head there. The 9B's passing
+        // pipeline_mtp_v1 record measured the pipeline's rounds faster (lossless by the near-tie rule), and chips
+        // never gate (owner, 2026-10-14): the rounds are credited the record's speed-up and planned by default.
         let unknown = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
             localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed, environment: handOff)
-        require("chips of no known generation keep the plain plan", unknown.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
+        require("chips of no known generation: no phase-split head; the recorded rounds are planned with their credit (chose \(unknown.result.chosen?.mode.rawValue ?? "-"))",
+            unknown.result.chosen?.mode == .pipelineMTP
+                && unknown.lines.contains { $0.contains("Pipeline speculative rounds are credited") })
         // By default (no opt-in) the same Macs and layout shard the model: no phase split, both Macs hold layers,
         // the plan lists every sharded candidate with its prediction and reason, and names the opt-in.
         let name = ClusterHandOffModes.environmentName

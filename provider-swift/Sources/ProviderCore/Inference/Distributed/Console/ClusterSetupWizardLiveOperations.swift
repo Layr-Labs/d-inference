@@ -621,13 +621,13 @@ final class LiveContext: @unchecked Sendable {
                             peerAddress: lock.withLock { linkPeer?.address }, delivery: delivery, seconds: ClusterSetupOperations.peerSeconds)
                     } catch let failure as ClusterSetupFailure { lastFailure = failure }
                 }
-                guard let digest else {
+                guard let delivered = digest else {
                     lines.append("Could not send the setup to the other Mac (\(lastFailure?.text ?? "no answer")). Make sure it is on, then run `darkbloom cluster` again.")
                     return .init(succeeded: false, lines: lines)
                 }
                 try store.updateRecord {
                     $0.add(.init(clusterID: setupClusterID(peerData) ?? "", memberID: peerID,
-                        configurationSHA256: ClusterConfigurationSyntax.hash(digest) ? digest : "", at: ClusterConsoleText.timestamp()))
+                        configurationSHA256: ClusterConfigurationSyntax.hash(delivered) ? delivered : "", at: ClusterConsoleText.timestamp()))
                 }
                 lines.append(settings.derivedPlacement
                     ? "Sent the setup to the other Mac over the cable; its cluster service applied it."

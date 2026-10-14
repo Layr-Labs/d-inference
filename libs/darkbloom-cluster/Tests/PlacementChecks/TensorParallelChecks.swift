@@ -116,10 +116,11 @@ private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementC
         ("ranks of different shares", r0, otherShares, [refA], "not the same run"),
         ("no reference", r0, r1, [Data](), "at least one single-Mac reference"),
         ("a pair report as the reference", r0, r1, [r1], "not a single-Mac full report"),
+        ("float32 partials recorded as bfloat16", r0, r1, [refA], "partials dtype"),
     ] as [(String, Data, Data, [Data], String)] {
         checks.refuses("tensor parallel record: refuses \(label)", because: why) {
             _ = try QwenTensorParallelQualification.record(rank0: a, rank1: b, references: refs, configuration: configuration,
-                planName: plan, partialsDType: "float32", createdUTC: "t")
+                planName: plan, partialsDType: label.hasPrefix("float32 partials") ? "bfloat16" : "float32", createdUTC: "t")
         }
     }
 }

@@ -116,6 +116,33 @@ not move it (tokens identical, steps within about 2%). `--mode shard-local
 --shard-rank R` is the floor meter: TP2 can only win where the shard alone
 plus about 6 ms of all-sums beats the faster Mac alone.
 
+Weighted shares, routed experts and records (2026-10-14, M3 Ultra + M5 Ultra over TB5 RDMA):
+
+- `--shares A:B` (tp and shard-local) gives each rank a weighted share. Each part moves in whole
+  blocks whose row-parallel input width stays on MLX's quantized matrix-vector fast path (input
+  width a multiple of (32 / bits) x 2 x 32: 512 for 4-bit), KV heads with their query heads,
+  linear key heads with their value heads, vocabulary rows in 8s; the shares are part of the
+  first exchange (launch digest v3). Equal shards are unchanged.
+- Routed experts (Qwen 3.5 35B A3B): every expert divided by its intermediate channels, the
+  router replicated, one reduction per MoE block. Lossless (near tie) but slow on this MLX: a
+  256-wide expert is off the gather_qmv fast path, so a half shard decodes slower than the whole
+  model. Expert parallelism is the split to build next for MoE.
+- `record --rank0 R0 --rank1 R1 --reference REF... --model-dir DIR --output FILE` appends a
+  `ClusterPairQualificationRecord` (mode `tensor_parallel_v1`, no cut, `tensorParallelLayout`
+  naming plan, partials and shares) after the near-tie comparison, as pair-check does for a
+  pipeline run.
+- `DARKBLOOM_QWEN35_FUSE_ELEMENTWISE=0` turns off the qwen3_5 compiled decode chains (on by
+  default; bit-identical tokens, -24 % primitives, about -2 % step: the removed kernels were off
+  the critical path).
+
+Measured (27B, greedy, 128 outputs; tokens equal or near tie against both Macs alone at 1K, 4K
+and 16K): each Mac alone decodes at 38.3 (M3 Ultra) and 55.8 tok/s (M5 Ultra); an equal TP2 at
+36.8 tok/s (1K) with a native all-sum, i.e. about 2.7 ms of all-sums per token behind the slower
+rank's half; with an explicit evaluate-and-synchronize before every all-sum (the class of a
+host-driven keyed exchange) 14.4 tok/s. A shard's step is not a straight line in its share (M3
+Ultra: whole 26.1 ms, half 24.7, quarter 16.3; M5 Ultra: whole 18.0, 3/4 21.2, half 15.8,
+quarter 10.2), so the planner takes per-share probes (`ClusterShareRate`).
+
 ## Generation modes
 
 How the two ranks divide one request is declared to both workers at launch

@@ -95,6 +95,10 @@ public enum QwenTensorParallelQualification {
                   && $0.outputCount == first.outputCount && $0.shares == first.shares && $0.mode == first.mode }) else {
             throw ProbeError("The two rank reports are not the same run")
         }
+        // The report names bfloat16 partials in its mode ("tp-bf16-partials"); the record must say the same.
+        guard first.mode.hasSuffix("-bf16-partials") == (partialsDType == "bfloat16"), ["float32", "bfloat16"].contains(partialsDType) else {
+            throw ProbeError("The run's partials dtype is not \(partialsDType)")
+        }
         let definition = try QwenResidentModelDefinition(configuration: configuration)
         let configurationSHA = SHA256.hash(data: configuration).map { String(format: "%02x", $0) }.joined()
         guard configurationSHA == first.modelConfigurationSHA256 else {

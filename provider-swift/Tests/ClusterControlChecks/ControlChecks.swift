@@ -34,6 +34,10 @@ import Darwin
         partChoice()
         continuousClockAndWake()
         waitingLogsOncePerMinute()
+        wokenLeaderReconfirms()
+        wokenMacGivesMembersATimeToLiveBeforeSolo()
+        leaderIntentSurvivesTheHandOver()
+        soloStartsWithoutTheEndedPartsBackoff()
         print("control checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -123,6 +127,8 @@ import Darwin
         var up: Set<String>
         var cut: Set<String> = []   // nodes with their cable out (alive, unreachable)
         var log: [String] = []
+        /// Each Mac's recorded serving intent (its setup record's `leadership.serving`), when a check follows it.
+        var serving: [String: Bool] = [:]
 
         func reachable(_ a: String, _ b: String) -> Bool { up.contains(a) && up.contains(b) && !cut.contains(a) && !cut.contains(b) }
 
@@ -147,6 +153,9 @@ import Darwin
         mutating func exchange(_ claim: ClusterControlClaim, from sender: String, to target: String, now: Double, running: Bool) {
             let facts = Array(nodes[sender]!.members.values)
             let (answer, actions) = nodes[target]!.receiveLease(from: sender, offered: claim, running: running, facts: facts, now: now)
+            if let intent = ClusterControlIntent.toRecord(answer: answer, leaderServing: serving[sender], recorded: serving[target]) {
+                serving[target] = intent
+            }
             for action in actions { deliver(action, from: target, now: now, running: false) }
             for action in nodes[sender]!.receiveAnswer(from: target, sent: claim, answer: answer, now: now) {
                 deliver(action, from: sender, now: now, running: false)
@@ -424,8 +433,10 @@ import Darwin
         expect(a2.leadershipConfirmed(now: 2), "confirmed by the member")
         // Nobody reachable: it may act only once the window passed (the member's time-to-live from the start).
         var a3 = ClusterControlNode(localID: A, members: members, claim: term1, rankOrder: [A, B], now: 100, ttl: 30)
-        _ = a3.tick(now: 110)
+        // Ticked at the service's cadence (a tick gap of a third of the time-to-live or more reads as a wake).
+        for t in stride(from: 110.0, through: 129, by: 1) { _ = a3.tick(now: t) }
         expect(!a3.leadershipConfirmed(now: 129.5), "inside the window with nobody answering: not yet")
+        _ = a3.tick(now: 130)
         expect(a3.leadershipConfirmed(now: 130), "the window passed with no member reachable")
         // A follower is never a confirmed leader; before a plan (onboarding, term 0) the same rule holds.
         expect(!b1.leadershipConfirmed(now: 500), "a follower never acts as the leader")
@@ -593,5 +604,133 @@ import Darwin
         expect(keys.count == 11, "one log line per whole minute of the grace (0-10 min buckets): \(keys.count)")
         expect(key(599) == key(540) && key(539) != key(540), "same minute, same key")
         expect(ClusterControlWords.logKey(.cluster, line: "leading the cluster") == "leading the cluster", "other modes: the line itself")
+    }
+
+    // MARK: - Review of the finish (2026-10-13 night)
+
+    /// (a)+(c) A leader that slept (or whose process was suspended) past the lease, while its member took over, is NOT a
+    /// confirmed leader when it wakes: the confirmations it had before the sleep are void, and a member it has not heard
+    /// from counts as unreachable only after one time-to-live AWAKE. Before the review it acted at once on its stale claim
+    /// (the member it confirmed before the sleep still counted as confirmed).
+    static func wokenLeaderReconfirms() {
+        var bus = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        expect(bus.nodes[A]!.leadershipConfirmed(now: 20), "confirmed before the sleep")
+        // A sleeps from 20 to 3620 (the continuous clock counts through it); B takes over meanwhile.
+        bus.up.remove(A)
+        for t in stride(from: 21.0, through: 300, by: 1) { bus.step(t) }
+        expect(bus.leaders == [B] && bus.nodes[B]!.claim.term == 1, "B took over (term 1): \(bus.leaders)")
+        // Woken, before its first tick and before the member's refusal came back: not confirmed.
+        var woken = bus.nodes[A]!
+        expect(woken.leads && !woken.leadershipConfirmed(now: 3620), "woken, not ticked yet: never a confirmed leader")
+        _ = woken.tick(now: 3620)
+        expect(!woken.leadershipConfirmed(now: 3620.5), "woken and ticked, nobody answered yet: not confirmed")
+        // The renewal reaches B, B refuses with term 2: A steps down having acted on nothing.
+        bus.up.insert(A)
+        bus.step(3620)
+        expect(!bus.nodes[A]!.leads && !bus.nodes[A]!.leadershipConfirmed(now: 3621), "the stale claim steps down")
+        // Woken with the cable out (nobody can answer): it may act only after one time-to-live awake.
+        var cut = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { cut.step(t) }
+        cut.up.remove(A)
+        for t in stride(from: 21.0, through: 300, by: 1) { cut.step(t) }
+        cut.up.insert(A); cut.cut = [A]
+        var confirmedAt: Double?
+        for t in stride(from: 3620.0, through: 3700, by: 1) {
+            cut.step(t)
+            if confirmedAt == nil, cut.nodes[A]!.leadershipConfirmed(now: t) { confirmedAt = t }
+        }
+        expect(confirmedAt == 3650, "the window passed awake with nobody reachable: \(String(describing: confirmedAt))")
+    }
+
+    /// (3)+(c) A Mac already inside the absence grace that sleeps past its end does not serve alone the moment it wakes:
+    /// the missing member may have come back while it slept, so it gets one time-to-live awake to answer first. Before
+    /// the review the woken Mac started its solo server at once and stopped it again when the member answered (a flap).
+    static func wokenMacGivesMembersATimeToLiveBeforeSolo() {
+        var bus = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        bus.up.remove(B)
+        for t in stride(from: 21.0, through: 300, by: 1) { bus.step(t) }
+        guard case .waiting = bus.nodes[A]!.mode(now: 300) else { return expect(false, "A waits the grace: \(bus.nodes[A]!.mode(now: 300))") }
+        // A sleeps from 300 to 3600. B's service restarts at 3000 from its saved claim; A cannot answer, so B takes over.
+        bus.up.remove(A)
+        let saved = bus.nodes[B]!.persisted
+        bus.nodes[B] = ClusterControlNode(localID: B, members: saved.members, claim: saved.claim, rankOrder: saved.rankOrder, now: 3000, ttl: 30, soloGrace: 600)
+        bus.up.insert(B)
+        for t in stride(from: 3000.0, through: 3599, by: 1) { bus.step(t) }
+        expect(bus.nodes[B]!.leads, "B took over while A slept")
+        // A wakes at 3600: its absence record of B is from before the sleep (more than the grace ago).
+        let woken = bus.nodes[A]!
+        if case .alone = woken.mode(now: 3600) { expect(false, "woken, not ticked yet: no solo at once") }
+        bus.up.insert(A)
+        var aloneAt = [Double]()
+        for t in stride(from: 3600.0, through: 3700, by: 1) {
+            bus.step(t)
+            for id in [A, B] { if case .alone = bus.nodes[id]!.mode(now: t) { aloneAt.append(t) } }
+        }
+        expect(aloneAt.isEmpty, "nobody served alone around the wake: \(aloneAt.prefix(3))")
+        expect(bus.leaders == [A] && bus.nodes[A]!.mode(now: 3700) == .cluster, "re-formed under rank 0: \(bus.leaders) \(bus.nodes[A]!.mode(now: 3700))")
+        // The member is really gone at the wake: solo one time-to-live after it (not at once, not a whole new grace).
+        var gone = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { gone.step(t) }
+        gone.up.remove(B)
+        for t in stride(from: 21.0, through: 300, by: 1) { gone.step(t) }
+        var soloAt: Double?
+        for t in stride(from: 3600.0, through: 3700, by: 1) {
+            gone.step(t)
+            if soloAt == nil, case .alone = gone.nodes[A]!.mode(now: t) { soloAt = t }
+        }
+        expect(soloAt == 3630, "solo one time-to-live after the wake: \(String(describing: soloAt))")
+    }
+
+    /// A stop (or a start) typed on the survivor while the plan's rank 0 is away must survive rank 0's return: control is
+    /// handed back to rank 0, which then leads with ITS record's serving intent. The leader's intent now travels with
+    /// every lease and hand-over, and a Mac records it from an accepted lease of its current leader. Before the review
+    /// the returning rank 0 led with the intent it had before it went away, restarted the cluster and synced `serve` to
+    /// the survivor: the user's stop was lost (the screen had promised the other Mac would be told to stop).
+    static func leaderIntentSurvivesTheHandOver() {
+        var bus = pair(aloneA: true, aloneB: true, grace: 600)
+        bus.serving = [A: true, B: true]
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        let stale = bus.nodes[A]!.persisted
+        bus.up.remove(A)
+        for t in stride(from: 21.0, through: 99, by: 1) { bus.step(t) }
+        expect(bus.leaders == [B], "B took over")
+        bus.serving[B] = false                       // `s` on B: A is away and cannot be told
+        bus.nodes[A] = ClusterControlNode(localID: A, members: stale.members, claim: stale.claim, rankOrder: stale.rankOrder, now: 200, ttl: 30, soloGrace: 600)
+        bus.up.insert(A)                             // A's record still says serving
+        for t in stride(from: 200.0, through: 260, by: 1) { bus.step(t) }
+        expect(bus.leaders == [A], "control back on rank 0: \(bus.leaders)")
+        expect(bus.serving[A] == false && bus.serving[B] == false, "the stop survived the hand-over: \(bus.serving)")
+        // The same for a start typed on the survivor while rank 0 was away and stopped.
+        var start = pair(aloneA: true, aloneB: true, grace: 600)
+        start.serving = [A: false, B: false]
+        for t in stride(from: 0.0, through: 20, by: 5) { start.step(t) }
+        let old = start.nodes[A]!.persisted
+        start.up.remove(A)
+        for t in stride(from: 21.0, through: 99, by: 1) { start.step(t) }
+        start.serving[B] = true
+        start.nodes[A] = ClusterControlNode(localID: A, members: old.members, claim: old.claim, rankOrder: old.rankOrder, now: 200, ttl: 30, soloGrace: 600)
+        start.up.insert(A)
+        for t in stride(from: 200.0, through: 260, by: 1) { start.step(t) }
+        expect(start.leaders == [A] && start.serving[A] == true, "the start survived the hand-over: \(start.serving)")
+        // A stale leader's intent is never recorded (its lease is refused), and a lease without one changes nothing.
+        let members = [mac(A, "a", 256, 80), mac(B, "b", 256, 80)]
+        expect(ClusterControlIntent.toRecord(answer: .refused(.init(term: 3, leaderID: B, members: [A, B], reason: "x"), members[1]),
+                                             leaderServing: true, recorded: false) == nil, "refused: not recorded")
+        expect(ClusterControlIntent.toRecord(answer: .accepted(members[1]), leaderServing: nil, recorded: false) == nil, "no intent sent")
+        expect(ClusterControlIntent.toRecord(answer: .accepted(members[1]), leaderServing: false, recorded: false) == nil, "unchanged")
+        expect(ClusterControlIntent.toRecord(answer: .accepted(members[1]), leaderServing: false, recorded: true) == false, "recorded")
+    }
+
+    /// After the grace the solo server starts at once: the restart backoff belongs to the part that kept ending (rank 0
+    /// waiting for its missing follower), not to another part. In e3 solo waited 23 s for the cluster part's backoff.
+    static func soloStartsWithoutTheEndedPartsBackoff() {
+        typealias P = ClusterControlPartChoice
+        expect(P.mayStart(key: "solo:m", endedKey: "cluster:abc", backoffElapsed: false), "another part: at once")
+        expect(!P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: false), "the part that ended: after its backoff")
+        expect(P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: true), "backoff elapsed")
+        expect(!P.mayStart(key: "solo:m", endedKey: "solo:m", backoffElapsed: false), "a crashing solo server backs off too")
+        expect(P.mayStart(key: "cluster:abc", endedKey: nil, backoffElapsed: false), "nothing ended: at once")
     }
 }

@@ -208,11 +208,26 @@ public struct ClusterControlNode: Sendable, Equatable {
     /// member the claim names confirmed the claim in this process's lifetime or did not answer within its time-to-live
     /// (the confirmation window passed with no member reachable). A restarted Mac whose persisted claim was superseded
     /// learns so from the first refusal and steps down having acted on nothing.
+    ///
+    /// After a gap no renewal could cross (system sleep, a suspended process) the confirmations from before it are void
+    /// (the member may have taken over meanwhile), and a member counts as unreachable only after one time-to-live AWAKE:
+    /// a woken leader acts only once the member answered (or refused, and it stepped down) or that window passed.
     public func leadershipConfirmed(now: Double) -> Bool {
-        guard leads else { return false }
-        let present = present(now: now)
-        return claim.members.filter { $0 != localID }.allSatisfy { confirmed.contains($0) || !present.contains($0) }
+        guard leads, !untickedGap(now: now) else { return false }
+        let woke = awakeSince
+        return claim.members.filter { $0 != localID }.allSatisfy { id in
+            confirmed.contains(id) || now - max(heard[id] ?? -Double.infinity, woke) >= ttl
+        }
     }
+
+    /// A gap since the last tick that no renewal could cross, not yet seen by a tick (`tick` then records the wake).
+    private func untickedGap(now: Double) -> Bool {
+        guard let last = lastTick else { return false }
+        return now - last >= ttl / 3
+    }
+
+    /// When this Mac last woke from such a gap: now while the gap has not been ticked yet.
+    private func wokeAt(now: Double) -> Double { untickedGap(now: now) ? now : awakeSince }
 
     public mutating func learn(_ member: ClusterControlMember) { members[member.memberID] = member }
 
@@ -290,7 +305,12 @@ public struct ClusterControlNode: Sendable, Equatable {
 
     /// What is due now: renewals and a hand-over on the leader, a take-over on a member whose leader's lease expired.
     public mutating func tick(now: Double) -> [Action] {
-        if let last = lastTick, now - last >= ttl / 3 { awakeSince = now }
+        if untickedGap(now: now) {
+            awakeSince = now
+            // Whatever members confirmed before the gap may have changed while nobody could renew (a member may have
+            // taken over): they confirm again, or are passed over one time-to-live awake from here.
+            confirmed = []
+        }
         lastTick = now
         defer { noteAbsences(now: now) }
         if leads {
@@ -352,7 +372,9 @@ public struct ClusterControlNode: Sendable, Equatable {
         let alonePossible = plan.contains(localID) && plan.filter({ present.contains($0) }) == [localID] && members[localID]?.holdsModelAlone == true
         // The grace counts from the most recent loss (a member not yet seen absent by a tick: from now).
         let since = missing.map { absentSince[$0] ?? now }.max() ?? now
-        let remaining = soloGrace - (now - since)
+        // A Mac that just woke gives the missing members one time-to-live awake to answer before it serves alone (one
+        // may have come back while it slept), whatever its absence record from before the sleep says.
+        let remaining = max(soloGrace - (now - since), ttl - (now - wokeAt(now: now)))
         if remaining > 0 {
             return .waiting(missing: missing, soloInSeconds: Int(remaining.rounded(.up)), canServeAlone: alonePossible)
         }
@@ -469,6 +491,13 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
         }
     }
 
+    /// Whether the wanted part (`key`) may start now: once the restart backoff of the part that ended last (`endedKey`)
+    /// elapsed, or at once when the wanted part is another one: the backoff belongs to the part that kept ending (rank 0
+    /// waiting for its missing follower), so serving alone after the grace never waits it out.
+    public static func mayStart(key: String, endedKey: String?, backoffElapsed: Bool) -> Bool {
+        backoffElapsed || key != endedKey
+    }
+
     /// Whether the leader's lease tells its members that the cluster runs (they run their parts only then): while it
     /// runs as planned, and while it waits inside the absence grace for a member to return.
     public static func leaseSaysRunning(mode: ClusterControlNode.Mode, serving: Bool) -> Bool {
@@ -477,6 +506,18 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
         case .cluster, .waiting: return true
         default: return false
         }
+    }
+}
+
+/// The leader's serving intent (its setup record's `leadership.serving`: the user started or stopped the cluster)
+/// travels with every lease and hand-over, and a Mac records it from an accepted lease of its current leader. So a stop
+/// or start typed on a survivor while the plan's rank 0 was away is what rank 0 leads with once control is handed back,
+/// instead of the intent rank 0 had before it went away. A refused (stale) leader's intent is never recorded.
+public enum ClusterControlIntent {
+    /// The value to record, or nil (nothing to change: a refused lease, no intent sent, or the same intent).
+    public static func toRecord(answer: ClusterControlNode.LeaseAnswer, leaderServing: Bool?, recorded: Bool?) -> Bool? {
+        guard case .accepted = answer, let leaderServing, leaderServing != recorded else { return nil }
+        return leaderServing
     }
 }
 
@@ -570,3 +611,4 @@ public enum ClusterControlRouting {
         return "this Mac does not lead the cluster; it follows \(names[claim.leaderID] ?? claim.leaderID) (term \(claim.term))"
     }
 }
+

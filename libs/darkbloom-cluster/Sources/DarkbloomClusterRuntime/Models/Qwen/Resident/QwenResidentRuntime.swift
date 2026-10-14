@@ -65,7 +65,7 @@ public final class QwenResidentRuntime {
          qualificationFault: QwenPhaseSplitFault? = nil,
          prefixCache: QwenStagePrefixCache = .fromEnvironment(),
          servingContextTokens: Int? = nil, activeLoadedBytes: Int = 0, prefixBudgetBytes: Int? = nil,
-         batch: QwenBatchSettings = .single) {
+         batch: QwenBatchSettings = .single, linkProbe: ClusterWorkerLinkProbe? = nil) {
         self.prefixCache = prefixCache; self.batch = batch
         if let prefixBudgetBytes { prefixCache.setBudget(prefixBudgetBytes) }
         self.servingContextTokens = servingContextTokens; self.activeLoadedBytes = activeLoadedBytes
@@ -77,7 +77,8 @@ public final class QwenResidentRuntime {
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane,
-            servingContextTokens: servingContextTokens.map { min($0, admission.wireProfile.maximumContextTokens) })
+            servingContextTokens: servingContextTokens.map { min($0, admission.wireProfile.maximumContextTokens) },
+            linkProbe: linkProbe)
     }
 
     /// Re-derives the serving context from this Mac's live admissible memory

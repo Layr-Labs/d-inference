@@ -117,20 +117,30 @@ public enum ClusterPlacementFlow {
         let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
             artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens, measurements: measurements,
             indices: profiles.compactMap { $0.1.speedIndex })
-        var devices = zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
+        // Speeds that are only ratios become each Mac's own index estimate when tensor parallel is open
+        // (`ClusterHardwarePrior`), so a request served in tensor parallel can correct them.
+        var devices = ClusterHardwarePrior.absolute(zip(profiles, speeds).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
+            layout: layout, link: link)
         // Requests this pair served are measurements too: the next plan starts from them.
         let members = Set(profiles.map { $0.0 })
         let ours = served.filter { $0.setup.modelID == description.publicModelID && ($0.setup.ranks.map { Set($0) == members } ?? false) }
+        // The request this pair's served requests look like (decode-heavy or prompt-heavy) is the one the
+        // planner chooses tensor parallel or a pipeline for, unless the caller named one.
+        if promptTokens == nil, outputTokens == nil, let mix = ClusterRequestMix.reference(ours.map(\.sample), layout: layout) {
+            policy.promptTokens = mix.promptTokens; policy.outputTokens = mix.outputTokens
+        }
         var servedLines: [String] = []
         if !ours.isEmpty {
-            let derived = try ClusterServedCalibration.measurements(entries: ours, devices: devices, layout: layout, link: .unmeasured,
+            // With the measured link, so that requests served in tensor parallel correct each rank's share.
+            let derived = try ClusterServedCalibration.measurements(entries: ours, devices: devices, layout: layout, link: link,
                 measuredUTC: ISO8601DateFormatter().string(from: Date()))
             servedLines = ["Speed records from served requests"] + derived.lines
             if !derived.measurements.isEmpty {
                 let again = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
                     artifactSHA256: layout.artifactSHA256, promptTokens: promptTokens ?? layout.maximumPromptTokens,
                     measurements: measurements + derived.measurements, indices: profiles.compactMap { $0.1.speedIndex })
-                devices = zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
+                devices = ClusterHardwarePrior.absolute(zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) },
+                    layout: layout, link: link)
             }
         }
         // The link as the pair's last load measured it (`ClusterLinkProbeHistory`);
@@ -140,6 +150,9 @@ public enum ClusterPlacementFlow {
             + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        if let why = ClusterPlacementExplanation.deploymentReason(result) {
+            lines += ["Tensor parallel or pipeline", "  " + why]
+        }
         if handOff {
             lines += ClusterHandOffModes.lines(enabled: true)
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {

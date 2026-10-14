@@ -47,13 +47,13 @@ public final class GPTOSSResidentRuntime {
 
     private init(admission: GPTOSSResidentAdmission, control: QwenResidentControl, collective: Collective,
                  stage: LoadedGPTOSSLayerStage, capacity: Int, lifecycle: QwenLayerStageResidentLifecycle,
-                 generationMode: QwenResidentGenerationMode) {
+                 generationMode: QwenResidentGenerationMode, linkProbe: ClusterWorkerLinkProbe? = nil) {
         self.admission = admission; self.control = control; self.collective = collective
         self.stage = stage; model = stage.model; self.lifecycle = lifecycle
         self.generationMode = generationMode
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
-            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane)
+            requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane, linkProbe: linkProbe)
     }
 
     /// Keep-warm tier 1: one asynchronous pulse on a dedicated stream of this
@@ -183,18 +183,32 @@ public final class GPTOSSResidentRuntime {
                                                        transport: collective.transport)
             }
             let plainAgreement = try admission.loadAgreementFingerprint(mode: mode, transport: transport)
-            let loadAgreement = credential == nil ? plainAgreement
-                : sha256(try canonicalJSONData([plainAgreement] + ClusterDataPlaneAgreement.loadAgreementFields))
+            // Every load over the cable measures the link as the sharded modes use it (`QwenTensorParallelLinkProbe`),
+            // so the planner can choose tensor parallel for this pair; bound here so both ranks measure it.
+            let probesLink = transport != .localSocketTest
+            let probeFields = probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : []
+            let loadAgreement = credential == nil
+                ? (probeFields.isEmpty ? plainAgreement : sha256(try canonicalJSONData([plainAgreement] + probeFields)))
+                : sha256(try canonicalJSONData([plainAgreement] + probeFields + ClusterDataPlaneAgreement.loadAgreementFields))
             if let credential {
                 try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
-                    loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, check: { try control.check() })
+                    loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, tensorParallelSeal: probesLink,
+                    check: { try control.check() })
             }
+            var linkProbe: ClusterWorkerLinkProbe?
             let capacity = try MLX.withError { nativeError in
                 func checked() throws { try nativeError.check(); try control.check(); try nativeError.check() }
                 do {
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
                         disagreementMessage: "Resident GPT-OSS load membership/source/Plan/mode differs", scope: .session(.loadAgreement, "resident-load-intent"), check: checked)
+                    if probesLink {
+                        // The link, before any weight is read.
+                        linkProbe = try QwenTensorParallelLinkProbe.measure(onPipeline: collective, keyed: credential != nil,
+                            loadAgreement: loadAgreement, hiddenSize: admission.profile.hiddenSize,
+                            chunkTokens: admission.profile.maximumChunkTokens, check: checked)
+                        if let linkProbe { log(QwenTensorParallelLinkProbe.line(linkProbe, rank: collective.rank)) }
+                    }
                     let beforeLoad = Memory.snapshot()
                     let started = DispatchTime.now().uptimeNanoseconds
                     var verified = started
@@ -285,7 +299,7 @@ public final class GPTOSSResidentRuntime {
             let lifecycle = QwenLayerStageResidentLifecycle()
             try control.loaded()
             return .init(admission: admission, control: control, collective: collective, stage: stage!,
-                capacity: capacity, lifecycle: lifecycle, generationMode: mode)
+                capacity: capacity, lifecycle: lifecycle, generationMode: mode, linkProbe: linkProbe)
         } catch {
             let primary = error; control.fail(); stage = nil
             do {

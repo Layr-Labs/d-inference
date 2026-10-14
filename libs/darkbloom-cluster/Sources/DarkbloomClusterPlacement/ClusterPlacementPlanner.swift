@@ -302,6 +302,10 @@ public enum ClusterPlacementPlanner {
             throw ClusterPlacementError("Placement needs two or more devices with distinct labels")
         }
         for device in devices { try device.profile.validate() }
+        // Tensor parallel against a pipeline compares seconds of compute with
+        // seconds of link: speeds that are only ratios become each Mac's own
+        // index estimate when that choice is open (`ClusterHardwarePrior`).
+        let devices = ClusterHardwarePrior.absolute(devices, layout: layout, link: link)
         let prompt = policy.promptTokens ?? layout.maximumPromptTokens
         let outputs = policy.outputTokens ?? layout.maximumOutputTokens
         if let largest = policy.largestContextTokens {
@@ -435,7 +439,8 @@ public enum ClusterPlacementPlanner {
         let steps = tp.reductionsPerStep(layerCount: layout.layerCount)
         let speeds = devices.map { device in
             ClusterTensorParallelAssessment.Device(device: device.label,
-                split: ClusterDecodeSplit(rates: device.speed.sustained.flatMap { regime == .sustained ? $0 : nil } ?? device.speed.rested))
+                split: ClusterDecodeSplit(rates: device.speed.sustained.flatMap { regime == .sustained ? $0 : nil } ?? device.speed.rested,
+                    hardwareWeightSeconds: device.speed.absolute ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil))
         }
         let bestOther = ranked.first { !$0.mode.usesTensorParallelDecode }?.prediction(regime).requestSeconds
         let bestAlone = alone.filter(\.fit.possible).map { $0.prediction(regime).requestSeconds }.min()
@@ -466,8 +471,10 @@ public enum ClusterPlacementPlanner {
             return make(.doesNotFit, "no tensor-parallel placement fits these Macs")
         }
         let time = fastest.prediction(regime).requestSeconds
-        let unmeasured = speeds.filter { !$0.split.measured }.map(\.device)
-        let note = unmeasured.isEmpty ? "" : "; no shard probe on \(unmeasured.joined(separator: ", ")), so its step is assumed not to shrink"
+        let unmeasured = speeds.filter { !$0.split.measured && $0.split.fromHardware == nil }.map(\.device)
+        let prior = speeds.filter { $0.split.fromHardware == true }.map(\.device)
+        let note = (unmeasured.isEmpty ? "" : "; no shard probe on \(unmeasured.joined(separator: ", ")), so its step is assumed not to shrink")
+            + (prior.isEmpty ? "" : "; no shard probe on \(prior.joined(separator: ", ")), so its share's step is predicted from its measured device index")
         if let bestOther, time >= bestOther * (1 - policy.tensorParallelMargin) {
             return make(.predictedSlower, String(format: "predicted %.2f s against %.2f s for the chosen placement", time, bestOther) + note)
         }
@@ -818,8 +825,11 @@ public enum ClusterPlacementPlanner {
                     let rate = rates(device, regime).0
                     // A measured probe at this share wins over scaling the half's.
                     let probed = rate.shareRate(near: share[index])?.prefillTokensPerSecond.map { 1 / $0 }
+                    // Without a probe, a Mac whose split comes from its hardware computes its share of
+                    // every layer (prefill is compute-bound); otherwise no gain is assumed.
+                    let prior = split(device, regime).fromHardware == true ? share[index] / rate.prefillTokensPerSecond : nil
                     perToken = max(perToken, probed ?? rate.tensorShardPrefillTokensPerSecond.map { share[index] * Double(order.count) / $0 }
-                        ?? 1 / rate.prefillTokensPerSecond)
+                        ?? prior ?? 1 / rate.prefillTokensPerSecond)
                 }
                 first = Double(prompt) * perToken
                     + Double(chunks * tp.family.reductionsPerLayer * layout.layerCount)
@@ -840,7 +850,7 @@ public enum ClusterPlacementPlanner {
                 // and every reduction of the step crosses the link.
                 var slowest = 0.0
                 for (index, device) in order.enumerated() {
-                    slowest = max(slowest, ClusterDecodeSplit(rates: rates(device, regime).0).shareStepSeconds(fraction: share[index]))
+                    slowest = max(slowest, split(device, regime).shareStepSeconds(fraction: share[index]))
                 }
                 step = slowest + Double(tp.reductionsPerStep(layerCount: layout.layerCount))
                     * reduction.seconds(bytes: tp.family.partialBytesPerToken)
@@ -871,6 +881,14 @@ public enum ClusterPlacementPlanner {
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
                 prefillTokensPerSecond: Double(prompt) / first, decodeTokensPerSecond: 1 / step,
                 requestSeconds: first + handoff + Double(max(0, outputs - 1)) * step)
+        }
+
+        /// One device's decode split in this regime: its shard probes, else its
+        /// measured hardware (`ClusterHardwarePrior`, only on absolute rates),
+        /// else no gain.
+        func split(_ device: ClusterPlacementDevice, _ regime: ClusterPlacementPolicy.Regime) -> ClusterDecodeSplit {
+            ClusterDecodeSplit(rates: rates(device, regime).0, hardwareWeightSeconds: device.speed.absolute
+                ? ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout) : nil)
         }
 
         /// A device's whole-model decode rate in this regime: plain, or with

@@ -356,6 +356,9 @@ public enum ClusterServedCalibration {
         return try devices.enumerated().compactMap { index, device -> ClusterSpeedMeasurement? in
             guard device.speed.absolute else { return nil }
             let base = device.speed.rested
+            // What the plan predicted for this rank: its shard probe, else its measured hardware (`ClusterHardwarePrior`).
+            let split = ClusterDecodeSplit(rates: base,
+                hardwareWeightSeconds: ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout))
             var shardDecode = base.tensorShardDecodeTokensPerSecond, shardPrefill = base.tensorShardPrefillTokensPerSecond
             var shareRates = base.tensorShareRates
             if let weights = placement.tensorShares {
@@ -363,18 +366,22 @@ public enum ClusterServedCalibration {
                 // its own share (a share rate), never the equal half's.
                 let fraction = Double(weights[index]) / total
                 let perMille = Int((fraction * 1000).rounded())
-                let step = ClusterDecodeSplit(rates: base).shareStepSeconds(fraction: fraction) * (decodeFactor ?? 1)
+                let step = split.shareStepSeconds(fraction: fraction) * (decodeFactor ?? 1)
+                // As the planner predicted it: a probe at this share, the half's scaled, the hardware prior
+                // (its share of every layer), else the whole model's rate.
                 let prefillPerToken = (base.shareRate(near: fraction)?.prefillTokensPerSecond.map { 1 / $0 }
                     ?? base.tensorShardPrefillTokensPerSecond.map { fraction * Double(devices.count) / $0 }
-                    ?? 1 / base.prefillTokensPerSecond) * (prefillFactor ?? 1)
+                    ?? (split.fromHardware == true ? fraction / base.prefillTokensPerSecond : 1 / base.prefillTokensPerSecond))
+                    * (prefillFactor ?? 1)
                 let kept = (shareRates ?? []).filter { abs($0.sharePerMille - perMille) > 5 }.suffix(15)
                 shareRates = Array(kept) + [ClusterShareRate(sharePerMille: perMille, decodeTokensPerSecond: 1 / step,
                     prefillTokensPerSecond: 1 / prefillPerToken)]
             } else {
-                shardDecode = decodeFactor.map { 1 / (ClusterDecodeSplit(rates: base).shareStepSeconds(ranks: devices.count) * $0) }
+                shardDecode = decodeFactor.map { 1 / (split.shareStepSeconds(ranks: devices.count) * $0) }
                     ?? base.tensorShardDecodeTokensPerSecond
-                shardPrefill = prefillFactor.map { (base.tensorShardPrefillTokensPerSecond ?? base.prefillTokensPerSecond) / $0 }
-                    ?? base.tensorShardPrefillTokensPerSecond
+                let predictedShardPrefill = base.tensorShardPrefillTokensPerSecond
+                    ?? (split.fromHardware == true ? base.prefillTokensPerSecond * Double(devices.count) : base.prefillTokensPerSecond)
+                shardPrefill = prefillFactor.map { predictedShardPrefill / $0 } ?? base.tensorShardPrefillTokensPerSecond
             }
             let prompt = Int(median(pair.map { Double($0.promptTokens) }) ?? Double(layout.maximumChunkTokens))
             return try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: device.profile.chip,

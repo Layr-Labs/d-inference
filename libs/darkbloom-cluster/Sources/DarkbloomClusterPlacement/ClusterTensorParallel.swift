@@ -156,8 +156,10 @@ public struct ClusterMeasuredStep: Codable, Equatable, Sendable {
 /// chain, the host's graph) and a part that does (reading the weights). With
 /// the whole model's step `t` and an equal half's step `h` (a shard probe, no
 /// reduction): floor `2h - t`, weight part `2(t - h)`, and a `1/k` share then
-/// steps in `floor + weight part / k`. Without a half measurement nothing
-/// says the step shrinks: the floor is the whole step (no gain is assumed).
+/// steps in `floor + weight part / k`. Without a half measurement, the
+/// device's own measured hardware gives the weight part (`fromHardware`,
+/// `ClusterHardwarePrior`); with neither, nothing says the step shrinks: the
+/// floor is the whole step (no gain is assumed).
 public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
     public let wholeStepSeconds: Double
     public let floorSeconds: Double
@@ -169,8 +171,19 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
     /// shares' probes and the whole, ascending; nil without share probes
     /// (so a split without them encodes as before).
     public let measuredSteps: [ClusterMeasuredStep]?
+    /// True when no shard probe measured this device and the split comes from
+    /// its own measured hardware instead (`ClusterHardwarePrior`): the weight
+    /// part is the bytes a step reads at the rate its device index measured,
+    /// at most the whole step, and the floor the rest of the measured step.
+    /// Nil otherwise (so a split without it encodes as before).
+    public let fromHardware: Bool?
 
-    public init(rates: ClusterSpeedRates) {
+    /// `hardwareWeightSeconds`: the seconds this device needs to read a decode
+    /// step's weights (`ClusterHardwarePrior.weightSeconds`), used only when
+    /// no shard probe measured a share: a share then divides that part of the
+    /// measured whole step and keeps the rest, instead of stepping as slowly
+    /// as the whole model.
+    public init(rates: ClusterSpeedRates, hardwareWeightSeconds: Double? = nil) {
         let whole = 1 / rates.decodeTokensPerSecond
         var points = (rates.tensorShareRates ?? []).map {
             ClusterMeasuredStep(fraction: Double($0.sharePerMille) / 1000, seconds: 1 / $0.decodeTokensPerSecond) }
@@ -185,9 +198,12 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
         if let shard = rates.tensorShardDecodeTokensPerSecond {
             // A half cannot be faster than half the whole, nor slower than it.
             let half = min(whole, max(whole / 2, 1 / shard))
-            floorSeconds = 2 * half - whole; weightSeconds = 2 * (whole - half); measured = true
+            floorSeconds = 2 * half - whole; weightSeconds = 2 * (whole - half); measured = true; fromHardware = nil
+        } else if let prior = hardwareWeightSeconds, prior.isFinite, prior > 0, measuredSteps == nil {
+            let weight = min(whole, prior)
+            floorSeconds = whole - weight; weightSeconds = weight; measured = false; fromHardware = true
         } else {
-            floorSeconds = whole; weightSeconds = 0; measured = false
+            floorSeconds = whole; weightSeconds = 0; measured = false; fromHardware = nil
         }
     }
 

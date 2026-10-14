@@ -3,8 +3,8 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 
 /// The link as the pair's last load measured it (`ClusterWorkerLinkProbe`, in
-/// each worker's ready record: a tensor-parallel load measures it before it
-/// reads a weight), by pair of members, in
+/// each worker's ready record: every load over the cable, pipeline or tensor
+/// parallel, measures it before it reads a weight), by pair of members, in
 /// `~/.darkbloom/cluster/link-probes.json` (owner-only). The serving leader
 /// writes it when the pair becomes ready; every plan of that pair reads it
 /// (`ClusterLinkCosts(probe:)`), so a re-plan always uses the link as it was

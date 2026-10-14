@@ -77,6 +77,20 @@ private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) thro
         checks.require("indexed[m3ultra-m5ultra] \(name): with both Macs' speed indices the M5 Ultra gets more layers than the memory-only cut \(memoryCut) (cut \(cut), \(mode)), the speeds labelled as index estimates",
             cut > 0 && cut < memoryCut && mode == "phase_split_mtp_v1" && sources.contains("transferredByDeviceIndex"))
     }
+    // MiMo (156 GiB), which only the M5 Ultra of this pair holds whole: with the speed indices the planner chooses
+    // the phase split with the M5 Ultra decoding (it can then serve requests alone) and gives the M3 Ultra a
+    // prefill share, instead of the pipeline that made every request cross the link (2026-10-13: 42 tok/s on the
+    // pair against 57 on the M5 Ultra alone).
+    let printed = try ClusterPlacementTool.run(["plan", "--layout", directory.appendingPathComponent("layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json").path]
+        + peers + ["--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
+    let object = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
+    let result = object?["result"] as? [String: Any]
+    let chosen = result?["chosen"] as? [String: Any]
+    let ranks = (chosen?["ranks"] as? [[String: Any]])?.compactMap { $0["device"] as? String } ?? []
+    let cut = (chosen?["cuts"] as? [Int])?.first ?? -1
+    checks.require("indexed[m3ultra-m5ultra] MiMo: a phase split with the M5 Ultra decoding and the M3 Ultra prefilling a share (cut \(cut), \(ranks)), its alone route priced",
+        chosen?["mode"] as? String == "phase_split_v1" && ranks == ["mac-a", "mac-b"] && cut > 0 && cut < 24
+            && (chosen?["aloneRoute"] as? [String: Any])?["device"] as? String == "mac-b")
 }
 
 private func checkGoldenPlanSet(profiles directory: URL, layouts: URL, label: String, _ checks: PlacementChecks) throws {

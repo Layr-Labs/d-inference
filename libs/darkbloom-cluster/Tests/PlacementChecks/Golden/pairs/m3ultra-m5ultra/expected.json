@@ -120,20 +120,20 @@
   "runtimeModelID": "registered_gpt_oss_20b"
  },
  "mimo-v2.6-flash-mopd-2026-09-28-r1": {
-  "cut": 14,
+  "cut": 24,
   "mode": "pipeline_v1",
-  "planSHA256": "9528851ea091896a9b9caae24c8f4d0834df57d5aca44e53b4f90d7013e1f561",
+  "planSHA256": "5fb1ae918836880ca513c95313c990b6e8b07bd6c0e4457695b3aa8e940e30f3",
   "ranks": [
    {
     "device": "mac-a",
-    "endLayer": 14,
+    "endLayer": 24,
     "firstLayer": 0,
     "fit": "now"
    },
    {
     "device": "mac-b",
     "endLayer": 48,
-    "firstLayer": 14,
+    "firstLayer": 24,
     "fit": "now"
    }
   ],

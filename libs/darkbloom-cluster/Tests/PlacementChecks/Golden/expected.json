@@ -122,7 +122,7 @@
  "mimo-v2.6-flash-mopd-2026-09-28-r1": {
   "cut": 41,
   "mode": "pipeline_v1",
-  "planSHA256": "76f438d4e8e20efdb650ddf61795d4d3f47999fb7d38fa700de1154bb170c642",
+  "planSHA256": "de8f58e6b3d09160221efde29a48295dfd58f54e795d1516fb60d1ed1031d531",
   "ranks": [
    {
     "device": "mac-a",

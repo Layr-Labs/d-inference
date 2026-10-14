@@ -88,8 +88,14 @@ public final class DistributedMemberLinkFollower: NativePairMemberServingHost, @
                     events(.refused(reason)); reporter.note(.idle, "refused a session: \(reason)")
                     reporter.recordIncident(.memberStartFailed, error: reason)
                 case .fenced(_, let reason):
-                    events(.fenced(reason)); reporter.note(.failed, "session fenced: \(reason)")
-                    reporter.recordIncident(.peerLost, error: "the leader's session was fenced: \(reason)")
+                    events(.fenced(reason))
+                    // The leader was asked to stop: a planned end, not a lost peer.
+                    if ClusterSessionStopCause.isRequestedStop(fenceReason: reason) {
+                        reporter.note(.idle, "the leader stopped the session")
+                    } else {
+                        reporter.note(.failed, "session fenced: \(reason)")
+                        reporter.recordIncident(.peerLost, error: "the leader's session was fenced: \(reason)")
+                    }
                 case .cleanup: events(.cleanup)
                 case .released(_, let cleanly):
                     events(.released(cleanly)); reporter.note(.idle, cleanly ? "released cleanly" : "released without its owner's proof")

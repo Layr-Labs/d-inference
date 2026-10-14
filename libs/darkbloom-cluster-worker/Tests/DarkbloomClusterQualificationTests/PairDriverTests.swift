@@ -625,6 +625,17 @@ final class PairDriverTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
         invalid = configuration; invalid.workerTransport = "tcp"
         XCTAssertThrowsError(try invalid.validate())
+        // A model with no recording runtime (MiMo) can only run a phase split as a serving run, so its
+        // hand-off fault is that run's input; still a phase split only, and never a recording run of it.
+        var serving = configuration
+        serving.request.modelID = "registered_mimo_v26_flash_mopd"
+        serving.request.profileID = "registered_mimo_v26_flash_mopd_greedy_generation_v1"
+        serving.recording = false
+        XCTAssertNoThrow(try serving.validate())
+        invalid = serving; invalid.generationMode = PairConfiguration.pipelineMode
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = serving; invalid.recording = true
+        XCTAssertThrowsError(try invalid.validate())
     }
 
     // MARK: S16 data plane (the fake stands in for the pinned exchange and a refused record)

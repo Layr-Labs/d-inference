@@ -45,14 +45,21 @@ final class MiMoLayerStageSession {
     var promptObserver: ((_ tokens: [Int], _ normalizedHidden: MLXArray) throws -> Void)?
     /// Rows of a verify window that ran but are not yet kept (`openWindow`).
     private var windowRows: Int?
+    /// The producer stage's state left this rank (a phase split's hand-off),
+    /// or it ran nothing for a request the decoding rank served alone.
+    private var handedOff = false
 
     var committedTokens: Int { schedule.committedTokens }
 
-    /// `adopting` starts the stage from its own cached state at the agreed
+    /// `restoring` starts the stage from its own cached state at the agreed
     /// reused prefix (`request.reusedPrefixTokens`) instead of empty caches.
+    /// `adopting` starts the producer stage from another rank's committed
+    /// prompt state (a phase split's hand-off): the arrays in `split`'s
+    /// component order, already checked against the sender's digests. At most one.
     init(stage: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
          generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false,
-         adopting: QwenStagePrefixState? = nil) throws {
+         restoring: QwenStagePrefixState? = nil,
+         adopting: QwenLayerStageAdoptedState? = nil, split: QwenPhaseSplitPlan? = nil) throws {
         guard plan.stages.count == 2, plan.stages.indices.contains(stage.stageIndex),
               stage.plan.fingerprint == plan.fingerprint else {
             throw ProbeError("MiMo stage session received a different source plan")
@@ -86,16 +93,28 @@ final class MiMoLayerStageSession {
         }
         globalLayers = layers.map(\.globalIndex)
         let fresh = stage.model.newCache()
-        if let adopting {
-            guard request.reusedPrefixTokens > 0, adopting.committedTokens == request.reusedPrefixTokens else {
+        if let restoring {
+            guard adopting == nil, split == nil, request.reusedPrefixTokens > 0,
+                  restoring.committedTokens == request.reusedPrefixTokens else {
                 throw ProbeError("Only the agreed reused prefix can be adopted")
             }
-            try MiMoStagePrefixSnapshot.restore(adopting, into: fresh, globalLayers: globalLayers)
+            try MiMoStagePrefixSnapshot.restore(restoring, into: fresh, globalLayers: globalLayers)
+            schedule = QwenLayerStageGenerationSchedule(request: request)
+        } else if let adopting {
+            guard let split, stage.stageIndex == 0, adopting.committedTokens == request.promptCount,
+                  adopting.recurrent.isEmpty, request.reusedPrefixTokens == 0 else {
+                throw ProbeError("Only the producer stage adopts, at the end of its prompt, with the agreed terms")
+            }
+            try MiMoPhaseSplitState.install(adopting, into: fresh, shapes: split.shapes,
+                frames: try MiMoPhaseSplitState.frameTokenCounts(request), configuration: stage.model.configuration)
+            schedule = try QwenLayerStageGenerationSchedule(request: request,
+                                                            adoptedCommittedTokens: adopting.committedTokens)
         } else {
             guard request.reusedPrefixTokens == 0 else { throw ProbeError("A reused prefix needs its restored state") }
+            guard split == nil else { throw ProbeError("Phase-split terms come with adopted state only") }
+            schedule = QwenLayerStageGenerationSchedule(request: request)
         }
         caches = fresh
-        schedule = QwenLayerStageGenerationSchedule(request: request)
         identity = .init(stageIndex: stage.stageIndex, requestFingerprint: request.fingerprint,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
             storageCommitmentSHA256: receipt.storageCommitmentSHA256,
@@ -373,14 +392,73 @@ final class MiMoLayerStageSession {
 
     /// Called only after both ranks agree to EOS, length or client stop.
     /// `discardedDecodeForwards`: kept window rows whose tokens a client stop
-    /// left unpublished (`pipeline_mtp_v1`); 0 otherwise.
+    /// left unpublished (`pipeline_mtp_v1`), or decode forwards a stage that
+    /// decoded alone ran past a client stop it had not yet been told about; 0 otherwise.
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason,
                           selectedTokenCount: Int, lastTokenID: Int, discardedDecodeForwards: Int = 0) throws {
         do {
             try requireOpen()
             guard windowRows == nil else { throw ProbeError("MiMo stage finished with an unsettled verify window") }
             try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID,
-                discardedDecodeForwards: discardedDecodeForwards)
+                                discardedDecodeForwards: discardedDecodeForwards)
+            try retire(failed: false)
+        } catch { try fail(error) }
+    }
+
+    /// The producer stage's committed prompt state as hand-off components, in
+    /// `split`'s order, with logical bytes and their digests. Refuses a cache
+    /// whose arrays or rotation differ from what the terms derived. It reads
+    /// state; the session stays open until `retireAfterHandoff`.
+    func handoffComponents(split: QwenPhaseSplitPlan,
+                           check: () throws -> Void) throws -> [QwenPhaseSplitHandoffSender.Component] {
+        do {
+            try requireOpen()
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+                  schedule.decodeForwardCount == 0, !handedOff, let caches,
+                  split.shapes.count == 2 * caches.count else {
+                throw ProbeError("Only the producer stage hands over, once, after its last prompt frame")
+            }
+            return try MLX.withError { error in
+                Stream.gpu.synchronize(); try error.check(); try check()
+                let arrays = try MiMoPhaseSplitState.exportArrays(caches: caches, configuration: stage.model.configuration,
+                    frames: try MiMoPhaseSplitState.frameTokenCounts(request), shapes: split.shapes)
+                let bytes = arrays.map { $0.asData().data }
+                try error.check(); try check()
+                guard zip(bytes, split.shapes).allSatisfy({ $0.count == $1.byteCount }) else {
+                    throw ProbeError("Producer state bytes differ from their agreed size")
+                }
+                let digests = CBv2OwnedStateSnapshot.digests(bytes)
+                return zip(split.shapes, zip(digests, bytes)).map { shape, value in
+                    .init(shape: shape, sha256: value.0, bytes: value.1)
+                }
+            }
+        } catch { try fail(error) }
+    }
+
+    /// After the adopting rank accepted the complete state. Retires this
+    /// stage's native request state; no further frame can run here.
+    func retireAfterHandoff() throws {
+        do {
+            try requireOpen()
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Hand-off retirement differs from the producer's committed prompt frontier")
+            }
+            handedOff = true
+            try retire(failed: false)
+        } catch { try fail(error) }
+    }
+
+    /// The producer stage of a request the decoding rank served alone: it ran
+    /// no frame, so it retires empty, cleanly, once both ranks agreed the route.
+    func retireUnusedForDecodingRankAlone() throws {
+        do {
+            try requireOpen()
+            guard stage.stageIndex == 0, request.decodingRankAlone, schedule.committedTokens == 0,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Only an unused producer stage of a request served alone retires empty")
+            }
+            handedOff = true
             try retire(failed: false)
         } catch { try fail(error) }
     }

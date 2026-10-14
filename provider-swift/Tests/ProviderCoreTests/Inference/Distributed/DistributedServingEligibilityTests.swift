@@ -176,31 +176,43 @@ import DarkbloomClusterProtocol
         #expect(ClusterPairServingGrants.withheld["registered_gpt_oss_20b"]?.contains("diverged at cuts 4, 8 and 10") == true)
     }
 
-    /// MiMo V2.6 Flash is granted by its six passing records (M5 Ultra rank 0,
-    /// M3 Ultra rank 1 with the last layers and the head, pipeline; the planner's
-    /// cut 47 on an idle M5 Ultra and its cut 14 when the M5 Ultra's file cache
-    /// left 55 GiB admissible; short, 4,096 and 16,384 prompts against the M5
-    /// Ultra's own reference): exactly the order that ran. No MiMo check failed,
-    /// so its records restrict no shape (the rule a failed check, like GPT-OSS's,
-    /// turns on); the mirrored order and any other chip are refused.
-    @Test func mimoIsGrantedInTheOrderItsChecksRan() throws {
+    /// MiMo's grant follows its records, family by family: the pipeline ran
+    /// with the M5 Ultra leading and the M3 Ultra holding the last layers and
+    /// the head (cuts 47 and 14, both framings; short, 4,096 and 16,384
+    /// prompts against the M5 Ultra's own reference), and the phase split (a
+    /// hand-off mode, off by default) with the M3 Ultra taking a prefill share
+    /// and the M5 Ultra, which holds every layer, decoding (cut 8, 2026-10-14,
+    /// the pair route and the alone route). No MiMo check failed, so its records
+    /// restrict no shape; each family is granted only in the order it ran, and
+    /// another chip class is refused.
+    @Test func mimoIsGrantedInTheOrdersItsChecksRan() throws {
         let model = "registered_mimo_v26_flash_mopd"
         let grant = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p",
             artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034")
-        #expect(grant.pipelineRankChipClasses == [.appleM5Ultra] && grant.decodingRankChipClasses == [.appleM3Ultra])
-        #expect(grant.qualifications == [.init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [14], mode: .pipeline),
-                                         .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline)])
-        #expect(grant.evidence.hasPrefix("6 passing cross-cable qualification records"))
+        #expect(grant.pipelineRankChipClasses == [.appleM3Ultra, .appleM5Ultra]
+            && grant.decodingRankChipClasses == [.appleM3Ultra, .appleM5Ultra])
+        let shapes = Set(grant.qualifications.map { "\($0.chipClasses.map(\.rawValue)) \($0.cuts) \($0.mode.rawValue)" })
+        for expected: ClusterPairServingQualification in [
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [14], mode: .pipeline),
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline),
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipelineCompactDecode),
+            .init(chipClasses: [.appleM3Ultra, .appleM5Ultra], cuts: [8], mode: .phaseSplit)] {
+            #expect(shapes.contains("\(expected.chipClasses.map(\.rawValue)) \(expected.cuts) \(expected.mode.rawValue)"))
+        }
+        #expect(grant.evidence.hasPrefix("17 passing cross-cable qualification records"))
         #expect(!ClusterPairServingGrants.records(runtimeModelID: model).restrictsShapes)
         try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
                                                       cuts: [47], mode: .pipeline)
         let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p",
                                                                                mode: .pipeline) }
         #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM3Ultra, allowed: [.appleM5Ultra]))
-        // MiMo's records are all pipeline: no hand-off placement is granted.
+        // MiMo's hand-off records (phase split at cut 8, the M5 Ultra decoding) grant that family alone, in the
+        // order they ran (the family is off by default and planned only under the opt-in); the pipeline's order is not one.
+        try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p",
+                                                      cuts: [8], mode: .phaseSplit)
         let handOff = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
                                                                               cuts: [47], mode: .phaseSplit) }
-        #expect(handOff?.reason == .modeNotQualified(rank: 0, mode: .phaseSplit, granted: [.pipeline]))
+        #expect(handOff != nil)
         let other = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p",
                                                                             mode: .pipeline) }
         #expect(other?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]))

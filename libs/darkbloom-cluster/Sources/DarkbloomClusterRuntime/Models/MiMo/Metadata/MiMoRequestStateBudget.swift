@@ -17,7 +17,27 @@ struct MiMoRequestStateBudget: Encodable, Equatable {
     let fullAttentionLayers: Int, slidingLayers: Int
     let fullAttentionStateBytes: Int, slidingStateBytes: Int
     let boundaryBytes: Int, rowBytes: Int, workspaceBytes: Int
+    /// A phase split's moving state: the producer's state, held a second time
+    /// while it is exported, sent and adopted. Zero otherwise.
+    var handoffBytes = 0
     let reservedBytes: Int
+
+    init(fullAttentionLayers: Int, slidingLayers: Int, fullAttentionStateBytes: Int, slidingStateBytes: Int,
+         boundaryBytes: Int, rowBytes: Int, workspaceBytes: Int, handoffBytes: Int = 0, reservedBytes: Int) {
+        self.fullAttentionLayers = fullAttentionLayers; self.slidingLayers = slidingLayers
+        self.fullAttentionStateBytes = fullAttentionStateBytes; self.slidingStateBytes = slidingStateBytes
+        self.boundaryBytes = boundaryBytes; self.rowBytes = rowBytes; self.workspaceBytes = workspaceBytes
+        self.handoffBytes = handoffBytes; self.reservedBytes = reservedBytes
+    }
+
+    /// The same budget with a phase split's moving state charged on top.
+    func adding(handoffBytes extra: Int) throws -> Self {
+        guard extra >= 0, handoffBytes == 0 else { throw MiMoProfileError("MiMo hand-off charge is invalid") }
+        return .init(fullAttentionLayers: fullAttentionLayers, slidingLayers: slidingLayers,
+            fullAttentionStateBytes: fullAttentionStateBytes, slidingStateBytes: slidingStateBytes,
+            boundaryBytes: boundaryBytes, rowBytes: rowBytes, workspaceBytes: workspaceBytes, handoffBytes: extra,
+            reservedBytes: try QwenLongPrefillCheckedBytes.sum([reservedBytes, extra]))
+    }
 
     static func estimate(specification spec: MiMoRegisteredSpecification, layers: Range<Int>, rank: Int,
                          maximumTokens: Int, chunkSize: Int, bound: (Int) throws -> Int) throws -> Self {

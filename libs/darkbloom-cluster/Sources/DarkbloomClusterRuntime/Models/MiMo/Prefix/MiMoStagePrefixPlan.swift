@@ -56,7 +56,7 @@ func agreeMiMoStagePrefixPlan(cache: QwenStagePrefixCache?, loaded: LoadedMiMoLa
         do {
             let planned = try request.planned(reusedPrefix: choice.reusedPrefix, splitFinalToken: choice.splitFinalToken)
             restoredSession = try MiMoLayerStageSession(stage: loaded, plan: plan, generationRequest: planned,
-                recordsSteps: recordsSteps, adopting: state)
+                recordsSteps: recordsSteps, restoring: state)
         } catch {
             // This rank could not restore; the confirmation says so and both
             // ranks prefill from zero. A native fault still surfaces below.

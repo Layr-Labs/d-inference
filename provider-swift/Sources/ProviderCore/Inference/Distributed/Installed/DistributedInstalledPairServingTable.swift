@@ -189,9 +189,14 @@ enum DistributedInstalledPairServingTable {
 
     /// Registered MiMo V2.6 Flash (172.9 GB artifact, 155.8 GiB of text-model
     /// tensors), granted in the order its cross-cable checks ran (its
-    /// qualification records, `ClusterPairServingGrants`). Pipeline only; the
-    /// figures are the pair's own across the cable (M3 Ultra + M5 Ultra,
-    /// 2026-10-12 at cut 31 and 2026-10-13 at the planner's cuts 47 and 14).
+    /// qualification records, `ClusterPairServingGrants`): the pipeline (both
+    /// framings) and the phase split, whose decoding rank holds every layer
+    /// and serves requests alone when the pair is not faster. The figures are
+    /// the pair's own across the cable (M3 Ultra + M5 Ultra, 2026-10-12 at cut
+    /// 31, 2026-10-13 at the planner's cuts 47 and 14, and 2026-10-14 the phase
+    /// split at the planner's cut 8 with lookahead: the M5 Ultra loads all
+    /// 167 GB and was ready with its peer in about a minute; first token 13.8 s
+    /// after 16,384 tokens on the pair, 16.0 s on the M5 Ultra alone).
     ///
     /// - Startup, 300 s. Both ranks were ready in 39.6 to 41.8 s at cut 47
     ///   (the rank holding 47 layers verifies 163 GB in 12.8 s and loads it in

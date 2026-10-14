@@ -142,6 +142,33 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public func prediction(_ regime: ClusterPlacementPolicy.Regime) -> ClusterPlacementPrediction {
         regime == .sustained ? sustained : rested
     }
+    /// A phase split's decoding member (the last rank, which holds every
+    /// layer) serving a request alone, as the per-request router prices it
+    /// (`ClusterRequestRouter`). Nil under a pipeline: no member holds every layer.
+    public var aloneRoute: ClusterPlacementAloneRoute? = nil
+    /// The request's time on the route the router would take: the placement
+    /// as placed, or its decoding member alone when that is predicted faster.
+    /// The ranking uses this, so a placement whose fast member can serve alone
+    /// is never ranked as if every request had to cross the link.
+    public func routedSeconds(_ regime: ClusterPlacementPolicy.Regime) -> Double {
+        min(prediction(regime).requestSeconds, aloneRoute?.prediction(regime).requestSeconds ?? .infinity)
+    }
+    /// True when the decoding member alone is predicted faster for the planned request.
+    public func routesAlone(_ regime: ClusterPlacementPolicy.Regime) -> Bool {
+        (aloneRoute?.prediction(regime).requestSeconds ?? .infinity) < prediction(regime).requestSeconds
+    }
+}
+
+/// The decoding member of a phase split serving the whole request by itself:
+/// every layer on that Mac, serial prefill, decode as the placement's mode
+/// decodes there (with the model's head when the mode runs it). No link.
+public struct ClusterPlacementAloneRoute: Codable, Equatable, Sendable {
+    public let device: String
+    public let sustained: ClusterPlacementPrediction
+    public let rested: ClusterPlacementPrediction
+    public func prediction(_ regime: ClusterPlacementPolicy.Regime) -> ClusterPlacementPrediction {
+        regime == .sustained ? sustained : rested
+    }
 }
 
 /// One Mac holding the whole model, for comparison with a placement.
@@ -218,6 +245,11 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     /// short request is often here.
     public let aloneAsFast: [String]
     public let refusal: ClusterPlacementRefusal?
+    /// The member the chosen placement's router sends the planned request to,
+    /// alone: the phase split's decoding member, which holds every layer, when
+    /// it is predicted faster than the pair for that request. Nil when the
+    /// pair serves it (or no member holds every layer).
+    public var routedAlone: String? = nil
     public let candidatesConsidered: Int
     /// Placements that would be possible but whose shape the policy's
     /// `admitsShape` refused: no passed qualification covers them. Nil when
@@ -323,7 +355,7 @@ public enum ClusterPlacementPlanner {
         }
         var aloneAsFast: [String] = []
         if let chosen = ranked.first {
-            let limit = chosen.prediction(policy.regime).requestSeconds * (1 + policy.tieTolerance)
+            let limit = chosen.routedSeconds(policy.regime) * (1 + policy.tieTolerance)
             aloneAsFast = alone.filter { $0.fit.tier <= chosen.tier && $0.prediction(policy.regime).requestSeconds <= limit }.map(\.device)
         }
         var result = ClusterPlacementResult(runtimeModelID: layout.runtimeModelID, promptTokens: prompt, outputTokens: outputs,
@@ -331,7 +363,9 @@ public enum ClusterPlacementPlanner {
             alternatives: Array(ranked.dropFirst().prefix(policy.alternatives)),
             chosenForOtherRegime: context.ordered(qualified.filter(\.possible), regime: other).first,
             bestStructural: structural, bestAnyBoundary: anyBoundary,
-            alone: alone, aloneAsFast: aloneAsFast, refusal: refusal, candidatesConsidered: admitted.count,
+            alone: alone, aloneAsFast: aloneAsFast, refusal: refusal,
+            routedAlone: ranked.first.flatMap { $0.routesAlone(policy.regime) ? $0.aloneRoute?.device : nil },
+            candidatesConsidered: admitted.count,
             unqualifiedPossible: policy.admitsShape == nil ? nil
                 : admitted.filter(\.possible).count - qualified.filter(\.possible).count)
         if layout.tensorParallel != nil {
@@ -823,11 +857,21 @@ public enum ClusterPlacementPlanner {
                         earlier: Array(ranges[..<index]), mode: mode, schedule: schedule)
             }
             let headroom = ranks.map { Double($0.admissibleNowBytes - $0.needBytes) / Double(max(1, $0.needBytes)) }.min() ?? 0
+            // Under a phase split the last rank holds every layer, so it can
+            // serve a request alone, as the router lets it (`ClusterRequestRouter`).
+            var route: ClusterPlacementAloneRoute?
+            if mode.isPhaseSplit, let decoder = chosen.last {
+                let whole = layout.range(0..<layout.layerCount)
+                let aloneMode: ClusterGenerationMode = mode.usesSpeculativeHead ? .phaseSplitMTP : .pipeline
+                route = .init(device: decoder.label,
+                    sustained: prediction(.sustained, order: [decoder], ranges: [whole], mode: aloneMode, schedule: .serial),
+                    rested: prediction(.rested, order: [decoder], ranges: [whole], mode: aloneMode, schedule: .serial))
+            }
             return .init(cuts: cuts, mode: mode, prefillSchedule: schedule, ranks: ranks,
                 sustained: prediction(.sustained, order: chosen, ranges: ranges, mode: mode, schedule: schedule, shares: shares),
                 rested: prediction(.rested, order: chosen, ranges: ranges, mode: mode, schedule: schedule, shares: shares),
                 tier: ranks.map(\.fit.tier).max() ?? 4, withinGPUWorkingSet: ranks.allSatisfy(\.withinGPUWorkingSet),
-                smallestHeadroomShare: headroom, shares: shares)
+                smallestHeadroomShare: headroom, shares: shares, aloneRoute: route)
         }
 
         /// How many layers a device could hold from the start of the model
@@ -856,7 +900,9 @@ public enum ClusterPlacementPlanner {
         /// Best first: tier; then inside the GPU working set; then, among
         /// placements that fit now, those with comfortable headroom; among
         /// placements that do not, the fewest Macs asked for memory and the
-        /// least asked; then predicted request time. Equal times are broken
+        /// least asked; then predicted request time on the route the router would
+    /// take (`routedSeconds`: a phase split's decoding member alone when it is
+    /// faster). Equal times are broken
         /// first by the model's speculative head (`headRank`: on a decoding
         /// Mac that prefers it, then no head, then the head on a Mac that
         /// prefers plain decode), then by the larger smallest headroom, the lower cut, the
@@ -871,7 +917,8 @@ public enum ClusterPlacementPlanner {
                 let tight = c.tier == 0 && c.smallestHeadroomShare < policy.comfortableHeadroomShare
                 return c.tier * 4 + (c.withinGPUWorkingSet ? 0 : 2) + (tight ? 1 : 0)
             }
-            func time(_ c: ClusterPlacementCandidate) -> Double { c.prediction(regime).requestSeconds }
+            // The route the router would take for this request (`routedSeconds`).
+            func time(_ c: ClusterPlacementCandidate) -> Double { c.routedSeconds(regime) }
             // Among placements that do not pass the gate now, the one that asks
             // the fewest Macs for memory comes first, then the one that asks
             // for the least, in whole GiB so that rounding does not decide.
@@ -900,13 +947,13 @@ public enum ClusterPlacementPlanner {
         func preferringHeadroom(_ ordered: [ClusterPlacementCandidate],
                                 regime: ClusterPlacementPolicy.Regime) -> [ClusterPlacementCandidate] {
             guard policy.preferHeadroomWithinTies, let first = ordered.first, first.tier == 0 else { return ordered }
-            let fastest = ordered.filter { $0.tier == 0 }.map { $0.prediction(regime).requestSeconds }.min() ?? 0
+            let fastest = ordered.filter { $0.tier == 0 }.map { $0.routedSeconds(regime) }.min() ?? 0
             let limit = fastest * (1 + policy.tieTolerance)
-            let close = ordered.filter { $0.tier == 0 && $0.withinGPUWorkingSet && $0.prediction(regime).requestSeconds <= limit }
+            let close = ordered.filter { $0.tier == 0 && $0.withinGPUWorkingSet && $0.routedSeconds(regime) <= limit }
             guard close.count > 1 else { return ordered }
             let preferred = close.sorted { a, b in
                 if a.smallestHeadroomShare != b.smallestHeadroomShare { return a.smallestHeadroomShare > b.smallestHeadroomShare }
-                return a.prediction(regime).requestSeconds < b.prediction(regime).requestSeconds
+                return a.routedSeconds(regime) < b.routedSeconds(regime)
             }
             return preferred + ordered.filter { candidate in !close.contains(candidate) }
         }

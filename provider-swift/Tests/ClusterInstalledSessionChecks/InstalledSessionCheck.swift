@@ -82,6 +82,21 @@ final class EndpointBox: @unchecked Sendable {
         try require(ClusterLinkProbeHistory.costs(homeDirectory: probeHome, members: ["a", "b"],
             now: 1_000 + ClusterLinkProbeHistory.maximumAgeSeconds + 1) == nil, "A stale probe was used")
     }
+    /// A served tensor-parallel request names its setup as the planner reads
+    /// it back: every rank 0-<layers> (not the capability plan's stage cut the
+    /// shards were read through), with each rank's weight when the shares are
+    /// unequal, so the calibration credits it to the split it ran.
+    static func tensorParallelSessionCut() throws {
+        let stages = [(rank: 1, start: 16, end: 64), (rank: 0, start: 0, end: 16)]
+        try require(DistributedSessionFacts.cut(stages)=="0-16|16-64","pipeline cut changed")
+        try require(DistributedSessionFacts.cut(stages,mode:.pipelineCompactDecode,tensorShares:[1,3])=="0-16|16-64","pipeline cut took shares")
+        let equal=DistributedSessionFacts.cut(stages,mode:.tensorParallel,tensorShares:nil)
+        let weighted=DistributedSessionFacts.cut(stages,mode:.tensorParallel,tensorShares:[1,3])
+        try require(equal=="0-64|0-64" && ClusterServedSpeedRecords.Setup.cuts(equal,layerCount:64,mode:.tensorParallel,ranks:2)==[],
+            "equal tensor-parallel session cut is \(equal)")
+        try require(weighted=="0-64@1|0-64@3" && ClusterServedSpeedRecords.Setup.cuts(weighted,layerCount:64,mode:.tensorParallel,ranks:2)==[]
+            && ClusterServedSpeedRecords.Setup.tensorShares(weighted)==[1,3], "weighted tensor-parallel session cut is \(weighted)")
+    }
     static func main() async throws {
         signal(SIGALRM){_ in Darwin._exit(124)};alarm(110);defer{alarm(0)}
         let root=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("installed-check-"+UUID().uuidString)
@@ -96,6 +111,7 @@ final class EndpointBox: @unchecked Sendable {
         try rejected{_ = try prepared.model.stopTokenIDs(tokenizerEOS:248320)}
         try metadataChecks(fixture,prepared)
         try linkProbeHistory()
+        try tensorParallelSessionCut()
         try prefixSSDKeyNeverInChildEnvironment(prepared)
         try pairedSetupRefusesLocalSession(fixture)
         try developerSSHGate(fixture)

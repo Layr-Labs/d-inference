@@ -165,7 +165,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         return .init(clusterID: configuration.clusterID, memberID: configuration.memberID, modelID: model.publicModelID,
             mode: configuration.selectedGenerationMode.rawValue,
-            cut: DistributedSessionFacts.cut(prepared.plan.partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) }),
+            cut: DistributedSessionFacts.cut(prepared.plan.partition.stages.map { ($0.rank, $0.sourceLayerStart, $0.sourceLayerEnd) },
+                mode: configuration.selectedGenerationMode, tensorShares: configuration.tensorShares),
             membershipEpoch: values.1.uuidString.lowercased(),
             // The last request failure comes last: the classifier scans newest first (S24).
             diagnostics: (ordered.compactMap(Self.diagnostic) + [values.3, values.2].compactMap { $0 }).filter { !$0.isEmpty },

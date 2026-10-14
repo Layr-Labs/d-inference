@@ -1,3 +1,5 @@
+import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
 import Foundation
 
 /// What an incident or a telemetry record needs to know about one installed
@@ -35,6 +37,17 @@ public struct DistributedSessionFacts: Sendable, Equatable {
     /// `0-16|16-32` from a partition's stages.
     public static func cut(_ stages: [(rank: Int, start: Int, end: Int)]) -> String {
         stages.sorted { $0.rank < $1.rank }.map { "\($0.start)-\($0.end)" }.joined(separator: "|")
+    }
+
+    /// The setup's cut as served-speed records name it: a partition's stages,
+    /// or under tensor parallel every rank `0-<layers>` (each holds a share
+    /// of every layer; the stages only say how the shards were read) with
+    /// each rank's weight when the shares are unequal (`0-64@1|0-64@3`), so
+    /// the planner credits what was served to the split that served it.
+    public static func cut(_ stages: [(rank: Int, start: Int, end: Int)], mode: ClusterGenerationMode,
+                           tensorShares: [Int]?) -> String {
+        guard mode.usesTensorParallelPrefill, let layers = stages.map(\.end).max(), layers > 0 else { return cut(stages) }
+        return ClusterServedSpeedRecords.Setup.cut([], layerCount: layers, mode: mode, ranks: stages.count, tensorShares: tensorShares)
     }
 
     static let maximumDiagnosticBytes = 4096

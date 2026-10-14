@@ -179,6 +179,10 @@ enum QwenTensorParallelSlicer {
             default:
                 throw ProbeError("Tensor parallel slice: input columns of a non-quantized tensor (\(leaf))")
             }
+        case .expertRows, .expertInputColumns:
+            // The plan covers routed experts; the tensor-parallel runtime does
+            // not load them yet (QwenTensorParallelModel refuses the model type).
+            throw ProbeError("Tensor parallel slice: routed-expert cuts are not loaded by this runtime yet")
         }
     }
 }

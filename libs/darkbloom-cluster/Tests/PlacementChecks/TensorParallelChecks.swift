@@ -137,13 +137,13 @@ private func checkTensorParallelLayouts(nine: ClusterModelLayout, big: ClusterMo
         do { _ = try QwenTensorParallelPlan(textConfiguration: t, quantization: q, size: 2); return nil } catch { return "\(error)" }
     }
     checks.require("tensor parallel: the registered 27B configuration is covered by the dense plan", refusal { _, _ in } == nil)
-    checks.require("tensor parallel: routed experts (the A3B rows) are not covered yet",
+    checks.require("tensor parallel: routed experts on a dense model type are refused (the A3B rows are qwen3_5_moe_text)",
         refusal { t, _ in t["num_experts"] = 256 }?.contains("routed experts") == true)
     checks.require("tensor parallel: a non-affine pack (Bonsai's Prism) is not covered yet",
         refusal { _, q in q["mode"] = "prism_hadamard" }?.contains("affine") == true)
     checks.require("tensor parallel: a tied head is not covered yet", refusal { t, _ in t["tie_word_embeddings"] = true }?.contains("tied") == true)
     checks.require("tensor parallel: another model type (MiMo, GPT-OSS, Gemma 4, Nemotron families) is not covered by this plan",
-        refusal { t, _ in t["model_type"] = "mimo_v2_flash" }?.contains("dense qwen3_5_text") == true)
+        refusal { t, _ in t["model_type"] = "mimo_v2_flash" }?.contains("qwen3_5_moe_text") == true)
     let synthetic = try syntheticLayout(layers: 8, layerGiB: 1)
     let syntheticPlan = try ClusterPlacementPlanner.plan(devices: [try SyntheticMac.idle(64).device("a"), try SyntheticMac.idle(64).device("b")],
         layout: synthetic)

@@ -46,8 +46,13 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public let linearValueHeads: Int
     public let linearKeyHeadDim: Int
     public let linearValueHeadDim: Int
+    /// The MLP width: the dense MLP's, or each routed expert's.
     public let intermediateSize: Int
     public let vocabularySize: Int
+    /// Routed experts (0 for a dense model) and the shared expert's width.
+    public let expertCount: Int
+    public let sharedExpertIntermediateSize: Int
+    public var routedExperts: Bool { expertCount > 0 }
     public let groupSize: Int
     public let bits: Int
     /// Each rank's weight (all ones: equal shards).
@@ -57,6 +62,7 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public let kvHeadsPerRank: [Int]
     public let linearKeyHeadsPerRank: [Int]
     public let intermediatePerRank: [Int]
+    public let sharedExpertIntermediatePerRank: [Int]
     public let vocabularyPerRank: [Int]
     /// True when every rank holds the same share.
     public var equalShares: Bool { Set(shares).count == 1 }
@@ -70,6 +76,10 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         /// These logical input columns of a quantized linear: packed weight
         /// words and per-group scales/biases are cut accordingly.
         case inputColumns(Range<Int>)
+        /// Every routed expert's rows (axis 1 of `[experts, out, in]`).
+        case expertRows(Range<Int>)
+        /// Every routed expert's logical input columns (axis 2, quantized).
+        case expertInputColumns(Range<Int>)
     }
 
     /// What a checkpoint key is for this plan.
@@ -79,7 +89,7 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         case skip
     }
 
-    public static let modelTypes: Set<String> = ["qwen3_5_text"]
+    public static let modelTypes: Set<String> = ["qwen3_5_text", "qwen3_5_moe_text"]
 
     /// Unequal two-rank share weights a planner may try (rank order), from a
     /// quarter to three quarters; a model whose parts cannot divide so is
@@ -98,10 +108,18 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             return value
         }
         guard let type = text["model_type"] as? String, Self.modelTypes.contains(type) else {
-            throw ProbeError("Tensor parallel plan: only a dense qwen3_5_text model is supported")
+            throw ProbeError("Tensor parallel plan: only a dense qwen3_5_text or routed-expert qwen3_5_moe_text model is supported")
         }
-        guard (text["num_experts"] as? Int ?? 0) == 0 else {
-            throw ProbeError("Tensor parallel plan: routed experts are not covered by the dense plan")
+        let experts = text["num_experts"] as? Int ?? 0
+        guard (experts > 0) == (type == "qwen3_5_moe_text") else {
+            throw ProbeError("Tensor parallel plan: routed experts belong to qwen3_5_moe_text only")
+        }
+        if experts > 0 {
+            // Every layer routed (no dense-MLP layers), one shared expert: the A3B shape.
+            guard (text["mlp_only_layers"] as? [Int] ?? []).isEmpty, (text["decoder_sparse_step"] as? Int ?? 1) == 1,
+                  (text["num_experts_per_tok"] as? Int ?? 0) > 0 else {
+                throw ProbeError("Tensor parallel plan: routed experts in every layer (no dense-MLP layers) are required")
+            }
         }
         guard (text["tie_word_embeddings"] as? Bool ?? false) == false else {
             throw ProbeError("Tensor parallel plan: a tied LM head is not covered")
@@ -139,7 +157,9 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         linearValueHeads = try integer("linear_num_value_heads")
         linearKeyHeadDim = try integer("linear_key_head_dim")
         linearValueHeadDim = try integer("linear_value_head_dim")
-        intermediateSize = try integer("intermediate_size")
+        expertCount = experts
+        intermediateSize = try integer(experts > 0 ? "moe_intermediate_size" : "intermediate_size")
+        sharedExpertIntermediateSize = experts > 0 ? try integer("shared_expert_intermediate_size") : 0
         vocabularySize = try integer("vocab_size")
 
         guard attentionHeads % kvHeads == 0, linearValueHeads % linearKeyHeads == 0 else {
@@ -158,23 +178,28 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             try divisible(linearKeyHeads, "linear key heads")
             try divisible(linearValueHeads, "linear value heads")
             try divisible(intermediateSize, "intermediate size")
+            if experts > 0 { try divisible(sharedExpertIntermediateSize, "shared expert size") }
             try divisible(vocabularySize, "vocabulary")
         }
         // MLP channels move in whole quantization groups (and packed words).
         let channelUnit = Self.lcm(groupSize, 32 / bits)
-        guard intermediateSize % channelUnit == 0 else {
+        guard intermediateSize % channelUnit == 0, sharedExpertIntermediateSize % channelUnit == 0 else {
             throw ProbeError("Tensor parallel plan: the MLP width (\(intermediateSize)) is not whole quantization groups")
         }
         kvHeadsPerRank = try Self.apportion(kvHeads, shares, "KV heads")
         linearKeyHeadsPerRank = try Self.apportion(linearKeyHeads, shares, "linear key heads")
         intermediatePerRank = try Self.apportion(intermediateSize / channelUnit, shares, "MLP channel groups").map { $0 * channelUnit }
+        sharedExpertIntermediatePerRank = experts > 0
+            ? try Self.apportion(sharedExpertIntermediateSize / channelUnit, shares, "shared expert channel groups").map { $0 * channelUnit }
+            : Array(repeating: 0, count: size)
         vocabularyPerRank = try Self.apportion(vocabularySize, shares, "vocabulary rows")
         // Row-parallel input widths must land on quantization groups and packed words.
         for rank in 0..<size {
             for (width, label) in [(kvHeadsPerRank[rank] * (attentionHeads / kvHeads) * headDim, "attention output"),
                                    (linearKeyHeadsPerRank[rank] * (linearValueHeads / linearKeyHeads) * linearValueHeadDim,
                                     "linear attention output"),
-                                   (intermediatePerRank[rank], "MLP down projection")] {
+                                   (intermediatePerRank[rank], "MLP down projection")]
+                + (experts > 0 ? [(sharedExpertIntermediatePerRank[rank], "shared expert down projection")] : []) {
                 guard width % groupSize == 0, (width * bits) % 32 == 0 else {
                     throw ProbeError("Tensor parallel plan: the \(label) shard (\(width)) does not land on a quantization group")
                 }
@@ -211,7 +236,12 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         shard["num_key_value_heads"] = kvHeadsPerRank[rank]
         shard["linear_num_key_heads"] = linearKeyHeadsPerRank[rank]
         shard["linear_num_value_heads"] = linearKeyHeadsPerRank[rank] * (linearValueHeads / linearKeyHeads)
-        shard["intermediate_size"] = intermediatePerRank[rank]
+        if routedExperts {
+            shard["moe_intermediate_size"] = intermediatePerRank[rank]
+            shard["shared_expert_intermediate_size"] = sharedExpertIntermediatePerRank[rank]
+        } else {
+            shard["intermediate_size"] = intermediatePerRank[rank]
+        }
         shard["mtp_num_hidden_layers"] = 0
         return shard
     }
@@ -290,10 +320,26 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             return .load(.rows([block(linearValueHeadsPerRank, rank: rank)]))
         case "linear_attn.out_proj" where isLinear && quantizedLeaf:
             return .load(.inputColumns(block(linearValueHeadsPerRank, unit: linearValueHeadDim, rank: rank)))
-        case "mlp.gate_proj" where quantizedLeaf, "mlp.up_proj" where quantizedLeaf:
+        case "mlp.gate_proj" where quantizedLeaf && !routedExperts, "mlp.up_proj" where quantizedLeaf && !routedExperts:
             return .load(.rows([block(intermediatePerRank, rank: rank)]))
-        case "mlp.down_proj" where quantizedLeaf:
+        case "mlp.down_proj" where quantizedLeaf && !routedExperts:
             return .load(.inputColumns(block(intermediatePerRank, rank: rank)))
+        // Routed experts: every expert divided by its intermediate channels (the
+        // owner's shard_inplace of switch_mlp), the shared expert like a dense
+        // MLP; the router and the shared expert's gate stay whole, so both ranks
+        // route every token identically and each sums its own partial.
+        case "mlp.gate" where quantizedLeaf && routedExperts, "mlp.shared_expert_gate" where quantizedLeaf && routedExperts:
+            return .load(.replicate)
+        case "mlp.switch_mlp.gate_proj" where quantizedLeaf && routedExperts,
+             "mlp.switch_mlp.up_proj" where quantizedLeaf && routedExperts:
+            return .load(.expertRows(block(intermediatePerRank, rank: rank)))
+        case "mlp.switch_mlp.down_proj" where quantizedLeaf && routedExperts:
+            return .load(.expertInputColumns(block(intermediatePerRank, rank: rank)))
+        case "mlp.shared_expert.gate_proj" where quantizedLeaf && routedExperts,
+             "mlp.shared_expert.up_proj" where quantizedLeaf && routedExperts:
+            return .load(.rows([block(sharedExpertIntermediatePerRank, rank: rank)]))
+        case "mlp.shared_expert.down_proj" where quantizedLeaf && routedExperts:
+            return .load(.inputColumns(block(sharedExpertIntermediatePerRank, rank: rank)))
         case "linear_attn" where isLinear && (name == "linear_attn.A_log" || name == "linear_attn.dt_bias"):
             return .load(.rows([block(linearValueHeadsPerRank, rank: rank)]))
         default:
@@ -303,13 +349,26 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     }
 
     /// The module paths (relative to the model root) whose outputs are partial
-    /// sums under this plan: the attention output, the linear attention output
-    /// and the MLP down projection of every layer.
+    /// sums under this plan, where the reduction is applied: the attention
+    /// output, the linear attention output and the MLP down projection of
+    /// every layer; for routed experts the whole MLP block (each rank's
+    /// experts and shared expert sum into one partial, reduced once).
     public func rowParallelModulePaths() -> [String] {
         (0..<layerCount).flatMap { layer -> [String] in
             let base = "language_model.model.layers.\(layer)."
             let mixer = (layer + 1) % fullAttentionInterval != 0 ? "linear_attn.out_proj" : "self_attn.o_proj"
-            return [base + mixer, base + "mlp.down_proj"]
+            return [base + mixer, base + (routedExperts ? "mlp" : "mlp.down_proj")]
+        }
+    }
+
+    /// The modules whose stored weights are cut by input columns (the
+    /// projections that produce partial sums).
+    public func inputColumnModulePaths() -> [String] {
+        (0..<layerCount).flatMap { layer -> [String] in
+            let base = "language_model.model.layers.\(layer)."
+            let mixer = (layer + 1) % fullAttentionInterval != 0 ? "linear_attn.out_proj" : "self_attn.o_proj"
+            return [base + mixer] + (routedExperts ? [base + "mlp.switch_mlp.down_proj", base + "mlp.shared_expert.down_proj"]
+                                                   : [base + "mlp.down_proj"])
         }
     }
 

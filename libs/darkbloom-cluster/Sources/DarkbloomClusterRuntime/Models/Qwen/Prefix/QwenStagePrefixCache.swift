@@ -220,9 +220,10 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     /// The deepest frontier this rank holds for `tokens` under `scope`, at
-    /// most `maximumFrontier` (0: none), as `frontiers(...).first` but hashing
-    /// prefixes from the deepest held frontier down only until one matches (a
-    /// repeat hashes once). Does not touch recency.
+    /// most `maximumFrontier` (0: none), as `frontiers(...).first`. Every held
+    /// frontier's key comes from one pass over the prompt
+    /// (`QwenStagePrefixKeys`, finding F10: one full hash per held frontier
+    /// was quadratic in the prompt). Does not touch recency.
     func deepestFrontier(scope: String, tokens: [Int], maximumFrontier: Int) -> Int {
         guard enabled else { return 0 }
         let limit = min(maximumFrontier, tokens.count)
@@ -233,11 +234,23 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
                 keys[entry.state.committedTokens, default: []].insert(entry.key)
             }
         }
-        for frontier in keys.keys.sorted(by: >)
-        where keys[frontier]?.contains(Self.key(scope: scope, tokens: tokens[0..<frontier])) == true {
-            return frontier
-        }
-        return 0
+        let computed = prefixKeys(scope: scope, tokens: tokens, frontiers: Set(keys.keys))
+        return keys.keys.sorted(by: >).first { frontier in
+            computed[frontier].map { keys[frontier]?.contains($0) == true } ?? false
+        } ?? 0
+    }
+
+    /// Prompt tokens fed to prefix hashers by lookups, for tests and
+    /// diagnostics: one pass hashes at most the deepest frontier asked for.
+    var lookupHashedTokens: Int { lock.withLock { hashedTokens } }
+    private var hashedTokens = 0
+
+    /// The shared keys of `tokens` at `frontiers` in one pass (each equals
+    /// `key(scope:tokens:)` of that prefix).
+    private func prefixKeys(scope: String, tokens: [Int], frontiers: Set<Int>) -> [Int: String] {
+        guard let deepest = frontiers.filter({ $0 > 0 && $0 <= tokens.count }).max() else { return [:] }
+        lock.withLock { hashedTokens += deepest }
+        return QwenStagePrefixKeys.keys(scope: scope, tokens: tokens, frontiers: frontiers)
     }
 
     /// The idle refresh: the budget follows `roomBytes`, the admissible room
@@ -390,15 +403,10 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     func frontiers(scope: String, tokens: [Int], maximumFrontier: Int) -> [Int] {
         guard enabled else { return [] }
         let held = lock.withLock { entries.values.filter { $0.scope == scope && $0.state.committedTokens <= maximumFrontier } }
-        var keys: [Int: String] = [:]
-        var found: [Int] = []
-        for entry in held {
-            let frontier = entry.state.committedTokens
-            guard frontier > 0, frontier <= tokens.count else { continue }
-            let key = keys[frontier] ?? Self.key(scope: scope, tokens: tokens[0..<frontier])
-            keys[frontier] = key
-            if key == entry.key { found.append(frontier) }
-        }
+            .filter { $0.state.committedTokens > 0 && $0.state.committedTokens <= tokens.count }
+        // One pass over the prompt for every held frontier (finding F10).
+        let keys = prefixKeys(scope: scope, tokens: tokens, frontiers: Set(held.map(\.state.committedTokens)))
+        let found = held.filter { keys[$0.state.committedTokens] == $0.key }.map(\.state.committedTokens)
         return Array(Set(found).sorted(by: >).prefix(Self.maximumOffered))
     }
 

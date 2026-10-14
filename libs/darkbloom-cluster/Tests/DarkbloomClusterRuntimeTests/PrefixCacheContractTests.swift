@@ -419,4 +419,23 @@ struct PrefixCacheContractTests {
         #expect(QwenStagePrefixCache().frontiersPerPrompt == QwenStagePrefixCache.defaultFrontiersPerPrompt)
         #expect(QwenStagePrefixCache(entryLimit: 4).frontiersPerPrompt == 4)
     }
+
+    /// Finding F10: a lookup keys every held frontier in one pass over the
+    /// prompt (as the SSD tier does), not one whole-prefix hash per frontier.
+    @Test func lookupsHashThePromptOncePerCall() {
+        let cache = QwenStagePrefixCache(budgetBytes: 1 << 30)
+        let tokens = Array(0..<26_642), frontiers = Array(stride(from: 512, to: 26_641, by: 512)) + [26_641]
+        cache.insert(scope: "s", tokens: tokens, states: frontiers.map(state))
+        let before = cache.lookupHashedTokens
+        #expect(cache.frontiers(scope: "s", tokens: tokens, maximumFrontier: 26_641).count == QwenStagePrefixCache.maximumOffered)
+        #expect(cache.lookupHashedTokens - before <= tokens.count)
+        var changed = tokens; changed[20_000] = -1
+        let missed = cache.lookupHashedTokens
+        #expect(cache.deepestFrontier(scope: "s", tokens: changed, maximumFrontier: 26_641) == 19_968)
+        #expect(cache.lookupHashedTokens - missed <= tokens.count)
+        // The one-pass keys are the keys an insert stored, frontier by frontier.
+        for frontier in [512, 19_968, 26_641] {
+            #expect(cache.frontiers(scope: "s", tokens: tokens, maximumFrontier: frontier).first == frontier)
+        }
+    }
 }

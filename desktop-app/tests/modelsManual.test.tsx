@@ -64,3 +64,18 @@ it('falls back to manual selection with a note on a runtime without Autopilot', 
   expect(screen.queryByRole('button', { name: /Pin/ })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: /Apply selection/ })).toBeVisible();
 });
+
+it('locks the manual selection while Autopilot is turning on', async () => {
+  api.act.mockReturnValueOnce(new Promise(() => {}));
+  const backend = renderModels();
+  fireEvent.click(screen.getByRole('button', { name: /Show \d+ more models/ }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select Qwen 3.5 9B' }));
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Turn on Autopilot' })));
+  expect(screen.getByRole('button', { name: 'Turning on…' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /Apply selection/ })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Remove Qwen 3.5 9B' })).toBeDisabled();
+  for (const download of screen.getAllByRole('button', { name: 'Download' }))
+    expect(download).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: /Apply selection/ }));
+  expect(backend.act).not.toHaveBeenCalled();
+});

@@ -321,11 +321,20 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         hook?()
     }
 
-    /// Before a request captures up to `bytes`: evicts least recently used
-    /// entries until the entries and that capture fit the budget together.
-    /// A reused entry was just used, so it goes last.
+    /// Before a request captures up to `bytes`: drops grid frontiers (least
+    /// recently used first, other prompts' before the newest's) until the
+    /// entries and that capture fit the budget together. It never drops a
+    /// prompt's deepest frontier, what an exact repeat needs (finding F3: on
+    /// the 27B's decoding rank a long prompt's capture plan of up to 32
+    /// frontiers evicted every other prompt's deepest frontier first, so
+    /// repeats of a few long documents never hit although their deepest
+    /// frontiers fit the budget). Once the request retired, `insert` keeps
+    /// the budget: the capture's own grid goes before another prompt's
+    /// deepest frontier. Memory stays bounded meanwhile: the capture is
+    /// charged in the request's reservation, and a live refusal still evicts
+    /// any entry (`yieldingMemory`).
     func makeRoom(forCapture bytes: Int) {
-        lock.withLock { evictLocked(reserving: max(0, bytes)) }
+        lock.withLock { evictLocked(reserving: max(0, bytes), gridOnly: true) }
     }
 
     private func remove(_ entry: Entry) {
@@ -338,14 +347,14 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         }
     }
 
-    private func evictLocked(reserving: Int) {
+    private func evictLocked(reserving: Int, gridOnly: Bool = false) {
         // Over the prompt count: the least recently used prompt goes whole
         // (thinning other prompts' grids would not lower the count).
         while prompts.count > promptLimit, let prompt = leastRecentlyUsedPromptLocked() {
             for entry in entries.values where entry.prompt == prompt { remove(entry); evictions += 1 }
         }
         while entries.count > entryLimit || (held > 0 && held > budget - min(budget, reserving)),
-              let victim = victimLocked() {
+              let victim = victimLocked(gridOnly: gridOnly) {
             remove(victim); evictions += 1
         }
     }
@@ -358,16 +367,19 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     /// The next entry to evict: the least recently used grid frontier of a
-    /// prompt other than the most recently used one; when there is none, the
-    /// least recently used entry. A prompt's deepest frontier (what an exact
-    /// repeat needs) outlives the grid of every other prompt.
-    private func victimLocked() -> Entry? {
+    /// prompt other than the most recently used one; then the most recently
+    /// used prompt's own grid (its shallowest first); only when no grid
+    /// frontier is left, the least recently used entry (a whole prompt's
+    /// deepest frontier), and never one with `gridOnly`. A prompt's deepest
+    /// frontier (what an exact repeat needs) outlives every grid frontier,
+    /// the newest prompt's included (finding F3).
+    private func victimLocked(gridOnly: Bool = false) -> Entry? {
         guard let newest = entries.values.max(by: { $0.lastUse < $1.lastUse }) else { return nil }
-        func thinnable(_ entry: Entry) -> Bool {
-            entry.prompt != newest.prompt && entry.state.committedTokens < (prompts[entry.prompt]?.deepest ?? 0)
-        }
-        return entries.values.filter(thinnable).min(by: { $0.lastUse < $1.lastUse })
-            ?? entries.values.min(by: { $0.lastUse < $1.lastUse })
+        func grid(_ entry: Entry) -> Bool { entry.state.committedTokens < (prompts[entry.prompt]?.deepest ?? 0) }
+        let byRecency: (Entry, Entry) -> Bool = { ($0.lastUse, $0.state.committedTokens) < ($1.lastUse, $1.state.committedTokens) }
+        if let other = entries.values.filter({ $0.prompt != newest.prompt && grid($0) }).min(by: byRecency) { return other }
+        if let own = entries.values.filter({ $0.prompt == newest.prompt && grid($0) }).min(by: byRecency) { return own }
+        return gridOnly ? nil : entries.values.min(by: byRecency)
     }
 
     /// Prompts held now (for tests and diagnostics).

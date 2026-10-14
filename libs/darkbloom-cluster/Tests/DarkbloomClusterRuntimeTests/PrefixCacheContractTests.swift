@@ -180,8 +180,12 @@ struct PrefixCacheContractTests {
         // A lower budget evicts at once; room for a capture evicts beforehand.
         cache.setBudget(6_000)
         #expect(cache.bytesInUse <= 6_000 && cache.budgetBytes == 6_000)
+        // Room for a capture thins grid frontiers only: both prompts' deepest
+        // frontiers stay (finding F3); `insert` keeps the budget afterwards.
         cache.makeRoom(forCapture: 5_500)
-        #expect(cache.bytesInUse <= 500)
+        #expect(cache.bytesInUse == 4_000)
+        #expect(cache.frontiers(scope: "s", tokens: a, maximumFrontier: 99) == [99])
+        #expect(cache.frontiers(scope: "s", tokens: b, maximumFrontier: 99) == [99])
         cache.sweep()
         #expect(cache.bytesInUse == 0)
         // Count still bounds: three tiny entries with a limit of two.
@@ -418,6 +422,55 @@ struct PrefixCacheContractTests {
         // One request still captures at most `frontiersPerPrompt` frontiers.
         #expect(QwenStagePrefixCache().frontiersPerPrompt == QwenStagePrefixCache.defaultFrontiersPerPrompt)
         #expect(QwenStagePrefixCache(entryLimit: 4).frontiersPerPrompt == 4)
+    }
+
+    /// Finding F3 (27B decoding rank, scaled 1:10,000): each long prompt's
+    /// capture plan (up to 32 frontiers of 135 MB recurrent state plus its
+    /// attention copy) made room by evicting every other prompt's deepest
+    /// frontier, so repeats of U1..U8 and a rotation of three long documents
+    /// never hit although their deepest frontiers fit the budget together.
+    /// A capture now makes room from grid frontiers only, and the newest
+    /// prompt's own grid goes before another prompt's deepest frontier.
+    @Test func longPromptCapturesNeverEvictAnotherPromptsDeepestFrontier() {
+        let own = 13_472, perToken = 7, budget = 858_993, chunk = 512
+        let lengths = [973, 1_932, 3_836, 7_641, 11_455, 15_260, 22_865, 26_642]
+        func document(_ index: Int) -> [Int] { Array((index * 100_000)..<(index * 100_000 + lengths[index])) }
+        /// One request as the driver runs it: the reservation's capture
+        /// limit, a hit when the whole prompt is held, else room for the
+        /// capture, the session's kept frontiers, and the insert.
+        func serve(_ cache: QwenStagePrefixCache, _ index: Int) -> Bool {
+            let tokens = document(index), n = tokens.count
+            let limit = cache.captureLimit(scope: "s", tokens: tokens, chunkSize: chunk)
+            let held = cache.deepestFrontier(scope: "s", tokens: tokens, maximumFrontier: n - 1)
+            if held > 0 { _ = cache.state(scope: "s", tokens: tokens, frontier: held) }
+            if held >= n - 1 { return true }
+            cache.makeRoom(forCapture: limit)
+            let step = cache.stride(chunkSize: chunk)
+            let planned = stride(from: step, to: n - 1, by: step).filter { $0 > held } + [n - 1]
+            let cost = QwenStagePrefixCaptureCost(attentionBytesPerToken: perToken, recurrentBytesPerFrontier: own,
+                historyBytesPerToken: 0)
+            let kept = cost.kept(planned, limit: limit, maximum: cache.frontiersPerPrompt)
+            cache.insert(scope: "s", tokens: tokens, states: kept.sorted().map { sized($0, own: own) },
+                sharedBytes: perToken * (n - 1))
+            return false
+        }
+        func measured() -> QwenStagePrefixCache {
+            let cache = QwenStagePrefixCache(budgetBytes: budget)
+            cache.record(.init(attentionBytesPerToken: perToken, recurrentBytesPerFrontier: own, historyBytesPerToken: 0))
+            return cache
+        }
+        // The deepest frontiers of all eight documents fit the budget together.
+        #expect(lengths.reduce(0) { $0 + perToken * ($1 - 1) + own } < budget)
+        let repeats = measured()
+        for index in 0..<8 { #expect(!serve(repeats, index)) }
+        let hits = (0..<8).filter { serve(repeats, $0) }.count
+        #expect(hits == 8)
+        #expect(repeats.bytesInUse <= budget)
+        let rotation = measured()
+        for index in 5..<8 { _ = serve(rotation, index) }
+        let rotated = (0..<9).filter { serve(rotation, 5 + $0 % 3) }.count
+        #expect(rotated == 9)
+        #expect(rotation.bytesInUse <= budget)
     }
 
     /// Finding F10: a lookup keys every held frontier in one pass over the

@@ -236,8 +236,8 @@ private func checkShardRules(_ big: ClusterModelLayout, _ checks: PlacementCheck
     let atCut = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: pipelineGated)
     checks.require("shards: records that admit the pipeline only at cut 32 plan it only there",
         atCut.chosen.map { $0.mode != .pipeline || $0.cuts == [32] } == true)
-    let today = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: shardPolicy(), link: linkCosts(reductionMicroseconds: 45))
-    checks.require("shards: predicted faster but not executed by this runtime: tensor parallel says so and the pipeline serves",
+    let today = try ClusterPlacementPlanner.plan(devices: devices, layout: try notExecuting(big), policy: shardPolicy(), link: linkCosts(reductionMicroseconds: 45))
+    checks.require("shards: predicted faster but not executed by a runtime that lists no tensor-parallel mode: tensor parallel says so and the pipeline serves",
         option(today, .tensorParallel)?.verdict == .notExecutedByRuntime && today.chosen?.mode != .tensorParallel)
     let mimo = try surveyedMiMoLayout()
     let mimoDevices = [try SyntheticMac.idle(128).device("a", chip: "Apple M2 Ultra"), try SyntheticMac.idle(128).device("b", chip: "Apple M2 Ultra")]

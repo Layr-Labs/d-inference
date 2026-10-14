@@ -173,6 +173,10 @@ private func checkRetainedDenseLayouts(_ directory: URL, dense: (nine: ClusterMo
         // The tensor-parallel facts were derived after the golden layouts were
         // recorded on both Macs: present in the built layout, absent there.
         let tensorParallel = a.removeValue(forKey: "tensorParallel") != nil && b["tensorParallel"] == nil
+        // So does the runtime's tensor-parallel mode in the row's mode list.
+        if let modes = a["generationModes"] as? [String], !((b["generationModes"] as? [String]) ?? []).contains(ClusterGenerationMode.tensorParallel.rawValue) {
+            a["generationModes"] = modes.filter { $0 != ClusterGenerationMode.tensorParallel.rawValue }
+        }
         checks.require("golden \(name): the layout from retained header metadata equals the one read from the real headers in every field but the \(excludedRead) excluded tensors (and the tensor-parallel facts the golden predates)",
             NSDictionary(dictionary: a).isEqual(to: b) && a.count == 18 && tensorParallel)
     }

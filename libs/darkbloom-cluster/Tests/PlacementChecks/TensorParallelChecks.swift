@@ -291,6 +291,13 @@ func executing(_ layout: ClusterModelLayout, _ modes: [ClusterGenerationMode] = 
     return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
 }
 
+/// The same layout as a runtime that executes no tensor-parallel mode lists it.
+func notExecuting(_ layout: ClusterModelLayout) throws -> ClusterModelLayout {
+    var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any] ?? [:]
+    object["generationModes"] = layout.generationModes.filter { !$0.usesTensorParallelDecode }.map(\.rawValue)
+    return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+}
+
 /// Rates from a floor-plus-bandwidth model of one Mac on a model of
 /// `weightBytes`: a decode step of `floor + weights / bandwidth`, an equal half
 /// stepping in `floor + weights / (2 bandwidth)`; prefill at `prefill`, its half
@@ -423,8 +430,8 @@ private func checkTensorParallelOlderMacs(_ big: ClusterModelLayout, _ checks: P
             none.chosen?.mode.usesTensorParallelDecode == false && none.tensorParallel?.verdict == .reductionNotMeasured
                 && none.tensorParallel?.tensorParallel == nil)
         // The runtime as built lists no tensor-parallel mode: predicted faster, not chosen, and said so.
-        let today = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: policy(), link: linkCosts(reductionMicroseconds: 45))
-        checks.require("tensor parallel \(pair.name): with today's runtime (no tensor-parallel mode listed) the verdict is notExecutedByRuntime, never chosen",
+        let today = try ClusterPlacementPlanner.plan(devices: devices, layout: try notExecuting(big), policy: policy(), link: linkCosts(reductionMicroseconds: 45))
+        checks.require("tensor parallel \(pair.name): with a runtime that lists no tensor-parallel mode the verdict is notExecutedByRuntime, never chosen",
             today.chosen?.mode.usesTensorParallelDecode == false && today.tensorParallel?.verdict == .notExecutedByRuntime)
         // Records that admit no tensor-parallel shape keep it out.
         var gated = policy()

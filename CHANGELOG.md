@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop runtime protocol check
+
+- Keep the desktop app disconnected from a runtime that speaks an incompatible protocol. Previously the app reported the error and then, within a quarter second, connected to the runtime's event stream anyway, showed it as ready and forwarded its unchecked snapshots. Streamed snapshots are now checked too.
 ## Unreleased — desktop first-launch eligibility on fresh installs
 
 - Confirm eligible Macs during first-launch onboarding on a fresh install. The runtime reports measured memory only for downloaded models, so with nothing downloaded every Mac read "We couldn't confirm everything". Models not yet on the Mac now count by catalog size, as the runtime's own fit check does. Memory is reported as failing only when every reported model needs more than the Mac has.

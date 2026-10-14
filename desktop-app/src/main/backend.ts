@@ -55,6 +55,17 @@ export function validateDiscovery(value: unknown): {
     throw new Error('Invalid backend discovery record');
   return item as ReturnType<typeof validateDiscovery>;
 }
+// Every snapshot, initial or streamed, must speak this app's protocol.
+function compatible(snapshot: Snapshot) {
+  if (
+    snapshot?.protocol !== protocolVersion ||
+    !Array.isArray(snapshot.models) ||
+    !snapshot.machine
+  )
+    throw new Error('Incompatible backend protocol');
+  return snapshot;
+}
+
 export class Backend extends EventEmitter {
   current: DesktopStatus = { state: 'connecting' };
   snapshot?: Snapshot;
@@ -99,16 +110,13 @@ export class Backend extends EventEmitter {
           maxBuffer: 64_000,
         });
       await this.discover();
-      this.snapshot = await this.read<Snapshot>('state');
-      if (
-        this.snapshot.protocol !== protocolVersion ||
-        !Array.isArray(this.snapshot.models) ||
-        !this.snapshot.machine
-      )
-        throw new Error('Incompatible backend protocol');
+      this.snapshot = compatible(await this.read<Snapshot>('state'));
       this.status({ state: 'ready' });
       this.emit('state', this.snapshot);
     } catch (error) {
+      // A discovered but rejected runtime must not be watched, or its events would bypass the
+      // protocol check above.
+      this.connection = undefined;
       const code = (error as NodeJS.ErrnoException).code;
       // The runtime answered, so it isn't unreachable: it needs an update, not a repair.
       if (error instanceof Error && error.message === 'Incompatible backend protocol')
@@ -214,7 +222,7 @@ export class Backend extends EventEmitter {
             for (const frame of frames) {
               const data = frameData(frame);
               if (data === undefined) continue;
-              this.snapshot = JSON.parse(data);
+              this.snapshot = compatible(JSON.parse(data));
               this.status({ state: 'ready' });
               this.emit('state', this.snapshot);
             }

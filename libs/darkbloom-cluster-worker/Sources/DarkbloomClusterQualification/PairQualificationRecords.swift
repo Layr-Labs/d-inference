@@ -33,8 +33,15 @@ public enum PairQualificationRecords {
         // with evidence has ranks that agree, unless it says they do not.
         // A run without `--evidence final-row` (a timed run) cannot tell exact
         // from tokensEqualLogitsDiffer: it measured, it did not qualify.
-        guard evidence.finalLogits != nil else {
-            throw QualificationError("The pair report has no final row (a timing run, not a qualification run)")
+        // MiMo has no final row: its pair runs qualify by the decoding rank's
+        // step lines instead, one digest and candidate set per selected row
+        // (`MiMoQualificationEvidence`). A run with neither is a timing run.
+        var candidateEvidence = evidence
+        if evidence.finalLogits == nil {
+            guard let steps = try MiMoQualificationEvidence.pairSteps(pair) else {
+                throw QualificationError("The pair report has no final row (a timing run, not a qualification run)")
+            }
+            candidateEvidence.steps = steps
         }
         guard pair.ranksAgreeOnTokens != false else { throw QualificationError("The pair report's ranks do not agree on the tokens") }
         // Reports written before the transport field existed ran over JACCL; the
@@ -54,12 +61,23 @@ public enum PairQualificationRecords {
         // Reports written before modes existed ran the pipeline.
         let mode = pair.generationMode ?? identity.generationMode ?? ClusterGenerationMode.pipeline.rawValue
         guard ClusterGenerationMode(rawValue: mode) != nil else { throw QualificationError("Unknown generation mode \(mode)") }
-        let candidate = QualificationSubject(label: "two-rank pair", identity: identity, evidence: evidence)
+        let candidate = QualificationSubject(label: "two-rank pair", identity: identity, evidence: candidateEvidence)
         var allowed: [String] = []
         if comparator.allowCutDifference { allowed.append("cut") }
         if comparator.allowScheduleDifference { allowed.append("schedule") }
         if comparator.allowProfileDifference { allowed.append("profile") }
         let comparisons = try references.map { referenceData -> ClusterPairQualificationRecord.Comparison in
+            if MiMoQualificationEvidence.isReference(referenceData) {
+                let (subject, chip) = try MiMoQualificationEvidence.reference(referenceData, comparableWith: identity)
+                let compared = try comparator.compare(reference: subject, candidate: candidate)
+                guard compared.identityMatches else {
+                    throw QualificationError("A reference is not the same request as the pair (differs in "
+                        + compared.identityDifferences.joined(separator: ", ") + ")")
+                }
+                return .init(referenceChip: chip, verdict: compared.verdict.rawValue,
+                    firstDivergenceIndex: compared.tokens.firstDivergenceIndex, gapInULPs: compared.divergence?.gapInULPs,
+                    nearTieThresholdULPs: comparator.nearTieULPs, allowed: allowed + [MiMoQualificationEvidence.requestByIDAllowance])
+            }
             guard (try? decoder.decode(Header.self, from: referenceData))?.schema == ReferenceReport.currentSchema else {
                 throw QualificationError("A reference is not a single-Mac reference report")
             }

@@ -89,12 +89,15 @@ public struct QualificationStep: Codable, Equatable, Sendable {
     public var topLogits: [Float]
     public var maximumTieCount: Int
     public var rowSHA256: String
+    /// The row's native dtype, when the step carries it (MiMo's step
+    /// evidence); otherwise the final row's dtype describes every row.
+    public var rowDType: String?
 
     public init(ordinal: Int, frameSequence: Int, committedTokens: Int, tokenID: Int, topTokenIDs: [Int],
-                topLogits: [Float], maximumTieCount: Int, rowSHA256: String) {
+                topLogits: [Float], maximumTieCount: Int, rowSHA256: String, rowDType: String? = nil) {
         self.ordinal = ordinal; self.frameSequence = frameSequence; self.committedTokens = committedTokens
         self.tokenID = tokenID; self.topTokenIDs = topTokenIDs; self.topLogits = topLogits
-        self.maximumTieCount = maximumTieCount; self.rowSHA256 = rowSHA256
+        self.maximumTieCount = maximumTieCount; self.rowSHA256 = rowSHA256; self.rowDType = rowDType
     }
 }
 
@@ -656,7 +659,9 @@ public enum QualificationReportFiles {
                 throw QualificationError("Pair report \(url.lastPathComponent) records outcome '\(report.outcome)' and has no evidence to compare")
             }
             let chips = report.ranks.map { $0.chip ?? "unknown chip" }.joined(separator: " + ")
-            return .init(label: "two-rank pair (\(chips))", identity: identity, evidence: evidence)
+            var read = evidence
+            if read.finalLogits == nil, read.steps == nil, let steps = try MiMoQualificationEvidence.pairSteps(report) { read.steps = steps }
+            return .init(label: "two-rank pair (\(chips))", identity: identity, evidence: read)
         default:
             throw QualificationError("\(url.lastPathComponent) is neither a reference report nor a pair report")
         }

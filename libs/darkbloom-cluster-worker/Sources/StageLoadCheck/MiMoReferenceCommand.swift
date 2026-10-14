@@ -7,6 +7,25 @@ import Foundation
 /// single-Mac reference a pair's tokens are compared with. It needs a Mac that
 /// can hold the whole text model (156 GiB of tensors).
 enum MiMoReferenceCommand {
+    /// `QualificationHost`'s fields, read the same way (this tool does not link the qualification package).
+    struct Host: Encodable {
+        let role = "single host"
+        let chip: String?
+        let operatingSystem: String
+        static func local() -> Host {
+            var size = 0
+            var chip: String?
+            if sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 1, size <= 256 {
+                var bytes = [CChar](repeating: 0, count: size)
+                if sysctlbyname("machdep.cpu.brand_string", &bytes, &size, nil, 0) == 0 {
+                    chip = String(decoding: bytes.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                }
+            }
+            let version = ProcessInfo.processInfo.operatingSystemVersion
+            return .init(chip: chip, operatingSystem: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)")
+        }
+    }
+
     static let name = "mimo-reference"
     static let usage = "usage: mimo-reference --model-dir /ABS/PATH --request REQUEST.json --stage-cut CUT "
         + "--report NEW-REPORT.json [--deadline-seconds 10...1800] [--residency on|off]\n  "
@@ -51,7 +70,11 @@ enum MiMoReferenceCommand {
         alarm(0)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        var encoded = try encoder.encode(result)
+        // The report names the kind of Mac that ran it (its chip and system
+        // version, never a host name), as every single-Mac reference does:
+        // a qualification record lists each reference's chip.
+        var encoded = Data("{\"host\":".utf8) + (try encoder.encode(Host.local())) + Data(",".utf8)
+            + (try encoder.encode(result)).dropFirst()
         encoded.append(10)
         try encoded.write(to: URL(fileURLWithPath: reportPath), options: [.withoutOverwriting])
         print(String(decoding: encoded, as: UTF8.self), terminator: "")

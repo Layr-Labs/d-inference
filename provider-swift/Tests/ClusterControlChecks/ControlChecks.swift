@@ -641,6 +641,13 @@ import Darwin
             if confirmedAt == nil, cut.nodes[A]!.leadershipConfirmed(now: t) { confirmedAt = t }
         }
         expect(confirmedAt == 3650, "the window passed awake with nobody reachable: \(String(describing: confirmedAt))")
+        // A short stall (15 s, inside the member's time-to-live, nobody could take over): nothing changes, the cluster
+        // keeps running (the lease keeps saying so) and the leader stays confirmed.
+        var short = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { short.step(t) }
+        var stalled = short.nodes[A]!
+        _ = stalled.tick(now: 35)
+        expect(stalled.mode(now: 35) == .cluster && stalled.leadershipConfirmed(now: 35), "a short stall: still the confirmed cluster: \(stalled.mode(now: 35))")
     }
 
     /// (3)+(c) A Mac already inside the absence grace that sleeps past its end does not serve alone the moment it wakes:

@@ -209,14 +209,15 @@ public struct ClusterControlNode: Sendable, Equatable {
     /// (the confirmation window passed with no member reachable). A restarted Mac whose persisted claim was superseded
     /// learns so from the first refusal and steps down having acted on nothing.
     ///
-    /// After a gap no renewal could cross (system sleep, a suspended process) the confirmations from before it are void
-    /// (the member may have taken over meanwhile), and a member counts as unreachable only after one time-to-live AWAKE:
-    /// a woken leader acts only once the member answered (or refused, and it stepped down) or that window passed.
+    /// A confirmation counts only while its member answers within the time-to-live (a member silent for longer may have
+    /// taken over), and a member counts as unreachable only after one time-to-live AWAKE: a leader that slept or was
+    /// suspended past the lease acts only once the member answered again (or refused, and it stepped down) or that
+    /// window passed awake. Never during a gap since the last tick that no tick has seen yet.
     public func leadershipConfirmed(now: Double) -> Bool {
         guard leads, !untickedGap(now: now) else { return false }
-        let woke = awakeSince
+        let present = present(now: now)
         return claim.members.filter { $0 != localID }.allSatisfy { id in
-            confirmed.contains(id) || now - max(heard[id] ?? -Double.infinity, woke) >= ttl
+            (confirmed.contains(id) && present.contains(id)) || now - max(heard[id] ?? -Double.infinity, awakeSince) >= ttl
         }
     }
 
@@ -305,12 +306,7 @@ public struct ClusterControlNode: Sendable, Equatable {
 
     /// What is due now: renewals and a hand-over on the leader, a take-over on a member whose leader's lease expired.
     public mutating func tick(now: Double) -> [Action] {
-        if untickedGap(now: now) {
-            awakeSince = now
-            // Whatever members confirmed before the gap may have changed while nobody could renew (a member may have
-            // taken over): they confirm again, or are passed over one time-to-live awake from here.
-            confirmed = []
-        }
+        if untickedGap(now: now) { awakeSince = now }
         lastTick = now
         defer { noteAbsences(now: now) }
         if leads {

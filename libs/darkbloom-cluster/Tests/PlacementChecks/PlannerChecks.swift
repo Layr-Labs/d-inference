@@ -127,10 +127,10 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("27B layout: 64 layers, its registered bytes, fifteen cuts",
         big.layerCount == 64 && big.wholeModelLoadedBytes == 15_132_802_048 && big.admittedCuts == Array(stride(from: 4, through: 60, by: 4))
             && big.structuralCuts == big.admittedCuts && big.runtimeModelID == "registered_qwen38_27b")
-    // The runtime executes no tensor-parallel mode yet, so neither row lists one; every other mode, the
-    // pipeline's speculative rounds included (the last rank runs the row's head).
-    let executed = ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode }
-    checks.require("both list every generation mode the runtime executes (no tensor-parallel one yet) and both prefill schedules",
+    // The runtime executes tensor parallel on both dense rows (`QwenTensorParallelResidentRuntime`), not the
+    // pipeline-prefill/tensor-decode hybrid; every other mode, the pipeline's speculative rounds included.
+    let executed = ClusterGenerationMode.allCases.filter { $0 != .pipelinePrefillTensorDecode }
+    checks.require("both list every generation mode the runtime executes (tensor parallel, not the hybrid) and both prefill schedules",
         nine.generationModes == executed && big.generationModes == executed
             && nine.prefillSchedules == [.serial, .oneChunkLookahead])
     // Stage sizes recorded by verified loads of the 27B (active bytes loaded).
@@ -169,7 +169,8 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
     for order in [[devices[0], devices[1]], [devices[1], devices[0]]] {
         for cut in cuts {
             // The hand-off modes are planned only under the opt-in (sharded deployments only by default).
-            for mode in layout.generationModes where policy.handOffModes || !mode.isHandOff {
+            // Tensor parallel cuts no layer range and needs a measured reduction: not a placement at a cut.
+            for mode in layout.generationModes where (policy.handOffModes || !mode.isHandOff) && !mode.usesTensorParallelPrefill {
                 result.append(try ClusterPlacementPlanner.evaluate(devices: order, cuts: [cut], mode: mode,
                     prefillSchedule: .oneChunkLookahead, layout: layout, policy: policy))
             }

@@ -99,6 +99,25 @@ import DarkbloomClusterProtocol
         let splitBytes = try ClusterConfigurationCodec.encode(split, capability: modesCapability, capabilitySHA256: modesHash)
         try require(split.selectedGenerationMode == .phaseSplit && String(decoding: splitBytes, as: UTF8.self).contains("\"generationMode\":\"phase_split_v1\"")
             && (try ClusterConfigurationCodec.decode(splitBytes, capability: modesCapability, capabilitySHA256: modesHash)) == split, "Advertised mode lost")
+        // Tensor-parallel shares: saved only beside tensor_parallel_v1, two
+        // unequal weights; passed to both workers as `--tensor-shares A:B`.
+        var tpObject = try JSONSerialization.jsonObject(with: capabilityData) as! [String: Any]
+        tpObject["supportedGenerationModes"] = ["pipeline_v1", "tensor_parallel_v1"]
+        var tpData = try JSONSerialization.data(withJSONObject: tpObject, options: [.sortedKeys, .withoutEscapingSlashes]); tpData.append(10)
+        let tpCapability = try ClusterCapabilityRecord.decode(tpData, writtenBy: "the fixture")
+        let tpHash = ClusterConfigurationCodec.sha256(tpData)
+        var tensor = object; tensor["capabilitySHA256"] = tpHash; tensor["generationMode"] = "tensor_parallel_v1"; tensor["tensorShares"] = [1, 3]
+        let weighted = try ClusterConfigurationCodec.decode(bytes(tensor), capability: tpCapability, capabilitySHA256: tpHash)
+        let weightedBytes = try ClusterConfigurationCodec.encode(weighted, capability: tpCapability, capabilitySHA256: tpHash)
+        try require(weighted.tensorShares == [1, 3] && String(decoding: weightedBytes, as: UTF8.self).contains("\"tensorShares\":[1,3]")
+            && (try ClusterConfigurationCodec.decode(weightedBytes, capability: tpCapability, capabilitySHA256: tpHash)) == weighted,
+            "Tensor-parallel shares were not kept")
+        for bad: Any in [[1, 1], [0, 3], [1, 65], [1, 2, 3], NSNull(), "1:3"] {
+            var refused = tensor; refused["tensorShares"] = bad
+            try rejected { _ = try ClusterConfigurationCodec.decode(bytes(refused), capability: tpCapability, capabilitySHA256: tpHash) }
+        }
+        var pipelineShares = object; pipelineShares["tensorShares"] = [1, 3]
+        try rejected { _ = try decode(pipelineShares) }
         // A record this build cannot read is explained as a mixed install.
         for edit in [{ (o: inout [String: Any]) in o["supportedGenerationModes"] = ["pipeline_v1", "a_newer_mode_v1"] },
                      { (o: inout [String: Any]) in o["aNewerField"] = 1 }] {

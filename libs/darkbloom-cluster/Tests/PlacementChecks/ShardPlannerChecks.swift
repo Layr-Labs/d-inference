@@ -100,10 +100,16 @@ private func checkShardChoiceBySyntheticPairs(_ big: ClusterModelLayout, _ check
         checks.require("shards \(name), keyed reduction 45 us (bandwidth-bound decode): tensor parallel is chosen, the pipeline is listed as slower with its predicted time",
             fast.chosen?.mode == .tensorParallel && fast.shards?.chosen == .tensorParallel && tp?.verdict == .chosen
                 && pp?.verdict == .slower && (pp?.prediction?.requestSeconds ?? 0) > (tp?.prediction?.requestSeconds ?? .infinity))
-        checks.require("shards \(name): the tensor-parallel option names equal shares and each member's bytes (about half the weights each)",
+        checks.require("shards \(name): the tensor-parallel option names its shares (equal for equal Macs) and each member holds about its share of the weights",
             tp.map { o in
-                o.shares == [0.5, 0.5] && o.members.count == 2
-                    && o.members.allSatisfy { Double($0.weightsBytes) < Double(weights) * 0.6 && Double($0.weightsBytes) > Double(weights) * 0.4 }
+                // Equal Macs keep equal shares; unequal Macs may take one of
+                // the plan's kernel-aligned weighted options. Either way the
+                // shares sum to one and each member holds about its share.
+                let shares = o.shares ?? []
+                return shares.count == 2 && abs(shares.reduce(0, +) - 1) < 1e-9 && o.members.count == 2
+                    && (a.chip != b.chip || shares == [0.5, 0.5])
+                    && zip(o.members, shares).allSatisfy { m, s in
+                        Double(m.weightsBytes) < Double(weights) * (s + 0.1) && Double(m.weightsBytes) > Double(weights) * (s - 0.1) }
             } == true)
         checks.require("shards \(name): the hybrid (pipeline prefill, tensor decode) is never chosen by default",
             fast.chosen?.mode != .pipelinePrefillTensorDecode && fast.alternatives.allSatisfy { !$0.mode.isHandOff })
@@ -179,7 +185,15 @@ private func checkTensorPipelineThreeMembers(_ big: ClusterModelLayout, _ checks
 private func checkUnequalTensorShares(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
     let weights = big.wholeModelLoadedBytes
     guard let tp = big.tensorParallel else { checks.require("shards: the 27B carries tensor-parallel facts", false); return }
-    checks.require("shards: the dense Qwen plan gives equal shares only (its runtime's shard rule)", tp.family.shareUnits == nil)
+    checks.require("shards: the dense Qwen plan hands out no free share units (its unequal shares are its kernel-aligned options)",
+        tp.family.shareUnits == nil && !(tp.family.shareOptions ?? []).isEmpty)
+    // Equal-only facts of the same model, the reference for "unequal is faster".
+    let equalFamily = ClusterTensorParallelFamilyPlan(plan: tp.family.plan, ranks: tp.family.ranks, reductionsPerLayer: tp.family.reductionsPerLayer,
+        reductionsPerStep: tp.family.reductionsPerStep, partialBytesPerToken: tp.family.partialBytesPerToken,
+        stateDividesByHeads: tp.family.stateDividesByHeads)
+    let equalFacts = ClusterTensorParallelLayout(family: equalFamily, layerDividedBytes: tp.layerDividedBytes, layerReplicatedBytes: tp.layerReplicatedBytes,
+        ingressDividedBytes: tp.ingressDividedBytes, ingressReplicatedBytes: tp.ingressReplicatedBytes,
+        egressDividedBytes: tp.egressDividedBytes, egressReplicatedBytes: tp.egressReplicatedBytes)
     // The same facts from a family whose plan can cut at any of 8 head groups.
     let family = ClusterTensorParallelFamilyPlan(plan: tp.family.plan, ranks: tp.family.ranks, reductionsPerLayer: tp.family.reductionsPerLayer,
         reductionsPerStep: tp.family.reductionsPerStep, partialBytesPerToken: tp.family.partialBytesPerToken,
@@ -188,7 +202,7 @@ private func checkUnequalTensorShares(_ big: ClusterModelLayout, _ checks: Place
         ingressDividedBytes: tp.ingressDividedBytes, ingressReplicatedBytes: tp.ingressReplicatedBytes,
         egressDividedBytes: tp.egressDividedBytes, egressReplicatedBytes: tp.egressReplicatedBytes)
     let layout = try executing(try big.with(tensorParallel: unequalFacts), [.tensorParallel])
-    let equal = try executing(big, [.tensorParallel])
+    let equal = try executing(try big.with(tensorParallel: equalFacts), [.tensorParallel])
     let devices = [try SyntheticMac.idle(64).device("max", speed: modelled(floorMs: 25, bandwidthGBs: 400, weightBytes: weights, prefill: 120), chip: "Apple M1 Max"),
                    try SyntheticMac.idle(192).device("ultra", speed: modelled(floorMs: 20, bandwidthGBs: 800, weightBytes: weights, prefill: 260), chip: "Apple M2 Ultra")]
     let link = linkCosts(reductionMicroseconds: 45)
@@ -222,8 +236,8 @@ private func checkShardRules(_ big: ClusterModelLayout, _ checks: PlacementCheck
     let atCut = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: pipelineGated)
     checks.require("shards: records that admit the pipeline only at cut 32 plan it only there",
         atCut.chosen.map { $0.mode != .pipeline || $0.cuts == [32] } == true)
-    let today = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: shardPolicy(), link: linkCosts(reductionMicroseconds: 45))
-    checks.require("shards: predicted faster but not executed by this runtime: tensor parallel says so and the pipeline serves",
+    let today = try ClusterPlacementPlanner.plan(devices: devices, layout: try notExecuting(big), policy: shardPolicy(), link: linkCosts(reductionMicroseconds: 45))
+    checks.require("shards: predicted faster but not executed by a runtime that lists no tensor-parallel mode: tensor parallel says so and the pipeline serves",
         option(today, .tensorParallel)?.verdict == .notExecutedByRuntime && today.chosen?.mode != .tensorParallel)
     let mimo = try surveyedMiMoLayout()
     let mimoDevices = [try SyntheticMac.idle(128).device("a", chip: "Apple M2 Ultra"), try SyntheticMac.idle(128).device("b", chip: "Apple M2 Ultra")]

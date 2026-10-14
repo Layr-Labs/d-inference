@@ -366,6 +366,12 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         // S16: a keyed session is ready only when both ranks report the same
         // encrypted data plane with each peer verified against its pin.
         if keysDataPlane, pair.readiness?.peerVerified != true { throw DistributedEngineError.unavailable }
+        // The link as this load measured it (a tensor-parallel load measures it):
+        // the next plan of this pair uses it, with no user step.
+        if let probe = values.compactMap({ $0.readiness?.linkProbe }).first {
+            ClusterLinkProbeHistory.record(probe, members: wireIdentity.peers.map(\.id),
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser)
+        }
         try lock.withLock {
             guard phase == .starting, owner.readiness() != nil else { throw DistributedEngineError.unavailable }
             self.observedMembershipEpoch = pair.readiness?.identity.membershipEpoch

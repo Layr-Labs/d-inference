@@ -44,6 +44,11 @@ struct WorkerConfiguration {
     /// argument names the scheme only; the key is never an argument or a
     /// variable. Absent: no key, and the SSD tier stays off.
     let prefixSSDKeyOnInput: Bool
+    /// `--tensor-shares A:B` (tensor_parallel_v1 only): each rank's share
+    /// weight of every layer, rank order, as the planner chose it from one of
+    /// the model plan's kernel-aligned options; equal (1:1) when absent. Both
+    /// ranks bind it into their load agreement, so they must be given the same.
+    let tensorShares: [Int]
 
     init(arguments: [String], now: UInt64) throws {
         let names: Set<String> = ["--model-dir", "--rank", "--stage-cut", "--membership-epoch",
@@ -51,7 +56,7 @@ struct WorkerConfiguration {
             "--peer0-build-sha256", "--peer1-id", "--peer1-build-sha256", "--deadline-uptime-nanoseconds"]
         let optionalNames: Set<String> = ["--prefill-schedule", "--evidence-directory", "--startup-deadline-uptime-nanoseconds",
             "--generation-mode", "--qualification-switches", "--keep-warm", "--mtp-depth", "--data-plane",
-            "--prefix-ssd-key"]
+            "--prefix-ssd-key", "--tensor-shares"]
         let bootstrapCounts = [0, WorkerBootstrapConfiguration.names.count, WorkerBootstrapConfiguration.names.count + 1]
         let counts = bootstrapCounts.map { names.count + $0 }.flatMap { required in
             (0...optionalNames.count).map { (required + $0) * 2 }
@@ -131,6 +136,14 @@ struct WorkerConfiguration {
             }
             speculativeTerms = terms
         } else { speculativeTerms = nil }
+        if let text = fields["--tensor-shares"] {
+            let weights = text.split(separator: ":", omittingEmptySubsequences: false).compactMap { Int($0) }
+            guard generationMode == .tensorParallel, weights.count == 2, weights.allSatisfy({ (1...64).contains($0) }),
+                  weights.map(String.init).joined(separator: ":") == text else {
+                throw WorkerFailure.invalid("--tensor-shares takes two canonical weights of 1...64 (A:B), only with tensor_parallel_v1")
+            }
+            tensorShares = weights
+        } else { tensorShares = [1, 1] }
         if let text = fields["--qualification-switches"] {
             guard text == "yes" else { throw WorkerFailure.invalid("--qualification-switches takes only the value yes") }
             qualificationSwitchesPermitted = true

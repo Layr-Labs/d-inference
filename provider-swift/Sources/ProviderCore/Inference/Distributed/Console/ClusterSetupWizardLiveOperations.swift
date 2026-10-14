@@ -548,6 +548,8 @@ final class LiveContext: @unchecked Sendable {
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,
             localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements(),
             leader: settings.derivedPlacement ? .some(nil) : .none, served: ClusterServedSpeedHistory.entries(homeDirectory: home),
+            link: description.members.count == 2
+                ? ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured : .unmeasured,
             peerMayReceive: settings.derivedPlacement)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.

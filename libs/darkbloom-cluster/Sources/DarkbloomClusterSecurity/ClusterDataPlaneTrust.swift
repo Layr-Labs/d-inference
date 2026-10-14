@@ -240,6 +240,34 @@ public final class ClusterDataPlaneKeyExchange: @unchecked Sendable, CustomStrin
         } catch { invalidate(); throw (error as? ClusterDataPlaneTrustError) ?? .keyConfirmationFailed }
     }
 
+    /// Domain of the tensor-parallel sealed all-sum's direction keys.
+    static let tensorParallelSealDomain = Data("darkbloom/data-plane/tensor-parallel-seal/v1\0".utf8)
+    private var tensorParallelSealDerived = false
+
+    /// At most once, after confirmation and before `makeTransport`: the two
+    /// direction keys of the tensor-parallel sealed all-sum (the partials of
+    /// every row-parallel projection cross the cable as AES-256-GCM frames).
+    /// HKDF-SHA256 of this session's confirmed record master, salted by the
+    /// transcript, with the sender's rank and `scope` (the load agreement) in
+    /// the info: keys of one session, direction and agreement only, never the
+    /// record transport's own keys. Nothing else leaves this object.
+    public func tensorParallelSealKeys(scope: Data) throws -> (send: SymmetricKey, receive: SymmetricKey) {
+        try lock.withLock {
+            guard phase == .confirmed, !tensorParallelSealDerived, let keys, let transcript,
+                  (1...64).contains(scope.count) else {
+                throw ClusterDataPlaneTrustError.inactive
+            }
+            tensorParallelSealDerived = true
+            func key(sender: Int) -> SymmetricKey {
+                var info = Self.tensorParallelSealDomain
+                info.append(UInt8(sender)); info.append(UInt8(1 - sender)); info.append(scope)
+                return HKDF<SHA256>.deriveKey(inputKeyMaterial: keys.recordMaster, salt: transcript, info: info,
+                    outputByteCount: 32)
+            }
+            return (key(sender: credential.rank), key(sender: 1 - credential.rank))
+        }
+    }
+
     /// Once, after confirmation: the record transport over `io`, bound to the
     /// epoch, the scope and the transcript. The record master is dropped here.
     public func makeTransport(io: any ClusterRecordByteIO, limits: ClusterRecordLimits,

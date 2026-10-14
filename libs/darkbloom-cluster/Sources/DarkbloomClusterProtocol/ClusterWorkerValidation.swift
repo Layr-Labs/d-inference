@@ -30,6 +30,7 @@ enum ClusterWorkerValidation {
         }
         try workerRequire(value.servingContextTokens.map { (1...p.maximumContextTokens).contains($0) } ?? true,
             "Invalid serving context")
+        try workerRequire(value.linkProbe?.valid ?? true, "Invalid link probe")
     }
     static func reservation(_ value: ClusterWorkerReservation) throws {
         try workerRequire(text(value.profileID, maximum: 128)

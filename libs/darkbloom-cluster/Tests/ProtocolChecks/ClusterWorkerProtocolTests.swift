@@ -79,6 +79,31 @@ struct ClusterWorkerProtocolTests {
             try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
                 requestID: nil, event: .ready(value))) }
         }
+        // The link probe a tensor-parallel load measured travels in readiness;
+        // absent when nil; refused when malformed.
+        let probe = ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+            pointToPointSmallMicroseconds: 18, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+            allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_600)
+        let probed = ClusterWorkerReady(identity: identity, rank: 0, profile: profile,
+            executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, linkProbe: probe)
+        let probedFrame = ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 1, requestID: nil, event: .ready(probed))
+        try check(try ClusterWorkerCodec.decodeEvent(ClusterWorkerCodec.encode(probedFrame)) == probedFrame, "Link probe round trip")
+        try check(!String(decoding: try ClusterWorkerCodec.encode(plain), as: UTF8.self).contains("linkProbe"),
+            "A worker without a link probe writes none")
+        for bad in [ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+                        pointToPointSmallMicroseconds: 0, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+                        allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_600),
+                    ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64,
+                        pointToPointSmallMicroseconds: 18, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+                        allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 20_480, allSumLargeMicroseconds: 2_600),
+                    ClusterWorkerLinkProbe(transport: "carrier-pigeon", keyed: true, pointToPointSmallBytes: 64,
+                        pointToPointSmallMicroseconds: 18, pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 900,
+                        allSumSmallBytes: 20_480, allSumSmallMicroseconds: 31, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 2_600)] {
+            let value = ClusterWorkerReady(identity: identity, rank: 0, profile: profile,
+                executionPlanSHA256: ready.executionPlanSHA256, requestCapacityBytes: 1024, linkProbe: bad)
+            try refuses { _ = try ClusterWorkerCodec.encode(ClusterWorkerEventFrame(membershipEpoch: epoch, sequence: 0,
+                requestID: nil, event: .ready(value))) }
+        }
         // Refused for capacity: idle and available, the next reservation proceeds.
         var refused = try Conversation()
         try refused.command(.reserve(reservation()))
@@ -473,17 +498,17 @@ struct ClusterWorkerProtocolTests {
             && ClusterGenerationMode.pipeline.layerCutCount(ranks: 3) == 2,
             "tensor parallel cuts no layer range; the hybrid's prefill and every other mode cut ranks - 1 times")
         let terms = ClusterTensorParallelTerms.current
-        try check(terms.partialsDType == "float32" && terms.shardRule == "equal_heads_and_channels_v1"
-            && terms.reduction == "keyed_exchange_sum_v1" && terms.ranks == 2,
-            "the bound terms: float32 partials, equal shards by heads and channels, a keyed exchange-and-add reduction, two ranks")
-        try check(terms.loadAgreementFields == ["cluster-tensor-parallel-v1", "float32", "equal_heads_and_channels_v1",
-            "keyed_exchange_sum_v1", "2"], "the terms are bound into the load agreement field by field")
+        try check(terms.partialsDType == "float32" && terms.shardRule == "kernel_aligned_heads_and_channels_v1"
+            && terms.reduction == "sealed_all_gather_sum_v1" && terms.ranks == 2,
+            "the bound terms: float32 partials, kernel-aligned shares of heads and channels, the sealed all-sum, two ranks")
+        try check(terms.loadAgreementFields == ["cluster-tensor-parallel-v1", "float32", "kernel_aligned_heads_and_channels_v1",
+            "sealed_all_gather_sum_v1", "2"], "the terms are bound into the load agreement field by field")
         var bf16 = terms; bf16.partialsDType = "bfloat16"
         try check(bf16.loadAgreementFields != terms.loadAgreementFields, "another partials dtype is another agreement")
         try check(ClusterGenerationMode.tensorParallel.tensorParallelTerms == terms
             && ClusterGenerationMode.pipelinePrefillTensorDecode.tensorParallelTerms == terms
             && ClusterGenerationMode.phaseSplit.tensorParallelTerms == nil, "only the tensor-parallel modes carry terms")
-        func record(_ mode: String, cuts: [Int]) -> ClusterPairQualificationRecord {
+        func record(_ mode: String, cuts: [Int], layout: String? = nil) -> ClusterPairQualificationRecord {
             .init(runtimeModelID: "registered_qwen38_27b", artifactSHA256: String(repeating: "a", count: 64),
                 ranks: [.init(rank: 0, chip: "Apple M3 Ultra", operatingSystem: "27.2"),
                         .init(rank: 1, chip: "Apple M5 Ultra", operatingSystem: "27.0.1")],
@@ -492,12 +517,20 @@ struct ClusterWorkerProtocolTests {
                 pairReportCreatedUTC: "2026-10-14T05:00:00Z",
                 comparisons: [.init(referenceChip: "Apple M3 Ultra", verdict: "exact", firstDivergenceIndex: nil,
                     gapInULPs: nil, nearTieThresholdULPs: 4, allowed: ["cut", "schedule", "profile"])],
-                producer: "darkbloom-cluster-tp-check record")
+                producer: "darkbloom-cluster-tp-check record", tensorParallelLayout: layout)
         }
-        try check(record("tensor_parallel_v1", cuts: []).isConsistent, "a tensor-parallel record has no cut and is consistent")
-        try check(!record("tensor_parallel_v1", cuts: [32]).isConsistent, "a tensor-parallel record with a cut is not")
-        try check(record("pipeline_prefill_tensor_decode_v1", cuts: [32]).isConsistent, "a hybrid record has its prefill cut")
-        try check(!record("pipeline_prefill_tensor_decode_v1", cuts: []).isConsistent, "a hybrid record without a cut is not")
+        let layout = "plan=qwen_dense_heads_and_channels_v1;partials=float32;shares=equal"
+        try check(record("tensor_parallel_v1", cuts: [], layout: layout).isConsistent, "a tensor-parallel record has no cut and is consistent")
+        try check(!record("tensor_parallel_v1", cuts: [32], layout: layout).isConsistent, "a tensor-parallel record with a cut is not")
+        try check(record("pipeline_prefill_tensor_decode_v1", cuts: [32], layout: layout).isConsistent, "a hybrid record has its prefill cut")
+        try check(!record("pipeline_prefill_tensor_decode_v1", cuts: [], layout: layout).isConsistent, "a hybrid record without a cut is not")
+        try check(!record("tensor_parallel_v1", cuts: []).isConsistent,
+            "a tensor-parallel record must name its layout (plan, partials, shares): it qualifies that layout only")
+        try check(!record("pipeline_v1", cuts: [32], layout: layout).isConsistent, "a pipeline record carries no tensor-parallel layout")
+        let line = try record("pipeline_v1", cuts: [32]).encodedLine()
+        try check(!line.contains("tensorParallelLayout"), "a record without a layout encodes as before (no new key)")
+        let decoded = try ClusterPairQualificationRecord.decodeLines(try record("tensor_parallel_v1", cuts: [], layout: layout).encodedLine())
+        try check(decoded.first?.tensorParallelLayout == layout && decoded.first?.isConsistent == true, "the layout round-trips")
         try check(!record("pipeline_v1", cuts: []).isConsistent && record("pipeline_v1", cuts: [32]).isConsistent,
             "a pipeline record still needs its cut")
     }

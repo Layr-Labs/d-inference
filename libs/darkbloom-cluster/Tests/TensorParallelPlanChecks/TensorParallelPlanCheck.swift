@@ -79,6 +79,17 @@ func cutShape(_ tensor: Tensor, _ cut: QwenTensorParallelPlan.Cut, _ plan: QwenT
               logical.upperBound / divisor <= shape[1] else { return nil }
         shape[1] = logical.count / divisor
         return shape
+    case .expertRows(let range):
+        guard shape.count == 3, range.upperBound <= shape[1] else { return nil }
+        shape[1] = range.count
+        return shape
+    case .expertInputColumns(let logical):
+        let leaf = tensor.name.split(separator: ".").last!
+        let divisor = leaf == "weight" ? 32 / plan.bits : plan.groupSize
+        guard shape.count == 3, logical.lowerBound % divisor == 0, logical.upperBound % divisor == 0,
+              logical.upperBound / divisor <= shape[2] else { return nil }
+        shape[2] = logical.count / divisor
+        return shape
     }
 }
 
@@ -93,8 +104,24 @@ func coverage(_ tensor: Tensor, _ cuts: [QwenTensorParallelPlan.Cut], _ plan: Qw
         }
         return seen.allSatisfy { $0 == 1 }
     }
+    if case .expertRows = cuts[0] {
+        var seen = [Int](repeating: 0, count: tensor.shape[1])
+        for cut in cuts {
+            guard case .expertRows(let range) = cut else { return false }
+            for row in range where row < seen.count { seen[row] += 1 }
+        }
+        return seen.allSatisfy { $0 == 1 }
+    }
     let leaf = tensor.name.split(separator: ".").last!
     let divisor = leaf == "weight" ? 32 / plan.bits : plan.groupSize
+    if case .expertInputColumns = cuts[0] {
+        var seen = [Int](repeating: 0, count: tensor.shape[2])
+        for cut in cuts {
+            guard case .expertInputColumns(let logical) = cut else { return false }
+            for column in (logical.lowerBound / divisor) ..< (logical.upperBound / divisor) where column < seen.count { seen[column] += 1 }
+        }
+        return seen.allSatisfy { $0 == 1 }
+    }
     var seen = [Int](repeating: 0, count: tensor.shape[1])
     for cut in cuts {
         guard case .inputColumns(let logical) = cut else { return false }
@@ -104,11 +131,15 @@ func coverage(_ tensor: Tensor, _ cuts: [QwenTensorParallelPlan.Cut], _ plan: Qw
 }
 
 /// The shape the rank's divided configuration constructs for a tensor.
-func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], _ plan: QwenTensorParallelPlan) -> [Int]? {
+func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], _ plan: QwenTensorParallelPlan,
+                      rank: Int) -> [Int]? {
     let h = shard["hidden_size"] as! Int, hq = shard["num_attention_heads"] as! Int, hkv = shard["num_key_value_heads"] as! Int
     let lk = (shard["linear_num_key_heads"] as! Int) * 128, lv = (shard["linear_num_value_heads"] as! Int) * 128
-    let nv = shard["linear_num_value_heads"] as! Int, inter = shard["intermediate_size"] as! Int
-    let vocab = plan.vocabularySize / plan.size
+    let nv = shard["linear_num_value_heads"] as! Int
+    let inter = (shard["intermediate_size"] ?? shard["moe_intermediate_size"]) as! Int
+    let shared = shard["shared_expert_intermediate_size"] as? Int ?? 0
+    let experts = shard["num_experts"] as? Int ?? 0
+    let vocab = plan.vocabularyRange(rank: rank).count
     let leaf = String(name.split(separator: ".").last!)
     func q(_ out: Int, _ input: Int) -> [Int]? {
         switch leaf {
@@ -117,7 +148,12 @@ func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], 
         default: return nil
         }
     }
+    func e(_ out: Int, _ input: Int) -> [Int]? { q(out, input).map { [experts] + $0 } }
     let table: [(String, () -> [Int]?)] = [
+        (".mlp.switch_mlp.gate_proj.", { e(inter, h) }), (".mlp.switch_mlp.up_proj.", { e(inter, h) }),
+        (".mlp.switch_mlp.down_proj.", { e(h, inter) }),
+        (".mlp.shared_expert.gate_proj.", { q(shared, h) }), (".mlp.shared_expert.up_proj.", { q(shared, h) }),
+        (".mlp.shared_expert.down_proj.", { q(h, shared) }),
         (".self_attn.q_proj.", { q(2 * hq * 256, h) }), (".self_attn.k_proj.", { q(hkv * 256, h) }),
         (".self_attn.v_proj.", { q(hkv * 256, h) }), (".self_attn.o_proj.", { q(h, hq * 256) }),
         (".linear_attn.in_proj_qkv.", { q(2 * lk + lv, h) }), (".linear_attn.in_proj_z.", { q(lv, h) }),
@@ -131,11 +167,15 @@ func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], 
     return tensor.shape // replicated tensors keep the checkpoint shape
 }
 
-func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor], quantization: [String: Any]) {
-    guard let plan = try? QwenTensorParallelPlan(textConfiguration: configuration, quantization: quantization, size: 2) else {
-        failures += 1; print("FAIL: \(label): plan refused"); return
+func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor], quantization: [String: Any],
+               shares: [Int]? = nil) {
+    let plan: QwenTensorParallelPlan
+    do {
+        plan = try QwenTensorParallelPlan(textConfiguration: configuration, quantization: quantization, size: 2, shares: shares)
+    } catch {
+        failures += 1; print("FAIL: \(label): plan refused: \(error)"); return
     }
-    let shard = plan.shardTextConfiguration(configuration)
+    let shards = (0..<2).map { plan.shardTextConfiguration(configuration, rank: $0) }
     var loaded = 0, skipped = 0, rowParallel = Set<String>()
     for tensor in tensors {
         let dispositions = (0..<2).compactMap { try? plan.disposition(key: tensor.name, rank: $0) }
@@ -149,15 +189,213 @@ func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor],
         check(coverage(tensor, cuts, plan), "\(label): \(tensor.name) not covered exactly once")
         for (rank, cut) in cuts.enumerated() {
             let got = cutShape(tensor, cut, plan)
-            let want = constructedShape(tensor.name, tensor, shard, plan)
+            let want = constructedShape(tensor.name, tensor, shards[rank], plan, rank: rank)
             check(got != nil && got == want, "\(label): \(tensor.name) rank \(rank) cut \(String(describing: got)) != constructed \(String(describing: want))")
-            if case .inputColumns = cut { rowParallel.insert(tensor.name.split(separator: ".").dropLast().joined(separator: ".")) }
+            switch cut {
+            case .inputColumns, .expertInputColumns: rowParallel.insert(tensor.name.split(separator: ".").dropLast().joined(separator: "."))
+            default: break
+            }
         }
         loaded += 1
     }
-    check(rowParallel == Set(plan.rowParallelModulePaths()), "\(label): row-parallel modules differ from the plan's list")
+    check(rowParallel == Set(plan.inputColumnModulePaths()), "\(label): input-column modules differ from the plan's list")
+    check(plan.rowParallelModulePaths().count == 2 * plan.layerCount, "\(label): two reductions per layer")
     check(plan.reductionsPerForward == 2 * plan.layerCount, "\(label): reductions per forward")
     print("\(label): \(loaded) tensors cut or replicated, \(skipped) skipped, \(rowParallel.count) row-parallel projections")
+}
+
+/// A 35B-A3B-shaped routed-expert model: every expert divided by its
+/// intermediate channels, the shared expert like a dense MLP, the router and
+/// the shared expert's gate replicated; two reductions per layer (the mixer
+/// and the whole MLP block).
+func syntheticMoEConfiguration() -> [String: Any] {
+    var c = syntheticConfiguration(hidden: 2048, layers: 8, heads: 16, kv: 2, linearK: 16, linearV: 32, intermediate: 1)
+    c.removeValue(forKey: "intermediate_size")
+    c["model_type"] = "qwen3_5_moe_text"; c["num_experts"] = 16; c["num_experts_per_tok"] = 4
+    c["moe_intermediate_size"] = 512; c["shared_expert_intermediate_size"] = 512
+    return c
+}
+
+func syntheticMoETensors(_ c: [String: Any]) -> [Tensor] {
+    var dense = c; dense["intermediate_size"] = 512; dense["model_type"] = "qwen3_5_text"
+    let experts = c["num_experts"] as! Int, h = c["hidden_size"] as! Int, inter = c["moe_intermediate_size"] as! Int
+    func q(_ name: String, _ out: Int, _ input: Int, experts e: Int? = nil) -> [Tensor] {
+        let lead = e.map { [$0] } ?? []
+        return [Tensor(name: name + ".weight", shape: lead + [out, input / 8], dtype: "U32"),
+                Tensor(name: name + ".scales", shape: lead + [out, input / 64], dtype: "BF16"),
+                Tensor(name: name + ".biases", shape: lead + [out, input / 64], dtype: "BF16")]
+    }
+    var all = syntheticTensors(dense).filter { !$0.name.contains(".mlp.") }
+    for layer in 0..<(c["num_hidden_layers"] as! Int) {
+        let p = "language_model.model.layers.\(layer).mlp."
+        all += q(p + "gate", experts, h) + q(p + "shared_expert_gate", 1, h)
+            + q(p + "switch_mlp.gate_proj", inter, h, experts: experts) + q(p + "switch_mlp.up_proj", inter, h, experts: experts)
+            + q(p + "switch_mlp.down_proj", h, inter, experts: experts)
+            + q(p + "shared_expert.gate_proj", inter, h) + q(p + "shared_expert.up_proj", inter, h)
+            + q(p + "shared_expert.down_proj", h, inter)
+    }
+    return all
+}
+
+func checkRoutedExperts(quantization: [String: Any]) {
+    let c = syntheticMoEConfiguration()
+    checkPlan("synthetic A3B-shaped equal", configuration: c, tensors: syntheticMoETensors(c), quantization: quantization)
+    // A 512-wide expert is one aligned block: unequal shares would leave a rank without one.
+    expectThrows("A3B-shaped 1:3 (one 512-wide aligned expert block)") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2, shares: [1, 3]) }
+    guard let plan = try? QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) else {
+        failures += 1; print("FAIL: routed experts: plan refused"); return
+    }
+    check(plan.routedExperts && plan.expertCount == 16 && plan.intermediatePerRank == [256, 256]
+          && plan.sharedExpertIntermediatePerRank == [256, 256], "routed experts: per-rank expert and shared widths")
+    check((try? plan.disposition(key: "language_model.model.layers.0.mlp.gate.weight", rank: 1)) == .load(.replicate),
+          "routed experts: the router is replicated")
+    check((try? plan.disposition(key: "language_model.model.layers.0.mlp.switch_mlp.up_proj.weight", rank: 1)) == .load(.expertRows(256..<512)),
+          "routed experts: rank 1 holds every expert's channels 256..<512")
+    check(plan.rowParallelModulePaths().contains("language_model.model.layers.0.mlp"), "routed experts: the MLP block is reduced once")
+    let s1 = plan.shardTextConfiguration(c, rank: 1)
+    check(s1["moe_intermediate_size"] as? Int == 256 && s1["shared_expert_intermediate_size"] as? Int == 256
+          && s1["num_key_value_heads"] as? Int == 1 && s1["intermediate_size"] == nil, "routed experts: rank 1 configuration")
+    expectThrows("routed experts with dense-MLP layers") { var m = c; m["mlp_only_layers"] = [0]
+        _ = try QwenTensorParallelPlan(textConfiguration: m, quantization: quantization, size: 2) }
+    print("routed experts: plan covered (equal), dispositions and refusals checked")
+}
+
+/// Weighted shares for unequal Macs: every tensor still covered exactly once
+/// with the shapes each rank's own configuration constructs; parts move in
+/// whole units (KV heads with their query heads, linear key heads with their
+/// value heads, quantization groups of MLP channels); equal weights give the
+/// equal plan; refusals when a rank would get no unit of a part.
+func checkWeightedShares(c27: [String: Any], c9: [String: Any], quantization: [String: Any]) {
+    for shares in [[1, 3], [3, 1], [2, 3], [3, 5], [1, 4], [1, 2]] {
+        checkPlan("synthetic 27B shares \(shares)", configuration: c27, tensors: syntheticTensors(c27),
+                  quantization: quantization, shares: shares)
+        checkPlan("synthetic 9B shares \(shares)", configuration: c9, tensors: syntheticTensors(c9),
+                  quantization: quantization, shares: shares)
+    }
+    guard let equal = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2),
+          let ones = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 1]),
+          let twos = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [2, 2]),
+          let weighted = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 3])
+    else { failures += 1; print("FAIL: weighted shares: a plan was refused"); return }
+    check(equal == ones, "weighted shares: [1, 1] is the equal plan")
+    let keys = syntheticTensors(c27).map(\.name)
+    check(keys.allSatisfy { k in (0..<2).allSatisfy { (try? equal.disposition(key: k, rank: $0)) == (try? twos.disposition(key: k, rank: $0)) } },
+          "weighted shares: [2, 2] cuts like [1, 1]")
+    check(equal.equalShares && !weighted.equalShares, "weighted shares: equalShares")
+    // 27B, kernel-aligned blocks (4-bit: input widths in 512s): 4 KV heads (6 x 256 = 1,536 each) -> 1 + 3;
+    // 16 linear key heads in blocks of 4 (4 x 3 x 128 = 1,536) -> 4 + 12; 17,408 channels = 34 blocks of 512 -> 9 + 25.
+    check(weighted.kvHeadsPerRank == [1, 3] && weighted.attentionHeadsPerRank == [6, 18], "27B 1:3 attention heads")
+    check(weighted.linearKeyHeadsPerRank == [4, 12] && weighted.linearValueHeadsPerRank == [12, 36], "27B 1:3 linear heads")
+    check(weighted.intermediatePerRank == [4608, 12800], "27B 1:3 MLP channels (512-aligned) \(weighted.intermediatePerRank)")
+    check(weighted.vocabularyRange(rank: 0) == 0..<62_080 && weighted.vocabularyRange(rank: 1) == 62_080..<248_320,
+          "27B 1:3 vocabulary rows")
+    check(weighted.linearQKVRows(rank: 1) == [512..<2048, 2560..<4096, 5632..<10240], "27B 1:3 rank 1 q/k/v rows")
+    let s0 = weighted.shardTextConfiguration(c27, rank: 0)
+    check(s0["num_attention_heads"] as? Int == 6 && s0["num_key_value_heads"] as? Int == 1
+          && s0["linear_num_key_heads"] as? Int == 4 && s0["linear_num_value_heads"] as? Int == 12
+          && s0["intermediate_size"] as? Int == 4608, "27B 1:3 rank 0 configuration")
+    // Largest remainder, ties to the lower rank: 3:5 of 4 KV heads = 1.5 / 2.5 -> 2 + 2; 4 key-head blocks -> 2 + 2;
+    // 34 MLP blocks = 12.75 / 21.25 -> 13 + 21.
+    if let p = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [3, 5]) {
+        check(p.kvHeadsPerRank == [2, 2] && p.linearKeyHeadsPerRank == [8, 8] && p.intermediatePerRank == [6656, 10752],
+              "27B 3:5 apportioned \(p.kvHeadsPerRank) \(p.linearKeyHeadsPerRank) \(p.intermediatePerRank)")
+    } else { failures += 1; print("FAIL: 27B 3:5 refused") }
+    // Every weighted plan keeps every row-parallel input width on the fast kernel's alignment.
+    for shares in [[1, 3], [3, 1], [2, 3], [3, 5], [1, 4], [1, 2]] {
+        for (label, c) in [("27B", c27), ("9B", c9)] {
+            guard let p = try? QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2, shares: shares) else {
+                failures += 1; print("FAIL: \(label) \(shares) refused"); continue
+            }
+            let aligned = (0..<2).allSatisfy { r in
+                [p.attentionHeadsPerRank[r] * p.headDim, p.linearValueHeadsPerRank[r] * p.linearValueHeadDim,
+                 p.intermediatePerRank[r]].allSatisfy { $0 % 512 == 0 } && p.vocabularyRange(rank: r).count % 8 == 0
+            }
+            check(aligned, "\(label) \(shares): every row-parallel input width a multiple of 512 and vocabulary rows of 8")
+        }
+    }
+    expectThrows("a rank without a KV head (1:9 of 4)") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 9]) }
+    expectThrows("a zero share") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [0, 1]) }
+    expectThrows("shares for the wrong rank count") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 1, 1]) }
+    print("weighted shares: 12 plans covered, apportionment and refusals checked")
+}
+
+/// The sealed all-sum's codec: a frame opens only on the peer, at its own
+/// counter, under its own scope; one flipped byte is refused, and a refused
+/// codec seals and opens nothing more.
+func checkSealCodec() {
+    let scope = Data("scope-a".utf8)
+    let (r0, r1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    var partial = (0..<5120).map { Float($0) * 0.25 - 7 }
+    let bytes = partial.count * 4
+    var frame = [UInt8](repeating: 0, count: bytes + QwenTensorParallelSealCodec.frameOverhead)
+    var opened = [Float](repeating: 0, count: partial.count)
+    let sealed = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in r0.seal(p.baseAddress!, bytes, f.baseAddress!, 41) } }
+    check(sealed == 0, "codec: rank 0 seals")
+    check(frame.withUnsafeBytes { f in partial.withUnsafeBytes { p in !f.starts(with: p) } }, "codec: the frame is not the plaintext")
+    func open(_ codec: QwenTensorParallelSealCodec, _ counter: UInt64, _ peer: Int, _ f: [UInt8]) -> Int32 {
+        f.withUnsafeBytes { fb in opened.withUnsafeMutableBytes { o in codec.open(fb.baseAddress!, bytes, o.baseAddress!, counter, peer) } }
+    }
+    check(open(r1, 41, 0, frame) == 0 && opened == partial, "codec: rank 1 opens rank 0's frame at its counter, byte for byte")
+    let (s0, s1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in s0.seal(p.baseAddress!, bytes, f.baseAddress!, 7) } }
+    check(open(s1, 8, 0, frame) != 0, "codec: another counter is refused")
+    check(s1.refused && open(s1, 7, 0, frame) != 0, "codec: a refused codec opens nothing more, even a good frame")
+    let (t0, t1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in t0.seal(p.baseAddress!, bytes, f.baseAddress!, 9) } }
+    var flipped = frame; flipped[bytes / 2] ^= 1
+    check(open(t1, 9, 0, flipped) != 0, "codec: one flipped ciphertext byte is refused")
+    let (u0, u1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in u0.seal(p.baseAddress!, bytes, f.baseAddress!, 3) } }
+    check(open(u1, 3, 1, frame) != 0, "codec: a frame claimed from the wrong peer is refused")
+    let (v0, _) = QwenTensorParallelSealCodec.pair(scope: scope)
+    let (_, w1) = QwenTensorParallelSealCodec.pair(scope: Data("scope-b".utf8))
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in v0.seal(p.baseAddress!, bytes, f.baseAddress!, 5) } }
+    check(open(w1, 5, 0, frame) != 0, "codec: another run's keys and scope are refused")
+    // A prefill-sized partial (512 x 5,120 float32 = 10.5 MB) is sealed in 40 pieces, in parallel.
+    let big = (0..<(512 * 5120)).map { Float($0 % 977) * 0.5 - 100 }
+    let bigBytes = big.count * 4
+    check(QwenTensorParallelSealCodec.chunks(bigBytes) == 40 && QwenTensorParallelSealCodec.chunks(bytes) == 1, "codec: piece counts")
+    var bigFrame = [UInt8](repeating: 0, count: bigBytes + QwenTensorParallelSealCodec.frameOverhead)
+    var bigOpened = [Float](repeating: 0, count: big.count)
+    let (p0, p1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    let bigSealed = big.withUnsafeBytes { p in bigFrame.withUnsafeMutableBytes { f in p0.seal(p.baseAddress!, bigBytes, f.baseAddress!, 11) } }
+    let o1 = bigFrame.withUnsafeBytes { f in bigOpened.withUnsafeMutableBytes { o in p1.open(f.baseAddress!, bigBytes, o.baseAddress!, 11, 0) } }
+    check(bigSealed == 0 && o1 == 0 && bigOpened == big, "codec: a 10.5 MB partial round-trips through 40 parallel pieces")
+    let (q0, q1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = big.withUnsafeBytes { p in bigFrame.withUnsafeMutableBytes { f in q0.seal(p.baseAddress!, bigBytes, f.baseAddress!, 12) } }
+    var swapped = bigFrame
+    let tags = bigBytes
+    for i in 0..<16 { swapped.swapAt(tags + i, tags + 16 + i) }
+    let refusedSwap = swapped.withUnsafeBytes { f in bigOpened.withUnsafeMutableBytes { o in q1.open(f.baseAddress!, bigBytes, o.baseAddress!, 12, 0) } }
+    check(refusedSwap != 0, "codec: two pieces' tags swapped are refused (each piece's nonce and data name its index)")
+    let (z0, z1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in z0.seal(p.baseAddress!, bytes, f.baseAddress!, 13) } }
+    var padded = frame; padded[bytes + QwenTensorParallelSealCodec.frameOverhead - 1] = 1
+    check(open(z1, 13, 0, padded) != 0, "codec: a non-zero padding byte is refused")
+    // Rekey: a new key generation every 3 frames per direction; both ranks
+    // cross it at the same counter, and a frame sealed in one generation
+    // does not open in another.
+    let (g0, g1) = QwenTensorParallelSealCodec.pair(scope: scope, rekeyFrames: 3)
+    var crossed = true
+    for counter in UInt64(20)..<UInt64(30) {
+        let s = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in g0.seal(p.baseAddress!, bytes, f.baseAddress!, counter) } }
+        crossed = crossed && s == 0 && open(g1, counter, 0, frame) == 0 && opened == partial
+    }
+    check(crossed && g0.keyGeneration == 3 && g1.keyGeneration == 3, "codec: rekey every 3 frames, both ranks at generation 3 after 10 frames")
+    let (h0, h1) = QwenTensorParallelSealCodec.pair(scope: scope, rekeyFrames: 1)
+    let (_, k1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in h0.seal(p.baseAddress!, bytes, f.baseAddress!, 1) } }
+    check(open(h1, 1, 0, frame) == 0, "codec: generation 0 opens")
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in h0.seal(p.baseAddress!, bytes, f.baseAddress!, 2) } }
+    check(h0.keyGeneration == 1 && open(k1, 2, 0, frame) != 0, "codec: a generation-1 frame does not open under the base keys")
+    check(open(h1, 2, 0, frame) == 0 && h1.keyGeneration == 1, "codec: the peer opens it in generation 1")
+    check(open(h1, 1, 0, frame) != 0, "codec: counters only grow (an older counter is refused)")
+    partial[0] = 1
+    print("seal codec: round trip, counter, tamper, direction, scope, pieces, padding, rekey and refusal checked")
 }
 
 /// Every launch option that changes the collectives must change the first
@@ -182,6 +420,9 @@ func checkLaunchAgreement() {
     variant("bfloat16 partials") { $0.bfloat16Partials = true }
     variant("hybrid, prefill rank 0") { $0.hybridPrefillRank = 0 }
     variant("hybrid, prefill rank 1") { $0.hybridPrefillRank = 1 }
+    variant("shares 1:3") { $0.shares = [1, 3] }
+    variant("shares 3:1") { $0.shares = [3, 1] }
+    variant("sealed reduction") { $0.sealedReduction = true }
     for (label, launch) in variants {
         check(launch != base, "launch: \(label) variant equals the base")
         check(launch.agreement != base.agreement, "launch: a rank launched with a different \(label) still agrees")
@@ -220,8 +461,19 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         let c9 = syntheticConfiguration(hidden: 4096, layers: 32, heads: 16, kv: 4, linearK: 16, linearV: 32, intermediate: 12288)
         checkPlan("synthetic 9B", configuration: c9, tensors: syntheticTensors(c9), quantization: quantization)
 
+        // The ready shard keeps a freed-buffer cache (a decode step's ~1,500 intermediate buffers are not
+        // created by the driver one by one), bounded inside the memory gate's allocator headroom.
+        let gib = 1 << 30
+        for headroom in [2 * gib, 4 * gib, 512 << 20] {
+            let bytes = QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: headroom)
+            check(bytes > 0 && bytes <= headroom / 2, "freed-buffer cache \(bytes) for headroom \(headroom) is half of it at most")
+        }
+        check(QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: 2 * gib) >= 256 << 20,
+              "the product's 2 GiB headroom leaves a cache that holds a decode step's buffers")
+        check(QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: 0) == 0, "no headroom, no cache")
+
         // Refusals.
-        expectThrows("routed experts") { var c = c27; c["num_experts"] = 256
+        expectThrows("routed experts on a dense model type") { var c = c27; c["num_experts"] = 256
             _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) }
         expectThrows("tied head") { var c = c27; c["tie_word_embeddings"] = true
             _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) }
@@ -230,8 +482,11 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         expectThrows("per-module quantization override") {
             var q = quantization; q["language_model.lm_head"] = ["group_size": 32, "bits": 8]
             _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: q, size: 2) }
-        expectThrows("MoE model type") { var c = c27; c["model_type"] = "qwen3_5_moe_text"
+        expectThrows("MoE model type without experts") { var c = c27; c["model_type"] = "qwen3_5_moe_text"
             _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) }
+        expectThrows("another model type") { var c = c27; c["model_type"] = "mimo_v2_flash"
+            _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) }
+        checkRoutedExperts(quantization: quantization)
         let plan = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2)
         expectThrows("unknown key") { _ = try plan.disposition(key: "language_model.model.layers.0.mlp.experts.weight", rank: 0) }
         expectThrows("attention key on a linear layer") { _ = try plan.disposition(key: "language_model.model.layers.0.self_attn.q_proj.weight", rank: 0) }
@@ -241,19 +496,26 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         // The linear attention's packed projection keeps each head block of q, k and v.
         check(plan.linearQKVRows(rank: 1) == [1024..<2048, 3072..<4096, 7168..<10240], "27B rank 1 q/k/v rows")
         check(plan.vocabularyRange(rank: 1) == 124_160..<248_320, "27B rank 1 vocabulary rows")
-        let shard = plan.shardTextConfiguration(c27)
+        let shard = plan.shardTextConfiguration(c27, rank: 1)
         check(shard["num_attention_heads"] as? Int == 12 && shard["num_key_value_heads"] as? Int == 2
               && shard["linear_num_key_heads"] as? Int == 8 && shard["linear_num_value_heads"] as? Int == 24
               && shard["intermediate_size"] as? Int == 8704 && shard["mtp_num_hidden_layers"] as? Int == 0, "27B shard configuration")
 
+        checkWeightedShares(c27: c27, c9: c9, quantization: quantization)
         checkLaunchAgreement()
+        checkSealCodec()
 
         for path in CommandLine.arguments.dropFirst() {
             let directory = URL(fileURLWithPath: path)
             let root = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as! [String: Any]
             let text = root["text_config"] as! [String: Any]
             let q = (root["quantization"] ?? root["quantization_config"]) as! [String: Any]
-            checkPlan("checkpoint \(directory.lastPathComponent)", configuration: text, tensors: try checkpointTensors(directory), quantization: q)
+            let tensors = try checkpointTensors(directory)
+            checkPlan("checkpoint \(directory.lastPathComponent)", configuration: text, tensors: tensors, quantization: q)
+            if (text["num_experts"] as? Int ?? 0) == 0 {
+                checkPlan("checkpoint \(directory.lastPathComponent) shares [1, 3]", configuration: text, tensors: tensors,
+                          quantization: q, shares: [1, 3])
+            }
         }
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)

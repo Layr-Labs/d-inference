@@ -135,6 +135,9 @@ public struct ClusterPlacementCandidate: Codable, Equatable, Sendable {
     public let smallestHeadroomShare: Double
     /// The first cut; 0 for tensor parallel, which cuts no layer range.
     public var cut: Int { cuts.first ?? 0 }
+    /// Tensor parallel with unequal shares: each rank's share weight (rank
+    /// order); nil for equal shards and every other mode.
+    public var tensorShares: [Int]? = nil
     /// Tensor parallel with unequal shares (`ClusterTensorParallelFamilyPlan.shareUnits`):
     /// each rank's share of every layer, in rank order. Nil for equal shares
     /// and for every other mode (omitted then, so a plan reads as before).
@@ -446,7 +449,7 @@ public enum ClusterPlacementPlanner {
     public static func evaluate(devices: [ClusterPlacementDevice], cuts: [Int], mode: ClusterGenerationMode,
                                 prefillSchedule: ClusterPrefillSchedule, layout: ClusterModelLayout,
                                 policy: ClusterPlacementPolicy = .init(),
-                                link: ClusterLinkCosts = .unmeasured) throws -> ClusterPlacementCandidate {
+                                link: ClusterLinkCosts = .unmeasured, tensorShares: [Int]? = nil) throws -> ClusterPlacementCandidate {
         try layout.validate()
         guard cuts.count == mode.layerCutCount(ranks: devices.count), devices.count >= 2 || cuts.isEmpty,
               cuts == Array(Set(cuts)).sorted(), cuts.allSatisfy({ (1..<layout.layerCount).contains($0) }) else {
@@ -460,7 +463,13 @@ public enum ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: policy.promptTokens ?? layout.maximumPromptTokens,
             outputs: policy.outputTokens ?? layout.maximumOutputTokens, modes: [mode], schedules: [prefillSchedule],
             link: link, policy: policy, tensorParallelForAssessment: true)
-        return context.evaluate(order: Array(devices.indices), cuts: cuts, mode: mode, schedule: prefillSchedule)
+        if let tensorShares {
+            guard mode == .tensorParallel, tensorShares.count == devices.count,
+                  Set(tensorShares).count == 1 || (layout.tensorParallel?.family.shareOptions ?? []).contains(tensorShares) else {
+                throw ClusterPlacementError("Tensor-parallel shares must be one the family's plan accepts, one weight per rank")
+            }
+        }
+        return context.evaluate(order: Array(devices.indices), cuts: cuts, mode: mode, schedule: prefillSchedule, weights: tensorShares)
     }
 
     /// One Mac running the whole model by itself for the policy's request,
@@ -550,6 +559,10 @@ public enum ClusterPlacementPlanner {
                     // at the best shares the family's plan allows (equal unless it has share units).
                     if modes.contains(.tensorParallel), placeable(.tensorParallel, ranges: ranges), scope == .admitted {
                         result.append(bestTensorShares(order: order, schedule: schedule))
+                        // Unequal Macs: each share option the family's plan accepts.
+                        for weights in layout.tensorParallel?.family.shareOptions ?? [] where weights.count == ranges && Set(weights).count > 1 {
+                            result.append(evaluate(order: order, cuts: [], mode: .tensorParallel, schedule: schedule, weights: weights))
+                        }
                     }
                 }
             }
@@ -679,7 +692,7 @@ public enum ClusterPlacementPlanner {
             let divides = tp.family.stateDividesByHeads
             func share(_ bytes: Int) -> Int {
                 guard divides else { return bytes }
-                return fraction.map { Int((Double(bytes) * $0).rounded(.up)) } ?? (bytes + count - 1) / count
+                return fraction.map { Int((Double(bytes) * min(1, $0 * 1.01)).rounded(.up)) } ?? (bytes + count - 1) / count
             }
             let context = prompt + outputs, chunk = min(layout.maximumChunkTokens, prompt)
             let ownState = pipelined
@@ -736,6 +749,8 @@ public enum ClusterPlacementPlanner {
         func prediction(_ regime: ClusterPlacementPolicy.Regime, order: [ClusterPlacementDevice],
                         ranges: [ClusterModelLayout.Range], mode: ClusterGenerationMode,
                         schedule: ClusterPrefillSchedule, shares: [Double]? = nil) -> ClusterPlacementPrediction {
+            // Each rank's share of a tensor-parallel layer (equal unless weighted).
+            let share = shares ?? Array(repeating: 1 / Double(max(1, order.count)), count: order.count)
             let total = layout.layers.reduce(0.0) { $0 + $1.cost }
             var measured = true, prefill: [Double] = [], decode: [Double] = []
             for (device, range) in zip(order, ranges) {
@@ -754,17 +769,16 @@ public enum ClusterPlacementPlanner {
                 // Every rank runs every chunk on its share of every layer; the
                 // slowest share sets the pace, and each layer's partials are
                 // summed once per chunk (a whole chunk's rows at a time).
+                // A shard probe measures an equal share (1 / ranks); a rank holding
+                // `share` takes that probe's time scaled by share * ranks. Without
+                // a probe no gain is assumed (the whole model's rate).
                 var perToken = 0.0
                 for (index, device) in order.enumerated() {
                     let rate = rates(device, regime).0
-                    if let shares {
-                        // Unequal shares: the prefill step split as the decode step is.
-                        let whole = 1 / rate.prefillTokensPerSecond
-                        let half = min(whole, max(whole / 2, 1 / (rate.tensorShardPrefillTokensPerSecond ?? rate.prefillTokensPerSecond)))
-                        perToken = max(perToken, (2 * half - whole) + 2 * (whole - half) * shares[index])
-                    } else {
-                        perToken = max(perToken, 1 / (rate.tensorShardPrefillTokensPerSecond ?? rate.prefillTokensPerSecond))
-                    }
+                    // A measured probe at this share wins over scaling the half's.
+                    let probed = rate.shareRate(near: share[index])?.prefillTokensPerSecond.map { 1 / $0 }
+                    perToken = max(perToken, probed ?? rate.tensorShardPrefillTokensPerSecond.map { share[index] * Double(order.count) / $0 }
+                        ?? 1 / rate.prefillTokensPerSecond)
                 }
                 first = Double(prompt) * perToken
                     + Double(chunks * tp.family.reductionsPerLayer * layout.layerCount)
@@ -783,12 +797,11 @@ public enum ClusterPlacementPlanner {
                 // Each rank steps its share (`ClusterDecodeSplit`: the floor
                 // whole, the weights divided); the slower share sets the pace,
                 // and every reduction of the step crosses the link.
-                var share = 0.0
+                var slowest = 0.0
                 for (index, device) in order.enumerated() {
-                    let split = ClusterDecodeSplit(rates: rates(device, regime).0)
-                    share = max(share, shares.map { split.shareStepSeconds(fraction: $0[index]) } ?? split.shareStepSeconds(ranks: order.count))
+                    slowest = max(slowest, ClusterDecodeSplit(rates: rates(device, regime).0).shareStepSeconds(fraction: share[index]))
                 }
-                step = share + Double(tp.reductionsPerStep(layerCount: layout.layerCount))
+                step = slowest + Double(tp.reductionsPerStep(layerCount: layout.layerCount))
                     * reduction.seconds(bytes: tp.family.partialBytesPerToken)
                 if !mode.usesTensorParallelPrefill {
                     // After a pipeline prefill each rank sends the state of the
@@ -842,7 +855,12 @@ public enum ClusterPlacementPlanner {
         }
 
         func evaluate(order: [Int], cuts: [Int], mode: ClusterGenerationMode,
-                      schedule: ClusterPrefillSchedule, shares: [Double]? = nil) -> ClusterPlacementCandidate {
+                      schedule: ClusterPrefillSchedule, shares: [Double]? = nil, weights: [Int]? = nil) -> ClusterPlacementCandidate {
+            // Integer weights (the family's share options, bound in the launch
+            // terms) or fractions (whole `shareUnits` groups); nil: equal.
+            let weighted = mode == .tensorParallel ? weights.flatMap { Set($0).count > 1 && $0.count == order.count ? $0 : nil } : nil
+            let unequal = mode == .tensorParallel ? shares.flatMap { $0.count == order.count && Set($0).count > 1 ? $0 : nil } : nil
+            let fractions: [Double]? = weighted.map { w in w.map { Double($0) / Double(w.reduce(0, +)) } } ?? unequal
             let bounds = [0] + cuts + [layout.layerCount]
             // Under tensor parallel every rank runs every layer (on its share).
             let ranges = mode.usesTensorParallelPrefill
@@ -852,7 +870,7 @@ public enum ClusterPlacementPlanner {
             let ranks = ranges.indices.map { index in
                 mode.usesTensorParallelDecode && layout.tensorParallel != nil
                     ? tensorRequirement(rank: index, of: ranges.count, device: chosen[index], own: ranges[index],
-                        mode: mode, schedule: schedule, fraction: shares?[index])
+                        mode: mode, schedule: schedule, fraction: fractions?[index])
                     : requirement(rank: index, of: ranges.count, device: chosen[index], own: ranges[index],
                         earlier: Array(ranges[..<index]), mode: mode, schedule: schedule)
             }
@@ -868,10 +886,10 @@ public enum ClusterPlacementPlanner {
                     rested: prediction(.rested, order: [decoder], ranges: [whole], mode: aloneMode, schedule: .serial))
             }
             return .init(cuts: cuts, mode: mode, prefillSchedule: schedule, ranks: ranks,
-                sustained: prediction(.sustained, order: chosen, ranges: ranges, mode: mode, schedule: schedule, shares: shares),
-                rested: prediction(.rested, order: chosen, ranges: ranges, mode: mode, schedule: schedule, shares: shares),
+                sustained: prediction(.sustained, order: chosen, ranges: ranges, mode: mode, schedule: schedule, shares: fractions),
+                rested: prediction(.rested, order: chosen, ranges: ranges, mode: mode, schedule: schedule, shares: fractions),
                 tier: ranks.map(\.fit.tier).max() ?? 4, withinGPUWorkingSet: ranks.allSatisfy(\.withinGPUWorkingSet),
-                smallestHeadroomShare: headroom, shares: shares, aloneRoute: route)
+                smallestHeadroomShare: headroom, tensorShares: weighted, shares: fractions, aloneRoute: route)
         }
 
         /// How many layers a device could hold from the start of the model

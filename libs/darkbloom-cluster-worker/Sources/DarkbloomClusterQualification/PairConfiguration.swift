@@ -46,6 +46,10 @@ public struct PairConfiguration: Sendable {
     public static let phaseSplitMTPMode = "phase_split_mtp_v1"
     /// The pipeline with the model's speculative head on the last rank.
     public static let pipelineMTPMode = "pipeline_mtp_v1"
+    /// Tensor parallel: both ranks hold a share of every layer (the dense Qwen rows).
+    public static let tensorParallelMode = "tensor_parallel_v1"
+    /// The worker argument tensor-parallel share weights are declared with.
+    public static let tensorSharesArgument = "--tensor-shares"
     /// The worker argument the speculative head's fixed depth is declared with.
     public static let speculativeDepthArgument = "--mtp-depth"
     /// The pipeline with four transfers per decode step instead of eleven.
@@ -106,6 +110,8 @@ public struct PairConfiguration: Sendable {
     /// `phase_split_mtp_v1` or `pipeline_mtp_v1` only: the speculative head's draft depth, declared
     /// to both workers. Nil: the worker's default (the family's standard terms).
     public var speculativeDepth: Int?
+    /// Tensor parallel only: each rank's share weight (rank order); nil is equal.
+    public var tensorShares: [Int]?
     /// Requests run one after another in the same loaded session, each with
     /// its own request ID. The first is the warm-up of a timing run.
     public var repetitions: Int
@@ -291,7 +297,12 @@ public struct PairConfiguration: Sendable {
         try require(Self.isCoordinator(coordinator), "coordinator must be IPV4:PORT with a unicast address")
         try require(["serial_v1", "one_chunk_lookahead_v1"].contains(prefillSchedule), "unknown prefill schedule")
         try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode, Self.phaseSplitMTPMode,
-                     Self.pipelineMTPMode].contains(generationMode), "unknown generation mode")
+                     Self.pipelineMTPMode, Self.tensorParallelMode].contains(generationMode), "unknown generation mode")
+        try require(tensorShares.map { $0.count == 2 && $0.allSatisfy({ (1...64).contains($0) })
+                && generationMode == Self.tensorParallelMode } ?? true,
+            "tensor shares are two weights of 1...64 and only with tensor_parallel_v1")
+        try require(generationMode != Self.tensorParallelMode || !recording,
+            "a tensor-parallel run has no recording worker; run it with --evidence none")
         try require(speculativeDepth.map { (1...4).contains($0)
                 && [Self.phaseSplitMTPMode, Self.pipelineMTPMode].contains(generationMode) } ?? true,
             "a speculative depth is 1...4 and only with phase_split_mtp_v1 or pipeline_mtp_v1")
@@ -504,6 +515,7 @@ public struct PairConfiguration: Sendable {
         // The pipeline's launch is unchanged; any other mode is declared to both ranks.
         if generationMode != Self.pipelineMode { arguments += [Self.generationModeArgument, generationMode] }
         if let speculativeDepth { arguments += [Self.speculativeDepthArgument, String(speculativeDepth)] }
+        if let tensorShares { arguments += [Self.tensorSharesArgument, tensorShares.map(String.init).joined(separator: ":")] }
         // A worker refuses a qualification switch in its environment unless it
         // was started with this flag. Both ranks get it when either has one,
         // so the two launches differ only where the run says they do.

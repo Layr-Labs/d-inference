@@ -14,6 +14,7 @@ no submodule pin changes.
 | `darkbloom-cluster-stage-check` | One Mac, one rank, the real artifact, no collective. Runs the verified loader for that rank's layer range, releases it, and reports memory before, loaded and after. |
 | `darkbloom-cluster-reference` | One Mac, both stages, the real artifact, no collective. Runs a request through stage 0 and stage 1 in one process and writes a reference report. |
 | `darkbloom-cluster-pair-check` | No MLX. Writes a request, runs it on rank 0 (this Mac) and rank 1 (the second Mac over SSH), and compares a pair report with a reference report. |
+| `darkbloom-cluster-tp-check` | Qualification of tensor parallelism (TP2) for the dense Qwen 3.5-family models: the unsharded model, the single-process TP oracle, one rank of a two-rank TP run over JACCL, the hybrid (solo prefill, state cut by heads, TP decode), and a comparator applying the near-tie rule. Not a serving path. |
 
 `Sources/DarkbloomClusterWorker`: `WorkerMain.swift` is the entry point.
 `Startup/` parses startup and bootstrap arguments; `Capabilities/` serves
@@ -62,6 +63,85 @@ swift test --package-path libs/darkbloom-cluster-worker --skip-build \
 # mode); no model, no GPU, a second or two.
 bash libs/darkbloom-cluster-worker/Tests/StartupChecks/run.sh /ABS/darkbloom-cluster-worker
 ```
+
+## Tensor parallel qualification (`darkbloom-cluster-tp-check`)
+
+`DarkbloomClusterRuntime/Models/Qwen/TensorParallel/` holds the plan (the
+owner's oMLX Qwen3-Next recipe applied to Qwen 3.5's separate projections:
+column-parallel q/k/v, linear-attention in-projections, convolution channels,
+`A_log`/`dt_bias`, MLP gate/up and the LM head by vocabulary rows; row-parallel
+attention output, linear-attention output and MLP down projection; equal
+shards), the row-parallel projection (float32 partial, lazy all-sum on the CPU
+stream, one rounding), the single-process oracle, the distributed argmax (one
+four-value all-sum per token, so both ranks pick the same token without an
+exchange) and the hybrid hand-off. The plan's coverage of a checkpoint is
+checked model-free by `libs/darkbloom-cluster/Tests/TensorParallelPlanChecks/run.sh [MODEL_DIR...]`.
+
+```sh
+# Both ranks: the same arguments; rank 0 is the JACCL listener. The first exchange is a versioned
+# launch digest of fixed width, so a rank of another build or launch is refused (builds before
+# 808b33f47 used a variable-length first agreement: never mix them with newer ones). Arithmetic environment as for the worker,
+# plus MLX_METAL_FAST_SYNCH=1 (the lazy all-sum is slow without it).
+env DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=128 DARKBLOOM_BF16_WEIGHTS=1 MLX_ENABLE_TF32=1 MLX_METAL_FAST_SYNCH=1 \
+  JACCL_RANK=0 JACCL_IBV_DEVICES=/ABS/matrix.json JACCL_COORDINATOR=ADDRESS:PORT \
+  darkbloom-cluster-tp-check run --mode tp --backend jaccl --model-dir /ABS/MODEL --request REQUEST.json --report rank0.json
+darkbloom-cluster-tp-check run --mode full --model-dir /ABS/MODEL --request REQUEST.json --report full.json --record-top 8
+darkbloom-cluster-tp-check compare --reference full.json --candidate rank0.json
+# Two ranks on ONE Mac (correctness only, never a timing): --backend socket, MLX_RANK=0|1 and
+# MLX_HOSTFILE=[["127.0.0.1:PORT0"],["127.0.0.1:PORT1"]]; rank 0 listens on PORT0. Each all-sum is
+# evaluated, exchanged whole over one loopback TCP connection (framed and length-checked) and summed
+# rank 0 + rank 1 on the CPU, which equals JACCL's two-value sum. --backend ring uses MLX's ring where
+# the build has it.
+```
+
+Measured on the M3 Ultra + M5 Max pair (registered 27B, greedy): tokens pass
+the near-tie rule against either Mac alone, and a rank ended mid-decode leaves
+nothing allocated; but TP2 decode (30-32 tok/s) is slower than either Mac
+alone (34-36 tok/s). One rank's shard without any collective decodes at
+25 ms/token against 30 ms for the whole model: batch-1 decode has a per-token
+floor that splitting the weights does not divide, and 129 all-sums per token
+cost more than the 5 ms saved. The local ring is not compiled into this MLX
+build; the one-Mac two-rank step uses `--backend socket` instead.
+
+Where the floor is (M5 Max, same session): the host spends 6-13 ms of thread
+CPU per 24-30 ms step (graph construction 2-4 ms) and then waits for the GPU,
+so the GPU is the bound, not graph building. One decode step is 3,169 MLX
+primitives (`--census yes`: about 2,200 that launch kernels, 353 quantized
+matmuls, 305 RMS norms, 434 casts); half the weights still take 24 ms
+(bfloat16 partials; the float32 partial path, 256 more casts and float32-input
+row-parallel matmuls, adds 1 ms), where reading them needs about 13 ms. Metal
+command-buffer limits
+(`MLX_MAX_OPS_PER_BUFFER` 50-400 x `MLX_MAX_MB_PER_BUFFER` 50-512 or 4096) do
+not move it (tokens identical, steps within about 2%). `--mode shard-local
+--shard-rank R` is the floor meter: TP2 can only win where the shard alone
+plus about 6 ms of all-sums beats the faster Mac alone.
+
+Weighted shares, routed experts and records (2026-10-14, M3 Ultra + M5 Ultra over TB5 RDMA):
+
+- `--shares A:B` (tp and shard-local) gives each rank a weighted share. Each part moves in whole
+  blocks whose row-parallel input width stays on MLX's quantized matrix-vector fast path (input
+  width a multiple of (32 / bits) x 2 x 32: 512 for 4-bit), KV heads with their query heads,
+  linear key heads with their value heads, vocabulary rows in 8s; the shares are part of the
+  first exchange (launch digest v3). Equal shards are unchanged.
+- Routed experts (Qwen 3.5 35B A3B): every expert divided by its intermediate channels, the
+  router replicated, one reduction per MoE block. Lossless (near tie) but slow on this MLX: a
+  256-wide expert is off the gather_qmv fast path, so a half shard decodes slower than the whole
+  model. Expert parallelism is the split to build next for MoE.
+- `record --rank0 R0 --rank1 R1 --reference REF... --model-dir DIR --output FILE` appends a
+  `ClusterPairQualificationRecord` (mode `tensor_parallel_v1`, no cut, `tensorParallelLayout`
+  naming plan, partials and shares) after the near-tie comparison, as pair-check does for a
+  pipeline run.
+- `DARKBLOOM_QWEN35_FUSE_ELEMENTWISE=0` turns off the qwen3_5 compiled decode chains (on by
+  default; bit-identical tokens, -24 % primitives, about -2 % step: the removed kernels were off
+  the critical path).
+
+Measured (27B, greedy, 128 outputs; tokens equal or near tie against both Macs alone at 1K, 4K
+and 16K): each Mac alone decodes at 38.3 (M3 Ultra) and 55.8 tok/s (M5 Ultra); an equal TP2 at
+36.8 tok/s (1K) with a native all-sum, i.e. about 2.7 ms of all-sums per token behind the slower
+rank's half; with an explicit evaluate-and-synchronize before every all-sum (the class of a
+host-driven keyed exchange) 14.4 tok/s. A shard's step is not a straight line in its share (M3
+Ultra: whole 26.1 ms, half 24.7, quarter 16.3; M5 Ultra: whole 18.0, 3/4 21.2, half 15.8,
+quarter 10.2), so the planner takes per-share probes (`ClusterShareRate`).
 
 ## Generation modes
 

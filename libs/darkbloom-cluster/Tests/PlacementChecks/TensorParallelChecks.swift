@@ -1,6 +1,8 @@
+import CryptoKit
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
+
 
 /// Tensor parallel as a planner-chosen mode: the layout facts a family's plan
 /// derives from the artifact's own headers, the planner's prediction from each
@@ -18,6 +20,207 @@ func checkTensorParallel(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Pl
     try checkTensorParallelPair(big, golden: golden, checks)
     try checkTensorParallelOlderMacs(big, checks)
     try checkTensorParallelServed(big, checks)
+    try checkTensorParallelWeighted(big, checks)
+    try checkTensorParallelRecord(configuration: inputs.twentySeven.configuration, checks)
+    checkShareProbes(checks)
+}
+
+/// Share probes measured per share replace the two-point line where present
+/// (M3 Ultra, 27B, 2026-10-14: whole 26.14 ms, half 24.66 ms, quarter 16.34 ms).
+private func checkShareProbes(_ checks: PlacementChecks) {
+    let line = ClusterDecodeSplit(rates: .init(prefillTokensPerSecond: 322, decodeTokensPerSecond: 1 / 0.02614,
+        tensorShardPrefillTokensPerSecond: 598, tensorShardDecodeTokensPerSecond: 1 / 0.02466))
+    let probed = ClusterDecodeSplit(rates: .init(prefillTokensPerSecond: 322, decodeTokensPerSecond: 1 / 0.02614,
+        tensorShardPrefillTokensPerSecond: 598, tensorShardDecodeTokensPerSecond: 1 / 0.02466,
+        tensorShareRates: [.init(sharePerMille: 250, decodeTokensPerSecond: 1 / 0.01634, prefillTokensPerSecond: 1152)]))
+    checks.require("share probes: without them a quarter is extrapolated on the line (floor 23.18 ms + weights x 1/4 = 23.92 ms)",
+        abs(line.shareStepSeconds(fraction: 0.25) - 0.023920) < 2e-5 && line.measuredSteps == nil)
+    checks.require("share probes: with a quarter probe the quarter steps as measured (16.34 ms), the half as its probe, between them on the measured segment",
+        abs(probed.shareStepSeconds(fraction: 0.25) - 0.01634) < 1e-9 && abs(probed.shareStepSeconds(fraction: 0.5) - 0.02466) < 1e-9
+            && abs(probed.shareStepSeconds(fraction: 0.375) - 0.0205) < 1e-9 && abs(probed.shareStepSeconds(fraction: 1) - 0.02614) < 1e-9
+            && probed.measuredSteps?.map(\.fraction) == [0.25, 0.5, 1])
+    checks.require("share probes: below the smallest probe the line is used but never above that probe's own step",
+        probed.shareStepSeconds(fraction: 0.1) <= 0.01634)
+    let rates = ClusterSpeedRates(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1,
+        tensorShareRates: [.init(sharePerMille: 750, decodeTokensPerSecond: 50)])
+    checks.require("share probes: a probe is found within 5 per mille of a share and not further",
+        rates.shareRate(near: 0.75) != nil && rates.shareRate(near: 0.753) != nil && rates.shareRate(near: 0.76) == nil)
+}
+
+// MARK: - The qualification record of a tensor-parallel run
+
+/// `QwenTensorParallelQualification.record`: two passed rank reports over
+/// JACCL compared with single-Mac references give a consistent record of
+/// mode tensor_parallel_v1, no cut, the registered model and artifact, and
+/// the layout the run used; what cannot qualify is refused. Constructed
+/// reports (no model run): not a hardware pass.
+private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementChecks) throws {
+    let sha = SHA256Hex.of(configuration)
+    let tokens = Array(100..<132)
+    func report(mode: String = "tp", role: String, rank: Int, size: Int, backend: String? = "jaccl", chip: String,
+                tokens: [Int], passed: Bool = true, agree: Bool? = true, shares: [Int]? = nil,
+                top: ([[Int]], [[Float]])? = nil, socket: Bool = false, reduction: String? = nil) -> Data {
+        var object: [String: Any] = ["schema": "darkbloom_cluster_tp_check_report_v1", "mode": mode, "role": role, "rank": rank,
+            "size": size, "correctnessOnly": socket, "chip": chip, "modelConfigurationSHA256": sha,
+            "modelID": "registered_qwen38_27b", "promptTokens": 1024, "promptTokenIDsSHA256": String(repeating: "c", count: 64),
+            "outputCount": tokens.count, "chunkSize": 512, "runs": [["tokenIDs": tokens]], "repeatsIdentical": true,
+            "passed": passed]
+        if let backend { object["backend"] = backend }
+        if let agree { object["ranksAgree"] = agree }
+        if let shares { object["shares"] = shares }
+        if let reduction { object["reduction"] = reduction }
+        if let top { object["topTokenIDs"] = top.0; object["topLogits"] = top.1 }
+        return try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+    let r0 = report(role: "tp2-rank0", rank: 0, size: 2, chip: "Apple M3 Ultra", tokens: tokens)
+    let r1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens)
+    let refA = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M3 Ultra", tokens: tokens, agree: nil)
+    let refB = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M5 Ultra", tokens: tokens, agree: nil)
+    let plan = "qwen_dense_heads_and_channels_v1"
+    let record = try QwenTensorParallelQualification.record(rank0: r0, rank1: r1, references: [refA, refB],
+        configuration: configuration, planName: plan, partialsDType: "float32", createdUTC: "2026-10-14T07:00:00Z")
+    checks.require("tensor parallel record: two passed JACCL ranks against both Macs' references make a consistent, passed record of tensor_parallel_v1 with no cut, the registered 27B and its artifact, and the layout",
+        record.isConsistent && record.passed && record.generationMode == "tensor_parallel_v1" && record.cuts.isEmpty
+            && record.runtimeModelID == "registered_qwen38_27b" && record.artifactSHA256.count == 64
+            && record.ranks.map(\.chip) == ["Apple M3 Ultra", "Apple M5 Ultra"]
+            && record.tensorParallelLayout == "plan=\(plan);partials=float32;shares=equal;reduction=native"
+            && record.comparisons.map(\.verdict) == ["tokensEqualLogitsDiffer", "tokensEqualLogitsDiffer"]
+            && record.producer == "darkbloom-cluster-tp-check record")
+    // A near tie at the first difference passes; a real divergence is a failing record (it withholds).
+    var other = tokens; other[5] = 7
+    let tie = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M3 Ultra", tokens: other, agree: nil,
+        top: (Array(repeating: [7, 105], count: 32), Array(repeating: [20.0, 20.0], count: 32)))
+    let far = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M3 Ultra", tokens: other, agree: nil,
+        top: (Array(repeating: [7, 105], count: 32), Array(repeating: [20.0, 12.0], count: 32)))
+    let near = try QwenTensorParallelQualification.record(rank0: r0, rank1: r1, references: [tie], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    let diverged = try QwenTensorParallelQualification.record(rank0: r0, rank1: r1, references: [far], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    checks.require("tensor parallel record: a 0-ulp tie at the first difference passes; an 8-logit gap is a diverged (withholding) record",
+        near.passed && near.comparisons.first?.verdict == "divergedAtNearTie" && near.comparisons.first?.firstDivergenceIndex == 5
+            && !diverged.passed && diverged.outcome == .diverged && diverged.isConsistent)
+    // Weighted shares are named in the layout.
+    let w0 = report(role: "tp2-rank0", rank: 0, size: 2, chip: "Apple M3 Ultra", tokens: tokens, shares: [1, 3])
+    let w1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, shares: [1, 3])
+    let weighted = try QwenTensorParallelQualification.record(rank0: w0, rank1: w1, references: [refA], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    checks.require("tensor parallel record: a weighted run's record names its shares (it qualifies 1:3 only)",
+        weighted.tensorParallelLayout == "plan=\(plan);partials=float32;shares=1:3;reduction=native")
+    let k0 = report(role: "tp2-rank0", rank: 0, size: 2, chip: "Apple M3 Ultra", tokens: tokens, reduction: "sealed-bench")
+    let k1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, reduction: "sealed-bench")
+    let keyed = try QwenTensorParallelQualification.record(rank0: k0, rank1: k1, references: [refA], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    checks.require("tensor parallel record: a sealed run's record names its reduction path; a native run's says native",
+        keyed.tensorParallelLayout?.hasSuffix(";reduction=sealed-bench") == true)
+    checks.refuses("tensor parallel record: refuses ranks that reduced differently", because: "not the same run") {
+        _ = try QwenTensorParallelQualification.record(rank0: r0, rank1: k1, references: [refA], configuration: configuration,
+            planName: plan, partialsDType: "float32", createdUTC: "t")
+    }
+    // Refusals.
+    let socket0 = report(role: "tp2-rank0", rank: 0, size: 2, backend: "socket", chip: "Apple M3 Ultra", tokens: tokens, socket: true)
+    let socket1 = report(role: "tp2-rank1", rank: 1, size: 2, backend: "socket", chip: "Apple M3 Ultra", tokens: tokens, socket: true)
+    let failed1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, passed: false)
+    let otherShares = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, shares: [1, 3])
+    for (label, a, b, refs, why) in [
+        ("two ranks on one Mac (local socket)", socket0, socket1, [refA], "not across two Macs"),
+        ("a rank that did not pass", r0, failed1, [refA], "not one passed"),
+        ("ranks of different shares", r0, otherShares, [refA], "not the same run"),
+        ("no reference", r0, r1, [Data](), "at least one single-Mac reference"),
+        ("a pair report as the reference", r0, r1, [r1], "not a single-Mac full report"),
+        ("float32 partials recorded as bfloat16", r0, r1, [refA], "partials dtype"),
+    ] as [(String, Data, Data, [Data], String)] {
+        checks.refuses("tensor parallel record: refuses \(label)", because: why) {
+            _ = try QwenTensorParallelQualification.record(rank0: a, rank1: b, references: refs, configuration: configuration,
+                planName: plan, partialsDType: label.hasPrefix("float32 partials") ? "bfloat16" : "float32", createdUTC: "t")
+        }
+    }
+}
+
+enum SHA256Hex {
+    static func of(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+}
+
+// MARK: - Unequal Macs: weighted shares
+
+/// The family states which unequal shares its plan accepts; the planner
+/// tries each and keeps the fastest. On unequal Macs the faster Mac takes the
+/// larger share; equal Macs keep equal shards; a family without options is
+/// planned with equal shards only. Constructed Macs (floor-plus-bandwidth
+/// test inputs), not a hardware pass.
+private func checkTensorParallelWeighted(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    let weights = big.wholeModelLoadedBytes
+    let options = big.tensorParallel?.family.shareOptions ?? []
+    checks.require("tensor parallel weighted: the 27B layout offers every candidate share its plan accepts (1:3, 1:2, 2:3, 3:2, 2:1, 3:1)",
+        options == [[1, 3], [1, 2], [2, 3], [3, 2], [2, 1], [3, 1]])
+    let layout = try executing(big)
+    // The owner's rule (2026-10-13): sharded deployments only; keep the phase split out of the comparison.
+    var sharded = ClusterPlacementPolicy()
+    sharded.promptTokens = 1024; sharded.outputTokens = 128
+    sharded.admitsShape = { _, _, mode in !mode.isPhaseSplit }
+    let slow = modelled(floorMs: 12, bandwidthGBs: 200, weightBytes: weights, prefill: 60)
+    let fast = modelled(floorMs: 10, bandwidthGBs: 400, weightBytes: weights, prefill: 150)
+    let devices = [try SyntheticMac.idle(32).device("small", speed: slow, chip: "Apple M1 Max"),
+                   try SyntheticMac.idle(64).device("large", speed: fast, chip: "Apple M2 Max")]
+    let link = linkCosts(reductionMicroseconds: 45)
+    let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: sharded, link: link)
+    guard let chosen = result.chosen, chosen.mode == .tensorParallel, let shares = chosen.tensorShares else {
+        let seen = ([result.chosen].compactMap { $0 } + result.alternatives).map {
+            "\($0.mode.rawValue) \($0.cuts) \($0.tensorShares ?? []) \(String(format: "%.4f", $0.rested.requestSeconds)) tier \($0.tier)" }
+        checks.require("tensor parallel weighted: M1 Max 32 GB + M2 Max 64 GB choose tensor parallel with unequal shares (got \(seen.joined(separator: "; ")); assessment \(result.tensorParallel?.reason ?? "-"))", false)
+        return
+    }
+    let largeRank = chosen.ranks.firstIndex { $0.device == "large" } ?? -1
+    checks.require("tensor parallel weighted: the faster Mac takes the larger share (\(ClusterPlacementExplanation.shareText(shares)) with the M2 Max as rank \(largeRank))",
+        largeRank >= 0 && shares[largeRank] > shares[1 - largeRank])
+    // The predicted step is the slower weighted share plus every reduction.
+    let fractions = shares.map { Double($0) / Double(shares.reduce(0, +)) }
+    let speeds = chosen.ranks.map { rank in rank.device == "large" ? fast : slow }
+    let expected = zip(speeds, fractions).map { ClusterDecodeSplit(rates: $0.rested).shareStepSeconds(fraction: $1) }.max()!
+        + 129 * (45e-6 + 20_480 / 5e9)
+    checks.require("tensor parallel weighted: the predicted step is max over ranks of (floor + weights x share) plus 129 reductions",
+        abs(1 / chosen.rested.decodeTokensPerSecond - expected) < 1e-9)
+    // Each rank holds about its share of the divided weights plus the replicated embedding.
+    let embedding = big.ingress.loadedBytes
+    checks.require("tensor parallel weighted: each rank holds about its share of the weights",
+        zip(chosen.ranks, fractions).allSatisfy { rank, f in
+            let want = Double(weights - embedding) * f + Double(embedding)
+            return abs(Double(rank.weightsBytes) - want) / want < 0.03
+        })
+    // The equal split alone (a family that offers no options) is beaten by the pipeline here.
+    let equalOnly = try withoutShareOptions(layout)
+    let plain = try ClusterPlacementPlanner.plan(devices: devices, layout: equalOnly, policy: sharded, link: link)
+    checks.require("tensor parallel weighted: with equal shards only the same Macs do not choose tensor parallel (the slower Mac's half sets the pace)",
+        plain.chosen?.mode.usesTensorParallelDecode == false)
+    checks.require("tensor parallel weighted: the weighted choice is faster than the equal-only plan's choice",
+        chosen.rested.requestSeconds < (plain.chosen?.rested.requestSeconds ?? 0))
+    // Equal Macs keep equal shards.
+    let twin = try ClusterPlacementPlanner.plan(devices: [try SyntheticMac.idle(192).device("a", speed: fast, chip: "Apple M2 Ultra"),
+                                                          try SyntheticMac.idle(192).device("b", speed: fast, chip: "Apple M2 Ultra")],
+                                                layout: layout, policy: sharded, link: link)
+    checks.require("tensor parallel weighted: equal Macs that choose tensor parallel keep equal shards (no tensorShares)",
+        twin.chosen?.mode == .tensorParallel && twin.chosen?.tensorShares == nil)
+    // An explicit evaluation accepts an offered share and refuses another.
+    _ = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+        layout: layout, policy: sharded, link: link, tensorShares: [1, 3])
+    checks.refuses("tensor parallel weighted: an explicit evaluation refuses shares the family does not offer",
+        because: "Tensor-parallel shares must be one the family's plan accepts") {
+        _ = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+            layout: layout, policy: sharded, link: link, tensorShares: [1, 7])
+    }
+    // The plan's words name the split.
+    let lines = ClusterPlacementExplanation.candidate(chosen, basis: result.basis, prompt: 1024, outputs: 128)
+    checks.require("tensor parallel weighted: the plan says \"tensor parallel, \(ClusterPlacementExplanation.shareText(shares))\"",
+        lines.contains { $0.contains("tensor parallel, \(ClusterPlacementExplanation.shareText(shares))") }
+            && ClusterPlacementExplanation.shareText([2, 3]) == "40/60" && ClusterPlacementExplanation.shareText([1, 3]) == "25/75")
+}
+
+/// The same layout whose family offers no unequal shares.
+func withoutShareOptions(_ layout: ClusterModelLayout) throws -> ClusterModelLayout {
+    var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any] ?? [:]
+    if var tp = object["tensorParallel"] as? [String: Any], var family = tp["family"] as? [String: Any] {
+        family.removeValue(forKey: "shareOptions"); tp["family"] = family; object["tensorParallel"] = tp
+    }
+    return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
 }
 
 // MARK: - Layout facts
@@ -53,13 +256,13 @@ private func checkTensorParallelLayouts(nine: ClusterModelLayout, big: ClusterMo
         do { _ = try QwenTensorParallelPlan(textConfiguration: t, quantization: q, size: 2); return nil } catch { return "\(error)" }
     }
     checks.require("tensor parallel: the registered 27B configuration is covered by the dense plan", refusal { _, _ in } == nil)
-    checks.require("tensor parallel: routed experts (the A3B rows) are not covered yet",
+    checks.require("tensor parallel: routed experts on a dense model type are refused (the A3B rows are qwen3_5_moe_text)",
         refusal { t, _ in t["num_experts"] = 256 }?.contains("routed experts") == true)
     checks.require("tensor parallel: a non-affine pack (Bonsai's Prism) is not covered yet",
         refusal { _, q in q["mode"] = "prism_hadamard" }?.contains("affine") == true)
     checks.require("tensor parallel: a tied head is not covered yet", refusal { t, _ in t["tie_word_embeddings"] = true }?.contains("tied") == true)
     checks.require("tensor parallel: another model type (MiMo, GPT-OSS, Gemma 4, Nemotron families) is not covered by this plan",
-        refusal { t, _ in t["model_type"] = "mimo_v2_flash" }?.contains("dense qwen3_5_text") == true)
+        refusal { t, _ in t["model_type"] = "mimo_v2_flash" }?.contains("qwen3_5_moe_text") == true)
     let synthetic = try syntheticLayout(layers: 8, layerGiB: 1)
     let syntheticPlan = try ClusterPlacementPlanner.plan(devices: [try SyntheticMac.idle(64).device("a"), try SyntheticMac.idle(64).device("b")],
         layout: synthetic)
@@ -85,6 +288,13 @@ func executing(_ layout: ClusterModelLayout, _ modes: [ClusterGenerationMode] = 
     var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any] ?? [:]
     let listed = layout.generationModes + modes.filter { !layout.generationModes.contains($0) }
     object["generationModes"] = ClusterGenerationMode.allCases.filter(listed.contains).map(\.rawValue)
+    return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+}
+
+/// The same layout as a runtime that executes no tensor-parallel mode lists it.
+func notExecuting(_ layout: ClusterModelLayout) throws -> ClusterModelLayout {
+    var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any] ?? [:]
+    object["generationModes"] = layout.generationModes.filter { !$0.usesTensorParallelDecode }.map(\.rawValue)
     return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
 }
 
@@ -148,16 +358,23 @@ private func checkTensorParallelPair(_ big: ClusterModelLayout, golden: URL, _ c
     checks.require("tensor parallel M3 Ultra + M5 Ultra with an M5-Max-like shard probe: still not chosen; the slower Mac's share sets the pace",
         withShard.tensorParallel?.verdict == .predictedSlower && withShard.chosen?.mode.usesTensorParallelDecode == false)
     if let tp = withShard.tensorParallel?.tensorParallel {
+        // The best tensor-parallel candidate may be weighted (the M5 Ultra taking more).
         let step = 1 / tp.rested.decodeTokensPerSecond
-        let expected = 1 / (35.7 / 0.845) + 129 * (45e-6 + 20_480 / 5e9)
+        let weightsOf = tp.tensorShares ?? [1, 1]
+        let fractions = weightsOf.map { Double($0) / Double(weightsOf.reduce(0, +)) }
+        let expected = zip(tp.ranks, fractions).map { rank, f in
+            ClusterDecodeSplit(rates: (rank.device == "mac-a" ? probed(300, 35.7) : probed(1530, 58)).rested).shareStepSeconds(fraction: f)
+        }.max()! + 129 * (45e-6 + 20_480 / 5e9)
         checks.require("tensor parallel M3 Ultra + M5 Ultra: the predicted step is the slower share plus 129 reductions",
             abs(step - expected) < 1e-9)
+        checks.require("tensor parallel M3 Ultra + M5 Ultra: the best tensor-parallel candidate gives the M5 Ultra the larger share",
+            tp.tensorShares.map { s in s[tp.ranks.firstIndex { $0.device == "mac-b" }!] > s[tp.ranks.firstIndex { $0.device == "mac-a" }!] } == true)
         // Each rank holds its share of every layer and the replicated embedding.
         let whole = big.wholeModelLoadedBytes, embedding = big.ingress.loadedBytes
-        checks.require("tensor parallel M3 Ultra + M5 Ultra: each rank holds about half the weights plus the replicated embedding",
-            tp.ranks.allSatisfy { rank in
-                let expected = Double(whole - embedding) / 2 + Double(embedding)
-                return abs(Double(rank.weightsBytes) - expected) / expected < 0.02 && rank.firstLayer == 0 && rank.endLayer == 64
+        checks.require("tensor parallel M3 Ultra + M5 Ultra: each rank holds about its share of the weights plus the replicated embedding",
+            zip(tp.ranks, fractions).allSatisfy { rank, f in
+                let expected = Double(whole - embedding) * f + Double(embedding)
+                return abs(Double(rank.weightsBytes) - expected) / expected < 0.03 && rank.firstLayer == 0 && rank.endLayer == 64
             } && tp.cuts.isEmpty)
     } else {
         checks.require("tensor parallel M3 Ultra + M5 Ultra: a tensor-parallel candidate was evaluated", false)
@@ -213,8 +430,8 @@ private func checkTensorParallelOlderMacs(_ big: ClusterModelLayout, _ checks: P
             none.chosen?.mode.usesTensorParallelDecode == false && none.tensorParallel?.verdict == .reductionNotMeasured
                 && none.tensorParallel?.tensorParallel == nil)
         // The runtime as built lists no tensor-parallel mode: predicted faster, not chosen, and said so.
-        let today = try ClusterPlacementPlanner.plan(devices: devices, layout: big, policy: policy(), link: linkCosts(reductionMicroseconds: 45))
-        checks.require("tensor parallel \(pair.name): with today's runtime (no tensor-parallel mode listed) the verdict is notExecutedByRuntime, never chosen",
+        let today = try ClusterPlacementPlanner.plan(devices: devices, layout: try notExecuting(big), policy: policy(), link: linkCosts(reductionMicroseconds: 45))
+        checks.require("tensor parallel \(pair.name): with a runtime that lists no tensor-parallel mode the verdict is notExecutedByRuntime, never chosen",
             today.chosen?.mode.usesTensorParallelDecode == false && today.tensorParallel?.verdict == .notExecutedByRuntime)
         // Records that admit no tensor-parallel shape keep it out.
         var gated = policy()

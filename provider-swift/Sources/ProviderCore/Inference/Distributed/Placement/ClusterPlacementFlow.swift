@@ -52,6 +52,7 @@ public enum ClusterPlacementFlow {
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
                               served: [ClusterServedSpeedRecords.Entry] = [],
+                              link: ClusterLinkCosts = .unmeasured,
                               environment: [String: String] = ProcessInfo.processInfo.environment,
                               benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
@@ -121,7 +122,9 @@ public enum ClusterPlacementFlow {
                 devices = zip(profiles, again).map { ClusterPlacementDevice(label: $0.0.0, profile: $0.0.1, speed: $0.1) }
             }
         }
-        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
+        // The link as the pair's last load measured it (`ClusterLinkProbeHistory`);
+        // unmeasured, no tensor-parallel mode is chosen.
+        let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
         var lines = (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)

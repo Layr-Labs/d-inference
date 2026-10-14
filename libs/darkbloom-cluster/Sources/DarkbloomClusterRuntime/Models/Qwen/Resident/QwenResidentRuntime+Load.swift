@@ -80,6 +80,10 @@ extension QwenResidentRuntime {
         guard admission.supportedGenerationModes.contains(mode) else {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of \(admission.runtimeModelID)")
         }
+        // Tensor parallel has its own resident owner (`QwenTensorParallelResidentRuntime`).
+        guard !mode.usesTensorParallelDecode else {
+            throw ProbeError("Generation mode \(mode.rawValue) runs on the tensor-parallel resident owner, not the stage runtime")
+        }
         guard requestedTerms == nil || mode.usesSpeculativeHead else {
             throw ProbeError("Speculative terms were declared for a mode without a speculative head")
         }

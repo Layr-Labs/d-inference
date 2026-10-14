@@ -24,6 +24,12 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// The pipeline has one saved spelling, the omitted one, so naming it in an
     /// input does not make a second digest for the same setup.
     mutating func makeGenerationSelectionCanonical() { if generationMode == .pipeline { generationMode = nil } }
+    /// Tensor parallel only: each rank's share weight of every layer (rank
+    /// order), as the planner chose it from the model plan's kernel-aligned
+    /// options. Omitted for equal shares and every other mode, so a setup
+    /// saved before this field keeps its bytes. Passed to both workers
+    /// (`--tensor-shares`), which bind it into their load agreement.
+    public private(set) var tensorShares: [Int]?
     public let chunkTokens: Int
     public let requestTimeoutSeconds: Int
     public let peers: [Peer]
@@ -110,6 +116,9 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
         }
         // After the peers: the refusal names the workers the record describes.
         try ClusterGenerationSelection.requireSupport(for: selectedGenerationMode, peers: peers, capability: capability)
+        try require(tensorShares.map { shares in selectedGenerationMode == .tensorParallel && shares.count == 2
+            && shares.allSatisfy({ (1...64).contains($0) }) && Set(shares).count > 1 } ?? true,
+            "Tensor-parallel shares are two unequal weights of 1...64, and only under tensor_parallel_v1")
         try require(ClusterConfigurationSyntax.ipv4(coordinator.address) && (1...65535).contains(coordinator.port), "Invalid JACCL coordinator address")
         if let linkControl {
             // A coordinator-paired setup (`nativeMember`) may carry it too: the

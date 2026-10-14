@@ -52,6 +52,12 @@ public enum ClusterConfigurationCodec {
             }
             expected.insert("generationMode")
         }
+        if let shares = object["tensorShares"] {
+            guard let values = shares as? [Int], values.count == 2 else {
+                throw ClusterConfigurationError.invalid("Tensor-parallel shares must be two integers")
+            }
+            expected.insert("tensorShares")
+        }
         if let attachment = object["nativeMember"] {
             guard let fields = attachment as? [String: Any] else {
                 throw ClusterConfigurationError.invalid("Native member attachment must be a non-null object")

@@ -70,7 +70,10 @@ public struct PairDriver: Sendable {
         "darkbloom-resident-context-v1 ", "darkbloom-resident-request-v1 ", "darkbloom-speculative-head-v1 ",
         "darkbloom-data-plane-v1 ", "darkbloom-data-plane-exchange-v1 ", "darkbloom-data-plane-tamper-v1 ",
         "darkbloom-data-plane-status-v1 ", "darkbloom-request-refused-v1 ", "darkbloom-serving-context-v1 ",
-        "darkbloom-stage-loaded-range-v1 ", "darkbloom-prefix-v1 ", "darkbloom-prefix-ssd-v1 "]
+        "darkbloom-stage-loaded-range-v1 ", "darkbloom-prefix-v1 ", "darkbloom-prefix-ssd-v1 ",
+        // Tensor parallel: the load (plan, shares, sealed all-sum), each request, the link probe and the collective wait.
+        "darkbloom-tensor-parallel-load-v1 ", "darkbloom-tensor-parallel-request-v1 ", "darkbloom-link-probe-v1 ",
+        "darkbloom-collective-sync-v1 "]
     /// The two workers' credential lines for one run (S16).
     static func dataPlaneLines(_ c: PairConfiguration) throws -> [Data?] {
         let identities = [P256.Signing.PrivateKey(), P256.Signing.PrivateKey()]

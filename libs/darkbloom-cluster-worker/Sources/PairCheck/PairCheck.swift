@@ -34,7 +34,8 @@ import Foundation
               [--local-rank 0|1 (default 0; 1 runs rank 0 on the second Mac and rank 1 here, and the
                coordinator address is then the second Mac's own link address)]
               [--evidence final-row|none] [--prefill-schedule serial_v1|one_chunk_lookahead_v1]
-              [--mode pipeline|pipeline-compact|pipeline-mtp|phase-split|phase-split-mtp] [--mtp-depth 1...4 (phase-split-mtp; 1...3 pipeline-mtp)]
+              [--mode pipeline|pipeline-compact|pipeline-mtp|phase-split|phase-split-mtp|tensor-parallel] [--mtp-depth 1...4 (phase-split-mtp; 1...3 pipeline-mtp)]
+              [--tensor-shares A:B (tensor-parallel; each rank's share weight, default equal)]
               [--repetitions N (with --evidence none; no session limit)]
               [--idle-seconds S[,S...] (idle gaps before requests 2, 3, ...; the list repeats)]
               [--keep-warm on|off (S27 keep-warm, both tiers; default on)]
@@ -213,7 +214,7 @@ import Foundation
             "--startup-seconds", "--request-seconds", "--rank1-delay-seconds",
             "--idle-seconds", "--keep-warm", "--stop-renewals-after-seconds",
             "--progress-timeout-ms", "--local-scratch-dir", "--remote-scratch-dir", "--remote-command-prefix",
-            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
+            "--preflight-only", "--allow-unguarded-jaccl", "--keep-run-files", "--mode", "--mtp-depth", "--tensor-shares", "--repetitions", "--transport", "--fault", "--stop-after-tokens",
             "--memory-gate", "--stage-residency", "--mimo-step-evidence", "--local-rank", "--follow-request", "--prefix-cache",
             "--data-plane", "--data-plane-fault", "--data-plane-rekey-records", "--serving-context-check",
             "--batch-lanes", "--batch-request", "--batch-wave", "--batch-solo", "--kv-backend",
@@ -258,9 +259,10 @@ import Foundation
         let delay = fields["--rank1-delay-seconds"]?.first.flatMap(Double.init) ?? 2
         let modes = ["pipeline": PairConfiguration.pipelineMode, "phase-split": PairConfiguration.phaseSplitMode,
                      "pipeline-compact": PairConfiguration.pipelineCompactDecodeMode,
-                     "phase-split-mtp": PairConfiguration.phaseSplitMTPMode, "pipeline-mtp": PairConfiguration.pipelineMTPMode]
+                     "phase-split-mtp": PairConfiguration.phaseSplitMTPMode, "pipeline-mtp": PairConfiguration.pipelineMTPMode,
+                     "tensor-parallel": PairConfiguration.tensorParallelMode]
         guard let mode = modes[fields["--mode"]?.first ?? "pipeline"] else {
-            throw Failure("--mode must be pipeline, pipeline-compact, pipeline-mtp, phase-split or phase-split-mtp")
+            throw Failure("--mode must be pipeline, pipeline-compact, pipeline-mtp, phase-split, phase-split-mtp or tensor-parallel")
         }
         var configuration = try PairConfiguration(request: request, stageCut: cut,
             local: .init(modelDirectory: try required("--local-model-dir"), workerPath: try required("--local-worker"),
@@ -368,6 +370,14 @@ import Foundation
         }
         if let depth = try integer(fields, "--mtp-depth") {
             configuration.speculativeDepth = depth
+            try configuration.validate()
+        }
+        if let text = fields["--tensor-shares"]?.first {
+            let weights = text.split(separator: ":").compactMap { Int($0) }
+            guard weights.count == 2, weights.map(String.init).joined(separator: ":") == text else {
+                throw Failure("--tensor-shares takes A:B")
+            }
+            configuration.tensorShares = weights
             try configuration.validate()
         }
         if let gate = fields["--memory-gate"]?.first {

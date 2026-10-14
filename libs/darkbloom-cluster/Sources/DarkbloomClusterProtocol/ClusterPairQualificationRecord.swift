@@ -84,10 +84,16 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
     public let passed: Bool
     /// Which tool wrote it.
     public let producer: String
+    /// Tensor parallel only: the layout the run used (plan, partials dtype,
+    /// shares), e.g. "plan=qwen_dense_heads_and_channels_v1;partials=float32;
+    /// shares=equal". A record qualifies that layout only; nil (and absent
+    /// from the encoded line) for every other mode.
+    public let tensorParallelLayout: String?
 
     public init(runtimeModelID: String, artifactSHA256: String, ranks: [Rank], cuts: [Int], generationMode: String,
                 prefillSchedule: String, chunkTokens: Int, promptTokens: Int, outputTokens: Int, transport: String,
-                pairReportSHA256: String, pairReportCreatedUTC: String, comparisons: [Comparison], producer: String) {
+                pairReportSHA256: String, pairReportCreatedUTC: String, comparisons: [Comparison], producer: String,
+                tensorParallelLayout: String? = nil) {
         schema = Self.schemaName
         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256; self.ranks = ranks; self.cuts = cuts
         self.generationMode = generationMode; self.prefillSchedule = prefillSchedule; self.chunkTokens = chunkTokens
@@ -96,6 +102,7 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
         self.comparisons = comparisons
         passed = !comparisons.isEmpty && comparisons.allSatisfy(\.passes)
         self.producer = producer
+        self.tensorParallelLayout = tensorParallelLayout
     }
 
     /// The near-tie rule applied to the comparisons, whatever `passed` says.
@@ -126,6 +133,8 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
             && chunkTokens > 0 && cuts.count == mode.layerCutCount(ranks: ranks.count)
             && cuts.allSatisfy { $0 > 0 } && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
             && transport == Self.crossCableTransport && passed == passesNearTieRule
+            && (mode.usesTensorParallelDecode == (tensorParallelLayout != nil))
+            && (tensorParallelLayout ?? "").utf8.count <= 256
             && comparisons.allSatisfy { $0.nearTieThresholdULPs >= 0 && $0.nearTieThresholdULPs.isFinite }
     }
 

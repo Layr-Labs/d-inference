@@ -19,9 +19,18 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
     public var bfloat16Partials: Bool
     /// The hybrid's prefill rank; nil for a plain tensor-parallel run.
     public var hybridPrefillRank: Int?
+    /// Each rank's share weight (`QwenTensorParallelPlan.shares`): which heads
+    /// and channels every rank holds. Ranks with different shares would hold
+    /// overlapping or missing heads and sum wrong partials without any
+    /// mismatched shape, so the shares are agreed first.
+    public var shares: [Int]
+    /// Floating all-sums cross the link sealed (`QwenTensorParallelSealCodec`)
+    /// instead of the native all-sum: another collective per reduction.
+    public var sealedReduction: Bool
 
     public init(outputCount: Int, chunkSize: Int, promptTokens: Int, repeats: Int, warmup: Bool,
-                explicitTiming: Bool, bfloat16Partials: Bool, hybridPrefillRank: Int?) {
+                explicitTiming: Bool, bfloat16Partials: Bool, hybridPrefillRank: Int?, shares: [Int] = [1, 1],
+                sealedReduction: Bool = false) {
         self.outputCount = outputCount
         self.chunkSize = chunkSize
         self.promptTokens = promptTokens
@@ -30,17 +39,20 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
         self.explicitTiming = explicitTiming
         self.bfloat16Partials = bfloat16Partials
         self.hybridPrefillRank = hybridPrefillRank
+        self.shares = shares
+        self.sealedReduction = sealedReduction
     }
 
     /// The values the first agreement compares across ranks.
     public var agreement: [Int32] {
         [Int32(clamping: outputCount), Int32(clamping: chunkSize), Int32(clamping: promptTokens),
          Int32(clamping: repeats), warmup ? 1 : 0, explicitTiming ? 2 : 1,
-         hybridPrefillRank.map { Int32(clamping: 10 + $0) } ?? 0, bfloat16Partials ? 2 : 1]
+         hybridPrefillRank.map { Int32(clamping: 10 + $0) } ?? 0, bfloat16Partials ? 2 : 1,
+         Int32(clamping: shares.count)] + shares.map { Int32(clamping: $0) } + [sealedReduction ? 2 : 1]
     }
 
     /// Version of the first exchange; change it whenever `agreement` changes meaning.
-    public static let agreementVersion = "darkbloom-tp-launch-v2"
+    public static let agreementVersion = "darkbloom-tp-launch-v4"
 
     /// 64-bit FNV-1a of the version and `agreement`: what the ranks compare first.
     public var digest: UInt64 {
@@ -49,5 +61,19 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
             hash = (hash ^ UInt64(byte)) &* 0x100_0000_01B3
         }
         return hash
+    }
+}
+
+extension QwenTensorParallelLaunch {
+    /// The freed-buffer cache a ready tensor-parallel shard keeps. The
+    /// dedicated worker loads with MLX's cache at zero (every freed buffer
+    /// returned at once, so the memory gate's accounting is exact while
+    /// weights load); a decode step then creates its ~1,500 intermediate
+    /// buffers through the driver one by one (measured on the M5 Ultra: most
+    /// of a 79 ms 27B step in buffer creation). Half of the allocator headroom
+    /// the memory gate already demands free beside the reservation, so the
+    /// cache never takes memory the gate did not hold back.
+    public static func freedBufferCacheBytes(allocatorHeadroomBytes: Int) -> Int {
+        max(0, allocatorHeadroomBytes) / 2
     }
 }

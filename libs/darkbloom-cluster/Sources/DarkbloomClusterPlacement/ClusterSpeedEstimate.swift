@@ -1,7 +1,27 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Two rates for a whole model on one device alone, and, when measured, the
 /// decode rate of the same device running the model's speculative head.
+/// A tensor-parallel shard probe at one share of the model (a rank holding
+/// `sharePerMille` / 1000 of every divided part, no reduction), measured on
+/// the device itself: a share's step is not a straight line between the
+/// whole and a half on every chip (measured 2026-10-14 on an M3 Ultra, 27B:
+/// whole 26.1 ms, half 24.7 ms, quarter 16.3 ms).
+public struct ClusterShareRate: Codable, Equatable, Sendable {
+    public let sharePerMille: Int
+    public let decodeTokensPerSecond: Double
+    public let prefillTokensPerSecond: Double?
+    public init(sharePerMille: Int, decodeTokensPerSecond: Double, prefillTokensPerSecond: Double? = nil) {
+        self.sharePerMille = sharePerMille; self.decodeTokensPerSecond = decodeTokensPerSecond
+        self.prefillTokensPerSecond = prefillTokensPerSecond
+    }
+    var valid: Bool {
+        (1...999).contains(sharePerMille) && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
+            && (prefillTokensPerSecond.map { $0.isFinite && $0 > 0 } ?? true)
+    }
+}
+
 public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     public let prefillTokensPerSecond: Double
     public let decodeTokensPerSecond: Double
@@ -24,26 +44,39 @@ public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     /// window, so neither says anything about the other. Nil when not served;
     /// never transferred from another device.
     public let pipelineSpeculativeFactor: Double?
+    /// Shard probes at other shares (unequal tensor-parallel splits), the
+    /// device's own; nil when none was measured.
+    public let tensorShareRates: [ClusterShareRate]?
     public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double,
                 speculativeDecodeTokensPerSecond: Double? = nil, pipelineSpeculativeFactor: Double? = nil,
-                tensorShardPrefillTokensPerSecond: Double? = nil, tensorShardDecodeTokensPerSecond: Double? = nil) {
+                tensorShardPrefillTokensPerSecond: Double? = nil, tensorShardDecodeTokensPerSecond: Double? = nil,
+                tensorShareRates: [ClusterShareRate]? = nil) {
         self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
         self.speculativeDecodeTokensPerSecond = speculativeDecodeTokensPerSecond
         self.pipelineSpeculativeFactor = pipelineSpeculativeFactor
         self.tensorShardPrefillTokensPerSecond = tensorShardPrefillTokensPerSecond
         self.tensorShardDecodeTokensPerSecond = tensorShardDecodeTokensPerSecond
+        self.tensorShareRates = tensorShareRates?.isEmpty == true ? nil : tensorShareRates
+    }
+
+    /// A measured shard probe within 5 per mille of `fraction`, if any.
+    public func shareRate(near fraction: Double) -> ClusterShareRate? {
+        (tensorShareRates ?? []).min { abs(Double($0.sharePerMille) / 1000 - fraction) < abs(Double($1.sharePerMille) / 1000 - fraction) }
+            .flatMap { abs(Double($0.sharePerMille) / 1000 - fraction) <= 0.005 ? $0 : nil }
     }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
             && [speculativeDecodeTokensPerSecond, pipelineSpeculativeFactor, tensorShardPrefillTokensPerSecond,
                 tensorShardDecodeTokensPerSecond].allSatisfy { $0.map { $0.isFinite && $0 > 0 } ?? true }
+            && (tensorShareRates ?? []).allSatisfy(\.valid) && (tensorShareRates ?? []).count <= 16
     }
     /// True when a figure beyond the plain two rates is present (schema v2):
     /// a speculative rate, the served pipeline speed-up or a shard rate.
     var extended: Bool {
         speculativeDecodeTokensPerSecond != nil || pipelineSpeculativeFactor != nil
             || tensorShardPrefillTokensPerSecond != nil || tensorShardDecodeTokensPerSecond != nil
+            || tensorShareRates != nil
     }
     /// True when either speculative figure is present.
     var carriesSpeculative: Bool { speculativeDecodeTokensPerSecond != nil || pipelineSpeculativeFactor != nil }
@@ -322,5 +355,37 @@ public enum ClusterSpeedEstimator {
             }
             return .assumedEqual
         }
+    }
+}
+
+extension ClusterLinkCosts {
+    /// The link costs a pair's latest link probe gives (`ClusterWorkerLinkProbe`,
+    /// measured at load as the sharded modes use the link): the reduction is
+    /// the all-sum's fixed part and per-byte slope between its small and large
+    /// measurements (keyed when the probe's all-sums were sealed); a pipeline
+    /// decode step pays two one-way small records (the step's hand-off and the
+    /// token back), or `servedPipelineStepSeconds` when the pair served the
+    /// pipeline and its owner derived the step's link share from that; a
+    /// prefill chunk's hop one large record; a hand-off the records' per-byte
+    /// slope. Nil for a malformed probe. Nothing here is per chip or per model.
+    public init?(probe: ClusterWorkerLinkProbe, measuredUTC: String, servedPipelineStepSeconds: Double? = nil) {
+        guard probe.valid, servedPipelineStepSeconds.map({ $0.isFinite && $0 >= 0 && $0 < 10 }) ?? true else { return nil }
+        let us = 1e-6
+        let slope = max(0, Double(probe.allSumLargeMicroseconds - probe.allSumSmallMicroseconds) * us
+            / Double(probe.allSumLargeBytes - probe.allSumSmallBytes))
+        let fixed = max(0, Double(probe.allSumSmallMicroseconds) * us - Double(probe.allSumSmallBytes) * slope)
+        let recordSlope = max(0, Double(probe.pointToPointLargeMicroseconds - probe.pointToPointSmallMicroseconds) * us
+            / Double(probe.pointToPointLargeBytes - probe.pointToPointSmallBytes))
+        let step = servedPipelineStepSeconds ?? 2 * Double(probe.pointToPointSmallMicroseconds) * us
+        let provenance = "measured at load over \(probe.transport) (\(probe.keyed ? "keyed, sealed all-sums" : "plaintext"))"
+            + " at \(measuredUTC): all-sum \(probe.allSumSmallMicroseconds) us at \(probe.allSumSmallBytes) B and"
+            + " \(probe.allSumLargeMicroseconds) us at \(probe.allSumLargeBytes) B; records \(probe.pointToPointSmallMicroseconds) us"
+            + " at \(probe.pointToPointSmallBytes) B and \(probe.pointToPointLargeMicroseconds) us at \(probe.pointToPointLargeBytes) B"
+            + (servedPipelineStepSeconds == nil ? "" : "; pipeline step from served requests")
+        self.init(measured: true, perChunkSeconds: Double(probe.pointToPointLargeMicroseconds) * us,
+            perDecodeStepSeconds: Dictionary(uniqueKeysWithValues: ClusterGenerationMode.allCases
+                .filter { !$0.usesTensorParallelPrefill }.map { ($0.rawValue, step) }),
+            handoffSecondsPerByte: recordSlope, provenance: String(provenance.prefix(1024)),
+            reduction: .init(fixedSeconds: fixed, secondsPerByte: slope, keyed: probe.keyed, provenance: String(provenance.prefix(1024))))
     }
 }

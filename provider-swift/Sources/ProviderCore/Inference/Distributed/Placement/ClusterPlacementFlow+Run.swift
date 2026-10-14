@@ -95,7 +95,8 @@ extension ClusterPlacementFlow {
         let decided = try decide(description: description, capability: capability, localMemberID: inputs.localMemberID,
             localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements,
             promptTokens: inputs.promptTokens, outputTokens: inputs.outputTokens, regime: inputs.regime,
-            served: ClusterServedSpeedHistory.entries(homeDirectory: home))
+            served: ClusterServedSpeedHistory.entries(homeDirectory: home),
+            link: ClusterLinkProbeHistory.costs(homeDirectory: home, members: description.members.map(\.id)) ?? .unmeasured)
         var written: [URL] = []
         var lines = decided.lines
         if let setup = decided.setup {

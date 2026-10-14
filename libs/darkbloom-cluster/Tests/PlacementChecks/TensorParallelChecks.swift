@@ -59,7 +59,7 @@ private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementC
     let tokens = Array(100..<132)
     func report(mode: String = "tp", role: String, rank: Int, size: Int, backend: String? = "jaccl", chip: String,
                 tokens: [Int], passed: Bool = true, agree: Bool? = true, shares: [Int]? = nil,
-                top: ([[Int]], [[Float]])? = nil, socket: Bool = false) -> Data {
+                top: ([[Int]], [[Float]])? = nil, socket: Bool = false, reduction: String? = nil) -> Data {
         var object: [String: Any] = ["schema": "darkbloom_cluster_tp_check_report_v1", "mode": mode, "role": role, "rank": rank,
             "size": size, "correctnessOnly": socket, "chip": chip, "modelConfigurationSHA256": sha,
             "modelID": "registered_qwen38_27b", "promptTokens": 1024, "promptTokenIDsSHA256": String(repeating: "c", count: 64),
@@ -68,6 +68,7 @@ private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementC
         if let backend { object["backend"] = backend }
         if let agree { object["ranksAgree"] = agree }
         if let shares { object["shares"] = shares }
+        if let reduction { object["reduction"] = reduction }
         if let top { object["topTokenIDs"] = top.0; object["topLogits"] = top.1 }
         return try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
@@ -82,7 +83,7 @@ private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementC
         record.isConsistent && record.passed && record.generationMode == "tensor_parallel_v1" && record.cuts.isEmpty
             && record.runtimeModelID == "registered_qwen38_27b" && record.artifactSHA256.count == 64
             && record.ranks.map(\.chip) == ["Apple M3 Ultra", "Apple M5 Ultra"]
-            && record.tensorParallelLayout == "plan=\(plan);partials=float32;shares=equal"
+            && record.tensorParallelLayout == "plan=\(plan);partials=float32;shares=equal;reduction=native"
             && record.comparisons.map(\.verdict) == ["tokensEqualLogitsDiffer", "tokensEqualLogitsDiffer"]
             && record.producer == "darkbloom-cluster-tp-check record")
     // A near tie at the first difference passes; a real divergence is a failing record (it withholds).
@@ -104,7 +105,17 @@ private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementC
     let weighted = try QwenTensorParallelQualification.record(rank0: w0, rank1: w1, references: [refA], configuration: configuration,
         planName: plan, partialsDType: "float32", createdUTC: "t")
     checks.require("tensor parallel record: a weighted run's record names its shares (it qualifies 1:3 only)",
-        weighted.tensorParallelLayout == "plan=\(plan);partials=float32;shares=1:3")
+        weighted.tensorParallelLayout == "plan=\(plan);partials=float32;shares=1:3;reduction=native")
+    let k0 = report(role: "tp2-rank0", rank: 0, size: 2, chip: "Apple M3 Ultra", tokens: tokens, reduction: "sealed-bench")
+    let k1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, reduction: "sealed-bench")
+    let keyed = try QwenTensorParallelQualification.record(rank0: k0, rank1: k1, references: [refA], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    checks.require("tensor parallel record: a sealed run's record names its reduction path; a native run's says native",
+        keyed.tensorParallelLayout?.hasSuffix(";reduction=sealed-bench") == true)
+    checks.refuses("tensor parallel record: refuses ranks that reduced differently", because: "not the same run") {
+        _ = try QwenTensorParallelQualification.record(rank0: r0, rank1: k1, references: [refA], configuration: configuration,
+            planName: plan, partialsDType: "float32", createdUTC: "t")
+    }
     // Refusals.
     let socket0 = report(role: "tp2-rank0", rank: 0, size: 2, backend: "socket", chip: "Apple M3 Ultra", tokens: tokens, socket: true)
     let socket1 = report(role: "tp2-rank1", rank: 1, size: 2, backend: "socket", chip: "Apple M3 Ultra", tokens: tokens, socket: true)

@@ -37,6 +37,8 @@ public enum QwenTensorParallelQualification {
         public let outputCount: Int
         public let chunkSize: Int
         public let shares: [Int]?
+        /// "sealed-bench" (or a product sealed path) when partials crossed sealed; nil: the native all-sum.
+        public let reduction: String?
         public let runs: [Run]
         public let topTokenIDs: [[Int]]?
         public let topLogits: [[Float]]?
@@ -92,7 +94,8 @@ public enum QwenTensorParallelQualification {
         guard !tokens.isEmpty, ranks[1].runs.first?.tokenIDs == tokens,
               ranks.allSatisfy({ !$0.chip.isEmpty && $0.modelConfigurationSHA256 == first.modelConfigurationSHA256
                   && $0.promptTokenIDsSHA256 == first.promptTokenIDsSHA256 && $0.chunkSize == first.chunkSize
-                  && $0.outputCount == first.outputCount && $0.shares == first.shares && $0.mode == first.mode }) else {
+                  && $0.outputCount == first.outputCount && $0.shares == first.shares && $0.mode == first.mode
+                  && $0.reduction == first.reduction }) else {
             throw ProbeError("The two rank reports are not the same run")
         }
         // The report names bfloat16 partials in its mode ("tp-bf16-partials"); the record must say the same.
@@ -124,6 +127,6 @@ public enum QwenTensorParallelQualification {
             transport: ClusterPairQualificationRecord.crossCableTransport,
             pairReportSHA256: SHA256.hash(data: rank0).map { String(format: "%02x", $0) }.joined(),
             pairReportCreatedUTC: createdUTC, comparisons: comparisons, producer: producer,
-            tensorParallelLayout: "plan=\(planName);partials=\(partialsDType);shares=\(shares)")
+            tensorParallelLayout: "plan=\(planName);partials=\(partialsDType);shares=\(shares);reduction=\(first.reduction ?? "native")")
     }
 }

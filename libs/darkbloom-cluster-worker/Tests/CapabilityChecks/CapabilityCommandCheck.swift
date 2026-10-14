@@ -114,7 +114,7 @@ import Foundation
                 let mimo = try ClusterResidentModelCatalog.describe(configuration: mimoConfiguration, manifest: mimoManifest,
                                                                     runtimeBinarySHA256: binary)
                 try capabilityCheck(mimo.adapterID == "mimo-v26-layer-stage" && mimo.runtimeModelID == "registered_mimo_v26_flash_mopd"
-                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode]
+                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP]
                     && mimo.supportedPrefillSchedules == [.serial]
                     && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...47)
                     && mimo.partitions.allSatisfy { $0.stages.count == 2 && $0.stages[1].sourceLayerEnd == 48 },

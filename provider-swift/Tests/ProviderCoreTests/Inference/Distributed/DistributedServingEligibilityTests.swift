@@ -256,9 +256,10 @@ import DarkbloomClusterProtocol
         #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [0], mode: .pipeline).isWellFormed)
         #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [20, 16], mode: .pipeline).isWellFormed)
         #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [16, 20], mode: .pipeline).isWellFormed)
-        // Modes are spelled as the coordinator's plan modes.
+        // Modes are spelled as the coordinator's plan modes (`pipeline_mtp_v1` needs the
+        // coordinator's protocol.ClusterPlanModes to list it before a plan may name it).
         #expect(Set(ClusterGenerationMode.allCases.map(\.rawValue))
-            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"])
+            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1", "pipeline_mtp_v1"])
     }
 
     @Test func rolesAndPlacementShape() {

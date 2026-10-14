@@ -25,8 +25,15 @@ struct MiMoMTPTerms: Equatable, Sendable, Encodable {
         self.depth = depth
     }
 
-    /// The depth a session runs when its launcher declares none.
-    static let standard = try! MiMoMTPTerms(depth: maximumDepth)
+    /// The depth a session runs when its launcher declares none: the fastest
+    /// measured across the cable (M5 Ultra rank 0, M3 Ultra decoding, cut 47,
+    /// 4,096-token prompt, 64 outputs, one hold, 2026-10-14): depth 2 decoded
+    /// 58.0 tok/s, depth 1 49.5, depth 3 36.2, the plain pipeline 35.3. A
+    /// window of four rows through the routed experts costs about 1.5 times
+    /// one of three on rank 0 (47 against 32 ms a round) and four times on the
+    /// decoding rank, which more than eats the extra accepted draft (86 % of
+    /// drafts were accepted at depth 3). The product drafter's ceiling stays 3.
+    static let standard = try! MiMoMTPTerms(depth: 2)
 
     /// Bound into the resident load agreement after the mode, before either
     /// stage is read. The head's tensors (`MiMoMTPHeadInventory`) are bound

@@ -93,7 +93,7 @@ private enum MiMoSpeculativeFixture {
 
 @Suite("MiMo speculative decode on a pipeline (contracts, synthetic caches, tiny random model)")
 struct MiMoSpeculativeDecodeTests {
-    typealias F = MiMoSpeculativeFixture
+    fileprivate typealias F = MiMoSpeculativeFixture
 
     // MARK: Roll back
 
@@ -183,7 +183,7 @@ struct MiMoSpeculativeDecodeTests {
         #expect(throws: ProbeError.self) { _ = try F.agreement(request, compact: true) }
         #expect(throws: ProbeError.self) { _ = try MiMoMTPTerms(depth: 4) }
         #expect(throws: ProbeError.self) { _ = try MiMoMTPTerms(depth: 0) }
-        #expect(MiMoMTPTerms.standard.depth == 3)
+        #expect(MiMoMTPTerms.standard.depth == 2 && MiMoMTPTerms.maximumDepth == 3)
     }
 
     @Test func aRoundGivesBothRanksOneHistory() throws {

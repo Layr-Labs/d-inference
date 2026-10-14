@@ -26,7 +26,7 @@ extension ClusterService {
     public static func installAtLogin(executable: URL, serviceOptions: [String],
                                       waitSeconds: Double = 15) throws -> ClusterServiceAgent.Outcome {
         let files = try paths()
-        _ = try ClusterConfigurationFiles.directory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
+        try ClusterConfigurationFiles.ensureDirectory(files.lock.deletingLastPathComponent(), create: true, privateMode: true)
         let job = try loginAgentJob(executable: executable, serviceOptions: serviceOptions)
         let outcome = try ClusterServiceAgent.install(job, serviceRunning: { running() }, stopUnsupervisedService: {
             try stopDetached()

@@ -593,7 +593,7 @@ final class LiveContext: @unchecked Sendable {
         do {
             // The setups and the record are kept where the wizard keeps its own files, owner-only.
             let directory = store.paths.directory.appendingPathComponent("plan-" + ClusterConsoleText.timestamp().replacingOccurrences(of: ":", with: ""), isDirectory: true)
-            _ = try ClusterConfigurationFiles.directory(store.paths.directory, create: true, privateMode: true)
+            try ClusterConfigurationFiles.ensureDirectory(store.paths.directory, create: true, privateMode: true)
             guard mkdir(directory.path, 0o700) == 0 else { throw ClusterSetupFailure("cannot create \(directory.lastPathComponent) (errno \(errno))") }
             let files = [("\(memberID).setup.json", localData), ("\(peerID).setup.json", peerData), ("capability.json", capability.data)]
             for (name, data) in files {

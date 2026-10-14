@@ -158,6 +158,16 @@ public enum ClusterWorkerCodec {
         try ClusterWorkerValidation.event(frame); return frame
     }
 
+    /// JSONSerialization autoreleases its writer, buffers and parsed objects. Frames are encoded and decoded per token on
+    /// threads and dispatch queues that never drain a pool (rank 0 grew about 40 MB a minute under load, F18): each call
+    /// drains its own. The result is retained by the Swift value it is bridged to.
+    private static func drained<T>(_ body: () throws -> T) rethrows -> T {
+        #if canImport(ObjectiveC)
+        return try autoreleasepool(invoking: body)
+        #else
+        return try body()
+        #endif
+    }
     private static func envelope(_ epoch: UUID, _ sequence: UInt64, _ request: UUID?) -> [String: Any] {
         var result: [String: Any] = ["version": ClusterWorkerLimits.version,
             "membershipEpoch": epoch.uuidString.lowercased(), "sequence": NSNumber(value: sequence)]
@@ -165,7 +175,7 @@ public enum ClusterWorkerCodec {
         return result
     }
     private static func encoded(_ value: [String: Any], maximum: Int) throws -> Data {
-        var data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
+        var data = try drained { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]) }
         try workerRequire(data.count < maximum, "Worker record exceeds byte limit")
         data.append(10); return data
     }
@@ -173,7 +183,7 @@ public enum ClusterWorkerCodec {
         try workerRequire(!data.isEmpty && data.count <= maximum && data.last == 10
             && !data.dropLast().contains(10), "Expected one bounded JSONL record")
         try validateClusterWorkerJSON(data)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let object = try drained({ try JSONSerialization.jsonObject(with: data) as? [String: Any] }) else {
             throw ClusterWorkerProtocolError.invalid("Worker record must be an object")
         }
         return WorkerObject(object)

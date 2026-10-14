@@ -158,7 +158,7 @@ public struct ClusterSetupStore: Sendable {
     /// Applies `change` to the record as it is on disk now and writes the result.
     @discardableResult
     public func updateRecord(_ change: (inout ClusterSetupRecord) throws -> Void) throws -> ClusterSetupRecord {
-        _ = try ClusterConfigurationFiles.directory(paths.directory, create: true, privateMode: true)
+        try ClusterConfigurationFiles.ensureDirectory(paths.directory, create: true, privateMode: true)
         var result = ClusterSetupRecord()
         try ClusterConfigurationFiles.update(paths.record, maximum: ClusterSetupRecord.maximumBytes) { current in
             var record = try current.map { try JSONDecoder().decode(ClusterSetupRecord.self, from: $0) } ?? .init()
@@ -228,7 +228,7 @@ public struct ClusterSetupStore: Sendable {
         decoded.makePrefillSelectionExplicit()
         let digest = ClusterConfigurationCodec.sha256(try ClusterConfigurationCodec.encode(decoded,
             capability: record, capabilitySHA256: delivery.capabilitySHA256))
-        _ = try ClusterConfigurationFiles.directory(paths.directory, create: true, privateMode: true)
+        try ClusterConfigurationFiles.ensureDirectory(paths.directory, create: true, privateMode: true)
         // Capability first: a setup in the inbox always has the record it pins beside it.
         try ClusterConfigurationFiles.update(paths.inboxCapability, maximum: ClusterRuntimeCapabilityCodec.maximumBytes) { _ in capability }
         try ClusterConfigurationFiles.update(paths.inboxSetup, maximum: ClusterConfigurationCodec.maximumBytes) { _ in configuration }

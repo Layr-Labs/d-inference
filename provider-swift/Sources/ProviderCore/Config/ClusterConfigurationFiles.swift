@@ -71,6 +71,14 @@ enum ClusterConfigurationFiles {
         } catch { Darwin.close(fd); throw error }
     }
 
+    /// Makes sure `url` is a safe directory (created owner-only when `create`) and closes the descriptor `directory`
+    /// opened. A caller that only needs the directory to exist uses this: discarding `directory`'s result leaks its
+    /// descriptor, and a cluster service that did so on every lease ran out of descriptors (F17).
+    static func ensureDirectory(_ url: URL, create: Bool = false, privateMode: Bool = false) throws {
+        let opened = try directory(url, create: create, privateMode: privateMode)
+        Darwin.close(opened.descriptor)
+    }
+
     static func read(_ url: URL, maximum: Int, privateMode: Bool = false) throws -> Data {
         try requireAbsolute(url.path)
         let parent = try directory(url.deletingLastPathComponent())

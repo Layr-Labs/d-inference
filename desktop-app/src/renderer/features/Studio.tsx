@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Play, Terminal } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
@@ -13,20 +13,52 @@ export function Studio({
 }) {
   const state = backend.state!;
   const [mode, setMode] = useState('combined');
-  const [revealed, setKey] = useState<string>();
+  const [revealed, setKey] = useState<{ identity: string; key: string }>();
+  const keySession = useRef<{ identity: string; alive: boolean; request: number } | null>(null);
   // Which value was just copied, so only that button confirms it.
   const [copied, setCopied] = useState<'url' | 'example' | null>(null);
   const [problem, setProblem] = useState('');
   const models = state.models.filter((model) => model.downloaded && model.eligible);
   const endpoint = state.endpoint;
+  // Local credentials are independent of account sign-in. Ordinary snapshots and model
+  // changes preserve a reveal; endpoint/runtime changes require another explicit Reveal.
+  const keyIdentity =
+    endpoint?.authenticated && backend.status.state === 'ready'
+      ? JSON.stringify([state.installation_id, state.activity.started_at, endpoint.base_url])
+      : undefined;
+  useEffect(() => {
+    setKey(undefined);
+    if (!keyIdentity) return;
+    const current = { identity: keyIdentity, alive: true, request: 0 };
+    keySession.current = current;
+    return () => {
+      current.alive = false;
+      if (keySession.current === current) keySession.current = null;
+    };
+  }, [keyIdentity]);
   // Default to what the endpoint serves now, so the example works as copied and applying the
   // serving mode does not switch models unless the user chooses another.
   const served = endpoint?.models.filter((id) => models.some((model) => model.id === id)) ?? [];
   const [selected, setSelected] = useState('');
   const model = selected || served[0] || models[0]?.id || '';
   const example = served.length && !served.includes(model) ? served[0] : model;
-  // A key belongs to the running endpoint; it is never left on screen after the endpoint stops.
-  const key = endpoint ? revealed : undefined;
+  // Also mask during the render that precedes effect cleanup for a changed endpoint.
+  const key = revealed?.identity === keyIdentity ? revealed?.key : undefined;
+  const toggleKey = async () => {
+    const current = keySession.current;
+    if (!keyIdentity || !current?.alive || current.identity !== keyIdentity) return;
+    const request = ++current.request;
+    if (key) return setKey(undefined);
+    try {
+      setProblem('');
+      const value = await api?.read<{ key: string }>('endpoint-key');
+      if (current.alive && current.request === request)
+        setKey(value?.key ? { identity: current.identity, key: value.key } : undefined);
+    } catch {
+      if (current.alive && current.request === request)
+        setProblem('Couldn’t read the API key. Try again.');
+    }
+  };
   const copy = async (value: string, what: 'url' | 'example') => {
     try {
       setProblem('');
@@ -127,22 +159,14 @@ export function Studio({
         <div className="setting-row">
           <span>API key</span>
           <code>{key || '••••••••••••••••'}</code>
-          <Button
-            disabled={!endpoint && !key}
-            onClick={async () => {
-              if (key) return setKey(undefined);
-              try {
-                setProblem('');
-                setKey((await api?.read<{ key: string }>('endpoint-key'))?.key);
-              } catch {
-                setProblem('Couldn’t read the API key. Try again.');
-              }
-            }}
-          >
+          <Button disabled={!keyIdentity} onClick={() => void toggleKey()}>
             {key ? 'Hide' : 'Reveal'}
           </Button>
         </div>
-        <small className="muted">Requires an API key. Accessible only on this Mac.</small>
+        <small className="muted">
+          {endpoint?.authenticated === false ? 'No API key required.' : 'Requires an API key.'}{' '}
+          Accessible only on this Mac.
+        </small>
         {problem && <Notice>{problem}</Notice>}
       </section>
       <section className="section">

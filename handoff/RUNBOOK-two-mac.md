@@ -1,5 +1,7 @@
 # Runbook: two Macs
 
+> Last updated: 2026-10-14
+
 > **Bench/developer only. Product path: `darkbloom cluster`** on each Mac, pick a
 > model, done ([two-mac-cluster.md](../docs/provider/two-mac-cluster.md)).
 

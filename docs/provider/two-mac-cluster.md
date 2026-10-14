@@ -32,10 +32,15 @@ handles commands afterwards is worked out by the cluster itself (see
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
 split is off. A model whose artifact ships a speculative (MTP) head can also
-decode as speculative rounds across the pipeline: the planner picks that only
-after the same placement served measurably faster with it, and a pair serves it
-only where its own cross-cable qualification records passed (this build ships
-none for it, so the plain pipeline serves).
+decode as speculative rounds across the pipeline, and does by default where its
+own cross-cable qualification records passed and measured the rounds faster
+than the plain pipeline of the same placement (this build: Qwen3.8 27B, Qwen3.5
+9B and MiMo V2.6 Flash). The onboarding then says "pipeline with speculative
+decoding". A draft is kept only when it is the model's own choice at that
+position, as the verify window computes it; the window's arithmetic differs in
+its last bits from one-token decode, so, as with the pipeline itself, output
+matches a single Mac's up to near ties. Once your pair has served the model, its
+own measured speed replaces the records' figure in the choice.
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|

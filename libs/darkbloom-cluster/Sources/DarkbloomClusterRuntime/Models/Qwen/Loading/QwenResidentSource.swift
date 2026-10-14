@@ -32,10 +32,13 @@ func prepareQwenResidentSource(_ admission: QwenResidentAdmission,
                               check: () throws -> Void) throws -> QwenResidentLocalSource {
     guard !_qwen35MTPEnabled else { throw ProbeError("Resident generation requires MTP disabled") }
     let ceilings = try QwenResidentResourceCeilings(specification: admission.specification)
-    let checkpoint = try VerifiedCheckpoint(directory: admission.configuration.modelDirectory,
+    // Several files hashed at once, and one verification per load when the
+    // decoding rank of a phase split loads both stages (finding R1).
+    let checkpoint = try VerifiedCheckpointReuse.checkpoint(directory: admission.configuration.modelDirectory,
         configurationData: admission.configBytes, expectedAggregateSHA256: admission.specification.artifactSHA256,
         maximumPayloadBytes: ceilings.maximumManifestPayloadBytes,
-        expectedManifestSHA256: admission.specification.manifestSHA256)
+        expectedManifestSHA256: admission.specification.manifestSHA256,
+        hashingConcurrency: VerifiedCheckpoint.derivedHashingConcurrency())
     try checkpoint.requireConfiguration(admission.configBytes)
     let prepared = try prepareQwenResidentMetadata(admission,
         artifact: .init(aggregateSHA256: checkpoint.aggregate, configurationSHA256: checkpoint.configurationSHA256,

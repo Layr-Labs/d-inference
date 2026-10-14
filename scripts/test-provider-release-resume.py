@@ -112,6 +112,23 @@ class RecoveryTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
 
+    def test_master_push_source_must_be_verified_master_ancestry(self):
+        # Master may advance before the job starts; ancestry is the boundary.
+        env = {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch",
+               "GITHUB_REF_NAME": "master", "GITHUB_REF": "refs/heads/master", "GITHUB_SHA": SHA}
+        self.assertEqual(verify_workflow_source(FakeAPI(), env), SHA)
+        for key, value in [("GITHUB_REF", "refs/heads/candidate"), ("GITHUB_REF", "refs/tags/v0.9.13"),
+                           ("GITHUB_REF", ""), ("GITHUB_REF_TYPE", "")]:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                verify_workflow_source(FakeAPI(), dict(env, **{key: value}))
+        for mutate in [lambda api: api.commit["commit"]["verification"].update(verified=False),
+                       lambda api: api.comparison.update(status="diverged"),
+                       lambda api: api.comparison["merge_base_commit"].update(sha="e"*40)]:
+            api = FakeAPI()
+            mutate(api)
+            with self.assertRaises(ValueError):
+                verify_workflow_source(api, env)
+
     def test_failed_source_verification_emits_no_trusted_outputs(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"

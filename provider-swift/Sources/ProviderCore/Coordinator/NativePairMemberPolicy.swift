@@ -22,7 +22,15 @@ struct NativePairMemberPolicy: Sendable {
         let minimumMembers, maximumMembers: Int
         let minimumMemberUsableBytes: UInt64
         let leaseTermsNanoseconds: [UInt64]
+        /// The numerics classes the approval lists; empty admits any class
+        /// (chip-agnostic; owner, 2026-10-14).
         let numericsClasses: [String]
+
+        /// Whether a member of this numerics class is covered: any class when
+        /// the approval lists none, otherwise a listed one.
+        func admits(numericsClass: String) -> Bool {
+            !numericsClass.isEmpty && (numericsClasses.isEmpty || numericsClasses.contains(numericsClass))
+        }
     }
     static let pairDomain = Data("darkbloom/coordinator-native-runtime-approval/v1\0".utf8)
     static let clusterDomain = Data("darkbloom/coordinator-cluster-runtime-approval/v1\0".utf8)
@@ -48,8 +56,10 @@ struct NativePairMemberPolicy: Sendable {
             terms = .init(minimumMembers: minimum, maximumMembers: maximum, minimumMemberUsableBytes: usable,
                 leaseTermsNanoseconds: lease, numericsClasses: [])
         }
+        // A pair approval names 1-16 chips; a cluster approval up to 16
+        // numerics classes, none meaning any class.
         let count = try r.integer(UInt32.self)
-        guard (1...16).contains(count) else { throw NativePairMemberError.binding }
+        guard (isCluster ? 0...16 : 1...16).contains(count) else { throw NativePairMemberError.binding }
         let names = try (0..<count).map { _ in try r.string(maximum: 128) }
         guard names.allSatisfy({ $0.utf8.allSatisfy { (0x20...0x7e).contains($0) } }) || !isCluster else {
             throw NativePairMemberError.binding

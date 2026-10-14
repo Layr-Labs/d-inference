@@ -61,13 +61,13 @@ public struct NativePairMemberInstallation: Sendable {
          roster: NativePairMemberRoster? = nil) throws {
         let policy = try NativePairMemberPolicy(expectedCoordinatorPolicy)
         // A pair approval lists the chips it covers; a cluster approval the
-        // numerics classes and the usable memory a member must have, and only
-        // a roster registration is offered under it.
+        // numerics classes (none listed: any class) and the usable memory a
+        // member must have, and only a roster registration is offered under it.
         let covered: Bool
         if let terms = policy.cluster {
             let device = roster?.membership.deviceProfile
             covered = roster != nil && device?.chipName == chip
-                && terms.numericsClasses.contains(device?.numericsClass ?? "")
+                && terms.admits(numericsClass: device?.numericsClass ?? "")
                 && (device?.usableWiredBytes ?? 0) >= terms.minimumMemberUsableBytes
                 && roster?.plan.policySHA256 == Self.hex(Data(SHA256.hash(data: expectedCoordinatorPolicy)))
                 && roster?.plan.model == policy.model

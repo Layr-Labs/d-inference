@@ -258,7 +258,7 @@ enum ClusterConsoleContent {
             : .init("Identity file: missing, or not an owner-only regular file.", .bad, from: identity))
         if let error = trust.error { lines.append(.init(error, .bad, from: identity)) }
         if let approval = pairing.pairApproval {
-            lines.append(.init("Coordinator pair approval \(approval.id), generation \(approval.generation), for \(approval.model) on \(approval.allowedChips.joined(separator: ", ")), until \(approval.notAfter). A saved expectation: only the coordinator's own file approves a pair.", from: .wired("pair.approval")))
+            lines.append(.init("Coordinator pair approval \(approval.id), generation \(approval.generation), for \(approval.model) on \(approval.allowedChips.isEmpty ? "any Apple silicon" : approval.allowedChips.joined(separator: ", ")), until \(approval.notAfter). A saved expectation: only the coordinator's own file approves a pair.", from: .wired("pair.approval")))
         } else {
             lines.append(.init("Coordinator pair approval: none saved.", .dim, from: .wired("pair.approval")))
         }

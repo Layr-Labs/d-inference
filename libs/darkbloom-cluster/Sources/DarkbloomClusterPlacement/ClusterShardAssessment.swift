@@ -260,7 +260,7 @@ extension ClusterPlacementPlanner {
         let bounds = [0] + cuts + [layout.layerCount]
         let total = layout.layers.reduce(0.0) { $0 + $1.cost }
         let context_ = context.prompt + context.outputs, chunk = min(layout.maximumChunkTokens, context.prompt)
-        var members: [ClusterShardOption.Member] = [], tier = 0, decode: [Double] = [], prefill: [Double] = []
+        var members: [ClusterShardOption.Member] = [], tier = 0, decode: [Double] = [], prefill: [Double] = [], measured = true
         for (index, stage) in stages.enumerated() {
             let range = layout.range(bounds[index]..<bounds[index + 1])
             let k = stage.count, share = range.cost / total
@@ -269,7 +269,8 @@ extension ClusterPlacementPlanner {
             var stageDecode = 0.0, stagePrefill = 0.0
             for member in stage {
                 let device = context.devices[member], memory = device.profile.memory
-                let rates = context.rates(device, regime).0
+                let (rates, known) = context.rates(device, regime)
+                measured = measured && known
                 var weights = 0, tensors = 0, largest = 0
                 if k == 1 {
                     weights = range.loadedBytes; tensors = range.tensorCount; largest = range.largestTensorBytes
@@ -313,7 +314,7 @@ extension ClusterPlacementPlanner {
         let first = Double(context.prompt) * slowest + Double(chunk) * (sum - slowest)
             + Double(chunks * (stages.count - 1)) * context.link.perChunkSeconds
         let step = decode.reduce(0, +) + (context.link.perDecodeStepSeconds[ClusterGenerationMode.pipeline.rawValue] ?? 0)
-        return (members, tier, .init(regime: regime, regimeMeasuredOnEveryDevice: true, firstTokenSeconds: first,
+        return (members, tier, .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
             prefillTokensPerSecond: Double(context.prompt) / first, decodeTokensPerSecond: 1 / step,
             requestSeconds: first + Double(max(0, context.outputs - 1)) * step))
     }

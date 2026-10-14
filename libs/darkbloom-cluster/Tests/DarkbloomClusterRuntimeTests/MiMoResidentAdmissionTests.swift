@@ -84,10 +84,11 @@ struct MiMoResidentAdmissionTests {
         #expect(spec.profileID == "registered_mimo_v26_flash_mopd_greedy_generation_v1")
         #expect(spec.layers == 48 && spec.hidden == 4096 && spec.vocabulary == 152_576)
         #expect(spec.supportedCuts == Array(1...47))
-        #expect(spec.supportedPrefillSchedules == [.serial])
-        // No phase split: the rank that decodes alone would hold the whole model. The last rank
-        // may hold the artifact's next-N heads beside its stage (`pipeline_mtp_v1`).
-        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
+        #expect(spec.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
+        // The phase split (a hand-off mode, planned only under the explicit opt-in) has the decoding
+        // rank hold every layer; the last rank may hold the artifact's next-N heads beside its stage
+        // (`pipeline_mtp_v1`).
+        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
         #expect(spec.maximumManifestPayloadBytes == 172_863_462_401 && spec.maximumStageTensorBytes == 167_264_120_704)
         #expect(try MiMoRegisteredSpecification.specification(runtimeModelID: "registered_mimo_v26_flash_mopd").model == .v26FlashMOPD)
         #expect(try MiMoRegisteredSpecification.specification(configuration: Self.fixture("configuration")).model == .v26FlashMOPD)
@@ -268,7 +269,6 @@ struct MiMoResidentAdmissionTests {
         refused("another model's ID") { try Self.admit(Self.configuration(identity: Self.identity(model: "registered_qwen38_27b"))) }
         refused("a cut of zero layers") { try Self.admit(Self.configuration(cut: 0, identity: Self.identity())) }
         refused("a cut outside the model") { try Self.admit(Self.configuration(cut: 48, identity: Self.identity())) }
-        refused("lookahead") { try Self.admit(Self.configuration(schedule: .oneChunkLookahead, identity: Self.identity())) }
         refused("a deadline beyond the hour") {
             try Self.admit(Self.configuration(deadline: Self.now + 3_600_000_000_001, identity: Self.identity()))
         }
@@ -332,8 +332,8 @@ struct MiMoResidentAdmissionTests {
         #expect(value.artifactSHA256 == spec.artifactSHA256 && value.manifestSHA256 == spec.manifestSHA256)
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == spec.supportedCuts)
         #expect(value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 48 })
-        #expect(value.supportedPrefillSchedules == [.serial])
-        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
+        #expect(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead])
+        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
         #expect(value.arithmeticPolicyID == "mimo_v26_text_ordinary_cache_bf16_defaults_v1")
         let plan = try MiMoLayerStagePlan(configuration: Self.fixture("configuration"), cut: 32)
         #expect(try value.selection(planSHA256: plan.fingerprint).stages.map(\.stagePlanSHA256) == plan.stages.map(\.fingerprint))
@@ -398,7 +398,7 @@ struct MiMoResidentAdmissionTests {
         #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP])
         let mimo = try ClusterResidentModelCatalog.entry(configuration: Self.fixture("configuration"))
         #expect(mimo.family == .mimoV26 && mimo.layerCount == 48 && mimo.supportedCuts == Array(1...47))
-        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
+        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
         #expect(ClusterResidentModelCatalog.entry(runtimeModelID: "mimo-v2.6-flash-mopd") == nil)
         #expect(throws: (any Error).self) { _ = try ClusterResidentModelCatalog.entry(configuration: Data("{}".utf8)) }
         let described = try ClusterResidentModelCatalog.describe(configuration: Self.fixture("configuration"),

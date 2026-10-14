@@ -292,7 +292,7 @@ struct MiMoSpeculativeDecodeTests {
 
     @Test func theModeIsTheRowsAndTheCapabilityFollowsIt() throws {
         let spec = try MiMoRegisteredSpecification.specification(.v26FlashMOPD)
-        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
+        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP])
         #expect(ClusterGenerationMode.pipelineMTP.usesSpeculativeHead && !ClusterGenerationMode.pipelineMTP.isPhaseSplit)
         #expect(ClusterGenerationMode(rawValue: "pipeline_mtp_v1") == .pipelineMTP)
         let capability = try MiMoResidentCapabilityMetadata.describe(configuration: try F.fixture("configuration"),

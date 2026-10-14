@@ -43,9 +43,13 @@ struct DistributedHTTPTerminalIntegrationTests {
         let http = try #require(reply as? HTTPURLResponse)
         let text = String(decoding: data, as: UTF8.self)
         #expect(http.statusCode == 200 && text.contains("\"role\":\"assistant\""))
-        #expect(text.contains("\"error\"") && text.contains("attempt_usage"))
-        #expect(text.contains("prefill_stall") || text.contains("deadline_unreachable"))
-        #expect(text.hasSuffix("data: [DONE]\n\n"))
+        // The product's failure frame (`finish_reason: "error"` plus the error
+        // object): the shared pipeline's own when it framed the failure, else
+        // the cluster's in that shape with its cause. Nothing follows it.
+        #expect(text.contains("\"error\"") && text.contains("\"finish_reason\":\"error\""))
+        #expect(text.contains("prefill_stall") || text.contains("deadline_unreachable")
+            || text.contains("Response generation failed"))
+        #expect(!text.contains("data: [DONE]"))
         #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })
         #expect(try await localHostEventually { await host.status.cleanupComplete })
     }

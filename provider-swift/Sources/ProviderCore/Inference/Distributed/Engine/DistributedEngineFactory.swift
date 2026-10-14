@@ -21,7 +21,12 @@ public enum DistributedEngineFactory {
         pairTelemetry: DistributedPairTelemetryContext? = nil
     ) throws -> EngineV2Bridge {
         if let publicModelID { try validatePublicModelID(publicModelID) }
-        guard eosTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
+        let modelID = publicModelID ?? expectedIdentity.modelID
+        // Product parity: the single-Mac slot's stop set, from the same files
+        // by the same rules (`EngineV2SlotFactory`).
+        let stopTokenIDs = productStopTokenIDs(installed: eosTokenIDs, modelID: modelID, modelType: modelType,
+                                               modelDirectory: modelDirectory, tokenizer: tokenizer)
+        guard stopTokenIDs.allSatisfy({ 0 <= $0 && $0 < profile.vocabularySize }) else {
             throw DistributedEngineError.invalidConfiguration("invalid EOS vocabulary")
         }
         try firstTokenBudgetPolicy?.validate(maximumPromptTokens: profile.maxPromptTokens)
@@ -39,12 +44,11 @@ public enum DistributedEngineFactory {
         // the product honours them for (legacy greedy defaults otherwise);
         // an omitted `max_tokens` is the product's 4,096 (the pair's output
         // limit), cut to the context left after the prompt.
-        let modelID = publicModelID ?? expectedIdentity.modelID
         let samplingDefaults = EngineV2SamplingDefaults.resolve(
             modelId: modelID, modelType: modelType, modelDirectory: modelDirectory)
         return EngineV2Bridge(
             engine: engine, modelId: modelID, tokenizer: tokenizer,
-            eosTokenIds: eosTokenIDs, samplingDefaults: samplingDefaults,
+            eosTokenIds: stopTokenIDs, samplingDefaults: samplingDefaults,
             defaultMaxTokens: min(defaultOutputTokens, profile.maxOutputTokens),
             defaultMaxTokensContextLimit: profile.maxContextTokens,
             maxConcurrentRequests: 1, residentPrefixCacheEvidence: residentPrefixEvidence,
@@ -76,6 +80,20 @@ public enum DistributedEngineFactory {
             pairTelemetry: pairTelemetry)
         return .init(tokenizer: tokenizer, modelType: modelType, container: nil,
                      isVLM: false, engineV2Bridge: bridge, visionGate: nil)
+    }
+
+    /// The stop set a single-Mac slot of this model serves with
+    /// (`EngineV2SlotFactory`): the artifact's EOS as the model loader reads
+    /// it (`ModelEOSPolicy.artifactEOSTokenIds`) plus the model's EOS policy
+    /// (GPT-OSS/Harmony stops at `<|call|>`, `<|return|>` and
+    /// `<|endoftext|>`). The bridge adds the tokenizer's EOS, as it does for
+    /// a single-Mac slot. The installed model's EOS is the base only when the
+    /// directory has no model configuration.
+    static func productStopTokenIDs(installed: Set<Int>, modelID: String, modelType: String?,
+                                    modelDirectory: URL?, tokenizer: TokenizerHandle) -> Set<Int> {
+        let base = modelDirectory.flatMap { ModelEOSPolicy.artifactEOSTokenIds(modelDirectory: $0) } ?? installed
+        return ModelEOSPolicy.effectiveEOSTokenIds(modelId: modelID, modelType: modelType, base: base,
+                                                   tokenToId: { tokenizer.inner.convertTokenToId($0) })
     }
 
     /// Same public-route bounds as saved cluster configuration. The installed

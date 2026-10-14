@@ -35,16 +35,20 @@ public struct ClusterPairSlotSpecification: Sendable {
     public let artifactBytes: Int
     /// Per-request pair telemetry for this slot (S24); nil records nothing.
     public let pairTelemetry: DistributedPairTelemetryContext?
+    /// The model's directory on this Mac. With it the slot's stop set and
+    /// sampling defaults are a single-Mac slot's (`DistributedEngineFactory`).
+    public let modelDirectory: URL?
 
     public init(publicModelID: String, modelType: String?, tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
                 expectedIdentity: DistributedResidentIdentity, profile: DistributedResidentExecutionProfile,
                 firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
                 residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil, artifactBytes: Int = 0,
-                pairTelemetry: DistributedPairTelemetryContext? = nil) {
+                modelDirectory: URL? = nil, pairTelemetry: DistributedPairTelemetryContext? = nil) {
         self.publicModelID = publicModelID; self.modelType = modelType; self.tokenizer = tokenizer
         self.eosTokenIDs = eosTokenIDs; self.expectedIdentity = expectedIdentity; self.profile = profile
         self.firstTokenBudgetPolicy = firstTokenBudgetPolicy; self.residentPrefixEvidence = residentPrefixEvidence
-        self.artifactBytes = max(0, artifactBytes); self.pairTelemetry = pairTelemetry
+        self.artifactBytes = max(0, artifactBytes); self.modelDirectory = modelDirectory
+        self.pairTelemetry = pairTelemetry
     }
 }
 
@@ -172,7 +176,8 @@ extension ProviderLoop {
                 publicModelID: specification.publicModelID, profile: specification.profile,
                 tokenizer: specification.tokenizer, eosTokenIDs: specification.eosTokenIDs,
                 modelType: specification.modelType, firstTokenBudgetPolicy: specification.firstTokenBudgetPolicy,
-                residentPrefixEvidence: specification.residentPrefixEvidence, pairTelemetry: specification.pairTelemetry)
+                residentPrefixEvidence: specification.residentPrefixEvidence,
+                modelDirectory: specification.modelDirectory, pairTelemetry: specification.pairTelemetry)
         } catch { throw ClusterPairSlotError.ownerUnavailable }
         guard let bridge = entry.engineV2Bridge else { throw ClusterPairSlotError.ownerUnavailable }
         let profile = specification.profile

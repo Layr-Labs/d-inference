@@ -8,6 +8,7 @@ extension DistributedLocalServer {
             tokenizerProvider: { try await self.resolveTokenizer($0) },
             availableModels: { await self.catalog() }, mtpSlots: { [] },
             onServerRunning: { await self.didBind($0) },
+            modelTypeProvider: { [binding] in $0 == binding.publicModelID ? binding.modelType : nil },
             clusterStatus: { try await self.clusterStatus(nonce: $0) },
             distributedResponses: responseRouter)
     }

@@ -25,8 +25,11 @@ struct DistributedHTTPVisibleContentTests {
             control.recordTerminal(.init(promptTokens: 3, completionTokens: 1, cause: .cancelled))
             continuation.finish(throwing: CancellationError())
             try await writing.value
-            #expect(capture.values.count == 3 && capture.values[1].contains("deadline_unreachable"))
-            #expect(capture.values[1].contains("attempt_usage") && capture.values[2] == ServerSentEventEncoder.done)
+            // The product's failure-frame shape with the cluster's cause; like
+            // the product's, nothing follows it.
+            #expect(capture.values.count == 2 && capture.values[1].contains("deadline_unreachable"))
+            #expect(capture.values[1].contains("attempt_usage") && capture.values[1].contains("\"finish_reason\":\"error\""))
+            #expect(capture.values[1].contains("\"id\":\"fixture\"") && capture.values[1].contains("\"model\":\"fixture\""))
             #expect(capture.finishCount == 1)
         }
     }

@@ -34,7 +34,8 @@ extension ClusterMemberPreparation {
             throw ClusterConfigurationError.invalid("Only the plan's rank-0 member serves the pair")
         }
         try requireUnchanged()
-        let tokenizer = TokenizerHandle(try await LocalTokenizerLoader().load(from: installed.directory))
+        let loaded = try await LocalTokenizerLoader().load(from: installed.directory)
+        let tokenizer = TokenizerHandle.serving(loaded, modelType: installed.modelType, modelDirectory: installed.directory)
         try requireUnchanged()
         let wire = plan.capability.profile
         let profile = try DistributedResidentExecutionProfile(id: wire.id, vocabularySize: wire.vocabularySize,
@@ -50,7 +51,7 @@ extension ClusterMemberPreparation {
         return .init(publicModelID: installed.publicModelID, modelType: installed.modelType, tokenizer: tokenizer,
             eosTokenIDs: try installed.stopTokenIDs(tokenizerEOS: tokenizer.inner.eosTokenId), profile: profile,
             firstTokenBudgetPolicy: budget, residentPrefixEvidence: evidence,
-            artifactBytes: max(0, Int(validation.manifest.totalSizeBytes)),
+            artifactBytes: max(0, Int(validation.manifest.totalSizeBytes)), modelDirectory: installed.directory,
             observabilityFacts: plan.observabilityFacts(membershipEpoch: nil),
             makeOwner: ClusterPairServingContext.pairOwner(profile: profile, chunkTokens: plan.configuration.chunkTokens,
                 startupAllowanceNanoseconds: plan.budgets.startupAllowanceNanoseconds, timing: plan.budgets.pairTiming,

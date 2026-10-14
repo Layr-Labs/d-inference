@@ -151,14 +151,19 @@ enum ClusterStartWait {
     enum Outcome: Equatable { case ready, cancelled, timedOut }
 
     /// `attempt(n)` waits at most `n` nanoseconds and returns whether the awaited thing is there. `now` is the uptime clock
-    /// the deadline is on.
+    /// the deadline is on. An attempt that gives up early (a closed channel answers at once) is followed by a nap for
+    /// the rest of its slice, so the wait never spins.
     static func wait(until deadline: UInt64, slice: UInt64 = 200_000_000, cancelled: () -> Bool, attempt: (UInt64) -> Bool,
-                     now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) -> Outcome {
+                     now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+                     nap: (UInt64) -> Void = { usleep(useconds_t(min($0 / 1000, 1_000_000))) }) -> Outcome {
         while true {
             if cancelled() { return .cancelled }
             let current = now()
             guard current < deadline else { return .timedOut }
-            if attempt(min(slice, deadline - current)) { return .ready }
+            let budget = min(slice, deadline - current)
+            if attempt(budget) { return .ready }
+            let spent = now() &- current
+            if spent < budget { nap(budget - spent) }
         }
     }
 }

@@ -28,6 +28,11 @@ import Testing
         #expect(clock == 1_000_000_000, "the last slice is cut to the deadline")
         var tries = 0
         #expect(ClusterStartWait.wait(until: .max, cancelled: { false }, attempt: { _ in tries += 1; return tries == 2 }, now: { 0 }) == .ready)
+        // An attempt that returns at once (a closed channel) never makes the wait spin: it naps out its slice.
+        var time: UInt64 = 0, naps: [UInt64] = []
+        #expect(ClusterStartWait.wait(until: 1_000_000_000, slice: 250_000_000, cancelled: { false }, attempt: { _ in false },
+                                      now: { time }, nap: { naps.append($0); time += $0 }) == .timedOut)
+        #expect(naps == [250_000_000, 250_000_000, 250_000_000, 250_000_000], "\(naps)")
     }
 
     // MARK: - (b) the solo readiness check names THIS service's solo server

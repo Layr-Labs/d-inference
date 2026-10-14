@@ -45,6 +45,8 @@ struct ClusterMemberNegotiation: Sendable {
 
 public enum ClusterMemberControlError: String, Error, Sendable, LocalizedError {
     case negotiationFailed = "Coordinator did not accept the control-only member role."
+    /// Not a refusal: no attempt during the wait reached a coordinator.
+    case coordinatorUnreachable = "The coordinator could not be reached before this member's registration wait ended, so nothing accepted or refused its role; start it again once the coordinator is reachable."
     case incompatibleConfiguration = "Control-only member mode cannot own a solo endpoint or engine."
     case connectionEnded = "Cluster member control connection ended."
     case invalidMembership = "Cluster membership claim is malformed."

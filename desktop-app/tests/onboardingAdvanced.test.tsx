@@ -79,6 +79,15 @@ it('refuses pins that need more memory than this Mac has', () => {
   expect(screen.getByRole('button', { name: /Start serving with Autopilot/ })).toBeDisabled();
 });
 
+it('says when pins need more models than this Mac keeps in memory at once', () => {
+  openAdvanced(snapshot({ memory: { total_gb: 64, max_model_slots: 1 } }));
+  fireEvent.click(pin(/GPT-OSS 20B/));
+  fireEvent.click(pin(/Qwen 3.5 9B/));
+  expect(screen.getByText(/more models than this Mac keeps in memory at once/)).toBeVisible();
+  expect(screen.queryByText(/more memory than this Mac has/)).toBeNull();
+  expect(screen.getByRole('button', { name: /Start serving with Autopilot/ })).toBeDisabled();
+});
+
 it('runs locally only with at least one pinned model and no account', async () => {
   const { backend, done } = openAdvanced(snapshot({ linked: false }));
   fireEvent.click(screen.getByRole('radio', { name: /Use models locally/ }));

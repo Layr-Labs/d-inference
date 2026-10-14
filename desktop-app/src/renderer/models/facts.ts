@@ -20,10 +20,10 @@ export function modelFacts(model: NativeModel) {
 }
 
 export function pinnedMemoryLine(snapshot: Snapshot, pinned: string[], noun: string) {
-  const { needed, measured, exceeds } = pinnedMemory(snapshot, pinned);
+  const { needed, measured, exceeds, limit } = pinnedMemory(snapshot, pinned);
   const count = `${pinned.length} ${noun}`;
-  if (!needed) return { text: count, exceeds };
+  if (!needed) return { text: count, exceeds, limit };
   const total = gigabytes(snapshot.memory.total_gb);
   const amount = `${measured ? '' : 'at least '}${gigabytes(needed)} of ${total} memory`;
-  return { text: `${count} · ${amount}`, exceeds };
+  return { text: `${count} · ${amount}`, exceeds, limit };
 }

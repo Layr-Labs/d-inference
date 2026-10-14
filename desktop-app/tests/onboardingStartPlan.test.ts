@@ -72,4 +72,23 @@ describe('pinned memory', () => {
       true,
     );
   });
+
+  it('tells the slot limit apart from the memory budget', () => {
+    const pins = ['gpt-oss-20b', 'qwen-3.5-9b'];
+    expect(
+      pinnedMemory(snapshot({ memory: { total_gb: 64, max_model_slots: 1 } }), pins),
+    ).toMatchObject({
+      exceeds: true,
+      limit: 'slots',
+    });
+    expect(
+      pinnedMemory(snapshot({ memory: { total_gb: 16, max_model_slots: 1 } }), pins),
+    ).toMatchObject({
+      exceeds: true,
+      limit: 'memory',
+    });
+    expect(
+      pinnedMemory(snapshot({ memory: { total_gb: 64, max_model_slots: 2 } }), pins).limit,
+    ).toBeUndefined();
+  });
 });

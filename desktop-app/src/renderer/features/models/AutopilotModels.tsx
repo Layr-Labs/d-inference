@@ -64,10 +64,14 @@ export function AutopilotModels({
     );
     if (linking?.cancellable) void backend.act({ action: 'cancel', operation: linking.id });
   };
-  const pinBlocked = (model: NativeModel) =>
-    pinnedMemory(state, [...status.pinned, model.id]).exceeds
-      ? 'Pinning this needs more memory than this Mac has.'
-      : undefined;
+  const pinBlocked = (model: NativeModel) => {
+    const { limit } = pinnedMemory(state, [...status.pinned, model.id]);
+    const slots = state.memory.max_model_slots;
+    if (limit === 'memory') return 'Keeping this in memory needs more memory than this Mac has.';
+    if (limit === 'slots')
+      return `${slots === 1 ? 'The model slot is' : `All ${slots} model slots are`} in use. Stop keeping another model in memory first.`;
+    return undefined;
+  };
   return (
     <>
       <Header

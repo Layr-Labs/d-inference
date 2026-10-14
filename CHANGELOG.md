@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop model slot limit
+
+- Say when a model can’t be kept in memory because all model slots (`max_model_slots`) are in use, instead of claiming it needs more memory than the Mac has. Onboarding’s pin summary makes the same distinction.
 ## Unreleased — desktop overview fan staleness
 
 - Show This Mac's Fans cell on the overview as unavailable when the cooling reading is more than a minute old, instead of presenting old RPM and GPU temperature as current, matching Home's fan indicator and the Cooling page.

@@ -50,9 +50,11 @@ export function PinList({
       </ul>
       {pinned.length > 0 && (
         <p className={styles.pinSummary} data-exceeds={summary.exceeds}>
-          {summary.exceeds
+          {summary.limit === 'memory'
             ? `${summary.text}. That’s more memory than this Mac has; choose fewer models.`
-            : summary.text}
+            : summary.limit === 'slots'
+              ? `${summary.text}. That’s more models than this Mac keeps in memory at once; choose fewer models.`
+              : summary.text}
         </p>
       )}
     </>

@@ -3,9 +3,28 @@ import type { ReleaseData, ReleaseHistory } from '../../../shared/contracts';
 import { compareVersions } from './version';
 import styles from './updates.module.css';
 
+// Match whole delimiter lines (optionally listed), not inline or quoted marker names.
+const signatureDelimiter = /^(?:(?:[-*+]|\d+\.)[ \t]+)?-----(BEGIN|END) (SSH|PGP) SIGNATURE-----$/;
+
 function lines(notes: string) {
+  let signatureType: string | undefined;
   return notes
     .split('\n')
+    .filter((line) => {
+      const delimiter = signatureDelimiter.exec(line.trim());
+      if (signatureType) {
+        if (delimiter?.[1] === 'END' && delimiter[2] === signatureType) {
+          signatureType = undefined;
+        }
+        // A real BEGIN without a matching END hides the remaining signature too.
+        return false;
+      }
+      if (delimiter?.[1] === 'BEGIN') {
+        signatureType = delimiter[2];
+        return false;
+      }
+      return true;
+    })
     .map((line) =>
       line
         .replace(/^\s*(?:#{1,6}|[-*+]|\d+\.)\s+/, '')

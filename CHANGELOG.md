@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop release notes without tag signatures
+
+- Never show a git tag's SSH or PGP signature block as release notes on the Updates page. Provider 0.9.20's published notes include the signed tag's signature, which appeared as five bullet points of encoded text. Preserve inline and quoted marker text and notes following a complete signature; hide real unterminated signature blocks too.
 ## Unreleased — desktop menu bar icon size
 
 - Draw the menu bar icon at the size of other menu bar icons (a 16 pt mark instead of the full 22 pt bar height) and sharply on Retina displays, which previously upscaled a single low-resolution bitmap.

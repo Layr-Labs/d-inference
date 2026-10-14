@@ -56,7 +56,9 @@ def release_changelog(env):
     if env.get('RELEASE_TAG') or env.get('GITHUB_REF_TYPE') == 'tag':
         # Read annotation text as data: never interpolate it into Python or a
         # shell program. Preserve multiline notes in the retained JSON payload.
-        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)',
+        # Subject and body only: %(contents) of a signed tag also carries its
+        # SSH/PGP signature block, which is verification data, not release notes.
+        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents:subject)%0a%0a%(contents:body)',
                                  '--', env.get('RELEASE_TAG') or env['GITHUB_REF_NAME']], capture_output=True, text=True, check=True)
         if result.stdout.strip():
             return result.stdout.strip()

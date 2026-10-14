@@ -16,6 +16,27 @@ PUB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PUB)
 
 
+class ReleaseChangelog(unittest.TestCase):
+    def test_signed_tag_notes_exclude_the_signature_block(self):
+        # A signed tag's message ends with its signature; git reports it separately.
+        with tempfile.TemporaryDirectory() as repo:
+            git = lambda *args: subprocess.run(['git', '-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com',
+                                                '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', *args],
+                                               check=True, capture_output=True, text=True)
+            git('init', '-q')
+            git('commit', '-q', '--allow-empty', '-m', 'release')
+            message = Path(repo) / 'message'
+            message.write_text('Provider 0.9.20\n\n* Raise the cache write budget.\n* Add limits.\n'
+                               '-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAA\nAAAAQNbi=\n-----END SSH SIGNATURE-----\n')
+            git('tag', '-a', 'v0.9.20', '-F', str(message))
+            cwd = os.getcwd()
+            os.chdir(repo)
+            self.addCleanup(os.chdir, cwd)
+            notes = PUB.release_changelog({'RELEASE_TAG': 'v0.9.20', 'VERSION': '0.9.20'})
+        self.assertEqual(notes, 'Provider 0.9.20\n\n* Raise the cache write budget.\n* Add limits.')
+        self.assertNotIn('SIGNATURE', notes)
+
+
 class PublicationFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

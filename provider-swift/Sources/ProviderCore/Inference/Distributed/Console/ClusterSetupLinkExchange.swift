@@ -71,8 +71,8 @@ public enum ClusterSetupLinkExchange {
     /// from the setup exchange: a renewal never supersedes a `darkbloom cluster` session on the exchange's listener,
     /// and never waits behind one.
     public static let controlPort: UInt16 = 47_423
-    static let exchangeLabel = "darkbloom-cluster-setup-exchange-v1"
-    static let controlLabel = "darkbloom-cluster-control-lease-v1"
+    public static let exchangeLabel = "darkbloom-cluster-setup-exchange-v1"
+    public static let controlLabel = "darkbloom-cluster-control-lease-v1"
     static let controlLockName = "darkbloom-cluster-control.lock"
     static let askTag: UInt16 = 0x5E01
     static let answerTag: UInt16 = 0x5E02

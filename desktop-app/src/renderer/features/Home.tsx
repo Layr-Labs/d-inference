@@ -19,18 +19,26 @@ export function Home({
   openMachine: (id: string) => void;
 }) {
   const state = backend.state!;
-  const running = state.state === 'running';
+  // A stale provider is still running, so it can be stopped; starting and draining are
+  // transitions to wait out rather than prompts to start again.
+  const stoppable = state.state === 'running' || state.state === 'stale';
+  const transition =
+    state.state === 'starting'
+      ? 'Starting provider'
+      : state.state === 'draining'
+        ? 'Finishing requests'
+        : null;
   return (
     <div className={styles.dashboard}>
       <Header
         title="Your contribution"
         action={
           <Button
-            disabled={backend.busy}
-            onClick={() => (running ? void backend.act({ action: 'stop' }) : navigate('models'))}
+            disabled={backend.busy || transition !== null}
+            onClick={() => (stoppable ? void backend.act({ action: 'stop' }) : navigate('models'))}
           >
-            {running ? <Pause size={14} /> : <Play size={14} />}{' '}
-            {running ? 'Stop provider' : 'Start providing'}
+            {stoppable ? <Pause size={14} /> : <Play size={14} />}{' '}
+            {stoppable ? 'Stop provider' : (transition ?? 'Start providing')}
           </Button>
         }
       />

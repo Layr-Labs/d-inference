@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop Home provider states
+
+- Home's header no longer offers Start providing while the provider is starting, draining or stale: it shows Starting provider or Finishing requests (disabled) during transitions and Stop provider while a stale provider is still running. The chip's screen-reader summary says live activity only while live numbers are shown, otherwise naming why (waiting for live activity, finishing current requests, or status out of date), without a trailing space.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

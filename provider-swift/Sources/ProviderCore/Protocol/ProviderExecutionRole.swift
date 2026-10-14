@@ -50,6 +50,12 @@ public enum ClusterMemberControlError: String, Error, Sendable, LocalizedError {
     case negotiationFailed = "Coordinator did not accept the control-only member role."
     /// Not a refusal: no attempt during the wait reached a coordinator.
     case coordinatorUnreachable = "The coordinator could not be reached before this member's registration wait ended, so nothing accepted or refused its role; start it again once the coordinator is reachable."
+    /// Not a refusal either: the coordinator answered the registration as an
+    /// ordinary provider's and kept the connection open past the negotiation
+    /// window without acknowledging the role, which a coordinator that knows
+    /// the role never does (it acknowledges or closes the connection). A
+    /// coordinator that predates the role answers this way.
+    case roleUnsupported = "The coordinator does not support the cluster member role (it answered this registration as an ordinary provider's and never acknowledged the role)."
     case incompatibleConfiguration = "Control-only member mode cannot own a solo endpoint or engine."
     case connectionEnded = "Cluster member control connection ended."
     case invalidMembership = "Cluster membership claim is malformed."

@@ -21,6 +21,9 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var pid: Int32? = nil
         public var startedAt: Double? = nil
         public var solo: Bool? = nil
+        /// While it runs: `ClusterLocalServing.notice` when this part (rank 0) serves on its local API only because the
+        /// coordinator cannot take the cluster member role; nil when it serves publicly or is not rank 0.
+        public var notice: String? = nil
     }
     public struct Session: Codable, Sendable, Equatable {
         public var observed: Bool

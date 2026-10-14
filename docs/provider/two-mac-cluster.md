@@ -52,6 +52,19 @@ Serving Qwen3.8-27B across both Macs: pipeline, M3 Ultra 40 layers / M5 Ultra 24
 API at http://localhost:8000 on Apple M3 Ultra, 256 GB.
 ```
 
+When the coordinator in your provider configuration cannot take a cluster
+member yet (it is unreachable, or it has no cluster support), the pair still
+serves, on the leader's local API only, with the same local token as
+`darkbloom start --local`, and a third line says so:
+
+```
+Serving locally on this Mac's API; public serving needs a coordinator with cluster support.
+```
+
+Nothing to do: the next start registers with the coordinator once it supports
+clusters. A coordinator that refuses this pair is not treated this way; the
+start fails and says why.
+
 Counting every key: `y` on the other Mac, and `y` and enter on the leader
 (three keys), plus at most one macOS approval per Mac.
 

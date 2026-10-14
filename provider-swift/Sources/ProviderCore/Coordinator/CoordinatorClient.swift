@@ -107,6 +107,14 @@ public actor CoordinatorClient {
     /// Set when member acceptance never arrives, arrives late, or is refused.
     /// The reconnect loop exits instead of cycling an unacknowledged member.
     internal var memberRoleFailure = false
+    /// The failure was the coordinator not knowing the role: it answered this
+    /// connection's registration as an ordinary provider's (`memberOrdinaryAnswer`)
+    /// and the negotiation window ended with the connection still open.
+    internal var memberRoleUnsupported = false
+    /// This connection's coordinator answered the member's registration with
+    /// an ordinary provider message (e.g. its desired builds) before any
+    /// acknowledgement. Reset with every connection's negotiation.
+    internal var memberOrdinaryAnswer = false
     /// When a starting member's registration wait gives up (set by its
     /// `ProviderLoop`); nil when nothing waits. Before it, a reconnect is
     /// never scheduled past it (CoordinatorClient+MemberRegistration).

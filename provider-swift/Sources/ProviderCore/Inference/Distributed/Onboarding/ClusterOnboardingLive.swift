@@ -984,7 +984,8 @@ final class OnboardingLive: @unchecked Sendable {
         var line: String
         if let session = now.session, session.observed {
             if session.ready, let port = session.port {
-                return (.init(servedBy: now.local ? here : peerName, port: port, deployment: leadership?.deployment), "ready")
+                return (.init(servedBy: now.local ? here : peerName, port: port, deployment: leadership?.deployment,
+                              notice: now.local ? ClusterService.servingNotice() : now.child?.notice), "ready")
             }
             line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
         } else if let child = now.child, let end = child.lastEnd, !child.running {
@@ -1068,6 +1069,7 @@ final class OnboardingLive: @unchecked Sendable {
                 let ready = ClusterOnboardingReady(servedBy: now.local ? here : peerName, port: session.port ?? 0, deployment: leadership?.deployment)
                 lines.append(ready.lines(model: model)[0] + ".")
                 lines.append(ready.apiLine + " (\(session.readyRanks) of \(session.ranks) parts ready).")
+                if let notice = now.local ? ClusterService.servingNotice() : now.child?.notice { lines.append(notice + ".") }
             } else {
                 lines.append("\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
             }

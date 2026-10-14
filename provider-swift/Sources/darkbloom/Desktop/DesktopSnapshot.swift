@@ -5,6 +5,9 @@ extension DesktopBackend {
   func state() async throws -> JSONValue {
     let loaded = try configuration()
     let now = Date()
+    // The provider version is the runtime that serves: in attach-only mode the installed CLI,
+    // which can differ from this API's own build (a local preview's bundled API).
+    let runtimeVersion = await runtimeProfile().version ?? ProviderCore.version
     refreshAccountIdentityIfNeeded(base: coordinatorHTTPBase(loaded.config.coordinator.url), now: now)
     if now.timeIntervalSince(localAt) > 30 {
       ModelScanner.configureCacheDirectory(
@@ -97,14 +100,14 @@ extension DesktopBackend {
     let machine: JSONValue = .dict([
       "id": .string("this-mac"), "name": .string(loaded.config.provider.name),
       "chip": .string(loaded.hardware?.chipName ?? "Unknown hardware"), "memory_gb": .number(total),
-      "status": .string(phase), "version": .string(daemon?.version ?? ProviderCore.version),
+      "status": .string(phase), "version": .string((fresh ? daemon?.version : nil) ?? runtimeVersion),
       "models": .array(selected.map(DV.string)),
       "observed_at": .number(fresh ? daemon?.writtenAt : nil),
     ])
     let connectionStatus: String? = fresh && !localOnly ? daemon?.trust?.status : nil
     let providerStatus: JSONValue = connectionStatus.map(JSONValue.string) ?? .null
     return .dict([
-      "protocol": .int(1), "version": .string(ProviderCore.version),
+      "protocol": .int(1), "version": .string(runtimeVersion),
       "installation_id": .string(instance),
       "observed_at": .number(now.timeIntervalSince1970),
       "resource_revision": .string(String(Int(now.timeIntervalSince1970 / 30))),

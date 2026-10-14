@@ -25,6 +25,8 @@ struct DesktopCoolingCacheTests {
     let script = directory.appendingPathComponent("fake-darkbloom")
     try """
     #!/bin/sh
+    # Only `fan status` runs are counted; runtime profile probes are separate invocations.
+    [ "$1" = fan ] || exit 0
     echo run >> '\(counter.path)'
     sleep 0.3
     printf '%s' '{"helper":{"mode":"automatic"},"diagnostic":{"supported":true,\

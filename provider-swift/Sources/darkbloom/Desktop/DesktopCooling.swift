@@ -7,7 +7,14 @@ extension DesktopBackend {
     if let coolingRead, coolingReadAt.map({ Date().timeIntervalSince($0) < 10 }) ?? true {
       return await coolingRead.value
     }
-    let task = Task { [executable] in await Self.readCooling(executable: executable) }
+    // Created before any suspension so concurrent readers share it. Control needs the runtime's
+    // `desktop configure-cooling`; an older installed runtime still reports fan status, but its
+    // controls would only fail.
+    let task = Task { [weak self, executable] in
+      let configurable =
+        await self?.runtimeProfile().desktopCommands.contains("configure-cooling") ?? true
+      return await Self.readCooling(executable: executable, configurable: configurable)
+    }
     coolingRead = task
     coolingReadAt = nil
     let value = await task.value
@@ -23,7 +30,7 @@ extension DesktopBackend {
     coolingReadAt = nil
   }
 
-  static func readCooling(executable: URL?) async -> JSONValue {
+  static func readCooling(executable: URL?, configurable: Bool = true) async -> JSONValue {
     let signed = executable ?? (try? DesktopFanRuntime.resolve())
     guard
       let (code, output) = try? await DesktopWorker(executable: signed ?? executable).run(
@@ -36,7 +43,7 @@ extension DesktopBackend {
         "error": .string("Cooling status unavailable"),
       ])
     }
-    return Self.projectCooling(status, controlAvailable: signed != nil)
+    return Self.projectCooling(status, controlAvailable: signed != nil && configurable)
   }
 
   static func projectCooling(_ status: JSONValue, controlAvailable: Bool) -> JSONValue {

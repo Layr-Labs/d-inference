@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop preview with an older installed runtime
+
+- Report the installed Darkbloom runtime's version as the provider version in the signed desktop preview, instead of the bundled desktop API's own build version, so Updates no longer offers an update that is already installed (a state file left behind by an older provider process no longer sets the stopped provider's version either) (clicking Update now ran `darkbloom update`, which reported "Already up to date", and the offer stayed). Refuse actions that need desktop commands the installed runtime does not have yet (provider cooling, Studio's local-only serving) with an explanation, and show its cooling controls as unavailable, instead of failing with the runtime's usage text.
+- Read the version probe from stdout only, so macOS upgrade notices on stderr do not hide the installed version. Invalid, failed, or oversized probes remain unavailable; ordinary commands keep their stderr diagnostics.
 ## Unreleased — desktop release notes without tag signatures
 
 - Never show a git tag's SSH or PGP signature block as release notes on the Updates page. Provider 0.9.20's published notes include the signed tag's signature, which appeared as five bullet points of encoded text. Preserve inline and quoted marker text and notes following a complete signature; hide real unterminated signature blocks too.

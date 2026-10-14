@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -118,6 +118,15 @@ dashboard state. If the app exits without quitting (a crash or force quit), the
 next launch stops the API it left running, verified by its recorded pid and exact
 bundled command, before starting a new one. A startup failure reports the API's
 last stderr line. It does not install a login item or configure an update feed.
+Because the installed runtime can be older than the bundled API, the API reports
+the installed runtime's `--version` as the provider version (re-read whenever an
+update replaces the executable). `DesktopRuntimeProfile` validates stdout alone
+for this probe, ignoring stderr notices such as the macOS upgrade warning; failed,
+invalid, or oversized output is not a version. Ordinary `DesktopWorker` commands
+still capture stderr diagnostics. The API also probes `desktop --help`: actions that need
+a `desktop` subcommand the runtime lacks (provider cooling, Studio's local-only
+serving) are refused with an explanation, and cooling controls are reported as
+unavailable.
 
 Initialize the Swift submodules, install the frontend dependencies, then run:
 

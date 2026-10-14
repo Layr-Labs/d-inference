@@ -423,11 +423,13 @@ public enum ClusterPlacementPlanner {
                 loadNeed = max(loadNeed, held + ask)
                 held += rounded; largest = max(largest, part.largestTensorBytes)
             }
-            // The decoding rank of a speculative phase split also holds the
-            // model's head, loaded after its stages (each tensor in whole pages).
-            if mode.usesSpeculativeHead, last, let head = layout.speculativeHead {
-                held += head.loadedBytes + head.tensorCount * memory.pageSizeBytes
-                largest = max(largest, head.largestTensorBytes)
+            // The decoding rank of a speculative mode also holds the model's
+            // head (and under a pipeline the embedding copy it drafts with),
+            // loaded after its stages (each tensor in whole pages).
+            if last {
+                let holding = layout.speculativeHolding(mode: mode, pageSizeBytes: memory.pageSizeBytes)
+                held += holding.bytes
+                largest = max(largest, holding.largestTensorBytes)
             }
             let context = prompt + outputs
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }
@@ -490,6 +492,12 @@ public enum ClusterPlacementPlanner {
             }
             // One Mac alone crosses no link.
             if ranges.count > 1 { step += link.perDecodeStepSeconds[mode.rawValue] ?? 0 }
+            // A pipeline's speculative rounds: the measured speed-up on the
+            // decoding rank, nothing without one (`ClusterSpeculativeCredit.pipelineFactor`).
+            if mode.usesSpeculativeHead, !mode.isPhaseSplit, let lastDevice = order.last,
+               let factor = ClusterSpeculativeCredit.pipelineFactor(rates(lastDevice, regime).0) {
+                step /= factor
+            }
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
                 prefillTokensPerSecond: Double(prompt) / first, decodeTokensPerSecond: 1 / step,
                 requestSeconds: first + handoff + Double(max(0, outputs - 1)) * step)
@@ -512,6 +520,9 @@ public enum ClusterPlacementPlanner {
         func headRank(_ c: ClusterPlacementCandidate, _ regime: ClusterPlacementPolicy.Regime) -> Int {
             guard c.mode.usesSpeculativeHead else { return 1 }
             guard let decoder = devices.first(where: { $0.label == c.ranks.last?.device }) else { return 2 }
+            if !c.mode.isPhaseSplit {
+                return (ClusterSpeculativeCredit.pipelineFactor(rates(decoder, regime).0) ?? 0) > 1 ? 0 : 2
+            }
             return ClusterSpeculativeCredit.prefersHead(rates(decoder, regime).0, device: decoder, layout: layout) ? 0 : 2
         }
 

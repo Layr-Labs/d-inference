@@ -41,6 +41,7 @@ import Foundation
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
             try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)
+            try checkPipelineSpeculativeHolding(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }
                 fputs("\(checks.failures.count) failed, \(checks.passed.count) passed\n", stderr)

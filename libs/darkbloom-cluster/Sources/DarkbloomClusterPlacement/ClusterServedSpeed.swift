@@ -170,8 +170,13 @@ public enum ClusterServedCalibration {
     /// One measurement per device the samples say something about, keyed to
     /// `artifactSHA256` and each device's chip and OS build, labelled as
     /// derived from served requests. Empty when no sample is usable.
+    /// `plainDecodeTokensPerSecond` (a pipeline's speculative rounds only): the
+    /// decode the same placement served without them; their speed-up is then
+    /// the ratio of the two observations. Without it the rounds are credited
+    /// nothing: a prediction of the plain decode is no measurement.
     public static func measurements(_ samples: [ClusterServedSample], placement: Placement,
-                                    runtimeBinarySHA256: String, measuredUTC: String) throws -> [ClusterSpeedMeasurement] {
+                                    runtimeBinarySHA256: String, measuredUTC: String,
+                                    plainDecodeTokensPerSecond: Double? = nil) throws -> [ClusterSpeedMeasurement] {
         let layout = placement.layout, devices = placement.devices
         let usable = samples.filter(\.valid)
         guard !usable.isEmpty, devices.count == placement.cuts.count + 1 else { return [] }
@@ -185,11 +190,23 @@ public enum ClusterServedCalibration {
         // Absolute scale of the current prefill estimates: predicted over observed first token.
         let prefillScale = median(try pair.map { try pairPrediction($0).firstTokenSeconds / $0.firstTokenSeconds })
         // Pipeline decode passes every range each step: its observed rate scales every device.
-        var decodeScales: [Double] = []
+        // A pipeline's speculative rounds say nothing about plain decode; their observed rate over what
+        // the same placement served plainly is the speed-up the decoding rank is credited with, and
+        // without a served plain rate they are credited nothing.
+        let pipelineSpeculative = placement.mode.usesSpeculativeHead && !placement.mode.isPhaseSplit
+        var decodeScales: [Double] = [], speculativeFactors: [Double] = []
         if !placement.mode.isPhaseSplit {
-            for s in pair { if let observed = s.decodeTokensPerSecond { decodeScales.append(observed / (try pairPrediction(s).decodeTokensPerSecond)) } }
+            for s in pair {
+                guard let observed = s.decodeTokensPerSecond else { continue }
+                if pipelineSpeculative {
+                    if let plain = plainDecodeTokensPerSecond, plain.isFinite, plain > 0 {
+                        speculativeFactors.append(observed / plain)
+                    }
+                }
+                else { decodeScales.append(observed / (try pairPrediction(s).decodeTokensPerSecond)) }
+            }
         }
-        let decodeScale = median(decodeScales)
+        let decodeScale = median(decodeScales), speculativeFactor = median(speculativeFactors)
         let decoder = devices.last?.label
         let phaseDecode = placement.mode.isPhaseSplit ? median(pair.compactMap(\.decodeTokensPerSecond)) : nil
         var result: [ClusterSpeedMeasurement] = []
@@ -202,13 +219,15 @@ public enum ClusterServedCalibration {
             let own = median(alone.compactMap(\.decodeTokensPerSecond)) ?? (device.label == decoder ? phaseDecode : nil)
             let head = placement.mode.usesSpeculativeHead
                 && ClusterSpeculativeCredit.prefersHead(base, device: device, layout: layout)
-            var decode: Double?, speculative: Double?
+            var decode: Double?, speculative: Double?, pipelineFactor: Double?
             if let own {
                 if head {
                     // The observed rate is with the head; the plain rate is the
                     // row's factor below it, or as fast when the row has none.
                     speculative = own; decode = own / max(1, layout.speculativeDecodeFactor ?? 1)
                 } else { decode = own }
+            } else if let speculativeFactor, device.label == decoder, device.speed.absolute {
+                decode = base.decodeTokensPerSecond; pipelineFactor = speculativeFactor
             } else if let decodeScale {
                 decode = base.decodeTokensPerSecond * decodeScale
             } else if let decoder, let observed = phaseDecode,
@@ -235,7 +254,7 @@ public enum ClusterServedCalibration {
                 promptTokens: max(1, prompt), chunkTokens: layout.maximumChunkTokens, probedLayers: layout.layerCount,
                 layerCount: layout.layerCount,
                 rested: .init(prefillTokensPerSecond: prefill, decodeTokensPerSecond: decode,
-                    speculativeDecodeTokensPerSecond: speculative),
+                    speculativeDecodeTokensPerSecond: speculative, pipelineSpeculativeFactor: pipelineFactor),
                 sustained: nil, measuredUTC: measuredUTC, provenance: how))
         }
         return result
@@ -250,6 +269,7 @@ public enum ClusterServedCalibration {
                                     layout: ClusterModelLayout, link: ClusterLinkCosts, measuredUTC: String) throws
         -> (measurements: [ClusterSpeedMeasurement], lines: [String]) {
         var measurements: [ClusterSpeedMeasurement] = [], lines: [String] = []
+        var speculativeFactors: [(device: ClusterPlacementDevice, factor: Double)] = []
         var setups: [ClusterServedSpeedRecords.Setup] = []
         for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
         for setup in setups {
@@ -262,6 +282,20 @@ public enum ClusterServedCalibration {
             guard ordered.count == ranks.count else { lines.append("  \(setup.mode) cut \(setup.cut): skipped (a rank is not a planned device)"); continue }
             let samples = entries.filter { $0.setup == setup }.map(\.sample)
             let schedule: ClusterPrefillSchedule = layout.prefillSchedules.contains(.oneChunkLookahead) ? .oneChunkLookahead : .serial
+            // A pipeline's speculative rounds are measured against what the same placement served plainly:
+            // their speed-up then rides on the decoding rank's plain measurement (one record per device).
+            if mode.usesSpeculativeHead, !mode.isPhaseSplit, let decoder = ordered.last {
+                let plainSetup = ClusterServedSpeedRecords.Setup(modelID: setup.modelID, mode: ClusterGenerationMode.pipeline.rawValue,
+                    cut: setup.cut, ranks: setup.ranks)
+                if let plain = median(entries.filter { $0.setup == plainSetup && $0.sample.route == .pair }.compactMap(\.sample.decodeTokensPerSecond)),
+                   let rounds = median(samples.filter { $0.route == .pair }.compactMap(\.decodeTokensPerSecond)) {
+                    speculativeFactors.append((decoder, rounds / plain))
+                    lines.append("  \(setup.mode) cut \(setup.cut) (\(ranks.joined(separator: ", "))): \(samples.count) request(s) -> "
+                        + String(format: "decode %.1f tok/s against %.1f served plainly: speed-up %.2f credited to %@", rounds, plain,
+                                 rounds / plain, decoder.label))
+                    continue
+                }
+            }
             let derived = try Self.measurements(samples,
                 placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link),
                 runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
@@ -273,6 +307,22 @@ public enum ClusterServedCalibration {
                     return String(format: "%@ prefill %.0f tok/s, decode %.1f tok/s", label, m.rested.prefillTokensPerSecond,
                         m.rested.speculativeDecodeTokensPerSecond ?? m.rested.decodeTokensPerSecond)
                 }.joined(separator: "; ")))
+        }
+        for (device, factor) in speculativeFactors where factor.isFinite && factor > 0 {
+            let plainProbe = "served_\(ClusterGenerationMode.pipeline.rawValue)_v1"
+            let same = { (m: ClusterSpeedMeasurement) in m.key.chip == device.profile.chip && m.key.osBuild == device.profile.osBuild }
+            if let index = measurements.lastIndex(where: { same($0) && $0.key.probe == plainProbe }) {
+                let m = measurements[index]
+                measurements[index] = try .init(key: m.key, promptTokens: m.promptTokens, chunkTokens: m.chunkTokens,
+                    probedLayers: m.probedLayers, layerCount: m.layerCount,
+                    rested: .init(prefillTokensPerSecond: m.rested.prefillTokensPerSecond,
+                        decodeTokensPerSecond: m.rested.decodeTokensPerSecond,
+                        speculativeDecodeTokensPerSecond: m.rested.speculativeDecodeTokensPerSecond,
+                        pipelineSpeculativeFactor: factor),
+                    sustained: m.sustained, hashBytesPerSecond: m.hashBytesPerSecond,
+                    materializeBytesPerSecond: m.materializeBytesPerSecond, measuredUTC: m.measuredUTC,
+                    provenance: m.provenance + String(format: "; pipeline speculative rounds served %.2fx this placement's plain decode", factor))
+            }
         }
         return (measurements, lines)
     }

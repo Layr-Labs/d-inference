@@ -125,8 +125,10 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("27B layout: 64 layers, its registered bytes, fifteen cuts",
         big.layerCount == 64 && big.wholeModelLoadedBytes == 15_132_802_048 && big.admittedCuts == Array(stride(from: 4, through: 60, by: 4))
             && big.structuralCuts == big.admittedCuts && big.runtimeModelID == "registered_qwen38_27b")
-    checks.require("both list every generation mode and both prefill schedules",
-        nine.generationModes == ClusterGenerationMode.allCases && big.generationModes == ClusterGenerationMode.allCases
+    // Every mode but the pipeline's speculative rounds, which only MiMo's row lists so far.
+    let denseModes = ClusterGenerationMode.allCases.filter { $0 != .pipelineMTP }
+    checks.require("both list every generation mode a dense row runs and both prefill schedules",
+        nine.generationModes == denseModes && big.generationModes == denseModes
             && nine.prefillSchedules == [.serial, .oneChunkLookahead])
     // Stage sizes recorded by verified loads of the 27B (active bytes loaded).
     func loadedGiB(_ layout: ClusterModelLayout, _ range: Range<Int>) -> Double { Double(layout.range(range).loadedBytes) / Double(gib) }

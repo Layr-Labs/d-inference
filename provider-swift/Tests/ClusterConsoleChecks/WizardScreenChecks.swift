@@ -233,6 +233,15 @@ extension ClusterConsoleCheck {
         // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
         for reading in F.readings {
             let option = options.first { $0.model.folder == reading.model.folder }
+            // A model whose pair-serving grant lists none of this pair's placements is not offered, and says
+            // why: MiMo's records ran with the M5 Ultra leading and the M3 Ultra decoding, and this pair is an
+            // M3 Ultra leading an M5 Max (its grant, from its records, not a table).
+            if reading.model.modelID == "mimo-v2.6-flash-mopd" {
+                expect(option?.plan == nil && option?.blocker?.contains("granted pair serving") == true
+                    && option?.blocker?.contains("apple_m5_ultra") == true,
+                    "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
+                continue
+            }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",
@@ -248,10 +257,6 @@ extension ClusterConsoleCheck {
                     "\(reading.model.modelID) is planned with the speculative head on the decoding M5: \(option?.plan?.mode ?? "-")")
             }
         }
-        let mimo = options.first { $0.model.modelID == "mimo-v2.6-flash-mopd" }?.plan?.ranks ?? []
-        let layers = { (member: String) in mimo.first { $0.memberID == member }.map { $0.endLayer - $0.firstLayer } ?? 0 }
-        expect(layers("mac-a") > layers("mac-b") && layers("mac-b") > 0,
-            "MiMo, larger than the 128 GB Mac, is split with the larger range on the 256 GB Mac: \(mimo.map { ($0.memberID, $0.firstLayer, $0.endLayer) })")
         expect(options.last?.model.folder == F.unreadModel.folder && options.last?.blocker?.contains("planner cannot read") == true,
             "a folder no family reads is blocked with the planner's reason")
         // With the 9B's recorded solo runs on each Mac, its figures are measured and shown, as on the pair.

@@ -51,10 +51,14 @@ struct MiMoRegisteredSpecification {
     /// and 105.6 GiB at cut 16; rank 0 50.2 GiB at cut 16 and 142.0 GiB at 44.
     /// The row once listed twelve the pair it was written on could place.
     var supportedCuts: [Int] { Array(1..<layers) }
+    /// Serial, and the one-chunk lookahead (rank 0 prefills the next frame
+    /// while rank 1 runs the current one; state is per request and frame-ordered).
     let supportedPrefillSchedules: [ClusterPrefillSchedule]
-    /// The pipeline and its compact decode framing. No phase split: the rank
-    /// that would decode alone would have to hold all `sourceBytes`, which is
-    /// the single-Mac case this pair exists to avoid.
+    /// The pipeline, its compact decode framing, and the phase split: the
+    /// decoding rank holds every layer (all `sourceBytes`) and decodes alone
+    /// after the other rank prefilled its share and handed its state over, or
+    /// serves a request alone. Whether a Mac can hold every layer is the
+    /// planner's and the load gate's question on the Macs at hand, not this row's.
     let supportedGenerationModes: [ClusterGenerationMode]
 
     // The earlier fixed reservation every profile started with; the row's
@@ -92,8 +96,8 @@ struct MiMoRegisteredSpecification {
             experts: 256, expertsPerToken: 8, slidingWindow: 128,
             fullKeyValueHeads: 4, slidingKeyValueHeads: 8, keyWidth: 192, valueWidth: 128,
             declaredContextTokens: 1_048_576,
-            supportedPrefillSchedules: [.serial],
-            supportedGenerationModes: [.pipeline, .pipelineCompactDecode]),
+            supportedPrefillSchedules: [.serial, .oneChunkLookahead],
+            supportedGenerationModes: [.pipeline, .pipelineCompactDecode, .phaseSplit]),
     ]
 
     static func specification(_ model: MiMoRegisteredModel) throws -> Self {

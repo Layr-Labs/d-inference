@@ -34,11 +34,18 @@ final class MiMoLayerStageSession {
     /// bytes the row digest already copies; no extra native work.
     let recordsSteps: Bool
     private(set) var steps: [MiMoStepEvidence] = []
+    /// The producer stage's state left this rank (a phase split's hand-off),
+    /// or it ran nothing for a request the decoding rank served alone.
+    private var handedOff = false
 
     var committedTokens: Int { schedule.committedTokens }
 
+    /// `adopting` starts the producer stage from another rank's committed
+    /// prompt state (a phase split's hand-off): the arrays in `split`'s
+    /// component order, already checked against the sender's digests.
     init(stage: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-         generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false) throws {
+         generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false,
+         adopting: QwenLayerStageAdoptedState? = nil, split: QwenPhaseSplitPlan? = nil) throws {
         guard plan.stages.count == 2, plan.stages.indices.contains(stage.stageIndex),
               stage.plan.fingerprint == plan.fingerprint else {
             throw ProbeError("MiMo stage session received a different source plan")
@@ -66,8 +73,21 @@ final class MiMoLayerStageSession {
         self.stage = stage; self.request = request; hiddenSize = hidden
         self.recordsSteps = recordsSteps && stage.stageIndex == 1
         producerStageFingerprint = plan.stages[0].fingerprint
-        caches = stage.model.newCache()
-        schedule = QwenLayerStageGenerationSchedule(request: request)
+        let fresh = stage.model.newCache()
+        if let adopting {
+            guard let split, stage.stageIndex == 0, adopting.committedTokens == request.promptCount,
+                  adopting.recurrent.isEmpty else {
+                throw ProbeError("Only the producer stage adopts, at the end of its prompt, with the agreed terms")
+            }
+            try MiMoPhaseSplitState.install(adopting, into: fresh, shapes: split.shapes, prompt: request.promptCount,
+                                            configuration: stage.model.configuration)
+            schedule = try QwenLayerStageGenerationSchedule(request: request,
+                                                            adoptedCommittedTokens: adopting.committedTokens)
+        } else {
+            guard split == nil else { throw ProbeError("Phase-split terms come with adopted state only") }
+            schedule = QwenLayerStageGenerationSchedule(request: request)
+        }
+        caches = fresh
         identity = .init(stageIndex: stage.stageIndex, requestFingerprint: request.fingerprint,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
             storageCommitmentSHA256: receipt.storageCommitmentSHA256,
@@ -208,11 +228,72 @@ final class MiMoLayerStageSession {
     }
 
     /// Called only after both ranks agree to EOS, length or client stop.
+    /// `discardedDecodeForwards` is nonzero only for a stage that decoded alone
+    /// past a client stop it had not yet been told about.
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason,
-                          selectedTokenCount: Int, lastTokenID: Int) throws {
+                          selectedTokenCount: Int, lastTokenID: Int, discardedDecodeForwards: Int = 0) throws {
         do {
             try requireOpen()
-            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
+            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID,
+                                discardedDecodeForwards: discardedDecodeForwards)
+            try retire(failed: false)
+        } catch { try fail(error) }
+    }
+
+    /// The producer stage's committed prompt state as hand-off components, in
+    /// `split`'s order, with logical bytes and their digests. Refuses a cache
+    /// whose arrays or rotation differ from what the terms derived. It reads
+    /// state; the session stays open until `retireAfterHandoff`.
+    func handoffComponents(split: QwenPhaseSplitPlan,
+                           check: () throws -> Void) throws -> [QwenPhaseSplitHandoffSender.Component] {
+        do {
+            try requireOpen()
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+                  schedule.decodeForwardCount == 0, !handedOff, let caches,
+                  split.shapes.count == 2 * caches.count else {
+                throw ProbeError("Only the producer stage hands over, once, after its last prompt frame")
+            }
+            return try MLX.withError { error in
+                Stream.gpu.synchronize(); try error.check(); try check()
+                let arrays = try MiMoPhaseSplitState.exportArrays(caches: caches, configuration: stage.model.configuration,
+                    prompt: request.promptCount, shapes: split.shapes)
+                let bytes = arrays.map { $0.asData().data }
+                try error.check(); try check()
+                guard zip(bytes, split.shapes).allSatisfy({ $0.count == $1.byteCount }) else {
+                    throw ProbeError("Producer state bytes differ from their agreed size")
+                }
+                let digests = CBv2OwnedStateSnapshot.digests(bytes)
+                return zip(split.shapes, zip(digests, bytes)).map { shape, value in
+                    .init(shape: shape, sha256: value.0, bytes: value.1)
+                }
+            }
+        } catch { try fail(error) }
+    }
+
+    /// After the adopting rank accepted the complete state. Retires this
+    /// stage's native request state; no further frame can run here.
+    func retireAfterHandoff() throws {
+        do {
+            try requireOpen()
+            guard stage.stageIndex == 0, schedule.committedPromptTokens == request.promptCount,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Hand-off retirement differs from the producer's committed prompt frontier")
+            }
+            handedOff = true
+            try retire(failed: false)
+        } catch { try fail(error) }
+    }
+
+    /// The producer stage of a request the decoding rank served alone: it ran
+    /// no frame, so it retires empty, cleanly, once both ranks agreed the route.
+    func retireUnusedForDecodingRankAlone() throws {
+        do {
+            try requireOpen()
+            guard stage.stageIndex == 0, request.decodingRankAlone, schedule.committedTokens == 0,
+                  schedule.decodeForwardCount == 0, !handedOff else {
+                throw ProbeError("Only an unused producer stage of a request served alone retires empty")
+            }
+            handedOff = true
             try retire(failed: false)
         } catch { try fail(error) }
     }

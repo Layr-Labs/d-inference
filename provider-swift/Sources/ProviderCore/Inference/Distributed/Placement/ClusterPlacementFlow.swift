@@ -60,8 +60,12 @@ public enum ClusterPlacementFlow {
         let benchCap = try ClusterPlannerBenchCap.capBytes(environment: environment, debugBuild: benchDebugBuild)
         // Sharded deployments only unless the one explicit opt-in is set (`ClusterHandOffModes`, off by default).
         let handOff = try ClusterHandOffModes.enabled(environment: environment)
-        let localProfile = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
-        let peerProfile = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
+        // Developer bench only (`ClusterBenchChip`): a debug build may be told to plan both Macs as another chip.
+        let benchChip = try ClusterBenchChip.planningChipName(environment: environment, debugBuild: benchDebugBuild)
+        let cappedLocal = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
+        let cappedPeer = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
+        let localProfile = try benchChip.map { try cappedLocal.renamedForBench(chip: $0) } ?? cappedLocal
+        let peerProfile = try benchChip.map { try cappedPeer.renamedForBench(chip: $0) } ?? cappedPeer
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {
             throw ClusterConfigurationError.invalid("This Mac's member ID, \(localMemberID), is not in the pair description")
@@ -78,18 +82,15 @@ public enum ClusterPlacementFlow {
         }
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = promptTokens; policy.outputTokens = outputTokens; policy.regime = regime
-        // The model's pair-serving grant can rule an order out before anything
-        // is planned (owner decision D4): the planner then ranks only the order
-        // a start would accept.
+        // A model whose grant is refused is still planned, with the refusal in the plan's words; a grant never
+        // rules a chip or an order out (owner, 2026-10-14).
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
             runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID,
             artifactSHA256: capability.artifactSHA256)
         policy.leader = granted.leader
-        // The planner keeps to what a start accepts: a model's granted mode
-        // families on the classes each family's checks ran in each role, and a
-        // family with a failed cross-cable check only at the shapes a check
-        // passed in (each rank's chip class, the cuts, the mode): the universal
-        // rule of `ClusterPairQualificationRecords`, mode-bound (owner sign-off O9).
+        // The planner keeps to what a start accepts: a model's granted mode families (on any chips) and, for a
+        // family with a diverged cross-cable check, not the chip combination and shapes that diverged
+        // (`ClusterPairQualificationRecords`, chip-agnostic; owner 2026-10-14).
         let records = ClusterPairServingGrants.records(runtimeModelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256)
         let runtimeModelID = capability.runtimeModelID, artifactSHA256 = capability.artifactSHA256
@@ -121,7 +122,8 @@ public enum ClusterPlacementFlow {
             }
         }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
-        var lines = (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + servedLines
+        var lines = (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
+            + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
         if handOff {
             lines += ClusterHandOffModes.lines(enabled: true)
@@ -132,8 +134,8 @@ public enum ClusterPlacementFlow {
         if records.restrictsShapes {
             lines.append("Qualified placements")
             lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placement "
-                + "(\(records.restrictedFamilies.sorted().map(\.description).joined(separator: ", ")) modes), so in that mode family only placements "
-                + "a check passed in are planned: \(records.passedShapesText).")
+                + "(\(records.restrictedFamilies.sorted().map(\.description).joined(separator: ", ")) modes): \(records.failedShapesText). "
+                + "On those chips only placements a check passed in are planned (\(records.passedShapesText)); other Macs are not restricted.")
         }
         var setup: ClusterPlacementSetup?
         if let chosen = result.chosen {
@@ -156,67 +158,23 @@ public enum ClusterPlacementFlow {
         return (lines, result, setup)
     }
 
-    /// Which Mac must lead for the placement to be one the model's
-    /// pair-serving grant allows, read from the chip names the two profiles
-    /// carry: the last rank is the decoding rank, the other the pipeline-only
-    /// rank (`ClusterPairServingRole`). Nil leaves the planner free.
-    ///
-    /// A plan is advice and a profile is what a Mac printed about itself, so
-    /// nothing is opened here: each Mac still checks the rank it runs with its
-    /// own chip before it serves. This only keeps the planner from choosing an
-    /// order that start would refuse, and says so. A chip name with no class
-    /// (a test profile, a virtual machine) is left to that check. A model
-    /// whose grant is withheld is still planned, with the refusal in `note`,
-    /// since a plan also answers whether the pair could hold it.
+    /// Which Mac leads, and a note when the model's pair-serving grant refuses
+    /// it outright. A grant lists no chip class (owner, 2026-10-14), so it
+    /// never rules a leader or an order out: the planner keeps to what a start
+    /// accepts through `ClusterPairServingGrants.plannable` (the mode family,
+    /// and the shapes of a chip combination that diverged). A model whose
+    /// grant is refused is still planned, with the refusal in `note`, since a
+    /// plan also answers whether the pair could hold it.
     static func leaderUnderGrant(requested: String?, members: [(id: String, chip: String)],
                                  runtimeModelID: String, publicModelID: String,
                                  artifactSHA256: String? = nil) throws -> (leader: String?, note: String?) {
         guard members.count == 2 else { return (requested, nil) }
-        let grant: ClusterPairServingGrant
         do {
-            grant = try ClusterPairServingGrants.grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-                                                       artifactSHA256: artifactSHA256)
+            _ = try ClusterPairServingGrants.grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                                                   artifactSHA256: artifactSHA256)
         } catch let refusal as ClusterPairServingRefusal {
             return (requested, refusal.description + " A setup made from this plan is refused when it is started.")
         }
-        let classes = members.map { ClusterChipClass(chipName: $0.chip) }
-        /// The refusal a start would give when `first` leads in every granted
-        /// mode family; nil when some family allows the order (the planner then
-        /// keeps to that family through `ClusterPairServingGrants.plannable`).
-        func refusal(leading first: Int) -> ClusterPairServingRefusal? {
-            let order = [classes[first], classes[1 - first]]
-            if grant.admitsOrder(order) { return nil }
-            for (rank, chipClass) in order.enumerated() {
-                guard let chipClass, let role = ClusterPairServingRole.of(rank: rank, rankCount: 2) else { continue }
-                let allowed = grant.chipClasses(for: role)
-                if !allowed.contains(chipClass) {
-                    return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-                        reason: .classNotAllowed(rank: rank, role: role, chipClass: chipClass, allowed: allowed.sorted()))
-                }
-            }
-            // Each class is listed for its role in some family, but no one family
-            // lists both: the decoding rank is refused with the classes the
-            // families that admit this leader list for it.
-            guard let leading = order[0], let decoding = order[1] else { return nil }
-            let allowed = grant.families.filter { grant.chipClasses(for: .pipelineRank, family: $0).contains(leading) }
-                .flatMap { grant.chipClasses(for: .decodingRank, family: $0) }
-            return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-                reason: .classNotAllowed(rank: 1, role: .decodingRank, chipClass: decoding, allowed: Set(allowed).sorted()))
-        }
-        if let requested, let index = members.firstIndex(where: { $0.id == requested }) {
-            if let refused = refusal(leading: index) { throw refused }
-            return (requested, nil)
-        }
-        let refused = [refusal(leading: 0), refusal(leading: 1)]
-        switch (refused[0], refused[1]) {
-        case (nil, nil): return (requested, nil)
-        case (.some(let both), .some): throw both
-        default:
-            let leader = refused[0] == nil ? 0 : 1
-            func words(_ classes: Set<ClusterChipClass>) -> String { classes.sorted().map(\.rawValue).joined(separator: " or ") }
-            return (members[leader].id, "This model is granted pair serving with the decoding rank (the last) on "
-                + "\(words(grant.decodingRankChipClasses)) and the other rank on \(words(grant.pipelineRankChipClasses)). "
-                + "On these two Macs that leaves one order, so \(members[leader].id) leads; the other order is not planned.")
-        }
+        return (requested, nil)
     }
 }

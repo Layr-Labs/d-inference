@@ -12,8 +12,8 @@ struct DistributedInstalledPlan: Sendable {
     let paths: ClusterUserPaths
     /// The selected registered model's owner-side time budgets.
     let budgets: DistributedInstalledTimeBudgets
-    /// The selected registered model's pair-serving grant: the chip classes
-    /// each role may run on.
+    /// The selected registered model's pair-serving grant: the mode families
+    /// a pair may serve it in, on any Apple silicon.
     let grant: ClusterPairServingGrant
     /// What the selected model's adapter adds to a rank's environment; see
     /// `adapterArithmeticEnvironment`.
@@ -66,12 +66,11 @@ struct DistributedInstalledPlan: Sendable {
 
     /// This Mac's rank under the grant, with this Mac's own chip class
     /// (`ClusterChipClass.local()` on a real Mac). Each Mac checks the rank
-    /// it runs, right before it serves or launches it, so a placement starts
-    /// only when every rank's class is listed for its role. A capability
-    /// record, a saved setup or a peer never supplies the class.
-    /// A model whose grant restricts shapes is also held to the placement's
-    /// cuts (from the selected Plan) and mode: this rank runs only a shape a
-    /// passed check ran with its class at its rank.
+    /// it runs, right before it serves or launches it: the model's mode family
+    /// must be granted (on any Apple silicon), and when the family has a
+    /// diverged record this rank must not be a rank-shape that diverged
+    /// (its class at its rank, the placement's cuts from the selected Plan).
+    /// A capability record, a saved setup or a peer never supplies the class.
     func requireLocalRankGranted(chipClass: ClusterChipClass?) throws {
         try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,
             chipClass: chipClass, runtimeModelID: capability.runtimeModelID, publicModelID: configuration.publicModelID,

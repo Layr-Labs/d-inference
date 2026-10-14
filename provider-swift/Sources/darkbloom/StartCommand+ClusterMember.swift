@@ -12,7 +12,7 @@ extension Start {
     func makeClusterMemberLoopAndPreparation(reference: ClusterConfigurationReference, stopOnDisconnect: Bool = false)
         async throws -> (loop: ProviderLoop, prepared: ClusterMemberPreparation) {
         // The model's pair-serving grant for the rank this Mac runs, with this
-        // Mac's own chip class (owner decision D4), is decided inside the
+        // Mac's own chip class (any Apple silicon; owner 2026-10-14), is decided inside the
         // preparation, before the weights are read. The single-Mac
         // requirements of the model are for solo serving and are not applied.
         let prepared = try await Task.detached(priority: .userInitiated) {

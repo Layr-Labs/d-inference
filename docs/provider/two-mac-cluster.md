@@ -102,20 +102,25 @@ to keep waiting (it leads) and the other says so and joins it.
 
 A pair serves a model only under the grant this build derives from its
 cross-cable qualification records (each a run of both Macs compared with
-single-Mac references under the near-tie rule). A grant is bound to the mode
-family its records ran: the pipeline (with its compact-decode variant), the
-pipeline with speculative rounds, tensor parallel, and the hand-off modes
-(phase split and the prefill/decode hybrids, kept but off by default) are four
-families, and a passing record of one opens no other. Within a family, a chip
-reaches a role (the decoding rank, or a rank before it) only when a passing run
-of that family ran it in that role; a record from a Mac generation no longer
-on hand still grants that chip, and only it. A record that diverged withholds
-its own family at every cut (that family is then planned only at shapes a
-check passed in, and never started); an inconclusive record neither grants nor
-withholds. The planner and every Mac's start apply the same rule, and the
-onboarding offers a model only when every rank of its chosen placement would
-pass that start check: a model its records withhold (a withheld family still
-has a plan at a passed shape) is listed as not served, with the reason.
+single-Mac references under the near-tie rule). A grant is bound to the model,
+its artifact and the mode family its records ran: the pipeline (with its
+compact-decode variant), the pipeline with speculative rounds, tensor parallel,
+and the hand-off modes (phase split and the prefill/decode hybrids, kept but off
+by default) are four families, and a passing record of one opens no other.
+
+Chips and memory do not decide what is offered. A passing record on any two
+Macs approves its family on any Apple silicon (M1 to M5, Pro, Max or Ultra, in
+either order): the planner reads each Mac's chip and memory and decides whether
+and how the model fits, and each Mac's memory gate decides every load. A record
+that diverged withholds only what it ran: on that chip combination the model is
+served only at shapes a check passed in, and a Mac that ran a diverged shape at
+its rank refuses that exact shape with any partner (it checks its rank with its
+own chip and cannot see its partner's). A pass contradicted by a divergence of
+the same shape is no evidence. A family with only diverged records is withheld
+everywhere; an inconclusive record neither grants nor withholds. The planner,
+the onboarding offer and every Mac's start apply the same rule, and a model
+also needs the installed path's time budgets for it (GPT-OSS 20B and Gemma 4
+26B QAT4 are granted but have none yet, so they are not offered).
 
 ## If a Mac goes away
 
@@ -128,9 +133,9 @@ they are handled by whichever Mac runs the cluster now.
 
 ## MiMo V2.6 Flash on the pair
 
-MiMo V2.6 Flash is granted on an M5 Ultra + M3 Ultra pair by its qualification
-records (pipeline at the planner's cut, in the order its records passed; the
-mirrored order is refused). Each start hashes the 172 GB of weights with the file
+MiMo V2.6 Flash is granted by its qualification records (pipeline, run on an
+M5 Ultra + M3 Ultra pair), on any pair the planner can place it on, at the
+planner's cut and in either order. Each start hashes the 172 GB of weights with the file
 cache off, so the hash does not fill the Mac's memory before the memory gate
 decides; the gate itself is unchanged. Both Macs keep MiMo's prompt prefixes,
 in memory and in the encrypted SSD tier, like the Qwen models. MiMo has no paged

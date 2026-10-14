@@ -538,9 +538,9 @@ final class EndpointBox: @unchecked Sendable {
         try require(nine.firstTokenBaseMilliseconds+8192*nine.firstTokenMillisecondsPerPromptToken==18_192,"9B first-token budget at 8,192 tokens")
         try require(big.shutdownAcknowledgementNanoseconds==3*nine.shutdownAcknowledgementNanoseconds
             && big.stopMarginNanoseconds>nine.stopMarginNanoseconds && big.admissionWaitNanoseconds==nine.admissionWaitNanoseconds,"27B release and admission waits")
-        // Every model with a pair-serving grant has exactly one row, in the grants' order; a model
-        // whose grant is withheld has none, so neither half alone can open it.
-        try require(Set(Table.rows.map(\.runtimeModelID))==Set(ClusterPairServingGrants.granted.map(\.runtimeModelID)),"the table's rows and the granted models differ")
+        // Every row's model has a pair-serving grant; a granted model without a row (GPT-OSS, Gemma 4 QAT4 since grants
+        // are chip-agnostic) and a withheld model have none, so neither half alone can open a model.
+        try require(Set(Table.rows.map(\.runtimeModelID)).isSubset(of:Set(ClusterPairServingGrants.granted.map(\.runtimeModelID))),"a row's model has no grant")
         for model in ClusterPairServingGrants.withheld.keys {
             let none=try refusal{_ = try Table.servingBudgets(runtimeModelID:model,publicModelID:"p")}
             try require(none.contains("no row for the registered model \(model)"),"a withheld model has a row: \(model)")
@@ -597,20 +597,16 @@ final class EndpointBox: @unchecked Sendable {
             let prepared=try big.prepare()
             try require(prepared.plan.budgets==Table.qwen38.budgets,"the 27B was prepared under another row's budgets")
             try require(prepared.plan.grant==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen38_27b",publicModelID:"p"),"the 27B was prepared under another model's grant")
-            // The fixture is the leader: rank 0 of two, the pipeline-only rank.
-            for chip in ["Apple M3 Ultra","Apple M5 Max"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
-            for chip in ["Apple M4 Max","Apple M5 Pro","Apple M1 (Virtual)"] {
-                let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip))}
-                try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
-                    && refused.contains("policy decision"),"\(chip) was not refused for the 27B's rank 0: \(refused)")
-            }
+            // The fixture is the leader: rank 0 of two. Any Apple silicon runs it (chip-agnostic grants); a chip with no class does not.
+            for chip in ["Apple M3 Ultra","Apple M5 Max","Apple M4 Max","Apple M5 Pro"] { try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:chip)) }
+            let refused=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:ClusterChipClass(chipName:"Apple M1 (Virtual)"))}
+            try require(refused.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused.contains("registered_qwen38_27b") && refused.contains("rank 0")
+                && refused.contains("not Apple silicon") && refused.contains("policy decision"),"a classless chip was not refused for the 27B's rank 0: \(refused)")
         }
-        // The 9B was checked with the M3 Ultra leading only: an M5 Max cannot run its rank 0.
+        // The 9B runs on any Apple silicon in either order: an M5 Max or an M4 Max may run its rank 0.
         let nine=try f.prepare()
         try require(nine.plan.grant==ClusterPairServingGrants.grant(runtimeModelID:"registered_qwen35_9b",publicModelID:"p"),"the 9B was prepared under another model's grant")
-        try nine.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
-        let led=try refusal{try nine.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
-        try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains("apple_m5_max"),"9B led by the M5 Max: \(led)")
+        for chipClass in [ClusterChipClass.appleM3Ultra, .appleM5Max, ClusterChipClass(chipName:"Apple M4 Max")!] { try nine.plan.requireLocalRankGranted(chipClass:chipClass) }
         // Budgets and grant are keyed on the runtime's model, whatever the public name.
         let renamed=try Table.servingBudgets(runtimeModelID:"registered_qwen38_27b",publicModelID:"renamed/public-id")
         try require(renamed==Table.qwen38.budgets,"renamed 27B budgets differ")
@@ -654,10 +650,10 @@ final class EndpointBox: @unchecked Sendable {
                 && environment["MLX_ENABLE_TF32"]=="1" && environment["DARKBLOOM_BF16_WEIGHTS"]=="1" && environment["DARKBLOOM_CBV2_ATTN_QUERY_BLOCK"]=="128"
                 && environment["JACCL_RANK"]=="0" && environment["JACCL_PROGRESS_TIMEOUT_MS"]=="60000","\(name): rank environment \(environment.keys.sorted())")
             try require(prepared.plan.budgets==budgets && prepared.plan.grant.runtimeModelID==model,"\(name) was prepared under another model's budgets or grant")
-            // The fixture is the leader: rank 0, which these grants list on the M3 Ultra only.
-            try prepared.plan.requireLocalRankGranted(chipClass:.appleM3Ultra)
-            let led=try refusal{try prepared.plan.requireLocalRankGranted(chipClass:.appleM5Max)}
-            try require(led.contains("pipeline-only rank on apple_m3_ultra") && led.contains(model),"\(name) led by the M5 Max: \(led)")
+            // The fixture is the leader: rank 0, which any Apple silicon may run (chip-agnostic grants).
+            for chipClass in [ClusterChipClass.appleM3Ultra, .appleM5Max, ClusterChipClass(chipName:"Apple M4 Max")!] {
+                try prepared.plan.requireLocalRankGranted(chipClass:chipClass)
+            }
         }
         // The dense adapter's environment is the ten values it always had.
         try require(try f.prepare().plan.adapterEnvironment.isEmpty,"the dense adapter gained an environment value")
@@ -665,14 +661,15 @@ final class EndpointBox: @unchecked Sendable {
         try require(DistributedInstalledPlan.adapterArithmeticEnvironment.values.allSatisfy{$0.keys.allSatisfy{key in
             !["PATH","LANG","LC_ALL","DARKBLOOM_CBV2_ATTN_QUERY_BLOCK","DARKBLOOM_BF16_WEIGHTS","MLX_ENABLE_TF32","JACCL_RANK","JACCL_IBV_DEVICES",
               "JACCL_COORDINATOR","JACCL_PROGRESS_TIMEOUT_MS"].contains(key)}},"an adapter names a fixed environment value")
-        // The adapters this path starts are exactly the adapters of the granted models.
-        let granted=Set(ClusterPairServingGrants.granted.compactMap{ClusterRuntimeAdapter.registering(runtimeModelID:$0.runtimeModelID)})
-        try require(Set(DistributedInstalledPlan.adapterArithmeticEnvironment.keys)==granted,"the installed path's adapters and the granted models' adapters differ")
-        // A model whose grant is withheld is refused before its adapter is looked at.
-        let withheld=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-gptoss"),probe:f.probe,owner:f.owner,worker:f.worker,
+        // The adapters this path starts are exactly the adapters of the granted models the table has budgets for.
+        let rows=Set(Table.rows.map(\.runtimeModelID))
+        let granted=Set(ClusterPairServingGrants.granted.filter{rows.contains($0.runtimeModelID)}.compactMap{ClusterRuntimeAdapter.registering(runtimeModelID:$0.runtimeModelID)})
+        try require(Set(DistributedInstalledPlan.adapterArithmeticEnvironment.keys)==granted,"the installed path's adapters and the served models' adapters differ")
+        // GPT-OSS is granted on chips other than the shapes that diverged, but has no budgets: refused before its adapter is looked at.
+        let unbudgeted=try InstalledFixture.make(root:f.root.appendingPathComponent("adapter-gptoss"),probe:f.probe,owner:f.owner,worker:f.worker,
             registered:("registered_gpt_oss_20b","registered_gpt_oss_20b_greedy_generation_v1","fixture/gptoss"),adapter:.gptossLayerStage)
-        let refused=try refusal{_ = try withheld.prepare()}
-        try require(refused.contains("is not granted pair serving") && refused.contains("registered_gpt_oss_20b"),"a withheld model on its own adapter: \(refused)")
+        let refused=try refusal{_ = try unbudgeted.prepare()}
+        try require(refused.contains("no row for the registered model registered_gpt_oss_20b"),"a model without budgets on its own adapter: \(refused)")
     }
     /// A worker whose description this build cannot read is a mixed install,
     /// and the refusal says so instead of reporting a difference.

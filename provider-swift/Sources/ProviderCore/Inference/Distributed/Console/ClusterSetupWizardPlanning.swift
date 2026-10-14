@@ -63,6 +63,9 @@ enum ClusterSetupPlanning {
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
         let sessionLeader: String? = leader ?? localMemberID
         let peerID = description.members.first { $0.id != localMemberID }?.id ?? "the other Mac"
+        // Developer bench only (`ClusterBenchChip`): both Macs are planned and checked as that chip; a release build
+        // refuses to plan while it is set (`ClusterPlacementFlow.decide`).
+        let benchChip = (try? ClusterBenchChip.planningChipName(environment: ProcessInfo.processInfo.environment)) ?? nil
         return readings.map { reading in
             let onOther = peerModels.contains { $0.sameEntry(reading.model) }
             func blocked(_ reason: String) -> Decision {
@@ -107,7 +110,7 @@ enum ClusterSetupPlanning {
                 }
                 // Offered only when each Mac's start would serve the chosen placement: a model or mode family its
                 // records withhold is planned (the plan still answers whether the pair could hold it) but never offered.
-                let chips = [localMemberID: localProfile.chip, peerID: peerProfile.chip]
+                let chips = [localMemberID: benchChip ?? localProfile.chip, peerID: benchChip ?? peerProfile.chip]
                 if let refusal = ClusterPairServingGrants.startRefusal(
                     chosen.ranks.map { chips[$0.device].flatMap { ClusterChipClass(chipName: $0) } },
                     cuts: chosen.cuts, mode: chosen.mode, runtimeModelID: capability.record.runtimeModelID,
@@ -120,7 +123,7 @@ enum ClusterSetupPlanning {
                 return .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan), setup: decided.setup,
                     capability: (capability.data, capability.sha256))
             } catch is ClusterPairServingRefusal {
-                // The grant allows neither order of these two Macs' chips.
+                // The model has no grant this build can serve it under.
                 return blocked(notQualified)
             } catch {
                 return blocked("Planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))).")
@@ -131,11 +134,14 @@ enum ClusterSetupPlanning {
     /// The plain blocker for a model the pair may not serve with this build.
     static let notQualified = "Not yet qualified on this pair of Macs."
 
-    /// The model's pair-serving grant refuses it outright for this build (independent of which Mac leads).
+    /// The model's pair-serving grant refuses it outright for this build (independent of the Macs' chips), or the
+    /// installed path has no time budgets for it (`DistributedInstalledPairServingTable`), so a start would be refused.
     static func pairServingRefused(_ capability: ClusterRuntimeCapability, publicModelID: String) -> Bool {
         do {
             _ = try ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: publicModelID,
                                                    artifactSHA256: capability.artifactSHA256)
+            _ = try DistributedInstalledPairServingTable.servingBudgets(runtimeModelID: capability.runtimeModelID,
+                                                                        publicModelID: publicModelID)
             return false
         } catch {
             return true

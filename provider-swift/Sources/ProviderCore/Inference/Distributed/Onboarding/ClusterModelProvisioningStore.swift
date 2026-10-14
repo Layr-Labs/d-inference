@@ -46,7 +46,7 @@ enum ClusterProductModelStore {
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             if let url = URL(string: "\(cdn)/\(ModelDownloader.escapeR2Path(prefix))/manifest.json") { urls.append(url) }
         }
-        if let config = try? ConfigManager.load(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
+        if let config = try? ConfigManager.loadOrDefaults(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
            let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") { urls.append(url) }
         for url in urls { if let data = fetchManifest(url, artifact: artifact, seconds: seconds) { return data } }
         return nil
@@ -88,10 +88,12 @@ extension ClusterModelCopyTrust {
     /// Every artifact digest this build's bundled qualification records name.
     static let pinnedArtifacts: Set<String> = Set(ClusterPairServingGrants.records.map(\.artifactSHA256))
 
-    /// The artifacts a pair may serve with this build (a granted model's records): what the onboarding offers to copy
-    /// from another Mac or to download, so nobody waits for bytes these Macs could not serve together.
+    /// The artifacts a pair may serve with this build (a granted model's records, for a model the installed path has
+    /// time budgets for): what the onboarding offers to copy from another Mac or to download, so nobody waits for bytes
+    /// these Macs could not serve together.
     static let servableArtifacts: Set<String> = {
-        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID))
+        let rows = Set(DistributedInstalledPairServingTable.rows.map(\.runtimeModelID))
+        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID)).intersection(rows)
         return Set(ClusterPairServingGrants.records.filter { granted.contains($0.runtimeModelID) }.map(\.artifactSHA256))
     }()
 

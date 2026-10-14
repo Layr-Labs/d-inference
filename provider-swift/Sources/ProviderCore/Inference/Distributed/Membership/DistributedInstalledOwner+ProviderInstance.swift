@@ -4,8 +4,8 @@ extension DistributedInstalledOwner {
     /// The fixed `cluster worker-owner --stdio` entry. Refuses while this Mac's
     /// ordinary provider holds its instance lock (see
     /// DistributedInstalledProviderExclusion for which holders are part of a
-    /// cluster), and when the model's pair-serving grant does not list this
-    /// Mac's chip class for the rank it runs.
+    /// cluster), and when the model's pair-serving grant refuses the rank this
+    /// Mac runs (mode family not granted, or a rank-shape that diverged).
     public static func serve(reference: ClusterConfigurationReference) throws {
         try serve(reference: reference,
             providerInstanceLock: ProcessLifecycle.defaultPIDFile().appendingPathExtension("lock"),

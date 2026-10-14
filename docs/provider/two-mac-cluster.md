@@ -140,7 +140,8 @@ cluster setup after a Darkbloom update.").
   frees the memory ("Quit apps on <Mac> first"); the fit is checked again right
   before the start.
 - **The start does not finish**: the screen shows each Mac's last error and
-  offers `d` to save a diagnostics file (no keys, addresses or names in it).
+  offers `d` to save a diagnostics file in your home folder (no keys, addresses or
+  names in it; nothing is written if any would remain).
 
 ## Undo
 

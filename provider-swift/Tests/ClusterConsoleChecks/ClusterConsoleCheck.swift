@@ -57,6 +57,7 @@ import Darwin
             ("renderer: content", rendererContent),
             ("redaction", redaction),
             ("diagnostic export", diagnosticExport),
+            ("onboarding diagnostics file", onboardingDiagnostics),
             ("saved setup, trust and candidate", savedSetup),
             ("what each Mac holds", holdings),
             ("link fix results and the guided setup's reading", linkFixResults),

@@ -949,24 +949,21 @@ final class OnboardingLive: @unchecked Sendable {
             return .failure(.init("The diagnostics could not be read within a minute; nothing was saved."))
         }
         let (status, doctor) = read
-        let redaction = ClusterDiagnosticRedaction(identifiers: .init(homeDirectories: [context.paths.homeDirectory.path, NSHomeDirectory()],
-            userNames: [NSUserName()], hostNames: [ProcessInfo.processInfo.hostName]))
-        var object: [String: Any] = ["schema": "darkbloom_cluster_onboarding_diagnostics_v1", "lastErrors": lastErrors(fallback: nil)]
-        for (key, data) in [("status", status), ("doctor", doctor)] {
-            if let data, let value = try? JSONSerialization.jsonObject(with: data) { object[key] = value }
+        // The console export's redaction: every identifier known here (serials, the computer's names, the local tokens,
+        // the saved setup's peers), each string on its own, and nothing written when the second look still finds one.
+        let redaction = ClusterDiagnosticRedaction(identifiers: ClusterConsoleOperations.localIdentifiers(paths: context.paths,
+            providerConfiguration: configuration, candidate: nil))
+        var sections = [String: Data]()
+        if let status { sections["status"] = status }
+        if let doctor { sections["doctor"] = doctor }
+        do {
+            // The home folder itself: Desktop, Documents and Downloads would bring a macOS prompt to the terminal app.
+            let file = try ClusterDiagnosticExport.writeOnboarding(lastErrors: lastErrors(fallback: nil), sections: sections,
+                redaction: redaction, home: context.paths.homeDirectory)
+            return .success(["Saved a diagnostics file (no keys, addresses or names in it): \(file.lastPathComponent) in your home folder."])
+        } catch {
+            return .failure(.init("The diagnostics file was not saved: \(ClusterConsoleText.bounded(String(describing: error), maximum: 200))"))
         }
-        guard let raw = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else {
-            return .failure(.init("The diagnostics could not be written; nothing was saved."))
-        }
-        let text = redaction.redact(String(decoding: raw, as: UTF8.self))
-        let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
-        let folder = FileManager.default.fileExists(atPath: desktop.path) ? desktop : FileManager.default.homeDirectoryForCurrentUser
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-        let file = folder.appendingPathComponent("darkbloom-cluster-diagnostics-\(stamp).json")
-        guard FileManager.default.createFile(atPath: file.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]) else {
-            return .failure(.init("The diagnostics file could not be written; nothing was saved."))
-        }
-        return .success(["Saved a diagnostics file (no keys, addresses or names in it): \(file.lastPathComponent) in \(folder.lastPathComponent)."])
     }
 
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.

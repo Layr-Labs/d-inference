@@ -193,7 +193,7 @@ import Darwin
             useLinkPort: { port in chosenPort.note(port); recorder.note("useLinkPort \(port)") },
             recheckFit: { index in recorder.note("recheckFit \(index)"); return recheck },
             afterRestart: { afterRestart },
-            saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): ~/Desktop/darkbloom-cluster-diagnostics.json"]) })
+            saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): darkbloom-cluster-diagnostics.json in your home folder."]) })
     }
 
     /// One driver run on a pseudo-terminal: the keys are typed only once the text before them is on screen.

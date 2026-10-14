@@ -1,6 +1,7 @@
 import { useId, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import styles from './expandableModels.module.css';
+import { plural } from '../../format';
 
 export function ExpandableModelList<T>({
   items,
@@ -24,7 +25,7 @@ export function ExpandableModelList<T>({
           aria-controls={listId}
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? 'Show fewer models' : `Show ${extra} more models`}
+          {expanded ? 'Show fewer models' : `Show ${plural(extra, 'more model', 'more models')}`}
           <ChevronDown size={16} />
         </button>
       )}

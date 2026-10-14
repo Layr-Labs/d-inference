@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop singular counts
+
+- Use singular nouns for counts of one: “1 Mac” on Home, “Show 1 more model” on Models, “1 download” in model recommendations, the Stats chart and token-bar descriptions, and “1 request processing” in live activity.
 ## Unreleased — desktop account link actions
 
 - Ask before unlinking this Mac from Settings, like other removals; unlinking previously happened on a single click. On Home, stop offering Link account again while a link is in progress or its code is shown, so repeated clicks no longer start new link requests.

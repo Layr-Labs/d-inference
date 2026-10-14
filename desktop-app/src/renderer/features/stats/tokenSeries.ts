@@ -1,4 +1,4 @@
-import { count } from '../../format';
+import { count, plural } from '../../format';
 import type { TrafficPoint } from './data';
 
 export const MAX_TOKEN_BARS = 48;
@@ -52,6 +52,6 @@ export function describeTokenBar(bar: TokenBar) {
     `Input ${amount(bar.input)}`,
     `Cached input ${amount(bar.cached)}`,
     `Output ${amount(bar.output)}`,
-    `Total ${count(bar.total)} tokens`,
+    `Total ${plural(bar.total, 'token')}`,
   ].join(' · ');
 }

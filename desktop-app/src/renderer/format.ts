@@ -54,3 +54,11 @@ export function gb(n?: number) {
 }
 
 export const shortModelName = (id: string) => id.split('/').pop() || id;
+
+/** “1 Mac”, “2 Macs”: a formatted count and the noun that agrees with it. */
+export const plural = (
+  value: number,
+  one: string,
+  many = `${one}s`,
+  format: (value: number) => string = count,
+) => `${format(value)} ${value === 1 ? one : many}`;

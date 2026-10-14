@@ -3,7 +3,7 @@ import { Check, Download, Sparkles } from 'lucide-react';
 import type { NativeModel, Snapshot } from '../../../shared/contracts';
 import { Button } from '../../components/UI';
 import { gigabytes } from '../../models/facts';
-import { money } from '../../format';
+import { money, plural } from '../../format';
 import type { AutopilotAction } from '../../../shared/autopilot';
 import { recommendedStart } from './recommendations';
 import type { ModelActions } from './useModelActions';
@@ -111,7 +111,7 @@ export function RecommendedModels({
       {setup && (
         <footer>
           {missing.length
-            ? `${missing.length} downloads · ${gigabytes(missing.reduce((total, model) => total + model.size_gb, 0))} total`
+            ? `${plural(missing.length, 'download')} · ${gigabytes(missing.reduce((total, model) => total + model.size_gb, 0))} total`
             : 'No downloads needed'}
         </footer>
       )}

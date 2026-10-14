@@ -492,6 +492,12 @@ public enum ClusterPlacementPlanner {
             }
             // One Mac alone crosses no link.
             if ranges.count > 1 { step += link.perDecodeStepSeconds[mode.rawValue] ?? 0 }
+            // A pipeline's speculative rounds: the measured speed-up on the
+            // decoding rank, nothing without one (`ClusterSpeculativeCredit.pipelineFactor`).
+            if mode.usesSpeculativeHead, !mode.isPhaseSplit, let lastDevice = order.last,
+               let factor = ClusterSpeculativeCredit.pipelineFactor(rates(lastDevice, regime).0) {
+                step /= factor
+            }
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
                 prefillTokensPerSecond: Double(prompt) / first, decodeTokensPerSecond: 1 / step,
                 requestSeconds: first + handoff + Double(max(0, outputs - 1)) * step)
@@ -514,6 +520,9 @@ public enum ClusterPlacementPlanner {
         func headRank(_ c: ClusterPlacementCandidate, _ regime: ClusterPlacementPolicy.Regime) -> Int {
             guard c.mode.usesSpeculativeHead else { return 1 }
             guard let decoder = devices.first(where: { $0.label == c.ranks.last?.device }) else { return 2 }
+            if !c.mode.isPhaseSplit {
+                return (ClusterSpeculativeCredit.pipelineFactor(rates(decoder, regime).0) ?? 0) > 1 ? 0 : 2
+            }
             return ClusterSpeculativeCredit.prefersHead(rates(decoder, regime).0, device: decoder, layout: layout) ? 0 : 2
         }
 

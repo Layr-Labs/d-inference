@@ -118,13 +118,15 @@ final class MiMoMTPDecoder {
     }
 
     /// The drafts of the next window from `lastToken` with `remaining` tokens
-    /// left before the output limit: `depth` of them, or none (a plain step)
-    /// when there is no carry, fewer than `depth` tokens are left, or the
-    /// request's sampler cannot verify drafts. Evaluated before return.
+    /// left before the output limit: `depth` of them, fewer when fewer tokens
+    /// are left (every window row may then be kept), or none (a plain step)
+    /// when there is no carry, one token is left, or the request's sampler
+    /// cannot verify drafts. Evaluated before return.
     func draft(lastToken: Int, remaining: Int, check: () throws -> Void) throws -> [Int] {
         guard !released, remaining >= 1 else { throw ProbeError("MiMo speculative decode stepped past its request") }
         let verifiable = request.sampler?.admitsSpeculativeVerification ?? true
-        guard verifiable, let carry, carry.token == lastToken, remaining > terms.depth else {
+        let depth = min(terms.depth, remaining - 1)
+        guard verifiable, let carry, carry.token == lastToken, depth >= 1 else {
             self.carry = nil
             return []
         }
@@ -133,7 +135,7 @@ final class MiMoMTPDecoder {
         let seed = MLXArray([Int32(lastToken)]).reshaped([1, 1])
         var feed = (tokens: seed, hidden: carry.hidden)
         var drafted: [MLXArray] = []
-        for _ in 0..<terms.depth {
+        for _ in 0..<depth {
             let next = head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden, shortlist: nil,
                 requestState: state)
             let token = next.tokens.reshaped([1, 1])
@@ -145,7 +147,7 @@ final class MiMoMTPDecoder {
         try head.assistant.requestStateDidFinishEvaluation(state)
         try check()
         let ids = drafts.asArray(Int32.self).map(Int.init)
-        guard ids.count == terms.depth, ids.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }) else {
+        guard ids.count == depth, ids.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }) else {
             throw ProbeError("MiMo speculative head drafted a token outside the vocabulary")
         }
         statistics.draftNanoseconds += DispatchTime.now().uptimeNanoseconds - started

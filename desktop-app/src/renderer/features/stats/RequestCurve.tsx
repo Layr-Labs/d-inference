@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { compact, timeOfDay } from '../../format';
+import { compact, plural, timeOfDay } from '../../format';
 import { curve, type TrafficPoint } from './data';
 import styles from './stats.module.css';
 
@@ -62,7 +62,7 @@ export function RequestCurve({ points }: { points: TrafficPoint[] }) {
           {points.map((p, i) => (
             <button
               key={p.at}
-              aria-label={`${timeOfDay(p.at)}: ${compact(p.requests)} requests`}
+              aria-label={`${timeOfDay(p.at)}: ${plural(p.requests, 'request', 'requests', compact)}`}
               onFocus={() => setSelected(i)}
               onMouseEnter={() => setSelected(i)}
               onClick={() => setSelected(i)}

@@ -2,7 +2,7 @@ import { machineStatus } from '../../presentation/status';
 import { useState } from 'react';
 import { Search } from 'lucide-react';
 import type { Machine } from '../../../shared/contracts';
-import { money } from '../../format';
+import { money, plural } from '../../format';
 import { Empty, Status } from '../../components/UI';
 import { MachineIcon } from '../machines/MachineIcon';
 import { isOnline, memoryLabel } from '../machines/fleet';
@@ -30,7 +30,7 @@ export function FleetMacs({
     <section aria-label="Your Macs">
       <div className={styles.listHeading}>
         <h3>Your Macs</h3>
-        <span>{machines.length} Macs</span>
+        <span>{plural(machines.length, 'Mac')}</span>
       </div>
       <div className={styles.filters}>
         <label className="search">

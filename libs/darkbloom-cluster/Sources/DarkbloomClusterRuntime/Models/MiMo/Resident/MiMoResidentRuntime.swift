@@ -30,6 +30,9 @@ public final class MiMoResidentRuntime {
     let baseReady: ClusterWorkerReady
     /// Declared at load and bound into the load agreement with the peer.
     public let generationMode: QwenResidentGenerationMode
+    /// This rank's prompt-prefix cache (on by default; `DARKBLOOM_CLUSTER_PREFIX_CACHE=off`
+    /// for diagnosis) and, when its owner configured one, its SSD tier.
+    public let prefixCache: QwenStagePrefixCache
     private let operation = NSLock()
     private let keepWarm = ClusterKeepWarm()
     private let lifecycle: QwenLayerStageResidentLifecycle
@@ -44,14 +47,17 @@ public final class MiMoResidentRuntime {
         let request: QwenLayerStageGenerationRequest
         let allowance: MiMoResidentRequestAllowance
         let deadline: UInt64
+        /// What this request's prefix capture may add (0: it captures nothing).
+        var prefixCaptureBytes = 0
     }
 
     private init(admission: MiMoResidentAdmission, control: QwenResidentControl, collective: Collective,
                  stage: LoadedMiMoLayerStage, residency: MiMoStageResidency?, capacity: Int,
-                 lifecycle: QwenLayerStageResidentLifecycle, generationMode: QwenResidentGenerationMode) {
+                 lifecycle: QwenLayerStageResidentLifecycle, generationMode: QwenResidentGenerationMode,
+                 prefixCache: QwenStagePrefixCache) {
         self.admission = admission; self.control = control; self.collective = collective
         self.stage = stage; model = stage.model; self.residency = residency; self.lifecycle = lifecycle
-        self.generationMode = generationMode
+        self.generationMode = generationMode; self.prefixCache = prefixCache
         baseReady = .init(identity: admission.configuration.identity, rank: collective.rank,
             profile: admission.wireProfile, executionPlanSHA256: admission.plan.fingerprint,
             requestCapacityBytes: capacity, dataPlane: collective.workerDataPlane)
@@ -87,10 +93,14 @@ public final class MiMoResidentRuntime {
     /// `--generation-mode`); both ranks must be given the same one, and it
     /// must be in the registered model's row. `qualification` says whether
     /// this process may honour the qualification switches in its environment.
+    /// `prefixSSDKey`: the 32-byte key of this rank's prompt-prefix SSD tier,
+    /// as the worker received it on its input (never from the environment);
+    /// nil leaves the tier off (`QwenStagePrefixDiskConfiguration`).
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
                             qualification: QwenResidentQualificationSwitches = .refused,
-                            dataPlane credential: ClusterDataPlaneCredential? = nil) throws -> MiMoResidentRuntime {
+                            dataPlane credential: ClusterDataPlaneCredential? = nil,
+                            prefixSSDKey: Data? = nil) throws -> MiMoResidentRuntime {
         let environment = ProcessInfo.processInfo.environment
         try qualification.admit(environment: environment)
         // A keyed data plane (S16); its qualification fault only with the switches.
@@ -139,6 +149,7 @@ public final class MiMoResidentRuntime {
         var stage: LoadedMiMoLayerStage?
         var residency: MiMoStageResidency?
         weak var retired: Module?
+        let prefixCache = QwenStagePrefixCache.fromEnvironment(environment)
         do {
             try control.check(); try QwenResidentResourceEnvironment.require()
             try admission.jaccl.requireUnchanged(environment: ProcessInfo.processInfo.environment, read: read)
@@ -228,6 +239,14 @@ public final class MiMoResidentRuntime {
                     let atAdmitted = try allowance(admitted.context, min(admission.profile.maximumChunkTokens,
                         min(admission.profile.maximumPromptTokens, admitted.context - 1)))
                     try atAdmitted.requireLive()
+                    if prefixCache.enabled {
+                        // Half the room beside the largest admitted request, at
+                        // most the cache's ceiling (the dense runtime's rule).
+                        let room = try MiMoStagePrefixBudget.roomBytes(chargeBytes: atAdmitted.reservedBytes)
+                        prefixCache.setBudget(QwenStagePrefixCache.budget(roomBytes: room))
+                        log("darkbloom-prefix-v1 rank=\(collective.rank) family=mimo budget_bytes=\(prefixCache.budgetBytes)"
+                            + " room_bytes=\(room)")
+                    }
                     log("darkbloom-resident-context-v1 rank=\(collective.rank) model=\(admission.specification.model.rawValue)"
                         + " limit=\(admission.profile.maximumContextTokens) admitted=\(admitted.context)"
                         + " charge_at_admitted=\(atAdmitted.reservedBytes)"
@@ -267,10 +286,25 @@ public final class MiMoResidentRuntime {
                     throw error
                 }
             }
+            // The SSD tier for this plan and rank, when the owner configured one
+            // (directory in the environment, key on the input). Opening it
+            // sweeps the directories of other plans under its root on this rank.
+            if prefixCache.enabled, let loaded = stage {
+                prefixCache.disk = QwenStagePrefixDiskTier.open(
+                    configuration: .fromEnvironment(environment, key: prefixSSDKey),
+                    planScope: QwenStagePrefixDiskTier.planScope(planFingerprint: admission.plan.fingerprint,
+                        artifactAggregateSHA256: loaded.receipt.verifiedAggregateSHA256,
+                        storageCommitmentSHA256: loaded.receipt.storageCommitmentSHA256,
+                        rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
+                        generationMode: mode.rawValue, prefillSchedule: configuration.prefillSchedule.rawValue),
+                    rank: collective.rank,
+                    stagingEpoch: admission.configuration.identity.membershipEpoch.uuidString.lowercased())
+            }
             let lifecycle = QwenLayerStageResidentLifecycle()
             try control.loaded()
             let runtime = MiMoResidentRuntime(admission: admission, control: control, collective: collective,
-                stage: stage!, residency: residency, capacity: capacity, lifecycle: lifecycle, generationMode: mode)
+                stage: stage!, residency: residency, capacity: capacity, lifecycle: lifecycle, generationMode: mode,
+                prefixCache: prefixCache)
             runtime.recordsSteps = recordsSteps
             return runtime
         } catch {
@@ -301,7 +335,7 @@ public final class MiMoResidentRuntime {
         try control.check(); try control.reserve(requestID)
         // Nothing below allocates: a throw is a refusal of this request alone.
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
-            guard stage != nil else { throw ProbeError("Resident model already released") }
+            guard let stage else { throw ProbeError("Resident model already released") }
             let allowance = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
                 chunkSize: min(request.chunkSize, request.promptCount))
@@ -309,9 +343,28 @@ public final class MiMoResidentRuntime {
                   allowance.reservedBytes <= baseReady.requestCapacityBytes else {
                 throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
             }
-            try allowance.requireLive()
+            var reserved = Reservation(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds)
+            // Only what this request's capture adds after the prefix this rank
+            // holds for it (nothing on a repeat of the whole prompt), under the
+            // scope its agreement will key the cache by.
+            if prefixCache.enabled {
+                let scope = qwenStagePrefixScope(source: try Self.sourceIdentity(stage: stage, admission: admission),
+                    numericalPolicySHA256: admission.arithmeticSHA256, request: request)
+                reserved.prefixCaptureBytes = prefixCache.captureLimit(scope: scope, tokens: request.promptTokenIDs,
+                    chunkSize: request.chunkSize)
+            }
+            // Kept prefixes give way before a reservation is refused for memory,
+            // and this request's own capture is optional.
+            do {
+                try prefixCache.yieldingMemory { try allowance.requireLive(additionalNativeBytes: reserved.prefixCaptureBytes) }
+            } catch where reserved.prefixCaptureBytes > 0 {
+                log("darkbloom-prefix-v1 rank=\(collective.rank) family=mimo capture-dropped bytes=\(reserved.prefixCaptureBytes): \(error)")
+                reserved.prefixCaptureBytes = 0
+                try prefixCache.yieldingMemory { try allowance.requireLive() }
+            }
             try control.check(deadline: value.deadlineUptimeNanoseconds)
-            reservation = .init(request: request, allowance: allowance, deadline: value.deadlineUptimeNanoseconds)
+            prefixCache.admitCapture(prefixCache.enabled ? reserved.prefixCaptureBytes : nil)
+            reservation = reserved
             return allowance.reservedBytes
         }
     }
@@ -324,7 +377,7 @@ public final class MiMoResidentRuntime {
         guard let reserved = reservation, reserved.request.requestID == requestID, control.withdraw(requestID) else {
             throw ProbeError("Resident release has no matching unstarted reservation")
         }
-        reservation = nil
+        reservation = nil; prefixCache.admitCapture(nil)
     }
 
     /// Only rank 0 invokes the callback, after both ranks commit and accept the
@@ -347,18 +400,29 @@ public final class MiMoResidentRuntime {
             }, prepare: { $0 })
             reservation = nil
             return value
-        } catch { control.fail(); throw error }
+        } catch {
+            // The peer may have stored or dropped differently; a failed owner
+            // keeps nothing it cannot prove both ranks hold.
+            prefixCache.sweep()
+            control.fail(); throw error
+        }
     }
 
-    private func run(stage: LoadedMiMoLayerStage, reserved: Reservation,
-                     onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+    /// The source identity both ranks' generation agreement carries for a
+    /// request on this loaded stage.
+    private static func sourceIdentity(stage: LoadedMiMoLayerStage, admission: MiMoResidentAdmission) throws
+        -> QwenLayerStageWireSourceIdentity {
         let receipt = stage.receipt
-        let source = try QwenLayerStageWireSourceIdentity(
-            sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
+        return try QwenLayerStageWireSourceIdentity(sourceConfigurationSHA256: receipt.sourceConfigurationSHA256,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
             storageCommitmentSHA256: receipt.storageCommitmentSHA256,
             planFingerprint: admission.plan.fingerprint,
             producerStageFingerprint: admission.plan.stages[0].fingerprint)
+    }
+
+    private func run(stage: LoadedMiMoLayerStage, reserved: Reservation,
+                     onCommittedToken: (Int, Int, Int) throws -> Bool) throws -> QwenResidentGenerationCompletion {
+        let source = try Self.sourceIdentity(stage: stage, admission: admission)
         let agreement = try QwenLayerStageGenerationAgreement(request: reserved.request,
             membershipEpoch: admission.configuration.identity.membershipEpoch, source: source,
             consumerStageFingerprint: admission.plan.stages[1].fingerprint,
@@ -366,11 +430,15 @@ public final class MiMoResidentRuntime {
             numericalPolicySHA256: admission.arithmeticSHA256,
             compactDecode: generationMode == .pipelineCompactDecode)
         var lastResourceCheck: UInt64 = 0, ordinal = 0
+        var captureCharge = reserved.prefixCaptureBytes
         func check() throws {
             try control.check(deadline: reserved.deadline)
             let now = DispatchTime.now().uptimeNanoseconds
             if lastResourceCheck == 0 || now - lastResourceCheck >= 250_000_000 {
-                try reserved.allowance.requireLive()
+                // Kept prefixes give way first, then this request's own capture.
+                captureCharge = try QwenResidentRequestExecution.checkRunning(captureBytes: captureCharge,
+                    prefixCache: prefixCache, rank: collective.rank,
+                    live: { try reserved.allowance.requireLive(additionalNativeBytes: $0) })
                 lastResourceCheck = DispatchTime.now().uptimeNanoseconds
             }
             try control.check(deadline: reserved.deadline)
@@ -379,7 +447,8 @@ public final class MiMoResidentRuntime {
         let started = DispatchTime.now().uptimeNanoseconds
         var firstToken: UInt64?
         let (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
-            agreement: agreement, collective: collective, recordsSteps: recordsSteps, onCommittedToken: { token in
+            agreement: agreement, collective: collective, recordsSteps: recordsSteps, prefixCache: prefixCache,
+            onCommittedToken: { token in
                 let current = ordinal; ordinal += 1
                 if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
                 return try onCommittedToken(current, token, reserved.request.promptCount + current)
@@ -402,15 +471,21 @@ public final class MiMoResidentRuntime {
             "last_row_sha256=\(evidence.lastRowSHA256 ?? "none")",
             "ms=\((finished - started) / 1_000_000)", "first_token_ms=\(firstTokenMilliseconds)",
             "active=\(peak.activeMemory)", "peak=\(peak.peakMemory)",
+            "prefix_reused=\(result.prefixCache?.reusedPromptTokens ?? 0)",
+            "prefix_tier=\(result.prefixCache?.restoredTier ?? "none")",
+            "prefix_stored=\((result.prefixCache?.storedFrontiers ?? []).map(String.init).joined(separator: ","))",
         ]
         for step in evidence.steps { log(step.line(rank: collective.rank)) }
         log(requestFields.joined(separator: " "))
         // S16: the session's record counters and key generations so far.
         collective.logDataPlaneStatus()
-        return QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
+        var completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
             selectedTokenIDs: result.selectedTokenIDs, completedFrames: result.completedFrames,
             committedTokens: result.committedTokens, tokenChainSHA256: result.tokenChainSHA256,
             bothRequestStatesRetired: true)
+        completion.reusedPromptTokens = result.prefixCache?.reusedPromptTokens ?? 0
+        completion.storedPromptFrontiers = result.prefixCache?.storedFrontiers ?? []
+        return completion
     }
 
     public func cancel(requestID: UUID) { control.cancel(requestID) }
@@ -426,6 +501,11 @@ public final class MiMoResidentRuntime {
             try lifecycle.withModelRelease {
                 try MLX.withError { error in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()
+                    // Every rank sweeps its cache before its model goes. Records
+                    // already queued for the SSD are finished first (bounded):
+                    // they are what a restarted pair restores.
+                    prefixCache.disk?.close()
+                    prefixCache.sweep()
                     try residency?.end(); residency = nil
                     reservation = nil; stage = nil
                     guard model == nil else { throw ProbeError("Resident MiMo model remains retained") }

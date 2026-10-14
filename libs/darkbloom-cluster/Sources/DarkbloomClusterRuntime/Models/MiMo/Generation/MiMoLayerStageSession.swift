@@ -34,11 +34,19 @@ final class MiMoLayerStageSession {
     /// bytes the row digest already copies; no extra native work.
     let recordsSteps: Bool
     private(set) var steps: [MiMoStepEvidence] = []
+    /// The model's global layer index of each local cache, in local order.
+    let globalLayers: [Int]
+    /// This request's prompt-prefix capture (`MiMoStagePrefixCapture`); nil
+    /// when the prefix cache is off or the plan split no final token.
+    var prefixCapture: MiMoStagePrefixCapture?
 
     var committedTokens: Int { schedule.committedTokens }
 
+    /// `adopting` starts the stage from its own cached state at the agreed
+    /// reused prefix (`request.reusedPrefixTokens`) instead of empty caches.
     init(stage: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-         generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false) throws {
+         generationRequest request: QwenLayerStageGenerationRequest, recordsSteps: Bool = false,
+         adopting: QwenStagePrefixState? = nil) throws {
         guard plan.stages.count == 2, plan.stages.indices.contains(stage.stageIndex),
               stage.plan.fingerprint == plan.fingerprint else {
             throw ProbeError("MiMo stage session received a different source plan")
@@ -66,7 +74,21 @@ final class MiMoLayerStageSession {
         self.stage = stage; self.request = request; hiddenSize = hidden
         self.recordsSteps = recordsSteps && stage.stageIndex == 1
         producerStageFingerprint = plan.stages[0].fingerprint
-        caches = stage.model.newCache()
+        let layers = descriptor.layers.sorted { $0.localIndex < $1.localIndex }
+        guard layers.map(\.localIndex) == Array(0..<stage.layerCount) else {
+            throw ProbeError("MiMo stage plan layers differ from the loaded stage")
+        }
+        globalLayers = layers.map(\.globalIndex)
+        let fresh = stage.model.newCache()
+        if let adopting {
+            guard request.reusedPrefixTokens > 0, adopting.committedTokens == request.reusedPrefixTokens else {
+                throw ProbeError("Only the agreed reused prefix can be adopted")
+            }
+            try MiMoStagePrefixSnapshot.restore(adopting, into: fresh, globalLayers: globalLayers)
+        } else {
+            guard request.reusedPrefixTokens == 0 else { throw ProbeError("A reused prefix needs its restored state") }
+        }
+        caches = fresh
         schedule = QwenLayerStageGenerationSchedule(request: request)
         identity = .init(stageIndex: stage.stageIndex, requestFingerprint: request.fingerprint,
             artifactAggregateSHA256: receipt.verifiedAggregateSHA256,
@@ -131,6 +153,7 @@ final class MiMoLayerStageSession {
                     throw ProbeError("MiMo stage output differs from the native residual contract")
                 }
                 try schedule.commit(frame)
+                try capturePrefix(after: frame)
                 // eval returns at the output event, which can precede the Metal
                 // completion handlers that still hold this buffer; the sender
                 // refuses a residual it does not own alone.
@@ -161,6 +184,7 @@ final class MiMoLayerStageSession {
                 throw ProbeError("MiMo stage output differs from the native logit contract")
             }
             try schedule.commit(frame)
+            try capturePrefix(after: frame)
             chain(incoming!.payloadSHA256)
             if wantsLogits {
                 Stream.gpu.synchronize(); try checked()
@@ -177,6 +201,13 @@ final class MiMoLayerStageSession {
             }
             return .evaluationHandle(output)
         }
+    }
+
+    /// After a committed prompt frame: the capture keeps this frontier when
+    /// it is one of its planned frontiers (its copies only; no frame depends on it).
+    private func capturePrefix(after frame: QwenLayerStageFrame) throws {
+        guard frame.phase == .prefill, let prefixCapture, let caches else { return }
+        try prefixCapture.capture(at: frame.tokenOffset + frame.tokenCount, caches: caches, globalLayers: globalLayers)
     }
 
     private func chain(_ payloadSHA256: String) {

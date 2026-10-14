@@ -99,13 +99,17 @@ struct MiMoResidentRequestAllowance {
             bound: QwenResidentResourceEnvironment.allocationBound))
     }
 
-    func requireLive() throws {
+    /// `additionalNativeBytes`: what the request may add beyond its state
+    /// (its prompt-prefix capture), charged in both checks.
+    func requireLive(additionalNativeBytes: Int = 0) throws {
         try QwenResidentResourceEnvironment.require()
+        guard additionalNativeBytes >= 0 else { throw ProbeError("Resident MiMo request charge is negative") }
         let os = try QwenDenseStageLoadResources.observeOS()
         let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes,
+                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([QwenDenseStageLoadResources.observeNative().activeBytes,
-            QwenDenseStageLoadResources.observeNative().cacheBytes, reservedBytes,
+            QwenDenseStageLoadResources.observeNative().cacheBytes, reservedBytes, additionalNativeBytes,
             QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident MiMo request was refused") }
         guard QwenDenseStageLoadResources.observeNative().allocatorLimitBytes >= allocator else {

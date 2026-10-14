@@ -1,0 +1,202 @@
+import Foundation
+import MLX
+import MLXLMCommon
+
+/// A MiMo stage's committed request state at an exact prompt frontier, as the
+/// prompt-prefix tiers keep it: the rows of every full-attention layer and the
+/// tail of every sliding-window layer's ring.
+///
+/// A full-attention layer (a growing `KVCacheSimple`) holds every committed
+/// position, so its rows at a frontier are a prefix of the request's rows: one
+/// copy at a prompt's deepest frontier serves every shallower one, as a dense
+/// stage's attention copy does. A sliding-window layer (a `RotatingKVCache` of
+/// `window` positions) holds only a ring, so its state at a frontier is its
+/// own: the last `min(frontier, window)` positions, in temporal order. That is
+/// exactly what the ring keeps after a multi-token frame (`updateConcat`
+/// leaves it in temporal order with `idx == count`); every later frame trims
+/// it to the same last `window - 1` (multi-token) or `window` (one token)
+/// positions whether it held `window - 1 + S` or `window` of them, so a ring
+/// restored from the tail continues bit for bit as the original would. A ring
+/// that was last written one token at a time (`updateInPlace`: rotated,
+/// `idx != count`) is not in temporal order; a frontier reached that way is
+/// not captured (the split frontier after a one-token frame, rare).
+///
+/// The tiers' shared types carry it unchanged (`QwenStagePrefixState`): the
+/// full-attention rows are its `attention` (a prefix of the deepest copy, kept
+/// once per prompt) and each sliding layer's tail is a per-frontier pair in its
+/// `recurrent` slots (keys in the first, values in the second), so the
+/// resident cache, the two-rank plan and the encrypted SSD record need no
+/// MiMo-specific code. The layer index is the model's global layer index.
+enum MiMoStagePrefixSnapshot {
+    /// One local cache's role, from its class and the plan's layer kind.
+    enum Kind: Equatable { case full, sliding(window: Int) }
+
+    /// The state of every local cache at `frontier`, or nil when a sliding
+    /// ring is not in temporal order (see the type). Arrays are this
+    /// session's own copies (`contiguous` + an exact multiply for the full
+    /// rows): no later write to the request's caches can reach them, and a
+    /// tail does not keep the whole ring buffer alive.
+    static func capture(caches: [KVCache], globalLayers: [Int], frontier: Int)
+        throws -> (full: [Int: (keys: MLXArray, values: MLXArray)], sliding: [Int: (keys: MLXArray, values: MLXArray)])? {
+        guard caches.count == globalLayers.count, frontier > 0 else {
+            throw ProbeError("MiMo prefix capture differs from the stage's layers")
+        }
+        var full: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        var sliding: [Int: (keys: MLXArray, values: MLXArray)] = [:]
+        for (cache, layer) in zip(caches, globalLayers) {
+            guard cache.offset == frontier else { throw ProbeError("MiMo prefix capture frontier differs from a layer's") }
+            switch try kind(cache) {
+            case .full:
+                let state = cache.state
+                guard state.count == 2, state[0].ndim == 4, state[0].dim(2) == frontier, state[1].dim(2) == frontier else {
+                    throw ProbeError("MiMo prefix capture lacks a full-attention row")
+                }
+                let one = MLXArray(1).asType(state[0].dtype)
+                full[layer] = (keys: state[0] * one, values: state[1] * one)
+            case .sliding(let window):
+                let raw = cache.innerState()
+                guard raw.count == 2, raw[0].ndim == 4, raw[0].dim(2) == raw[1].dim(2),
+                      let idx = Int(cache.metaState[4]) else {
+                    throw ProbeError("MiMo prefix capture lacks a sliding-window ring")
+                }
+                let count = raw[0].dim(2)
+                // Rotated by one-token writes: not in temporal order, not kept.
+                guard idx == count, count >= min(frontier, window) else { return nil }
+                let kept = min(frontier, window)
+                sliding[layer] = (keys: contiguous(raw[0][0..., 0..., (count - kept)..<count, 0...]),
+                                  values: contiguous(raw[1][0..., 0..., (count - kept)..<count, 0...]))
+            }
+        }
+        eval(full.values.flatMap { [$0.keys, $0.values] } + sliding.values.flatMap { [$0.keys, $0.values] })
+        return (full, sliding)
+    }
+
+    /// Restores `state` (this stage's state at `state.committedTokens`) into
+    /// fresh caches. Every local layer must be present exactly once, in its
+    /// own kind, with the frontier's row counts; anything else is refused and
+    /// the request prefills from zero on both ranks.
+    static func restore(_ state: QwenStagePrefixState, into caches: [KVCache], globalLayers: [Int]) throws {
+        let frontier = state.committedTokens
+        guard frontier > 0, caches.count == globalLayers.count,
+              caches.allSatisfy({ $0.offset == 0 && $0.innerState().isEmpty }) else {
+            throw ProbeError("MiMo prefix restore needs fresh caches")
+        }
+        var fullLayers = Set<Int>(), slidingLayers = Set<Int>()
+        for (fresh, layer) in zip(caches, globalLayers) {
+            // The caches are classes: this binding mutates the request's own.
+            var cache = fresh
+            switch try kind(cache) {
+            case .full:
+                guard let pair = state.attention[layer], pair.keys.ndim == 4, pair.values.ndim == 4,
+                      pair.keys.dim(2) == frontier, pair.values.dim(2) == frontier,
+                      pair.keys.dim(0) == 1, pair.values.dim(0) == 1, pair.keys.dim(1) == pair.values.dim(1) else {
+                    throw ProbeError("MiMo prefix restore lacks full-attention layer \(layer)")
+                }
+                cache.state = [pair.keys, pair.values]
+                fullLayers.insert(layer)
+            case .sliding(let window):
+                let kept = min(frontier, window)
+                guard let pair = state.recurrent[layer], pair.conv.ndim == 4, pair.ssm.ndim == 4,
+                      pair.conv.dim(2) == kept, pair.ssm.dim(2) == kept,
+                      pair.conv.dim(0) == 1, pair.ssm.dim(0) == 1, pair.conv.dim(1) == pair.ssm.dim(1) else {
+                    throw ProbeError("MiMo prefix restore lacks sliding-window layer \(layer)")
+                }
+                let meta = cache.metaState
+                guard meta.count == 5 else { throw ProbeError("MiMo prefix restore found an unknown ring") }
+                cache.state = [pair.conv, pair.ssm]
+                // keep, window, step as the fresh ring has them; offset and the
+                // write position as the original ring had them after its frame.
+                cache.metaState = [meta[0], meta[1], meta[2], String(frontier), String(kept)]
+                slidingLayers.insert(layer)
+            }
+            guard cache.offset == frontier else { throw ProbeError("MiMo prefix restore left a layer at another frontier") }
+        }
+        guard Set(state.attention.keys) == fullLayers, Set(state.recurrent.keys) == slidingLayers else {
+            throw ProbeError("MiMo prefix state names a layer outside this stage")
+        }
+    }
+
+    static func kind(_ cache: KVCache) throws -> Kind {
+        if let ring = cache as? RotatingKVCache {
+            guard let window = ring.maxSize, window > 0, ring.metaState.count == 5, ring.metaState[0] == "0" else {
+                throw ProbeError("MiMo prefix needs a sliding ring with no kept prefix")
+            }
+            return .sliding(window: window)
+        }
+        guard type(of: cache) == KVCacheSimple.self else { throw ProbeError("MiMo prefix found an unknown layer cache") }
+        return .full
+    }
+}
+
+/// One request's prefix capture on one MiMo stage: the frontiers it was asked
+/// to keep, what it kept within its limit, and the copies. The sliding tails
+/// are captured at every kept frontier; the full-attention rows once, at the
+/// deepest (the split frontier), and shallower frontiers view a prefix of
+/// that copy, exactly as the dense stage session keeps its attention copy.
+final class MiMoStagePrefixCapture {
+    /// Prompt frontiers at which this request may keep its state (grid
+    /// multiples of the stride and the split frontier `promptCount - 1`).
+    let frontiers: Set<Int>
+    /// Most bytes this request's captures may hold together (its charge).
+    var limitBytes: Int?
+    var maximumFrontiers = Int.max
+    /// Measured at the first capture frontier; decides what is kept.
+    private(set) var cost: QwenStagePrefixCaptureCost?
+    private var kept: Set<Int>?
+    private(set) var withdrawn = false
+    private var sliding: [Int: [Int: (keys: MLXArray, values: MLXArray)]] = [:]
+    private var deepest: (committed: Int, layers: [Int: (keys: MLXArray, values: MLXArray)])?
+    /// Frontiers not captured because a ring was rotated there.
+    private(set) var skipped: [Int] = []
+
+    init(frontiers: Set<Int>) { self.frontiers = frontiers }
+
+    /// After the frame that committed `frontier` (`caches` are the request's).
+    func capture(at frontier: Int, caches: [KVCache], globalLayers: [Int]) throws {
+        guard frontiers.contains(frontier), !withdrawn else { return }
+        guard let state = try MiMoStagePrefixSnapshot.capture(caches: caches, globalLayers: globalLayers,
+                                                              frontier: frontier) else {
+            skipped.append(frontier); return
+        }
+        let planned = frontiers.sorted()
+        if kept == nil {
+            let rows = state.full.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            let tails = state.sliding.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            // A ring holds at most its window: the tail at the deepest frontier
+            // costs what it costs here once the prompt is past the window.
+            let measured = QwenStagePrefixCaptureCost(attentionBytesPerToken: (rows + frontier - 1) / frontier,
+                recurrentBytesPerFrontier: tails, historyBytesPerToken: 0)
+            cost = measured
+            kept = measured.kept(planned, limit: limitBytes ?? Int.max, maximum: maximumFrontiers)
+        }
+        guard kept?.contains(frontier) == true else { return }
+        sliding[frontier] = state.sliding
+        if frontier == planned.last { deepest = (frontier, state.full) }
+    }
+
+    /// The kept frontiers' states, ascending. Empty unless the deepest was
+    /// reached (a request that never reached its split frontier keeps nothing).
+    func states() -> [QwenStagePrefixState] {
+        guard let deepest, !withdrawn else { return [] }
+        return sliding.keys.sorted().compactMap { frontier in
+            guard frontier <= deepest.committed, let tails = sliding[frontier] else { return nil }
+            let rows = deepest.layers.mapValues { pair -> (keys: MLXArray, values: MLXArray) in
+                frontier == deepest.committed ? pair
+                    : (keys: pair.keys[0..., 0..., 0..<frontier, 0...], values: pair.values[0..., 0..., 0..<frontier, 0...])
+            }
+            return QwenStagePrefixState(committedTokens: frontier, attention: rows,
+                recurrent: tails.mapValues { (conv: $0.keys, ssm: $0.values) })
+        }
+    }
+
+    /// Bytes of the full-attention copy the kept states view together.
+    var sharedBytes: Int { deepest?.layers.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes } ?? 0 }
+
+    /// Whether this request keeps its prompt: the deepest frontier was captured.
+    var keepsPrompt: Bool { !withdrawn && deepest != nil }
+
+    /// The running check withdrew this capture: let go of it, capture no more.
+    func withdraw() { withdrawn = true; sliding.removeAll(); deepest = nil }
+
+    func discard() { sliding.removeAll(); deepest = nil; kept = nil }
+}

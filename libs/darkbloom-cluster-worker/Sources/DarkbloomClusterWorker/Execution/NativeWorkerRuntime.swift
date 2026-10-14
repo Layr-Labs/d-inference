@@ -33,7 +33,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         case .mimoV26:
             guard speculativeTerms == nil else { throw WorkerFailure.invalid("MiMo has no speculative decoding on a pair") }
             owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification,
-                dataPlane: dataPlane))
+                dataPlane: dataPlane, prefixSSDKey: prefixSSDKey))
         case .gptoss:
             throw WorkerFailure.invalid("GPT-OSS runs on its own worker runtime, not the native wrapper")
         }

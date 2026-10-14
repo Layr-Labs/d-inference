@@ -663,6 +663,20 @@ public enum ConfigManager: Sendable {
         return config
     }
 
+    /// The config at `path`, or the build's defaults when nothing exists at
+    /// that path: a new Mac has no provider.toml until its first cluster
+    /// setup is saved, and `darkbloom cluster` reads the coordinator (for
+    /// Darkbloom's catalog) before that. A file that exists but cannot be read
+    /// or decoded still throws, as `load(from:)` does.
+    public static func loadOrDefaults(from path: URL) throws -> ProviderConfig {
+        var value = stat()
+        if lstat(path.path, &value) != 0, errno == ENOENT {
+            return ProviderConfig(provider: ProviderSettings(name: "darkbloom"), backend: BackendSettings(),
+                                  coordinator: CoordinatorSettings())
+        }
+        return try load(from: path)
+    }
+
     /// Save config to a file path, creating parent directories as needed. The
     /// file is replaced atomically and owner-only (`ProviderConfigFile`).
     public static func save(_ config: ProviderConfig, to path: URL) throws {

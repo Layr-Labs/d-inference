@@ -635,7 +635,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// The catalog models this Mac could fetch for the cluster (a verified manifest, small enough for both Macs'
     /// memory together); empty when the catalog does not answer within a few seconds.
     func catalogModels(peer: ClusterSetupReport) -> [CatalogModel] {
-        guard let config = try? ConfigManager.load(from: settings.service.wizard.providerConfiguration) else { return [] }
+        guard let config = try? ConfigManager.loadOrDefaults(from: settings.service.wizard.providerConfiguration) else { return [] }
         let client = ModelCatalogClient(coordinatorURL: config.coordinator.url)
         let box = ClusterOnboardingMailbox<[CatalogModel]>()
         let done = DispatchSemaphore(value: 0)
@@ -755,7 +755,7 @@ final class OnboardingLive: @unchecked Sendable {
     /// product's model store), then clones it into the cluster's store. Returns its folder there.
     func downloadOnThisMac(_ model: CatalogModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
         let capabilities = (try? HardwareDetector.detect()).map { ProviderRuntimeCapabilityDetector.detectPrepared(hardware: $0, boundMetallibHash: nil) } ?? []
-        let catalog = (try? ConfigManager.load(from: settings.service.wizard.providerConfiguration)).map { ModelCatalogClient(coordinatorURL: $0.coordinator.url) }
+        let catalog = (try? ConfigManager.loadOrDefaults(from: settings.service.wizard.providerConfiguration)).map { ModelCatalogClient(coordinatorURL: $0.coordinator.url) }
         var downloader = ModelDownloader(catalogClient: catalog, runtimeCapabilities: capabilities)
         // Written and verified uncached, like the copy over the cable: a download does not take memory from a model load.
         downloader.uncachedWrites = true

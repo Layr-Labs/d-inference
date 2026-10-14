@@ -46,7 +46,7 @@ enum ClusterProductModelStore {
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             if let url = URL(string: "\(cdn)/\(ModelDownloader.escapeR2Path(prefix))/manifest.json") { urls.append(url) }
         }
-        if let config = try? ConfigManager.load(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
+        if let config = try? ConfigManager.loadOrDefaults(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
            let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") { urls.append(url) }
         for url in urls { if let data = fetchManifest(url, artifact: artifact, seconds: seconds) { return data } }
         return nil

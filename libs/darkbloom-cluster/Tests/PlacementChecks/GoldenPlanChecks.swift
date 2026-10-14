@@ -2,12 +2,16 @@ import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
 
-/// One golden plan: the digest of the plan the plan tool printed on each Mac
-/// (`plan --layout L --peer mac-a=A --peer mac-b=B --leader mac-a --json`;
-/// the two printouts were byte-equal) and its chosen placement in words.
+/// One golden plan: the digest of the plan the plan tool prints by default
+/// (`plan --layout L --peer mac-a=A --peer mac-b=B --leader mac-a --json`:
+/// sharded deployments only, owner 2026-10-13) and its chosen sharded
+/// placement in words; and the digest of the same plan under the hand-off
+/// opt-in (`--hand-off-modes`), so the phase split code kept off by default
+/// is still held to its output byte for byte.
 struct GoldenPlanExpectation: Decodable {
     struct Rank: Decodable, Equatable { let device: String; let firstLayer: Int; let endLayer: Int; let fit: String }
     let planSHA256: String
+    let handOffPlanSHA256: String
     let runtimeModelID: String
     let cut: Int
     let mode: String
@@ -19,7 +23,9 @@ struct GoldenPlanExpectation: Decodable {
 /// on Mac A and on Mac B (the two reads byte-equal); `Golden/profile-*.json`
 /// are both Macs' device profiles as their plan tools sampled them. The plan
 /// command's own code plans each layout here, away from both Macs, and must
-/// print exactly the plan both Macs printed. The dense rows' layouts, built
+/// print exactly the golden plan (first printed on both Macs; reprinted by
+/// this code when the default became sharded deployments only, 2026-10-14,
+/// with the hand-off opt-in's plan kept beside it). The dense rows' layouts, built
 /// here from retained header metadata, must equal the ones read from the
 /// real headers.
 ///
@@ -77,18 +83,28 @@ private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) thro
         checks.require("indexed[m3ultra-m5ultra] \(name): with both Macs' speed indices the M5 Ultra gets more layers than the memory-only cut \(memoryCut) (cut \(cut), \(mode)), the speeds labelled as index estimates",
             cut > 0 && cut < memoryCut && mode == "phase_split_mtp_v1" && sources.contains("transferredByDeviceIndex"))
     }
-    // MiMo (156 GiB), which only the M5 Ultra of this pair holds whole: with the speed indices the planner chooses
-    // the phase split with the M5 Ultra decoding (it can then serve requests alone) and gives the M3 Ultra a
-    // prefill share, instead of the pipeline that made every request cross the link (2026-10-13: 42 tok/s on the
-    // pair against 57 on the M5 Ultra alone).
-    let printed = try ClusterPlacementTool.run(["plan", "--layout", directory.appendingPathComponent("layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json").path]
-        + peers + ["--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
+    // MiMo (156 GiB), which only the M5 Ultra of this pair holds whole: by default (sharded deployments only)
+    // a pipeline or tensor parallel deployment, no request routed alone.
+    let mimo = directory.appendingPathComponent("layouts/mimo-v2.6-flash-mopd-2026-09-28-r1.json").path
+    let shardedPrinted = try ClusterPlacementTool.run(["plan", "--layout", mimo] + peers + ["--json"],
+        sampleDevice: { throw ProbeError("recorded profiles only") })
+    let shardedChosen = ((try JSONSerialization.jsonObject(with: Data(shardedPrinted.utf8)) as? [String: Any])?["result"]
+        as? [String: Any])?["chosen"] as? [String: Any]
+    let shardedMode = (shardedChosen?["mode"] as? String).flatMap(ClusterGenerationMode.init(rawValue:))
+    checks.require("indexed[m3ultra-m5ultra] MiMo, by default: a sharded mode (\(shardedMode?.rawValue ?? "none")) and no alone route",
+        shardedMode?.isSharded == true && shardedChosen?["aloneRoute"] == nil)
+    // Under the hand-off opt-in, with the speed indices the planner chooses the phase split with the M5 Ultra
+    // decoding (it can then serve requests alone) and gives the M3 Ultra a prefill share, instead of the
+    // pipeline that made every request cross the link (2026-10-13: 42 tok/s on the pair against 57 on the
+    // M5 Ultra alone).
+    let printed = try ClusterPlacementTool.run(["plan", "--layout", mimo] + peers + ["--hand-off-modes", "--json"],
+        sampleDevice: { throw ProbeError("recorded profiles only") })
     let object = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
     let result = object?["result"] as? [String: Any]
     let chosen = result?["chosen"] as? [String: Any]
     let ranks = (chosen?["ranks"] as? [[String: Any]])?.compactMap { $0["device"] as? String } ?? []
     let cut = (chosen?["cuts"] as? [Int])?.first ?? -1
-    checks.require("indexed[m3ultra-m5ultra] MiMo: a phase split with the M5 Ultra decoding and the M3 Ultra prefilling a share (cut \(cut), \(ranks)), its alone route priced",
+    checks.require("indexed[m3ultra-m5ultra] MiMo, under the hand-off opt-in: a phase split with the M5 Ultra decoding and the M3 Ultra prefilling a share (cut \(cut), \(ranks)), its alone route priced",
         chosen?["mode"] as? String == "phase_split_v1" && ranks == ["mac-a", "mac-b"] && cut > 0 && cut < 24
             && (chosen?["aloneRoute"] as? [String: Any])?["device"] as? String == "mac-b")
 }
@@ -107,17 +123,19 @@ private func checkGoldenPlanSet(profiles directory: URL, layouts: URL, label: St
         checks.require("\(label) \(name): the layout is canonical and names its row",
             try layout.encoded() + Data([10]) == Data(contentsOf: layoutFile) && layout.runtimeModelID == want.runtimeModelID)
         checks.require("\(label) \(name): every admitted cut is one of the stage plan's cuts", Set(layout.admittedCuts).isSubset(of: layout.structuralCuts))
-        // The golden plans were printed before the sharded-only default (2026-10-13): under the hand-off
-        // opt-in the plan tool prints them byte for byte, so the phase split code is held to them.
-        let printed = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--hand-off-modes", "--json"],
+        // The default plan shards (a pipeline or tensor parallel, every member holding layers), byte for byte.
+        let printed = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--json"],
             sampleDevice: { throw ProbeError("The golden plans take every device from a recorded profile") })
         let bytes = Data((printed + "\n").utf8)
-        checks.require("\(label) \(name): under the hand-off opt-in the plan is byte-for-byte the one both Macs' plan tools printed (printed \(sha256(bytes)))",
+        checks.require("\(label) \(name): by default the plan is byte-for-byte the golden sharded plan (printed \(sha256(bytes)))",
             sha256(bytes) == want.planSHA256)
-        // The default shards: the same Macs and layout plan a pipeline or tensor parallel, every member holding layers.
-        let sharded = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--json"],
+        // Under the hand-off opt-in the plan tool prints the kept hand-off code's plan, byte for byte.
+        let handOff = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--hand-off-modes", "--json"],
             sampleDevice: { throw ProbeError("The golden plans take every device from a recorded profile") })
-        let shardedResult = (try JSONSerialization.jsonObject(with: Data(sharded.utf8)) as? [String: Any])?["result"] as? [String: Any]
+        let handOffBytes = Data((handOff + "\n").utf8)
+        checks.require("\(label) \(name): under the hand-off opt-in the plan is byte-for-byte its golden (printed \(sha256(handOffBytes)))",
+            sha256(handOffBytes) == want.handOffPlanSHA256)
+        let shardedResult = (try JSONSerialization.jsonObject(with: bytes) as? [String: Any])?["result"] as? [String: Any]
         let shardedChosen = shardedResult?["chosen"] as? [String: Any]
         let shardedMode = (shardedChosen?["mode"] as? String).flatMap(ClusterGenerationMode.init(rawValue:))
         let shardedRanks = (shardedChosen?["ranks"] as? [[String: Any]]) ?? []

@@ -49,13 +49,18 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
     let forced = try chosen(["--modes", ClusterGenerationMode.pipelineMTP.rawValue])
     checks.require("asked for pipeline_mtp_v1 alone, the planner places it and charges the last rank (chose \(forced.mode))",
         forced.mode == ClusterGenerationMode.pipelineMTP.rawValue && forced.ranks.count == 2)
+    // The served records below are of the placement the planner chooses here (its cut and order),
+    // whichever that is on these profiles: credit is only ever for the same placement.
+    let placedRanks = free.ranks.compactMap { $0["device"] as? String }
+    let placedCut = free.ranks.map { "\($0["firstLayer"] as? Int ?? -1)-\($0["endLayer"] as? Int ?? -1)" }.joined(separator: "|")
+    let decodingDevice = placedRanks.last ?? "-"
 
     // Credit from served records only: the same placement served plainly and with rounds; the
     // speed-up rides on the decoding rank and the planner then prefers the rounds, or does not.
     func served(rounds: Double) throws -> URL {
         func entries(_ mode: ClusterGenerationMode, _ decode: Double) -> [ClusterServedSpeedRecords.Entry] {
             (0..<3).map { index in
-                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: "0-47|47-48", ranks: ["mac-b", "mac-a"]),
+                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: placedCut, ranks: placedRanks),
                       sample: .init(route: .pair, member: nil, promptTokens: 4096, outputTokens: 64, firstTokenSeconds: 3.7,
                                     decodeTokensPerSecond: decode + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
             }
@@ -75,7 +80,7 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
     }
     let faster = try planned(rounds: 55.6), slower = try planned(rounds: 38.0)
     checks.require("served rounds 1.34x the plain pipeline: the planner chooses pipeline_mtp_v1 (chose \(faster.mode), decode \(faster.decode))",
-        faster.mode == ClusterGenerationMode.pipelineMTP.rawValue && faster.explanation.contains("speed-up 1.34 credited to mac-a"))
+        faster.mode == ClusterGenerationMode.pipelineMTP.rawValue && faster.explanation.contains("speed-up 1.34 credited to \(decodingDevice)"))
     checks.require("served rounds slower than plain: the planner keeps a plain pipeline mode (chose \(slower.mode))",
         slower.mode == ClusterGenerationMode.pipeline.rawValue || slower.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
     checks.require("the credited prediction is the plain one scaled by the measured speed-up",
@@ -93,7 +98,7 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
         let entries = try ClusterServedSpeedRecords.decode(Data(contentsOf: try served(rounds: 55.6))).entries
         let derived = try ClusterServedCalibration.measurements(entries: entries, devices: profiles, layout: layout,
             link: .unmeasured, measuredUTC: "2026-10-14T00:00:00Z").measurements
-        let decoder = profiles[0].profile
+        let decoder = (profiles.first { $0.label == decodingDevice } ?? profiles[0]).profile
         let own = derived.filter { $0.key.chip == decoder.chip && $0.key.osBuild == decoder.osBuild }
         checks.require("the decoding rank's served record carries the rounds' speed-up as its own figure, no head rate",
             !own.isEmpty && own.allSatisfy { $0.rested.speculativeDecodeTokensPerSecond == nil }
@@ -106,7 +111,7 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
         let file = scratch.appendingPathComponent("served-rounds-only.json")
         try ClusterServedSpeedRecords(entries: (0..<3).map { index in
             .init(setup: .init(modelID: layout.runtimeModelID, mode: ClusterGenerationMode.pipelineMTP.rawValue,
-                               cut: "0-47|47-48", ranks: ["mac-b", "mac-a"]),
+                               cut: placedCut, ranks: placedRanks),
                   sample: .init(route: .pair, member: nil, promptTokens: 4096, outputTokens: 64, firstTokenSeconds: 3.7,
                                 decodeTokensPerSecond: 58 + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
         }).encoded().write(to: file)

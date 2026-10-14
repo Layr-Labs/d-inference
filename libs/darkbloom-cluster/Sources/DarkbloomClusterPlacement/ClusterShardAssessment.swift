@@ -12,6 +12,10 @@ public struct ClusterShardOption: Codable, Equatable, Sendable {
         case pipeline
         /// The same pipeline with compact decode framing (`pipeline_compact_decode_v1`).
         case pipelineCompactDecode
+        /// The same pipeline with decode as speculative rounds: the last member
+        /// holds the model's head (`pipeline_mtp_v1`). Credited only from what
+        /// this placement served with and without the rounds.
+        case pipelineSpeculative
         /// Three or more members: tensor-parallel groups as stages of a
         /// pipeline. Predicted only: no runtime executes it yet.
         case tensorPipeline
@@ -21,6 +25,7 @@ public struct ClusterShardOption: Codable, Equatable, Sendable {
             case .tensorParallel: "tensor parallel"
             case .pipeline: "pipeline"
             case .pipelineCompactDecode: "pipeline with compact decode"
+            case .pipelineSpeculative: "pipeline with speculative rounds"
             case .tensorPipeline: "tensor parallel x pipeline"
             }
         }
@@ -87,6 +92,7 @@ extension ClusterPlacementPlanner {
         switch mode {
         case .pipeline: .pipeline
         case .pipelineCompactDecode: .pipelineCompactDecode
+        case .pipelineMTP: .pipelineSpeculative
         case .tensorParallel: .tensorParallel
         case .phaseSplit, .phaseSplitMTP, .pipelinePrefillTensorDecode: nil
         }
@@ -126,7 +132,7 @@ extension ClusterPlacementPlanner {
         let layout = context.layout, policy = context.policy, regime = policy.regime, layers = layout.layerCount
         let chosen = ranked.first
         var options: [ClusterShardOption] = []
-        for mode in [ClusterGenerationMode.pipeline, .pipelineCompactDecode] {
+        for mode in [ClusterGenerationMode.pipeline, .pipelineCompactDecode, .pipelineMTP] {
             let kind = shardKind(mode)!
             guard layout.generationModes.contains(mode), context.modes.contains(mode) else {
                 options.append(option(kind, .notExecutedByRuntime, "this runtime does not execute \(mode.rawValue) for this model", nil,
@@ -147,7 +153,7 @@ extension ClusterPlacementPlanner {
         }
         options.append(tensorParallelOption(context: context, ranked: ranked, assessment: tensorParallel))
         options.append(tensorPipelineOption(context: context))
-        let order: [ClusterShardOption.Kind] = [.tensorParallel, .pipeline, .pipelineCompactDecode, .tensorPipeline]
+        let order: [ClusterShardOption.Kind] = [.tensorParallel, .pipeline, .pipelineCompactDecode, .pipelineSpeculative, .tensorPipeline]
         options.sort { order.firstIndex(of: $0.kind)! < order.firstIndex(of: $1.kind)! }
         return .init(chosen: chosen.flatMap { shardKind($0.mode) }, handOffModes: false, options: options,
             note: "Phase split, phase split + MTP, the pipeline-prefill/tensor-decode hybrid and the per-request alone route are kept "

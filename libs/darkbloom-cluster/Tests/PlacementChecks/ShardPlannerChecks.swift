@@ -43,9 +43,9 @@ private func recordedPair(_ golden: URL) throws -> (ClusterDeviceProfile, Cluste
 // MARK: - Hand-off modes: kept, off by default
 
 private func checkHandOffOffByDefault(_ big: ClusterModelLayout, golden: URL, _ checks: PlacementChecks) throws {
-    checks.require("shards: phase split, phase split + MTP and the pipeline-prefill/tensor-decode hybrid are the hand-off modes; pipeline, compact decode and tensor parallel are sharded",
+    checks.require("shards: phase split, phase split + MTP and the pipeline-prefill/tensor-decode hybrid are the hand-off modes; pipeline, compact decode, tensor parallel and the pipeline's speculative rounds are sharded",
         ClusterGenerationMode.allCases.filter(\.isHandOff) == [.phaseSplit, .phaseSplitMTP, .pipelinePrefillTensorDecode]
-            && ClusterGenerationMode.allCases.filter(\.isSharded) == [.pipeline, .pipelineCompactDecode, .tensorParallel])
+            && ClusterGenerationMode.allCases.filter(\.isSharded) == [.pipeline, .pipelineCompactDecode, .tensorParallel, .pipelineMTP])
     checks.require("shards: the policy's hand-off opt-in is off by default", ClusterPlacementPolicy().handOffModes == false)
     let (a, b) = try recordedPair(golden)
     // The M3 Ultra + M5 Ultra with whole-model 27B rates in the measured range:

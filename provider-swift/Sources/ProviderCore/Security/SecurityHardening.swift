@@ -290,9 +290,19 @@ public struct SecurityPosture: Sendable {
 
 }
 
+/// Whether this install's own Darkbloom MDM profile is installed. The
+/// configured coordinator host counts as ours, the same as for enroll, doctor
+/// and unenroll; the other build environment's profile does not.
+func postureMDMEnrolled(
+    coordinatorURL: String?,
+    check: (String?) -> MDMEnrollmentState = { checkMDMEnrollment(coordinatorURL: $0) }
+) -> Bool {
+    check(coordinatorURL).isDarkbloom
+}
+
 /// Collect startup posture. Failures are reported to the coordinator, which
 /// owns the routing trust decision; local startup remains warning-only.
-public func collectSecurityPosture() -> SecurityPosture {
+public func collectSecurityPosture(coordinatorURL: String? = nil) -> SecurityPosture {
     let sipEnabled = checkSIPEnabled()
     if !sipEnabled {
         logger.warning("SIP is not fully enabled; coordinator trust verification will decide routing")
@@ -337,7 +347,7 @@ public func collectSecurityPosture() -> SecurityPosture {
         antiDebugEnabled: antiDebugOk,
         coreDumpsDisabled: coreDumpsOk,
         envScrubbed: true,
-        mdmEnrolled: checkMDMEnrollment().isDarkbloom,
+        mdmEnrolled: postureMDMEnrolled(coordinatorURL: coordinatorURL),
         bundleSignatureValid: bundleOk,
         binaryHash: selfBinaryHash()
     )

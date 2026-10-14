@@ -258,7 +258,12 @@ These values are the same for both builds:
 - The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
   keeps one lease for each provider session and returns the fans to Auto only
   when no lease is live. `fan disable` and `fan uninstall` affect both installs
-  and say so before they act.
+  and say so before they act. This is helper version 2 (`FanIPC.helperVersion`).
+  A version 1 helper keeps one lease for the Mac, so the last provider to renew
+  owns it. `fan status` and `doctor` report an older helper with the command
+  that updates it, and `fan enable` does not replace a newer running helper
+  with an older one. A provider built before this change does not have that
+  check.
 - The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
   bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
   registration requires these names. Dev uploads go to the dev bucket under the

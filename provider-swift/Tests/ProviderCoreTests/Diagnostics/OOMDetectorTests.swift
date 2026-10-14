@@ -255,3 +255,23 @@ private final class LockedBox: @unchecked Sendable {
     #expect(OOMDetector.parseMemoryCrashReport(contents: crash, processName: prod) == nil)
     #expect(OOMDetector.parseMemoryCrashReport(contents: crash, processName: dev) != nil)
 }
+
+@Test func crashReportMatchesTheExecutableWhenAppNameIsTheBundleName() {
+    let dev = BuildEnvironment.dev
+    let report = """
+    {"app_name":"\(dev.appDisplayName)","name":"\(dev.cliName)","bug_type":"309"}
+    {"procName":"\(dev.cliName)","exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: report, processName: dev.cliName)?.source == .memoryCrashReport)
+    #expect(OOMDetector.parseMemoryCrashReport(contents: report, processName: BuildEnvironment.prod.cliName) == nil)
+    let bodyOnly = """
+    {"app_name":"\(dev.appDisplayName)","bug_type":"309"}
+    {"procName":"\(dev.cliName)","exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: bodyOnly, processName: dev.cliName) != nil)
+    let enclave = """
+    {"app_name":"\(BuildEnvironment.prod.enclaveName)","bug_type":"309"}
+    {"exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: enclave, processName: BuildEnvironment.prod.cliName) == nil)
+}

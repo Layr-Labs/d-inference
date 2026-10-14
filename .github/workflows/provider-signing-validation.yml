@@ -57,10 +57,12 @@ jobs:
       - name: Resolve packaged names and build environment
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
+        # The candidate's own identity, so the products and the environment
+        # agree with the source that is built.
         run: |
           set -euo pipefail
-          python3 tooling/scripts/provider_release_identity.py "$EXPECTED_VERSION" >> "$GITHUB_ENV"
-          echo "DARKBLOOM_RELEASE_ENVIRONMENT=$(python3 tooling/scripts/provider_release_identity.py --environment "$EXPECTED_VERSION")" >> "$GITHUB_ENV"
+          python3 candidate/scripts/provider_release_identity.py "$EXPECTED_VERSION" >> "$GITHUB_ENV"
+          echo "DARKBLOOM_RELEASE_ENVIRONMENT=$(python3 candidate/scripts/provider_release_identity.py --environment "$EXPECTED_VERSION")" >> "$GITHUB_ENV"
       - name: Install pinned CMake for Metal build
         run: bash tooling/scripts/install-release-cmake.sh
       - name: Build exact source and stage unsigned app

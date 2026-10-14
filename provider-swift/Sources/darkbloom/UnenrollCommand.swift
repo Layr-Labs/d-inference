@@ -44,7 +44,7 @@ struct Unenroll: AsyncParsableCommand {
         print()
 
         let service = EnrollmentService()
-        let coordinator = (try? loadRuntimeSnapshot(configPath: nil))?.config.coordinator.url
+        let coordinator = (try? loadRuntimeSnapshot(configOptions: configOptions))?.config.coordinator.url
         let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
         switch enrollment {
         case .enrolledDarkbloom:

@@ -88,6 +88,20 @@ import Testing
         #expect(!parseMDMEnrollmentStatus(out).isDarkbloom)
     }
 
+    @Test func attestationPostureUsesTheConfiguredCoordinator() {
+        let configured = "wss://coordinator.example/ws/provider"
+        var seen: [String?] = []
+        let enrolled = postureMDMEnrolled(coordinatorURL: configured) { url in
+            seen.append(url)
+            return .enrolledDarkbloom(serverURL: "https://coordinator.example/mdm/connect")
+        }
+        #expect(enrolled)
+        #expect(seen == [configured])
+        #expect(!postureMDMEnrolled(coordinatorURL: configured) { _ in
+            .enrolledOtherMDM(serverURL: BuildEnvironment.dev.coordinatorHTTPURL + "/mdm/connect")
+        })
+    }
+
     @Test func corporateMDMIsForeign() {
         let out = """
         Enrolled via DEP: Yes

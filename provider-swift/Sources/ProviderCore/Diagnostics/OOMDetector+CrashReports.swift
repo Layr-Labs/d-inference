@@ -43,9 +43,15 @@ extension OOMDetector {
     /// MEMORY subtype, or a JETSAM termination namespace.
     public static func parseMemoryCrashReport(contents: String, processName: String) -> Finding? {
         guard let header = jsonHeader(from: contents) else { return nil }
-        let appName = (header["app_name"] as? String) ?? (header["procName"] as? String) ?? ""
-        guard appName.lowercased() == processName.lowercased() else { return nil }
-        guard let body = jsonBody(from: contents) else { return nil }
+        let body = jsonBody(from: contents)
+        // `app_name` can hold the bundle display name (`appDisplayName`) rather than
+        // the executable, so any of the report's name fields may match, but
+        // each must equal this build's process name exactly.
+        let names = [header["app_name"], header["name"], header["procName"], body?["procName"]]
+            .compactMap { $0 as? String }
+        guard let appName = names.first(where: { $0.lowercased() == processName.lowercased() }),
+              let body
+        else { return nil }
 
         if let exception = body["exception"] as? [String: Any] {
             let type = (exception["type"] as? String) ?? ""

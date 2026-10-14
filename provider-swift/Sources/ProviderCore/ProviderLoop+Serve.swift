@@ -503,7 +503,7 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = collectSecurityPosture()
+        let posture = collectSecurityPosture(coordinatorURL: loopConfig.config.coordinator.url)
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable

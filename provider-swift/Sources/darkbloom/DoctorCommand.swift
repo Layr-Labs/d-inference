@@ -214,7 +214,8 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
 func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
     bootSecurity: BootSecuritySnapshot = .live(),
-    contention: LocalContentionSnapshot = .live()
+    contention: LocalContentionSnapshot = .live(),
+    fanHelperVersion: () -> String? = Fan.runningHelperVersion
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
 
@@ -321,6 +322,10 @@ func buildDoctorChecks(
 
     // Local coexistence: Ollama / other inference on unified memory (operator feedback).
     checks.append(competingInferenceCheck(contention))
+    if let installed = fanHelperVersion(),
+       let notice = Fan.outdatedHelperNotice(installedVersion: installed) {
+        checks.append(.init(name: "fan helper", status: .warn, detail: notice))
+    }
 
     return checks
 }

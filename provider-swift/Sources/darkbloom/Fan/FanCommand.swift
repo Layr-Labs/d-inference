@@ -13,6 +13,21 @@ struct Fan: AsyncParsableCommand {
         let providers = BuildEnvironment.allCases.map { "`\($0.cliName)`" }.joined(separator: " and ")
         return "The fan helper serves every Darkbloom provider on this Mac (\(providers)). This change applies to all of them."
     }
+
+    /// Version of the running helper, or nil when it is not loaded or does
+    /// not answer.
+    static func runningHelperVersion() -> String? {
+        guard FanServiceManager().isLoaded() else { return nil }
+        return try? FanHelperClient().status().helperVersion
+    }
+
+    /// Text for an installed helper that is older than the one this build
+    /// ships, or nil when it is current, newer or unknown.
+    static func outdatedHelperNotice(installedVersion: String) -> String? {
+        guard FanIPC.compareHelperVersion(installedVersion) == .orderedAscending else { return nil }
+        return "The installed fan helper is version \(installedVersion); this build ships version "
+            + "\(FanIPC.helperVersion). Update it with `sudo \(BuildEnvironment.current.cliName) fan enable`."
+    }
     private static var commandTypes: [ParsableCommand.Type] {
         var commands: [ParsableCommand.Type] = [
             Status.self, Diagnose.self, Enable.self, Configure.self,
@@ -121,6 +136,9 @@ extension Fan {
             output.append("Installed: \(report.installed ? "yes" : "no")")
             output.append("Service: \(report.loaded ? "running" : "stopped")")
             if let helper = report.helper {
+                if let notice = Fan.outdatedHelperNotice(installedVersion: helper.helperVersion) {
+                    output.append("Helper: \(notice)")
+                }
                 output.append("Mode: \(helper.mode.rawValue)")
                 output.append("Provider active: \(helper.providerActive ? "yes" : "no")")
                 output.append(

@@ -204,6 +204,68 @@ struct ClusterMemberServeLoopTests {
         await fixture.cleanUp(task)
     }
 
+    /// Pilot blocker: a coordinator that predates the member role (platform
+    /// master) answers the registration as an ordinary provider's (here its
+    /// desired builds) and keeps the connection open without ever sending
+    /// the acknowledgement. That answer means the role is unknown there, not
+    /// that this member was refused: the wait says so, so the leader can
+    /// serve locally instead of restarting every 38 s.
+    @Test func aCoordinatorWithoutTheMemberRoleIsReportedAsUnsupported() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+            let started = ContinuousClock.now
+            let coordinator = Task {
+                _ = try await fixture.awaitRegistration()
+                try await fixture.mock.pushDesiredModels([])
+            }
+            await #expect(throws: ClusterMemberControlError.roleUnsupported) {
+                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(20)))
+            }
+            try await coordinator.value
+            // Ended by this connection's negotiation window, not the wait's deadline.
+            #expect(ContinuousClock.now - started < .seconds(15))
+            #expect(await fixture.loop.memberConnectionID == nil)
+        }
+    }
+
+    /// A coordinator that knows the role and refuses THIS member closes the
+    /// connection (or never answers it): that stays a refusal even when it
+    /// had answered the registration first. Each connection is judged on its
+    /// own answer.
+    @Test func aCoordinatorThatClosesTheMemberConnectionStillRefusesIt() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+            let started = ContinuousClock.now
+            let coordinator = Task {
+                _ = try await fixture.awaitRegistration()
+                try await fixture.mock.pushDesiredModels([])
+                await fixture.mock.dropActiveWebSocket()
+            }
+            var ended: Error?
+            do { try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(2))) } catch { ended = error }
+            let error = try #require(ended as? ClusterMemberControlError)
+            #expect(error != .roleUnsupported && error != .coordinatorUnreachable, "a closed member connection read as \(error)")
+            #expect(!ClusterLocalServing.servesLocally(after: error))
+            try await coordinator.value
+            #expect(await fixture.loop.memberConnectionID == nil)
+        }
+    }
+
+    /// An acknowledgement that does not verify (another connection's nonce)
+    /// is a refusal, whatever the coordinator answered before it.
+    @Test func aForeignAcknowledgementAfterAnOrdinaryAnswerIsARefusal() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+            let coordinator = Task {
+                _ = try await fixture.awaitRegistration()
+                try await fixture.mock.pushDesiredModels([])
+                try await fixture.mock.pushClusterMemberAcceptance(nonce: String(repeating: "0", count: 64))
+            }
+            await #expect(throws: ClusterMemberControlError.negotiationFailed) {
+                try await fixture.loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(20)))
+            }
+            try await coordinator.value
+            #expect(await fixture.loop.memberConnectionID == nil)
+        }
+    }
+
     /// F11 restart race: the coordinator comes back shortly before the
     /// restarted member's wait ends. A doubling backoff (0.5-1, 1-2, 2-4,
     /// 4-8, 8-16 s) puts the next retry after the deadline, so the member

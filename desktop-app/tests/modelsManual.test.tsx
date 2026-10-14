@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { Action } from '../src/shared/contracts';
 import { Models } from '../src/renderer/features/models/Models';
@@ -109,4 +109,19 @@ it('explains an empty Downloaded filter instead of blaming the catalog', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Downloaded' }));
   expect(screen.getByText('No downloaded models')).toBeVisible();
   expect(screen.queryByText(/load the model catalog/)).not.toBeInTheDocument();
+});
+
+it('does not offer to download a model this Mac cannot run', () => {
+  const state = poolSnapshot({ enabled: false, phase: 'off' });
+  renderModels({
+    ...state,
+    models: state.models.map((model) =>
+      model.id === 'qwen-3.6-35b'
+        ? { ...model, eligible: false, reason: 'Needs 512 GB of unified memory' }
+        : model,
+    ),
+  });
+  fireEvent.click(screen.getByRole('button', { name: /Show \d+ more models/ }));
+  const row = screen.getByRole('heading', { name: 'Qwen 3.6 35B A3B' }).closest('article')!;
+  expect(within(row as HTMLElement).getByRole('button', { name: /Download/ })).toBeDisabled();
 });

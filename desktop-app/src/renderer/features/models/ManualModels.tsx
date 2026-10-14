@@ -158,7 +158,12 @@ export function ManualModels({
                   </>
                 ) : (
                   <Button
-                    disabled={backend.busy}
+                    // A model this Mac can't run (its reason is shown above) isn't offered for
+                    // download; Autopilot's view treats it as not available the same way.
+                    disabled={backend.busy || !model.eligible}
+                    title={
+                      model.eligible ? undefined : (model.reason ?? 'Not available on this Mac')
+                    }
                     onClick={() => void backend.act({ action: 'download', model: model.id })}
                   >
                     <Download size={15} /> Download

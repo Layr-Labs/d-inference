@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop manual model selection
 
-- In manual model selection, drop a chosen model from the selection when it is removed, instead of leaving it checked, disabled and submitted with Apply selection. Do not draw unreported memory use as an empty bar, and explain an empty Downloaded or Serving filter instead of saying the model catalog failed to load.
+- In manual model selection, drop a chosen model from the selection when it is removed, instead of leaving it checked, disabled and submitted with Apply selection. Do not draw unreported memory use as an empty bar, and explain an empty Downloaded or Serving filter instead of saying the model catalog failed to load. Don't offer to download a model this Mac can't run.
 
 ## Unreleased — desktop hardware load
 

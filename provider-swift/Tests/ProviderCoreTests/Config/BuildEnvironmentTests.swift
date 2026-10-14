@@ -5,20 +5,20 @@ import Testing
 
 @Suite("Build environment defaults")
 struct BuildEnvironmentTests {
-    private let prodCoordinator = "wss://api.darkbloom.dev/ws/provider"
+    private let devCoordinator = "wss://api.dev.darkbloom.dev/ws/provider"
 
-    @Test func testBuildsKeepProductionDefaults() {
+    @Test func devBranchBuildsDefaultToDevNet() {
         let hardware = HardwareInfo(
             machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
             memoryGb: 64, memoryAvailableGb: 64,
             cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546)
-        #expect(BuildEnvironment.current == .prod)
-        #expect(CoordinatorSettings().url == prodCoordinator)
-        #expect(ConfigManager.parse("").coordinator.url == prodCoordinator)
+        #expect(BuildEnvironment.current == .dev)
+        #expect(CoordinatorSettings().url == devCoordinator)
+        #expect(ConfigManager.parse("").coordinator.url == devCoordinator)
         #expect(ConfigManager.parse("[coordinator]\nheartbeat_interval_secs = 5\n").coordinator.url
-            == prodCoordinator)
-        #expect(ProviderConfig.defaultForHardware(hardware).coordinator.url == prodCoordinator)
+            == devCoordinator)
+        #expect(ProviderConfig.defaultForHardware(hardware).coordinator.url == devCoordinator)
         #expect(ModelDownloader.defaultR2CDNURL == "https://models.darkbloom.ai")
     }
 

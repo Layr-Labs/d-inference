@@ -80,6 +80,26 @@ provider tests and isolated native gates; restoring a cache never skips them.
 Signing verifies the source, version, SDK, inventory and entitlements before
 importing its certificate. See [release qualification](test.md#sdk-27-release-qualification).
 
+## The `dev` branch
+
+The `dev` branch is master plus one commit. On it, a plain `swift build` is a
+DevNet build: `DARKBLOOM_RELEASE_ENVIRONMENT` defaults to `dev`, so the
+provider talks to `https://api.dev.darkbloom.dev` and nothing else. On master
+the default is `prod`. Set `DARKBLOOM_RELEASE_ENVIRONMENT=prod` to build a
+production binary from the `dev` branch.
+
+Use the `dev` branch to run a provider from source against the DevNet
+coordinator. Published dev providers do not come from this branch: a master
+push that changes the provider publishes one through `release-swift.yml`
+(see `docs/operations/provider-release.md`).
+
+Rules for the branch:
+
+- Merge master into `dev` to update it. Never merge `dev` into master.
+- Never tag a commit on `dev`. Tags publish production.
+- Code changes go to master through a pull request, then reach `dev` by
+  merging master. Only the default-environment commit lives on `dev` alone.
+
 `scripts/provider-release-cache.py` separates optimized and qualification Swift
 caches by compiler/SDK, architecture, absolute checkout/toolchain paths,
 dependency pins and build recipe. `DARKBLOOM_RELEASE_ENVIRONMENT` also separates

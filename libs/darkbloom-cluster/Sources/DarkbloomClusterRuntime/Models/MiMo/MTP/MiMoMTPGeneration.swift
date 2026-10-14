@@ -56,8 +56,12 @@ struct MiMoMTPStatistics: Encodable, Equatable {
 /// normalized rows), drafts from the carry, and after each window keeps only
 /// the verified target history (`finalizeRound`), exactly as the single-Mac
 /// engine drives it. Its requested observation fence is honoured: each
-/// observation's roots are evaluated, and the state's completion recorded,
-/// before the next mutation.
+/// observation's roots are evaluated before the next mutation. The SDK's
+/// residency measurement of that state (`requestStateDidFinishEvaluation`,
+/// the CBv2 engine's accounting) is not used: this runtime charges the state
+/// through the head's bounded request declaration (`MiMoMTPHead.requestBytes`)
+/// in the rank's request allowance, and the measurement's sole-owner proof
+/// does not hold while the stage still holds the rows it observed.
 final class MiMoMTPDecoder {
     let head: MiMoMTPHead
     let terms: MiMoMTPTerms
@@ -80,12 +84,10 @@ final class MiMoMTPDecoder {
         try head.assistant.configureRequestState(state, maximumSequenceLength: request.maximumTokens)
     }
 
-    /// Joins the drafter's queued work and records its completion (the
-    /// product's committed-observation fence).
+    /// Joins the drafter's queued work (the product's committed-observation fence).
     private func fence() throws {
         guard fencePending else { return }
         eval(head.assistant.evaluationTargets(for: state))
-        try head.assistant.requestStateDidFinishEvaluation(state)
         fencePending = false
     }
 
@@ -144,7 +146,6 @@ final class MiMoMTPDecoder {
         }
         let drafts = concatenated(drafted, axis: 1)
         eval([drafts] + head.assistant.evaluationTargets(for: state))
-        try head.assistant.requestStateDidFinishEvaluation(state)
         try check()
         let ids = drafts.asArray(Int32.self).map(Int.init)
         guard ids.count == depth, ids.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }) else {
@@ -173,7 +174,6 @@ final class MiMoMTPDecoder {
             committedDraftTokens: draftArray[0..., 0 ..< committed],
             committedTargetHidden: hidden[0..., 0 ..< committed, 0...])
         eval(head.assistant.evaluationTargets(for: state) + [carryHidden])
-        try head.assistant.requestStateDidFinishEvaluation(state)
         carry = (tokens[tokens.count - 1], carryHidden)
     }
 

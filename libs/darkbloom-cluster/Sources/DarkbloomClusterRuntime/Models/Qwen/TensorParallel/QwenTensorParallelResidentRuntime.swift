@@ -389,7 +389,12 @@ public final class QwenTensorParallelResidentRuntime {
 
         func choose(_ stepLogits: MLXArray, stop: Float) -> (MLXArray, MLXArray) {
             guard let sampler else { return model.selectWithFlags(stepLogits, stop: stop) }
+            // Every rank evaluates the logits gather before the choice is broadcast:
+            // rank 0's draw reads it, and a rank that left it unevaluated would meet
+            // rank 0's gather with the broadcast's reduction (the first sampled run on
+            // the pair hung so: both ranks ended at the 60 s progress guard, status 75).
             let full = model.gatheredLogits(stepLogits)
+            eval(full)
             let drawn = rank == 0 ? sampler.sample(full) : nil
             return model.broadcastChoice(drawn, stop: stop)
         }

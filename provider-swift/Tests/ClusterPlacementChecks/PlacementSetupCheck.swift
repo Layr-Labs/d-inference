@@ -137,6 +137,26 @@ import Foundation
             _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
                 localProfile: m5, peerProfile: m3, layout: headed, environment: [name: "yes"])
         }
+        // A setup saved with a hand-off mode (by the earlier default planner, or under the opt-in) is served only
+        // under the opt-in: the owner of each rank refuses it otherwise and names the way back to a sharded setup.
+        for mode in ClusterGenerationMode.allCases {
+            if mode.isHandOff {
+                refuses("hand-off modes: a saved \(mode.rawValue) setup is not served without the opt-in", because: "off by default") {
+                    try ClusterHandOffModes.requireServable(mode, environment: [:])
+                }
+                refuses("hand-off modes: the refusal of a saved \(mode.rawValue) setup says how to shard it", because: "`darkbloom cluster`") {
+                    try ClusterHandOffModes.requireServable(mode, environment: [name: "0"])
+                }
+                require("hand-off modes: a saved \(mode.rawValue) setup is served under the opt-in",
+                    try { try ClusterHandOffModes.requireServable(mode, environment: handOff); return true }())
+            } else {
+                require("hand-off modes: a saved \(mode.rawValue) setup is served by default",
+                    try { try ClusterHandOffModes.requireServable(mode, environment: [:]); return true }())
+            }
+        }
+        refuses("hand-off modes: a malformed setting stops a saved phase split from serving", because: name) {
+            try ClusterHandOffModes.requireServable(.phaseSplitMTP, environment: [name: "yes"])
+        }
     }
 
     static let handOff = [ClusterHandOffModes.environmentName: "1"]

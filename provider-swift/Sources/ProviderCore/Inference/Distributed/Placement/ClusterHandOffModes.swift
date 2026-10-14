@@ -1,4 +1,5 @@
 import Foundation
+import DarkbloomClusterProtocol
 
 /// The one explicit opt-in for the hand-off modes, off by default (owner,
 /// 2026-10-13: "Keep the phase split engineering but keep it off"). A cluster
@@ -8,7 +9,8 @@ import Foundation
 /// per-request "alone" route stay in the code with their tests and records,
 /// and are reachable only when `DARKBLOOM_CLUSTER_HANDOFF_MODES=1` is in the
 /// environment of the process that plans (`darkbloom cluster`, `darkbloom
-/// cluster plan`) and, for the alone route, of the serving leader. The
+/// cluster plan`) and of each Mac's serving owner (a saved hand-off setup is
+/// served only under it; the alone route is taken only by such a leader). The
 /// onboarding never offers it.
 public enum ClusterHandOffModes {
     public static let environmentName = "DARKBLOOM_CLUSTER_HANDOFF_MODES"
@@ -24,6 +26,17 @@ public enum ClusterHandOffModes {
             throw ClusterConfigurationError.invalid("\(environmentName) is 1 (consider the hand-off modes: phase split, phase split + MTP, "
                 + "the pipeline-prefill/tensor-decode hybrid and the alone route) or 0 (the default: sharded deployments only)")
         }
+    }
+
+    /// A saved setup's mode may be served here: any sharded mode, and a
+    /// hand-off mode only under the opt-in. A setup saved with a phase split
+    /// by an earlier planner (whose default it was), or under the opt-in on
+    /// another day, is refused, so a hand-off mode never runs by default.
+    /// Each rank's owner checks it before it serves.
+    public static func requireServable(_ mode: ClusterGenerationMode, environment: [String: String]) throws {
+        guard mode.isHandOff, try !enabled(environment: environment) else { return }
+        throw ClusterConfigurationError.invalid("This Mac's saved cluster setup uses \(mode.rawValue), a hand-off mode that is off by default "
+            + "(sharded deployments only). Run `darkbloom cluster` and select the model again to serve it sharded")
     }
 
     /// The words a plan carries about the setting.

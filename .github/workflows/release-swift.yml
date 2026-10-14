@@ -14,10 +14,15 @@ name: Release Provider Bundle (Swift)
 # build. The legacy `release.yml` was deleted alongside `app/` once we
 # committed to a CLI-only migration.
 #
-# Tag convention:
-#   - vX.Y.Z           -> prod Swift release (signed tag on reviewed master)
-# Dev releases use workflow_dispatch so the requested version can remain
-# byte-identical to the checked-in ProviderCore.version.
+# Triggers:
+#   - tag vX.Y.Z       -> prod release of ProviderCore.version (signed tag on
+#                         reviewed master). Path filters do not apply to tags.
+#   - push to master   -> dev release X.Y.Z-dev.<run number> when the push
+#                         changes the provider or this release tooling.
+#   - workflow_dispatch -> manual dev release, signed validation build, or
+#                         prod recovery of a retained build.
+# Every dev build carries the -dev.<run number> suffix: the build stamps it
+# into ProviderCore.version, so `darkbloom --version` shows it.
 #
 # Repo secrets use DEV_/PROD_ prefixes. Source verification gates every
 # credential-consuming job; release jobs do not need environment approvals.
@@ -32,10 +37,51 @@ name: Release Provider Bundle (Swift)
 #   DEV_RELEASE_KEY       / PROD_RELEASE_KEY
 # Apple signing secrets are shared (same cert for both envs).
 
+run-name: >-
+  ${{ (github.ref_type == 'tag' && format('prod provider release {0}', github.ref_name)) ||
+      (github.event_name == 'push' && format('dev provider release -dev.{0} (master push)', github.run_number)) ||
+      (inputs.resume_run_id && format('prod provider release (resume run {0})', inputs.resume_run_id)) ||
+      (inputs.validation_only && format('dev provider validation build -dev.{0} (not published)', github.run_number)) ||
+      (inputs.environment == 'dev' && format('dev provider release -dev.{0} (manual)', github.run_number)) ||
+      'prod provider release (manual)' }}
+
 on:
   push:
     tags:
       - 'v*.*.*'
+    # A master push publishes a dev release. These paths are the provider
+    # sources, its submodule pins, and every script this workflow and
+    # .github/actions/provider-release-build run.
+    branches: [master]
+    paths:
+      - 'provider-swift/**'
+      - 'libs/**'
+      - '.gitmodules'
+      - '.github/workflows/release-swift.yml'
+      - '.github/actions/provider-release-build/**'
+      - 'scripts/check-release-version.sh'
+      - 'scripts/resolve-provider-release.sh'
+      - 'scripts/provider-release-resume.py'
+      - 'scripts/provider_release_resume/**'
+      - 'scripts/provider-release-cache.py'
+      - 'scripts/provider_release_cache/**'
+      - 'scripts/provider-release-publication.py'
+      - 'scripts/provider_release_artifact.py'
+      - 'scripts/provider_release_github.py'
+      - 'scripts/provider-signing-validation.py'
+      - 'scripts/stage-swiftpm-resource-bundles.sh'
+      - 'scripts/prepare-provider-release-toolchain.sh'
+      - 'scripts/prepare-metal-toolchain.py'
+      - 'scripts/prepare-app-attest-entitlements.py'
+      - 'scripts/install-macos-github-cli.sh'
+      - 'scripts/install-release-cmake.sh'
+      - 'scripts/fetch-metallib.sh'
+      - 'scripts/test-qwen4-packaged-resources.py'
+      - 'scripts/verify-prompt-parity.sh'
+      - 'scripts/prepare-mimo-*-fixtures.py'
+      - 'scripts/run-provider-tests.sh'
+      - 'scripts/run-nested-suite.sh'
+      - 'scripts/run-provider-test-watchdog.py'
   workflow_dispatch:
     inputs:
       resume_run_id:
@@ -62,6 +108,19 @@ on:
         required: false
         type: boolean
         default: false
+
+# One dev publication at a time (master pushes and manual dev releases). A
+# running dev release always completes: cancelling it during notarization or
+# registration wastes the Apple submission and can leave a registered release
+# without its latest aliases. GitHub keeps only the newest pending run, so a
+# burst of merges produces one release of the newest commit. Tags, signed
+# validation builds and prod recovery keep one group per run, as before.
+concurrency:
+  group: >-
+    ${{ ((github.event_name == 'push' && github.ref_type == 'branch') ||
+         (github.event_name == 'workflow_dispatch' && inputs.environment == 'dev' && !inputs.validation_only))
+        && 'release-dev' || format('release-swift-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 permissions:
   contents: write   # gh release create
@@ -125,6 +184,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_RESUME_RUN_ID: ${{ inputs.resume_run_id }}
           RELEASE_RESUME_RUN_ATTEMPT: ${{ inputs.resume_run_attempt || '1' }}
+          # Inputs exist only on workflow_dispatch. The script maps a master
+          # push to dev from GITHUB_EVENT_NAME and GITHUB_REF, not from inputs.
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
@@ -161,6 +222,7 @@ jobs:
         id: build
         with:
           lane: release
+          version: ${{ needs.resolve-env.outputs.version }}
       - name: Bind unsigned bundle to this source and version
         id: input
         env:
@@ -241,14 +303,16 @@ jobs:
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
-          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_COORDINATOR_URL || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+          # PROD_* and legacy values are empty unless the resolved environment
+          # is prod, so a dev run never receives them.
+          LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
+          LEGACY_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.COORDINATOR_URL || '' }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
@@ -944,23 +1008,25 @@ jobs:
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ACCESS_KEY_ID || '' }}
           DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_SECRET_ACCESS_KEY || '' }}
           DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ENDPOINT || '' }}
           DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_BUCKET || '' }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
-          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          # PROD_* and legacy values are empty unless the resolved environment
+          # is prod, so a dev run never receives them.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ACCESS_KEY_ID || '' }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_SECRET_ACCESS_KEY || '' }}
+          LEGACY_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ENDPOINT || '' }}
+          LEGACY_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && vars.R2_BUCKET || '' }}
+          LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
@@ -1044,29 +1110,31 @@ jobs:
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ACCESS_KEY_ID || '' }}
           DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_SECRET_ACCESS_KEY || '' }}
           DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_ENDPOINT || '' }}
           DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_BUCKET || '' }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
-          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_R2_PUBLIC_URL || '' }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
-          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_COORDINATOR_URL || '' }}
           DEV_RELEASE_KEY: ${{ secrets.DEV_RELEASE_KEY }}
-          PROD_RELEASE_KEY: ${{ secrets.PROD_RELEASE_KEY }}
+          PROD_RELEASE_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.PROD_RELEASE_KEY || '' }}
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
-          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
-          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
-          LEGACY_RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+          # PROD_* and legacy values are empty unless the resolved environment
+          # is prod, so a dev run never receives them.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ACCESS_KEY_ID || '' }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_SECRET_ACCESS_KEY || '' }}
+          LEGACY_R2_ENDPOINT: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_ENDPOINT || '' }}
+          LEGACY_R2_BUCKET: ${{ needs.resolve-env.outputs.environment == 'prod' && vars.R2_BUCKET || '' }}
+          LEGACY_R2_PUBLIC_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.R2_PUBLIC_URL || '' }}
+          LEGACY_COORDINATOR_URL: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.COORDINATOR_URL || '' }}
+          LEGACY_RELEASE_KEY: ${{ needs.resolve-env.outputs.environment == 'prod' && secrets.RELEASE_KEY || '' }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')

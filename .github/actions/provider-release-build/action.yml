@@ -4,6 +4,10 @@ inputs:
   lane:
     description: release or qualification; compiled outputs never cross lanes
     required: true
+  version:
+    description: Release version for the release lane; a dev version X.Y.Z-dev.N is stamped into ProviderCore.version
+    required: false
+    default: ''
 outputs:
   bin-dir:
     description: Optimized Swift products (release lane only)
@@ -34,6 +38,24 @@ runs:
         if git submodule status --recursive | grep -qE '^[-+U]'; then
           echo 'Recursive submodules differ from committed source' >&2
           exit 1
+        fi
+    - name: Stamp dev release version
+      # Runs after the clean-source check and changes only the version line.
+      # Cached timestamps are restored only for identical file contents, so
+      # a later build never reuses the stamped file's timestamp.
+      if: inputs.lane == 'release' && inputs.version != ''
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        ./scripts/check-release-version.sh "$VERSION"
+        SOURCE=provider-swift/Sources/ProviderCore/ProviderCore.swift
+        BASE=$(awk -F'"' '/public static let version =/ { print $2 }' "$SOURCE")
+        if [ "$VERSION" != "$BASE" ]; then
+          sed -i '' "s/public static let version = \"$BASE\"/public static let version = \"$VERSION\"/" "$SOURCE"
+          ./scripts/check-release-version.sh "$VERSION"
+          test "$(git diff --name-only)" = "$SOURCE"
         fi
     - name: Select SDK 27 provider toolchain
       shell: bash

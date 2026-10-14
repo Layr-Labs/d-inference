@@ -14,6 +14,10 @@ publication, or a signed validation bundle. Build, SDK qualification, signing,
 R2 staging and publication are separate jobs. Staging/publication failures retry
 the retained artifact rather than rebuilding or re-signing it.
 
+A push to `master` that changes the provider or its release tooling publishes a
+dev release automatically. A `vX.Y.Z` tag publishes production. To find the
+newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
+
 `ProviderCore.version` is prepared as `0.9.20`; preparation does not publish a tag
 or release. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
 from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
@@ -148,7 +152,14 @@ Never move an existing release tag to repair a failed run.
 
 ### 5. Select Dev Or Validation Mode When Needed
 
-For an authorized dev publication:
+A push to `master` starts a dev release when it changes a path in the workflow's
+`on.push.paths` list: `provider-swift/**`, `libs/**`, the release workflow, the
+build action, or a script that the release runs. The trigger, not an input,
+selects dev. Path filters do not apply to tags, so tags publish as before. One
+dev release runs at a time. A running dev release always completes; when more
+merges arrive, only the newest waiting run continues.
+
+To publish a dev release by hand:
 
 ```bash
 gh workflow run release-swift.yml --ref master -f environment=dev
@@ -156,7 +167,10 @@ gh workflow run release-swift.yml --ref master -f environment=dev
 
 `version_override`, if supplied, must equal the source. Production without a
 source-matching tag is refused, except the validated retained-build recovery
-path below. Dev uses `DEV_*` secrets and creates no GitHub Release.
+path below. Dev uses only `DEV_*` secrets: the `PROD_*` and legacy secret values
+are empty in every job unless the resolved environment is `prod`. Dev creates no
+GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
+the `DEV_R2_PUBLIC_URL` origin.
 
 The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
 `provider-swift/Package.swift` compiles `ProviderCore` with `DARKBLOOM_ENV_DEV`;
@@ -167,10 +181,21 @@ builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags an
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
 
-Dev and prod retain the same version string. The dev installer at
-`https://api.dev.darkbloom.dev/install.sh` binds `[coordinator] url` in
-`provider.toml` (`scripts/install.sh`, `bind_provider_coordinator`), so future
-updates come from dev. The
+Every dev build has the version `X.Y.Z-dev.N`. `X.Y.Z` is the source
+`ProviderCore.version` and `N` is the workflow run number. The release lane
+writes this version into `ProviderCore.version` before it compiles, so
+`darkbloom --version`, the app `Info.plist`, the registration and the R2 path all
+show the `-dev.N` marker. SemVer puts `X.Y.Z-dev.N` below `X.Y.Z` and orders dev
+builds by `N`, so a dev provider updates to each newer dev build. Production
+versions never have a suffix. A dev `EIGENINFERENCE_MIN_PROVIDER_VERSION` must
+use the dev form, for example `0.9.20-dev.0`, because `0.9.20` excludes every
+`0.9.20-dev.N` build.
+
+Install a dev provider only with `https://api.dev.darkbloom.dev/install.sh`. A
+dev build uses the dev coordinator by default, and this installer binds
+`[coordinator] url` in `provider.toml` (`scripts/install.sh`,
+`bind_provider_coordinator`), so the provider and its updates use only the dev
+coordinator. The
 [pinned dev operations reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md)
 is historical; verify current endpoints with the platform owner.
 

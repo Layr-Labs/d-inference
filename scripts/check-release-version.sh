@@ -28,21 +28,26 @@ if [[ ! "$PROVIDER_VERSION" =~ $SEMVER ]]; then
     echo "release version check: invalid ProviderCore.version: $PROVIDER_VERSION" >&2
     exit 1
 fi
+# A dev release is the source version plus -dev.<run number>. The release
+# build stamps that full value into ProviderCore.version before compiling.
+RELEASE_VERSION=$PROVIDER_VERSION
 if [ -n "$EXPECTED" ]; then
     EXPECTED=${EXPECTED#v}
-    if [ "$PROVIDER_VERSION" != "$EXPECTED" ]; then
+    if [ "$PROVIDER_VERSION" != "$EXPECTED" ] &&
+        [[ ! "$EXPECTED" =~ ^"$PROVIDER_VERSION"-dev\.[1-9][0-9]*$ ]]; then
         echo "release version check: source=$PROVIDER_VERSION requested=$EXPECTED" >&2
         exit 1
     fi
+    RELEASE_VERSION=$EXPECTED
 fi
 if [ -n "$REPORTED" ]; then
     case "$REPORTED" in
-        "$PROVIDER_VERSION"|"darkbloom $PROVIDER_VERSION") ;;
+        "$RELEASE_VERSION"|"darkbloom $RELEASE_VERSION") ;;
         *)
-            echo "release version check: binary reported '$REPORTED', expected '$PROVIDER_VERSION'" >&2
+            echo "release version check: binary reported '$REPORTED', expected '$RELEASE_VERSION'" >&2
             exit 1
             ;;
     esac
 fi
 
-echo "release version integrity: $PROVIDER_VERSION"
+echo "release version integrity: $RELEASE_VERSION"

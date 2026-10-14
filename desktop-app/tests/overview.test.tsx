@@ -91,6 +91,32 @@ it('distinguishes unread, fanless, unavailable and provider-cooled fans', async 
   expect(health()).toHaveTextContent('72°C GPU');
 });
 
+it('withholds fan readings older than a minute, as Home and Cooling do', async () => {
+  const backend = await previewBackend();
+  const cooling = {
+    ...backend.cooling!,
+    temperature: 71.6,
+    fans: [{ name: 'Fan', rpm: 4100, max_rpm: 5000 }],
+  };
+  const { rerender } = render(
+    <LocalOverview
+      backend={{ ...backend, cooling: { ...cooling, observed_at: Date.now() / 1000 - 30 } }}
+      navigate={vi.fn()}
+    />,
+  );
+  expect(health()).toHaveTextContent('Spinning · 4,100 RPM');
+  rerender(
+    <LocalOverview
+      backend={{ ...backend, cooling: { ...cooling, observed_at: Date.now() / 1000 - 300 } }}
+      navigate={vi.fn()}
+    />,
+  );
+  expect(health()).toHaveTextContent('UnavailableThe last fan reading is out of date.');
+  expect(health()).not.toHaveTextContent('RPM');
+  expect(health()).not.toHaveTextContent('°C GPU');
+  expect(within(health()).queryByRole('img', { name: /Fan spinning/ })).not.toBeInTheDocument();
+});
+
 it('lists next steps with working actions for a stopped, unlinked Mac', async () => {
   const backend = await previewBackend();
   backend.state = {

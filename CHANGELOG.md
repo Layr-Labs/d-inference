@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop overview fan staleness
+
+- Show This Mac's Fans cell on the overview as unavailable when the cooling reading is more than a minute old, instead of presenting old RPM and GPU temperature as current, matching Home's fan indicator and the Cooling page.
 ## Unreleased — desktop Home provider states
 
 - Home's header no longer offers Start providing while the provider is starting, draining or stale: it shows Starting provider or Finishing requests (disabled) during transitions and Stop provider while a stale provider is still running. The chip's screen-reader summary says live activity only while live numbers are shown, otherwise naming why (waiting for live activity, finishing current requests, or status out of date), without a trailing space.

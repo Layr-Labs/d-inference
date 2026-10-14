@@ -1,11 +1,12 @@
 import type { CSSProperties } from 'react';
 import { Fan } from 'lucide-react';
 import type { CoolingData } from '../../../../shared/contracts';
+import { coolingStale } from '../../cooling/status';
 import styles from './fanStatus.module.css';
 
 export function FanStatus({ cooling, onOpen }: { cooling?: CoolingData; onOpen: () => void }) {
-  const stale = cooling?.observed_at != null && Date.now() / 1000 - cooling.observed_at > 60;
-  const known = cooling?.supported && !cooling.error && !stale && cooling.enabled != null;
+  const known =
+    cooling?.supported && !cooling.error && !coolingStale(cooling) && cooling.enabled != null;
   const enabled = known && cooling.enabled;
   const temperature =
     known && cooling.temperature != null && Number.isFinite(cooling.temperature)

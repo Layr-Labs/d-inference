@@ -62,10 +62,10 @@ public enum ClusterPlacementFlow {
         let handOff = try ClusterHandOffModes.enabled(environment: environment)
         // Developer bench only (`ClusterBenchChip`): a debug build may be told to plan both Macs as another chip.
         let benchChip = try ClusterBenchChip.planningChipName(environment: environment, debugBuild: benchDebugBuild)
-        let localProfile = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
-        let peerProfile = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
-        let renamed = try benchChip.map { chip in (try localProfile.renamedForBench(chip: chip), try peerProfile.renamedForBench(chip: chip)) }
-        let (localProfile, peerProfile) = renamed ?? (localProfile, peerProfile)
+        let cappedLocal = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
+        let cappedPeer = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
+        let localProfile = try benchChip.map { try cappedLocal.renamedForBench(chip: $0) } ?? cappedLocal
+        let peerProfile = try benchChip.map { try cappedPeer.renamedForBench(chip: $0) } ?? cappedPeer
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {
             throw ClusterConfigurationError.invalid("This Mac's member ID, \(localMemberID), is not in the pair description")

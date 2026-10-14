@@ -509,8 +509,8 @@ import Foundation
             localMemberID: "mac-one", localProfile: m3, peerProfile: m5, layout: layout, leader: "mac-one").setup?.leaderID == "mac-one"
             && (try ClusterPlacementFlow.decide(description: description, capability: capability,
                 localMemberID: "mac-one", localProfile: m3, peerProfile: m5, layout: layout, leader: "mac-two").setup?.leaderID == "mac-two"))
-        let m4max = try chip(slowTwo[1], "Apple M4 Max")
-        for (name, local, peer) in [("two M5 Max Macs", m5, m5), ("an M3 Ultra and an M4 Max", m3, m4max), ("two M4 Max Macs", try chip(slowTwo[0], "Apple M4 Max"), m4max)] {
+        let m4max = try chip(slowTwo[1], "Apple M4 Max"), m4maxOther = try chip(slowTwo[0], "Apple M4 Max")
+        for (name, local, peer) in [("two M5 Max Macs", m5, m5), ("an M3 Ultra and an M4 Max", m3, m4max), ("two M4 Max Macs", m4maxOther, m4max)] {
             let planned = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
                 localProfile: local, peerProfile: peer, layout: layout)
             require("the 9B on \(name) is planned (no chip gates a grant)", planned.setup != nil && planned.result.chosen != nil)
@@ -567,7 +567,7 @@ import Foundation
         let pair = [(id: "a", chip: "Apple M3 Ultra"), (id: "b", chip: "Apple M5 Max")]
         for model in ["registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b",
                       "registered_nemotron35_lightning", "registered_gpt_oss_20b"] {
-            for members in [pair, pair.reversed(), [(id: "a", chip: "Apple M4 Max"), (id: "b", chip: "Apple M4 Max")]] {
+            for members in [pair, Array(pair.reversed()), [(id: "a", chip: "Apple M4 Max"), (id: "b", chip: "Apple M4 Max")]] {
                 let free = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: members, runtimeModelID: model, publicModelID: "p")
                 require("\(model) leaves the planner free on \(members.map(\.chip))", free.leader == nil && free.note == nil)
             }

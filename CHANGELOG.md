@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop layout fit at narrow widths
+
+- Fix layout defects found at the desktop window's smaller sizes: 30-day earnings bars and Stats chart hover targets lost width to default button padding, a long waitlist email widened the onboarding page past the window, the Stats Activity table hid its Earned column below about 1000 px, Settings drew a double rule between sections, and chart times used a leading zero ("06:39 PM") unlike the rest of the app.
 ## Unreleased — desktop Settings save checks
 
 - Offer Save changes in Settings only after something changed, and explain a weekly schedule the runtime would reject (no windows, a window without days, or a missing time) right under the schedule instead of failing after Save with a generic error.

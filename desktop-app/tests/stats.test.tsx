@@ -117,7 +117,7 @@ it('stacks input, cached input and output tokens with a legend and labelled bars
     'Output tokens',
   ]);
   const bar = screen.getByRole('button', {
-    name: '04:00 PM: Input 2,500 · Cached input 1,500 · Output 1,000 · Total 5,000 tokens',
+    name: '4:00 PM: Input 2,500 · Cached input 1,500 · Output 1,000 · Total 5,000 tokens',
   });
   expect(bar).toHaveAttribute('title', bar.getAttribute('aria-label'));
   expect(screen.getByText('8.4K')).toBeVisible();
@@ -137,7 +137,7 @@ it('falls back to output-only bars with a note when the runtime reports no promp
   ]);
   expect(
     screen.getByRole('button', {
-      name: '09:00 AM: Input not reported · Cached input not reported · Output 700 · Total 700 tokens',
+      name: '9:00 AM: Input not reported · Cached input not reported · Output 700 · Total 700 tokens',
     }),
   ).toBeVisible();
   expect(

@@ -42,7 +42,8 @@
 }
 .table {
   width: 100%;
-  min-width: 760px;
+  /* Fits the narrowest window (940 px) so the Earned column isn't hidden off-screen. */
+  min-width: 640px;
   border-collapse: collapse;
   font-size: 12px;
   font-variant-numeric: tabular-nums;

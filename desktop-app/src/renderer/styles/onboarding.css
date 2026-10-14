@@ -24,7 +24,8 @@
 
 .onboarding-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …) keeps unbreakable text from widening one column past half. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 100px;
   flex: 1;
   align-items: center;

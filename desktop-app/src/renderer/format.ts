@@ -37,7 +37,7 @@ export function age(at?: number) {
 }
 // Hour and minute of an epoch-seconds instant, for chart axes and intervals.
 export const timeOfDay = (at: number) =>
-  new Date(at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  new Date(at * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 // Time of day when `at` falls on the same local day as `now`, otherwise date and time.
 export function clockTime(at: number, now: number) {
   const date = new Date(at * 1000);

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import DarkbloomClusterProtocol
 import Testing
 @testable import ProviderCore
 
@@ -123,5 +124,40 @@ import Testing
         }
         #expect(loopDrains("while let self, !self.lock.withLock({ self.stopping }) {"), "the control tick loop")
         #expect(loopDrains("while !stopped {"), "the supervise loop")
+    }
+
+    /// Rank 0 sends the worker a command frame per decoded token (`tokenDecision`), encoded with JSONSerialization, from
+    /// threads and queues that never drain an autorelease pool: each frame left its writer and a 4 KB NSData behind (rank
+    /// 0 grew about 40 MB a minute under load; its heap held thousands of `_NSJSONWriter` buffers). Encoding and decoding
+    /// frames on such a thread keeps the bytes in use flat.
+    @Test func workerFramesLeaveNothingOnAThreadThatNeverDrains() throws {
+        func inUse() -> Int {
+            var stats = malloc_statistics_t()
+            malloc_zone_statistics(nil, &stats)
+            return Int(stats.size_in_use)
+        }
+        let frames = 20_000
+        let finished = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var grown = 0
+        nonisolated(unsafe) var failure: Error?
+        Thread.detachNewThread {
+            defer { finished.signal() }
+            do {
+                let epoch = UUID()
+                let warm = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: 0, requestID: nil,
+                                                                                   command: .keepWarm(ordinal: 1)))
+                _ = try ClusterWorkerCodec.decodeCommand(warm)
+                let before = inUse()
+                for index in 0..<frames {
+                    let data = try ClusterWorkerCodec.encode(ClusterWorkerCommandFrame(membershipEpoch: epoch, sequence: UInt64(index),
+                                                                                       requestID: nil, command: .keepWarm(ordinal: 1)))
+                    _ = try ClusterWorkerCodec.decodeCommand(data)
+                }
+                grown = inUse() - before
+            } catch { failure = error }
+        }
+        finished.wait()
+        #expect(failure == nil, "\(String(describing: failure))")
+        #expect(grown < 16 * 1024 * 1024, "\(grown / 1024) KiB still in use after \(frames) worker frames on a thread that never drains")
     }
 }

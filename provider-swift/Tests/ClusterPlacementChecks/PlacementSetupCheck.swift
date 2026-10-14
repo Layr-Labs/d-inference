@@ -91,10 +91,15 @@ import Foundation
                     try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: capabilityHash)
                 }
             } ?? []
-            require("planned from \(who) under the hand-off opt-in: the head, the M3 Ultra leading and the M5 decoding, saved by name in both setups",
-                decided.result.chosen?.mode == .phaseSplitMTP && decided.setup?.leaderID == "mac-two"
-                    && configurations.count == 2 && configurations.allSatisfy { $0.generationMode == .phaseSplitMTP }
-                    && decided.lines.contains { $0.contains("It decodes with the model's speculative (MTP) head") })
+            // Under the opt-in the hand-off modes are ranked beside the sharded ones: the phase split + MTP with the
+            // M3 Ultra leading and the M5 decoding is a candidate, but the 9B's passing pipeline_mtp_v1 records
+            // (chip-agnostic since 2026-10-14) credit the pipeline's rounds 1.74x against the phase split's 1.44x
+            // row, so the fastest, the pipeline's rounds, is chosen and saved by name in both setups.
+            require("planned from \(who) under the hand-off opt-in: the phase split + MTP (M3 Ultra leading) is ranked, the recorded rounds are chosen and saved by name in both setups (chose \(decided.result.chosen?.mode.rawValue ?? "-"))",
+                decided.result.chosen?.mode == .pipelineMTP
+                    && configurations.count == 2 && configurations.allSatisfy { $0.generationMode == .pipelineMTP }
+                    && decided.lines.contains { $0.contains("mac-two then mac-one, phase_split_mtp_v1: relative time") }
+                    && decided.lines.contains { $0.hasPrefix("  Opted in: phase split, phase split + MTP") })
         }
         // The other order is asked for: a grant lists no chip (owner, 2026-10-14), so the M5 leading is planned too.
         let mirrored = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
@@ -137,8 +142,9 @@ import Foundation
             require("planned from \(who), default: a sharded mode with layers on both Macs, saved by name in both setups (never a phase split)",
                 sharded.result.chosen.map { $0.mode.isSharded && $0.ranks.allSatisfy { $0.endLayer > $0.firstLayer } } == true
                     && configurations.count == 2 && configurations.allSatisfy { $0.generationMode.map { !$0.isHandOff } ?? true })
-            require("planned from \(who), default: the plan lists the sharded candidates and names the opt-in",
-                sharded.lines.contains("Sharded deployment candidates") && sharded.lines.contains { $0.contains("pipeline: chosen") }
+            require("planned from \(who), default: the plan lists the sharded candidates and names the opt-in (\(sharded.lines.filter { $0.contains(": chosen") }.joined(separator: " | ")))",
+                sharded.lines.contains("Sharded deployment candidates")
+                    && sharded.lines.contains { $0.contains("pipeline with speculative rounds: chosen") }
                     && sharded.lines.contains { $0.contains(name + "=1") && $0.contains("never offered in the onboarding") })
         }
         refuses("hand-off modes: a malformed setting stops the plan instead of planning something else", because: name) {
@@ -876,6 +882,7 @@ import Foundation
             record("registered_divergedrounds", mode: "pipeline_v1", measured: nil),
             record("registered_divergedrounds"), record("registered_divergedrounds", verdict: "diverged"),
             record("registered_plainonly", mode: "pipeline_v1", measured: (70, 35)),
+            record("registered_qwen38_27b", mode: "pipeline_v1", measured: nil), record("registered_qwen38_27b"),
         ])
         func factor(_ model: String, artifact: String? = nil) -> Double? {
             ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: model, artifactSHA256: artifact, decisions: decisions)
@@ -892,6 +899,10 @@ import Foundation
             ClusterPlan.modes.contains(ClusterGenerationMode.pipelineMTP.rawValue))
         require("the rounds are plannable where their family is granted",
             ClusterPairServingGrants.plannable([ClusterChipClass(chipName: "Apple M3 Ultra"), ClusterChipClass(chipName: "Apple M5 Ultra")],
+                cuts: [8], mode: .pipelineMTP, runtimeModelID: "registered_qwen38_27b", decisions: decisions))
+        // The owner's serving needs a cluster stage adapter (owner rule 08:45): a model no adapter runs is never plannable.
+        require("a model no stage adapter runs is not plannable, whatever its records",
+            !ClusterPairServingGrants.plannable([ClusterChipClass(chipName: "Apple M3 Ultra"), ClusterChipClass(chipName: "Apple M5 Ultra")],
                 cuts: [8], mode: .pipelineMTP, runtimeModelID: "registered_rounds", decisions: decisions))
     }
 

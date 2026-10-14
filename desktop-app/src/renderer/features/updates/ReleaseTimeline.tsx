@@ -3,15 +3,28 @@ import type { ReleaseData, ReleaseHistory } from '../../../shared/contracts';
 import { compareVersions } from './version';
 import styles from './updates.module.css';
 
-// Notes published from a signed git tag carried the tag's signature block; it is not release
-// text, so it is never shown (including an unterminated block running to the end).
-const signature =
-  /-----BEGIN (?:SSH|PGP) SIGNATURE-----[\s\S]*?(?:-----END (?:SSH|PGP) SIGNATURE-----|$)/g;
+// Match whole delimiter lines (optionally listed), not inline or quoted marker names.
+const signatureDelimiter = /^(?:(?:[-*+]|\d+\.)[ \t]+)?-----(BEGIN|END) (SSH|PGP) SIGNATURE-----$/;
 
 function lines(notes: string) {
+  let signatureType: string | undefined;
   return notes
-    .replace(signature, '')
     .split('\n')
+    .filter((line) => {
+      const delimiter = signatureDelimiter.exec(line.trim());
+      if (signatureType) {
+        if (delimiter?.[1] === 'END' && delimiter[2] === signatureType) {
+          signatureType = undefined;
+        }
+        // A real BEGIN without a matching END hides the remaining signature too.
+        return false;
+      }
+      if (delimiter?.[1] === 'BEGIN') {
+        signatureType = delimiter[2];
+        return false;
+      }
+      return true;
+    })
     .map((line) =>
       line
         .replace(/^\s*(?:#{1,6}|[-*+]|\d+\.)\s+/, '')

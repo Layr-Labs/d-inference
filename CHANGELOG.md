@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop release notes without tag signatures
 
-- Never show a git tag's SSH or PGP signature block as release notes on the Updates page. Provider 0.9.20's published notes include the signed tag's signature, which appeared as five bullet points of encoded text.
+- Never show a git tag's SSH or PGP signature block as release notes on the Updates page. Provider 0.9.20's published notes include the signed tag's signature, which appeared as five bullet points of encoded text. Preserve inline and quoted marker text and notes following a complete signature; hide real unterminated signature blocks too.
 
 ## Unreleased — desktop hardware load
 

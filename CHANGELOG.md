@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop account link actions
+
+- Ask before unlinking this Mac from Settings, like other removals; unlinking previously happened on a single click. On Home, stop offering Link account again while a link is in progress or its code is shown, so repeated clicks no longer start new link requests.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

@@ -8,6 +8,7 @@ import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
 import { IdleMemory } from './settings/IdleMemory';
 import { idleDraft, idleMinutes } from './settings/idleDuration';
 import { ScheduleEditor } from '../components/ScheduleEditor';
+import { UnlinkDialog } from '../components/account/UnlinkDialog';
 
 export function Settings({
   backend,
@@ -18,6 +19,7 @@ export function Settings({
 }) {
   const original = backend.state!.settings;
   const [base, setBase] = useState(original);
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
   const changedElsewhere = base.revision !== original.revision;
   const [name, setName] = useState(original.name);
   const [idle, setIdle] = useState(() => idleDraft(original.idle_minutes));
@@ -121,11 +123,19 @@ export function Settings({
           </span>
           <Button
             disabled={backend.busy}
-            onClick={() => void backend.act({ action: backend.state!.linked ? 'unlink' : 'link' })}
+            onClick={() =>
+              backend.state!.linked ? setConfirmUnlink(true) : void backend.act({ action: 'link' })
+            }
           >
             {backend.state!.linked ? 'Unlink this Mac' : 'Link account'}
           </Button>
         </div>
+        {confirmUnlink && (
+          <UnlinkDialog
+            onUnlink={() => void backend.act({ action: 'unlink' })}
+            onClose={() => setConfirmUnlink(false)}
+          />
+        )}
         <div className="action-row">
           <External target="console">Account & payouts</External>
           <External target="privacy">Privacy</External>

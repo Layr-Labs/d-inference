@@ -25,10 +25,13 @@ export function enableAction(snapshot: Snapshot) {
 export function TurnOnAutopilot({
   snapshot,
   working,
+  busy = false,
   onEnable,
 }: {
   snapshot: Snapshot;
   working?: string;
+  /** Another model or runtime operation is in flight. */
+  busy?: boolean;
   onEnable: () => void;
 }) {
   return (
@@ -40,7 +43,10 @@ export function TurnOnAutopilot({
         <strong>Autopilot</strong>
         <small>Choose downloads. Autopilot manages what’s loaded.</small>
       </div>
-      <Button disabled={!!working || !enableAction(snapshot).models.length} onClick={onEnable}>
+      <Button
+        disabled={busy || !!working || !enableAction(snapshot).models.length}
+        onClick={onEnable}
+      >
         {working ?? 'Turn on Autopilot'}
       </Button>
     </section>

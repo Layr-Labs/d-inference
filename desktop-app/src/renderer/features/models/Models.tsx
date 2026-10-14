@@ -64,6 +64,7 @@ export function Models({
             <TurnOnAutopilot
               snapshot={state}
               working={actions.working.autopilot}
+              busy={backend.busy || Object.keys(actions.working).length > 0}
               onEnable={() => void actions.policy(enableAction(state), 'Turning on…')}
             />
           </>

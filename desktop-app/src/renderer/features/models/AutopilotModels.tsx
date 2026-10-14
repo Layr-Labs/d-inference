@@ -147,7 +147,7 @@ export function AutopilotModels({
               working={actions.working[row.model.id]}
               pinBlocked={pinBlocked(row.model)}
               onDownload={() => void actions.join(row.model)}
-              onJoin={() => void actions.join(row.model)}
+              onJoin={() => void actions.add(row.model)}
               onPin={() => void actions.pin(row.model)}
               onUnpin={() => void actions.unpin(row.model)}
               onRemove={() => setRemove(row.model)}

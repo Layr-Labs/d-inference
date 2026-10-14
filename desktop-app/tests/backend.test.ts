@@ -172,8 +172,8 @@ it('never watches a runtime whose protocol it rejected', async () => {
   backend.stop();
   server.close();
   expect(seen.protocols).toEqual([]);
-  expect(seen.statuses).toEqual(['error']);
-  expect(backend.current.state).toBe('error');
+  expect(seen.statuses).toEqual(['incompatible']);
+  expect(backend.current.state).toBe('incompatible');
 });
 
 it('stops forwarding when a streamed snapshot changes protocol', async () => {

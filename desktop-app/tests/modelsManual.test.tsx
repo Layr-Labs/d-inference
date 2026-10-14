@@ -124,6 +124,7 @@ it('does not offer to download a model this Mac cannot run', () => {
   fireEvent.click(screen.getByRole('button', { name: /Show \d+ more models/ }));
   const row = screen.getByRole('heading', { name: 'Qwen 3.6 35B A3B' }).closest('article')!;
   expect(within(row as HTMLElement).getByRole('button', { name: /Download/ })).toBeDisabled();
+});
 
 it('locks the manual selection while Autopilot is turning on', async () => {
   api.act.mockReturnValueOnce(new Promise(() => {}));

@@ -155,7 +155,7 @@ enum QwenResidentRequestExecution {
             let fault = split == nil ? nil : qualificationFault
             let recorded = try recordQwenLayerStageGenerationRequest(loaded: stage.loaded,
                 producerStage: producerStage?.loaded, speculativeHead: speculativeHead,
-                plan: admission.plan, agreement: agreement, collective: collective,
+                speculativeRounds: speculativeRounds, plan: admission.plan, agreement: agreement, collective: collective,
                 resources: {
                     try stage.diagnosticResources(plan: admission.plan, request: reserved.request,
                         rank: collective.rank, requestAllowance: reserved.allowance)

@@ -47,6 +47,10 @@ public struct PairEvidence: Decodable, Equatable, Sendable {
     public let stateEntries: [QualificationStateEntry]
     public let stageStateSHA256: String
     public let finalLogits: Logits?
+    /// Rank 1 of a speculative pipeline (`pipeline_mtp_v1`) only: one step per
+    /// selected token, from the row it was selected from (the accepted
+    /// timeline); absent in every other record.
+    public let steps: [QualificationStep]?
 
     public static func decode(_ data: Data, rank: Int) throws -> Self {
         guard !data.isEmpty, data.count <= maximumBytes else {
@@ -56,6 +60,7 @@ public struct PairEvidence: Decodable, Equatable, Sendable {
         do { value = try JSONDecoder().decode(Self.self, from: data) }
         catch { throw QualificationError("Rank \(rank) evidence is not a final diagnostic record") }
         guard value.schema == schema, value.rank == rank, (value.finalLogits != nil) == (rank == 1),
+              value.steps == nil || rank == 1,
               QualificationHash.isSHA256(value.requestFingerprint),
               value.finalLogits.map({ $0.values.count == $0.shape.reduce(1, *) && $0.values.allSatisfy(\.isFinite) }) ?? true else {
             throw QualificationError("Rank \(rank) evidence has the wrong schema, rank or final row")
@@ -79,9 +84,18 @@ public struct PairEvidence: Decodable, Equatable, Sendable {
         guard Set(entries.map(\.key)).count == entries.count else {
             throw QualificationError("The two ranks recorded overlapping state entries")
         }
+        // Rank 1's steps, when it recorded them, cover every selected token once, in order.
+        if let steps = b.steps {
+            let tokens = a.execution.selectedTokenIDs
+            guard steps.map(\.ordinal) == Array(tokens.indices), steps.map(\.tokenID) == tokens,
+                  steps.allSatisfy({ $0.topTokenIDs.count == $0.topLogits.count && $0.topLogits.count >= 2
+                      && $0.topLogits.allSatisfy(\.isFinite) && QualificationHash.isSHA256($0.rowSHA256) }) else {
+                throw QualificationError("Rank 1's steps do not cover every selected token once, in order")
+            }
+        }
         let evidence = QualificationEvidence(selectedTokenIDs: a.execution.selectedTokenIDs,
             finishReason: a.execution.finishReason, completedFrames: a.execution.completedFrames,
-            committedTokens: a.execution.committedTokens, steps: nil,
+            committedTokens: a.execution.committedTokens, steps: b.steps,
             finalLogits: .init(shape: row.shape, dtype: row.dtype, byteCount: row.byteCount,
                                logicalBytesSHA256: row.logicalBytesSHA256, values: row.values),
             stateEntries: entries,

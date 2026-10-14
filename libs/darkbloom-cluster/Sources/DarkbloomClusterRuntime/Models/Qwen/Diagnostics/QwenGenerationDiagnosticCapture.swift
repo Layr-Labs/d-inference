@@ -14,6 +14,13 @@ final class QwenGenerationDiagnosticCapture {
     private var state: QwenLayerStageRankStateCapture?
     private var completion: QwenGenerationDiagnosticCompletion?
     private var consumed = false
+    /// Rank 1 of a speculative pipeline (`pipeline_mtp_v1`): one step per
+    /// selected token, in order, from the row that token was taken from (the
+    /// prompt's last frame, then each kept column of a verify window). The
+    /// record then carries the accepted timeline row by row, so the near-tie
+    /// rule reads every accepted token (`QwenRecordedStep`).
+    var recordsSteps = false
+    private(set) var steps: [QwenRecordedStep] = []
 
     init(request: QwenLayerStageGenerationRequest, rank: Int,
          resources: QwenGenerationDiagnosticResources) {
@@ -42,6 +49,21 @@ final class QwenGenerationDiagnosticCapture {
         try check()
         try resources.requireLive(force: true)
         finalFrame = frame; finalTokenID = tokenID
+    }
+
+    /// One selected token's row on rank 1 of a recorded speculative pipeline:
+    /// its digest over the native bytes and its highest candidates. `frame` is
+    /// the decode frame the token takes through the generation control.
+    func captureStep(_ row: MLXArray, frame: QwenLayerStageFrame, tokenID: Int, check: () throws -> Void) throws {
+        guard recordsSteps, rank == 1, !consumed, finalFrame == nil, completion == nil, state == nil else {
+            throw ProbeError("Diagnostic step capture outside a recorded speculative pipeline's rank 1")
+        }
+        try check()
+        let step = try QwenRecordedStep(row, ordinal: steps.count, frame: frame, tokenID: tokenID,
+            vocabularySize: request.profile.vocabularySize, rowDType: request.profile.selectedRowDType,
+            sampled: request.sampler != nil)
+        try check()
+        steps.append(step)
     }
 
     func captureState(session: QwenLayerStageSession, stage: QwenLayerStagePlan.Stage,
@@ -81,6 +103,15 @@ final class QwenGenerationDiagnosticCapture {
               execution.finishReason == completion.reason,
               execution.completedFrames == finalFrame.sequence + 1,
               resources.observationCount > 0 else { throw ProbeError("Diagnostic publication precedes complete retirement/evidence") }
+        // A speculative pipeline's rank 1 records one step per selected token, in order.
+        if recordsSteps {
+            guard steps.map(\.ordinal) == Array(execution.selectedTokenIDs.indices),
+                  steps.map(\.tokenID) == execution.selectedTokenIDs else {
+                throw ProbeError("Diagnostic steps differ from the selected token history")
+            }
+        } else if !steps.isEmpty {
+            throw ProbeError("Diagnostic steps recorded outside a recorded speculative pipeline")
+        }
         consumed = true
         return .init(execution: execution, agreement: agreement.descriptor, requestFingerprint: request.fingerprint,
             profileFingerprint: request.profile.fingerprint, rank: rank,
@@ -89,10 +120,12 @@ final class QwenGenerationDiagnosticCapture {
             stageStateSHA256: state.fingerprint, finalLogits: finalLogits, captureBudget: resources.budget,
             resourceObservationCount: resources.observationCount,
             minimumObservedActualFreeBytes: resources.minimumActualFreeBytes,
-            minimumObservedAllocatorLimitBytes: resources.minimumAllocatorLimitBytes)
+            minimumObservedAllocatorLimitBytes: resources.minimumAllocatorLimitBytes,
+            steps: recordsSteps ? steps : nil)
     }
 
     func discard() {
         consumed = true; finalFrame = nil; finalTokenID = nil; finalLogits = nil; state = nil; completion = nil
+        steps = []
     }
 }

@@ -133,6 +133,9 @@ func classifierChecks() {
         ("Cannot inspect the provider instance lock", [], .localProviderRunning),
         ("GPT-OSS stage load exceeds the allocator limit: needs 9 of 8 bytes", [], .memoryGateRefused),
         ("The follower member did not connect over the link control channel (is `darkbloom cluster link-follower` running on the other Mac?)", [], .followerNotConnected),
+        // The plain wording of the one-command path keeps the classifier's phrase (A/B3 of the fix list).
+        ("The other Mac did not answer over the cable. Make sure it is on; it rejoins by itself. (The follower member did not connect over the link control channel.)", [], .followerNotConnected),
+        ("Darkbloom changed on this Mac since the cluster was set up: run `darkbloom cluster` again; it sets up again by itself. (The installed worker's runtime description differs from the saved capability.)", [], .workerRuntimeMismatch),
         ("Native key relay deadline expired", [], .bootstrapStalled),
         ("Installed executable bytes differ from the expected binary SHA-256", [], .workerRuntimeMismatch),
         ("Unsupported worker protocol version", [], .versionMismatch),

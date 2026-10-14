@@ -38,7 +38,7 @@ extension ClusterLinkCheck {
             case .finish(let exitCode):
                 transcript.exitCode = exitCode
                 transcript.state = flow.linkState
-                transcript.choices = flow.choices.map(\.interface)
+                transcript.choices = flow.choices.map { $0.interface }
                 return transcript
             }
         }

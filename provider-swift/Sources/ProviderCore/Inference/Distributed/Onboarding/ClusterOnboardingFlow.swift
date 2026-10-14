@@ -112,6 +112,7 @@ public enum ClusterOnboardingDeployment {
     /// The plan's mode in words: tensor parallel or pipeline (the sharded modes), anything else plainly.
     public static func modeWords(_ raw: String) -> String {
         let lower = raw.lowercased()
+        if lower.contains("prefill_tensor_decode") { return "pipeline prefill, tensor parallel decode" }
         if lower.contains("tensor") || lower.hasPrefix("tp") { return "tensor parallel" }
         if lower.hasPrefix("pipeline") { return "pipeline" }
         if lower.hasPrefix("phase_split") { return "prompt split, then one Mac decodes (opt-in)" }
@@ -123,7 +124,7 @@ public enum ClusterOnboardingDeployment {
         let names = shares.map { shortName($0.name) }
         // Two Macs of one kind: say which is which by the full name.
         let labels = Set(names).count == names.count ? names : shares.map(\.name)
-        if modeWords(mode) == "tensor parallel" {
+        if modeWords(mode).contains("tensor parallel") {
             let total = shares.compactMap(\.weightsBytes).reduce(0, +)
             guard total > 0, shares.allSatisfy({ $0.weightsBytes != nil }) else { return labels.joined(separator: " / ") }
             return zip(labels, shares).map { "\($0) \(Int((Double($1.weightsBytes!) * 100 / Double(total)).rounded()))%" }.joined(separator: " / ")

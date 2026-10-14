@@ -55,7 +55,7 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
 
     public static func == (lhs: ClusterLinkSetupFlow, rhs: ClusterLinkSetupFlow) -> Bool {
         lhs.mayPrompt == rhs.mayPrompt && lhs.temporary == rhs.temporary && lhs.dryRun == rhs.dryRun && lhs.linkState == rhs.linkState
-            && lhs.device == rhs.device && lhs.plain == rhs.plain && lhs.choices.map(\.device) == rhs.choices.map(\.device)
+            && lhs.device == rhs.device && lhs.plain == rhs.plain && lhs.choices.map { $0.device } == rhs.choices.map { $0.device }
             && lhs.rdmaReported == rhs.rdmaReported && lhs.waitReported == rhs.waitReported && lhs.keepingOnly == rhs.keepingOnly
             && lhs.isolating == rhs.isolating && lhs.keeperAwaited == rhs.keeperAwaited && lhs.portsReported == rhs.portsReported
     }

@@ -269,7 +269,7 @@ final class OnboardingLive: @unchecked Sendable {
                 }
                 step = flow.repaired(result)
             case .finish(let code):
-                if !flow.choices.isEmpty { return .init(ready: false, exitCode: max(code, 1), ports: flow.choices.map(\.interface)) }
+                if !flow.choices.isEmpty { return .init(ready: false, exitCode: max(code, 1), ports: flow.choices.map { $0.interface }) }
                 guard code == 0, flow.linkState == .ready else { return .init(ready: false, exitCode: max(code, 1)) }
                 // A port isolated as link setup v2 leaves it but with no record (an administrator ran the commands
                 // by hand): recorded now, with no prompt and no change, so the earlier settings can be restored.
@@ -945,9 +945,10 @@ final class OnboardingLive: @unchecked Sendable {
             let doctor = try? encoder.encode(await ClusterDiagnostics.doctor(providerConfiguration: configuration))
             box.post((status, doctor)); done.signal()
         }
-        guard done.wait(timeout: .now() + 60) == .success, let (status, doctor) = box.take().first else {
+        guard done.wait(timeout: .now() + 60) == .success, let read = box.take().first else {
             return .failure(.init("The diagnostics could not be read within a minute; nothing was saved."))
         }
+        let (status, doctor) = read
         let redaction = ClusterDiagnosticRedaction(identifiers: .init(homeDirectories: [context.paths.homeDirectory.path, NSHomeDirectory()],
             userNames: [NSUserName()], hostNames: [ProcessInfo.processInfo.hostName]))
         var object: [String: Any] = ["schema": "darkbloom_cluster_onboarding_diagnostics_v1", "lastErrors": lastErrors(fallback: nil)]

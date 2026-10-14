@@ -240,9 +240,12 @@ import Foundation
                 && three.admitsRank(1, of: 3, chipClass: m2, cuts: [10, 20], mode: .pipeline)
                 && three.admitsRank(1, of: 2, chipClass: m4, cuts: [10, 20], mode: .pipeline)
                 && three.admitsRank(1, of: 2, chipClass: m2, cuts: [12], mode: .pipelineCompactDecode))
-        require("records: another chip combination is not restricted",
-            three.admits(chipClasses: [m2, m2, m4], cuts: [10, 20], mode: .pipeline)
-                && three.admits(chipClasses: [m5, m5, m5], cuts: [3, 7], mode: .pipeline))
+        // A Mac checks its rank with only its own class at start, so a rank whose class ran a diverged rank-shape
+        // refuses that rank-shape with any partner; the planner and the offer apply the same half and pick another cut.
+        require("records: another chip combination is not restricted, except at a rank-shape its own class diverged at",
+            three.admits(chipClasses: [m4, m2, m2], cuts: [10, 20], mode: .pipeline)
+                && three.admits(chipClasses: [m5, m5, m5], cuts: [3, 7], mode: .pipeline)
+                && !three.admits(chipClasses: [m2, m2, m4], cuts: [10, 20], mode: .pipeline))
         let four = ClusterPairQualificationRecords(runtimeModelID: "x", passed: [], failed: [.init(chipClasses: [m4, m4, m4, m4], cuts: [6, 12, 18], mode: .pipeline)])
         require("records: a model whose every check failed admits no shape", four.restrictsShapes
             && !four.admits(chipClasses: [m4, m4, m4, m4], cuts: [6, 12, 18], mode: .pipeline) && four.passedShapesText == "none")
@@ -676,7 +679,8 @@ import Foundation
         let cutdep = try? ClusterPairServingGrants.grant(runtimeModelID: "registered_cutdep", publicModelID: "p", decisions: decisions)
         require("a diverged pipeline record with a pipeline pass withholds only its chips and shape",
             allows([m2Max, m4Max], "registered_cutdep", cuts: [11], .pipeline) && !allows([m2Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
-                && !allows([m2Max, m4Max], "registered_cutdep", cuts: [6], .pipeline) && allows([m4Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
+                && !allows([m2Max, m4Max], "registered_cutdep", cuts: [6], .pipeline) && allows([m4Max, m4Max], "registered_cutdep", cuts: [6], .pipeline)
+                && !allows([m4Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
                 && allows([m2Max, m4Max], "registered_cutdep", cuts: [11], .phaseSplit)
                 && cutdep?.families == [.pipeline, .handOff] && cutdep?.withheldFamilies.isEmpty == true)
         require("an inconclusive record neither grants nor withholds its family",
@@ -692,7 +696,7 @@ import Foundation
                 && plans([m3Ultra, m5Max], "registered_retired", cuts: [24], .pipelineCompactDecode) && plans([m3Ultra, m5Ultra], "registered_retired", cuts: [24], .pipeline))
         require("the planner keeps a diverged combination to its passed shapes and leaves a classless chip to the start",
             plans([m2Max, m4Max], "registered_cutdep", cuts: [11], .pipeline) && !plans([m2Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
-                && plans([m4Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
+                && plans([m4Max, m4Max], "registered_cutdep", cuts: [6], .pipeline) && !plans([m4Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
                 && plans([nil, m5Ultra], "registered_handoff", cuts: [8], .phaseSplit) && plans([nil, m4Max], "registered_handoff", cuts: [8], .phaseSplit)
                 && !plans([nil, m4Max], "registered_cutdep", cuts: [6], .pipeline) && plans([m2Max, m4Max], "registered_nobody", cuts: [3], .pipeline))
         // The shipped records: every granted family on the M3 Ultra and the M5 Ultra in both orders, and on two M4 Max Macs.

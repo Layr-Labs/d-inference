@@ -37,7 +37,7 @@ public enum ClusterBenchChip {
     /// The planner's half: the chip name both profiles carry while planning,
     /// nil when unset. A release build refuses to plan while it is set.
     public static func planningChipName(environment: [String: String], debugBuild: Bool = isDebugBuild) throws -> String? {
-        guard let value = environment[environmentName] else { return nil }
+        guard environment[environmentName] != nil else { return nil }
         guard debugBuild else {
             throw ClusterConfigurationError.invalid("\(environmentName) is a developer bench override and is not available in a release build; "
                 + "unset it to plan this pair on its real chips")

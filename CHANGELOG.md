@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop model action guards
 
-- Lock a model's controls on the first click, so double-clicking Keep in memory, Add to pool or other model actions no longer sends the action twice. Add to pool before Autopilot is set up now turns Autopilot on with that model, as Keep in memory already does, instead of doing nothing. Turn on Autopilot is disabled while another operation runs.
+- Lock a model's controls on the first click, so double-clicking Keep in memory, Add to pool or other model actions no longer sends the action twice. Add to pool before Autopilot is set up now turns Autopilot on with the cached pool instead of doing nothing, preserving the serving selection or starting one model when none serve. Turn on Autopilot is disabled while another operation runs.
 
 ## Unreleased — desktop hardware load
 

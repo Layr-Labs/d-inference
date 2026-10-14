@@ -79,14 +79,13 @@ export function useModelActions(backend: BackendState) {
       task(model.id, model.downloaded ? 'Joining the pool…' : 'Downloading…', () =>
         intoPool(model),
       ),
-    // Adding a downloaded model before Autopilot is on starts Autopilot with it in the pool, as
-    // keeping a model in memory does; otherwise it joins the running pool.
+    // Enabling inventories eligible cached models for the pool; keep that inventory separate
+    // from the serving selection so adding a member doesn't load another model at startup.
     add: (model: NativeModel) =>
       task(model.id, 'Joining the pool…', async () => {
         if (snapshot.autopilot?.enabled) return intoPool(model);
-        const start = enableAction(snapshot);
         label(model.id, 'Starting…');
-        await run({ ...start, models: [...new Set([...start.models, model.id])] });
+        await run(enableAction(snapshot));
       }),
     pin: (model: NativeModel) =>
       task(model.id, 'Pinning…', async () => {

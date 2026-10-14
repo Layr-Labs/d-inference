@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop download notifications
+
+- Name the model in download notifications, with the same progress its row on Models shows (for example “Downloading Qwen 3.5 9B · 42%”), and in their outcome (“Qwen 3.5 9B download · Failed”). Downloads the runtime doesn't attribute to a model still read “Downloading model”.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

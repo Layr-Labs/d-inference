@@ -1,5 +1,5 @@
 import type { BackendState } from '../../useBackend';
-import { operationLabel } from './labels';
+import { operationTitle } from './labels';
 import { OperationToast } from './OperationToast';
 import { useOperationDismissal } from './useOperationDismissal';
 
@@ -8,13 +8,14 @@ export function OperationFeed({ backend }: { backend: BackendState }) {
   const operation = backend.state?.operations.find((item) => item.action !== 'account-signin');
   const { hidden, dismiss } = useOperationDismissal(operation);
   const error = backend.error;
+  const models = backend.state?.models ?? [];
   if (error) {
     const matchingFailure = operation?.state === 'failed' && operation.message === error;
     return (
       <OperationToast
         state="failed"
         message={error}
-        title={matchingFailure ? operationLabel(operation) : 'Action failed'}
+        title={matchingFailure ? operationTitle(operation, models) : 'Action failed'}
         onClose={() => {
           backend.setError('');
           if (matchingFailure) dismiss(operation.id);
@@ -26,7 +27,7 @@ export function OperationFeed({ backend }: { backend: BackendState }) {
   return (
     <OperationToast
       state={operation.state}
-      title={operationLabel(operation)}
+      title={operationTitle(operation, models)}
       message={operation.message}
       onCancel={
         operation.state === 'running' && operation.cancellable

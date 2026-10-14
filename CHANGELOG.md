@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop dialog keyboard focus
 
-- Keep keyboard focus inside desktop dialogs when their content changes, such as sign-in moving from "Continue in browser" to approval or cancellation. Escape still closes the dialog, Tab no longer reaches the page behind it, and expandable details are reachable with Tab. Dialogs also no longer pull focus back to their first button every few seconds while the app refreshes.
+- Keep keyboard focus inside desktop dialogs when their content changes, such as sign-in moving from "Continue in browser" to approval or cancellation. Only the topmost dialog handles Escape, Tab and focus recovery when dialogs overlap; closing it restores focus without disturbing a dialog still open beneath it. Expandable details are reachable with Tab, and dialogs no longer pull focus back to their first button every few seconds while the app refreshes.
 
 ## Unreleased — desktop hardware load
 

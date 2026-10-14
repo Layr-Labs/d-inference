@@ -1,6 +1,7 @@
 import { ArrowUpRight, Monitor, X } from 'lucide-react';
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { api } from '../useBackend';
+import { useModalFocus } from './useModalFocus';
 export { OperationFeed } from './operations/OperationFeed';
 export function Button({
   children,
@@ -99,53 +100,7 @@ export function Modal({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
-  // Callers often pass a new onClose every render, and pages re-render on every state push. The
-  // setup below must run once per open dialog, or each re-run would move focus back to the first
-  // button (about every two seconds), so the latest onClose is read through a ref.
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const element = ref.current!;
-    element.querySelector<HTMLButtonElement>('button')?.focus();
-    // Sign-in and other dialogs replace their content as an operation advances. When the focused
-    // control disappears, focus would fall to the page behind the dialog, so keys are handled at
-    // the document and focus returns to the dialog itself.
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        close.current();
-      }
-      if (event.key !== 'Tab') return;
-      const controls = [
-        ...element.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex="0"]',
-        ),
-      ];
-      const first = controls[0],
-        last = controls.at(-1);
-      if (!element.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    const keep = new MutationObserver(() => {
-      if (!element.contains(document.activeElement)) element.focus();
-    });
-    keep.observe(element, { childList: true, subtree: true });
-    document.addEventListener('keydown', keydown);
-    return () => {
-      keep.disconnect();
-      document.removeEventListener('keydown', keydown);
-      previous?.focus();
-    };
-  }, []);
+  useModalFocus(ref, onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section

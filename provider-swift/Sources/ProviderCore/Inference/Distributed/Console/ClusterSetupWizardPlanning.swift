@@ -169,7 +169,7 @@ enum ClusterSetupPlanning {
         case .afterApplicationsRelease(let bytes):
             return "\(device) needs \(ClusterSetupScreen.gib(bytes)) more free: quit applications there first"
         case .afterRestart(let bytes):
-            return "\(device) is \(ClusterSetupScreen.gib(bytes)) short even with every application closed: only a restart frees the kernel's file cache"
+            return "\(device) is \(ClusterSetupScreen.gib(bytes)) short even with every application closed: the kernel keeps that much file cache as its minimum (a share of the memory that is not wired), which closing applications does not lower; a restart empties the cache"
         case .never(let bytes):
             return "\(device) cannot hold this range: \(ClusterSetupScreen.gib(bytes)) short of what it has at all"
         }

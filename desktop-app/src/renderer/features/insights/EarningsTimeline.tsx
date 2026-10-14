@@ -27,11 +27,13 @@ export function EarningsTimeline({
   const max = maximum(
     days.filter((day) => day.available !== false).map((day) => metricValue(day, metric)),
   );
+  // maximum() floors at 1 to scale bars; an all-zero period has no scale to label.
+  const empty = days.every((day) => day.available === false || metricValue(day, metric) === 0n);
   return (
     <div className={styles.timeline}>
       <div className={styles.chartScale}>
-        <span>{metricLabel(max, metric)}</span>
-        <span>{metricLabel(max / 2n, metric)}</span>
+        <span>{empty ? '' : metricLabel(max, metric)}</span>
+        <span>{empty ? '' : metricLabel(max / 2n, metric)}</span>
         <span>0</span>
       </div>
       <div className={styles.bars} role="group" aria-label={`Daily ${metric} in UTC`}>

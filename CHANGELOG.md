@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop milestone, empty chart and unknown memory display
+
+- Keep Home's network strip from showing a total just short of a milestone as reaching it (for example "1B" with "Next milestone 1B", every cell lit and 100%). Leave an all-zero earnings chart's scale unlabeled instead of "$0.000001", and show undetected memory as unknown instead of 0 GB on This Mac's Overview and Home's memory legend.
 ## Unreleased — desktop view-only Mac status and totals
 
 - Show a view-only Mac's reported status (Starting, Finishing requests, Verification needed, Ready) instead of Offline whenever it is not online. Show its 24-hour Tokens served as unavailable when the input or cached-input breakdown is missing instead of undercounting, say "Not observed yet" rather than "Last observed not observed", hide the hourly chart when there is no observation to anchor it, and keep the month's capitalization in older observations' chart ranges.

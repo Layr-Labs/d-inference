@@ -27,7 +27,7 @@ export function MemoryLegend({
     <section className={styles.memory} aria-label="Unified memory allocation">
       <div className={styles.heading}>
         <h3>Unified memory</h3>
-        <span>{memory.totalGb} GB</span>
+        <span>{memory.totalGb > 0 ? `${memory.totalGb} GB` : 'Unknown'}</span>
       </div>
       <div className={styles.total}>
         <span>Darkbloom</span>

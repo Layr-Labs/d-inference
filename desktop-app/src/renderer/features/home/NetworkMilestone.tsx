@@ -4,6 +4,15 @@ import { milestoneProgress, networkStatus, networkTokens } from './milestones';
 import styles from './milestone.module.css';
 
 const CELLS = 24;
+// A total just short of a milestone rounds down, so it never reads as reached
+// ("1B of a proposed 1B").
+const towardMilestone = (value: number) =>
+  // roundingMode is supported by Electron's Chromium and Node, but not yet in this TS lib.
+  Intl.NumberFormat('en', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+    roundingMode: 'floor',
+  } as Intl.NumberFormatOptions).format(value);
 const STATUS_LABEL = {
   connecting: 'Connecting',
   live: 'Live',
@@ -15,11 +24,14 @@ export function NetworkMilestone({ network }: { network?: NetworkData }) {
   const status = networkStatus(network);
   const total = networkTokens(network);
   const milestone = total === undefined ? undefined : milestoneProgress(total);
-  const lit = milestone ? Math.round(milestone.progress * CELLS) : 0;
+  // Progress is always short of the next milestone, so it never fills the strip or reads 100%.
+  const lit = milestone ? Math.min(CELLS - 1, Math.round(milestone.progress * CELLS)) : 0;
   return (
     <section className={styles.strip} aria-label="Collective network progress">
       <div className={styles.total}>
-        <strong>{total === undefined ? '—' : compact(total)}</strong>
+        <strong title={total === undefined ? undefined : `${count(total)} tokens`}>
+          {total === undefined ? '—' : towardMilestone(total)}
+        </strong>
         <span>Network tokens</span>
       </div>
       {total !== undefined && (
@@ -46,10 +58,10 @@ export function NetworkMilestone({ network }: { network?: NetworkData }) {
           aria-label="Network tokens toward the next proposed milestone"
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={milestone ? Math.round(milestone.progress * 100) : undefined}
+          aria-valuenow={milestone ? Math.min(99, Math.round(milestone.progress * 100)) : undefined}
           aria-valuetext={
             milestone
-              ? `${compact(total)} of a proposed ${compact(milestone.next)} tokens`
+              ? `${towardMilestone(total!)} of a proposed ${compact(milestone.next)} tokens`
               : 'Network statistics unavailable'
           }
         >

@@ -191,17 +191,19 @@ enum DistributedInstalledPairServingTable {
     /// tensors), granted in the order its cross-cable checks ran (its
     /// qualification records, `ClusterPairServingGrants`). Pipeline only; the
     /// figures are the pair's own across the cable (M3 Ultra + M5 Ultra,
-    /// 2026-10-12 at cut 31 and 2026-10-13 at the planner's cut 47).
+    /// 2026-10-12 at cut 31 and 2026-10-13 at the planner's cuts 47 and 14).
     ///
     /// - Startup, 300 s. Both ranks were ready in 39.6 to 41.8 s at cut 47
     ///   (the rank holding 47 layers verifies 163 GB in 12.8 s and loads it in
-    ///   25.9 s) and in 56.2 s at cut 31, where the slower Mac holds 107 GB.
-    ///   300 s is five times the slowest.
+    ///   25.9 s), in 56.2 s at cut 31 and 58.4 to 63.7 s at cut 14, where the
+    ///   slower Mac holds 120 GB; the product served 83 s after its start at
+    ///   cut 14. 300 s is five times the slowest rank.
     /// - First token, 10 s plus 4 ms per prompt token. The slower Mac prefills
     ///   this model at about 325 tokens a second (3.1 ms per token, its staged
     ///   reference at 4,096 tokens), rounded up. The pair's first token was
-    ///   3.9 s after 4,096 tokens and 17.4 s after 16,384 at cut 47, and 8.4 to
-    ///   10.0 s after 4,096 at cut 31; the budget at the 8,192-token limit is 42.8 s.
+    ///   3.9 s after 4,096 tokens and 17.4 s after 16,384 at cut 47, 11.5 s and
+    ///   37.7 s at cut 14, and 8.4 to 10.0 s after 4,096 at cut 31; through the
+    ///   product 12.3 s after 5,703 at cut 14. The budget at 8,192 is 42.8 s.
     /// - Admission, 5 s.
     /// - Shutdown acknowledgement, 10 s, and stop margin, 30 s: the largest
     ///   weights of any row to release (163 GB on one rank); every recorded

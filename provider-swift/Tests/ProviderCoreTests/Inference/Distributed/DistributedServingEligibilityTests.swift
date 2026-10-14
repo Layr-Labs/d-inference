@@ -173,19 +173,21 @@ import DarkbloomClusterProtocol
         #expect(ClusterPairServingGrants.withheld["registered_gpt_oss_20b"]?.contains("diverged at cuts 4, 8 and 10") == true)
     }
 
-    /// MiMo V2.6 Flash is granted by its three passing records (M5 Ultra rank 0
-    /// with 47 layers, M3 Ultra rank 1 with the last layer and the head, cut 47,
-    /// pipeline; short, 4,096 and 16,384 prompts against the M5 Ultra's own
-    /// reference): exactly the order that ran. No MiMo check failed, so its
-    /// records restrict no shape (the rule a failed check, like GPT-OSS's,
+    /// MiMo V2.6 Flash is granted by its six passing records (M5 Ultra rank 0,
+    /// M3 Ultra rank 1 with the last layers and the head, pipeline; the planner's
+    /// cut 47 on an idle M5 Ultra and its cut 14 when the M5 Ultra's file cache
+    /// left 55 GiB admissible; short, 4,096 and 16,384 prompts against the M5
+    /// Ultra's own reference): exactly the order that ran. No MiMo check failed,
+    /// so its records restrict no shape (the rule a failed check, like GPT-OSS's,
     /// turns on); the mirrored order and any other chip are refused.
     @Test func mimoIsGrantedInTheOrderItsChecksRan() throws {
         let model = "registered_mimo_v26_flash_mopd"
         let grant = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p",
             artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034")
         #expect(grant.pipelineRankChipClasses == [.appleM5Ultra] && grant.decodingRankChipClasses == [.appleM3Ultra])
-        #expect(grant.qualifications == [.init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline)])
-        #expect(grant.evidence.hasPrefix("3 passing cross-cable qualification records"))
+        #expect(grant.qualifications == [.init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [14], mode: .pipeline),
+                                         .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline)])
+        #expect(grant.evidence.hasPrefix("6 passing cross-cable qualification records"))
         #expect(!ClusterPairServingGrants.records(runtimeModelID: model).restrictsShapes)
         try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
                                                       cuts: [47], mode: .pipeline)

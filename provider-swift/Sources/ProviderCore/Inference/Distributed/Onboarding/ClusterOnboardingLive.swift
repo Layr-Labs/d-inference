@@ -127,14 +127,49 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// Runs `request` on the control leader over the link control channel and returns its answer as it is.
     func forward(_ request: ClusterControlRequest, seconds: Double = 60) -> Result<ClusterControlReply, ClusterOnboardingFailure> {
+        forwardReply(request, seconds: seconds).flatMap { $0.failed ? .failure(.init($0.lines)) : .success($0) }
+    }
+
+    /// Runs one `darkbloom cluster` command where the control leader is now. `acting` (a model change, a start, a stop):
+    /// only once this Mac's own leadership is confirmed when it leads. When leadership moves while the command is sent
+    /// (a hand-over finishing on the other Mac), the Mac that no longer leads runs nothing and says so (`notLeader`), and
+    /// the command is routed again (up to 3 more times, 2 s apart) instead of failing or running where nobody leads.
+    func routed<T>(_ request: ClusterControlRequest, seconds: Double = 60, acting: Bool, forwarding: (() -> Void)? = nil,
+                   local: () -> Result<T, ClusterOnboardingFailure>, remote: (ClusterControlReply) -> T) -> Result<T, ClusterOnboardingFailure> {
+        var moved: ClusterOnboardingFailure?
+        for attempt in 0..<4 {
+            if attempt > 0 { sleep(2) }
+            if acting, let failure = awaitConfirmedLeadership() { return .failure(failure) }
+            if !forwards {
+                guard acting else { return local() }
+                // Acting here: hold this Mac's command lock (the service never hands leadership over meanwhile), and
+                // run only if this Mac still leads once it is held (a hand-over may have finished while it waited).
+                guard let held = ClusterControlCommandLock.acquire(seconds: 600) else {
+                    return .failure(.init("Another cluster command is still running on this Mac; run `darkbloom cluster` again."))
+                }
+                defer { held.release() }
+                if !forwards { return local() }
+                continue
+            }
+            forwarding?()
+            switch forwardReply(request, seconds: seconds) {
+            case .success(let reply) where reply.failed && reply.notLeader == true: moved = .init(reply.lines)
+            case .success(let reply): return reply.failed ? .failure(.init(reply.lines)) : .success(remote(reply))
+            case .failure(let failure): return .failure(failure)
+            }
+        }
+        return .failure(moved ?? .init("The control leader kept changing; run `darkbloom cluster` again."))
+    }
+
+    /// The leader's reply as it came, failed or not.
+    func forwardReply(_ request: ClusterControlRequest, seconds: Double) -> Result<ClusterControlReply, ClusterOnboardingFailure> {
         guard case .forward(let to) = route() else { return .failure(.init("This Mac leads: nothing to forward.")) }
         guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerMemberID == to else {
             return .failure(.init("The control leader is not the Mac this one paired with (forwarding to a third Mac is not built)."))
         }
         do {
             let data = try command(.init(op: .control, control: request), seconds: seconds)
-            let reply = try JSONDecoder().decode(ClusterControlReply.self, from: data)
-            return reply.failed ? .failure(.init(reply.lines)) : .success(reply)
+            return .success(try JSONDecoder().decode(ClusterControlReply.self, from: data))
         } catch let failure as ClusterSetupFailure {
             return .failure(.init("The control leader, \(leaderName), did not answer over the cable: \(failure.text)"))
         } catch {
@@ -309,11 +344,9 @@ final class OnboardingLive: @unchecked Sendable {
     // MARK: - The leader
 
     func reachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
-        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
-        guard forwards else { return localReachMembers(say) }
-        say("Asking the control leader, \(leaderName), over the cable…")
         let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
-        return forward(.init(op: .reachMembers), seconds: 150).map { reply in
+        return routed(.init(op: .reachMembers), seconds: 150, acting: true, forwarding: { say("Asking the control leader, \(self.leaderName), over the cable…") },
+                      local: { localReachMembers(say) }) { reply in
             (reply.machines ?? []).map { machine in
                 var machine = machine
                 machine.here = machine.memberID != nil && machine.memberID == local
@@ -352,8 +385,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
-        guard forwards else { return localPlanModels() }
-        return forward(.init(op: .planModels), seconds: 240).map { $0.choices ?? [] }
+        routed(.init(op: .planModels), seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
     }
 
     func localPlanModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
@@ -387,9 +419,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
-        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
-        guard forwards else { return localAdopt(index) }
-        return forward(.init(op: .adopt, index: index), seconds: 240).map(\.lines)
+        routed(.init(op: .adopt, index: index), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
     }
 
     func localAdopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
@@ -442,9 +472,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
-        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
-        guard forwards else { return localServe() }
-        return forward(.init(op: .serve)).map(\.lines)
+        routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
     }
 
     func localServe() -> Result<[String], ClusterOnboardingFailure> {
@@ -542,8 +570,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
-        guard forwards else { return localTestRequest() }
-        return forward(.init(op: .test), seconds: 240).map(\.lines)
+        routed(.init(op: .test), seconds: 240, acting: false, local: { localTestRequest() }) { $0.lines }
     }
 
     func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
@@ -574,13 +601,13 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func status() -> [String] {
-        guard forwards else { return localStatus() }
+        var forwarded = false
         var lines: [String]
-        switch forward(.init(op: .status), seconds: 30) {
-        case .success(let reply): lines = reply.lines
+        switch routed(.init(op: .status), seconds: 30, acting: false, forwarding: { forwarded = true }, local: { .success(localStatus()) }, remote: { $0.lines }) {
+        case .success(let value): lines = value
         case .failure(let failure): lines = failure.lines
         }
-        if let own = ClusterService.published()?.control { lines.append("This Mac: " + own.line + ".") }
+        if forwarded, let own = ClusterService.published()?.control { lines.append("This Mac: " + own.line + ".") }
         return lines
     }
 
@@ -612,14 +639,11 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {
-        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
-        guard forwards else { return localStop() }
-        return forward(.init(op: .stop)).map(\.lines)
+        routed(.init(op: .stop), acting: true, local: { localStop() }) { $0.lines }
     }
 
     func verifyTeardown() -> Result<[String], ClusterOnboardingFailure> {
-        guard forwards else { return localVerifyTeardown() }
-        return forward(.init(op: .verifyTeardown), seconds: 60).map(\.lines)
+        routed(.init(op: .verifyTeardown), seconds: 60, acting: false, local: { localVerifyTeardown() }) { $0.lines }
     }
 
     /// Each Mac's verify-teardown summary: this one's, and the other's over the link.

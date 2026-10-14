@@ -3,6 +3,38 @@ import Darwin
 import DarkbloomClusterRemote
 import DarkbloomClusterProcess
 
+/// One acting `darkbloom cluster` command at a time on this Mac, across processes (the command typed here, a command
+/// forwarded to this Mac's cluster service), and never while the service hands leadership over: an exclusive flock on
+/// `control.lock` beside the service lock. A command that waited for a hand-over finds the claim moved and is routed to
+/// the new leader instead of running where nobody leads. Released by closing its descriptor (any thread may).
+public final class ClusterControlCommandLock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var descriptor: Int32
+
+    private init(descriptor: Int32) { self.descriptor = descriptor }
+
+    /// Nil when it could not be taken within `seconds` (0: one try).
+    public static func acquire(seconds: Double, file: URL? = nil) -> ClusterControlCommandLock? {
+        guard let path = file ?? (try? ClusterService.paths().lock.deletingLastPathComponent().appendingPathComponent("control.lock")) else { return nil }
+        _ = try? ClusterConfigurationFiles.directory(path.deletingLastPathComponent(), create: true, privateMode: true)
+        let fd = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return nil }
+        let deadline = Date().addingTimeInterval(seconds)
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EINTR, Date() < deadline else { close(fd); return nil }
+            usleep(100_000)
+        }
+        return ClusterControlCommandLock(descriptor: fd)
+    }
+
+    public func release() {
+        let fd: Int32 = lock.withLock { defer { descriptor = -1 }; return descriptor }
+        if fd >= 0 { close(fd) }
+    }
+
+    deinit { release() }
+}
+
 /// What one Mac's cluster service reports to its leader.
 public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     public struct Child: Codable, Sendable, Equatable {
@@ -144,7 +176,6 @@ public final class ClusterService: @unchecked Sendable {
     var nextLease: Double = 0
     var lastModeLine: String?
     var localHardware: (name: String, memoryBytes: UInt64, gpuCores: Int)?
-    let controlCommands = NSLock()
     lazy var controlLive: OnboardingLive = OnboardingLive(context: context, store: store,
         settings: .init(service: settings, serviceArguments: []))
 

@@ -176,6 +176,35 @@ import Testing
         #expect(scope.ownerExecutables.contains { $0 == ClusterProcessTable.executablePath(of: getpid()) }, "this process's own file")
     }
 
+    // MARK: - commands and hand-overs never overlap (one acting command at a time, across processes)
+
+    @Test func commandLockExcludesAHandOverAndAnotherCommand() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("control-lock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("control.lock")
+        let command = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: file))
+        #expect(ClusterControlCommandLock.acquire(seconds: 0, file: file) == nil, "a hand-over (one try) does not start while a command runs")
+        let started = Date()
+        #expect(ClusterControlCommandLock.acquire(seconds: 0.3, file: file) == nil, "a second command waits, bounded")
+        #expect(Date().timeIntervalSince(started) >= 0.3)
+        // Released from another thread (a hand-over's exchange finishes on its own thread).
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { command.release(); done.signal() }
+        done.wait()
+        let next = try #require(ClusterControlCommandLock.acquire(seconds: 1, file: file), "free again once released")
+        next.release()
+        // Another process holding it excludes this one too (flock is per open file, not per process).
+        let holder = Process()
+        holder.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        holder.arguments = ["-I", "-c", "import fcntl,sys,time; f=open(sys.argv[1],'w'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(30)", file.path]
+        let pipe = Pipe(); holder.standardOutput = pipe
+        try holder.run()
+        defer { holder.terminate(); holder.waitUntilExit() }
+        _ = pipe.fileHandleForReading.availableData
+        #expect(ClusterControlCommandLock.acquire(seconds: 0.2, file: file) == nil, "held by another process")
+    }
+
     // MARK: - (a)/(3) the service's choices come from the pure control node
 
     @Test func serviceGraceAndLeaderCommands() {

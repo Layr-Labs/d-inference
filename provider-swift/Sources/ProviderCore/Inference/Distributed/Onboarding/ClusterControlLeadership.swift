@@ -482,6 +482,15 @@ public enum ClusterControlPartChoice: Sendable, Equatable {
 
 /// The words for a mode, one line for `darkbloom cluster` and the service log.
 public enum ClusterControlWords {
+    /// When the service log repeats a mode's line: when it changes, except that inside the grace (whose countdown changes
+    /// every second) only when the whole minutes until solo change.
+    public static func logKey(_ mode: ClusterControlNode.Mode, line: String) -> String {
+        if case .waiting(let missing, let seconds, let canServeAlone) = mode {
+            return "waiting \(missing.joined(separator: ",")) \(canServeAlone) \(seconds / 60)"
+        }
+        return line
+    }
+
     /// "9 min 50 s", "45 s".
     public static func duration(_ seconds: Int) -> String {
         let value = max(0, seconds)
@@ -533,11 +542,14 @@ public struct ClusterControlReply: Codable, Sendable, Equatable {
     public var ready: ClusterOnboardingReady?
     /// `readiness` while not ready: the progress line.
     public var progress: String?
+    /// The Mac asked does not lead (any more): nothing ran there, and the asking Mac routes the command again.
+    public var notLeader: Bool?
 
     public init(lines: [String], failed: Bool, leaderID: String? = nil, machines: [ClusterOnboardingMachine]? = nil,
-                choices: [ClusterOnboardingModelChoice]? = nil, ready: ClusterOnboardingReady? = nil, progress: String? = nil) {
+                choices: [ClusterOnboardingModelChoice]? = nil, ready: ClusterOnboardingReady? = nil, progress: String? = nil,
+                notLeader: Bool? = nil) {
         self.lines = lines; self.failed = failed; self.leaderID = leaderID; self.machines = machines; self.choices = choices
-        self.ready = ready; self.progress = progress
+        self.ready = ready; self.progress = progress; self.notLeader = notLeader
     }
 }
 

@@ -33,6 +33,7 @@ import Darwin
         soloGraceSetting()
         partChoice()
         continuousClockAndWake()
+        waitingLogsOncePerMinute()
         print("control checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -103,6 +104,12 @@ import Darwin
             machines: [.init(name: "Apple M3 Ultra, 256 GB", memoryGB: 256, gpuCores: 80, leads: true, models: 2)],
             choices: [.init(title: "m", lines: ["rank 0"], blocker: nil)], ready: .init(servedBy: "this Mac", port: 8000), progress: "1 of 2 parts ready")
         expect((try? JSONDecoder().decode(ClusterControlReply.self, from: JSONEncoder().encode(reply))) == reply, "reply round trip")
+        // A Mac that stopped leading while a command was on its way runs nothing and says so: the sender routes it again.
+        let moved = ClusterControlReply(lines: ["The command did not run: this Mac does not lead the cluster"], failed: true,
+                                        leaderID: "mac-aaaaaaaaaaaa", notLeader: true)
+        expect((try? JSONDecoder().decode(ClusterControlReply.self, from: JSONEncoder().encode(moved)))?.notLeader == true, "notLeader travels")
+        let older = try? JSONDecoder().decode(ClusterControlReply.self, from: Data(#"{"lines":["x"],"failed":true}"#.utf8))
+        expect(older != nil && older?.notLeader == nil, "a reply of the previous build still decodes")
         // A Mac that does not lead refuses a forwarded command and names the leader it follows.
         let refusal = ClusterControlRouting.refusal(localID: "mac-aaaaaaaaaaaa", claim: claim, names: ["mac-bbbbbbbbbbbb": "Apple M5 Ultra, 256 GB"])
         expect(refusal?.contains("Apple M5 Ultra, 256 GB") == true, "refusal names the leader: \(String(describing: refusal))")
@@ -573,5 +580,18 @@ import Darwin
         var at: Double?
         for t in stride(from: 3620.0, through: 3700, by: 1) { gone.step(t); if at == nil, gone.nodes[B]!.leads { at = t } }
         expect(at == 3650, "take-over one time-to-live after the wake: \(String(describing: at))")
+    }
+
+    /// The service log says a mode when it changes; inside the grace the countdown changes every second, so the log
+    /// line is repeated only when the whole minutes until solo change (about ten lines for the 10-minute grace).
+    static func waitingLogsOncePerMinute() {
+        func key(_ seconds: Int) -> String {
+            let mode = ClusterControlNode.Mode.waiting(missing: [B], soloInSeconds: seconds, canServeAlone: true)
+            return ClusterControlWords.logKey(mode, line: ClusterControlWords.line(mode, names: [:], model: "m"))
+        }
+        let keys = Set((1...600).map(key))
+        expect(keys.count == 11, "one log line per whole minute of the grace (0-10 min buckets): \(keys.count)")
+        expect(key(599) == key(540) && key(539) != key(540), "same minute, same key")
+        expect(ClusterControlWords.logKey(.cluster, line: "leading the cluster") == "leading the cluster", "other modes: the line itself")
     }
 }

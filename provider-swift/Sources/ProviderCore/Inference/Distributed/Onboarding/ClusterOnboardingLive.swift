@@ -281,7 +281,8 @@ private final class OnboardingLive: @unchecked Sendable {
                     members: [.init(name: peerName, holding: .complete(folder: model.folder), freeBytes: nil)],
                     linkBytesPerSecond: measuredCopyRate, catalogHasIt: false)
                 ordered.append((.init(title: model.modelID, lines: ["on \(peerName) only: planned once it is on this Mac too"], blocker: nil,
-                    provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker)),
+                    provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
+                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan))),
                     (model.folder, "", model.modelID)))
             }
             for model in catalogModels(peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
@@ -315,7 +316,8 @@ private final class OnboardingLive: @unchecked Sendable {
             leader: .init(name: "\(localName) (this Mac)", holding: .complete(folder: model.folder), freeBytes: nil),
             members: [.init(name: peerName, holding: holding(model, in: peer), freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
-        return .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: false, blocker: plan.blocker)
+        return .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: false, blocker: plan.blocker,
+            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan))
     }
 
     func downloadChoice(_ model: CatalogModel, peer: ClusterSetupReport, localName: String) -> ClusterOnboardingModelChoice {
@@ -326,7 +328,8 @@ private final class OnboardingLive: @unchecked Sendable {
             members: [.init(name: peerName, holding: .missing, freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
         return .init(title: model.id, lines: ["not on these Macs yet: \(ClusterModelProvisioning.gigabytes(bytes)) from Darkbloom's catalog; planned once it is on this Mac"],
-            blocker: nil, provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker))
+            blocker: nil, provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
+            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)))
     }
 
     /// The catalog models this Mac could fetch for the cluster (a verified manifest, small enough for both Macs'
@@ -364,7 +367,8 @@ private final class OnboardingLive: @unchecked Sendable {
             guard let data = ClusterModelStore.readSmall(manifest) else { throw ClusterSetupFailure("this Mac's \(folder) has no readable manifest") }
             let artifact = try ClusterCatalogArtifact.parse(manifest: data)
             if let peer = lock.withLock({ peerReport }),
-               peer.models.contains(where: { artifact.sameEntry(modelID: $0.modelID, version: $0.version, aggregate: $0.artifactSHA256) }) {
+               peer.models.contains(where: { artifact.sameEntry(modelID: $0.modelID, version: $0.version, aggregate: $0.artifactSHA256)
+                   && ($0.filesSHA256 == nil || $0.filesSHA256 == artifact.filesDigest) }) {
                 lines.append("\(peerName) has it already (same catalog digest).")
                 return .success(lines)
             }
@@ -413,7 +417,8 @@ private final class OnboardingLive: @unchecked Sendable {
         while Date() < deadline {
             if let data = ClusterModelStore.readSmall(store.appendingPathComponent(model.folder).appendingPathComponent("manifest.json")),
                let artifact = try? ClusterCatalogArtifact.parse(manifest: data),
-               artifact.sameEntry(modelID: model.modelID, version: model.version, aggregate: model.artifactSHA256) {
+               artifact.sameEntry(modelID: model.modelID, version: model.version, aggregate: model.artifactSHA256),
+               model.filesSHA256 == nil || model.filesSHA256 == artifact.filesDigest {
                 let seconds = Date().timeIntervalSince(started)
                 return "\(peerName) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to this Mac over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
             }
@@ -452,6 +457,8 @@ private final class OnboardingLive: @unchecked Sendable {
         let capabilities = (try? HardwareDetector.detect()).map { ProviderRuntimeCapabilityDetector.detectPrepared(hardware: $0, boundMetallibHash: nil) } ?? []
         let catalog = (try? ConfigManager.load(from: settings.service.wizard.providerConfiguration)).map { ModelCatalogClient(coordinatorURL: $0.coordinator.url) }
         var downloader = ModelDownloader(catalogClient: catalog, runtimeCapabilities: capabilities)
+        // Written and verified uncached, like the copy over the cable: a download does not take memory from a model load.
+        downloader.uncachedWrites = true
         let started = Date()
         let lastLine = ClusterOnboardingMailbox<Date>()
         let verifying = ClusterOnboardingMailbox<Bool>()

@@ -86,9 +86,14 @@ public struct ClusterOnboardingProvisionOffer: Sendable, Equatable {
     public var leaderDownloads: Bool
     /// Why it cannot start (not enough free disk on a Mac), nil when it can.
     public var blocker: String?
+    /// The predicted time of a copy over the cable short enough to start without asking (derived from the copy rate
+    /// measured on these Macs and the bytes to move; `ClusterModelProvisioning.quickCopySeconds`): it starts with a
+    /// stated line and n still stops it. Nil: asked for (a long copy, a download, or no rate measured yet).
+    public var quickSeconds: Double?
 
-    public init(lines: [String], downloadAlternative: Bool, leaderDownloads: Bool, blocker: String? = nil) {
+    public init(lines: [String], downloadAlternative: Bool, leaderDownloads: Bool, blocker: String? = nil, quickSeconds: Double? = nil) {
         self.lines = lines; self.downloadAlternative = downloadAlternative; self.leaderDownloads = leaderDownloads; self.blocker = blocker
+        self.quickSeconds = quickSeconds
     }
 }
 
@@ -563,6 +568,28 @@ public enum ClusterOnboardingDriver {
             console.say("It cannot start: \(blocker). Free some space and run `darkbloom cluster` here again.")
             return .failed
         }
+        var download = false
+        if let seconds = offer.quickSeconds {
+            // A short copy is not asked for: said, with a moment to stop it (or take the catalog instead).
+            let alternative = offer.downloadAlternative ? ", d to download it from Darkbloom's catalog instead" : ""
+            console.say("Copying it over the Thunderbolt cable now (\(Self.duration(seconds)) at the speed measured on these Macs); press n in the next 3 s to stop here\(alternative).")
+            let deadline = Date().addingTimeInterval(3)
+            wait: while Date() < deadline {
+                guard let key = console.key(milliseconds: max(1, Int(deadline.timeIntervalSinceNow * 1000))) else {
+                    if console.closed { return .stopped }
+                    continue
+                }
+                switch key {
+                case "\r", "\n", "c", "C": break wait
+                case "d" where offer.downloadAlternative, "D" where offer.downloadAlternative: download = true; break wait
+                case "n", "N", "q", "Q":
+                    console.say("Nothing was copied or downloaded. Run `darkbloom cluster` here again to choose.")
+                    return .stopped
+                default: continue
+                }
+            }
+            return move(index: index, download: download, operations, console)
+        }
         if offer.leaderDownloads {
             console.say("Press enter to get it, n to stop here.")
         } else if offer.downloadAlternative {
@@ -570,7 +597,6 @@ public enum ClusterOnboardingDriver {
         } else {
             console.say("Press enter to copy it over the Thunderbolt cable, n to stop here.")
         }
-        var download = false
         answer: while true {
             guard let key = console.key(milliseconds: 60_000) else {
                 if console.closed { return .stopped }
@@ -585,6 +611,16 @@ public enum ClusterOnboardingDriver {
             default: continue
             }
         }
+        return move(index: index, download: download, operations, console)
+    }
+
+    /// "about 3 s", "about 2 min" (as `ClusterModelProvisioning.duration`, which this file does not link).
+    static func duration(_ seconds: Double) -> String {
+        seconds < 90 ? "about \(max(1, Int(seconds.rounded()))) s" : "about \(Int((seconds / 60).rounded())) min"
+    }
+
+    /// Moves the chosen model with progress until it is done or failed.
+    static func move(index: Int, download: Bool, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> ProvisionOutcome {
         let progress = ClusterOnboardingMailbox<String>()
         let finished = ClusterOnboardingMailbox<Result<[String], ClusterOnboardingFailure>>()
         let chosenDownload = download

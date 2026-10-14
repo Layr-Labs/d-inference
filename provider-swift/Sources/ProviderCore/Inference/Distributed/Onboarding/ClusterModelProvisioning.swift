@@ -90,6 +90,25 @@ public struct ClusterCatalogArtifact: Sendable, Equatable {
         return .init(modelID: modelID, version: version, aggregateSHA256: aggregate, totalBytes: total, files: files, manifest: data, r2Prefix: prefix)
     }
 
+    /// SHA-256 over every file's path, size and digest in path order. The aggregate digest covers the file digests
+    /// only, so a manifest that renames files (keeping their order) keeps it; this digest binds the NAMES too, and two
+    /// manifests of one entry compare equal only when they place the same bytes under the same names.
+    public var filesDigest: String { Self.filesDigest(files) }
+
+    public static func filesDigest(_ files: [File]) -> String {
+        var hasher = SHA256()
+        // Paths hold no control character (`safePath`), so NUL and newline separate the fields unambiguously.
+        for file in files.sorted(by: { $0.path < $1.path }) {
+            hasher.update(data: Data((file.path + "\u{0}" + String(file.sizeBytes) + "\u{0}" + file.sha256 + "\n").utf8))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The same entry with the same files under the same names (`sameEntry` plus `filesDigest`).
+    public func sameArtifact(_ other: ClusterCatalogArtifact) -> Bool {
+        sameEntry(modelID: other.modelID, version: other.version, aggregate: other.aggregateSHA256) && filesDigest == other.filesDigest
+    }
+
     /// SHA-256 over the raw per-file digests in path order.
     public static func aggregateDigest(_ files: [File]) -> String {
         var hasher = SHA256()
@@ -148,15 +167,15 @@ public enum ClusterModelStore {
     /// Staging folders are hidden from every listing: a folder appears only after its last byte is verified.
     public static func stagingName(_ artifact: ClusterCatalogArtifact) -> String { ".darkbloom-incoming-" + String(artifact.aggregateSHA256.prefix(32)) }
 
-    /// The folders of `store` whose manifest names this catalog entry (model ID, version, aggregate digest; manifests
-    /// only: the worker verifies the weights before anything is served, and a copy verifies every byte as it arrives).
+    /// The folders of `store` whose manifest names this catalog entry (model ID, version, aggregate digest) with the
+    /// same files under the same names (the aggregate digest does not cover names: a folder whose manifest renames the
+    /// files is not this artifact). Manifests only: the worker verifies the weights before anything is served, and a
+    /// copy verifies every byte as it arrives.
     public static func holding(store: URL, artifact: ClusterCatalogArtifact) -> ClusterModelHolding {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
         for name in names where !name.hasPrefix(".") {
             guard let data = readSmall(store.appendingPathComponent(name).appendingPathComponent("manifest.json")),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  artifact.sameEntry(modelID: object["model_id"] as? String ?? "", version: object["version"] as? String ?? "",
-                                     aggregate: object["aggregate_sha256"] as? String ?? "") else { continue }
+                  let held = try? ClusterCatalogArtifact.parse(manifest: data), artifact.sameArtifact(held) else { continue }
             return .complete(folder: name)
         }
         let staging = store.appendingPathComponent(stagingName(artifact))
@@ -298,6 +317,28 @@ public enum ClusterModelProvisioning {
             return step.blocker.map { line + " — cannot start: " + $0 } ?? line
         }
     }
+
+    /// A copy predicted to take less than this starts with a stated line (n still stops it); a longer one, or one
+    /// whose time cannot be predicted, is asked for first.
+    public static let confirmationSeconds: Double = 30
+
+    /// The predicted time of a plan that only copies over the cable, from the copy rate measured on these Macs and the
+    /// bytes left; nil when it downloads anything, cannot start, or no rate was measured yet (then it is asked for).
+    public static func predictedCopySeconds(_ plan: ClusterModelProvisioningPlan) -> Double? {
+        let moving = plan.steps.filter { $0.source != .present }
+        guard !moving.isEmpty, plan.blocker == nil else { return nil }
+        var total = 0.0
+        for step in moving {
+            guard case .copy = step.source, let seconds = step.seconds else { return nil }
+            total += seconds
+        }
+        return total
+    }
+
+    /// The predicted time when the copy is short enough to start without asking (under `confirmationSeconds`), else nil.
+    public static func quickCopySeconds(_ plan: ClusterModelProvisioningPlan) -> Double? {
+        predictedCopySeconds(plan).flatMap { $0 < confirmationSeconds ? $0 : nil }
+    }
 }
 
 // MARK: - The receiving Mac
@@ -322,20 +363,33 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     public let folder: String
     let staging: URL
     let freeBytes: @Sendable (URL) -> Int64?
+    let stagedCheck: ((URL) -> String?)?
     private var current: (index: Int, fd: Int32, hasher: SHA256, written: Int64)?
     private var verified = Set<Int>()
+    /// Bytes still to write (set by `begin`), and bytes written since free disk was last read.
+    private var remaining: Int64 = 0
+    private var sinceDiskCheck: Int64 = 0
+
+    /// Free disk is read again after every this many bytes written (256 MiB by default): a disk something else fills
+    /// during the copy stops it cleanly, with its staged bytes kept for the resume, before the disk is full.
+    let diskCheckBytes: Int64
 
     /// Checks the artifact's identity against what the receiving Mac trusts (`expectedAggregate`: the catalog's
-    /// digest for this model), the folder name, and that the destination is not something else.
+    /// digest for this model), the folder name, and that the destination is not something else. `stagedCheck` runs
+    /// on the complete staged folder (files and manifest) right before it is put in place, and its refusal (nil:
+    /// accepted) discards the copy: the cluster service runs this Mac's own installed worker's runtime description
+    /// there, so file names and configuration are checked against what the worker loads, not only the digests.
     public init(artifact: ClusterCatalogArtifact, store: URL, folder: String, expectedAggregate: String?,
                 trust: ((ClusterCatalogArtifact) -> String?)? = nil,
+                stagedCheck: ((URL) -> String?)? = nil, diskCheckBytes: Int64 = 256 << 20,
                 freeBytes: @escaping @Sendable (URL) -> Int64? = { ClusterModelStore.freeBytes(at: $0) }) throws {
         guard let safe = ClusterCatalogArtifact.safeFolder(folder) else { throw ClusterModelProvisioningError("the model folder name is not safe") }
         if let expectedAggregate, expectedAggregate != artifact.aggregateSHA256 {
             throw ClusterModelProvisioningError("the model offered is not the catalog's \(artifact.modelID) \(artifact.version) (its digest differs)")
         }
         if let refusal = trust?(artifact) { throw ClusterModelProvisioningError(refusal) }
-        self.artifact = artifact; self.store = store; self.folder = safe; self.freeBytes = freeBytes
+        self.artifact = artifact; self.store = store; self.folder = safe; self.freeBytes = freeBytes; self.stagedCheck = stagedCheck
+        self.diskCheckBytes = max(1, diskCheckBytes)
         staging = store.appendingPathComponent(ClusterModelStore.stagingName(artifact))
     }
 
@@ -375,6 +429,7 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         if let free, free < left + ClusterModelProvisioning.reserveBytes {
             throw ClusterModelProvisioningError("this Mac has \(ClusterModelProvisioning.gigabytes(free)) free; the copy needs \(ClusterModelProvisioning.gigabytes(left)) and \(ClusterModelProvisioning.gigabytes(ClusterModelProvisioning.reserveBytes)) to spare")
         }
+        remaining = left; sinceDiskCheck = 0
         return .init(complete: false, offsets: offsets, freeBytes: free, refusal: nil)
     }
 
@@ -391,6 +446,11 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         guard var open = current, open.written == offset, offset + Int64(bytes.count) <= file.sizeBytes else {
             throw ClusterModelProvisioningError("bytes out of order for \(file.path)")
         }
+        sinceDiskCheck += Int64(bytes.count)
+        if sinceDiskCheck >= diskCheckBytes {
+            sinceDiskCheck = 0
+            try checkFreeDisk()
+        }
         try bytes.withUnsafeBytes { buffer in
             var done = 0
             while done < buffer.count {
@@ -401,7 +461,19 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         }
         open.hasher.update(data: bytes)
         open.written += Int64(bytes.count)
+        remaining = max(0, remaining - Int64(bytes.count))
         current = open
+    }
+
+    /// Something else filled the disk during the copy: stop before it is full (half the reserve is kept for macOS),
+    /// with what is staged kept for the resume and the reason in words.
+    private func checkFreeDisk() throws {
+        guard let free = freeBytes(store) else { return }
+        let keep = ClusterModelProvisioning.reserveBytes / 2
+        guard free < remaining + keep else { return }
+        if let open = current { _ = fsync(open.fd); close(open.fd); current = nil }
+        let staged = max(0, artifact.totalBytes - remaining)
+        throw ClusterModelProvisioningError("this Mac's free disk fell to \(ClusterModelProvisioning.gigabytes(free)) during the copy (something else is writing to it); the copy needs \(ClusterModelProvisioning.gigabytes(remaining)) more and \(ClusterModelProvisioning.gigabytes(keep)) to spare, so it stopped with \(ClusterModelProvisioning.gigabytes(staged)) staged and kept for the resume. Free some space and run `darkbloom cluster` again")
     }
 
     /// The last byte of file `index` arrived: verify its size and digest, then move it to its name.
@@ -445,6 +517,13 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         let wrote = artifact.manifest.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
         _ = fsync(fd); close(fd)
         guard wrote == artifact.manifest.count else { throw ClusterModelProvisioningError("the manifest could not be written") }
+        // This Mac's own worker checks the folder as it will load it (names, configuration, manifest): the catalog digest
+        // does not bind file names, so a renamed copy is refused here and never listed as held.
+        if let stagedCheck, let refusal = stagedCheck(staging) {
+            try? FileManager.default.removeItem(at: staging)
+            verified.removeAll()
+            throw ClusterModelProvisioningError("this Mac's cluster worker refused the copied \(artifact.modelID) \(artifact.version): \(refusal); the copy was discarded")
+        }
         // Exclusive: never replaces what appeared at the destination after `begin` (rename(2) would replace an empty folder).
         guard renamex_np(staging.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
             throw ClusterModelProvisioningError("the model folder could not be put in place (errno \(errno)); \(folder) appeared in this Mac's model store during the copy")

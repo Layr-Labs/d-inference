@@ -193,7 +193,14 @@ public final class ClusterService: @unchecked Sendable {
         // A model the leader copies here over the cable lands in this Mac's model store, verified file by file.
         let provisioner = ClusterModelProvisionResponder(store: {
             URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
-        }, trust: { ClusterModelCopyTrust.refusal($0) }, say: say)
+        }, trust: { ClusterModelCopyTrust.refusal($0) }, worker: {
+            // This Mac's own installed worker (the one its ranks load models with) checks every staged copy.
+            let input = context.pairInput()
+            guard let memberID = input.pair?.memberID, let local = input.description?.members.first(where: { $0.id == memberID }) else {
+                throw ClusterSetupFailure(input.error ?? "this Mac's cluster worker is not set up yet")
+            }
+            return ClusterModelWorkerCheck(executable: URL(fileURLWithPath: local.workerExecutable), runtimeBinarySHA256: local.runtimeBinarySHA256)
+        }, say: say)
         do {
             let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection, answer: {
                 ClusterSetupLinkAnswer(report: context.report(input: context.pairInput(), saved: context.savedConfiguration(),

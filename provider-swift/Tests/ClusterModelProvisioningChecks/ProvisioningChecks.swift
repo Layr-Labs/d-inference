@@ -36,6 +36,11 @@ import CryptoKit
         concurrentClonesNeverMix()
         commitNeverReplacesAFolder()
         abandonedStagingReclaimedForSpace()
+        // Finish 2026-10-13 night: failing first on c35897c36.
+        renamedFilesAreNotTheArtifact()
+        stagedCheckRefusesRenamedCopy()
+        diskFilledDuringCopyStopsCleanly()
+        shortCopiesAreNotAskedFor()
         print("provisioning checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -440,6 +445,135 @@ import CryptoKit
             expect(FileManager.default.fileExists(atPath: store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact)).path),
                 "a copy's own staging stays for its resume")
         } catch { expect(false, "reclaim: \(error)") }
+    }
+
+    // MARK: - Finish 2026-10-13 night
+
+    /// The fixture's manifest with `config.json` renamed (the files keep their order, so the aggregate digest, which
+    /// covers the file digests only, is unchanged): what a paired peer could send under an approved digest.
+    static func renamedFiles(_ model: (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact))
+        -> (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact) {
+        var object = try! JSONSerialization.jsonObject(with: model.manifest) as! [String: Any]
+        var entries = object["files"] as! [[String: Any]]
+        for index in entries.indices where entries[index]["path"] as? String == "config.json" { entries[index]["path"] = "config.jsom" }
+        object["files"] = entries
+        let manifest = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let files = model.files.map { ($0.0 == "config.json" ? "config.jsom" : $0.0, $0.1) }
+        return (files, manifest, try! ClusterCatalogArtifact.parse(manifest: manifest))
+    }
+
+    /// File-name binding: a folder whose manifest renames the files is not the artifact, and a copy of the real one
+    /// into that folder is refused in words instead of being taken as "already here".
+    static func renamedFilesAreNotTheArtifact() {
+        let model = fixture()
+        let bad = renamedFiles(model)
+        expect(bad.artifact.aggregateSHA256 == model.artifact.aggregateSHA256, "fixture: renamed files keep the aggregate digest")
+        expect(bad.artifact.filesDigest != model.artifact.filesDigest, "the files digest binds the names")
+        expect(!model.artifact.sameArtifact(bad.artifact) && model.artifact.sameArtifact(model.artifact), "sameArtifact compares names too")
+        let store = temporary("store")
+        do {
+            // The pure receiver (no worker check) places the renamed copy under the real folder name...
+            let receiver = try ClusterModelReceiver(artifact: bad.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil)
+            _ = try send(try ClusterModelSender(artifact: bad.artifact, directory: source(bad)), to: receiver, from: try receiver.begin().offsets)
+            _ = try receiver.commit()
+            // ...but the store never lists it as holding the real artifact,
+            expect(ClusterModelStore.holding(store: store, artifact: model.artifact) != .complete(folder: model.artifact.folderName),
+                "a folder of renamed files is not held: \(ClusterModelStore.holding(store: store, artifact: model.artifact))")
+            // and the real copy into that folder is refused in words, not answered "already here".
+            refuses("with other contents") {
+                let state = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil).begin()
+                if state.complete { throw ClusterModelProvisioningError("already here") }
+            }
+        } catch { expect(false, "renamed files: \(error)") }
+    }
+
+    /// The receiving Mac's own worker check runs on the complete staged folder before the exclusive rename: a refusal
+    /// discards the copy (no folder appears, no staging is kept); the real files pass and are placed.
+    static func stagedCheckRefusesRenamedCopy() {
+        let model = fixture()
+        let bad = renamedFiles(model)
+        // Stands in for `--describe-runtime`: the registered configuration and manifest bytes, read from the folder.
+        final class Seen: @unchecked Sendable { var folders = [URL]() }
+        let seen = Seen()
+        let check: (URL) -> String? = { staged in
+            seen.folders.append(staged)
+            guard (try? Data(contentsOf: staged.appendingPathComponent("config.json"))) == model.files[0].1 else { return "the configuration is not a registered resident model's" }
+            guard (try? Data(contentsOf: staged.appendingPathComponent("manifest.json"))) == model.manifest else { return "the manifest is not the registered one" }
+            return nil
+        }
+        let store = temporary("store")
+        do {
+            let receiver = try ClusterModelReceiver(artifact: bad.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil, stagedCheck: check)
+            _ = try send(try ClusterModelSender(artifact: bad.artifact, directory: source(bad)), to: receiver, from: try receiver.begin().offsets)
+            refuses("cluster worker refused the copied Example/Tiny-Model 2026-10-13-r1: the configuration is not a registered resident model's; the copy was discarded") {
+                _ = try receiver.commit()
+            }
+            expect(seen.folders.count == 1 && seen.folders[0].lastPathComponent == ClusterModelStore.stagingName(model.artifact),
+                "the check ran once, on the staged folder: \(seen.folders.map(\.lastPathComponent))")
+            expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent(model.artifact.folderName).path), "no folder appears for a refused copy")
+            expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact)).path),
+                "the refused staging is discarded (renamed bytes are never resumed into the real names)")
+            let good = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil, stagedCheck: check)
+            _ = try send(try ClusterModelSender(artifact: model.artifact, directory: source(model)), to: good, from: try good.begin().offsets)
+            let placed = try good.commit()
+            expect(placed.lastPathComponent == model.artifact.folderName && seen.folders.count == 2, "the real files pass the worker check and are placed")
+            expect(ClusterModelStore.holding(store: store, artifact: model.artifact) == .complete(folder: model.artifact.folderName), "and are held")
+        } catch { expect(false, "staged check: \(error)") }
+    }
+
+    /// Something else fills the disk during the copy: it stops with the reason in words, the staged bytes stay, and
+    /// the next copy resumes from them.
+    static func diskFilledDuringCopyStopsCleanly() {
+        let model = fixture()
+        let from = source(model)
+        let store = temporary("store")
+        final class Disk: @unchecked Sendable { let lock = NSLock(); var free: Int64 = 100_000_000_000; var reads = 0 }
+        let disk = Disk()
+        do {
+            let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
+                diskCheckBytes: 1 << 20, freeBytes: { _ in disk.lock.withLock { disk.reads += 1; return disk.free } })
+            let state = try receiver.begin()
+            let readsAtBegin = disk.lock.withLock { disk.reads }
+            let sender = try ClusterModelSender(artifact: model.artifact, directory: from)
+            _ = try send(sender, to: receiver, from: state.offsets, stopAfterBytes: 2 << 20)
+            expect(disk.lock.withLock { disk.reads } > readsAtBegin, "free disk is read again during the copy")
+            disk.lock.withLock { disk.free = 900_000_000 }   // another writer took the space
+            refuses("free disk fell to 0.9 GB during the copy (something else is writing to it)") {
+                _ = try send(sender, to: receiver, from: [model.artifact.files[0].sizeBytes, model.artifact.files[1].sizeBytes, 2 << 20, 0])
+            }
+            if case .partial(let bytes) = ClusterModelStore.holding(store: store, artifact: model.artifact) {
+                expect(bytes >= 2 << 20, "the staged bytes are kept for the resume: \(bytes)")
+            } else { expect(false, "a stopped copy keeps its staging: \(ClusterModelStore.holding(store: store, artifact: model.artifact))") }
+            expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent(model.artifact.folderName).path), "nothing placed")
+            disk.lock.withLock { disk.free = 100_000_000_000 }
+            let again = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
+                diskCheckBytes: 1 << 20, freeBytes: { _ in disk.lock.withLock { disk.free } })
+            let resumed = try again.begin()
+            expect(resumed.offsets[0] == model.artifact.files[0].sizeBytes && resumed.offsets[2] > 0, "the copy resumes from the staged bytes: \(resumed.offsets)")
+            _ = try send(sender, to: again, from: resumed.offsets)
+            let placed = try again.commit()
+            for (path, data) in model.files { expect((try? Data(contentsOf: placed.appendingPathComponent(path))) == data, "resumed after the disk stop: \(path)") }
+        } catch { expect(false, "disk filled during the copy: \(error)") }
+    }
+
+    /// Only a long copy is asked for: under 30 s at the rate measured on these Macs it starts with a stated line.
+    static func shortCopiesAreNotAskedFor() {
+        typealias P = ClusterModelProvisioning
+        typealias Mac = ClusterModelProvisioningMac
+        func plan(_ bytes: Int64, rate: Double?, leaderHas: Bool = true, free: Int64? = nil) -> ClusterModelProvisioningPlan {
+            P.plan(totalBytes: bytes, leader: Mac(name: "A", holding: leaderHas ? .complete(folder: "m") : .missing, freeBytes: nil),
+                members: [Mac(name: "B", holding: .missing, freeBytes: free)], linkBytesPerSecond: rate, catalogHasIt: true)
+        }
+        let nine = plan(6_100_000_000, rate: 2e9)
+        expect(P.predictedCopySeconds(nine).map { abs($0 - 3.05) < 0.01 } == true && P.quickCopySeconds(nine) != nil, "6.1 GB at 2 GB/s: about 3 s, not asked")
+        let big = plan(16_300_000_000, rate: 0.5e9)
+        expect(P.predictedCopySeconds(big).map { $0 > 30 } == true && P.quickCopySeconds(big) == nil, "16.3 GB at 0.5 GB/s: over 30 s, asked")
+        expect(P.quickCopySeconds(plan(6_100_000_000, rate: nil)) == nil, "no measured rate: the time is unknown, asked")
+        expect(P.quickCopySeconds(plan(6_100_000_000, rate: 2e9, leaderHas: false)) == nil, "no Mac has it (the leader downloads first): asked")
+        expect(P.quickCopySeconds(plan(6_100_000_000, rate: 2e9, free: 1_000_000_000)) == nil, "a copy that cannot start is not started")
+        let fromMember = P.plan(totalBytes: 6_100_000_000, leader: Mac(name: "A", holding: .missing, freeBytes: nil),
+            members: [Mac(name: "B", holding: .complete(folder: "m"), freeBytes: nil)], linkBytesPerSecond: 2e9, catalogHasIt: false)
+        expect(P.quickCopySeconds(fromMember) != nil, "a member sending to the leader is a copy too: predicted, not asked")
     }
 
     static func wireRoundTrip() {

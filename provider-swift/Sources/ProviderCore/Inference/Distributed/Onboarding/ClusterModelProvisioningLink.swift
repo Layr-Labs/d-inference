@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import DarkbloomClusterRemote
+import DarkbloomClusterProtocol
 
 // The model copy on the paired link: the Mac that has the model sends it to a Mac that lacks it inside a link control
 // session keyed by the pairing's edge secret (authenticated and encrypted records, rekeyed by the channel before its
@@ -29,18 +30,58 @@ struct ClusterModelCopyBegin: Codable, Sendable {
     var folder: String
 }
 
+/// The receiving Mac's own installed cluster worker, asked to describe a staged copy exactly as it describes a model
+/// before it loads it (`--describe-runtime` with this Mac's pinned worker hash: the registered configuration and
+/// manifest bytes). The catalog's aggregate digest covers the file digests but not their names, so a paired peer
+/// could otherwise send an approved model under renamed files; this check binds names, configuration and manifest
+/// to what the worker loads, before the folder is put in place.
+struct ClusterModelWorkerCheck: Sendable {
+    var executable: URL
+    var runtimeBinarySHA256: String
+
+    /// Nil when the worker describes the staged folder as this artifact; otherwise why not, in words.
+    func refusal(staged: URL, artifact: ClusterCatalogArtifact) -> String? {
+        let arguments = ["--describe-runtime", "--config", staged.appendingPathComponent("config.json").path,
+                         "--manifest", staged.appendingPathComponent("manifest.json").path,
+                         "--expected-executable-sha256", runtimeBinarySHA256]
+        let outcome: ClusterSetupChild.Outcome
+        do {
+            outcome = try ClusterSetupChild.run(executable: executable, arguments: arguments, seconds: 20,
+                                                maximumOutputBytes: ClusterRuntimeCapabilityCodec.maximumBytes)
+        } catch {
+            return "its runtime description did not run (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160)))"
+        }
+        guard outcome.status == 0 else {
+            let line = outcome.errorText.split(whereSeparator: \.isNewline).first.map(String.init) ?? "exit status \(outcome.status)"
+            return "its runtime description refused the files (\(ClusterConsoleText.bounded(line, maximum: 200)))"
+        }
+        guard let described = try? ClusterCapabilityRecord.decode(outcome.output, writtenBy: "this Mac's cluster worker") else {
+            return "its runtime description could not be read"
+        }
+        guard described.runtimeBinarySHA256 == runtimeBinarySHA256 else { return "its runtime description names another worker build" }
+        guard described.artifactSHA256 == artifact.aggregateSHA256 else {
+            return "it registers these files as \(described.runtimeModelID) with another artifact digest"
+        }
+        return nil
+    }
+}
+
 /// The receiving side, one copy at a time, driven by the sender's frames on the cluster service's link listener.
 final class ClusterModelProvisionResponder: @unchecked Sendable {
     let store: @Sendable () -> URL
     let trust: @Sendable (ClusterCatalogArtifact) -> String?
+    /// This Mac's installed worker for the staged-folder check; throws (the copy is refused before any byte) when
+    /// this Mac has no worker set up to check with.
+    let worker: @Sendable () throws -> ClusterModelWorkerCheck
     let say: @Sendable (String) -> Void
     private var receiver: ClusterModelReceiver?
     private var failure: String?
     private var received: Int64 = 0
     private var started = Date()
 
-    init(store: @escaping @Sendable () -> URL, trust: @escaping @Sendable (ClusterCatalogArtifact) -> String?, say: @escaping @Sendable (String) -> Void) {
-        self.store = store; self.trust = trust; self.say = say
+    init(store: @escaping @Sendable () -> URL, trust: @escaping @Sendable (ClusterCatalogArtifact) -> String?,
+         worker: @escaping @Sendable () throws -> ClusterModelWorkerCheck, say: @escaping @Sendable (String) -> Void) {
+        self.store = store; self.trust = trust; self.worker = worker; self.say = say
     }
 
     static func error(_ text: String) -> Data { Data(("error:" + ClusterConsoleText.bounded(text, maximum: 300)).utf8) }
@@ -55,8 +96,13 @@ final class ClusterModelProvisionResponder: @unchecked Sendable {
             do {
                 let begin = try JSONDecoder().decode(ClusterModelCopyBegin.self, from: data)
                 let artifact = try ClusterCatalogArtifact.parse(manifest: begin.manifest)
+                // Fail closed: no worker to check the staged folder with, no copy.
+                let check: ClusterModelWorkerCheck
+                do { check = try worker() } catch {
+                    throw ClusterSetupFailure("this Mac cannot check a copied model with its own cluster worker (\(ClusterConsoleText.bounded(String(describing: error), maximum: 200))); it was not accepted")
+                }
                 let created = try ClusterModelReceiver(artifact: artifact, store: store(), folder: begin.folder,
-                    expectedAggregate: nil, trust: trust)
+                    expectedAggregate: nil, trust: trust, stagedCheck: { check.refusal(staged: $0, artifact: artifact) })
                 let state = try created.begin()
                 receiver = state.complete ? nil : created
                 say("model copy: \(artifact.modelID) \(artifact.version) into \(begin.folder): " + (state.complete ? "already here"
@@ -78,6 +124,7 @@ final class ClusterModelProvisionResponder: @unchecked Sendable {
                 return (X.provisionAckTag, ClusterModelTransferWire.chunk(index: chunk.index, offset: chunk.offset + Int64(chunk.bytes.count), Data()))
             } catch {
                 failure = "\(error)"
+                say("model copy stopped: \(error)")
                 return (X.provisionAckTag, Self.error(failure!))
             }
         case X.provisionFileTag:
@@ -100,6 +147,7 @@ final class ClusterModelProvisionResponder: @unchecked Sendable {
                 return (X.provisionCommitReplyTag, Data(("ok:" + placed.lastPathComponent).utf8))
             } catch {
                 failure = "\(error)"
+                say("model copy refused: \(error)")
                 return (X.provisionCommitReplyTag, Self.error(failure!))
             }
         default:

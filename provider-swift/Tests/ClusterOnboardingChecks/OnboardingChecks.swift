@@ -35,6 +35,9 @@ import Darwin
         copyDeclined()
         copyBlockedByDisk()
         copyInterrupted()
+        // Finish 2026-10-13 night: failing first on c35897c36.
+        shortCopyStartsWithAStatedLine()
+        shortCopyStillStopsWithN()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -477,6 +480,43 @@ import Darwin
         expect(run.finish() == 1, "interrupted: exit 1")
         expect(run.text.contains("Run `darkbloom cluster` here again: a copy or download resumes where it stopped."), "interrupted: resumes next time")
         expect(!recorder.all.contains("adopt 0"), "interrupted: no setup synced for a model a Mac lacks")
+    }
+
+    // MARK: - Only large copies are asked for
+
+    static let quickOffer = ClusterOnboardingProvisionOffer(
+        lines: ["Apple M3 Ultra, 256 GB: copy from Apple M5 Ultra, 256 GB (this Mac) over the Thunderbolt cable (6.1 GB, about 3 s)"],
+        downloadAlternative: true, leaderDownloads: false, quickSeconds: 3.05)
+
+    /// A copy predicted under 30 s (from the copy rate measured on these Macs) starts with a stated line: no key.
+    static func shortCopyStartsWithAStatedLine() {
+        let recorder = Recorder()
+        let choices = [ClusterOnboardingModelChoice(title: "Qwen3.5-9B", lines: ["rank 0: Apple M3 Ultra, 256 GB, layers 0-15"], blocker: nil, provision: quickOffer)]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: choices))
+        expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "short copy: the choice"); run.type("\r")
+        expect(run.waitFor("Copying it over the Thunderbolt cable now (about 3 s at the speed measured on these Macs); press n in the next 3 s to stop here, d to download it from Darkbloom's catalog instead."),
+            "short copy: a stated line, n still visible")
+        expect(run.waitFor("Serve Qwen3.5-9B on both Macs? Press y to start, n to stop here."), "short copy: copied without a key, then the start question")
+        run.type("y")
+        expect(run.finish() == 0, "short copy: served")
+        expect(!run.text.contains("Press enter to copy it over the Thunderbolt cable"), "short copy: not asked")
+        expect(recorder.all == ["ensureService", "reachMembers", "planModels", "provision 0 copy", "adopt 0", "serve", "waitReady", "testRequest"],
+            "short copy: copied before the setup is synced: \(recorder.all)")
+        expect(run.keys == 2, "short copy: enter (model), y (start); got \(run.keys)")
+        transcript("leader-short-copy-not-asked", run.text, keys: run.keys)
+    }
+
+    static func shortCopyStillStopsWithN() {
+        let recorder = Recorder()
+        let choices = [ClusterOnboardingModelChoice(title: "Qwen3.5-9B", lines: [], blocker: nil, provision: quickOffer)]
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
+            choices: choices))
+        expect(run.waitFor("Choose a model"), "short copy n: choice"); run.type("\r")
+        expect(run.waitFor("press n in the next 3 s to stop here"), "short copy n: the stated line"); run.type("n")
+        expect(run.finish() == 0, "short copy n: exit 0")
+        expect(run.text.contains("Nothing was copied or downloaded. Run `darkbloom cluster` here again to choose."), "short copy n: said")
+        expect(!recorder.all.contains { $0.hasPrefix("provision") || $0.hasPrefix("adopt") }, "short copy n: nothing moved: \(recorder.all)")
     }
 
     /// The exact text and key count of a flow, for the evidence.

@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 @testable import InstalledContract
 import DarkbloomClusterRemote
+import DarkbloomClusterProtocol
 
 /// Step 4 over the paired link (no SSH, no typed address): the other Mac's
 /// report and facts, and the setup handed to its inbox, through the real link
@@ -247,7 +248,34 @@ extension ClusterConsoleCheck {
         final class Said: @unchecked Sendable { let lock = NSLock(); var lines = [String]() }
         let said = Said()
         let port: UInt16 = 45_883
-        let provisioner = ClusterModelProvisionResponder(store: { store }, trust: { _ in nil }, say: { line in said.lock.withLock { said.lines.append(line) } })
+        // This Mac's installed worker for the staged-folder check: a stand-in that, like `--describe-runtime`, answers
+        // only for the registered configuration and manifest bytes (here: the tiny model's), with a capability record.
+        let fixtureCapability = try ClusterCapabilityRecord.decode(WizardFixtures.data("capability-qwen35-9b.json"), writtenBy: "fixture")
+        let workerHash = fixtureCapability.runtimeBinarySHA256
+        let described = try ClusterRuntimeCapability(runtimeBinarySHA256: workerHash, adapterID: fixtureCapability.adapterID,
+            adapterVersion: fixtureCapability.adapterVersion, runtimeModelID: fixtureCapability.runtimeModelID, artifactSHA256: artifact.aggregateSHA256,
+            configurationSHA256: CryptoKitSHA.hex(files[0].1), manifestSHA256: CryptoKitSHA.hex(manifest), profile: fixtureCapability.profile,
+            profileFingerprint: fixtureCapability.profileFingerprint, partitions: fixtureCapability.partitions,
+            arithmeticPolicyID: fixtureCapability.arithmeticPolicyID, arithmeticPolicySHA256: fixtureCapability.arithmeticPolicySHA256,
+            supportedPrefillSchedules: fixtureCapability.supportedPrefillSchedules, supportedGenerationModes: fixtureCapability.supportedGenerationModes)
+        let record = base.appendingPathComponent("worker-capability.json")
+        try ClusterRuntimeCapabilityCodec.encode(described).write(to: record)
+        let workerScript = base.appendingPathComponent("describe-runtime-worker")
+        try Data("""
+            #!/bin/sh
+            [ "$1" = --describe-runtime ] && [ "$6" = --expected-executable-sha256 ] && [ "$7" = \(workerHash) ] || { echo "Expected --describe-runtime" >&2; exit 1; }
+            [ "$(/usr/bin/shasum -a 256 "$3" 2>/dev/null | /usr/bin/cut -c1-64)" = \(CryptoKitSHA.hex(files[0].1)) ] || { echo "The configuration is not a registered resident model's" >&2; exit 1; }
+            [ "$(/usr/bin/shasum -a 256 "$5" 2>/dev/null | /usr/bin/cut -c1-64)" = \(CryptoKitSHA.hex(manifest)) ] || { echo "The manifest is not the registered one" >&2; exit 1; }
+            /bin/cat '\(record.path)'
+
+            """.utf8).write(to: workerScript)
+        chmod(workerScript.path, 0o755)
+        final class Worker: @unchecked Sendable { let lock = NSLock(); var installed = true }
+        let worker = Worker()
+        let provisioner = ClusterModelProvisionResponder(store: { store }, trust: { _ in nil }, worker: {
+            guard worker.lock.withLock({ worker.installed }) else { throw ClusterSetupFailure("this Mac's cluster worker is not set up yet") }
+            return ClusterModelWorkerCheck(executable: workerScript, runtimeBinarySHA256: workerHash)
+        }, say: { line in said.lock.withLock { said.lines.append(line) } })
         let member = try X.Responder(pairing: pairing(pinB, pinA), selection: selection, port: port, policy: .loopbackForTests,
             answer: { throw ClusterSetupFailure("not asked") }, receive: { _ in "" }, command: { $0 },
             provision: { tag, data in provisioner.handle(tag: tag, data) })
@@ -273,6 +301,59 @@ extension ClusterConsoleCheck {
         let again = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
             folder: "Tiny-Model-2026-10-13-r1", port: port, policy: .loopbackForTests) { _, _ in }
         expect(again.alreadyThere && again.sentBytes == 0, "copy: a second copy finds it there and sends nothing")
+        // File-name binding (finish 2026-10-13 night, failing first on c35897c36): the same bytes under renamed files keep
+        // the catalog's aggregate digest, so the digest checks pass; the member's own worker refuses the staged folder
+        // before it is put in place, and nothing is listed as held.
+        var renamedObject = try JSONSerialization.jsonObject(with: manifest) as! [String: Any]
+        renamedObject["files"] = (renamedObject["files"] as! [[String: Any]]).map { entry in
+            var entry = entry; if entry["path"] as? String == "config.json" { entry["path"] = "config.jsom" }; return entry }
+        let renamedManifest = try JSONSerialization.data(withJSONObject: renamedObject, options: [.sortedKeys])
+        let renamedArtifact = try ClusterCatalogArtifact.parse(manifest: renamedManifest)
+        let renamedSource = base.appendingPathComponent("leader/renamed")
+        try FileManager.default.createDirectory(at: renamedSource, withIntermediateDirectories: true)
+        for (path, data) in files { try data.write(to: renamedSource.appendingPathComponent(path == "config.json" ? "config.jsom" : path)) }
+        expect(renamedArtifact.aggregateSHA256 == artifact.aggregateSHA256, "copy: renamed files keep the aggregate digest (the gap the worker check closes)")
+        do {
+            _ = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: renamedArtifact, source: renamedSource,
+                folder: "Tiny-Model-renamed", port: port, policy: .loopbackForTests) { _, _ in }
+            expect(false, "copy: renamed files must be refused by the member's own worker")
+        } catch {
+            expect("\(error)".contains("cluster worker refused the copied Example/Tiny-Model 2026-10-13-r1")
+                && "\(error)".contains("The configuration is not a registered resident model"), "copy: the member's worker names the refusal: \(error)")
+        }
+        expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent("Tiny-Model-renamed").path), "copy: no folder appears for renamed files")
+        expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent(".darkbloom-incoming-" + String(artifact.aggregateSHA256.prefix(32))).path),
+            "copy: the refused staging is discarded")
+        expect(said.lock.withLock { said.lines.contains { $0.contains("model copy refused") && $0.contains("cluster worker refused") } },
+            "copy: the member's service says why it refused")
+        // The report binds names too: a folder whose manifest renames the files (placed by hand here) is listed with
+        // another files digest, so the leader never takes it for the model; a peer of an older build (no files digest)
+        // compares as before.
+        let byHand = store.appendingPathComponent("Tiny-Model-by-hand")
+        try FileManager.default.createDirectory(at: byHand, withIntermediateDirectories: true)
+        try renamedManifest.write(to: byHand.appendingPathComponent("manifest.json"))
+        let listed = try ClusterSetupModelFolders.list(parent: store)
+        if let real = listed.first(where: { $0.folder == "Tiny-Model-2026-10-13-r1" }), let renamed = listed.first(where: { $0.folder == "Tiny-Model-by-hand" }) {
+            expect(real.filesSHA256 == artifact.filesDigest && renamed.filesSHA256 == renamedArtifact.filesDigest && real.artifactSHA256 == renamed.artifactSHA256,
+                "report: each folder lists its files digest (same aggregate digest)")
+            expect(!real.sameEntry(renamed) && real.sameEntry(real), "report: renamed files are not the same entry")
+            var older = renamed; older.filesSHA256 = nil
+            expect(real.sameEntry(older), "report: a peer that reports no files digest compares by entry and digest, as before")
+        } else { expect(false, "report: both folders listed: \(listed.map(\.folder))") }
+        try FileManager.default.removeItem(at: byHand)
+        // A Mac with no worker to check with refuses before any byte (fail closed), and `begun` never fires.
+        worker.lock.withLock { worker.installed = false }
+        let noWorkerBegun = Flag0()
+        do {
+            _ = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
+                folder: "Tiny-Model-unchecked", port: port, policy: .loopbackForTests, begun: { _ in noWorkerBegun.set() }) { _, _ in }
+            expect(false, "copy: a Mac without its worker must refuse the copy")
+        } catch {
+            expect("\(error)".contains("cannot check a copied model with its own cluster worker"), "copy: no worker, refused in words: \(error)")
+        }
+        expect(!noWorkerBegun.value && !FileManager.default.fileExists(atPath: store.appendingPathComponent("Tiny-Model-unchecked").path),
+            "copy: refused before any byte, nothing placed")
+        worker.lock.withLock { worker.installed = true }
         // Bytes that do not match the manifest (changed after it was taken): refused on the member, nothing placed.
         let other = store.appendingPathComponent("Tiny-Model-copy")
         var changed = files[1].1; changed[5_000_000] ^= 0x5A
@@ -309,6 +390,12 @@ extension ClusterConsoleCheck {
             expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent("Tiny-Model-other").path), "copy: nothing from an unpaired sender")
         }
     }
+}
+
+final class Flag0: @unchecked Sendable {
+    private let lock = NSLock(); private var flag = false
+    func set() { lock.withLock { flag = true } }
+    var value: Bool { lock.withLock { flag } }
 }
 
 import CryptoKit

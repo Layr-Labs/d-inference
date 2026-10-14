@@ -3,6 +3,7 @@
 ## Unreleased — desktop cold launch for returning users
 
 - Show returning users "Connecting to this Mac…" while the desktop app waits for its first runtime snapshot, instead of first-run onboarding's Welcome and Start. When the runtime is missing or unreachable, offer Install or Repair directly. First-run onboarding is unchanged.
+- Tell returning users why Darkbloom can't start instead of showing first-run wording: reinstall it when the runtime is missing, update it when the installed version doesn't work with this app, or repair it when it couldn't start. An incompatible runtime is no longer described as unreachable.
 
 ## Unreleased — desktop hardware load
 

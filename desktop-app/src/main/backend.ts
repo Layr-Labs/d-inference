@@ -110,6 +110,13 @@ export class Backend extends EventEmitter {
       this.emit('state', this.snapshot);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
+      // The runtime answered, so it isn't unreachable: it needs an update, not a repair.
+      if (error instanceof Error && error.message === 'Incompatible backend protocol')
+        return this.status({
+          state: 'incompatible',
+          message:
+            'The installed runtime is not compatible with this version of the app. Update Darkbloom.',
+        });
       this.status({
         state: code === 'ENOENT' ? 'missing' : 'error',
         message:

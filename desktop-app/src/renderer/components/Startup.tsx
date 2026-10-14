@@ -15,7 +15,7 @@ export function Startup({ backend }: { backend: BackendState }) {
         <OnboardingIntro grid="idle" />
         <section className="onboarding-form">
           {unreachable.includes(backend.status.state) ? (
-            <RuntimeSetup backend={backend} />
+            <RuntimeSetup backend={backend} returningUser />
           ) : (
             <p role="status">{backend.status.message || 'Connecting to this Mac…'}</p>
           )}

@@ -408,6 +408,12 @@ public final class ClusterModelReceiver: @unchecked Sendable {
             throw ClusterModelProvisioningError("\(folder) exists in this Mac's model store with other contents; it was left as it is")
         }
         try makeDirectory(staging)
+        // The staging is named by the aggregate digest, which a manifest that renames the files keeps: whatever a copy
+        // under other names left here (extra files, a folder where a file of this manifest belongs) goes, so it neither
+        // wedges this copy nor rides into the placed folder.
+        for unexpected in unexpectedStagingEntries(partsAllowed: true) {
+            try? FileManager.default.removeItem(at: staging.appendingPathComponent(unexpected))
+        }
         var offsets = [Int64]()
         for (index, file) in artifact.files.enumerated() {
             let final = staging.appendingPathComponent(file.path)
@@ -511,6 +517,14 @@ public final class ClusterModelReceiver: @unchecked Sendable {
                 throw ClusterModelProvisioningError("\(file.path) is not a single-linked file of its manifest size")
             }
         }
+        // Exactly the manifest's files: anything else that appeared in the staging during the copy refuses it.
+        let unexpected = unexpectedStagingEntries(partsAllowed: false)
+        if !unexpected.isEmpty {
+            try? FileManager.default.removeItem(at: staging)
+            verified.removeAll()
+            let names = unexpected.prefix(3).map { String($0.prefix(80)) }.joined(separator: ", ")
+            throw ClusterModelProvisioningError("the staged copy of \(artifact.modelID) holds \(unexpected.count) item(s) besides its manifest's files (\(names)); the copy was discarded")
+        }
         let manifest = staging.appendingPathComponent("manifest.json")
         let fd = open(manifest.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw ClusterModelProvisioningError("the manifest could not be written") }
@@ -534,6 +548,39 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     }
 
     // MARK: Internals
+
+    /// The staging's entries (relative paths) that are not this manifest's: allowed are each manifest file as a regular
+    /// file (with `partsAllowed`, its `.part` too), the folders on the way to one as folders, and `manifest.json`.
+    /// Names compare exactly. An allowed name of the wrong kind (a folder where a file belongs) is unexpected; the
+    /// contents of an unexpected folder are not listed (it goes, or refuses, as a whole).
+    func unexpectedStagingEntries(partsAllowed: Bool) -> [String] {
+        var files: Set<String> = ["manifest.json"], folders = Set<String>()
+        for file in artifact.files {
+            files.insert(file.path)
+            if partsAllowed { files.insert(file.path + ".part") }
+            var prefix = ""
+            for component in file.path.split(separator: "/").dropLast() {
+                prefix = prefix.isEmpty ? String(component) : prefix + "/" + component
+                folders.insert(prefix)
+            }
+        }
+        var unexpected = [String]()
+        func walk(_ relative: String) {
+            let url = relative.isEmpty ? staging : staging.appendingPathComponent(relative)
+            for name in ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).sorted() {
+                let path = relative.isEmpty ? name : relative + "/" + name
+                var info = stat()
+                guard lstat(staging.appendingPathComponent(path).path, &info) == 0 else { continue }
+                switch info.st_mode & S_IFMT {
+                case S_IFDIR where folders.contains(path): walk(path)
+                case S_IFREG where files.contains(path): continue
+                default: unexpected.append(path)
+                }
+            }
+        }
+        walk("")
+        return unexpected
+    }
 
     /// Removes the hidden staging of copies of OTHER artifacts (abandoned: one copy runs at a time on a Mac), so
     /// hidden bytes never starve the disk; this artifact's own staging stays for its resume. True when one went.

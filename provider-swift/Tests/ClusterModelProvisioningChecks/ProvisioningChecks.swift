@@ -41,6 +41,8 @@ import CryptoKit
         stagedCheckRefusesRenamedCopy()
         diskFilledDuringCopyStopsCleanly()
         shortCopiesAreNotAskedFor()
+        // Finish review 2026-10-13 night: failing first on 754286da9.
+        stagingHoldsOnlyTheManifestFiles()
         print("provisioning checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -75,7 +77,11 @@ import CryptoKit
     static func source(_ fixture: (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact)) -> URL {
         let directory = temporary("source").appendingPathComponent(fixture.artifact.folderName)
         try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for (path, data) in fixture.files { try! data.write(to: directory.appendingPathComponent(path)) }
+        for (path, data) in fixture.files {
+            let url = directory.appendingPathComponent(path)
+            try! FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try! data.write(to: url)
+        }
         try! fixture.manifest.write(to: directory.appendingPathComponent("manifest.json"))
         return directory
     }
@@ -574,6 +580,55 @@ import CryptoKit
         let fromMember = P.plan(totalBytes: 6_100_000_000, leader: Mac(name: "A", holding: .missing, freeBytes: nil),
             members: [Mac(name: "B", holding: .complete(folder: "m"), freeBytes: nil)], linkBytesPerSecond: 2e9, catalogHasIt: false)
         expect(P.quickCopySeconds(fromMember) != nil, "a member sending to the leader is a copy too: predicted, not asked")
+    }
+
+    // MARK: - Finish review 2026-10-13 night
+
+    /// The staging folder is named by the aggregate digest, which a renamed manifest keeps: a paired peer that sends an
+    /// approved model under other names and stops before the commit leaves those names (and a folder where a real file
+    /// belongs) in the staging the real copy then resumes into. The real copy must neither be wedged by them nor carry
+    /// them into the placed folder (placement reads every `*.safetensors` of a folder); files that appear in the staging
+    /// during a copy refuse the commit.
+    static func stagingHoldsOnlyTheManifestFiles() {
+        let model = fixture()
+        // Same digests in the same path order (same aggregate): config.json becomes a folder, tokenizer.json an extra shard.
+        var object = try! JSONSerialization.jsonObject(with: model.manifest) as! [String: Any]
+        var entries = object["files"] as! [[String: Any]]
+        let renames = ["config.json": "config.json/x", "tokenizer.json": "zz-extra.safetensors"]
+        for index in entries.indices { if let to = renames[entries[index]["path"] as! String] { entries[index]["path"] = to } }
+        object["files"] = entries
+        let badManifest = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let bad = (files: model.files.map { (renames[$0.0] ?? $0.0, $0.1) }, manifest: badManifest, artifact: try! ClusterCatalogArtifact.parse(manifest: badManifest))
+        expect(bad.artifact.aggregateSHA256 == model.artifact.aggregateSHA256, "fixture: the renamed manifest keeps the aggregate digest")
+        let check: (URL) -> String? = { staged in
+            (try? Data(contentsOf: staged.appendingPathComponent("manifest.json"))) == model.manifest ? nil : "the manifest is not the registered one"
+        }
+        let store = temporary("store")
+        let staging = store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact))
+        do {
+            // The peer sends every renamed file, then stops before the commit.
+            let attacker = try ClusterModelReceiver(artifact: bad.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil, stagedCheck: check)
+            _ = try send(try ClusterModelSender(artifact: bad.artifact, directory: source(bad)), to: attacker, from: try attacker.begin().offsets)
+            try Data("left by something else".utf8).write(to: staging.appendingPathComponent("leftover.bin"))
+            // The real copy resumes into that staging: not wedged, and only the manifest's files are placed.
+            let good = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil, stagedCheck: check)
+            let state = try good.begin()
+            expect(state.offsets[2] == model.artifact.files[2].sizeBytes, "real files under their real names are kept for the resume: \(state.offsets)")
+            _ = try send(try ClusterModelSender(artifact: model.artifact, directory: source(model)), to: good, from: state.offsets)
+            let placed = try good.commit()
+            let names = Set((try? FileManager.default.contentsOfDirectory(atPath: placed.path)) ?? [])
+            expect(names == Set(model.files.map(\.0) + ["manifest.json"]), "the placed folder holds exactly the manifest's files: \(names.sorted())")
+            for (path, data) in model.files { expect((try? Data(contentsOf: placed.appendingPathComponent(path))) == data, "placed \(path) byte for byte") }
+        } catch { expect(false, "staging left by a renamed copy: \(error)") }
+        // A file that appears in the staging during the copy refuses the commit; nothing is placed.
+        let store2 = temporary("store2")
+        do {
+            let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store2, folder: model.artifact.folderName, expectedAggregate: nil, stagedCheck: check)
+            _ = try send(try ClusterModelSender(artifact: model.artifact, directory: source(model)), to: receiver, from: try receiver.begin().offsets)
+            try Data("x".utf8).write(to: store2.appendingPathComponent(ClusterModelStore.stagingName(model.artifact)).appendingPathComponent("extra.safetensors"))
+            refuses("besides its manifest's files (extra.safetensors); the copy was discarded") { _ = try receiver.commit() }
+            expect(!FileManager.default.fileExists(atPath: store2.appendingPathComponent(model.artifact.folderName).path), "nothing placed with an extra file")
+        } catch { expect(false, "extra file during the copy: \(error)") }
     }
 
     static func wireRoundTrip() {

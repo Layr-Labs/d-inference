@@ -24,7 +24,7 @@ import Darwin
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "security")
+private let logger = Logger(subsystem: BuildEnvironment.current.serviceLogSubsystem, category: "security")
 
 // MARK: - Errors
 

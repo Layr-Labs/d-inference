@@ -9,6 +9,11 @@ name: Release Provider Bundle (Swift)
 #   - bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib: regular-file
 #     copies of the app's CLI, Secure Enclave helper and Metal kernels. Release
 #     hashes are computed from them; installers verify them, then install the app.
+# A dev release is packaged as Darkbloom Dev.app with the executables
+# darkbloom-dev and darkbloom-enclave-dev, so it installs beside production
+# (scripts/provider_release_identity.py). The bundle identifier, the signing
+# identity, the flat bin/ names and the bundle file name are the same for both;
+# the coordinator's release registration requires the last two.
 #
 # No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
 # build. The legacy `release.yml` was deleted alongside `app/` once we
@@ -68,6 +73,7 @@ on:
       - 'scripts/provider-release-publication.py'
       - 'scripts/provider_release_artifact.py'
       - 'scripts/provider_release_github.py'
+      - 'scripts/provider_release_identity.py'
       - 'scripts/provider-signing-validation.py'
       - 'scripts/stage-swiftpm-resource-bundles.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'
@@ -129,8 +135,6 @@ permissions:
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
-  CLI_NAME: 'darkbloom'
-  ENCLAVE_NAME: 'darkbloom-enclave'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
@@ -230,7 +234,7 @@ jobs:
           METALLIB: ${{ steps.build.outputs.metallib }}
         run: |
           set -euo pipefail
-          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$CLI_NAME" --version)"
+          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/darkbloom" --version)"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
@@ -348,6 +352,9 @@ jobs:
 
       - name: Install pinned GitHub CLI
         run: ./scripts/install-macos-github-cli.sh
+
+      - name: Resolve packaged app names
+        run: python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"
 
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
@@ -510,9 +517,9 @@ jobs:
 
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
-          APP="$STAGE/Darkbloom.app"
+          APP="$STAGE/$APP_NAME"
           mkdir -p "$STAGE"
-          cp -R "$UNSIGNED_ROOT/Darkbloom.app" "$APP"
+          cp -R "$UNSIGNED_ROOT/$APP_NAME" "$APP"
           printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
@@ -525,7 +532,7 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>${CLI_NAME}</string>
               <key>CFBundleName</key>
-              <string>Darkbloom</string>
+              <string>${APP_DISPLAY_NAME}</string>
               <key>CFBundleVersion</key>
               <string>${VERSION}</string>
               <key>CFBundleShortVersionString</key>
@@ -571,7 +578,7 @@ jobs:
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
-            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -683,8 +690,10 @@ jobs:
           # requires bin/darkbloom to be a regular file — symlinks fail the
           # tar.TypeReg check.
           mkdir -p "$STAGE/bin"
-          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
-          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
+          # The flat names are the same for a dev app, whose executables are
+          # darkbloom-dev and darkbloom-enclave-dev.
+          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/darkbloom"
+          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/darkbloom-enclave"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
           # Notarize only the canonical app. The flat bin/ copies exist solely
@@ -742,7 +751,7 @@ jobs:
           # Require an attached ticket and a local Gatekeeper acceptance before
           # the distribution artifact can be rebuilt or uploaded.
           STAGE="${{ steps.bundle.outputs.stage }}"
-          APP="$STAGE/Darkbloom.app"
+          APP="$STAGE/$APP_NAME"
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
@@ -750,35 +759,37 @@ jobs:
 
           # Stapling the bundle must not change the executable bytes registered
           # with the coordinator and verified by provider self-update.
-          cmp "$STAGE/bin/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
-          cmp "$STAGE/bin/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          cmp "$STAGE/bin/darkbloom" "$APP/Contents/MacOS/$CLI_NAME"
+          cmp "$STAGE/bin/darkbloom-enclave" "$APP/Contents/MacOS/$ENCLAVE_NAME"
           cmp "$STAGE/bin/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
 
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx "./$APP_NAME/Contents/MacOS/$CLI_NAME" /tmp/darkbloom-bundle-files.txt
+          grep -qx "./$APP_NAME/Contents/MacOS/$ENCLAVE_NAME" /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
           if grep -qx './bin/darkbloom-fan-helper' /tmp/darkbloom-bundle-files.txt; then
             echo "::error::fan helper must not be present in the flat verifier layout"
             exit 1
           fi
           grep -qx \
-            './Darkbloom.app/Contents/Helpers/darkbloom-fan-helper' \
+            "./$APP_NAME/Contents/Helpers/darkbloom-fan-helper" \
             /tmp/darkbloom-bundle-files.txt
           grep -qx \
-            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1' \
+            "./$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1" \
             /tmp/darkbloom-bundle-files.txt
           while IFS= read -r bundle_name; do
             grep -qx \
-              "./Darkbloom.app/Contents/Resources/${bundle_name}/" \
+              "./$APP_NAME/Contents/Resources/${bundle_name}/" \
               /tmp/darkbloom-bundle-files.txt
           done < /tmp/darkbloom-swiftpm-resource-bundles.txt
           grep -qx \
-            './Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal' \
+            "./$APP_NAME/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal" \
             /tmp/darkbloom-bundle-files.txt
           grep -qx \
-            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1' \
+            "./$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1" \
             /tmp/darkbloom-bundle-files.txt
 
           # Verify the FINAL archived layout, not merely the staging tree.
@@ -788,7 +799,7 @@ jobs:
           rm -rf "$SMOKE_ROOT"
           mkdir -p "$SMOKE_ROOT"
           tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
-          FINAL_APP_METALLIB="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
+          FINAL_APP_METALLIB="$SMOKE_ROOT/$APP_NAME/Contents/MacOS/mlx.metallib"
           FINAL_FLAT_METALLIB="$SMOKE_ROOT/bin/mlx.metallib"
           test -s "$FINAL_APP_METALLIB"
           test -s "$FINAL_FLAT_METALLIB"
@@ -821,9 +832,9 @@ jobs:
               exit 1
             fi
           done
-          FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
-          test -f "$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
-          FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+          FINAL_FAN_HELPER="$SMOKE_ROOT/$APP_NAME/Contents/Helpers/$FAN_HELPER_NAME"
+          test -f "$SMOKE_ROOT/$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
+          FINAL_FAN_MARKER="$SMOKE_ROOT/$APP_NAME/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
           test -f "$FINAL_FAN_HELPER"
           test ! -L "$FINAL_FAN_HELPER"
           test -x "$FINAL_FAN_HELPER"
@@ -832,17 +843,17 @@ jobs:
           test ! -L "$FINAL_FAN_MARKER"
           test "$(tr -d '[:space:]' < "$FINAL_FAN_MARKER")" = "1"
           LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME"
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME"
           FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
           codesign --verify --deep --strict --verbose=2 \
-            "$SMOKE_ROOT/Darkbloom.app"
+            "$SMOKE_ROOT/$APP_NAME"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
             DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
             MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
             MLX_GATHER_QMM_EXPERT_SLICES=1 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -851,24 +862,24 @@ jobs:
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
-            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "
-          REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
+            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "
+          REPORTED=$("$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+            "$SMOKE_ROOT/$APP_NAME/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+            "$SMOKE_ROOT/$APP_NAME/Contents/Info.plist")" = "$VERSION"
 
-          BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
+          BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/darkbloom" | cut -d' ' -f1)
           CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" 2>&1 \
             | sed -n 's/^CandidateCDHashFull sha256=//p')
           if [[ ! "$CODE_DIRECTORY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::Expected one full SHA-256 CodeDirectory hash from the final signed provider"
             exit 1
           fi
           LINKED_SDK=$(codesign -d --verbose=4 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" 2>&1 \
             | sed -n 's/^VersionSDK=//p')
           python3 - "$LINKED_SDK" "$BUILD_SDK_VERSION" <<'PY'
           import sys
@@ -1202,6 +1213,10 @@ jobs:
           persist-credentials: false
       - name: Install pinned GitHub CLI
         run: ./scripts/install-macos-github-cli.sh
+      - name: Resolve packaged app names
+        env:
+          VERSION: ${{ needs.resolve-env.outputs.version }}
+        run: python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1227,7 +1242,7 @@ jobs:
           mkdir "$ARTIFACT/extracted"
           # Native tar restores the non-Mach-O signing extended attributes.
           /usr/bin/tar -xzf "$ARTIFACT/darkbloom-bundle-macos-arm64.tar.gz" -C "$ARTIFACT/extracted"
-          APP="$ARTIFACT/extracted/Darkbloom.app"
+          APP="$ARTIFACT/extracted/$APP_NAME"
           codesign --verify --deep --strict "$APP"
           xcrun stapler validate "$APP"
           # The child validates the retained Gemma latches, which MLX reads at

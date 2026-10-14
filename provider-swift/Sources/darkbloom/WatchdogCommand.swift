@@ -225,7 +225,7 @@ struct Watchdog: AsyncParsableCommand {
             crashLoopCount: issuedCrashLoopCount,
             crashLoopVersion: issuedCrashLoopVersion
         ), !WatchdogStateStore.write(newState) {
-            Self.log("warning: could not persist watchdog state (check ~/.darkbloom)")
+            Self.log("warning: could not persist watchdog state (check ~/\(BuildEnvironment.current.installDirectoryName))")
         }
     }
 

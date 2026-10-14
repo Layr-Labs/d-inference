@@ -157,7 +157,7 @@ extension Fan {
                 output.append("GPU sensors: \(sensors)")
             }
             if !report.installed {
-                output.append("Enable with: sudo darkbloom fan enable")
+                output.append("Enable with: sudo \(BuildEnvironment.current.cliName) fan enable")
             }
             return output
         }
@@ -218,7 +218,7 @@ extension Fan {
                         + "\(String(format: "%.0f", status.triggerTemperatureC)) C"
                 )
                 Swift.print("  Active only while the Darkbloom provider is running.")
-                Swift.print("  Disable with: sudo darkbloom fan disable")
+                Swift.print("  Disable with: sudo \(BuildEnvironment.current.cliName) fan disable")
             }
         }
     }

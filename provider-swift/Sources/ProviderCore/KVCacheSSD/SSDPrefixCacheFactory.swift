@@ -36,7 +36,7 @@ enum SSDPrefixCacheFactory {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "ssd_prefix_cache")
     #endif
 
     /// The SSD tier's OWN root: `<cacheDirectory>/darkbloom/kv3/<modelKey>`

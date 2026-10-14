@@ -1,6 +1,6 @@
 # Release A Provider Version
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Build, sign, notarize and publish an explicitly authorized provider artifact.
 The pipeline registers its exact official identity through the external platform
@@ -173,10 +173,10 @@ GitHub Release and no tag. Dev uploads go only to the `DEV_R2_BUCKET` bucket and
 the `DEV_R2_PUBLIC_URL` origin.
 
 The optimized job sets `DARKBLOOM_RELEASE_ENVIRONMENT`. For `dev`,
-`provider-swift/Package.swift` compiles `ProviderCore` with `DARKBLOOM_ENV_DEV`;
-defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
+`provider-swift/Package.swift` compiles `ProviderBuildEnvironment` with
+`DARKBLOOM_ENV_DEV`; defaults are `wss://api.dev.darkbloom.dev/ws/provider` and
 `https://models.darkbloom.ai`
-(`provider-swift/Sources/ProviderCore/Config/BuildEnvironment.swift`). Local
+(`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift`). Local
 builds, tests and `qualify-sdk` retain production defaults. Config, CLI flags and
 `DARKBLOOM_R2_CDN_URL` still override defaults. Dev/prod products have different
 cache keys, and packaged smoke must report the selected build environment.
@@ -198,6 +198,52 @@ dev build uses the dev coordinator by default, and this installer binds
 coordinator. The
 [pinned dev operations reference](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/dev-environment.md)
 is historical; verify current endpoints with the platform owner.
+
+#### Dev Build Identity
+
+A dev build installs and runs beside a production provider on the same Mac.
+The two installs do not share a path, a port, a launchd label or a keychain
+item, and each command prints its own name in its help text:
+
+| Item | Production | Dev |
+|---|---|---|
+| CLI command | `darkbloom` | `darkbloom-dev` |
+| Secure Enclave helper | `darkbloom-enclave` | `darkbloom-enclave-dev` |
+| App bundle (`CFBundleName`) | `Darkbloom.app` (`Darkbloom`) | `Darkbloom Dev.app` (`Darkbloom Dev`) |
+| Install and data directory | `~/.darkbloom` | `~/.darkbloom-dev` |
+| Configuration directory | `~/.config/darkbloom` | `~/.config/darkbloom-dev` |
+| Provider LaunchAgent label | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
+| Watchdog LaunchAgent label | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
+| Unified log subsystems | `dev.darkbloom.provider`, `com.darkbloom.provider` | `dev.darkbloom.provider.dev`, `com.darkbloom.provider.dev` |
+| Default backend port | `8100` | `8101` |
+| Keychain service and key label prefix | `io.darkbloom` | `io.darkbloom.dev` |
+
+`BuildEnvironment` in
+`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift` holds
+these values. The release lane selects the packaged names from the version
+(`scripts/provider_release_identity.py`). It renames the SwiftPM products
+`darkbloom` and `darkbloom-enclave` when it packages a dev app. The installer
+selects the same names from the version that `/v1/releases/latest` returns
+(`scripts/install.sh`, `select_provider_identity`). Only production reads the
+legacy `~/.config/eigeninference` directory.
+
+These values are the same for both builds:
+
+- The bundle identifier and code-signing identifier `io.darkbloom.provider`,
+  and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
+  Developer ID signature, the provisioning profile, notarization and App Attest
+  check them. A different dev value does not match the signed bundle.
+- The MDM profile identifiers and the fan helper `io.darkbloom.fan-helper`. The
+  fan helper is one system service for the Mac.
+- The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
+  bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
+  registration requires these names. Dev uploads go to the dev bucket under the
+  `-dev.N` version.
+
+An install of an earlier dev build in `~/.darkbloom` does not move to the new
+names. Its updater expects `Darkbloom.app`, so it cannot install a
+`Darkbloom Dev.app` release. Install the dev provider again with the dev
+`install.sh`.
 
 For a signed, notarized validation bundle without registration/publication:
 

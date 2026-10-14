@@ -31,11 +31,11 @@ struct LaunchAgentPathsAndErrorsTests {
         #expect(path.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
     }
 
-    @Test("the log file is provider.log in the .darkbloom folder")
+    @Test("the log file is provider.log in the install folder")
     func logPathShape() {
         let path = LaunchAgent.logPath()
         #expect(path.lastPathComponent == "provider.log")
-        #expect(path.deletingLastPathComponent().lastPathComponent == ".darkbloom")
+        #expect(path.deletingLastPathComponent().lastPathComponent == BuildEnvironment.current.installDirectoryName)
         #expect(path.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))
     }
 

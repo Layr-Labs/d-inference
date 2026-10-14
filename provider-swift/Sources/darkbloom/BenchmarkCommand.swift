@@ -27,14 +27,14 @@ struct Benchmark: AsyncParsableCommand {
     @Flag(name: .long, help: """
         Run the fail-closed signed-candidate cap-0/cap-1 scheduler-prefill \
         evaluation. This mode only runs from the packaged signed \
-        Darkbloom.app main executable.
+        \(BuildEnvironment.current.appBundleName) main executable.
         """)
     var schedulerPrefillDecision = false
 
     @Option(name: .long, help: "Signed decision: expected registered model aggregate SHA-256.")
     var expectedModelAggregateSHA256: String?
 
-    @Option(name: .long, help: "Signed decision: expected registered signed darkbloom binary SHA-256.")
+    @Option(name: .long, help: "Signed decision: expected registered signed \(BuildEnvironment.current.cliName) binary SHA-256.")
     var expectedRegisteredBinarySHA256: String?
 
     @Option(name: .long, help: "Signed decision: exact expected ProviderCore version.")
@@ -236,7 +236,7 @@ struct Benchmark: AsyncParsableCommand {
                 benchmark is config-driven: refusing to run with \
                 \(conflict.key)=\(conflict.shellValue) set in this shell while \
                 provider.toml projects \(conflict.configValue). Toggle with \
-                `darkbloom beta` or edit [gemma_optimizations] in provider.toml, \
+                `\(BuildEnvironment.current.cliName) beta` or edit [gemma_optimizations] in provider.toml, \
                 then re-run benchmark without the low-level override.
                 """)
             throw ExitCode.failure
@@ -363,7 +363,7 @@ struct Benchmark: AsyncParsableCommand {
             return
         }
 
-        print("darkbloom benchmark")
+        print("\(BuildEnvironment.current.cliName) benchmark")
         print("")
 
         let report = try await ModelBenchmark.run(

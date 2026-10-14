@@ -33,7 +33,7 @@ extension Unenroll {
             print("App Attest authorizes this connection. Keep your organization's management profile installed.")
             return
         case .checkFailed:
-            printError("The installed management profile could not be identified. No removal guidance was opened; retry darkbloom doctor.")
+            printError("The installed management profile could not be identified. No removal guidance was opened; retry \(BuildEnvironment.current.cliName) doctor.")
             throw ExitCode.failure
         case .enrolledDarkbloom:
             break
@@ -67,7 +67,7 @@ extension Unenroll {
         print("  Server: \(target.serverURL)")
         print("Keep any organization management profiles installed.")
         print("Your Darkbloom account, machine identity, App Attest keys, and model data are retained.")
-        print("Keep the provider running during removal, then run darkbloom doctor.")
+        print("Keep the provider running during removal, then run \(BuildEnvironment.current.cliName) doctor.")
         print("If authorization expires or is revoked, new inference waits for fresh verification.")
         if !noOpen { EnrollmentService().openProfilesPaneForRemoval() }
     }

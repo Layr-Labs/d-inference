@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -105,6 +105,29 @@ the selected product without treating an old build-directory layout as a
 resource authority. Keep its archive/path checks and source-matched staging;
 see [resource and release tooling checks](test.md#focused-tooling-checks).
 
+## Dev Build Identity
+
+A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install
+identity, so it runs beside a production provider on the same Mac.
+`BuildEnvironment` in
+`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift` holds
+the values. Local builds and tests use the production values.
+
+| Item | Production | Dev |
+|---|---|---|
+| CLI command and app | `darkbloom` in `Darkbloom.app` | `darkbloom-dev` in `Darkbloom Dev.app` |
+| Install and configuration directories | `~/.darkbloom`, `~/.config/darkbloom` | `~/.darkbloom-dev`, `~/.config/darkbloom-dev` |
+| Provider LaunchAgent label | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
+| Default backend port | `8100` | `8101` |
+| Keychain service and key label prefix | `io.darkbloom` | `io.darkbloom.dev` |
+
+The code-signing identifier `io.darkbloom.provider` and the keychain access
+group `SLDQ2GJ6TL.io.darkbloom.provider` are the same for both builds. The
+Developer ID signature and the provisioning profile bind them, and notarization
+and App Attest check them. Do not make them depend on the environment. The full
+list is in
+[Dev build identity](../operations/provider-release.md#dev-build-identity).
+
 ## App Attest Release Qualification
 
 Build the local dispatch, worker and endpoint-resumption test targets through
@@ -140,8 +163,9 @@ MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 \
 Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke
 ```
 
-Require the environment line
-`build-environment-runtime-smoke: <prod|dev> coordinator=<url> cdn=<url>`
+A dev release packages `Darkbloom Dev.app/Contents/MacOS/darkbloom-dev`. Require
+the environment line
+`build-environment-runtime-smoke: <prod|dev> cli=<darkbloom|darkbloom-dev> coordinator=<url> cdn=<url>`
 to match the release environment, plus all four markers:
 `app-attest-callback-runtime-smoke: ok`,
 `gemma-optimizations-runtime-smoke: ok`, `paged-kernel-runtime-smoke: ok`, and

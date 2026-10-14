@@ -47,14 +47,14 @@ struct Doctor: AsyncParsableCommand {
             coordinatorURL: coordinatorURL
         )
 
-        print("darkbloom doctor \(ProviderCore.version)")
+        print("\(BuildEnvironment.current.cliName) doctor \(ProviderCore.version)")
         print("Config: \(describeConfigPath(snapshot))")
         print("Build: \(BuildEnvironment.current.rawValue)")
         print("Coordinator: \(coordinatorURL)")
         print("Model CDN: \(ModelDownloader.resolveCDNURL())")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = doctorDaemonProcessMatches(daemonState: daemonState)
-        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
+        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `\(BuildEnvironment.current.cliName) start`")")
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?
@@ -340,7 +340,7 @@ func buildCoordinatorDoctorChecks(
     checks.append(.init(
         name: "account link",
         status: linked ? .pass : .warn,
-        detail: !linked ? "not logged in; run darkbloom login" : "auth token present"
+        detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
     switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {

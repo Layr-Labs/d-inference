@@ -70,9 +70,12 @@ struct Unenroll: AsyncParsableCommand {
 
         print()
         print("Local data cleanup will remove:")
-        print("  • Config dir:    ~/.config/darkbloom/  (and legacy ~/.config/eigeninference/)")
-        print("  • Auth token:    ~/.darkbloom/auth_token")
-        print("  • Legacy keys:   ~/.darkbloom/{wallet_key,enclave_key.data,…}")
+        let environment = BuildEnvironment.current
+        let legacy = environment.legacyConfigDirectoryNames.map { "~/\($0)/" }.joined(separator: ", ")
+        print("  • Config dir:    ~/\(environment.configDirectoryName)/"
+            + (legacy.isEmpty ? "" : "  (and legacy \(legacy))"))
+        print("  • Auth token:    ~/\(environment.installDirectoryName)/auth_token")
+        print("  • Legacy keys:   ~/\(environment.installDirectoryName)/{wallet_key,enclave_key.data,…}")
         print("  • Signing key:   Secure Enclave attestation key")
         print()
 

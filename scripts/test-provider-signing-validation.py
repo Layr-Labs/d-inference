@@ -31,20 +31,22 @@ class SigningValidationTests(unittest.TestCase):
         self.assertNotIn("secrets.", build_job)
         self.assertIn("provider-signing-validation.py cli-entitlements", workflow)
 
-    def make_archive(self, directory, mutate=False, info_updates=None):
+    def make_archive(self, directory, mutate=False, info_updates=None, version="test-version",
+                     app="Darkbloom.app", executable="darkbloom", name="Darkbloom"):
         source = directory / "source"
         (source / "validation-inputs").mkdir(parents=True)
-        app_contents = source / "Darkbloom.app/Contents"
+        app_contents = source / app / "Contents"
         app_contents.mkdir(parents=True)
-        info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": "test-version",
-                "CFBundleShortVersionString": "test-version", "CFBundleExecutable": "darkbloom"}
+        info = {"CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": version,
+                "CFBundleShortVersionString": version, "CFBundleExecutable": executable,
+                "CFBundleName": name}
         info.update(info_updates or {})
         with (app_contents / "Info.plist").open("wb") as output:
             plistlib.dump(info, output)
         for name in ["entitlements.plist", "entitlements-enclave.plist"]:
             shutil.copy2(ROOT / "provider-swift" / name, source / "validation-inputs" / name)
         (source / "fixture.txt").write_text("synthetic unsigned archive fixture")
-        manifest = {"source_sha": "test-source", "version": "test-version", "files": VALIDATION.inventory(source)}
+        manifest = {"source_sha": "test-source", "version": version, "files": VALIDATION.inventory(source)}
         (source / "unsigned-files.json").write_text(json.dumps(manifest))
         if mutate:
             (source / "fixture.txt").write_text("changed after manifest")
@@ -81,13 +83,76 @@ class SigningValidationTests(unittest.TestCase):
                 self.assertFalse((root / "escape").exists())
 
     def test_unpack_refuses_mismatched_bundle_identity_and_versions(self):
-        for key in ["CFBundleIdentifier", "CFBundleVersion", "CFBundleShortVersionString", "CFBundleExecutable"]:
+        for key in ["CFBundleIdentifier", "CFBundleVersion", "CFBundleShortVersionString", "CFBundleExecutable",
+                    "CFBundleName"]:
             with self.subTest(key=key), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 archive = self.make_archive(root, info_updates={key: "wrong-value"})
                 with self.assertRaisesRegex(ValueError, "Info.plist"):
                     VALIDATION.unpack(argparse.Namespace(archive=archive, output=root / "output",
                         source_sha="test-source", version="test-version"))
+
+    def test_dev_version_requires_the_dev_app_identity(self):
+        dev = {"app": "Darkbloom Dev.app", "executable": "darkbloom-dev", "name": "Darkbloom Dev"}
+        prod = {"app": "Darkbloom.app", "executable": "darkbloom", "name": "Darkbloom"}
+        for scenario, layout, version, valid in [
+                ("dev", dev, "0.9.20-dev.3", True), ("prod", prod, "0.9.20", True),
+                ("prod-layout-dev-version", prod, "0.9.20-dev.3", False),
+                ("dev-layout-prod-version", dev, "0.9.20", False)]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = self.make_archive(root, version=version, **layout)
+                arguments = argparse.Namespace(archive=archive, output=root / "output",
+                    source_sha="test-source", version=version)
+                if valid:
+                    VALIDATION.unpack(arguments)
+                else:
+                    with self.assertRaises(ValueError):
+                        VALIDATION.unpack(arguments)
+
+    def test_stage_renames_products_for_a_dev_release(self):
+        for version, app, executables, name in [
+                ("0.9.20", "Darkbloom.app", ["darkbloom", "darkbloom-enclave"], "Darkbloom"),
+                ("0.9.20-dev.3", "Darkbloom Dev.app", ["darkbloom-dev", "darkbloom-enclave-dev"], "Darkbloom Dev")]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                products = root / "bin"
+                products.mkdir()
+                for product in ["darkbloom", "darkbloom-enclave", "darkbloom-fan-helper"]:
+                    (products / product).write_text(product)
+                (root / "mlx.metallib").write_text("metallib")
+                with mock.patch.object(VALIDATION.subprocess, "run"), \
+                        mock.patch.object(VALIDATION.subprocess, "check_output", return_value=""):
+                    VALIDATION.stage(argparse.Namespace(source=ROOT, bin=products,
+                        metallib=root / "mlx.metallib", output=root / "stage", version=version))
+                binaries = root / "stage" / app / "Contents/MacOS"
+                self.assertEqual(sorted(path.name for path in binaries.iterdir()),
+                                 sorted(executables + ["mlx.metallib"]))
+                self.assertEqual((binaries / executables[0]).read_text(), "darkbloom")
+                info = plistlib.loads((root / "stage" / app / "Contents/Info.plist").read_bytes())
+                self.assertEqual(info["CFBundleIdentifier"], "io.darkbloom.provider")
+                self.assertEqual(info["CFBundleExecutable"], executables[0])
+                self.assertEqual(info["CFBundleName"], name)
+
+    def test_receipt_keeps_the_flat_product_names_for_a_dev_app(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "Darkbloom Dev.app/Contents"
+            (app / "MacOS").mkdir(parents=True)
+            for name in ["darkbloom-dev", "darkbloom-enclave-dev", "mlx.metallib"]:
+                (app / "MacOS" / name).write_text(name)
+            (app / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": VALIDATION.APP_ID, "CFBundleVersion": "0.9.20-dev.3",
+                "CFBundleShortVersionString": "0.9.20-dev.3", "CFBundleExecutable": "darkbloom-dev",
+                "CFBundleName": "Darkbloom Dev"}))
+            (root / "unsigned-files.json").write_text(json.dumps(
+                {"source_sha": "s", "version": "0.9.20-dev.3", "submodules": []}))
+            notary = root / "notary.json"
+            notary.write_text(json.dumps({"status": "Accepted", "id": "n"}))
+            VALIDATION.receipt(argparse.Namespace(output=root, notary=notary))
+            self.assertEqual({path.name: path.read_text() for path in (root / "bin").iterdir()}, {
+                "darkbloom": "darkbloom-dev", "darkbloom-enclave": "darkbloom-enclave-dev",
+                "mlx.metallib": "mlx.metallib"})
 
     def test_unpack_bounds_members_total_size_and_count(self):
         cases = [

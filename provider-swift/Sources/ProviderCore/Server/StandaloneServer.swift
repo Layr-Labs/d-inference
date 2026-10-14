@@ -138,7 +138,7 @@ public struct StandaloneServerConfig: Sendable {
 }
 
 let standaloneLogger = Logger(
-    subsystem: "dev.darkbloom.provider",
+    subsystem: BuildEnvironment.current.serviceLogSubsystem,
     category: "StandaloneServer"
 )
 

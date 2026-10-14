@@ -500,8 +500,8 @@ public enum DaemonStateFile {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/daemon-state.json")
+        return BuildEnvironment.current.installDirectory()
+            .appendingPathComponent("daemon-state.json")
     }
 
     /// Built once. `write` runs on a ~2 s tick for the life of the daemon, and

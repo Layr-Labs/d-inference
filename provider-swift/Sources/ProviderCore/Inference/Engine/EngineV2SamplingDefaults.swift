@@ -60,7 +60,7 @@ public struct EngineV2SamplingDefaults: Sendable, Equatable {
 
     #if canImport(os)
     private static let logger = Logger(
-        subsystem: "com.darkbloom.provider", category: "engine_v2")
+        subsystem: BuildEnvironment.current.logSubsystem, category: "engine_v2")
     #endif
 
     /// Family gate. Explicit admission per model onboarding; sharing the

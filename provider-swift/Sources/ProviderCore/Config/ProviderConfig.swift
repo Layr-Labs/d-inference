@@ -297,7 +297,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public static let defaultEngineV2MaxConcurrent: UInt64 = 4
 
     public init(
-        port: UInt16 = 8100,
+        port: UInt16 = BuildEnvironment.current.defaultBackendPort,
         model: String? = nil,
         modelCacheDirectory: String? = nil,
         enabledModels: [String] = [],
@@ -395,7 +395,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8100
+        self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? BuildEnvironment.current.defaultBackendPort
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
         self.modelCacheDirectory = try container.decodeIfPresent(String.self, forKey: .modelCacheDirectory)
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
@@ -569,7 +569,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
                 autoUpdate: true
             ),
             backend: BackendSettings(
-                port: 8100,
+                port: BuildEnvironment.current.defaultBackendPort,
                 model: nil,
                 enabledModels: [],
                 idleTimeoutMins: 60,
@@ -616,9 +616,7 @@ public enum ConfigManager: Sendable {
     /// The same path for another account's home, such as the invoking user
     /// of `sudo darkbloom report`.
     public static func defaultConfigPath(home: URL) -> URL {
-        home
-            .appendingPathComponent(".config")
-            .appendingPathComponent("darkbloom")
+        BuildEnvironment.current.configDirectory(home: home)
             .appendingPathComponent("provider.toml")
     }
 

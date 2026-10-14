@@ -35,8 +35,8 @@ extension Autopilot {
                 if !operation.releasing.isEmpty { print("  Release: \(operation.releasing.joined(separator: ", "))") }
                 if let elapsed = operation.elapsedMs { print("  Last transition: \(String(format: "%.1f", Double(elapsed)/1000)) s") }
             }
-            print("  Pause/resume: darkbloom autopilot pause | resume")
-            print("  Change selection: darkbloom autopilot models")
+            print("  Pause/resume: \(BuildEnvironment.current.cliName) autopilot pause | resume")
+            print("  Change selection: \(BuildEnvironment.current.cliName) autopilot models")
         }
 
         static func snapshotIsFresh(_ state: DaemonState, heartbeatIntervalSecs: UInt64, now: Double) -> Bool {
@@ -49,7 +49,7 @@ extension Autopilot {
             switch phase {
             case "shadow": return "shadow (not activated; no automatic model changes)"
             case "waiting": return "waiting (not activated; no current coordinator control)"
-            case "waiting_inventory": return "waiting for inventory refresh (not activated; run darkbloom autopilot models)"
+            case "waiting_inventory": return "waiting for inventory refresh (not activated; run \(BuildEnvironment.current.cliName) autopilot models)"
             default: return phase
             }
         }

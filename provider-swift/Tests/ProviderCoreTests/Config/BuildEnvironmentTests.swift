@@ -28,6 +28,63 @@ struct BuildEnvironmentTests {
         #expect(BuildEnvironment.dev.modelCDNURL == "https://models.darkbloom.ai")
     }
 
+    @Test func productionIdentityIsUnchanged() {
+        let prod = BuildEnvironment.prod
+        #expect(prod.cliName == "darkbloom")
+        #expect(prod.enclaveName == "darkbloom-enclave")
+        #expect(prod.appBundleName == "Darkbloom.app")
+        #expect(prod.installDirectoryName == ".darkbloom")
+        #expect(prod.configDirectoryName == ".config/darkbloom")
+        #expect(prod.legacyConfigDirectoryNames == [".config/eigeninference"])
+        #expect(prod.launchAgentLabel == "io.darkbloom.provider")
+        #expect(prod.watchdogAgentLabel == "io.darkbloom.watchdog")
+        #expect(prod.logSubsystem == "com.darkbloom.provider")
+        #expect(prod.serviceLogSubsystem == "dev.darkbloom.provider")
+        #expect(prod.defaultBackendPort == 8100)
+        #expect(prod.keychainServicePrefix == "io.darkbloom")
+        #expect(KeychainWrappedKEKStorage.defaultService == "io.darkbloom.kv.kek.v1")
+        #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
+        #expect(LaunchAgent.label == "io.darkbloom.provider")
+        #expect(WatchdogAgent.label == "io.darkbloom.watchdog")
+        #expect(BackendSettings().port == 8100)
+        #expect(ConfigManager.parse("").backend.port == 8100)
+        let home = URL(fileURLWithPath: "/Users/op")
+        #expect(ConfigManager.defaultConfigPath(home: home).path == "/Users/op/.config/darkbloom/provider.toml")
+        #expect(prod.installDirectory(home: home).path == "/Users/op/.darkbloom")
+    }
+
+    @Test func devIdentityIsSuffixed() {
+        let dev = BuildEnvironment.dev
+        #expect(dev.cliName == "darkbloom-dev")
+        #expect(dev.enclaveName == "darkbloom-enclave-dev")
+        #expect(dev.appBundleName == "Darkbloom Dev.app")
+        #expect(dev.installDirectoryName == ".darkbloom-dev")
+        #expect(dev.configDirectoryName == ".config/darkbloom-dev")
+        #expect(dev.legacyConfigDirectoryNames.isEmpty)
+        #expect(dev.launchAgentLabel == "io.darkbloom.provider.dev")
+        #expect(dev.watchdogAgentLabel == "io.darkbloom.watchdog.dev")
+        #expect(dev.logSubsystem == "com.darkbloom.provider.dev")
+        #expect(dev.serviceLogSubsystem == "dev.darkbloom.provider.dev")
+        #expect(dev.defaultBackendPort == 8101)
+        #expect(dev.keychainServicePrefix == "io.darkbloom.dev")
+        #expect(dev.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom-dev")
+    }
+
+    @Test func environmentsShareNoPathPortOrLabel() {
+        let identities = BuildEnvironment.allCases.map { environment in
+            [environment.cliName, environment.enclaveName, environment.appBundleName,
+             environment.installDirectoryName, environment.configDirectoryName,
+             environment.launchAgentLabel, environment.watchdogAgentLabel,
+             environment.logSubsystem, environment.serviceLogSubsystem,
+             environment.keychainServicePrefix]
+                + environment.legacyConfigDirectoryNames
+        }
+        let all = identities.flatMap { $0 }
+        #expect(Set(all).count == all.count)
+        let ports = BuildEnvironment.allCases.map(\.defaultBackendPort)
+        #expect(Set(ports).count == ports.count)
+    }
+
     @Test func webSocketAndHTTPFormsAgree() {
         for environment in BuildEnvironment.allCases {
             #expect(coordinatorHTTPBase(environment.coordinatorWebSocketURL) == environment.coordinatorHTTPURL)

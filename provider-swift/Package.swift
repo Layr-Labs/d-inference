@@ -3,13 +3,14 @@
 import PackageDescription
 import Foundation
 
-// Release builds select the default coordinator and model CDN. The release
-// workflow sets DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
+// Release builds select the default coordinator, model CDN and install
+// identity (BuildEnvironment). The release workflow sets
+// DARKBLOOM_RELEASE_ENVIRONMENT; every other build is prod.
 let releaseEnvironment = ProcessInfo.processInfo.environment["DARKBLOOM_RELEASE_ENVIRONMENT"]
     .flatMap { $0.isEmpty ? nil : $0 } ?? "prod"
 precondition(["prod", "dev"].contains(releaseEnvironment),
              "DARKBLOOM_RELEASE_ENVIRONMENT must be prod or dev")
-let providerCoreSwiftSettings: [SwiftSetting] =
+let buildEnvironmentSwiftSettings: [SwiftSetting] =
     releaseEnvironment == "dev" ? [.define("DARKBLOOM_ENV_DEV")] : []
 
 let package = Package(
@@ -67,9 +68,19 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", exact: "2.6.0"),
     ],
     targets: [
+        // BuildEnvironment only. ProviderAppAttest and ProviderCore both need
+        // the install identity, and ProviderCore re-exports this module.
+        .target(
+            name: "ProviderBuildEnvironment",
+            path: "Sources/ProviderBuildEnvironment",
+            swiftSettings: buildEnvironmentSwiftSettings
+        ),
         .target(
             name: "ProviderAppAttest",
-            dependencies: [.product(name: "Sodium", package: "swift-sodium")],
+            dependencies: [
+                "ProviderBuildEnvironment",
+                .product(name: "Sodium", package: "swift-sodium"),
+            ],
             path: "Sources/ProviderAppAttest",
             linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security"), .linkedLibrary("bsm")]
         ),
@@ -137,6 +148,7 @@ let package = Package(
             name: "ProviderCore",
             dependencies: [
                 "ProviderAppAttest",
+                "ProviderBuildEnvironment",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -153,8 +165,7 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "NIOCore", package: "swift-nio"),
             ],
-            path: "Sources/ProviderCore",
-            swiftSettings: providerCoreSwiftSettings
+            path: "Sources/ProviderCore"
         ),
 
         // ----------------------------------------------------------------

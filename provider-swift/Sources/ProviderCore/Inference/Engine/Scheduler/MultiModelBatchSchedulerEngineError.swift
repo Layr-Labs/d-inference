@@ -48,6 +48,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// reasoning. Deterministic request error, before acceptance or render;
     /// the field is a closed wire spelling, never a caller value.
     case reasoningCannotBeDisabled(ThinkingDisableField)
+    /// LFM2.5 received a structured-output `response_format` that nothing
+    /// enforces. Deterministic request error, before acceptance or render;
+    /// the mode is a closed wire spelling, never a caller value.
+    case responseFormatNotEnforced(UnenforcedResponseFormat)
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -116,6 +120,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
         case .reasoningCannotBeDisabled(let field):
             return LFM2ReasoningControlPolicy.rejectionMessage(for: field)
+        case .responseFormatNotEnforced(let format):
+            return LFM2ResponseFormatPolicy.rejectionMessage(for: format)
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

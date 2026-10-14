@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -562,13 +562,20 @@ markers. This does not admit forced tool choice: `required`/named still fail
 closed and the tool-constraint capability is not advertised. Reasoning cannot
 be disabled: for the exact ids, `LFM2ReasoningControlPolicy` refuses top-level
 `enable_thinking: false`, `chat_template_kwargs.enable_thinking: false`,
-`reasoning.enabled: false`, and `reasoning.effort` / `reasoning_effort` of
-`none`/`off`/`0` (shadowed spellings included, via raw-body
-`ThinkingDisableEvidence`) with `reasoningCannotBeDisabled` before acceptance,
-model load or template render. The coordinator wire carries the closed
+`thinking: false`, `chat_template_kwargs.thinking: false`, Anthropic
+`thinking: {"type": "disabled"}` (the coordinator lowers `/v1/messages` with
+`thinking` kept), `reasoning.enabled: false`, and `reasoning.effort` /
+`reasoning_effort` of `none`/`off`/`0` (shadowed spellings included, via
+raw-body `ThinkingDisableEvidence`) with `reasoningCannotBeDisabled` before
+acceptance, model load or template render. Structured output is not enforced
+for this model (the `response_format` instruction is prompt-only and no
+grammar applies to `lfm2_moe`), so `LFM2ResponseFormatPolicy` refuses
+`response_format` `json_object`/`json_schema` (Responses `text.format` after
+coordinator lowering) with `responseFormatNotEnforced` at the same three gates;
+`text` is accepted. The coordinator wire carries the closed
 `invalid_request` 400 (`client_error`: terminal, not retried, not charged), so
 coordinator clients see the generic "invalid inference request"; the local HTTP
-server returns a fixed message naming the offending field. Effort hints
+server returns a fixed message naming the offending field or format. Effort hints
 (`low`/`medium`/`high`) and absence are accepted and render the identical
 prompt: the template has no effort control
 (`provider-swift/Sources/ProviderCore/Inference/Prompting/LFM2ReasoningControlPolicy.swift`).

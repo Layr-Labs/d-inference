@@ -57,7 +57,7 @@ enum ProviderPromptContractPipeline {
         preserveMiMoMediaParts: Bool = false
     ) throws -> NormalizedInput {
         try validateNativeControls(templateControls, modelType: modelType)
-        try LFM2ReasoningControlPolicy.validate(request: request, controls: templateControls)
+        try LFM2RequestPolicy.validate(request: request, controls: templateControls)
         try MediaIngest.rejectUnsupportedAudio(request,
             modelType: preserveMiMoMediaParts ? modelType : nil)
         try DiffusionGemmaReasoningControl.validate(

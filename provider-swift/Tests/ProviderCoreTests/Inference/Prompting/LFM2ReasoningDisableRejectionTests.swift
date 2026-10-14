@@ -36,6 +36,12 @@ struct LFM2ReasoningDisableRejectionTests {
          .chatTemplateKwargsEnableThinking),
         (["reasoning": ["enabled": true], "reasoning_effort": "none"], .topLevelReasoningEffort),
         (["reasoning": ["enabled": false, "effort": "high"]], .reasoningEnabled),
+        (["thinking": false], .thinking),
+        (["thinking": ["type": "disabled"]], .thinkingType),
+        (["thinking": ["type": " DISABLED "]], .thinkingType),
+        (["chat_template_kwargs": ["thinking": false]], .chatTemplateKwargsThinking),
+        (["chat_template_kwargs": ["enable_thinking": true, "thinking": false]], .chatTemplateKwargsThinking),
+        (["thinking": ["type": "disabled"], "reasoning_effort": "none"], .topLevelReasoningEffort),
     ] }
 
     static var acceptedForms: [[String: Any]] { [
@@ -44,6 +50,8 @@ struct LFM2ReasoningDisableRejectionTests {
         ["reasoning_effort": "low"], ["reasoning_effort": "medium"], ["reasoning_effort": "high"],
         ["reasoning": ["enabled": true]], ["enable_thinking": true],
         ["chat_template_kwargs": ["enable_thinking": true]],
+        ["thinking": true], ["thinking": ["type": "enabled", "budget_tokens": 1024]],
+        ["chat_template_kwargs": ["thinking": true]],
         // Wrong types are ignored by the permissive control decode, as before.
         ["enable_thinking": "false"], ["reasoning_effort": 0],
     ] }
@@ -73,7 +81,7 @@ struct LFM2ReasoningDisableRejectionTests {
         }
         #expect(ThinkingDisableField.allCases.map(\.rawValue) == [
             "enable_thinking", "chat_template_kwargs.enable_thinking", "reasoning.enabled",
-            "reasoning.effort", "reasoning_effort",
+            "reasoning.effort", "reasoning_effort", "thinking", "thinking.type", "chat_template_kwargs.thinking",
         ])
     }
 
@@ -116,6 +124,8 @@ struct LFM2ReasoningDisableRejectionTests {
             (["enable_thinking": false], .enableThinking),
             (["chat_template_kwargs": ["enable_thinking": false]], .chatTemplateKwargsEnableThinking),
             (["reasoning_effort": "none"], .topLevelReasoningEffort),
+            (["thinking": ["type": "disabled"]], .thinkingType),
+            (["chat_template_kwargs": ["thinking": false]], .chatTemplateKwargsThinking),
         ]
         for (control, field) in raw {
             var object: [String: Any] = ["model": model, "input": "hi"]
@@ -181,6 +191,29 @@ struct LFM2ReasoningDisableRejectionTests {
         #expect(error["type"] as? String == "invalid_request_error")
         #expect(error["message"] as? String
             == LFM2ReasoningControlPolicy.rejectionMessage(for: .chatTemplateKwargsEnableThinking))
+    }
+
+    /// Structured output is refused with a fixed message naming only the
+    /// closed format spelling.
+    @Test func localHTTPServerNamesTheUnenforcedResponseFormat() async throws {
+        for format in UnenforcedResponseFormat.allCases {
+            let responder = CORSResponder(inner: ThrowingResponder(
+                error: MultiModelBatchSchedulerEngineError.responseFormatNotEnforced(format)))
+            let request = Request(
+                head: .init(method: .post, scheme: "http", authority: "localhost", path: "/v1/chat/completions"),
+                body: .init(buffer: ByteBuffer()))
+            let context = BasicRequestContext(source: ApplicationRequestContextSource(
+                channel: EmbeddedChannel(), logger: Logger(label: #function)))
+            let response = try await responder.respond(to: request, context: context)
+            #expect(response.status == .badRequest)
+            let collector = BodyCollector()
+            try await response.body.write(CollectingWriter(collector: collector))
+            let json = try #require(JSONSerialization.jsonObject(
+                with: Data(collector.buffer.readableBytesView)) as? [String: Any])
+            let error = try #require(json["error"] as? [String: Any])
+            #expect(error["type"] as? String == "invalid_request_error")
+            #expect(error["message"] as? String == LFM2ResponseFormatPolicy.rejectionMessage(for: format))
+        }
     }
 
     @Test(arguments: lfmIDs)

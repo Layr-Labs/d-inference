@@ -431,10 +431,11 @@ extension ProviderLoop {
             rejectInvalidRequest() // Never publish raw decrypted validation details.
             return
         }
-        // Exact-id reasoning-only refusal: before acceptance, admission or a
-        // cold load. The typed error maps to the closed 400 client_error frame.
+        // Exact-id LFM2.5 refusals (reasoning disable, unenforced
+        // response_format): before acceptance, admission or a cold load. The
+        // typed errors map to the closed 400 client_error frame.
         do {
-            try LFM2ReasoningControlPolicy.validate(request: chatRequest, controls: templateControls)
+            try LFM2RequestPolicy.validate(request: chatRequest, controls: templateControls)
         } catch {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(

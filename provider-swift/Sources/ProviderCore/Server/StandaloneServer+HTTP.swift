@@ -153,6 +153,10 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             // Fixed text naming a closed field spelling; no caller content.
             return Self.openAIErrorResponse(
                 status: .badRequest, message: LFM2ReasoningControlPolicy.rejectionMessage(for: field))
+        } catch MultiModelBatchSchedulerEngineError.responseFormatNotEnforced(let format) {
+            // Fixed text naming a closed response_format mode; no caller content.
+            return Self.openAIErrorResponse(
+                status: .badRequest, message: LFM2ResponseFormatPolicy.rejectionMessage(for: format))
         } catch let error where error is MultiModelBatchSchedulerEngineError
             || error is MediaIngest.MediaError
         {

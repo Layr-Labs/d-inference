@@ -620,6 +620,14 @@ import CryptoKit
             expect(names == Set(model.files.map(\.0) + ["manifest.json"]), "the placed folder holds exactly the manifest's files: \(names.sorted())")
             for (path, data) in model.files { expect((try? Data(contentsOf: placed.appendingPathComponent(path))) == data, "placed \(path) byte for byte") }
         } catch { expect(false, "staging left by a renamed copy: \(error)") }
+        // A manifest with files in a subfolder (as MiMo's audio_tokenizer/) commits: the folders on the way are its own.
+        let store3 = temporary("store3")
+        do {
+            let nested = try ClusterModelReceiver(artifact: bad.artifact, store: store3, folder: "nested", expectedAggregate: nil)
+            _ = try send(try ClusterModelSender(artifact: bad.artifact, directory: source(bad)), to: nested, from: try nested.begin().offsets)
+            let placed = try nested.commit()
+            expect((try? Data(contentsOf: placed.appendingPathComponent("config.json/x"))) == model.files[0].1, "a file in a subfolder is placed")
+        } catch { expect(false, "subfolder manifest: \(error)") }
         // A file that appears in the staging during the copy refuses the commit; nothing is placed.
         let store2 = temporary("store2")
         do {

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "releaseVersionMarker": "-dev.",
+  "swiftProducts": {
+    "cli": "darkbloom",
+    "enclave": "darkbloom-enclave"
+  },
+  "environments": {
+    "prod": {
+      "cliName": "darkbloom",
+      "enclaveName": "darkbloom-enclave",
+      "appBundleName": "Darkbloom.app",
+      "appDisplayName": "Darkbloom",
+      "installDirectoryName": ".darkbloom",
+      "configDirectoryName": ".config/darkbloom",
+      "legacyConfigDirectoryNames": [".config/eigeninference"],
+      "launchAgentLabel": "io.darkbloom.provider",
+      "watchdogAgentLabel": "io.darkbloom.watchdog",
+      "logSubsystem": "com.darkbloom.provider",
+      "serviceLogSubsystem": "dev.darkbloom.provider",
+      "defaultBackendPort": 8100,
+      "keychainServicePrefix": "io.darkbloom",
+      "coordinatorHTTPURL": "https://api.darkbloom.dev",
+      "coordinatorWebSocketURL": "wss://api.darkbloom.dev/ws/provider",
+      "modelCDNURL": "https://models.darkbloom.ai"
+    },
+    "dev": {
+      "cliName": "darkbloom-dev",
+      "enclaveName": "darkbloom-enclave-dev",
+      "appBundleName": "Darkbloom Dev.app",
+      "appDisplayName": "Darkbloom Dev",
+      "installDirectoryName": ".darkbloom-dev",
+      "configDirectoryName": ".config/darkbloom-dev",
+      "legacyConfigDirectoryNames": [],
+      "launchAgentLabel": "io.darkbloom.provider.dev",
+      "watchdogAgentLabel": "io.darkbloom.watchdog.dev",
+      "logSubsystem": "com.darkbloom.provider.dev",
+      "serviceLogSubsystem": "dev.darkbloom.provider.dev",
+      "defaultBackendPort": 8101,
+      "keychainServicePrefix": "io.darkbloom.dev",
+      "coordinatorHTTPURL": "https://api.dev.darkbloom.dev",
+      "coordinatorWebSocketURL": "wss://api.dev.darkbloom.dev/ws/provider",
+      "modelCDNURL": "https://models.darkbloom.ai"
+    }
+  }
+}

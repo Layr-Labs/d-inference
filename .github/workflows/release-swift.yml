@@ -9,11 +9,12 @@ name: Release Provider Bundle (Swift)
 #   - bin/darkbloom, bin/darkbloom-enclave, bin/mlx.metallib: regular-file
 #     copies of the app's CLI, Secure Enclave helper and Metal kernels. Release
 #     hashes are computed from them; installers verify them, then install the app.
-# A dev release is packaged as Darkbloom Dev.app with the executables
-# darkbloom-dev and darkbloom-enclave-dev, so it installs beside production
-# (scripts/provider_release_identity.py). The bundle identifier, the signing
-# identity, the flat bin/ names and the bundle file name are the same for both;
-# the coordinator's release registration requires the last two.
+# A dev release is packaged with the dev app and executable names from
+# provider-swift/identity/provider-identity.json, so it installs beside
+# production. scripts/provider_release_identity.py exports them. The bundle
+# identifier, the signing identity, the flat bin/ names (the SwiftPM product
+# names) and the bundle file name are the same for both; the coordinator's
+# release registration requires the last two.
 #
 # No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
 # build. The legacy `release.yml` was deleted alongside `app/` once we
@@ -234,7 +235,7 @@ jobs:
           METALLIB: ${{ steps.build.outputs.metallib }}
         run: |
           set -euo pipefail
-          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/darkbloom" --version)"
+          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$PRODUCT_CLI_NAME" --version)"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/provider-signing-validation.py stage \
             --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
@@ -690,10 +691,9 @@ jobs:
           # requires bin/darkbloom to be a regular file — symlinks fail the
           # tar.TypeReg check.
           mkdir -p "$STAGE/bin"
-          # The flat names are the same for a dev app, whose executables are
-          # darkbloom-dev and darkbloom-enclave-dev.
-          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/darkbloom"
-          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/darkbloom-enclave"
+          # The flat copies keep the SwiftPM product names for both identities.
+          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$PRODUCT_CLI_NAME"
+          cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$PRODUCT_ENCLAVE_NAME"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
           # Notarize only the canonical app. The flat bin/ copies exist solely
@@ -759,14 +759,14 @@ jobs:
 
           # Stapling the bundle must not change the executable bytes registered
           # with the coordinator and verified by provider self-update.
-          cmp "$STAGE/bin/darkbloom" "$APP/Contents/MacOS/$CLI_NAME"
-          cmp "$STAGE/bin/darkbloom-enclave" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          cmp "$STAGE/bin/$PRODUCT_CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
+          cmp "$STAGE/bin/$PRODUCT_ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
           cmp "$STAGE/bin/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
 
           tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
           tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
+          grep -qx "./bin/$PRODUCT_CLI_NAME" /tmp/darkbloom-bundle-files.txt
+          grep -qx "./bin/$PRODUCT_ENCLAVE_NAME" /tmp/darkbloom-bundle-files.txt
           grep -qx "./$APP_NAME/Contents/MacOS/$CLI_NAME" /tmp/darkbloom-bundle-files.txt
           grep -qx "./$APP_NAME/Contents/MacOS/$ENCLAVE_NAME" /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
@@ -870,7 +870,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
             "$SMOKE_ROOT/$APP_NAME/Contents/Info.plist")" = "$VERSION"
 
-          BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/darkbloom" | cut -d' ' -f1)
+          BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$PRODUCT_CLI_NAME" | cut -d' ' -f1)
           CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
             "$SMOKE_ROOT/$APP_NAME/Contents/MacOS/$CLI_NAME" 2>&1 \
             | sed -n 's/^CandidateCDHashFull sha256=//p')

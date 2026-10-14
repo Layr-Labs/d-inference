@@ -203,29 +203,46 @@ is historical; verify current endpoints with the platform owner.
 
 A dev build installs and runs beside a production provider on the same Mac.
 The two installs do not share a path, a port, a launchd label or a keychain
-item, and each command prints its own name in its help text:
+item, and each command prints its own name in its help text. The table is a
+generated copy of `provider-swift/identity/provider-identity.json`, the only
+declaration of these values:
 
-| Item | Production | Dev |
+<!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
+
+| Field | Production | Dev |
 |---|---|---|
-| CLI command | `darkbloom` | `darkbloom-dev` |
-| Secure Enclave helper | `darkbloom-enclave` | `darkbloom-enclave-dev` |
-| App bundle (`CFBundleName`) | `Darkbloom.app` (`Darkbloom`) | `Darkbloom Dev.app` (`Darkbloom Dev`) |
-| Install and data directory | `~/.darkbloom` | `~/.darkbloom-dev` |
-| Configuration directory | `~/.config/darkbloom` | `~/.config/darkbloom-dev` |
-| Provider LaunchAgent label | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
-| Watchdog LaunchAgent label | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
-| Unified log subsystems | `dev.darkbloom.provider`, `com.darkbloom.provider` | `dev.darkbloom.provider.dev`, `com.darkbloom.provider.dev` |
-| Default backend port | `8100` | `8101` |
-| Keychain service and key label prefix | `io.darkbloom` | `io.darkbloom.dev` |
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
+| `defaultBackendPort` | `8100` | `8101` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
+| `releaseVersionMarker` | versions without it | `-dev.` |
 
-`BuildEnvironment` in
-`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift` holds
-these values. The release lane selects the packaged names from the version
-(`scripts/provider_release_identity.py`). It renames the SwiftPM products
-`darkbloom` and `darkbloom-enclave` when it packages a dev app. The installer
+<!-- END provider identity -->
+
+`scripts/generate-provider-identity.py` generates
+`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift` (the
+`BuildEnvironment` properties) and this table from the JSON.
+`scripts/test-provider-identity.py` fails when a generated file, the Python
+release tooling or the installer differs from the JSON. The release lane reads
+the packaged names from the JSON through `scripts/provider_release_identity.py`.
+It renames the SwiftPM products (`swiftProducts` in the JSON) when it packages a
+dev app. The installer
 selects the same names from the version that `/v1/releases/latest` returns
-(`scripts/install.sh`, `select_provider_identity`). Only production reads the
-legacy `~/.config/eigeninference` directory.
+(`scripts/install.sh`, `select_provider_identity`). The installer must work as
+`curl | bash`, so it keeps its own copy of the names; the test compares that copy
+with the JSON.
 
 These values are the same for both builds:
 

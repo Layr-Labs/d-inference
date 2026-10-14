@@ -6,6 +6,10 @@ import subprocess
 import tempfile
 import unittest
 
+from provider_release_identity import DOCUMENT, identity
+
+DEV_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarker"] + "12"
+
 
 class InstallerOnboardingTests(unittest.TestCase):
     def run_setup(self, version, enrolled=False, request_fails=False, interactive=False,
@@ -92,9 +96,9 @@ echo "next installation phase"
     def test_dev_release_names_the_dev_cli(self):
         for version in ("27.0", "26.5"):
             with self.subTest(version=version):
-                output, _ = self.run_setup(version, release="0.9.20-dev.12")
-                self.assertIn("darkbloom-dev login", output)
-                self.assertNotIn("darkbloom login", output)
+                output, _ = self.run_setup(version, release=DEV_RELEASE)
+                self.assertIn(identity(DEV_RELEASE)["cliName"] + " login", output)
+                self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
 
     def test_legacy_setup_never_attempts_anonymous_enrollment_or_fallback(self):
         output, calls = self.run_setup("26.5", request_fails=True)

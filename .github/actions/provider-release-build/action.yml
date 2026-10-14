@@ -210,6 +210,14 @@ runs:
         MIMO_V26_SERIAL_NATIVE_TESTS: '1'
         MIMO_V26_MANAGED_AUDIO_PROVIDER_TESTS: '1'
       run: ../scripts/run-nested-suite.sh testNativeAudioRelease --no-parallel
+    - name: Resolve provider product and packaged names
+      if: inputs.lane == 'release'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      # Exports PRODUCT_CLI_NAME and PRODUCT_ENCLAVE_NAME from
+      # provider-swift/identity/provider-identity.json for this and later steps.
+      run: python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"
     - name: Build optimized provider products
       if: inputs.lane == 'release'
       id: products
@@ -217,11 +225,11 @@ runs:
       working-directory: provider-swift
       run: |
         set -euo pipefail
-        swift build -c release --product darkbloom
-        swift build -c release --product darkbloom-enclave
+        swift build -c release --product "$PRODUCT_CLI_NAME"
+        swift build -c release --product "$PRODUCT_ENCLAVE_NAME"
         swift build -c release --product darkbloom-fan-helper
         BIN_DIR=$(swift build -c release --show-bin-path)
-        for product in darkbloom darkbloom-enclave darkbloom-fan-helper; do
+        for product in "$PRODUCT_CLI_NAME" "$PRODUCT_ENCLAVE_NAME" darkbloom-fan-helper; do
           test -x "$BIN_DIR/$product"
         done
         echo "bin_dir=$BIN_DIR" >> "$GITHUB_OUTPUT"

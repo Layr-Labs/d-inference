@@ -20,6 +20,11 @@ MAX_TOTAL_BYTES = 2 << 30
 MAX_ARCHIVE_MEMBERS = 16_384
 
 
+def executables(names):
+    """(SwiftPM product, packaged executable) pairs for one identity."""
+    return [(PRODUCTS["cli"], names["cliName"]), (PRODUCTS["enclave"], names["enclaveName"])]
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -50,21 +55,21 @@ def stage(arguments):
     root = arguments.output
     root.mkdir(parents=True, exist_ok=False)
     names = identity(arguments.version)
-    app = root / names["app"]
+    app = root / names["appBundleName"]
     binaries = app / "Contents/MacOS"
     helpers = app / "Contents/Helpers"
     resources = app / "Contents/Resources/darkbloom-runtime-capabilities"
     for path in [binaries, helpers, resources, root / "validation-inputs"]:
         path.mkdir(parents=True)
     # The SwiftPM products keep their names; a dev release renames them here.
-    for key in ["cli", "enclave"]:
-        shutil.copy2(arguments.bin / PRODUCTS[key], binaries / names[key])
+    for product, name in executables(names):
+        shutil.copy2(arguments.bin / product, binaries / name)
     shutil.copy2(arguments.bin / "darkbloom-fan-helper", helpers / "darkbloom-fan-helper")
     shutil.copy2(arguments.metallib, binaries / "mlx.metallib")
     (resources / "fan-helper-v1").write_text("1\n")
     info = {
-        "CFBundleIdentifier": APP_ID, "CFBundleExecutable": names["cli"],
-        "CFBundleName": names["display_name"], "CFBundleVersion": arguments.version,
+        "CFBundleIdentifier": APP_ID, "CFBundleExecutable": names["cliName"],
+        "CFBundleName": names["appDisplayName"], "CFBundleVersion": arguments.version,
         "CFBundleShortVersionString": arguments.version,
         "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "14.0",
     }
@@ -126,14 +131,14 @@ def unpack(arguments):
 
 def check_info(root, version):
     names = identity(version)
-    path = root / names["app"] / "Contents/Info.plist"
+    path = root / names["appBundleName"] / "Contents/Info.plist"
     if not path.is_file():
-        raise ValueError(f"Artifact has no {names['app']} for version {version}")
+        raise ValueError(f"Artifact has no {names['appBundleName']} for version {version}")
     with path.open("rb") as source:
         info = plistlib.load(source)
     required = {"CFBundleIdentifier": APP_ID, "CFBundleVersion": version,
-                "CFBundleShortVersionString": version, "CFBundleExecutable": names["cli"],
-                "CFBundleName": names["display_name"]}
+                "CFBundleShortVersionString": version, "CFBundleExecutable": names["cliName"],
+                "CFBundleName": names["appDisplayName"]}
     if not isinstance(info, dict) or any(info.get(key) != value for key, value in required.items()):
         raise ValueError("App Info.plist identity/version does not match the expected source")
 
@@ -189,11 +194,11 @@ def receipt(arguments):
     unsigned = json.loads((root / "unsigned-files.json").read_text())
     check_info(root, unsigned["version"])
     names = identity(unsigned["version"])
-    app = root / names["app"]
+    app = root / names["appBundleName"]
     (root / "bin").mkdir()
     # The flat verifier copies keep the product names for both identities.
-    for key in ["cli", "enclave"]:
-        shutil.copy2(app / "Contents/MacOS" / names[key], root / "bin" / PRODUCTS[key])
+    for product, name in executables(names):
+        shutil.copy2(app / "Contents/MacOS" / name, root / "bin" / product)
     shutil.copy2(app / "Contents/MacOS/mlx.metallib", root / "bin/mlx.metallib")
     write_json(root / "signing-validation.json", {
         "schema": 1, "scope": "signing_and_notarization_validation_only",

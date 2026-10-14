@@ -108,18 +108,37 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 ## Dev Build Identity
 
 A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install
-identity, so it runs beside a production provider on the same Mac.
-`BuildEnvironment` in
-`provider-swift/Sources/ProviderBuildEnvironment/BuildEnvironment.swift` holds
-the values. Local builds and tests use the production values.
+identity, so it runs beside a production provider on the same Mac. The only
+declaration of the values is `provider-swift/identity/provider-identity.json`.
+`scripts/generate-provider-identity.py` generates the Swift `BuildEnvironment`
+properties (`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift`)
+and the table below from it; run the script after you change the JSON.
+`scripts/test-provider-identity.py` fails when they differ. Local builds and
+tests use the production values.
 
-| Item | Production | Dev |
+<!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
+
+| Field | Production | Dev |
 |---|---|---|
-| CLI command and app | `darkbloom` in `Darkbloom.app` | `darkbloom-dev` in `Darkbloom Dev.app` |
-| Install and configuration directories | `~/.darkbloom`, `~/.config/darkbloom` | `~/.darkbloom-dev`, `~/.config/darkbloom-dev` |
-| Provider LaunchAgent label | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
-| Default backend port | `8100` | `8101` |
-| Keychain service and key label prefix | `io.darkbloom` | `io.darkbloom.dev` |
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
+| `defaultBackendPort` | `8100` | `8101` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
+| `releaseVersionMarker` | versions without it | `-dev.` |
+
+<!-- END provider identity -->
 
 The code-signing identifier `io.darkbloom.provider` and the keychain access
 group `SLDQ2GJ6TL.io.darkbloom.provider` are the same for both builds. The

@@ -70,7 +70,7 @@ struct MiMoPhaseSplitHandoffTests {
         let shapes = try MiMoPhaseSplitState.expectedShapes(stage: stage.configuration, firstGlobalLayer: 0, frames: frames,
                                                             activationDType: "bfloat16")
         let arrays = try MiMoPhaseSplitState.exportArrays(caches: producer, configuration: stage.configuration,
-                                                          prompt: prompt, shapes: shapes)
+                                                          frames: frames, shapes: shapes)
         let received = zip(arrays, shapes).map { array, shape in
             MLXArray(array.asData().data, shape.shape, dtype: array.dtype)
         }
@@ -78,11 +78,11 @@ struct MiMoPhaseSplitHandoffTests {
         for layer in 0..<producer.count { attention[layer] = (received[2 * layer], received[2 * layer + 1]) }
         let fresh = stage.newCache()
         try MiMoPhaseSplitState.install(.init(committedTokens: prompt, attention: attention, recurrent: [:]),
-                                        into: fresh, shapes: shapes, prompt: prompt, configuration: stage.configuration)
+                                        into: fresh, shapes: shapes, frames: frames, configuration: stage.configuration)
         return fresh
     }
 
-    @Test(arguments: [(11, 4), (2, 4), (3, 4), (4, 4), (9, 2), (17, 5)])
+    @Test(arguments: [(11, 4), (1, 4), (2, 4), (3, 4), (4, 4), (9, 2), (13, 4), (17, 5)])
     func adoptedProducerDecodesBitForBit(prompt length: Int, chunk: Int) throws {
         let data = Equivalence.configuration(dtype: "bfloat16")
         let whole = try Equivalence.whole(data, dtype: .bfloat16)
@@ -111,14 +111,15 @@ struct MiMoPhaseSplitHandoffTests {
         let whole = try Equivalence.whole(data, dtype: .bfloat16)
         let plan = try MiMoLayerStagePlan(configuration: data, cut: 3)
         let stages = try Equivalence.stages(plan, from: whole, dtype: .bfloat16)
-        for (length, chunk) in [(1, 4), (3, 3), (6, 4), (13, 4), (12, 3)] {
+        // Single-token frames (a prompt of one token, a last frame of one) are written in place, not concatenated.
+        for (length, chunk) in [(1, 4), (2, 1), (3, 3), (5, 2), (6, 4), (13, 4), (12, 3), (7, 3)] {
             let prompt = (0..<length).map { (3 * $0 + 1) % Equivalence.vocabulary }
             let run = try Self.prefill(stages, prompt: prompt, chunk: chunk)
             let shapes = try MiMoPhaseSplitState.expectedShapes(stage: stages[0].configuration, firstGlobalLayer: 0,
                 frames: run.frames, activationDType: "bfloat16")
             // exportArrays refuses any array or rotation that differs from the derivation.
             let arrays = try MiMoPhaseSplitState.exportArrays(caches: run.caches[0], configuration: stages[0].configuration,
-                                                              prompt: length, shapes: shapes)
+                                                              frames: run.frames, shapes: shapes)
             #expect(zip(arrays, shapes).allSatisfy { $0.shape == $1.shape && $0.nbytes == $1.byteCount },
                     "prompt \(length) chunk \(chunk)")
         }
@@ -128,7 +129,7 @@ struct MiMoPhaseSplitHandoffTests {
             frames: [13], activationDType: "bfloat16")
         #expect(throws: (any Error).self) {
             _ = try MiMoPhaseSplitState.exportArrays(caches: run.caches[0], configuration: stages[0].configuration,
-                                                     prompt: 13, shapes: other)
+                                                     frames: [13], shapes: other)
         }
     }
 
@@ -139,5 +140,10 @@ struct MiMoPhaseSplitHandoffTests {
         #expect(try MiMoPhaseSplitState.slidingRetainedTokens(window: 128, frames: [100, 20]) == 120)
         #expect(try MiMoPhaseSplitState.slidingRetainedTokens(window: 128, frames: [100, 20, 30]) == 150)
         #expect(throws: (any Error).self) { _ = try MiMoPhaseSplitState.slidingRetainedTokens(window: 128, frames: []) }
+        // A last frame of one token goes in place: the buffer is cut to the window and rotates.
+        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [512, 1]) == (length: 128, index: 1))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [1]) == (length: 1, index: 1))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 128, step: 256, frames: [100, 1]) == (length: 101, index: 101))
+        #expect(try MiMoPhaseSplitState.slidingState(window: 3, step: 256, frames: [2, 2, 2, 2, 1]) == (length: 3, index: 1))
     }
 }

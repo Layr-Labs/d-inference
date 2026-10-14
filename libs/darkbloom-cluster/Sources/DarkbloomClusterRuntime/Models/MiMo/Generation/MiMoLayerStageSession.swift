@@ -79,8 +79,8 @@ final class MiMoLayerStageSession {
                   adopting.recurrent.isEmpty else {
                 throw ProbeError("Only the producer stage adopts, at the end of its prompt, with the agreed terms")
             }
-            try MiMoPhaseSplitState.install(adopting, into: fresh, shapes: split.shapes, prompt: request.promptCount,
-                                            configuration: stage.model.configuration)
+            try MiMoPhaseSplitState.install(adopting, into: fresh, shapes: split.shapes,
+                frames: try MiMoPhaseSplitState.frameTokenCounts(request), configuration: stage.model.configuration)
             schedule = try QwenLayerStageGenerationSchedule(request: request,
                                                             adoptedCommittedTokens: adopting.committedTokens)
         } else {
@@ -256,7 +256,7 @@ final class MiMoLayerStageSession {
             return try MLX.withError { error in
                 Stream.gpu.synchronize(); try error.check(); try check()
                 let arrays = try MiMoPhaseSplitState.exportArrays(caches: caches, configuration: stage.model.configuration,
-                    prompt: request.promptCount, shapes: split.shapes)
+                    frames: try MiMoPhaseSplitState.frameTokenCounts(request), shapes: split.shapes)
                 let bytes = arrays.map { $0.asData().data }
                 try error.check(); try check()
                 guard zip(bytes, split.shapes).allSatisfy({ $0.count == $1.byteCount }) else {

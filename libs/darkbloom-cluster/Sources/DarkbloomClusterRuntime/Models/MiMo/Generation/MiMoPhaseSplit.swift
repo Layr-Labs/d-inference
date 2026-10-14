@@ -27,18 +27,52 @@ enum MiMoPhaseSplitState {
         }
     }
 
-    /// The rotating cache's retained length after prompt frames of these lengths.
+    /// The rotating cache (`RotatingKVCache`, keep 0) after prompt frames of
+    /// these lengths, replayed by its own rules: a frame of several tokens is
+    /// concatenated (the cache keeps at most `window - 1` earlier positions,
+    /// in temporal order); a frame of one token is written in place (the
+    /// buffer grows by `step` up to the window, then rotates). Returns the
+    /// length of the arrays its `state` gives (its buffer, or the positions
+    /// written while fewer than the buffer) and its write index.
+    static func slidingState(window: Int, step: Int, frames: [Int]) throws -> (length: Int, index: Int) {
+        guard window >= 1, step >= 1, !frames.isEmpty, frames.allSatisfy({ $0 >= 1 }) else {
+            throw ProbeError("A sliding-window layer needs a positive window and step, and a prompt")
+        }
+        var capacity: Int?, index = 0, offset = 0
+        for count in frames {
+            if count == 1 {
+                if capacity == nil || (offset >= capacity! && capacity! < window) {
+                    capacity = (capacity ?? 0) + min(step, window - offset)
+                    index = offset
+                }
+                if capacity! - window > 0 { capacity = window; index = window }
+                if index == window { index = 0 }
+                offset += 1; index += 1
+            } else {
+                if var held = capacity {
+                    // Temporal order: an unrotated buffer written short of its end is cut at its index.
+                    if index != held, index >= offset { held = index }
+                    let trim = held - window + 1
+                    if trim > 0 { held -= trim }
+                    capacity = held + count
+                } else {
+                    capacity = count
+                }
+                offset += count; index = capacity!
+            }
+        }
+        return (offset < capacity! ? offset : capacity!, index)
+    }
+
+    /// The retained length alone (frames of several tokens each).
     static func slidingRetainedTokens(window: Int, frames: [Int]) throws -> Int {
-        guard window >= 1, !frames.isEmpty, frames.allSatisfy({ $0 >= 1 }) else {
-            throw ProbeError("A sliding-window layer needs a positive window and a prompt")
-        }
-        var length = 0
-        for (index, count) in frames.enumerated() {
-            // First frame: the cache takes the frame as it is. Later frames: the
-            // cache keeps at most window - 1 earlier positions, then appends.
-            length = (index == 0 ? 0 : min(length, window - 1)) + count
-        }
-        return length
+        try slidingState(window: window, step: defaultStep(window: window), frames: frames).length
+    }
+
+    /// The step a fresh rotating cache of this window is built with (the
+    /// class's own default, read back rather than assumed).
+    static func defaultStep(window: Int) -> Int {
+        Int(RotatingKVCache(maxSize: window).metaState[2]) ?? 256
     }
 
     /// Hand-off components of a producer stage after a prompt prefilled in
@@ -55,7 +89,8 @@ enum MiMoPhaseSplitState {
         var shapes: [QwenPhaseSplitStateShape] = []
         for local in 0..<configuration.numHiddenLayers {
             let geometry = try configuration.attentionGeometry(at: local)
-            let tokens = try geometry.slidingWindow.map { try slidingRetainedTokens(window: $0, frames: frames) } ?? prompt
+            let tokens = try geometry.slidingWindow.map {
+                try slidingState(window: $0, step: defaultStep(window: $0), frames: frames).length } ?? prompt
             for (component, width) in [("kv.keys", geometry.headDim), ("kv.values", geometry.valueHeadDim)] {
                 let shape = [1, geometry.keyValueHeads, tokens, width]
                 shapes.append(.init(globalLayerIndex: firstGlobalLayer + local, component: component, shape: shape,
@@ -67,16 +102,17 @@ enum MiMoPhaseSplitState {
 
     /// The rotating cache's metadata after the prompt (`RotatingKVCache.metaState`):
     /// keep 0, the window, the cache's own step, the prompt as its offset and
-    /// the retained length as its write index.
-    static func slidingMetadata(window: Int, retained: Int, prompt: Int, step: Int) -> [String] {
-        ["0", String(window), String(step), String(prompt), String(retained)]
+    /// the write index the frame grid gives.
+    static func slidingMetadata(window: Int, index: Int, prompt: Int, step: Int) -> [String] {
+        ["0", String(window), String(step), String(prompt), String(index)]
     }
 
     /// The producer caches' arrays after the prompt, in `shapes` order, each
     /// checked against its agreed shape and (for a rotating cache) the
     /// rotation the frame grid gives. Lazy views; the caller reads the bytes.
-    static func exportArrays(caches: [KVCache], configuration: MiMoV26Configuration, prompt: Int,
+    static func exportArrays(caches: [KVCache], configuration: MiMoV26Configuration, frames: [Int],
                              shapes: [QwenPhaseSplitStateShape]) throws -> [MLXArray] {
+        let prompt = frames.reduce(0, +)
         guard shapes.count == 2 * caches.count, caches.count == configuration.numHiddenLayers else {
             throw ProbeError("Producer caches differ from the agreed hand-off manifest")
         }
@@ -92,7 +128,9 @@ enum MiMoPhaseSplitState {
             let geometry = try configuration.attentionGeometry(at: local)
             if let rotating = cache as? RotatingKVCache {
                 guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]),
-                      rotating.metaState == slidingMetadata(window: window, retained: keys.shape[2], prompt: prompt, step: step) else {
+                      let expected = try? slidingState(window: window, step: step, frames: frames),
+                      expected.length == keys.shape[2],
+                      rotating.metaState == slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step) else {
                     throw ProbeError("Producer layer \(local) rotation differs from the request's frame grid")
                 }
             } else {
@@ -109,7 +147,8 @@ enum MiMoPhaseSplitState {
     /// growing cache takes keys and values as they are; a sliding layer's
     /// rotating cache also takes the rotation the frame grid gives.
     static func install(_ state: QwenLayerStageAdoptedState, into caches: [KVCache], shapes: [QwenPhaseSplitStateShape],
-                        prompt: Int, configuration: MiMoV26Configuration) throws {
+                        frames: [Int], configuration: MiMoV26Configuration) throws {
+        let prompt = frames.reduce(0, +)
         guard shapes.count == 2 * caches.count, state.attention.count == caches.count, state.recurrent.isEmpty,
               state.committedTokens == prompt, caches.allSatisfy({ $0.offset == 0 }) else {
             throw ProbeError("Adopted state names other layers or another frontier than the producer stage holds")
@@ -124,10 +163,12 @@ enum MiMoPhaseSplitState {
             }
             let geometry = try configuration.attentionGeometry(at: local)
             if let rotating = cache as? RotatingKVCache {
-                guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]) else {
-                    throw ProbeError("Adopted layer \(local) is not a sliding-window layer")
+                guard let window = geometry.slidingWindow, let step = Int(rotating.metaState[2]),
+                      let expected = try? slidingState(window: window, step: step, frames: frames),
+                      expected.length == keys.shape[2] else {
+                    throw ProbeError("Adopted layer \(local) is not the sliding-window layer the frame grid describes")
                 }
-                rotating.metaState = slidingMetadata(window: window, retained: keys.shape[2], prompt: prompt, step: step)
+                rotating.metaState = slidingMetadata(window: window, index: expected.index, prompt: prompt, step: step)
                 rotating.state = [arrays.keys, arrays.values]
             } else {
                 guard geometry.slidingWindow == nil, let simple = cache as? KVCacheSimple else {

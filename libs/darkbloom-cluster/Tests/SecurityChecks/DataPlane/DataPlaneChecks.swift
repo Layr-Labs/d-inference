@@ -227,7 +227,22 @@ func checkPinnedExchange() throws {
     let a = try ClusterDataPlaneKeyExchange(credential: members.credential(0), scopeSHA256: scope)
     let b = try ClusterDataPlaneKeyExchange(credential: members.credential(1), scopeSHA256: scope)
     try require(a.hello.count == 384 && b.hello.count == 384, "fixed hello size")
+    try refuses(ClusterDataPlaneTrustError.inactive, "tensor-parallel seal keys before confirmation") {
+        _ = try ClusterDataPlaneKeyExchange(credential: members.credential(0), scopeSHA256: scope)
+            .tensorParallelSealKeys(scope: Data(repeating: 7, count: 32))
+    }
     try exchange(a, b)
+    // The tensor-parallel seal keys: one per direction, the same on both
+    // ranks seen from each side, once per session.
+    let agreed = Data(repeating: 7, count: 32)
+    let ka = try a.tensorParallelSealKeys(scope: agreed), kb = try b.tensorParallelSealKeys(scope: agreed)
+    func bytes(_ key: SymmetricKey) -> Data { key.withUnsafeBytes { Data($0) } }
+    try require(bytes(ka.send) == bytes(kb.receive) && bytes(ka.receive) == bytes(kb.send)
+        && bytes(ka.send) != bytes(ka.receive) && bytes(ka.send).count == 32,
+        "tensor-parallel seal keys: one per direction, agreed by both ranks")
+    try refuses(ClusterDataPlaneTrustError.inactive, "tensor-parallel seal keys derived twice") {
+        _ = try a.tensorParallelSealKeys(scope: agreed)
+    }
     let frames = Frames()
     let l = try ClusterRecordLimits(maximumPlaintextBytes: 4096)
     let (ta, ra) = try a.makeTransport(io: MemoryIO(0, frames), limits: l, rekey: .dataPlane)

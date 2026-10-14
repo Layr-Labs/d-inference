@@ -218,7 +218,11 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             config["v_head_dim"] as? Int == 32, config["swa_v_head_dim"] as? Int == 32 else {
             throw FixtureError.payloadFixtureRequired
         }
-        if float32 { config["dtype"] = "float32" }
+        if float32 {
+            config["dtype"] = "float32"
+            // The rewrite converts router weights too; their dtype is declared separately.
+            config["moe_router_dtype"] = "float32"
+        }
         if asymmetric { config["v_head_dim"] = 64; config["swa_v_head_dim"] = 64 }
         let indexURL = root.appendingPathComponent("model.safetensors.index.json")
         var index = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
@@ -826,7 +830,8 @@ final class MiMoV26ServingLoadTests: XCTestCase {
             inspected = try MiMoV26ServingLoad.inspect(directory: root)
             XCTFail("FP32 must be refused before a serving load can be claimed")
         } catch {
-            XCTAssertEqual(error as? MiMoV26LoadFootprintError, .unsupportedProfile)
+            XCTAssertEqual(error as? MiMoV26LoadFootprintError, .unsupportedProfile,
+                "Unexpected preflight error: \(String(reflecting: error))")
         }
         XCTAssertNil(inspected)
         XCTAssertTrue(nativeOwners.isEmpty, "Preflight must not create a native owner")

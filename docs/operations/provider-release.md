@@ -18,8 +18,15 @@ A push to `master` that changes the provider or its release tooling publishes a
 dev release automatically. A `vX.Y.Z` tag publishes production. To find the
 newest dev release, read `https://api.dev.darkbloom.dev/v1/releases/latest`.
 
-`ProviderCore.version` is prepared as `0.9.20`; preparation does not publish a tag
-or release. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
+`ProviderCore.version` is prepared as `0.9.21`. This candidate excludes startup
+health-check timings from throughput learning and enables bounded calibration
+for ordinary autoregressive and native block engines without requiring a customer
+job. It pins the merged ordinary-request retirement API from
+[mlx-swift-lm #305](https://github.com/Layr-Labs/mlx-swift-lm/pull/305).
+Preparation does not tag, register or publish a release.
+
+`v0.9.20` was [published on 2026-10-12](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.20).
+Unrelated unreleased changelog entries remain separate. `v0.9.19` was [published on 2026-10-08](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.19)
 from `31a6dcbc658007ba160455f73749fe88960f9697`, and `v0.9.18` was
 [published on 2026-10-07](https://github.com/Layr-Labs/d-inference/releases/tag/v0.9.18)
 from `f57a671856bd7a9dd3646e0c77db6ef46751c854`. Publication does not establish

@@ -131,6 +131,11 @@ extension ProviderLoop {
             return
         }
 
+        // Schedule loaded engines before opening the coordinator connection.
+        // This is nonblocking; foreground work can still preempt calibration.
+        await refreshModelCalibration()
+        await updateAggregateCapacity()
+
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
         // Secure-Enclave-signed attestation below.

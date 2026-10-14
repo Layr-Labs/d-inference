@@ -297,7 +297,8 @@ public actor EngineV2Bridge {
     var performanceUpdates: EnginePerformanceUpdates?
     var performanceMeasurements = EnginePerformanceMeasurements()
     var prefillEvidenceRecovery = PrefillEvidenceRecovery()
-    var mimoCalibration = MimoCalibrationState()
+    var modelCalibration = ModelCalibrationState()
+    let calibrationPosturePermitsWork: @Sendable () -> Bool
     var prefillRequestsTotal: Int64 = 0
     var generatedTokensTotal: Int64 = 0
     var generationRequestsTotal: Int64 = 0
@@ -377,10 +378,14 @@ public actor EngineV2Bridge {
         pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
         advertisedContextTokens: Int? = nil,
+        calibrationPosturePermitsWork: @escaping @Sendable () -> Bool = {
+            !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.thermalState == .nominal
+        },
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
+        self.calibrationPosturePermitsWork = calibrationPosturePermitsWork
         self.usesNativeBlockTiming = engine is CBv2NativeBlockEngine
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind

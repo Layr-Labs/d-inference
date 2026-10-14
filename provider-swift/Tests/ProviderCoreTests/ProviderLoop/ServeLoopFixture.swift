@@ -43,7 +43,9 @@ struct ServeLoopFixture: Sendable {
         heartbeatIntervalSecs: UInt64 = 60,
         privateOnly: Bool = false,
         coordinatorURL overrideURL: String? = nil,
-        memoryGB: UInt64 = 64
+        memoryGB: UInt64 = 64,
+        models: [ModelInfo] = [],
+        backend: BackendSettings = BackendSettings()
     ) async throws -> ServeLoopFixture {
         let mock = MockCoordinator()
         let localURL = try await mock.start().mockProviderWebSocketURL()
@@ -63,10 +65,10 @@ struct ServeLoopFixture: Sendable {
         let signer = ServeLoopTestSigner()
         let loop = try ProviderLoop(
             config: .init(
-                coordinatorURL: coordinatorURL, hardware: hardware, models: [],
+                coordinatorURL: coordinatorURL, hardware: hardware, models: models,
                 config: .init(
                     provider: .init(name: "serve-loop", autoUpdate: false),
-                    backend: .init(),
+                    backend: backend,
                     coordinator: .init(
                         url: coordinatorURL,
                         heartbeatIntervalSecs: heartbeatIntervalSecs,

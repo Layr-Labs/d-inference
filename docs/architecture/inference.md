@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -117,6 +117,78 @@ feeds the same scheduler plan used by execution and first-token projection.
 An absent qualified cap preserves the existing environment/default behavior.
 The prefill-only stripe, one partial prefill, recurrent checkpoints and
 one-image-at-a-time vision execution keep their existing geometry.
+
+### Model startup calibration
+
+The startup health check exercises a one-token request through the serving
+adapter with local-only `EngineMeasurementPurpose.startupWarmup`. Its first-use
+timing never trains prefill, decode, workload-bucket or delivered-rate estimates.
+Work accounting, resource ownership and the health-check result are unchanged;
+overlapping customer requests remain independently measurable.
+
+Completed startup preloads and the pre-registration path schedule calibration
+without waiting for the first capacity tick. Ordinary model loads also schedule
+it after construction releases its device-work receipt. Capacity ticks retry
+when loading, foreground work or device posture initially prevents calibration.
+An uncancelled calibration retirement schedules the next eligible resident
+slot immediately; the process-wide owner still permits only one session at a
+time. That successor scheduling runs after the session's retirement, outside
+the task a preempting customer request waits for; a preempted session schedules
+no successor. Ordinary and native MiMo load
+completion share a handoff that releases the finished construction activity and
+offers the newly loaded slot first,
+while keeping the load-transition gate closed. It rechecks cancellation and
+native ownership before releasing the gate and waking parked requests. Existing
+foreground or calibration ownership can still defer calibration.
+`refreshModelCalibration` asks the loaded bridge's `startModelCalibrationIfNeeded`
+to measure its actual serving configuration. Ordinary `EngineV2` autoregressive engines, including dense and
+MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
+128-token warmup followed by two uncached solo probes
+of at most 512 prompt tokens and 32 output tokens. Completed calibration seeds
+prefill/decode evidence without requiring a customer job and runs once per loaded
+engine. Failure backs off for 120 seconds; interruption backs off for 30 seconds.
+An unfinished bootstrap retries when that backoff expires even if its completed
+probes left fresh partial rates. Fresh serving samples from an early request do
+not suppress an unfinished first bootstrap either. Only completed native MiMo
+maintenance waits for rate staleness. A replaced engine starts a new measurement epoch.
+
+Transaction-owned native MiMo slots retain the wider bootstrap and periodic
+maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
+affordable concurrency sweeps and solo refresh after 90 seconds. The existing
+15-second group deadline, context/KV limits and affordability checks bound work.
+All calibration requires an idle Mac in nominal thermal state outside Low Power
+Mode. Slots with a reviewed deadline profile never calibrate, because bounded
+probes must not enter deadline-qualified rates; those profiles keep their own
+applicability and posture checks.
+
+`IdleCalibrationCoordinator.beginForeground` cancels the probe when a customer
+request on any model arrives. Ordinary engines use `EngineV2.submitWithRetirement`
+to retain shared service and KV reservations until the actual submitted stream
+generation retires, including after an early watchdog terminal or cancelled
+waiter. The customer's original first-content deadline continues through this
+wait. Unsupported custom adapters remain ineligible until they expose a trusted
+retirement boundary. Unload and shutdown stop calibration without retaining
+retired weights.
+
+Only completed, uncached, isolated receipts seed solo rates. Batched measurements
+populate workload buckets without replacing solo admission rates. Calibration
+produces no served-request/output-token counters; its actual in-flight work stays
+visible until retirement. Prefill receipts retain their calibration identity
+after cell cleanup, so delayed callback consumption cannot turn a cancelled
+probe into serving counters or rate evidence. Fresh evidence is published through existing capacity
+heartbeats. Memory floors, concurrency ceilings and deadline enforcement remain
+unchanged. Scheduling is asynchronous: registration and customer service do not
+wait for the full calibration plan to finish. Once completed slot publication
+reaches this handoff, cancelling its load caller does not turn the resident slot into a failed
+load; shutdown and slot-owner validity checks still apply. See the calibration entries in the
+[code map](#code-map) for the enforcing paths and symbols.
+
+Each cell stages its numeric prefill/decode observations until all its requests
+have retired. Posture is checked before the cell and again before publication.
+A failed, cancelled or non-nominal cell discards its own staged observations
+and leaves the bootstrap retryable, including for the final cell. Earlier valid
+cells and independent serving observations remain intact. Serving observations
+still publish immediately, through the same rate/EWMA application helper.
 
 ### One request through the engine
 
@@ -1021,6 +1093,10 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Concern | File / symbol |
 |---|---|
 | Bridge submit path | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| Calibration scheduling | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelCalibration.swift` (`refreshModelCalibration`); `provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift` (`finishStartupPreload`); `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`finishModelLoad`); `provider-swift/Sources/ProviderCore/MiMo/ProviderLoop+NativeMiMo.swift` (`finishNativeMiMoSlotPublication`) |
+| Calibration plan and retry gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift` (`startModelCalibrationIfNeeded`, `runModelCalibration`); `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`startup`, `bootstrap`, `maintenance`) |
+| Calibration evidence and foreground priority | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` (`EnginePerformanceMeasurements`); `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`) |
+| Per-cell evidence publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+RateObservations.swift` (`recordRateObservation`, `applyRateObservation`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationCell`) |
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |

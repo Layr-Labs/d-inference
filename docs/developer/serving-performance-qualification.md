@@ -1,6 +1,6 @@
 # Qualify a serving performance profile
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 This procedure prepares an exact model/runtime/hardware profile for code review.
 It never installs a profile or changes a running provider. The deadline catalog
@@ -14,6 +14,15 @@ The ordinary admission path uses its resolved rates without the former fixed
 is separate work required to introduce a measured prediction-error envelope.
 
 ## Verify local evidence
+
+Keep [automatic startup calibration](../architecture/inference.md#model-startup-calibration)
+separate from profile qualification. `ModelCalibrationPolicy.startup` collects
+bounded, uncached solo measurements on the loaded engine without requiring customer work;
+`EngineMeasurementPurpose.startupWarmup` excludes the one-token health check
+from throughput learning. These observations refresh ordinary rate estimates,
+but do not qualify a timing envelope, increase concurrency or lower memory
+reserves. Continue to require the independent full-context evidence below before
+publishing a reviewed profile, including for engines with fresh startup rates.
 
 Normal CI checks the committed prompt-count coefficients, runtime guards,
 synthetic qualification regressions, and the provider deadline catalog.

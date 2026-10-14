@@ -22,8 +22,10 @@ requires the release qualifications below.
    ```
 
    Build scripts copy the landing page's fonts/logo and generate shared color
-   tokens and the icon. Generated copies are ignored by Git; edit the sources in
-   `landing/`. PP Telegraf remains governed by its supplied license.
+   tokens, the app icon and the menu bar template icon (a 16 pt mark rendered
+   from the vector at 1x and 2x, `trayTemplate.png` and `trayTemplate@2x.png`).
+   Generated copies are ignored by Git; edit the sources in `landing/`. PP
+   Telegraf remains governed by its supplied license.
 
 2. Preview UI development without touching a provider:
 

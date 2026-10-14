@@ -10,3 +10,4 @@ resources/icon.icns
 resources/icon.iconset/
 src/renderer/brand.css
 resources/trayTemplate.png
+resources/trayTemplate@2x.png

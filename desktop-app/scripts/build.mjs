@@ -23,3 +23,4 @@ await mkdir('resources', { recursive: true });
 await copyFile('../scripts/install.sh', 'resources/install-runtime.sh');
 
 await copyFile('resources/trayTemplate.png', 'dist/trayTemplate.png');
+await copyFile('resources/trayTemplate@2x.png', 'dist/trayTemplate@2x.png');

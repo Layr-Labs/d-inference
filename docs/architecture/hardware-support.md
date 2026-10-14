@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-13
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -43,7 +43,7 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | `defaultCapFraction` | `0.90` | `UnifiedMemoryCap.swift` |
 | `minimumReserveBytes` | `2 * 1024 * 1024 * 1024` (2 GiB OS floor) | `UnifiedMemoryCap.swift` |
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
-| `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
+| `measuredActivationFloorsBytes` | `"gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2` = 3.5 GiB; `"LiquidAI/LFM2.5-24B-A2B-MLX-4bit"` and `"lfm2.5-24b-a2b"`: `2 * 1024 * 1024 * 1024` = 2.0 GiB ([measurement](../reports/2026-10-13-lfm25-activation-floor.md)); exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
 | `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
@@ -103,6 +103,7 @@ loadIsServeable(measuredLiveKVHeadroomBytes) = measuredLiveKVHeadroomBytes ≥ m
 defaultLoadHeadroomGb = loadHeadroomBytes() / 2^30
     -- defaultActivationReserveBytes + minimumLoadKVBytes by default;
     -- measuredActivationFloorsBytes["gpt-oss-20b"] + minimumLoadKVBytes for a gpt-oss-20b-only serving set
+    -- 2.0 + 1.0 = 3.0 GiB for an LFM2.5-24B-A2B-only serving set (either exact id)
 
 freeForLoadGb(total, systemAvailable, gpuActive, gpuCache, reserve, outstanding)
     mlxUsed   = gpuActive + gpuCache

@@ -2,7 +2,7 @@
 //
 // Host-only serving policy for LFM2.5-24B-A2B (`lfm2_moe`): the exact-ID
 // advertise gate, paged KV and SSD complete-checkpoint defaults, the
-// unmeasured activation reserve, artifact sampling defaults, MTP off, and the
+// measured activation floor, artifact sampling defaults, MTP off, and the
 // attention-only pre-load KV rate. Loaded-model capability checks live in
 // `LFM25NativeAdapterTests`; these pin the defaults that must not regress.
 
@@ -182,14 +182,68 @@ struct LFM25ServingPolicyTests {
         #expect(expected == 20_480)
     }
 
-    @Test("unmeasured activation reserve: the 5.5 GiB default, no invented floor")
-    func activationReserveIsTheUnmeasuredDefault() {
+    @Test("measured activation floor: 2.0 GiB for the exact ids only")
+    func activationFloorIsMeasuredForExactIDs() {
+        let gib: UInt64 = 1024 * 1024 * 1024
+        // Worst measured non-KV peak 1.28 GiB (B=1, 131k, production slot)
+        // + 0.30 slack, rounded up to the 0.5 GiB grid. Mirrored by the
+        // coordinator's servabilityModelActivationFloorsGB (2.0).
         for id in lfmIDs {
+            #expect(UnifiedMemoryCap.measuredActivationFloorsBytes[id] == 2 * gib)
+            #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [id]) == 2 * gib)
+            #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+                explicit: nil, env: [:], modelIDs: [id]) == 2 * gib)
+            // Load headroom = floor + 1 GiB minimum serveable KV.
+            #expect(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: [id]) == 3 * gib)
+        }
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: lfmIDs) == 2 * gib)
+        // The default and the other measured entry are unchanged.
+        #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 11 * gib / 2)
+        #expect(UnifiedMemoryCap.measuredActivationFloorsBytes["gpt-oss-20b"] == 7 * gib / 2)
+        #expect(Set(UnifiedMemoryCap.measuredActivationFloorsBytes.keys)
+            == Set(["gpt-oss-20b"] + lfmIDs))
+    }
+
+    @Test("look-alike LFM ids stay on the unmeasured default")
+    func lookAlikeIDsKeepTheDefaultFloor() {
+        for id in unqualifiedLFMIDs {
             #expect(UnifiedMemoryCap.measuredActivationFloorsBytes[id] == nil)
             #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [id])
                 == UnifiedMemoryCap.defaultActivationReserveBytes)
         }
-        #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 11 * 1024 * 1024 * 1024 / 2)
+    }
+
+    @Test("serving set: an unmeasured or larger-floor member wins over LFM")
+    func servingSetTakesTheMaximumFloor() {
+        let gib: UInt64 = 1024 * 1024 * 1024
+        let lfm = EngineV2SupportedModels.lfm25_24bA2BModelID
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [lfm, "gpt-oss-20b"]) == 7 * gib / 2)
+        #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: [lfm, "gemma-4-26b"])
+            == UnifiedMemoryCap.defaultActivationReserveBytes)
+        // The operator env override stays raise-only against the LFM floor.
+        #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "1"], modelIDs: [lfm]) == 2 * gib)
+        #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+            explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"], modelIDs: [lfm]) == 4 * gib)
+    }
+
+    @Test("doctor/status requirement uses the LFM floor: 15.16 + 2.0 + 1.0")
+    func coldLoadRequirementUsesTheMeasuredFloor() {
+        // Scanner LOAD estimate of the pinned artifact (13,567,188,992 B
+        // x 1.2 / 2^30 = 15.16 GiB, see scannerLoadEstimate).
+        let estimate = 13_567_188_992.0 * 1.2 / 1_073_741_824.0
+        for id in lfmIDs {
+            #expect(abs(ModelFitDiagnostic.requiredGb(estimatedMemoryGb: estimate, modelID: id)
+                - (estimate + 3.0)) < 0.001)
+        }
+        // Without the id the flat default still applies (6.5 GiB headroom).
+        #expect(abs(ModelFitDiagnostic.requiredGb(estimatedMemoryGb: estimate) - (estimate + 6.5)) < 0.001)
+        let fit = ModelFitDiagnostic.diagnose(
+            modelID: EngineV2SupportedModels.lfm25_24bA2BModelID, weightGb: estimate, usableGb: 18.5)
+        #expect(fit.level == .pass)
+        let short = ModelFitDiagnostic.diagnose(
+            modelID: EngineV2SupportedModels.lfm25_24bA2BModelID, weightGb: estimate, usableGb: 18.0)
+        #expect(short.level == .fail)
     }
 
     @Test("scanner LOAD estimate is resident weights with the standard load padding")

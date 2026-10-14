@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -173,7 +173,10 @@ re-read them from `darkbloom models catalog` before relying on a row.
 How each column is computed: weights are the catalog `size_gb` padded by
 `memoryOverheadFactor`; the activation reserve is
 `UnifiedMemoryCap.defaultActivationReserveBytes`, or the model's entry in
-`measuredActivationFloorsBytes` where one exists (today only `gpt-oss-20b`);
+`measuredActivationFloorsBytes` where one exists (today `gpt-oss-20b`, and
+`LiquidAI/LFM2.5-24B-A2B-MLX-4bit` / `lfm2.5-24b-a2b` at 2.0 GiB, which are
+not in the 2026-08-30 catalog above: their load requirement is
+15.2 + 2.0 + 1.0 = 18.2 GiB);
 the load also needs `minimumLoadKVBytes` of KV headroom. The values of those
 constants are in [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)
 and the formulas in [Cap and reserves](../architecture/hardware-support.md#cap-and-reserves-unifiedmemorycap).

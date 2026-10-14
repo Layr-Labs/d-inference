@@ -119,7 +119,9 @@ public enum UnifiedMemoryCap {
     /// `memory_reserve_gb` default the gate still needs ~22 GB free of 24,
     /// and the #653 reporters measured 12.3 and 16.1 GB usable — the
     /// remaining levers there are the admit-time disk×1.2 padding and the
-    /// small-box reserve default (see the plan's follow-ups).
+    /// small-box reserve default (see the plan's follow-ups). For the
+    /// text-only LFM2.5-24B-A2B the load requirement drops from
+    /// 15.2 + 5.5 + 1 = 21.7 GB to 15.2 + 2.0 + 1 = 18.2 GB.
     ///
     /// Keyed by catalog model id, EXACT match only: a variant or new build id
     /// without its own measurement falls back to the default — unmeasured
@@ -144,6 +146,17 @@ public enum UnifiedMemoryCap {
         // convention; the compiled path was removed in v0.8.0 — the
         // current-engine raw figure is 2.63, so 3.5 keeps ~0.9 margin).
         "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2,
+        // LFM2.5-24B-A2B (text-only `lfm2_moe`; the artifact id and its
+        // catalog alias, exact match). Worst measured non-KV peak 1.28 GiB:
+        // B=1 at 131,000 prompt tokens through the production slot (paged
+        // KV, default-on SSD complete checkpoints). Release sweep of the
+        // production construction (2026-10-13): paged B=8 raw peak-over-
+        // resident 0.67 GiB at 500-token prompts and 1.63 GiB at 16k (KV
+        // included); paged B=1 non-KV 0.98 / 1.01 / 1.26 GiB at
+        // 32k / 64k / 131k. 2.0 = 1.28 + 0.30 slack, rounded up to the
+        // 0.5 GiB grid. docs/reports/2026-10-13-lfm25-activation-floor.md.
+        EngineV2SupportedModels.lfm25_24bA2BModelID: 2 * 1024 * 1024 * 1024,
+        EngineV2SupportedModels.lfm25_24bA2BRegistryModelID: 2 * 1024 * 1024 * 1024,
         // qwen3.5/3.6 (measured text-decode envelope ~3.3 GiB, floor 4.0
         // candidate) are deliberately ABSENT pending a vision-inclusive
         // measurement: they are vision-capable, and VisionMemoryGate charges

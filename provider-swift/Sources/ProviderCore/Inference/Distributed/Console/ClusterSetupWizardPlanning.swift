@@ -180,7 +180,8 @@ enum ClusterSetupPlanning {
             outputTokens: result.outputTokens, firstTokenSeconds: prediction.firstTokenSeconds,
             decodeTokensPerSecond: prediction.decodeTokensPerSecond, absolute: result.basis.absolute,
             measured: result.basis.source == .measured, alone: alone, aloneAsFast: result.aloneAsFast,
-            fitsNow: ranks.allSatisfy { $0.fit == "now" }, needsBytes: ranks.compactMap(\.shortBytes).max(), explanation: lines)
+            fitsNow: ranks.allSatisfy { $0.fit == "now" }, needsBytes: ranks.compactMap(\.shortBytes).max(), explanation: lines,
+            modeReason: ClusterPlacementExplanation.deploymentReason(result))
     }
 
     static func fitCode(_ fit: ClusterPlacementFit) -> String {

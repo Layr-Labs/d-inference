@@ -138,6 +138,9 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
     public var needsBytes: Int?
     /// The planner's own explanation, line by line.
     public var explanation: [String]
+    /// Why the planner chose tensor parallel or a pipeline, in one line
+    /// (`ClusterPlacementExplanation.deploymentReason`); nil in a summary written before it.
+    public var modeReason: String? = nil
 }
 
 /// What reaching the other Mac gave.

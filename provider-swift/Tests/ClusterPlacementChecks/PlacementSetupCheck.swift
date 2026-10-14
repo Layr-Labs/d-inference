@@ -206,6 +206,30 @@ import Foundation
         }
     }
 
+    /// The request the pair's own served requests look like (`ClusterRequestMix`) is the one the planner chooses
+    /// tensor parallel or a pipeline for, and the plan says why in one line.
+    static func requestMix(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                           slowTwo: [ClusterPlacementDevice]) throws {
+        func entry(_ prompt: Int, _ output: Int) -> ClusterServedSpeedRecords.Entry {
+            .init(setup: .init(modelID: description.publicModelID, mode: ClusterGenerationMode.pipeline.rawValue, cut: "unknown",
+                               ranks: description.members.map(\.id)),
+                  sample: .init(route: .pair, member: nil, promptTokens: prompt, outputTokens: output, firstTokenSeconds: 0.5,
+                                decodeTokensPerSecond: 40, finishedAt: 1))
+        }
+        let plain = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [:], benchDebugBuild: true)
+        let mixed = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+            served: [entry(64, 100), entry(128, 120), entry(96, 110)], environment: [:], benchDebugBuild: true)
+        require("request mix: unserved, the model's planned request stands",
+            plain.result.promptTokens == layout.maximumPromptTokens && plain.result.outputTokens == layout.maximumOutputTokens)
+        require("request mix: the pair's served requests (median 96-token prompt, 110-token answer) are the request the plan is made for",
+            mixed.result.promptTokens == 96 && mixed.result.outputTokens == min(110, layout.maximumOutputTokens))
+        require("the plan says in one line why it is tensor parallel or a pipeline",
+            plain.lines.contains("Tensor parallel or pipeline")
+                && plain.lines.contains { $0.hasPrefix("  Pipeline: ") || $0.hasPrefix("  Tensor parallel: ") })
+    }
+
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`): a model with a failed
     /// cross-cable check on record is planned and started only at shapes a check passed in. Synthetic records of
     /// two to four ranks on several chips; then the registered GPT-OSS records through the guided step's own
@@ -440,6 +464,7 @@ import Foundation
             capabilityHash: capabilityHash, slowTwo: slowTwo)
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
+        try requestMix(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,

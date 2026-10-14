@@ -170,6 +170,15 @@ public struct QualificationComparator: Sendable {
             }
         }
         guard let logits = result.logits else {
+            // Without a final row, a run whose every selected row carries its
+            // native bytes' digest (MiMo's step evidence) is told apart by those:
+            // equal digests on every row are an exact run.
+            if let rows = Self.stepRowsEqual(a, b) {
+                result.verdict = rows.equal ? .exact : .tokensEqualLogitsDiffer
+                result.reasons.append("no final row: the digests of all \(rows.compared) selected rows were compared"
+                    + (rows.equal ? " and are equal" : "; the first that differs is at index \(rows.firstDifferent ?? 0)"))
+                return result
+            }
             result.reasons.append("all \(prefix) tokens are equal, but \(result.logitsNotCompared!), so exact and tokensEqualLogitsDiffer cannot be told apart")
             return result
         }
@@ -206,6 +215,25 @@ public struct QualificationComparator: Sendable {
         return "the prompt was framed differently (reference \(a.frames) prefill frames, \(a.label); candidate "
             + "\(b.frames), \(b.label)); tokens and the committed frontier are equal, so the frame counts are compared "
             + "through each run's own framing"
+    }
+
+    /// Row digests both runs recorded for every selected token, compared on
+    /// the characters both carry (at least 16: a runtime line keeps 64 bits).
+    /// Nil unless each side has exactly one step per selected token, in order.
+    static func stepRowsEqual(_ a: QualificationEvidence, _ b: QualificationEvidence)
+        -> (equal: Bool, compared: Int, firstDifferent: Int?)? {
+        guard let x = a.steps, let y = b.steps, !a.selectedTokenIDs.isEmpty,
+              a.selectedTokenIDs == b.selectedTokenIDs else { return nil }
+        let count = a.selectedTokenIDs.count
+        guard x.map(\.ordinal) == Array(0..<count), y.map(\.ordinal) == Array(0..<count) else { return nil }
+        var first: Int?
+        for index in 0..<count {
+            let left = x[index].rowSHA256.lowercased(), right = y[index].rowSHA256.lowercased()
+            let shared = min(left.count, right.count)
+            guard shared >= 16, left.allSatisfy(\.isHexDigit), right.allSatisfy(\.isHexDigit) else { return nil }
+            if first == nil, left.prefix(shared) != right.prefix(shared) { first = index }
+        }
+        return (first == nil, count, first)
     }
 
     private func zipOptional<T>(_ a: T?, _ b: T?) -> (T, T)? {
@@ -265,7 +293,7 @@ public struct QualificationComparator: Sendable {
         detail.referenceTop1Logit = step.topLogits[0]
         detail.referenceTop2TokenID = step.topTokenIDs[1]
         detail.referenceTop1Top2Margin = step.topLogits[0] - step.topLogits[1]
-        let dtype = reference.finalLogits?.dtype ?? "bfloat16"
+        let dtype = step.rowDType ?? reference.finalLogits?.dtype ?? "bfloat16"
         detail.ulpAtTop1 = Self.unitInLastPlace(of: step.topLogits[0], dtype: dtype)
         guard let token = detail.candidateTokenID, let rank = step.topTokenIDs.firstIndex(of: token) else { return detail }
         let gap = step.topLogits[0] - step.topLogits[rank]

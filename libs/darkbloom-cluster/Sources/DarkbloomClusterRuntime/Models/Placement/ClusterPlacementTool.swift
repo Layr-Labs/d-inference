@@ -21,11 +21,14 @@ public enum ClusterPlacementTool {
                                       [--local LABEL] --peer LABEL=PROFILE.json [--peer LABEL=PROFILE.json ...]
                                       [--speed MEASUREMENT.json ...] [--index INDEX.json ...] [--link LINK.json]
                                       [--prompt-tokens N] [--output-tokens N] [--regime rested|sustained (default rested)]
-                                      [--modes MODE,MODE] [--alternatives N] [--leader LABEL] [--json]
+                                      [--modes MODE,MODE] [--alternatives N] [--leader LABEL] [--hand-off-modes] [--json]
               How the model is divided between the devices, and why. `--local` samples this Mac
               and names it LABEL; every other device is a profile file made by `device --json`
               on that Mac. Without `--local` at least two `--peer` profiles are needed. `--leader`
               keeps only placements whose rank 0 is that device (the Mac a session is started from).
+              A plan shards the model (tensor parallel or pipeline); `--hand-off-modes` is the opt-in
+              that also considers phase split, phase split + MTP and the pipeline-prefill/tensor-decode
+              hybrid (off by default; such a plan is the earlier planner's, byte for byte).
         """
 
     struct Arguments {
@@ -111,7 +114,7 @@ public enum ClusterPlacementTool {
     }
 
     static func plan(_ arguments: [String], sampleDevice: () throws -> ClusterDeviceProfile) throws -> String {
-        let parsed = try Arguments(arguments, flags: ["--json"], options: ["--model-dir", "--layout", "--local", "--peer",
+        let parsed = try Arguments(arguments, flags: ["--json", "--hand-off-modes"], options: ["--model-dir", "--layout", "--local", "--peer",
             "--speed", "--index", "--link", "--prompt-tokens", "--output-tokens", "--regime", "--modes", "--alternatives",
             "--leader", "--served", "--served-ranks"])
         let layout: ClusterModelLayout
@@ -147,6 +150,7 @@ public enum ClusterPlacementTool {
         }
         if let alternatives = try parsed.integer("--alternatives") { policy.alternatives = min(alternatives, 256) }
         policy.leader = try parsed.one("--leader")
+        policy.handOffModes = parsed.flags.contains("--hand-off-modes")
         if let regime = try parsed.one("--regime") {
             guard let value = ClusterPlacementPolicy.Regime(rawValue: regime) else { throw ProbeError("--regime is sustained or rested") }
             policy.regime = value

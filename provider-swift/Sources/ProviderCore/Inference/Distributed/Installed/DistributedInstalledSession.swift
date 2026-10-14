@@ -40,7 +40,7 @@ public enum DistributedInstalledDeveloperSSH {
     static func requireFollowerRoute(_ configuration: ClusterConfiguration,
                                      environment: [String: String] = ProcessInfo.processInfo.environment) throws {
         guard configuration.linkControl == nil, !enabled(environment) else { return }
-        throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Pair the two Macs again with `darkbloom cluster setup`, so the follower is served over the cable's link control channel")
+        throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Run `darkbloom cluster` on both Macs to pair them again")
     }
 }
 
@@ -86,6 +86,9 @@ public final class DistributedInstalledSession: @unchecked Sendable {
     private var stopNoticeHandler: (@Sendable (DistributedInstalledStopNotice) -> Void)?
     private var stopNoticePending = false
     private var abnormalStop = false
+    /// A stop was asked for (`stop`, `drain`) before any loss of readiness:
+    /// the workers' exit that follows is that stop, not a lost rank.
+    private var stopRequested = false
     /// Bounds the stop's waits once a stop nobody asked for began (see the type).
     private let stopBound: DistributedInstalledStopBound
     private var stopDetailText: String?
@@ -332,6 +335,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             let leader = try DistributedInstalledLinkLeader(configuration: configuration)
             lock.withLock { self.link = leader }
             link = leader
+            // A stop that came before the link existed is seen here; one during the wait cancels it (`beginStop`).
+            try requireStarting()
             try leader.waitForFollower(until: min(startupDeadline, DispatchTime.now().uptimeNanoseconds + 30_000_000_000))
         }
         let credentials: [Data?] = keysDataPlane
@@ -450,6 +455,7 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             if abnormal, phase == .ready {
                 if let stopNoticeHandler { notice = stopNoticeHandler } else { stopNoticePending = true }
             }
+            if !abnormal, !abnormalStop { stopRequested = true }
             if abnormal { draining = false; abnormalStop = true; stopBound.beginUnrequested() }
             phase = abnormal ? .quarantined : (phase == .quarantined ? .quarantined : (draining ? .draining : .stopping))
             if wasPrepared { startup.complete() }
@@ -460,8 +466,15 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         if let notice { let value = stopNotice; notifications.async { notice(value) } }
         result.1?.cancel()
+        // A rank 0 still waiting for its follower stops waiting now (a stop during start must not wait for that deadline).
+        lock.withLock { link }?.cancelStart()
         // The fence names its cause on the other Mac as well (S24).
-        let cause = lock.withLock { abnormalStop ? "the session stopped: " + (pair?.lastRequestFailure ?? "a rank was lost") : "the session is stopping" }
+        // A requested stop keeps its cause when its own workers' exit follows, so
+        // neither Mac journals a planned stop as an incident (ClusterSessionStopCause).
+        let cause = lock.withLock {
+            ClusterSessionStopCause.fenceCause(unrequested: abnormalStop, requestedFirst: stopRequested,
+                                               lastFailure: pair?.lastRequestFailure)
+        }
         for endpoint in result.0 { endpoint.requestNativeCleanup(reason: cause) }
         // An abnormal stop can interrupt a previously started graceful drain.
         // Pair.shutdown owns cancellation/actual retirement and is idempotent.

@@ -295,4 +295,55 @@ extension ClusterConsoleCheck {
         expect(own?["schema"] as? String == ClusterDiagnosticExport.schemaName
             && (own?["snapshot"] as? [String: Any])?["schema"] as? String == ClusterConsoleSnapshot.schemaName, "schema names pass through unchanged")
     }
+
+    /// The onboarding's `d` after a start that did not finish: the same redaction as the console's export (every string
+    /// on its own, the second look refusing what survives), owner-only, never replacing a file, and written into the
+    /// home folder itself: never Desktop, Documents or Downloads, which macOS guards with a prompt to the terminal app.
+    static func onboardingDiagnostics() throws {
+        let home = scratch.appendingPathComponent("onboarding-home")
+        for folder in ["Desktop", "Documents", "Downloads"] {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        let redaction = ClusterDiagnosticRedaction(identifiers: .init(homeDirectories: [Secret.home, home.path], userNames: [Secret.user, Secret.fullName],
+            hostNames: [Secret.host, Secret.peerHost], serials: [Secret.serial, Secret.hardwareUUID], secrets: [Secret.token]))
+        // What `cluster status --json` and `doctor --json` encode: slashes escaped, values nested.
+        let status = try JSONEncoder().encode(["cluster": ["home": "\(Secret.home)/.darkbloom/cluster-setup", "peer": "192.0.2.10",
+            "host": Secret.host, "token": Secret.token], "serial": ["number": Secret.serial]])
+        let doctor = try JSONSerialization.data(withJSONObject: ["checks": [["name": "link", "detail": "fe80::200:5eff:fe00:5307%en6 from \(Secret.peerHost)",
+            "ok": false]], "schema": "darkbloom_cluster_doctor_v1"])
+        let lastErrors = ["Apple M5 Ultra, 256 GB: worker at \(Secret.home)/worker refused 169.254.12.7 (its part is still running).",
+                          "Apple M3 Ultra, 256 GB: no report.", "serial number \(Secret.hardwareUUID) by \(Secret.fullName)"]
+        let moment = Date(timeIntervalSince1970: 1_791_000_000)
+        let file = try ClusterDiagnosticExport.writeOnboarding(lastErrors: lastErrors, sections: ["status": status, "doctor": doctor, "broken": Data("{".utf8)],
+            redaction: redaction, home: home, now: moment)
+        expectEqual(file.deletingLastPathComponent().standardizedFileURL.path, home.standardizedFileURL.path,
+            "the diagnostics file is written in the home folder itself, never in Desktop, Documents or Downloads")
+        var information = stat()
+        expect(lstat(file.path, &information) == 0 && information.st_mode & 0o777 == 0o600, "the diagnostics file is owner-only")
+        expect(file.lastPathComponent.hasPrefix("darkbloom-cluster-diagnostics-") && file.pathExtension == "json", "the file is named for what it is")
+        let text = String(decoding: try Data(contentsOf: file), as: UTF8.self)
+        for value in [Secret.home, Secret.host, Secret.peerHost, Secret.serial, Secret.hardwareUUID, Secret.token, Secret.fullName,
+                      "192.0.2.10", "169.254.12.7", "fe80::200"] {
+            expect(!text.lowercased().contains(value.lowercased()), "the onboarding diagnostics file still contains \(value)")
+        }
+        let object = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        expectEqual(object?["schema"] as? String, ClusterDiagnosticExport.onboardingSchemaName, "one JSON document with its schema")
+        expectEqual((object?["lastErrors"] as? [String])?.count, lastErrors.count, "each Mac's last error is still a line")
+        expect(((object?["status"] as? [String: Any])?["cluster"] as? [String: Any])?["home"] as? String == "<home-path>",
+            "this Mac's status keeps its shape, less what identifies the Mac")
+        expect((object?["doctor"] as? [String: Any])?["schema"] as? String == "darkbloom_cluster_doctor_v1", "a section's own schema name passes through")
+        expect(object?["broken"] == nil, "a section that is not JSON is left out")
+        expect(text.contains("Apple M5 Ultra, 256 GB: worker at <home-path>"), "the last errors stay readable")
+        var refusal = ""
+        do { _ = try ClusterDiagnosticExport.writeOnboarding(lastErrors: lastErrors, sections: [:], redaction: redaction, home: home, now: moment) }
+        catch { refusal = String(describing: error) }
+        expect(refusal.contains("already exists"), "a second file in the same second replaces nothing")
+        // The second look refuses what a faulty first pass let by: nothing is written.
+        var refused: ClusterDiagnosticExport.Failure?
+        do { _ = try ClusterDiagnosticExport.renderOnboarding(lastErrors: ["a host name no rule knows by shape: quietbox"], sections: [:],
+                redaction: ClusterDiagnosticRedaction(identifiers: .init(hostNames: ["quietbox"])), createdAt: "x", marking: { $0 }) }
+        catch let failure as ClusterDiagnosticExport.Failure { refused = failure }
+        expectEqual(refused?.description, "The export was not written: after redaction it still contained a host name.",
+            "an onboarding file the first pass left a name in is refused")
+    }
 }

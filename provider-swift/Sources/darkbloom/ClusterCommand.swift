@@ -4,7 +4,7 @@ import ProviderCore
 
 struct Cluster: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "cluster",
-        abstract: "Set up this Mac's cluster link, and manage saved distributed-cluster setup.",
+        abstract: "Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen.",
         subcommands: [Setup.self, Console.self, Plan.self, Configure.self, Status.self, Doctor.self, Link.self, Recover.self, WorkerOwner.self,
                       Report.self, Inbox.self, LinkChannel.self, LinkFollower.self, MemberIdentity.self, Pair.self, Incidents.self,
                       Service.self, Stop.self, Reap.self, VerifyTeardown.self, CancelAll.self],
@@ -12,7 +12,7 @@ struct Cluster: AsyncParsableCommand {
 
     struct Configure: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "configure",
-            abstract: "Validate and save cluster setup without enabling or starting it.")
+            abstract: "Validate and save cluster setup without enabling or starting it.", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
         @Option(help: "Absolute path to the bounded cluster configuration JSON.")
         var input: String

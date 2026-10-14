@@ -218,8 +218,9 @@ public struct ClusterDeviceMemory: Codable, Equatable, Sendable {
     /// kernel's cache minimum.
     public var withApplicationsClosedBytes: Int { max(0, pageableBytes - min(fileBackedBytes, fileCacheReserveBytes)) }
 
-    /// What a restart could give: everything that is not wired. Nothing the
-    /// owner can do in a session reaches this.
+    /// What a restart could give: everything that is not wired. Closing
+    /// applications does not reach this; the kernel's cache minimum stands
+    /// between (it shrinks only as memory is wired).
     public var afterRestartBytes: Int { min(physicalMemoryBytes, pageableBytes + compressorBytes) }
 
     /// More memory is wired than macOS keeps wired on a Mac at rest (a
@@ -285,7 +286,9 @@ public enum ClusterPlacementFit: Codable, Equatable, Sendable {
     /// Applications would have to release this much first.
     case afterApplicationsRelease(bytes: Int)
     /// Even with every application closed it is this much short, because the
-    /// kernel keeps its minimum of file cache. Only a restart empties that.
+    /// kernel keeps a minimum of file cache: a share of the memory that is not
+    /// wired (10/27 on both Macs measured), recomputed as memory is wired, not
+    /// lowered by closing applications or by waiting. A restart empties the cache.
     case afterRestart(bytes: Int)
     /// Not on this Mac: short by this much of what is not wired, or beyond
     /// the allocator's or the GPU's own limit.

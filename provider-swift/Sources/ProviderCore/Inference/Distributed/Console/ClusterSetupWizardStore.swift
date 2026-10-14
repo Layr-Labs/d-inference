@@ -73,6 +73,14 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// Who leads this cluster, as `darkbloom cluster` settled it at pairing:
     /// the Mac where onboarding started leads. Nil before pairing.
     public var leadership: ClusterOnboardingLeadership? = nil
+    /// The derived control leader as this Mac's cluster service last knew it (claim and term, the members' facts,
+    /// the plan's rank order), so a restart re-forms the same way. Nil until the service first derives it.
+    public var control: ClusterControlRecord? = nil
+    /// The members the planner said hold the adopted model alone (written where the plan is adopted, learned by
+    /// the others from the leader's lease).
+    public var aloneHolders: [String]? = nil
+    /// The plan (the saved setup's selected plan SHA-256) `aloneHolders` is for: verdicts for any other plan never count.
+    public var aloneHoldersPlan: String? = nil
 
     public init(pair: Pair? = nil) { self.pair = pair }
 
@@ -120,6 +128,8 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     public var serving: Bool = false
     /// The model the leader chose, for the screen.
     public var modelName: String?
+    /// How the chosen model is served, in one line from the adopted plan ("Serving … across both Macs: pipeline, …").
+    public var deployment: String?
 
     public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
         self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since

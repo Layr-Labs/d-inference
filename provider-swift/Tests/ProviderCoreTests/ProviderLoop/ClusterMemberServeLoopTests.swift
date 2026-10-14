@@ -15,10 +15,18 @@ private struct ClusterMemberServeFixture: Sendable {
 
     /// `pairing` installs a member control whose chip and model the loop must
     /// then report, exactly as a saved setup with a pair approval does.
+    /// `absentOnPort`: the coordinator is not up yet (a restart while it is
+    /// away); the test brings the mock up on that port when it returns.
     static func make(stopOnDisconnect: Bool, heartbeatSeconds: UInt64 = 60,
-                     pairing: NativePairMemberInstallation? = nil) async throws -> ClusterMemberServeFixture {
+                     pairing: NativePairMemberInstallation? = nil,
+                     absentOnPort: Int? = nil) async throws -> ClusterMemberServeFixture {
         let mock = MockCoordinator()
-        let coordinatorURL = try await mock.start().mockProviderWebSocketURL()
+        let coordinatorURL: String
+        if let absentOnPort {
+            coordinatorURL = "ws://127.0.0.1:\(absentOnPort)/ws/provider"
+        } else {
+            coordinatorURL = try await mock.start().mockProviderWebSocketURL()
+        }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("cluster-member-serve-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -93,14 +101,17 @@ struct ClusterMemberServeLoopTests {
             #expect(registration.clusterModels?.map(\.id) == [ClusterMemberServeFixture.modelId])
             #expect(registration.memberRegistrationNonce?.count == 64)
 
-            // Sending the registration is not acceptance: the wait must expire.
-            await #expect(throws: ClusterMemberControlError.negotiationFailed) {
-                try await fixture.loop.waitForClusterMemberRegistration(
-                    until: .now.advanced(by: .milliseconds(300)))
+            // Sending the registration is not acceptance: nothing connects, and
+            // a wait whose deadline passes while this connection's negotiation
+            // window is open runs to that window, never past it.
+            let waiting = Task {
+                try await fixture.loop.waitForClusterMemberRegistration(until: .now.advanced(by: .milliseconds(300)))
             }
+            try await Task.sleep(for: .milliseconds(600))
             #expect(await fixture.loop.memberConnectionID == nil)
 
-            try await fixture.accept(registration)
+            try await fixture.mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+            try await waiting.value
             #expect(await fixture.loop.memberConnectionID != nil)
         }
     }
@@ -172,6 +183,79 @@ struct ClusterMemberServeLoopTests {
         await fixture.cleanUp(task)
     }
 
+    /// F11: a leader restarted while its coordinator was away waited 30 s and
+    /// then reported "Coordinator did not accept the control-only member
+    /// role." although nothing had answered at all. The wait must say the
+    /// coordinator was not reached, and end promptly at its deadline.
+    @Test func unreachableCoordinatorIsNotReportedAsARoleRefusal() async throws {
+        let port = try freeLoopbackPort()
+        let fixture = try await ClusterMemberServeFixture.make(stopOnDisconnect: true, absentOnPort: port)
+        let task = fixture.start()
+        do {
+            let started = ContinuousClock.now
+            await #expect(throws: ClusterMemberControlError.coordinatorUnreachable) {
+                try await fixture.loop.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(2)))
+            }
+            // The final attempt at the deadline is refused at once: no extra window is spent.
+            let waited = ContinuousClock.now - started
+            #expect(waited < .seconds(5), "waited \(waited)")
+            #expect(await fixture.loop.memberConnectionID == nil)
+        } catch { await fixture.cleanUp(task); throw error }
+        await fixture.cleanUp(task)
+    }
+
+    /// F11 restart race: the coordinator comes back shortly before the
+    /// restarted member's wait ends. A doubling backoff (0.5-1, 1-2, 2-4,
+    /// 4-8, 8-16 s) puts the next retry after the deadline, so the member
+    /// gave up although its coordinator was back. Its retries now stay
+    /// inside the wait, and the one placed at the deadline is given its
+    /// own negotiation window. Acceptance is still the nonce-bound one.
+    @Test func restartedMemberRegistersWhenItsCoordinatorReturnsBeforeTheWaitEnds() async throws {
+        let port = try freeLoopbackPort()
+        let fixture = try await ClusterMemberServeFixture.make(stopOnDisconnect: true, absentOnPort: port)
+        let started = ContinuousClock.now
+        let task = fixture.start()
+        let coordinator = Task {
+            try await ContinuousClock().sleep(until: started.advanced(by: .milliseconds(7_500)))
+            _ = try await fixture.mock.start(port: port)
+            let registration = try #require(try await fixture.mock.awaitFirstRegister(timeout: .seconds(20)))
+            try await fixture.mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+        }
+        do {
+            try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .seconds(8)))
+            #expect(await fixture.loop.memberConnectionID != nil)
+            try await coordinator.value
+            let registers = fixture.mock.snapshot().registers
+            #expect(registers.count == 1 && registers.first?.executionRole == .clusterMember)
+        } catch {
+            coordinator.cancel()
+            await fixture.cleanUp(task); throw error
+        }
+        await fixture.cleanUp(task)
+    }
+
+    /// A connection reached just before the wait's deadline (a coordinator
+    /// back a moment earlier) keeps its own negotiation window: an in-window
+    /// acceptance arriving after the deadline connects the member. The wait
+    /// reported a role refusal at its deadline instead.
+    @Test func aNegotiationOpenAtTheDeadlineRunsToItsWindow() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+            let started = ContinuousClock.now
+            let coordinator = Task {
+                let registration = try await fixture.awaitRegistration()
+                try await ContinuousClock().sleep(until: started.advanced(by: .milliseconds(2_500)))
+                try await fixture.mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+            }
+            do {
+                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .milliseconds(1_500)))
+            } catch { coordinator.cancel(); throw error }
+            try await coordinator.value
+            #expect(await fixture.loop.memberConnectionID != nil)
+            #expect(ContinuousClock.now - started < .seconds(10))
+            #expect(fixture.mock.snapshot().registers.count == 1)
+        }
+    }
+
     @Test func acceptedLeaderLoopEndsWhenItsControlConnectionDrops() async throws {
         try await withMemberServeLoop(stopOnDisconnect: true) { fixture, task in
             try await fixture.accept(try await fixture.awaitRegistration())
@@ -194,4 +278,24 @@ private extension ProviderLoop {
         idleMonitorTask == nil && capacityRefreshTask == nil && mtpUpgradeMonitorTask == nil
             && modelRevisionMonitorTask == nil && autoUpdateTask == nil && prefetchCoordinator == nil
     }
+}
+
+/// A loopback port nothing listens on (bound, read, released).
+private func freeLoopbackPort() throws -> Int {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw POSIXError(.EMFILE) }
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    address.sin_port = 0
+    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let bound = withUnsafeMutablePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0
+        }
+    }
+    guard bound else { throw POSIXError(.EADDRNOTAVAIL) }
+    return Int(UInt16(bigEndian: address.sin_port))
 }

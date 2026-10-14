@@ -72,7 +72,7 @@ extension ClusterLinkCheck {
         }
         let portLine = plugged.first.map { compactJSON($0) } ?? "", stateLine = plugged.last.map { compactJSON($0) } ?? ""
         expect(portLine.contains("\"device\":\"rdma_en6\"") && portLine.contains("\"fixable\":true"), "port event JSON names the port")
-        expect(stateLine.contains("\"previousState\":\"noActivePort\"") && stateLine.contains("--fix"),
+        expect(stateLine.contains("\"previousState\":\"noActivePort\"") && stateLine.contains("run `darkbloom cluster` again"),
             "state event JSON carries the previous state and the fix guidance")
     }
 }

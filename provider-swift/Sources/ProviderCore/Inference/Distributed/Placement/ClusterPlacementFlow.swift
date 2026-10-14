@@ -51,8 +51,17 @@ public enum ClusterPlacementFlow {
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
-                              served: [ClusterServedSpeedRecords.Entry] = []) throws
+                              served: [ClusterServedSpeedRecords.Entry] = [],
+                              environment: [String: String] = ProcessInfo.processInfo.environment,
+                              benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+        // Developer bench only (`ClusterPlannerBenchCap`): a debug build may be told to plan as if each Mac could
+        // give less memory than it detected; a release build refuses. The load gates never see this.
+        let benchCap = try ClusterPlannerBenchCap.capBytes(environment: environment, debugBuild: benchDebugBuild)
+        // Sharded deployments only unless the one explicit opt-in is set (`ClusterHandOffModes`, off by default).
+        let handOff = try ClusterHandOffModes.enabled(environment: environment)
+        let localProfile = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
+        let peerProfile = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {
             throw ClusterConfigurationError.invalid("This Mac's member ID, \(localMemberID), is not in the pair description")
@@ -76,17 +85,20 @@ public enum ClusterPlacementFlow {
             runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID,
             artifactSHA256: capability.artifactSHA256)
         policy.leader = granted.leader
-        // A model with a failed cross-cable check on record is planned only at
-        // the shapes a check passed in (each rank's chip class, the cuts, the
-        // mode): the universal rule of `ClusterPairQualificationRecords`.
+        // The planner keeps to what a start accepts: a model's granted mode
+        // families on the classes each family's checks ran in each role, and a
+        // family with a failed cross-cable check only at the shapes a check
+        // passed in (each rank's chip class, the cuts, the mode): the universal
+        // rule of `ClusterPairQualificationRecords`, mode-bound (owner sign-off O9).
         let records = ClusterPairServingGrants.records(runtimeModelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256)
-        if records.restrictsShapes {
-            policy.admitsShape = { chips, cuts, mode in
-                records.admits(chipClasses: chips.map { ClusterChipClass(chipName: $0) }, cuts: cuts, mode: mode)
-            }
+        let runtimeModelID = capability.runtimeModelID, artifactSHA256 = capability.artifactSHA256
+        policy.admitsShape = { chips, cuts, mode in
+            ClusterPairServingGrants.plannable(chips.map { ClusterChipClass(chipName: $0) }, cuts: cuts, mode: mode,
+                runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256)
         }
         policy.modes = capability.supportedGenerationModes
+        policy.handOffModes = handOff
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]
         let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
@@ -109,11 +121,18 @@ public enum ClusterPlacementFlow {
             }
         }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
-        var lines = servedLines + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        var lines = (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + servedLines
+            + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        if handOff {
+            lines += ClusterHandOffModes.lines(enabled: true)
+        } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
+            lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
+        }
         if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
         if records.restrictsShapes {
             lines.append("Qualified placements")
-            lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placement, so only placements "
+            lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placement "
+                + "(\(records.restrictedFamilies.sorted().map(\.description).joined(separator: ", ")) modes), so in that mode family only placements "
                 + "a check passed in are planned: \(records.passedShapesText).")
         }
         var setup: ClusterPlacementSetup?
@@ -161,17 +180,28 @@ public enum ClusterPlacementFlow {
             return (requested, refusal.description + " A setup made from this plan is refused when it is started.")
         }
         let classes = members.map { ClusterChipClass(chipName: $0.chip) }
-        /// The refusal a start would give when `first` leads; nil when the grant allows the order.
+        /// The refusal a start would give when `first` leads in every granted
+        /// mode family; nil when some family allows the order (the planner then
+        /// keeps to that family through `ClusterPairServingGrants.plannable`).
         func refusal(leading first: Int) -> ClusterPairServingRefusal? {
-            for (rank, member) in [first, 1 - first].enumerated() {
-                guard let chipClass = classes[member], let role = ClusterPairServingRole.of(rank: rank, rankCount: 2) else { continue }
+            let order = [classes[first], classes[1 - first]]
+            if grant.admitsOrder(order) { return nil }
+            for (rank, chipClass) in order.enumerated() {
+                guard let chipClass, let role = ClusterPairServingRole.of(rank: rank, rankCount: 2) else { continue }
                 let allowed = grant.chipClasses(for: role)
                 if !allowed.contains(chipClass) {
                     return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
                         reason: .classNotAllowed(rank: rank, role: role, chipClass: chipClass, allowed: allowed.sorted()))
                 }
             }
-            return nil
+            // Each class is listed for its role in some family, but no one family
+            // lists both: the decoding rank is refused with the classes the
+            // families that admit this leader list for it.
+            guard let leading = order[0], let decoding = order[1] else { return nil }
+            let allowed = grant.families.filter { grant.chipClasses(for: .pipelineRank, family: $0).contains(leading) }
+                .flatMap { grant.chipClasses(for: .decodingRank, family: $0) }
+            return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                reason: .classNotAllowed(rank: 1, role: .decodingRank, chipClass: decoding, allowed: Set(allowed).sorted()))
         }
         if let requested, let index = members.firstIndex(where: { $0.id == requested }) {
             if let refused = refusal(leading: index) { throw refused }

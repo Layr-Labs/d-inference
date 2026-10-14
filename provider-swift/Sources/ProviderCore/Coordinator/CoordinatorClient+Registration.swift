@@ -40,7 +40,8 @@ extension CoordinatorClient {
             ordinaryServingModelIDs: ordinaryServingModelIDs,
             autopilotInventory: state.autopilotInventory,
             memberRegistrationNonce: memberNegotiation?.nonce,
-            clusterResume: nativePairMember?.resumeClaim
+            clusterResume: nativePairMember?.resumeClaim,
+            appAttestResumeNonce: nwConnection === connection ? appAttestResumeNonce : nil
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed

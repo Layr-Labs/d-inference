@@ -32,7 +32,8 @@ public enum ClusterPlacementExplanation {
                 + "The file cache the kernel keeps as its minimum does not count; it is not memory that closing or waiting frees"
         case .afterRestart(let bytes):
             return "does not fit as this Mac is: with every application closed it would still be \(gibText(bytes, roundUp: true)) short, "
-                + "because the kernel keeps its minimum of file cache. Only a restart empties that"
+                + "because the kernel keeps a minimum of file cache in proportion to the memory that is not wired. Closing applications "
+                + "or waiting does not lower that minimum; it falls only as memory is wired, and the cache itself is emptied by a restart"
         case .never(let bytes):
             return "cannot fit on this Mac whatever is freed: short by \(gibText(bytes, roundUp: true))"
         }
@@ -65,7 +66,8 @@ public enum ClusterPlacementExplanation {
         // Three parts with three remedies, so they are never added up.
         lines.append("  Memory as sampled at \(m.sampledUTC): \(gibText(m.actualFreeBytes)) free; \(gibText(m.anonymousBytes)) held by applications "
             + "(closing them frees it); \(gibText(m.fileBackedBytes)) of file cache, of which the kernel keeps \(gibText(min(m.fileBackedBytes, m.fileCacheReserveBytes))) "
-            + "as its minimum (not reclaimable short of a restart) and would give up \(gibText(m.fileCacheAboveReserveBytes)); "
+            + "as its minimum now (a share of the memory that is not wired: it falls as memory is wired, not when applications close) "
+            + "and would give up \(gibText(m.fileCacheAboveReserveBytes)); "
             + "\(gibText(m.wiredBytes + m.compressorBytes)) wired or compressed.")
         if m.wiredLooksHeldByAProgram {
             lines.append("  \(gibText(m.wiredBytes)) wired is far more than macOS keeps wired at rest: a running program holds it (a loaded model "
@@ -104,7 +106,8 @@ public enum ClusterPlacementExplanation {
     public static func speed(_ label: String, _ speed: ClusterDeviceSpeed) -> String {
         let unit = speed.absolute ? " tok/s" : " (relative)"
         func head(_ rates: ClusterSpeedRates) -> String {
-            rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? ""
+            (rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? "")
+                + (rates.pipelineSpeculativeFactor.map { String(format: " (pipeline speculative rounds served %.2fx)", $0) } ?? "")
         }
         var text = "\(label): prefill \(rate(speed.rested.prefillTokensPerSecond))\(unit) and decode "
             + "\(rate(speed.rested.decodeTokensPerSecond))\(unit)\(head(speed.rested)) rested"
@@ -145,6 +148,7 @@ public enum ClusterPlacementExplanation {
             modeText = c.tensorShares.map { "tensor parallel, \(shareText($0)) (each rank holds that share of every layer's heads and channels; both run every token and sum their partials over the keyed data plane)" }
                 ?? "tensor parallel (each rank holds an equal share of every layer; both run every token and sum their partials over the keyed data plane)"
         case .pipelinePrefillTensorDecode: modeText = "pipeline prefill, then tensor-parallel decode (after the first token each rank hands the other the state of the heads it does not keep)"
+        case .pipelineMTP: modeText = "pipeline with speculative decoding (the last rank holds the model's MTP head and drafts; every rank verifies the drafts in one window)"
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines
@@ -178,6 +182,34 @@ public enum ClusterPlacementExplanation {
                 + "first token \(seconds(p.firstTokenSeconds)), decode \(rate(p.decodeTokensPerSecond)) tok/s, request \(seconds(p.requestSeconds))"
                 + (candidate.tier == 0 ? "." : "; does not fit now."))
         }
+        return lines
+    }
+
+    /// Every sharded candidate in one line each: verdict and reason, what each
+    /// member holds (its layers, or its share of every layer, and the bytes),
+    /// and the predicted speed; then that the hand-off modes are off.
+    public static func shards(_ s: ClusterShardAssessment, basis: ClusterPlacementBasis) -> [String] {
+        var lines: [String] = []
+        for o in s.options {
+            var text = "\(o.kind.label): \(o.verdict.rawValue) (\(o.reason))."
+            if !o.members.isEmpty {
+                let held = o.members.map { m -> String in
+                    let part = m.share.map { String(format: "%.0f%% of layers %d to %d", $0 * 100, m.firstLayer, m.endLayer - 1) }
+                        ?? "layers \(m.firstLayer) to \(m.endLayer - 1)"
+                    return "\(m.device) \(part), \(gibText(m.weightsBytes))" + (m.tier == 0 ? "" : " (does not fit now)")
+                }
+                let shape = o.stages.map { " Stages " + $0.map { $0.joined(separator: "+") }.joined(separator: " then ") + ";" } ?? ""
+                let cut = o.cuts.isEmpty ? "" : " Cut \(o.cuts.map(String.init).joined(separator: "/")):"
+                text += shape + cut + " " + held.joined(separator: "; ") + "."
+            }
+            if let p = o.prediction {
+                text += basis.absolute
+                    ? " Predicted: first token \(seconds(p.firstTokenSeconds)), decode \(rate(p.decodeTokensPerSecond)) tok/s, request \(seconds(p.requestSeconds))."
+                    : " Predicted relative time \(number(p.requestSeconds, 3))."
+            }
+            lines.append(text)
+        }
+        lines.append(s.note)
         return lines
     }
 
@@ -283,6 +315,10 @@ public enum ClusterPlacementExplanation {
                     + (a.tier == 0 ? "" : "; does not fit now"))
             }
         }
+        if let shards = result.shards {
+            lines.append("Sharded deployment candidates")
+            lines += Self.shards(shards, basis: result.basis).map { "  " + $0 }
+        }
         if let tp = result.tensorParallel {
             lines.append("Tensor parallel")
             lines += tensorParallel(tp, basis: result.basis, regime: result.regime).map { "  " + $0 }
@@ -364,6 +400,18 @@ public enum ClusterPlacementExplanation {
         if chosen.mode.isPhaseSplit {
             lines.append("The last rank holds every layer and decodes alone after the first token, because that is faster than passing each token through both.")
             if let line = speculation(chosen, devices: devices, layout: layout, regime: regime) { lines.append(line) }
+            if let route = chosen.aloneRoute {
+                let q = route.prediction(regime)
+                if chosen.routesAlone(regime) {
+                    lines.append("For this request \(route.device) alone is predicted faster than the pair"
+                        + (result.basis.absolute ? " (\(seconds(q.requestSeconds)) against \(seconds(p.requestSeconds)))" : "")
+                        + ", so the router sends it there; the other Mac takes a prefill share only for the prompts the pair is predicted faster for. "
+                        + "A Mac that can hold the whole model is never made slower by its pair.")
+                } else {
+                    lines.append("\(route.device) holds every layer, so the router sends each request the pair is not predicted faster for to \(route.device) alone"
+                        + (result.basis.absolute ? " (for this request alone: \(seconds(q.requestSeconds)))" : "") + ".")
+                }
+            }
         }
         if let other = result.chosenForOtherRegime, other.cuts != chosen.cuts || other.ranks.map(\.device) != chosen.ranks.map(\.device) || other.mode != chosen.mode {
             let name = regime == .sustained ? "rested" : "sustained"

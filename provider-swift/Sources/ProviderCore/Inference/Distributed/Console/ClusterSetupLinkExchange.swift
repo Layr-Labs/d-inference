@@ -67,6 +67,13 @@ public struct ClusterSetupLinkAnswer: Codable, Sendable, Equatable {
 /// the exchange's own port: no address is typed and no SSH is used.
 public enum ClusterSetupLinkExchange {
     public static let port: UInt16 = 47_422
+    /// The control leader's lease (derived leadership, `ClusterControlNode`) on a listener of its own, keyed apart
+    /// from the setup exchange: a renewal never supersedes a `darkbloom cluster` session on the exchange's listener,
+    /// and never waits behind one.
+    public static let controlPort: UInt16 = 47_423
+    public static let exchangeLabel = "darkbloom-cluster-setup-exchange-v1"
+    public static let controlLabel = "darkbloom-cluster-control-lease-v1"
+    static let controlLockName = "darkbloom-cluster-control.lock"
     static let askTag: UInt16 = 0x5E01
     static let answerTag: UInt16 = 0x5E02
     static let deliverTag: UInt16 = 0x5E03
@@ -75,6 +82,8 @@ public enum ClusterSetupLinkExchange {
     static let commandTag: UInt16 = 0x5E05
     static let commandReplyTag: UInt16 = 0x5E06
     static let maximumBytes = 1 << 20
+    /// One chunk of a model copy (ClusterModelProvisioningLink): the largest body on the exchange.
+    static let provisionChunkBytes = 4 << 20
 
     /// The one pairing this Mac uses, with its edge secret.
     public struct Pairing: Sendable {
@@ -103,21 +112,22 @@ public enum ClusterSetupLinkExchange {
     }
 
     /// The edge of the exchange, keyed apart from serving.
-    static func edge(_ pairing: Pairing, peerAddress: ClusterLinkIPv4Address?) throws -> ClusterLinkControlEdge {
+    static func edge(_ pairing: Pairing, peerAddress: ClusterLinkIPv4Address?, label: String = exchangeLabel) throws -> ClusterLinkControlEdge {
         guard let edgeID = UUID(uuidString: pairing.edgeID), let linkEpoch = UUID(uuidString: pairing.linkEpoch) else {
             throw ClusterSetupFailure("the pairing record names no usable link edge; pair again with `darkbloom cluster`")
         }
-        let epoch = exchangeEpoch(linkEpoch)
+        let epoch = exchangeEpoch(linkEpoch, label: label)
         let key = try ClusterLinkControlKey.qualification(secret: pairing.secret, epoch: epoch, edgeID: edgeID)
         var limits = ClusterLinkControlLimits()
-        limits.maximumBodyBytes = maximumBytes + 4096
+        // A model copy's chunk is the largest body on the exchange.
+        limits.maximumBodyBytes = max(maximumBytes, provisionChunkBytes) + 4096
         return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: peerAddress, limits: limits)
     }
 
     /// A UUID of its own for the exchange, derived from the pairing's link epoch.
-    static func exchangeEpoch(_ linkEpoch: UUID) -> UUID {
+    static func exchangeEpoch(_ linkEpoch: UUID, label: String = exchangeLabel) -> UUID {
         var hasher = SHA256()
-        hasher.update(data: Data("darkbloom-cluster-setup-exchange-v1".utf8))
+        hasher.update(data: Data(label.utf8))
         withUnsafeBytes(of: linkEpoch.uuid) { hasher.update(data: Data($0)) }
         var bytes = Array(hasher.finalize().prefix(16))
         bytes[6] = (bytes[6] & 0x0F) | 0x40
@@ -137,10 +147,12 @@ public enum ClusterSetupLinkExchange {
 
         public init(pairing: Pairing, selection: ClusterLinkInterfaceSelection,
                     port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
+                    epochLabel: String = ClusterSetupLinkExchange.exchangeLabel,
                     answer: @escaping @Sendable () throws -> ClusterSetupLinkAnswer,
                     receive: @escaping @Sendable (Data) throws -> String,
-                    command: (@Sendable (Data) throws -> Data)? = nil) throws {
-            let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil)
+                    command: (@Sendable (Data) throws -> Data)? = nil,
+                    provision: (@Sendable (UInt16, Data) -> (UInt16, Data)?)? = nil) throws {
+            let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil, label: epochLabel)
             edgeID = edge.edgeID
             let work = DispatchQueue(label: "darkbloom.cluster-setup.exchange")
             listener = try ClusterLinkControlListener(configuration: .init(interface: selection.interface,
@@ -174,7 +186,10 @@ public enum ClusterSetupLinkExchange {
                         if reply.count > ClusterSetupLinkExchange.maximumBytes { reply = Data("error:the answer is too large".utf8) }
                         _ = try? peer.sendOpaque(tag: ClusterSetupLinkExchange.commandReplyTag, reply, timeout: .seconds(10))
                     default:
-                        break
+                        // A model copy (cluster service only): every frame in order, each answered after it was written.
+                        if let provision, let reply = provision(tag, data) {
+                            _ = try? peer.sendOpaque(tag: reply.0, reply.1, timeout: .seconds(30))
+                        }
                     }
                 }
             }
@@ -200,11 +215,11 @@ public enum ClusterSetupLinkExchange {
     /// newer session supersedes the older, whose answer then goes to the newer one and is lost: two processes on
     /// this Mac asking at once (the onboarding and the leader's cluster service) would take each other's answers
     /// away. Each request waits for the one under way (its own time and 30 s more) and then has the edge alone.
-    static func oneAtATime<Value>(seconds: Double, _ request: () throws -> Value) throws -> Value {
+    static func oneAtATime<Value>(seconds: Double, lockName: String = requestLockName, _ request: () throws -> Value) throws -> Value {
         let held: ClusterConsoleInstanceLock
         do {
             held = try ClusterConsoleInstanceLock.acquire(directory: ClusterConsoleInstanceLock.userTemporaryDirectory(),
-                fileName: requestLockName, waitSeconds: seconds + 30)
+                fileName: lockName, waitSeconds: seconds + 30)
         } catch is ClusterConsoleInstanceLock.Held {
             throw ClusterSetupFailure("another request to the other Mac did not finish within \(Int(seconds + 30)) s")
         }
@@ -219,9 +234,9 @@ public enum ClusterSetupLinkExchange {
         private var replies: [UInt16: Data] = [:]
 
         init(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address,
-             port: UInt16, policy: ClusterLinkInterfacePolicy) throws {
+             port: UInt16, policy: ClusterLinkInterfacePolicy, label: String = ClusterSetupLinkExchange.exchangeLabel) throws {
             self.peerAddress = peerAddress
-            let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: peerAddress)
+            let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: peerAddress, label: label)
             let box = WeakSessionBox()
             client = try ClusterLinkControlClient(configuration: .init(interface: selection.interface,
                 localAddress: selection.local.address, port: port, policy: policy, edge: edge)) { event, _ in
@@ -301,15 +316,25 @@ public enum ClusterSetupLinkExchange {
         }
     }
 
+    /// One lease (or hand-over) to the other Mac's control listener: its own port, edge epoch and request lock.
+    public static func lease(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
+                             body: Data, seconds: Double, policy: ClusterLinkInterfacePolicy = .thunderboltOnly)
+        throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
+        try oneAtATime(seconds: seconds, lockName: controlLockName) {
+            try commandNow(pairing: pairing, selection: selection, peerAddress: peerAddress, body: body, seconds: seconds,
+                port: controlPort, policy: policy, label: controlLabel)
+        }
+    }
+
     private static func commandNow(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
-                                   body: Data, seconds: Double, port: UInt16,
-                                   policy: ClusterLinkInterfacePolicy) throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
+                                   body: Data, seconds: Double, port: UInt16, policy: ClusterLinkInterfacePolicy,
+                                   label: String = exchangeLabel) throws -> (reply: Data, peerAddress: ClusterLinkIPv4Address) {
         var address = peerAddress
         if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: min(seconds, 8)).first?.address }
         guard let address else {
             throw ClusterSetupFailure("the other Mac's cluster service did not answer on the cable")
         }
-        let session = try Session(pairing: pairing, selection: selection, peerAddress: address, port: port, policy: policy)
+        let session = try Session(pairing: pairing, selection: selection, peerAddress: address, port: port, policy: policy, label: label)
         defer { session.close() }
         let data = try session.request(tag: commandTag, body, reply: commandReplyTag, seconds: seconds)
         if data.starts(with: Data("ok:".utf8)) { return (data.dropFirst(3), address) }

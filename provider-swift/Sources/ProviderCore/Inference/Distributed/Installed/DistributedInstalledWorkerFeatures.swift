@@ -60,7 +60,7 @@ struct DistributedInstalledWorkerFeatures: Sendable, Equatable {
     /// the same user can read it: it is refused, never given the key there.
     func requirePrefixSSDKeyInput(tierOn: Bool) throws {
         guard tierOn, !acceptsPrefixSSDKeyInput else { return }
-        throw ClusterConfigurationError.invalid("Installed worker cannot take the prefix-SSD key on its input (--prefix-ssd-key); an older worker would need it in its environment, which this owner never does. Install a worker built with it, or turn the SSD tier off (DARKBLOOM_CLUSTER_PREFIX_SSD=off).")
+        throw ClusterConfigurationError.invalid("Install the same Darkbloom release on both Macs. (The installed worker cannot take the prefix-SSD key on its input; an older worker would need it in its environment, which this owner never does.)")
     }
 
     func requireProgressGuard() throws {

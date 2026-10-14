@@ -78,20 +78,27 @@ public enum ClusterRequestRouter {
         /// so never used. False keeps every request on the member alone
         /// until the pair is predicted faster by the larger margin.
         public let measuresPair: Bool
+        /// The per-request alone route, kept but off by default (owner,
+        /// 2026-10-13: sharded deployments only). Only the explicit hand-off
+        /// opt-in (`DARKBLOOM_CLUSTER_HANDOFF_MODES=1` in the provider) turns it
+        /// on; off, every request uses the cluster as placed.
+        public let aloneRoute: Bool
         public init(devices: [ClusterPlacementDevice], cuts: [Int], mode: ClusterGenerationMode, schedule: ClusterPrefillSchedule,
                     layout: ClusterModelLayout, link: ClusterLinkCosts = .unmeasured,
                     regime: ClusterPlacementPolicy.Regime = .rested, tieTolerance: Double = 0.03, unmeasuredMargin: Double = 0.25,
-                    measuresPair: Bool = true) {
+                    measuresPair: Bool = true, aloneRoute: Bool = false) {
             self.devices = devices; self.cuts = cuts; self.mode = mode; self.schedule = schedule; self.layout = layout
             self.link = link; self.regime = regime; self.tieTolerance = tieTolerance
             self.unmeasuredMargin = max(tieTolerance, unmeasuredMargin); self.measuresPair = measuresPair
+            self.aloneRoute = aloneRoute
         }
 
-        /// The members holding every layer under this placement: the last
-        /// rank of a phase split (it loads every earlier range to decode
-        /// alone). Under a pipeline every member holds only its range.
+        /// The members a request may be routed to alone: under the alone
+        /// route's opt-in, the last rank of a phase split (it loads every
+        /// earlier range to decode alone). Otherwise none: under a pipeline or
+        /// tensor parallel every member holds only its shard.
         public var membersHoldingWholeModel: [ClusterPlacementDevice] {
-            guard mode.isPhaseSplit, let last = devices.last else { return [] }
+            guard aloneRoute, mode.isPhaseSplit, let last = devices.last else { return [] }
             return [last]
         }
     }
@@ -190,7 +197,9 @@ public enum ClusterRequestRouter {
                   aloneFirstTokenSeconds: best?.priced.firstToken, aloneBasis: best?.priced.basis, reason: reason)
         }
         guard let best else {
-            return make(.pair, setup.mode.isPhaseSplit
+            return make(.pair, !setup.aloneRoute
+                ? "the alone route is off by default (sharded deployments only): every request uses the cluster as placed"
+                : setup.mode.isPhaseSplit
                 ? "no member holds the whole model"
                 : "no member holds the whole model under \(setup.mode.rawValue): every request uses the pair")
         }

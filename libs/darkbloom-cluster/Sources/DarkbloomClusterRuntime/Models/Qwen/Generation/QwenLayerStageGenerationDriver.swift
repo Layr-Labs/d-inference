@@ -12,14 +12,19 @@ import MLX
 ///
 /// `producerStage` is the stage-0 model a phase-split rank 1 also holds. It is
 /// touched only after rank 0 has handed its request state over.
+///
+/// `speculativeRounds` (`pipeline_mtp_v1`): the agreed terms on both ranks;
+/// rank 1 is also handed the head. Decode then runs as speculative rounds
+/// (`QwenPipelineMTPGeneration`) after the prompt and the first token.
 func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
+    speculativeRounds: QwenMTPTerms? = nil,
     plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, prefixCache: QwenStagePrefixCache? = nil, onCommittedToken: (Int) throws -> Bool,
     check: () throws -> Void
 ) throws -> QwenLayerStageGenerationResult {
     try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage, speculativeHead: speculativeHead,
-        plan: plan, agreement: agreement,
+        speculativeRounds: speculativeRounds, plan: plan, agreement: agreement,
         collective: collective, diagnostics: nil, prefixCache: prefixCache, onCommittedToken: onCommittedToken,
         check: check).result
 }
@@ -82,7 +87,7 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 
 private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage?, speculativeHead: QwenMTPHead? = nil,
-    plan: QwenLayerStagePlan, agreement unplannedAgreement: QwenLayerStageGenerationAgreement,
+    speculativeRounds: QwenMTPTerms? = nil, plan: QwenLayerStagePlan, agreement unplannedAgreement: QwenLayerStageGenerationAgreement,
     collective: Collective, diagnostics: QwenGenerationDiagnosticCapture?,
     phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
@@ -108,9 +113,14 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             } else if producerStage != nil {
                 throw ProbeError("Only a phase-split rank1 runs with a producer stage")
             }
-            // The decoding rank of a speculative phase split holds the head; no
-            // other rank, and no other request, may be handed one.
-            guard (speculativeHead != nil) == (unplannedAgreement.speculativeHead != nil && collective.rank == 1) else {
+            // The decoding rank of a speculative phase split, and the last rank
+            // of a speculative pipeline, hold the head; no other rank, and no
+            // other request, may be handed one. A pipeline's rounds are the
+            // agreement's decode framing, on both ranks.
+            guard unplannedAgreement.speculativeRoundsFraming == speculativeRounds?.pipelineDecodeFraming,
+                  speculativeRounds == nil || (unplannedAgreement.phaseSplit == nil && diagnostics == nil),
+                  (speculativeHead != nil) == ((unplannedAgreement.speculativeHead != nil || speculativeRounds != nil)
+                      && collective.rank == 1) else {
                 throw ProbeError("Speculative head differs from this rank's agreed role")
             }
             try checked()
@@ -123,7 +133,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             // the head's history. A prefix reused from the cache is not observed
             // again (exact tokens either way; the head drafts from what it saw).
             var decoder: QwenMTPDecoder?
-            if let speculativeHead, let terms = unplannedAgreement.speculativeHead {
+            if let speculativeHead, let terms = unplannedAgreement.speculativeHead ?? speculativeRounds {
                 decoder = try QwenMTPDecoder(head: speculativeHead, terms: terms, request: unplannedAgreement.request)
             }
             // Prefix plan, before the first forward: both ranks agree what to
@@ -200,6 +210,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                 }
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
+                var discardedDecodeForwards = 0
+                var roundStatistics: QwenMTPStatistics?
                 // A phase-split request leaves this loop after its first agreed
                 // token and decision; a pipeline request runs it to the end.
                 let split = agreement.phaseSplit
@@ -208,6 +220,28 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                       split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()
+                        if let speculativeRounds, control.selectedTokenCount > 0 {
+                            // The prompt and the first token ran as frames; decode runs as rounds.
+                            guard producer == nil || producer!.isComplete else {
+                                throw ProbeError("Speculative rounds precede lookahead prompt drain")
+                            }
+                            let outcome: QwenPipelineMTPGeneration.Outcome
+                            if collective.rank == 0 {
+                                outcome = try QwenPipelineMTPGeneration.runProducer(session: owned, control: control,
+                                    terms: speculativeRounds, collective: collective,
+                                    onCommittedToken: onCommittedToken, check: checked)
+                            } else {
+                                guard let decoder else { throw ProbeError("Speculative rounds need the head on rank 1") }
+                                try decoder.begin(firstToken: selectedTokens[0])
+                                outcome = try QwenPipelineMTPGeneration.runConsumer(session: owned, decoder: decoder,
+                                    control: control, collective: collective, check: checked)
+                            }
+                            selectedTokens += outcome.selected
+                            finalDecision = outcome.finalDecision
+                            discardedDecodeForwards = outcome.discardedDecodeForwards
+                            roundStatistics = outcome.statistics
+                            return
+                        }
                         let expected = try control.beginFrame()
                         if agreement.compactDecode, expected.frame.phase == .decode {
                             guard producer == nil || producer!.isComplete else {
@@ -301,7 +335,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                     try diagnostics?.captureState(session: owned, stage: plan.stages[collective.rank],
                         selectedTokenIDs: selectedTokens, completedFrames: control.completedFrames,
                         committedTokens: control.committedTokens, reason: reason, check: checked)
-                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken,
+                        discardedDecodeForwards: discardedDecodeForwards)
                 }
                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
@@ -361,7 +396,8 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                             preparedAheadFrames: producer?.preparedAheadFrames ?? 0,
                             maximumPreparedBoundaries: producer?.maximumPreparedBoundaries ?? 0),
                     phaseSplit: handedOver?.summary, prefixCache: prefixCache == nil ? nil : prefixSummary)
-                result.mtpEnabled = agreement.speculativeHead != nil
+                result.mtpEnabled = agreement.speculativeHead != nil || speculativeRounds != nil
+                result.speculativeRounds = roundStatistics
                 return (result, handedOver?.recorded)
             } catch {
                 // Prefer a recorded native fault before invoking any cleanup. The

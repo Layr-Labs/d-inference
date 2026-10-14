@@ -11,45 +11,134 @@ struct MiMoRequestEvidence: Encodable, Equatable {
     let lastRowSHA256: String?
     /// Rank 1, when step evidence was asked for: one record per selected token.
     var steps: [MiMoStepEvidence] = []
+    /// Rank 1 of `pipeline_mtp_v1`: the speculative rounds' counts and times.
+    var speculative: MiMoMTPStatistics? = nil
+}
+
+/// What a `pipeline_mtp_v1` request runs with on one rank: the agreed terms,
+/// and on rank 1 the loaded head.
+struct MiMoSpeculativeDecode {
+    let terms: MiMoMTPTerms
+    let head: MiMoMTPHead?
 }
 
 /// Runs one request on an already exclusively owned, admitted resident MiMo
-/// stage: the two-stage pipeline, with the serial prefill schedule and either
-/// decode framing. The frame, token, decision and retirement exchanges are the
-/// dense adapter's own control and transport, used unchanged; only the stage
-/// session differs. The owner enforces live resources, deadline and
-/// cancellation through `check`; only rank 0 calls the token callback.
+/// stage: the two-stage pipeline, with the serial or the one-chunk lookahead
+/// prefill schedule and either decode framing, or a phase split (rank 1 also
+/// holds the producer stage, `producerStage`, adopts rank 0's state after the
+/// first token and decodes alone; or serves the whole request alone when the
+/// request is routed to it). The frame, token, decision, hand-off, relay and
+/// retirement exchanges are the dense adapter's own control and transport,
+/// used unchanged; only the stage sessions differ. The owner enforces live
+/// resources, deadline and cancellation through `check`; only rank 0 calls
+/// the token callback.
 ///
 /// A successful return follows both native request-state retirements. On
 /// error this retires local state and throws; the owner must fence the peer
 /// out of band before it claims retirement or releases anything.
+///
+/// With `prefixCache`, both ranks first agree a prompt-prefix plan before the
+/// first forward (`agreeMiMoStagePrefixPlan`): reuse the deepest frontier both
+/// hold, restored on both or neither, and keep this prompt's frontiers once
+/// both ranks retired cleanly (`storeMiMoStagePrefix`).
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-    agreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
+    agreement unplannedAgreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
+    prefixCache requestedPrefixCache: QwenStagePrefixCache? = nil, speculative: MiMoSpeculativeDecode? = nil,
+    producerStage: LoadedMiMoLayerStage? = nil, handoffFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
     try MLX.withError { nativeError in
         func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
         do {
-            try requireMiMoGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+            try requireMiMoGenerationSource(loaded: loaded, plan: plan, agreement: unplannedAgreement,
+                                            collective: collective, speculative: speculative, producerStage: producerStage)
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
-                material: { .generation(agreementFingerprint: agreement.fingerprint) },
+                material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
                 disagreementMessage: "Generation membership/request/source readiness differs",
-                scope: .request(.requestAgreement, requestID: agreement.request.requestID,
-                    agreementFingerprint: agreement.fingerprint, "generation-readiness"), check: checked)
+                scope: .request(.requestAgreement, requestID: unplannedAgreement.request.requestID,
+                    agreementFingerprint: unplannedAgreement.fingerprint, "generation-readiness"), check: checked)
+            // Prefix plan, before the first forward. The planned agreement keeps
+            // the request's fingerprint; only where prompt frames start and end moves.
+            // A phase split (a hand-off mode, off by default) hands over state computed
+            // from frame 0 and refuses a restored prefix, and a request routed to the
+            // decoding rank alone runs no pair frame: neither plans, restores or keeps prefixes.
+            let prefixCache = unplannedAgreement.phaseSplit == nil && !unplannedAgreement.request.decodingRankAlone
+                ? requestedPrefixCache : nil
+            let planned = try agreeMiMoStagePrefixPlan(cache: prefixCache, loaded: loaded, plan: plan,
+                agreement: unplannedAgreement, collective: collective, recordsSteps: recordsSteps, check: checked)
+            let agreement = planned.agreement
+            let session: MiMoLayerStageSession? = planned.session
+            let captureLimit = beginMiMoStagePrefixCapture(cache: prefixCache, session: planned.session)
+            defer { prefixCache?.endCapture() }
             let control = QwenLayerStageGenerationControl(agreement: agreement)
-            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
-            var session: MiMoLayerStageSession?
+            let transport: QwenLayerStageGenerationTransport
+            do { transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective) }
+            catch { try? planned.session.cancel(); throw error }
+            var decoder: MiMoMTPDecoder?
+            defer { decoder?.release() }
             do {
-                let owned = try MiMoLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
-                                                      recordsSteps: recordsSteps)
-                session = owned
+                let owned = planned.session
+                if let speculative, collective.rank == 1 {
+                    // The head observes the prompt rows this request computes. After a
+                    // restored prefix that is only the rest of the prompt: drafts stay
+                    // verified by the target (tokens unaffected), only acceptance drops.
+                    guard let head = speculative.head else { throw ProbeError("Speculative decode needs the head on rank 1") }
+                    let owner = try MiMoMTPDecoder(head: head, terms: speculative.terms, request: agreement.request)
+                    decoder = owner
+                    owned.promptObserver = { tokens, hidden in try owner.observePrompt(tokens: tokens, hidden: hidden) }
+                }
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
-                while control.phase == .frame {
+                var discardedDecodeForwards = 0
+                var speculativeStatistics: MiMoMTPStatistics?
+                // A phase-split request leaves this loop after its first agreed
+                // token and decision; a request routed to the decoding rank alone
+                // runs no pair frame at all; a pipeline request runs it to the end.
+                let split = agreement.phaseSplit, alone = agreement.request.decodingRankAlone
+                let producer = agreement.prefillPolicy == .oneChunkLookahead && collective.rank == 0 && !alone
+                    ? try MiMoGenerationLookaheadProducer(request: agreement.request) : nil
+                while control.phase == .frame, !alone,
+                      split.map({ control.selectedTokenCount < $0.terms.handoffSelectedTokens }) ?? true {
                     try autoreleasepool {
                         try checked()
+                        if let speculative, control.selectedTokenCount > 0 {
+                            // The prompt and the first token ran as frames; decode runs as rounds.
+                            guard producer == nil || producer!.isComplete else {
+                                throw ProbeError("Generation rounds precede lookahead prompt drain")
+                            }
+                            let outcome: MiMoMTPGeneration.Outcome
+                            if collective.rank == 0 {
+                                outcome = try MiMoMTPGeneration.runProducer(session: owned, control: control,
+                                    terms: speculative.terms, collective: collective,
+                                    onCommittedToken: onCommittedToken, check: checked)
+                            } else {
+                                try decoder!.begin(firstToken: selectedTokens[0])
+                                outcome = try MiMoMTPGeneration.runConsumer(session: owned, decoder: decoder!,
+                                    control: control, collective: collective, check: checked)
+                            }
+                            selectedTokens += outcome.selected
+                            finalDecision = outcome.finalDecision
+                            discardedDecodeForwards = outcome.discardedDecodeForwards
+                            speculativeStatistics = outcome.statistics
+                            return
+                        }
                         let expected = try control.beginFrame()
+                        if let producer, expected.frame.phase == .prefill {
+                            let packet = try producer.run(session: owned, control: control, transport: transport,
+                                                          expected: expected, check: checked)
+                            guard control.phase == .token else { return }
+                            // The last prompt frame's token: rank 0 owns no logits.
+                            let token = try agreeMiMoGenerationToken(row: nil, boundary: packet, control: control,
+                                transport: transport, check: checked)
+                            try decideMiMoToken(token: token, control: control, transport: transport, collective: collective,
+                                selectedTokens: &selectedTokens, finalDecision: &finalDecision,
+                                onCommittedToken: onCommittedToken, check: checked)
+                            return
+                        }
+                        guard producer == nil || producer!.isComplete else {
+                            throw ProbeError("Generation decode precedes lookahead prompt drain")
+                        }
                         if agreement.compactDecode, expected.frame.phase == .decode {
                             let step = try runMiMoCompactDecodeFrame(session: owned, control: control,
                                 transport: transport, expected: expected, onCommittedToken: onCommittedToken,
@@ -63,31 +152,24 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                         guard control.phase == .token else { return }
                         let token = try agreeMiMoGenerationToken(row: row, boundary: packet, control: control,
                             transport: transport, check: checked)
-                        let selected = try control.takeCommittedToken()
-                        selectedTokens.append(selected)
-                        // The scalar agreement is complete. No next forward runs
-                        // while this callback is active or before the decision.
-                        let decision: QwenLayerStageGenerationDecisionPacket
-                        if collective.rank == 0 {
-                            try checked()
-                            let keepGoing = try onCommittedToken(selected)
-                            try checked()
-                            decision = try control.decide(continueRequested: keepGoing)
-                            try control.acknowledgeDecision(rank: 0, packet: decision)
-                            try transport.sendDecision(decision, check: checked)
-                            try control.acknowledgeDecision(rank: 1, packet: decision)
-                        } else {
-                            decision = try transport.receiveDecision(token: token, check: checked)
-                            let local = try control.decide(continueRequested: decision.content.decision == .proceed)
-                            guard local.content == decision.content else {
-                                throw ProbeError("Generation owner decision differs from local token/stop policy")
-                            }
-                            try control.acknowledgeDecision(rank: 0, packet: decision)
-                            try control.acknowledgeDecision(rank: 1, packet: decision)
-                            try transport.acknowledgeDecision(decision, check: checked)
-                        }
-                        if control.phase == .retiring { finalDecision = decision }
+                        try decideMiMoToken(token: token, control: control, transport: transport, collective: collective,
+                            selectedTokens: &selectedTokens, finalDecision: &finalDecision,
+                            onCommittedToken: onCommittedToken, check: checked)
                     }
+                }
+                var handedOver: MiMoPhaseSplitGeneration.Outcome?
+                if let split, control.phase == .frame {
+                    guard producer == nil || producer!.isComplete else {
+                        throw ProbeError("Hand-off precedes lookahead prompt drain")
+                    }
+                    // Hand-off (or the whole request on the decoding rank alone),
+                    // then rank 1 decodes alone. Both stages' request state is
+                    // retired inside; only the retirement exchange is left.
+                    let outcome = try MiMoPhaseSplitGeneration.run(producerStage: producerStage, plan: plan, split: split,
+                        control: control, transport: transport, session: owned, selectedTokens: &selectedTokens,
+                        fault: handoffFault, onCommittedToken: onCommittedToken, check: checked)
+                    log(outcome.summary.diagnosticLine(requestID: agreement.request.requestID))
+                    finalDecision = outcome.finalDecision; handedOver = outcome
                 }
                 guard control.phase == .retiring, !control.isFailed,
                       let reason = control.finishReason, let lastToken = control.lastTokenID,
@@ -95,10 +177,16 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                     throw ProbeError("Generation ended without agreed clean stop")
                 }
                 try checked()
+                guard producer == nil || producer!.isComplete else {
+                    throw ProbeError("Generation ended with a prepared or pending prompt boundary")
+                }
                 let evidence = MiMoRequestEvidence(rank: collective.rank,
                     boundaryChainSHA256: owned.boundaryChainSHA256, lastRowSHA256: owned.lastRowSHA256,
-                    steps: owned.steps)
-                try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+                    steps: owned.steps, speculative: speculativeStatistics)
+                if handedOver == nil {
+                    try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken,
+                        discardedDecodeForwards: discardedDecodeForwards)
+                }
                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
                 try transport.exchangeRetirement(decision: finalDecision, check: checked)
@@ -107,15 +195,25 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                return (QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
+                let stored = storeMiMoStagePrefix(cache: prefixCache, session: owned, agreement: agreement,
+                    rank: collective.rank, captureLimit: captureLimit)
+                var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
                     completedFrames: control.completedFrames, committedTokens: control.committedTokens,
-                    finishReason: reason), evidence)
+                    finishReason: reason)
+                if let prefixCache {
+                    let summary = planned.summary
+                    result.prefixCache = .init(reusedPromptTokens: summary.reusedPromptTokens,
+                        restoredTier: summary.restoredTier, agreedPromptTokens: summary.agreedPromptTokens,
+                        splitFinalToken: summary.splitFinalToken, storedFrontiers: stored, cacheEntries: prefixCache.count)
+                }
+                return (result, evidence)
             } catch {
                 // Prefer a recorded native fault before any cleanup.
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
+                session?.prefixCapture?.discard()
                 control.cancel(); transport.retire()
                 do { try session?.cancel() }
                 catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }
@@ -129,7 +227,13 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
 }
 
 private func requireMiMoGenerationSource(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-    agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
+    agreement: QwenLayerStageGenerationAgreement, collective: Collective, speculative: MiMoSpeculativeDecode?,
+    producerStage: LoadedMiMoLayerStage?) throws {
+    guard agreement.speculativeRoundsFraming == speculative?.terms.decodeFraming,
+          speculative == nil || (agreement.phaseSplit == nil && !agreement.compactDecode
+              && (collective.rank == 0) == (speculative?.head == nil)) else {
+        throw ProbeError("Generation speculative rounds differ from this rank's loaded head and terms")
+    }
     let source = agreement.descriptor, receipt = loaded.receipt
     guard collective.size == 2, (0...1).contains(collective.rank), loaded.stageIndex == collective.rank,
           plan.stages.count == 2, source.planFingerprint == plan.fingerprint,
@@ -141,15 +245,60 @@ private func requireMiMoGenerationSource(loaded: LoadedMiMoLayerStage, plan: MiM
           receipt.storageCommitmentSHA256 == source.storageCommitmentSHA256,
           receipt.stagePlanSHA256 == source.stageFingerprints[collective.rank],
           receipt.planSHA256 == source.planFingerprint,
-          agreement.phaseSplit == nil, agreement.prefillPolicy == .serial,
+          agreement.prefillPolicy == .serial || agreement.prefillPolicy == .oneChunkLookahead,
+          agreement.speculativeHead == nil, !(agreement.phaseSplit != nil && agreement.compactDecode),
           agreement.request.profile.vocabularySize == loaded.vocabularySize,
           agreement.request.profile.activationDType == String(describing: loaded.activationDType) else {
         throw ProbeError("Generation actual loaded MiMo stage/source/rank differs from agreement")
+    }
+    // Only a phase split's decoding rank holds the producer stage beside its own.
+    if agreement.phaseSplit != nil, collective.rank == 1 {
+        guard let producerStage, producerStage.stageIndex == 0, producerStage.plan.fingerprint == plan.fingerprint,
+              producerStage.receipt.stagePlanSHA256 == source.stageFingerprints[0],
+              producerStage.receipt.storageCommitmentSHA256 == source.storageCommitmentSHA256,
+              producerStage.receipt.verifiedAggregateSHA256 == source.artifactAggregateSHA256 else {
+            throw ProbeError("Phase-split rank1 does not hold the agreed MiMo producer stage")
+        }
+    } else if producerStage != nil {
+        throw ProbeError("Only a phase-split rank1 runs with a MiMo producer stage")
     }
     // The transport's own limit, before readiness or request-state construction.
     _ = try CollectivePointToPointShape(
         shape: [1, min(agreement.request.chunkSize, agreement.request.promptCount), agreement.request.profile.hiddenSize],
         dtype: loaded.activationDType, maximumBytes: CollectivePointToPointShape.hardByteLimit)
+}
+
+/// The owner's decision on an agreed token, as the dense adapter takes it:
+/// rank 0 calls the callback and sends; rank 1 receives and checks it
+/// against its own token/stop policy.
+private func decideMiMoToken(token: QwenLayerStageGenerationTokenPacket, control: QwenLayerStageGenerationControl,
+    transport: QwenLayerStageGenerationTransport, collective: Collective, selectedTokens: inout [Int],
+    finalDecision: inout QwenLayerStageGenerationDecisionPacket?,
+    onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws {
+    let selected = try control.takeCommittedToken()
+    selectedTokens.append(selected)
+    // The scalar agreement is complete. No next forward runs while this
+    // callback is active or before the decision.
+    let decision: QwenLayerStageGenerationDecisionPacket
+    if collective.rank == 0 {
+        try check()
+        let keepGoing = try onCommittedToken(selected)
+        try check()
+        decision = try control.decide(continueRequested: keepGoing)
+        try control.acknowledgeDecision(rank: 0, packet: decision)
+        try transport.sendDecision(decision, check: check)
+        try control.acknowledgeDecision(rank: 1, packet: decision)
+    } else {
+        decision = try transport.receiveDecision(token: token, check: check)
+        let local = try control.decide(continueRequested: decision.content.decision == .proceed)
+        guard local.content == decision.content else {
+            throw ProbeError("Generation owner decision differs from local token/stop policy")
+        }
+        try control.acknowledgeDecision(rank: 0, packet: decision)
+        try control.acknowledgeDecision(rank: 1, packet: decision)
+        try transport.acknowledgeDecision(decision, check: check)
+    }
+    if control.phase == .retiring { finalDecision = decision }
 }
 
 private func runMiMoGenerationFrame(session: MiMoLayerStageSession, control: QwenLayerStageGenerationControl,

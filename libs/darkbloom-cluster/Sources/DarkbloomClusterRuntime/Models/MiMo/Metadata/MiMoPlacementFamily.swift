@@ -6,8 +6,10 @@ import Foundation
 /// layer owns its attention state and only the residual crosses a boundary,
 /// so every layer boundary is a structural cut; the registered row lists the
 /// ones admitted. The embedded MTP heads, the vision tower, the audio encoder
-/// and the speech embeddings belong to no stage. The modes have no phase
-/// split, so no rank is ever asked to hold the whole text model. Pure
+/// and the speech embeddings belong to no stage (the last rank of
+/// `pipeline_mtp_v1` holds the heads beside its stage). Under the phase split
+/// (a hand-off mode: kept, off by default) the decoding rank holds the whole
+/// text model (the planner prices that with the layout's own sizes). Pure
 /// metadata: no checkpoint payload and no GPU.
 struct MiMoPlacementFamily: ClusterPlacementFamily {
     let specification: MiMoRegisteredSpecification
@@ -39,7 +41,14 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
     var structuralCuts: [Int] { Array(1..<specification.layers) }
     var generationModes: [ClusterGenerationMode] { specification.supportedGenerationModes }
     var prefillSchedules: [ClusterPrefillSchedule] { specification.supportedPrefillSchedules }
-    var maximumPromptTokens: Int { ClusterPlacementPlanningLimits.prompt(profile.maximumPromptTokens) }
+    /// The request a placement is planned and fitted for: the longest the
+    /// profile serves (its context, derived from the configuration's declared
+    /// positions), less the planned output. Each rank charges only its own
+    /// layers' state (no every-rank charge), so a placement planned for the
+    /// whole context holds every request the product admits, and the plan,
+    /// the capability and the served limit name one figure (was 8,192: the
+    /// earlier reservation, while the capability said 32,767).
+    var maximumPromptTokens: Int { max(1, profile.maximumContextTokens - maximumOutputTokens) }
     var maximumOutputTokens: Int { ClusterPlacementPlanningLimits.output(profile.maximumOutputTokens) }
     var maximumChunkTokens: Int { ClusterPlacementPlanningLimits.chunk(profile.maximumChunkTokens) }
     var boundaryBytesPerToken: Int { specification.hidden * MiMoRequestStateBudget.activationBytes }
@@ -78,6 +87,12 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         let s = specification, heads = 64
         return .init(bytesPerQuery: heads * s.valueWidth * 4, bytesPerQueryKey: heads * 4,
             keyWindow: layers[layer].attention == "full" ? nil : s.slidingWindow + MiMoRegisteredSpecification.maximumChunkTokens)
+    }
+
+    /// The artifact's three trained next-N heads: the last rank of
+    /// `pipeline_mtp_v1` loads them (and a copy of the embedding) beside its stage.
+    func isSpeculativeHead(storedTensor name: String) -> Bool {
+        name.hasPrefix(MiMoLayerStagePlan.sourceNamespace + "model.mtp.")
     }
 
     /// The text tensors (every indexed tensor no stage excludes) are the

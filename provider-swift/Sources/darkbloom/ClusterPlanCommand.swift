@@ -16,7 +16,7 @@ extension Cluster {
                 Mac that holds the first range leads, whichever Mac this is run on. Each Mac then approves its \
                 own setup with `darkbloom cluster configure`, as before. Where this Mac cannot reach the other \
                 one, pass the profile that Mac printed with --peer-profile.
-                """)
+                """, shouldDisplay: false)
         @Option(help: "Absolute path to the pair description JSON: the two members and their installations, with no rank and no plan.")
         var pair: String
         @Option(help: "Absolute path to the worker's capability record.")

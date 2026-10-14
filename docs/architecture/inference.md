@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-07
+> Last updated: 2026-10-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -52,7 +52,7 @@ adapter is dropped from the advertised set at scan time and never loads
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
-| promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | `coordinator/promptsidecar/`, `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
+| promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([prefix-cache.md#block-hashing](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | [coordinator/promptsidecar/](https://github.com/Layr-Labs/darkbloom-platform/tree/48a198c71a2d30feec5597bacf1101120f7f955d/coordinator/promptsidecar/), `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md) |
 
 Slot construction carries the engine's immutable admission watermark into the
 bridge so future load and reserve-raise checks can preserve a serviceable total
@@ -80,7 +80,7 @@ confirmed prompt computation. The buckets retain computed-suffix size, full
 context size, cache state and same/other-model overlap. They do not train text
 rates. Cold, unpacked, non-preempted samples with exclusive whole-Mac ownership
 and one continuously observed nominal AC/Automatic posture can inform the
-native target predictor described in [first-content routing](first-content-routing.md#native-media-target-observations).
+native target predictor described in [first-content routing](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/first-content-routing.md#native-media-target-observations).
 These online observations are not a release-certified prediction envelope.
 Generic vision submissions remain excluded. The native owner and opaque media seal are checked before a
 submission can produce a completed receipt
@@ -261,7 +261,10 @@ the fixed rate reduction takes effect without a timing-profile entry.
 
 `DeadlineRuntimeEnvironment.permitsQualification` rejects `MLX_*`, `MTPLX_*`,
 `QWEN_*`, and unrecognized or performance-affecting `DARKBLOOM_*` settings.
-Only exact credential, local-state and update-control keys are exempt.
+Exact credential, local-state and update-control keys are exempt. The resolved
+`DARKBLOOM_CBV2_KV_QUANTIZATION` key is accepted only for native precision by
+both deadline and serving-profile environment checks. Balanced and 8-bit cache
+formats still require separate format-bound measurements before using a profile.
 CLI-projected MLX settings also retain the timing fallback until that execution
 environment is covered by reviewed evidence. This deadline-only guard does not
 change universal serving-profile admission.
@@ -649,13 +652,13 @@ records tiny-model correctness and remaining release gates.
 
 | `model_type` | Family | Notes |
 |---|---|---|
-| `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); contiguous fallback serves cold; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
-| `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires the loaded paged capability |
+| `gpt_oss` | GPT-OSS | Harmony tool format; historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); native contiguous and paged paths require observed dtype/capability gates; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
+| `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires loaded capability and observed native types |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `diffusion_gemma` | Native DiffusionGemma wrapper | Committed-block generation with native image/video-frame processing; see the [native adapter and qualification boundaries](native-block-inference.md) |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
-| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; paged KV supports its positioned wrapper attention. Prefix reuse, compiled decode, packed prefill and MTP capabilities remain disabled. |
 | `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
@@ -663,9 +666,28 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
-`detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
+`detectQuantization`). Weight precision is independent of live KV and checkpoint
+precision. `EngineV2KVQuantizationPolicy` defaults to native live execution and
+separately requests balanced checkpoint storage. Native `auto` backend selection
+is unchanged; storage compression never forces paging. Eligible native paged
+and contiguous checkpoints encode older attention rows and restore into native
+state, preserving exact recent and recurrent/auxiliary state. Older reconstructed
+rows remain lossy. Effective native fallback and the unchanged opt-in live
+packed path are described in the
+[precision architecture](kv-cache-quantization.md); controls are in the
+[CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+Admission prices actual live/native destination owners rather than a disk
+compression ratio. Memory sizing
 (native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+Explicit live-packed slots reuse durable prefixes only through the complete packed
+checkpoint contract, which preserves the coded rows and original-precision
+tail. Their legacy resident blocks and attention-only native tensor snapshots
+are disabled. DiffusionGemma's packed prefix codec remains unqualified, so its
+quantized slots report `unsupported_layout` and retain no resident or SSD prefix
+payloads. Generation continues with packed KV; selecting `native` preserves the
+existing native prefix policy.
 
 ### Native MiMo V2.6 candidate
 
@@ -674,7 +696,7 @@ separately packaged DFlash assistant. It preserves unequal K/V widths, hybrid
 full/sliding attention, partial RoPE, trained sinks, native value scaling and
 sigmoid MoE routing. The embedded three-head MTP assistant consumes target
 post-final-norm features; it does not chain one predictor head's output into
-the next. See the [SDK implementation map](../../libs/mlx-swift-lm/docs/mimo-v26/README.md).
+the next. See the [SDK implementation map](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/README.md).
 
 `MiMoV26ServingLoad.inspect` validates the source-bound serial load plan.
 Discovery quotes that same full main LOAD request plus the ordinary installed
@@ -760,7 +782,7 @@ flowchart LR
 | Media | Explicit decoded visual/audio profiles bind the real processor/codec, load generation and reservation; media requests stay target-only even when a text assistant is installed | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26LoadedModel.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26ServingLoad.swift` |
 | Prefix | [Exact MiMo identities default to SSD reuse](prefix-cache.md#mimo-complete-state); text-only COMPLETE checkpoints bind the exact store, observed dtypes, assistant codec, process owner and loaded validator; async store work participates in retirement | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/EngineV2SlotFactory+MiMoPrefix.swift` (`prepareNativeMiMoPrefix`); `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2NativeCompletePrefixWork.swift` |
 | Native paging / generic fast paths | Separate opt-in target-only or explicit serial-MTP paging binds the actual asymmetric pool, bank and process owner. Authenticated text-prefix composition restores target pages and assistant state before publication; rectangular verification and paged media remain refused. Generic prefix reuse, compiled decode and packed-prefill flags remain disabled | `libs/mlx-swift-lm/Libraries/MLXVLM/Models/MiMo/MiMoV26NativePagedProducer.swift` (`makeNativePagedExecutionResources`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+Native.swift` (`makeNativeMiMoBundle`) |
-| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](../../libs/mlx-swift-lm/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
+| Fast prefill | Native-rounded NAX attention and admitted query-block grouping default on where eligible. The provider budgets fixed workspace for all configured concurrent requests, target rings, the watermark and minimum KV allowance before choosing a larger solo-text stripe. Unaffordable candidates retain a narrower or ungrouped profile; actual request charges and explicit overrides remain intact. Runtime and matched-speed qualification remain separate | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/MiMo/MiMoV26PrefillProfile.swift`; `libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/MiMo/MiMoV26PrefillMemoryBudget.swift`; [SDK policy](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/FAST-PREFILL-POLICY.md) |
 | Public availability | Exact `mimo_v2` is admitted by the ordinary allowlist; normal callers select bounded visual/audio policies through MiMoV26OrdinaryServingPolicy. This does not create a catalog entry or qualify all endpoints | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift` (`isSupported`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 
 The native contiguous and paged factories use the same artifact-bound serving
@@ -868,7 +890,7 @@ real-frame limits and native sampling/timestamps are unchanged.
 Joint contiguous text-prefix/media issuance shares the real process/store/model
 ownership contract: text can use complete checkpoints, while media remains
 noncacheable and target-only. This does not enable media-prefix reuse or the
-separate paged profile. The [composed SDK component record](../../libs/mlx-swift-lm/docs/mimo-v26/qualified-composition-20260928.md)
+separate paged profile. The [composed SDK component record](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/qualified-composition-20260928.md)
 identifies selected executed checks and the still-open full-artifact gates.
 
 The newer serial-paged-prefix composition retains the real encrypted store on
@@ -881,7 +903,7 @@ This source candidate does not register a catalog model, change context or
 hardware limits, or activate a release. Defaults and opt-in spellings are in
 the [MiMo configuration reference](../reference/configuration.md#native-mimo-v26-candidate);
 qualification requirements and numerical boundaries are in the
-[SDK qualification contract](../../libs/mlx-swift-lm/docs/mimo-v26/qualification.md).
+[SDK qualification contract](https://github.com/Layr-Labs/mlx-swift-lm/blob/3fd4944c3b3ee5cb45c5cbfac8805876332d3a29/docs/mimo-v26/qualification.md).
 
 ### Native Flash-Next ownership and admission
 
@@ -942,6 +964,36 @@ serializes SSE frames; the provider encrypts and sends them back over the
 coordinator connection. This integration does not start a local HTTP endpoint
 or change consumer/OpenRouter routing.
 
+### Two-Mac cluster stages (experimental)
+
+A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
+runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
+installed owner, driven over the owner-authenticated link control channel, with
+activations and KV hand-offs crossing the cable only on the encrypted,
+authenticated data plane (JACCL over RDMA). The stage runtimes reuse the CBv2
+engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
+stage's KV pool (`CBv2StageKVHost`, native precision; the prefill mirror is on
+only for one-request hosts) on the paged chain of
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift`
+(pinned to the paged-engine branch; the mirror refuses quantized KV layers).
+Placement is derived at run time from both Macs' device profiles, measured
+speed records and the model's own configuration
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/`); a pair serves a
+model only on the chip and numerics classes its qualification records granted
+(`libs/darkbloom-cluster-worker/`). Provider-side membership, onboarding,
+pairing, model provisioning, control leadership and the installed session live
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/`. The user
+procedure is [two Macs as one provider](../provider/two-mac-cluster.md):
+`darkbloom cluster` on each Mac, pick a model, done. The onboarding
+(`Onboarding/ClusterOnboardingFlow.swift`, pure; `ClusterOnboardingLive.swift`)
+shows the adopted plan as one deployment line (`ClusterOnboardingDeployment`:
+the plan's mode in words, each Mac's layers or tensor-parallel share), lists
+the choices that fit in free memory first and measures the fit again before
+the start, and never offers a model whose pair-serving grant refuses the pair.
+After a Darkbloom update changes a Mac's worker digest, the control leader's
+cluster service re-plans and re-adopts the same model by itself
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`).
+
 ## Invariants
 
 1. Only `model_type`s accepted by `EngineV2SupportedModels.isSupported` are
@@ -995,6 +1047,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | `Tools` | Schema normalization and constrained generation (`ToolSchemaNormalization`, `ToolConstraintFactory`). |
 | `Streaming` | Reasoning/tool output routing, logprobs and usage (`NativeToolStreamRouter`, `StreamedGenerationUsage` in `Streaming/UsageAccounting.swift`). |
 | `Vision` | Media decoding, feature preparation and memory gates (`MediaIngest`, `VisionMemoryGate`). |
+| `Distributed` | Two-Mac cluster (experimental): onboarding, pairing, link control, model provisioning, derived control leadership and failover, installed sessions and diagnostics (`ClusterService`, `ClusterControlNode`, `ClusterModelProvisionResponder`). |
 
 | Concern | File / symbol |
 |---|---|
@@ -1018,6 +1071,6 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 - [`prefix-cache.md`](prefix-cache.md) — KV layouts, resident prefix reuse, SSD tier
 - [`hardware-support.md`](hardware-support.md) — memory model and load gate
 - [`components/provider.md`](components/provider.md), [`components/mlx-swift.md`](components/mlx-swift.md) — process components and pinned submodules
-- [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) — coordinator-side contract identity
+- [prompt-contract-sidecar.md](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/architecture/prompt-contract-sidecar.md) — coordinator-side contract identity
 - [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable and config key with its default
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — wire shape of capacity, timing and status fields

@@ -2,6 +2,8 @@
 /// resume, raw stream-to-disk, existence probe, ref/publish, SHA-256.
 
 import Foundation
+import Darwin
+import CryptoKit
 
 extension ModelDownloader {
     internal func downloadFileForTesting(
@@ -68,7 +70,8 @@ extension ModelDownloader {
                 }
 
                 if let expectedSHA256 {
-                    let actual = Self.sha256HexForVerification(of: partial)
+                    let actual = uncachedWrites ? (Self.sha256Uncached(partial).map(Self.hex) ?? "<unreadable>")
+                                                : Self.sha256HexForVerification(of: partial)
                     let size = fileSize(partial)
                     guard actual == expectedSHA256 else {
                         // The `.part` is corrupt (hash mismatch). Delete it so the
@@ -143,6 +146,7 @@ extension ModelDownloader {
             existingBytes: existingBytes,
             label: label,
             maximumTotalBytes: maximumBytes,
+            uncached: uncachedWrites,
             onChunk: onChunk
         )
         let task = urlSession.dataTask(with: request)
@@ -214,6 +218,36 @@ extension ModelDownloader {
         guard let digest = WeightHasher.hashSingleFile(at: url) else { return nil }
         return digest.map { String(format: "%02x", $0) }.joined()
     }
+
+    /// SHA-256 of a whole file read with the file cache off (the `uncachedWrites` verification); nil when unreadable.
+    static func sha256Uncached(_ url: URL) -> Data? {
+        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { Darwin.close(fd) }
+        _ = fcntl(fd, F_NOCACHE, 1)
+        var hasher = CryptoKit.SHA256()
+        var buffer = [UInt8](repeating: 0, count: 8 << 20)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count < 0 { if errno == EINTR { continue }; return nil }
+            if count == 0 { break }
+            buffer.withUnsafeBytes { hasher.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0[0..<count])) }
+        }
+        return Data(hasher.finalize())
+    }
+
+    /// The aggregate digest (SHA-256 over the files' raw digests in sort-key order, as
+    /// `WeightHasher.hashFilesWithRelativeKey`), each file read with the file cache off.
+    static func aggregateUncached(_ files: [(file: URL, sortKey: String)]) -> String? {
+        var hasher = CryptoKit.SHA256()
+        for entry in files.sorted(by: { $0.sortKey < $1.sortKey }) {
+            guard let digest = sha256Uncached(entry.file) else { return nil }
+            hasher.update(data: digest)
+        }
+        return hex(Data(hasher.finalize()))
+    }
+
+    static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
     static func sha256HexForVerification(of url: URL) -> String {
         sha256HexForVerification(of: url, hasher: sha256Hex)

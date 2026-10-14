@@ -56,11 +56,24 @@ public enum ClusterOrphanSweep {
         return "orphan sweep: " + parts.joined(separator: "; ")
     }
 
+    /// Counts only THIS cluster's processes (`scope()`): another cluster home's or a check's processes of the same user
+    /// are listed apart and never fail it; with no pairing every cluster process counts.
     public static func verify(liveEpochs: Set<String> = [], baselineWiredBytes: UInt64? = nil, samples: Int = 5,
                               intervalNanoseconds: UInt64 = 1_000_000_000) throws -> ClusterTeardownVerification.Report {
         let paths = try ClusterUserPaths()
         return ClusterTeardownVerification.verify(liveEpochs: liveEpochs, deviceDirectory: paths.deviceDirectory,
-            baselineWiredBytes: baselineWiredBytes, samples: samples, intervalNanoseconds: intervalNanoseconds)
+            baselineWiredBytes: baselineWiredBytes, samples: samples, intervalNanoseconds: intervalNanoseconds, scope: scope())
+    }
+
+    /// This cluster on this Mac: the paired member identity its workers carry, and this install's owner executable.
+    public static func scope(memberID: String? = (try? ClusterSetupLinkExchange.pairing())?.localMemberID,
+                             executablePath: String = ClusterProcessTable.executablePath(of: getpid()) ?? "") -> ClusterTeardownVerification.Scope {
+        var executables: Set<String> = []
+        for path in [executablePath, ClusterProcessTable.executablePath(of: getpid())].compactMap({ $0 }) where !path.isEmpty {
+            executables.insert(path)
+            executables.insert(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+        }
+        return .init(memberID: memberID, ownerExecutables: executables)
     }
 
     public struct CancelAllReport: Encodable, Sendable {

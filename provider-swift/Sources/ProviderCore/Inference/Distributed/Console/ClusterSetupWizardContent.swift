@@ -371,7 +371,7 @@ enum ClusterSetupContent {
                 b.text("\(g.spin(state.now)) Reaching it over the pinned route\u{2026} \(seconds(state.now, since))", .accent, from: .wired("pair.verify"))
             case .failed(let reason):
                 b.verdict(g.blocked, "Could not reach \(pair.peerMemberID) over the pinned route: \(reason)", .bad, from: .wired("pair.verify"))
-                b.text("Check that the cable is in, the other Mac is awake with Remote Login on, this Mac's key is accepted there, and the pinned host key is the other Mac's.", indent: 6, from: .frame)
+                b.text("Check that the cable is in and the other Mac is awake, then run `darkbloom cluster` on both Macs again.", indent: 6, from: .frame)
                 b.action("p", "Try again", from: .wired("pair.verify"))
             case .reached(let report, let seconds, _):
                 b.verdict(g.done, String(format: "Answered over the pinned route in %.2f s: it holds the host key the setup pins.", seconds), .good, from: .wired("pair.verify"))
@@ -404,7 +404,7 @@ enum ClusterSetupContent {
                 b.action("enter", "Both screens show \(code.spaced)", from: .wired("pair.confirm"))
             }
         } else {
-            b.text(pair.canReachPeer ? "No code: the setup's pinned known-hosts file has no host key." : "No code: this Mac's own SSH server did not answer with its host key (is Remote Login on?).", .warning, from: .wired("pair.code"))
+            b.text(pair.canReachPeer ? "No code yet: the other Mac has not answered over the cable." : "No code yet: run `darkbloom cluster` on the other Mac too.", .warning, from: .wired("pair.code"))
         }
         b.blank()
         linkPairing(state, &b)
@@ -944,10 +944,10 @@ enum ClusterSetupContent {
                     "RDMA can only be turned on from macOS Recovery (`rdma_ctl enable`); Darkbloom never changes it. Memory left wired by a crashed run is reported here: only a restart frees it."]
         case .cable:
             return ["The Thunderbolt port that carries the cluster: whether it is ready for RDMA, the link speed (Thunderbolt 5 links run at 80 Gb/s or more; 40 Gb/s is Thunderbolt 4 or USB4 and cannot carry RDMA), and whether the port belongs to the cluster alone.",
-                    "Fix link shows the exact commands first. Only after y does macOS ask once for an administrator; Darkbloom never uses sudo and never changes Internet Sharing. `darkbloom cluster link --remove` undoes it."]
+                    "Fix link shows the exact commands first. Only after y does macOS ask once for an administrator; Darkbloom never uses sudo and never changes Internet Sharing."]
         case .pair:
-            return ["The leader reaches the other Mac over the pinned SSH route: the connection fails unless the other Mac holds the host key the setup pins. That proves which Mac answered.",
-                    "The pairing code is the same six digits on both screens when the Mac that answered is the Mac in front of you. Confirm only when you have read both. A later build pairs without SSH; this screen stays the same."]
+            return ["The two Macs pair over the Thunderbolt cable with their Secure Enclave keys: no SSH, no address and no network setting.",
+                    "The pairing code is the same six digits on both screens when the Mac that answered is the Mac in front of you. Confirm only when you have read both."]
         case .model:
             return ["Each model folder found on this Mac, whether the other Mac has the same artifact, and the planner's choice from both Macs' memory now: which Mac holds which layers, the mode, the predicted speed against each Mac alone, and what each rank needs against what its Mac has free.",
                     "Using a plan saves this Mac's setup and sends the other Mac its own; the other Mac approves it on its own screen. Nothing starts."]

@@ -190,9 +190,28 @@ public final class QwenResidentRuntime {
 
     /// The hand-off's own named storage for a prompt of `promptCount` tokens;
     /// nil for the pipeline. Shared by load, readiness, reserve and start.
+    ///
+    /// `pipeline_mtp_v1` has no hand-off; its named storage is the verify
+    /// window's (both ranks run every window through their stage, each
+    /// recurrent layer keeping its state at every window position) and, on the
+    /// last rank, the head's request state: `QwenMTPAllowance`, charged in
+    /// full on both ranks (conservative on rank 0, which holds no head).
     static func phaseSplitAllowance(_ mode: QwenResidentGenerationMode, admission: any LayerStageResidentAdmission,
                                     stage: (any LayerStageResidentStage)?, rank: Int,
                                     promptCount: Int, speculativeTerms: QwenMTPTerms? = nil) throws -> QwenPhaseSplitAllowance? {
+        if mode == .pipelineMTP {
+            guard let speculativeTerms else { throw ProbeError("Speculative terms differ from the declared generation mode") }
+            guard let stage else { throw ProbeError("Resident model already released") }
+            guard let geometry = stage.handoffGeometry else {
+                throw ProbeError("This registered model has no speculative window geometry")
+            }
+            let speculative = try QwenMTPAllowance.derive(geometry: geometry, depth: speculativeTerms.depth,
+                maximumTokens: admission.profile.maximumContextTokens, promptTokens: promptCount,
+                chunkSize: admission.profile.maximumChunkTokens, vocabularySize: admission.profile.vocabularySize,
+                bound: QwenResidentResourceEnvironment.allocationBound)
+            return .init(rank: rank, extraNativeBytes: speculative.extraNativeBytes,
+                extraHostBytes: speculative.extraHostBytes)
+        }
         guard mode.isPhaseSplit else { return nil }
         guard mode.usesSpeculativeHead == (speculativeTerms != nil) else {
             throw ProbeError("Speculative terms differ from the declared generation mode")

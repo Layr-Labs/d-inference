@@ -30,10 +30,19 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertNotIn('secrets.', content)
             self.assertNotRegex(content, r'(?m)^    environment:')
 
-    def test_publication_requires_both_lanes_and_production_approval(self):
+    def test_only_the_release_lane_compiles_the_release_environment(self):
+        selector = 'DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.resolve-env.outputs.environment }}'
+        self.assertIn(selector, job(RELEASE, 'build-provider'))
+        self.assertNotIn('DARKBLOOM_RELEASE_ENVIRONMENT', job(RELEASE, 'qualify-sdk'))
+        signing = job(RELEASE, 'build-and-release')
+        for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
+            self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
+                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
+
+    def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')
         self.assertIn('needs: [resolve-env, build-provider, qualify-sdk]', content)
-        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+        self.assertNotRegex(content, r'(?m)^    environment:')
         self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertNotIn('continue-on-error:', RELEASE)
         self.assertNotIn('continue-on-error:', ACTION)
@@ -58,9 +67,14 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('needs: [resolve-env, build-and-release]', stage)
         self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
         for content in [stage, publish]:
-            self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+            self.assertNotRegex(content, r'(?m)^    environment:')
             self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
-            self.assertIn('gh run download "$GITHUB_RUN_ID"', content)
+            self.assertIn('provider-release-publication.py download', content)
+            self.assertIn('PUBLICATION_ARTIFACT_ID', content)
+            self.assertIn('PUBLICATION_ARTIFACT_DIGEST', content)
+            self.assertIn('--run-id "$RELEASE_SIGNING_RUN_ID"', content)
+            self.assertIn('RELEASE_PAYLOAD_SHA256:', content)
+            self.assertIn('RELEASE_PROVENANCE_SHA256:', content)
             self.assertNotIn('GITHUB_RUN_ATTEMPT', content)
             self.assertNotIn('notarytool', content)
             self.assertNotIn('APPLE_', content)
@@ -68,6 +82,30 @@ class ReleasePipelineTests(unittest.TestCase):
             self.assertIn("needs.resolve-env.outputs.publish == 'true'", content)
             self.assertNotRegex(content, r'(?m)^    if:.*always')
         self.assertIn('cancel-in-progress: false', publish)
+
+    def test_source_policy_runs_from_master_before_candidate_code(self):
+        resolver = job(RELEASE, 'resolve-env')
+        self.assertNotIn('secrets.', resolver)
+        self.assertIn('contents: read', resolver)
+        self.assertIn('actions: read', resolver)
+        self.assertLess(resolver.index('ref: master'), resolver.index('provider-release-resume.py verify-source'))
+        self.assertLess(resolver.index('provider-release-resume.py verify-source'),
+                        resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'))
+        self.assertLess(resolver.index('ref: ${{ steps.trust.outputs.source_sha }}'),
+                        resolver.index('./scripts/resolve-provider-release.sh'))
+        self.assertIn('workflow_sha: ${{ steps.trust.outputs.source_sha }}', resolver)
+        for name in ['build-provider', 'qualify-sdk', 'build-and-release',
+                     'stage-release', 'publish-release', 'validate-older-macos']:
+            content = job(RELEASE, name)
+            self.assertIn('ref: ${{ needs.resolve-env.outputs.workflow_sha }}', content)
+            self.assertIn('resolve-env', content.split('steps:', 1)[0])
+            self.assertNotRegex(content, r'(?m)^    environment:')
+
+    def test_no_separate_hardware_or_receipt_authority(self):
+        for forbidden in ['qualify-release:', 'validate-signed-macos26:', 'validate-signed-macos27:',
+                          'PLATFORM_QUALIFICATION', 'RELEASE_QUALIFICATION',
+                          'provider-release-qualification', '/v1/releases/qualify', '/v1/admin/app-attest/builds']:
+            self.assertNotIn(forbidden, RELEASE)
 
     def test_artifact_handoff_is_same_run_and_source_bound(self):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')
@@ -89,7 +127,7 @@ class ReleasePipelineTests(unittest.TestCase):
                         signing.index('Stage and sign bundle'))
 
     def test_checks_run_even_on_exact_cache_hits(self):
-        for name in ['Verify production prompt parity', 'Test provider with release SDK',
+        for name in ['Verify public prompt golden vectors', 'Test provider with release SDK',
                      'Build optimized provider products', 'Build or validate source-matched metallib']:
             step = ACTION.split('- name: ' + name + '\n', 1)[1].split('\n    - name:', 1)[0]
             self.assertNotIn('cache-hit', step)
@@ -99,13 +137,14 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('steps.keys.outputs.swift-prefix', ACTION)
         self.assertNotIn('spm-v3-', ACTION)
 
-    def test_independent_cache_generations_cannot_reuse_stale_rust_outputs(self):
-        step = ACTION.split('- name: Invalidate workspace Rust outputs\n', 1)[1].split('\n    - name:', 1)[0]
+    def test_qualification_keeps_public_prompt_vectors_without_backend_execution(self):
+        step = ACTION.split('- name: Verify public prompt golden vectors\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn("if: inputs.lane == 'qualification'", step)
+        self.assertIn('./scripts/verify-prompt-parity.sh', step)
         self.assertNotIn('cache-hit', step)
-        self.assertIn('cargo +1.88.0 clean --manifest-path coordinator/promptsidecar/Cargo.toml -p promptsidecar', step)
-        self.assertLess(ACTION.index('- name: Invalidate workspace Rust outputs'),
-                        ACTION.index('- name: Verify production prompt parity'))
+        for forbidden in ('coordinator/', 'go.mod', 'actions/setup-go@', 'cargo ', 'rust-key', 'install-release-rust.sh'):
+            self.assertNotIn(forbidden, ACTION)
+            self.assertNotIn(forbidden, WARM)
 
     def test_warming_cannot_publish_or_seed_default_branch_from_pr(self):
         self.assertIn('branches: [master]', WARM)

@@ -60,8 +60,9 @@ import Foundation
         for (member, data) in setup.configurations { try data.write(to: output.appendingPathComponent(member + ".setup.json")) }
     }
 
-    /// MTP on by default on a planner-built setup (PERF-BACKLOG item 2): with
-    /// the row's credit and the head in the layout (as the plan tool now reads
+    /// MTP with the phase split, under the hand-off opt-in (`ClusterHandOffModes`;
+    /// off by default since 2026-10-13, sharded deployments only): with the
+    /// row's credit and the head in the layout (as the plan tool now reads
     /// them), the guided step saves `phase_split_mtp_v1` in both setups with
     /// the M5 decoding, and never the head on the M3 Ultra.
     static func speculativeHeadByDefault(layout: ClusterModelLayout, description: ClusterPairDescription,
@@ -84,13 +85,13 @@ import Foundation
         let m5 = try chip(slowTwo[0], "Apple M5 Max"), m3 = try chip(slowTwo[1], "Apple M3 Ultra")
         for (who, local, peer) in [("mac-one", m5, m3), ("mac-two", m3, m5)] {
             let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: who,
-                localProfile: local, peerProfile: peer, layout: headed)
+                localProfile: local, peerProfile: peer, layout: headed, environment: handOff)
             let configurations = try decided.setup.map { setup in
                 try setup.configurations.values.map {
                     try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: capabilityHash)
                 }
             } ?? []
-            require("planned from \(who): the head by default, the M3 Ultra leading and the M5 decoding, saved by name in both setups",
+            require("planned from \(who) under the hand-off opt-in: the head, the M3 Ultra leading and the M5 decoding, saved by name in both setups",
                 decided.result.chosen?.mode == .phaseSplitMTP && decided.setup?.leaderID == "mac-two"
                     && configurations.count == 2 && configurations.allSatisfy { $0.generationMode == .phaseSplitMTP }
                     && decided.lines.contains { $0.contains("It decodes with the model's speculative (MTP) head") })
@@ -99,12 +100,110 @@ import Foundation
         // lead it, so the mirrored order is refused at plan time instead of being saved without the head.
         refuses("led by the M5, the 9B fixture's grant refuses the order", because: "pipeline-only rank on apple_m3_ultra") {
             _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
-                localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one")
+                localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one", environment: handOff)
         }
         // Two Macs of no known generation: nothing prefers the head, the setup is what it was.
         let unknown = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
-            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed)
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed, environment: handOff)
         require("chips of no known generation keep the plain plan", unknown.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
+        // By default (no opt-in) the same Macs and layout shard the model: no phase split, both Macs hold layers,
+        // the plan lists every sharded candidate with its prediction and reason, and names the opt-in.
+        let name = ClusterHandOffModes.environmentName
+        require("hand-off modes: unset, \"0\" and \"off\" are off; \"1\" and \"on\" opt in",
+            try !ClusterHandOffModes.enabled(environment: [:]) && !ClusterHandOffModes.enabled(environment: [name: "0"])
+                && !ClusterHandOffModes.enabled(environment: [name: "off"]) && ClusterHandOffModes.enabled(environment: [name: "1"])
+                && ClusterHandOffModes.enabled(environment: [name: "on"]))
+        for bad in ["yes", "2", "true ", "ON"] {
+            refuses("hand-off modes: \"\(bad)\" is refused", because: "sharded deployments only") {
+                _ = try ClusterHandOffModes.enabled(environment: [name: bad])
+            }
+        }
+        for (who, local, peer) in [("mac-one", m5, m3), ("mac-two", m3, m5)] {
+            let sharded = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: who,
+                localProfile: local, peerProfile: peer, layout: headed, environment: [:])
+            let configurations = try sharded.setup.map { setup in
+                try setup.configurations.values.map {
+                    try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: capabilityHash)
+                }
+            } ?? []
+            require("planned from \(who), default: a sharded mode with layers on both Macs, saved by name in both setups (never a phase split)",
+                sharded.result.chosen.map { $0.mode.isSharded && $0.ranks.allSatisfy { $0.endLayer > $0.firstLayer } } == true
+                    && configurations.count == 2 && configurations.allSatisfy { $0.generationMode.map { !$0.isHandOff } ?? true })
+            require("planned from \(who), default: the plan lists the sharded candidates and names the opt-in",
+                sharded.lines.contains("Sharded deployment candidates") && sharded.lines.contains { $0.contains("pipeline: chosen") }
+                    && sharded.lines.contains { $0.contains(name + "=1") && $0.contains("never offered in the onboarding") })
+        }
+        refuses("hand-off modes: a malformed setting stops the plan instead of planning something else", because: name) {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: m5, peerProfile: m3, layout: headed, environment: [name: "yes"])
+        }
+        // A setup saved with a hand-off mode (by the earlier default planner, or under the opt-in) is served only
+        // under the opt-in: the owner of each rank refuses it otherwise and names the way back to a sharded setup.
+        for mode in ClusterGenerationMode.allCases {
+            if mode.isHandOff {
+                refuses("hand-off modes: a saved \(mode.rawValue) setup is not served without the opt-in", because: "off by default") {
+                    try ClusterHandOffModes.requireServable(mode, environment: [:])
+                }
+                refuses("hand-off modes: the refusal of a saved \(mode.rawValue) setup says how to shard it", because: "`darkbloom cluster`") {
+                    try ClusterHandOffModes.requireServable(mode, environment: [name: "0"])
+                }
+                require("hand-off modes: a saved \(mode.rawValue) setup is served under the opt-in",
+                    try { try ClusterHandOffModes.requireServable(mode, environment: handOff); return true }())
+            } else {
+                require("hand-off modes: a saved \(mode.rawValue) setup is served by default",
+                    try { try ClusterHandOffModes.requireServable(mode, environment: [:]); return true }())
+            }
+        }
+        refuses("hand-off modes: a malformed setting stops a saved phase split from serving", because: name) {
+            try ClusterHandOffModes.requireServable(.phaseSplitMTP, environment: [name: "yes"])
+        }
+    }
+
+    static let handOff = [ClusterHandOffModes.environmentName: "1"]
+
+    /// The developer bench cap (`ClusterPlannerBenchCap`, test only): an explicit environment variable that, in a
+    /// debug build, lowers what the planner believes each member can give a model, so a large pair is planned as a
+    /// smaller pair would be. A release build refuses it; the load gates never see it.
+    static func benchCap(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                         slowTwo: [ClusterPlacementDevice]) throws {
+        let name = ClusterPlannerBenchCap.environmentName
+        require("bench cap: the variable is named as a developer bench override", name.hasPrefix("DARKBLOOM_DEV_BENCH_"))
+        require("bench cap: unset, nothing is capped in either build", try ClusterPlannerBenchCap.capBytes(environment: [:], debugBuild: true) == nil
+            && ClusterPlannerBenchCap.capBytes(environment: [:], debugBuild: false) == nil)
+        require("bench cap: a debug build reads whole GiB", try ClusterPlannerBenchCap.capBytes(environment: [name: "96"], debugBuild: true) == 96 * gib)
+        refuses("bench cap: a release build refuses the override", because: "not available in a release build") {
+            _ = try ClusterPlannerBenchCap.capBytes(environment: [name: "96"], debugBuild: false)
+        }
+        for bad in ["", "abc", "0", "-8", "1e3", "9.5", " 96", "99999999"] {
+            refuses("bench cap: \"\(bad)\" is refused", because: "whole number of GiB") {
+                _ = try ClusterPlannerBenchCap.capBytes(environment: [name: bad], debugBuild: true)
+            }
+        }
+        let plain = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [:], benchDebugBuild: true)
+        require("bench cap: uncapped, a member holds the 5 GiB fixture whole", plain.result.alone.contains { $0.fit == .now }
+            && !plain.lines.contains { $0.contains("Developer bench cap") })
+        // Capped to 10 GiB each, no member can hold the model and its request alone: the plan is a real split.
+        let capped = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+            environment: [name: "10"], benchDebugBuild: true)
+        require("bench cap: capped to 10 GiB, neither member holds the model alone", capped.result.alone.allSatisfy { !$0.fit.possible })
+        require("bench cap: capped to 10 GiB, the chosen plan is a split in which no rank holds every layer and each fits the cap",
+            capped.result.chosen.map { chosen in !chosen.mode.isPhaseSplit && chosen.ranks.count == 2
+                && chosen.ranks.allSatisfy { $0.needBytes <= 10 * gib && $0.endLayer > $0.firstLayer } } == true && capped.setup != nil)
+        require("bench cap: the plan says the cap is on, that it is test only and that the load gates are unchanged",
+            capped.lines.contains { $0.contains("Developer bench cap") && $0.contains(name) }
+                && capped.lines.contains { $0.contains("test only") } && capped.lines.contains { $0.contains("load gate") && $0.contains("unchanged") })
+        refuses("bench cap: a release build refuses to plan with the override set", because: "not available in a release build") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+                environment: [name: "10"], benchDebugBuild: false)
+        }
+        refuses("bench cap: a cap below the load gate's own minimum is refused", because: "below the load gate's minimum") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+                environment: [name: "2"], benchDebugBuild: true)
+        }
     }
 
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`): a model with a failed
@@ -127,9 +226,13 @@ import Foundation
         require("records: a passed shape of three ranks is admitted whole", three.admits(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .pipeline))
         require("records: another cut, mode or order of the same chips is not",
             !three.admits(chipClasses: [m2, m4, m5u], cuts: [10, 20], mode: .pipeline)
-                && !three.admits(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .phaseSplit)
+                && !three.admits(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .pipelineCompactDecode)
                 && !three.admits(chipClasses: [m5u, m4, m2], cuts: [8, 20], mode: .pipeline)
                 && !three.admits(chipClasses: [m2, nil, m5u], cuts: [8, 20], mode: .pipeline))
+        // Mode-bound (O9): a failed pipeline check restricts the pipeline family's shapes; another family is
+        // restricted by its own records and its grant, not by these.
+        require("records: a failed check restricts its own mode family only", three.restrictedFamilies == [.pipeline]
+            && three.admits(chipClasses: [m2, m4, m5u], cuts: [8, 20], mode: .phaseSplit))
         require("records: each rank decides its own half with its own class",
             three.admitsRank(1, of: 3, chipClass: m4, cuts: [8, 20], mode: .pipeline)
                 && !three.admitsRank(1, of: 3, chipClass: m2, cuts: [8, 20], mode: .pipeline)
@@ -150,7 +253,7 @@ import Foundation
             && !gpt.admits(chipClasses: [m5u, m3], cuts: [12], mode: .pipeline))
         require("a model with no failed check keeps its grant by role and class",
             !ClusterPairServingGrants.records(runtimeModelID: "registered_qwen38_27b").restrictsShapes)
-        try ClusterPairServingGrants.requirePlacement([m3, m5], runtimeModelID: "registered_qwen38_27b", publicModelID: "p")
+        try ClusterPairServingGrants.requirePlacement([m3, m5], runtimeModelID: "registered_qwen38_27b", publicModelID: "p", cuts: [16], mode: .pipeline)
 
         // The guided step on a 24-layer model registered as GPT-OSS, every cut admitted.
         var part = ClusterModelLayout.Part(storedBytes: gib / 2, loadedBytes: gib / 2, largestTensorBytes: gib / 8, tensorCount: 32)
@@ -274,7 +377,8 @@ import Foundation
         let description = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: descriptionObject))
 
         func setup(_ devices: [ClusterPlacementDevice], modes: [ClusterGenerationMode]? = [.pipeline]) throws -> (ClusterPlacementSetup, ClusterPlacementCandidate) {
-            var policy = ClusterPlacementPolicy(); policy.modes = modes
+            // A phase split named here is planned under the hand-off opt-in (off by default).
+            var policy = ClusterPlacementPolicy(); policy.modes = modes; policy.handOffModes = modes?.contains { $0.isHandOff } ?? false
             guard let chosen = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy).chosen else {
                 throw ClusterConfigurationError.invalid("check: no placement")
             }
@@ -335,6 +439,7 @@ import Foundation
         try speculativeHeadByDefault(layout: layout, description: description, capability: capability,
             capabilityHash: capabilityHash, slowTwo: slowTwo)
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
+        try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,
@@ -463,7 +568,10 @@ import Foundation
         require("the 27B leaves the planner free on an M3 Ultra and an M5 Max", free.leader == nil && free.note == nil)
         for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"] {
             let one = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: pair.reversed(), runtimeModelID: model, publicModelID: "p")
-            require("\(model) is planned with the M3 Ultra leading", one.leader == "a" && one.note?.contains("decoding rank (the last) on apple_m5_max") == true)
+            // Every granted family lists the M5 Max as a decoding rank and never as rank 0 (mode-bound: the M5 Ultra's
+            // pipeline records may add other classes to the words, not this order).
+            require("\(model) is planned with the M3 Ultra leading", one.leader == "a" && one.note?.contains("decoding rank (the last) on") == true
+                && one.note?.contains("apple_m5_max") == true)
         }
         // A withheld model is still planned, and the plan says a start refuses it; a chip name with no class is left to the start.
         let withheld = try ClusterPlacementFlow.leaderUnderGrant(requested: nil, members: pair, runtimeModelID: "registered_gpt_oss_20b", publicModelID: "p")
@@ -473,6 +581,7 @@ import Foundation
             runtimeModelID: "registered_qwen35_9b", publicModelID: "p")
         require("a chip name with no class decides nothing at plan time", unknown.leader == "b" && unknown.note == nil)
         syntheticQualificationRecords()
+        modeBoundGrants()
         // Leader-first onboarding: the Mac where `darkbloom cluster` started leads the cluster (model, sync, start),
         // but which Mac runs rank 0 and which decodes is the planner's, from detected hardware and the model's grant.
         // Synthetic hardware, each pair planned from both Macs: the placement must not follow who asks.
@@ -504,6 +613,134 @@ import Foundation
         print("placement setup checks passed: \(passed)")
     }
 
+    /// Mode-bound grants (owner sign-off O9): a record grants only its own mode
+    /// family (pipeline variants, pipeline MTP, tensor parallel, the hand-off
+    /// modes) and only the chip classes in the roles it ran; a diverged record
+    /// withholds its own family; an inconclusive one neither grants nor
+    /// withholds. Synthetic records on chips this bench never had.
+    static func modeBoundGrants() {
+        func record(_ model: String, _ chips: [String], cuts: [Int], mode: String, verdicts: [String] = ["tokensEqualLogitsDiffer"]) -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: model, artifactSHA256: hash("a"), ranks: chips.enumerated().map { .init(rank: $0.offset, chip: $0.element, operatingSystem: "27.0") },
+                cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", chunkTokens: 512, promptTokens: 4096, outputTokens: 128, transport: "jaccl",
+                pairReportSHA256: hash("b"), pairReportCreatedUTC: "2026-10-14T00:00:00Z",
+                comparisons: verdicts.map { .init(referenceChip: chips.last, verdict: $0, firstDivergenceIndex: 7, gapInULPs: $0 == "diverged" ? 9 : 1,
+                                                  nearTieThresholdULPs: 4, allowed: ["cut"]) }, producer: "check")
+        }
+        func cls(_ name: String) -> ClusterChipClass? { ClusterChipClass(chipName: name) }
+        let m2Max = cls("Apple M2 Max"), m4Max = cls("Apple M4 Max"), m3Ultra = cls("Apple M3 Ultra"), m5Ultra = cls("Apple M5 Ultra"), m5Max = cls("Apple M5 Max")
+        require("pipeline and compact decode are one family; the phase splits are the hand-off family",
+            ClusterGenerationMode.pipeline.servingFamily == .pipeline && ClusterGenerationMode.pipelineCompactDecode.servingFamily == .pipeline
+                && ClusterGenerationMode.phaseSplit.servingFamily == .handOff && ClusterGenerationMode.phaseSplitMTP.servingFamily == .handOff)
+        let decisions = ClusterPairServingDecisions(records: [
+            // Only hand-off records: a phase-split pass opens no pipeline shape.
+            record("registered_handoff", ["Apple M3 Ultra", "Apple M5 Ultra"], cuts: [8], mode: "phase_split_mtp_v1"),
+            // Pipeline passed on a retired chip, hand-off on the current pair.
+            record("registered_retired", ["Apple M3 Ultra", "Apple M5 Max"], cuts: [16], mode: "pipeline_v1"),
+            record("registered_retired", ["Apple M3 Ultra", "Apple M5 Ultra"], cuts: [8], mode: "phase_split_v1"),
+            // Pipeline passed, hand-off diverged: the pipeline family stays granted.
+            record("registered_mixed", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "pipeline_compact_decode_v1"),
+            record("registered_mixed", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "phase_split_v1", verdicts: ["diverged"]),
+            // Pipeline diverged at one cut and passed at another, hand-off passed: pipeline withheld, hand-off granted.
+            record("registered_cutdep", ["Apple M2 Max", "Apple M4 Max"], cuts: [4], mode: "pipeline_v1", verdicts: ["tokensEqualLogitsDiffer", "diverged"]),
+            record("registered_cutdep", ["Apple M2 Max", "Apple M4 Max"], cuts: [11], mode: "pipeline_v1"),
+            record("registered_cutdep", ["Apple M2 Max", "Apple M4 Max"], cuts: [11], mode: "phase_split_v1"),
+            // An inconclusive pipeline record neither grants nor withholds.
+            record("registered_unsure", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "pipeline_v1", verdicts: ["incomparable"]),
+            record("registered_unsure", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "phase_split_v1"),
+        ])
+        func allows(_ classes: [ClusterChipClass?], _ model: String, cuts: [Int], _ mode: ClusterGenerationMode) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", cuts: cuts, mode: mode, decisions: decisions)) != nil
+        }
+        func reason(_ classes: [ClusterChipClass?], _ model: String, cuts: [Int]?, _ mode: ClusterGenerationMode?) -> String {
+            do { try ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", cuts: cuts, mode: mode, decisions: decisions); return "allowed" }
+            catch { return String(describing: error) }
+        }
+        require("a hand-off record grants the hand-off family", allows([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .phaseSplitMTP)
+            && allows([m3Ultra, m5Ultra], "registered_handoff", cuts: [20], .phaseSplit))
+        require("a hand-off record grants no pipeline shape", !allows([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .pipeline)
+            && !allows([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .pipelineCompactDecode))
+        require("the refusal names the mode and the families the records ran",
+            reason([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .pipeline).contains("pipeline_v1")
+                && reason([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .pipeline).contains("hand-off"))
+        require("a placement checked without its mode is refused", reason([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], nil) != "allowed")
+        let handoff = try? ClusterPairServingGrants.grant(runtimeModelID: "registered_handoff", publicModelID: "p", decisions: decisions)
+        require("a grant lists its families and its classes per family", handoff?.families == [.handOff]
+            && handoff?.chipClasses(for: .decodingRank, family: .pipeline) == [] && handoff?.chipClasses(for: .decodingRank, family: .handOff) == [m5Ultra!])
+        require("a record of a retired chip grants that chip only, in its own family",
+            allows([m3Ultra, m5Max], "registered_retired", cuts: [16], .pipeline) && !allows([m3Ultra, m5Ultra], "registered_retired", cuts: [16], .pipeline)
+                && allows([m3Ultra, m5Ultra], "registered_retired", cuts: [8], .phaseSplit) && !allows([m3Ultra, m5Max], "registered_retired", cuts: [8], .phaseSplit))
+        require("a diverged hand-off record leaves the pipeline family granted and withholds its own",
+            allows([m2Max, m4Max], "registered_mixed", cuts: [12], .pipeline) && !allows([m2Max, m4Max], "registered_mixed", cuts: [12], .phaseSplit)
+                && reason([m2Max, m4Max], "registered_mixed", cuts: [12], .phaseSplit).contains("not granted pair serving")
+                && decisions.withheld["registered_mixed"] == nil && decisions.granted.contains { $0.runtimeModelID == "registered_mixed" })
+        let cutdep = try? ClusterPairServingGrants.grant(runtimeModelID: "registered_cutdep", publicModelID: "p", decisions: decisions)
+        require("a diverged pipeline record withholds the pipeline family at every cut, and only it",
+            !allows([m2Max, m4Max], "registered_cutdep", cuts: [11], .pipeline) && !allows([m2Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
+                && allows([m2Max, m4Max], "registered_cutdep", cuts: [11], .phaseSplit)
+                && cutdep?.families == [.handOff] && cutdep?.withheldFamilies[.pipeline]?.contains("diverged at cut 4") == true)
+        require("an inconclusive record neither grants nor withholds its family",
+            !allows([m2Max, m4Max], "registered_unsure", cuts: [12], .pipeline) && allows([m2Max, m4Max], "registered_unsure", cuts: [12], .phaseSplit)
+                && (try? ClusterPairServingGrants.grant(runtimeModelID: "registered_unsure", publicModelID: "p", decisions: decisions))?.withheldFamilies.isEmpty == true)
+        // The planner keeps to the same rule: it never plans a mode family the records did not grant on these chips.
+        func plans(_ classes: [ClusterChipClass?], _ model: String, cuts: [Int], _ mode: ClusterGenerationMode) -> Bool {
+            ClusterPairServingGrants.plannable(classes, cuts: cuts, mode: mode, runtimeModelID: model, decisions: decisions)
+        }
+        require("the planner plans only granted families on granted classes",
+            plans([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .phaseSplitMTP) && !plans([m3Ultra, m5Ultra], "registered_handoff", cuts: [8], .pipeline)
+                && !plans([m5Ultra, m3Ultra], "registered_handoff", cuts: [8], .phaseSplitMTP)
+                && plans([m3Ultra, m5Max], "registered_retired", cuts: [24], .pipelineCompactDecode) && !plans([m3Ultra, m5Ultra], "registered_retired", cuts: [24], .pipeline))
+        require("the planner keeps a withheld family to its passed shapes and leaves a classless chip to the start",
+            plans([m2Max, m4Max], "registered_cutdep", cuts: [11], .pipeline) && !plans([m2Max, m4Max], "registered_cutdep", cuts: [4], .pipeline)
+                && plans([nil, m5Ultra], "registered_handoff", cuts: [8], .phaseSplit) && !plans([nil, m4Max], "registered_handoff", cuts: [8], .phaseSplit) && plans([m2Max, m4Max], "registered_nobody", cuts: [3], .pipeline))
+        // The shipped records: a phase-split pass on the M3 Ultra and the M5 Ultra opens no pipeline there; the 27B's
+        // pipeline records on the retired M5 Max grant that chip only.
+        let m3 = m3Ultra!, m5u = m5Ultra!
+        let shipped27 = try? ClusterPairServingGrants.grant(runtimeModelID: "registered_qwen38_27b", publicModelID: "p")
+        let pipelineOnPair = ClusterPairServingGrants.records.contains { $0.runtimeModelID == "registered_qwen38_27b" && $0.mode?.servingFamily == .pipeline
+            && $0.ranks.map(\.chip) == ["Apple M3 Ultra", "Apple M5 Ultra"] && $0.passesNearTieRule }
+        require("the shipped 27B grant binds each mode family to the chips its records ran",
+            shipped27?.chipClasses(for: .decodingRank, family: .handOff).contains(m5u) == true
+                && shipped27?.chipClasses(for: .decodingRank, family: .pipeline).contains(m5u) == pipelineOnPair
+                && shipped27?.chipClasses(for: .pipelineRank, family: .pipeline).contains(m3) == true)
+        // The pipeline on the M3 Ultra and the M5 Ultra, in the order each family's check ran at the planner's cut
+        // (records of 2026-10-14; MiMo's of 2026-10-13); GPT-OSS and the Gemma 4 artifacts stay withheld in the pipeline.
+        func servesPipeline(_ model: String, _ order: [ClusterChipClass]) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(order, runtimeModelID: model, publicModelID: "p", mode: .pipeline)) != nil
+        }
+        for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_nemotron35_lightning"] {
+            require("shipped: \(model) pipeline with the M3 Ultra leading the M5 Ultra only", servesPipeline(model, [m3, m5u]) && !servesPipeline(model, [m5u, m3]))
+        }
+        for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_mimo_v26_flash_mopd"] {
+            require("shipped: \(model) pipeline with the M5 Ultra leading the M3 Ultra only", servesPipeline(model, [m5u, m3]) && !servesPipeline(model, [m3, m5u]))
+        }
+        require("shipped: Bonsai pipeline in both orders (cut 32 led by the M3 Ultra, cut 56 by the M5 Ultra)",
+            servesPipeline("registered_ternary_bonsai_2_27b", [m3, m5u]) && servesPipeline("registered_ternary_bonsai_2_27b", [m5u, m3]))
+        for model in ["registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_8bit"] {
+            require("shipped: \(model) stays withheld", !servesPipeline(model, [m3, m5u]) && !servesPipeline(model, [m5u, m3])
+                && ClusterPairServingGrants.withheld[model] != nil)
+        }
+        // What the onboarding offers is what a start serves: at the planner's sharded shape on this pair, each
+        // granted model starts, and a withheld one is refused although its passed shape is still plannable
+        // (GPT-OSS passed at cut 20, the planner's cut, after diverging at 4, 8 and 10).
+        func startRefusal(_ model: String, _ order: [ClusterChipClass?], _ cut: Int) -> ClusterPairServingRefusal? {
+            ClusterPairServingGrants.startRefusal(order, cuts: [cut], mode: .pipeline, runtimeModelID: model, publicModelID: "p")
+        }
+        for (model, order, cut) in [("registered_qwen38_27b", [m3, m5u], 8), ("registered_qwen35_9b", [m3, m5u], 4),
+                                    ("registered_nemotron35_lightning", [m3, m5u], 8), ("registered_qwen35_35b_a3b", [m5u, m3], 36),
+                                    ("registered_qwen36_35b_a3b", [m5u, m3], 36), ("registered_ternary_bonsai_2_27b", [m5u, m3], 56),
+                                    ("registered_mimo_v26_flash_mopd", [m5u, m3], 47)] {
+            require("offered: \(model) starts at the planner's cut \(cut)", startRefusal(model, order, cut) == nil)
+        }
+        require("not offered: GPT-OSS at cut 20 is plannable but its start is refused",
+            ClusterPairServingGrants.plannable([m5u, m3], cuts: [20], mode: .pipeline, runtimeModelID: "registered_gpt_oss_20b")
+                && startRefusal("registered_gpt_oss_20b", [m5u, m3], 20) != nil)
+        require("not offered: Gemma 4 QAT4 at the planner's cut 25", startRefusal("registered_gemma4_26b_qat_4bit", [m5u, m3], 25) != nil)
+        require("not offered: the 27B's start refused in an order its pipeline checks never ran",
+            startRefusal("registered_qwen38_27b", [m5u, m3], 56) != nil)
+        require("not offered: a model with no record", startRefusal("registered_unknown_model", [m3, m5u], 8) != nil)
+        require("a rank with no class is left to its own start", startRefusal("registered_qwen38_27b", [m3, nil], 8) == nil)
+    }
+
     /// Grants come from qualification records only, for any chips and any
     /// number of ranks: synthetic records for Macs this bench never had.
     static func syntheticQualificationRecords() {
@@ -530,15 +767,16 @@ import Foundation
             record("registered_virtual", ["Apple M1 (Virtual)", "Apple M2 Max"], cuts: [16]),
             record("registered_wide", ["Apple M1 Ultra", "Apple M2 Ultra", "Apple M4 Max"], cuts: [20, 10]),
         ])
-        func allows(_ classes: [ClusterChipClass?], _ model: String) -> Bool {
-            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", decisions: decisions)) != nil
+        func allows(_ classes: [ClusterChipClass?], _ model: String, _ mode: ClusterGenerationMode = .pipeline) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", mode: mode, decisions: decisions)) != nil
         }
-        func shipped(_ classes: [ClusterChipClass?], _ model: String) -> Bool {
-            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p")) != nil
+        func shipped(_ classes: [ClusterChipClass?], _ model: String, _ mode: ClusterGenerationMode) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", cuts: [16], mode: mode)) != nil
         }
         require("two 64 GB M2 Max Macs are granted as their record ran", allows([m2Max, m2Max], "registered_dense"))
-        require("an M4 Pro leading an M3 Ultra is granted, and that order only", allows([m4Pro, m3Ultra], "registered_dense")
-            && !allows([m3Ultra, m4Pro], "registered_dense") && !allows([m3Ultra, m2Max], "registered_dense"))
+        require("an M4 Pro leading an M3 Ultra is granted in the mode family it ran, and that order only", allows([m4Pro, m3Ultra], "registered_dense", .phaseSplit)
+            && !allows([m4Pro, m3Ultra], "registered_dense", .pipeline)
+            && !allows([m3Ultra, m4Pro], "registered_dense", .phaseSplit) && !allows([m3Ultra, m2Max], "registered_dense", .phaseSplit))
         require("three ranks: each class reaches the role its record ran it in", allows([m1Ultra, m2Ultra, m4Max], "registered_wide")
             && allows([m2Ultra, m1Ultra, m4Max], "registered_wide") && !allows([m1Ultra, m4Max, m2Ultra], "registered_wide")
             // A grant restricts roles, not the number of ranks (cuts and modes are the coordinator's parity qualification).
@@ -572,6 +810,6 @@ import Foundation
         let owners = Dictionary(grouping: ClusterPairServingGrants.records, by: \.artifactSHA256).mapValues { Set($0.map(\.runtimeModelID)) }
         require("no shipped artifact is recorded under two registered models", owners.values.allSatisfy { $0.count == 1 })
         require("the shipped records grant the 9B with the M3 Ultra leading, from records only",
-            shipped([m3Ultra, cls("Apple M5 Ultra")], "registered_qwen35_9b") && !shipped([cls("Apple M5 Ultra"), m3Ultra], "registered_qwen35_9b"))
+            shipped([m3Ultra, cls("Apple M5 Ultra")], "registered_qwen35_9b", .phaseSplitMTP) && !shipped([cls("Apple M5 Ultra"), m3Ultra], "registered_qwen35_9b", .phaseSplitMTP))
     }
 }

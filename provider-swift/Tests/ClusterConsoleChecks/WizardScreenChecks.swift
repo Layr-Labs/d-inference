@@ -1,5 +1,6 @@
 import Foundation
 import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
 @testable import InstalledContract
 
 extension ClusterConsoleCheck {
@@ -233,6 +234,27 @@ extension ClusterConsoleCheck {
         // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
         for reading in F.readings {
             let option = options.first { $0.model.folder == reading.model.folder }
+            // A model whose pair-serving grant lists none of this pair's placements is not offered, and says
+            // why: MiMo's records ran with the M5 Ultra leading and the M3 Ultra decoding, and this pair is an
+            // M3 Ultra leading an M5 Max (its grant, from its records, not a table).
+            if reading.model.modelID == "mimo-v2.6-flash-mopd" {
+                // In plain words, action or fact first, with no command (one-command fix A2/B4).
+                expect(option?.plan == nil && option?.blocker == ClusterSetupPlanning.notQualified,
+                    "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
+                continue
+            }
+            // A model its records withhold (GPT-OSS: its pipeline checks diverged at cuts 4, 8 and 10) is planned
+            // only at a shape a check passed in, and a start refuses it: the onboarding does not offer it, and says why
+            // (the start's refusal at the planned shape, or the grant's plain refusal when no shape is granted at all).
+            if reading.model.modelID == "gpt-oss-20b" {
+                expect(option?.plan == nil && (option?.blocker?.contains("not granted pair serving") == true
+                        || option?.blocker == ClusterSetupPlanning.notQualified),
+                    "GPT-OSS is not offered while its records withhold it: \(option?.blocker ?? "offered")")
+                continue
+            }
+            // A model the pair may not serve with this build is not offered at all (checked below).
+            if let described = try? reading.capability.get(),
+               ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: reading.model.modelID) { continue }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",
@@ -241,17 +263,12 @@ extension ClusterConsoleCheck {
             expect(layout?.admittedCuts.contains(option?.plan?.cut ?? -1) == true,
                 "\(reading.model.modelID)'s cut \(option?.plan?.cut ?? -1) is one its layout admits")
             expect(described.contains(option?.plan?.mode ?? "-"), "\(reading.model.modelID)'s mode is one its worker described")
-            // MTP on by default: a family whose worker runs the speculative head is planned with it, the
-            // M5 (the Mac that prefers the head) decoding.
-            if described.contains("phase_split_mtp_v1") {
-                expect(option?.plan?.mode == "phase_split_mtp_v1" && option?.plan?.ranks.last?.memberID == "mac-b",
-                    "\(reading.model.modelID) is planned with the speculative head on the decoding M5: \(option?.plan?.mode ?? "-")")
-            }
+            // Sharded deployments only (owner, 2026-10-13): the onboarding never offers a hand-off mode (phase split,
+            // phase split + MTP, the hybrid), even for a family whose worker runs one; every member holds layers.
+            let mode = (option?.plan?.mode).flatMap(ClusterGenerationMode.init(rawValue:))
+            expect(mode?.isSharded == true && (option?.plan?.ranks.allSatisfy { $0.endLayer > $0.firstLayer } ?? false),
+                "\(reading.model.modelID) is offered sharded with layers on both Macs, never a hand-off mode: \(option?.plan?.mode ?? "-")")
         }
-        let mimo = options.first { $0.model.modelID == "mimo-v2.6-flash-mopd" }?.plan?.ranks ?? []
-        let layers = { (member: String) in mimo.first { $0.memberID == member }.map { $0.endLayer - $0.firstLayer } ?? 0 }
-        expect(layers("mac-a") > layers("mac-b") && layers("mac-b") > 0,
-            "MiMo, larger than the 128 GB Mac, is split with the larger range on the 256 GB Mac: \(mimo.map { ($0.memberID, $0.firstLayer, $0.endLayer) })")
         expect(options.last?.model.folder == F.unreadModel.folder && options.last?.blocker?.contains("planner cannot read") == true,
             "a folder no family reads is blocked with the planner's reason")
         // With the 9B's recorded solo runs on each Mac, its figures are measured and shown, as on the pair.
@@ -279,6 +296,19 @@ extension ClusterConsoleCheck {
         let alone = ClusterSetupPlanning.decide(readings: F.readings, description: F.pairDescription, localMemberID: "mac-a",
             localProfile: F.profileA, peerProfile: F.profileB, peerModels: [], measurements: [])
         expect(alone.allSatisfy { $0.option.blocker?.contains("copy it there first") == true }, "models only here say to copy them")
+        // A model the pair may not serve with this build is never offered (a start would refuse it on both Macs after
+        // a long wait): its grant refusal is the blocker, in plain words with no command.
+        for withheld in F.readings {
+            guard let described = try? withheld.capability.get(),
+                  ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: withheld.model.modelID) else { continue }
+            let option = F.decisions.first { $0.option.model.folder == withheld.model.folder }?.option
+            expect(option?.blocker == ClusterSetupPlanning.notQualified, "\(withheld.model.modelID): not offered, plainly: \(option?.blocker ?? "offered")")
+        }
+        for option in F.decisions.map(\.option) {
+            let words = option.blocker ?? ""
+            expect(!words.contains("`darkbloom") && !words.contains("this Mac leads") && !words.contains("mac-a") && !words.contains("mac-b"),
+                "\(option.model.modelID): the reason names no command, no member ID and no leader: \(words)")
+        }
         // The decision also writes both setups, rank 0 this Mac's.
         let setup = F.decisions.first { $0.option.model.modelID == "Qwen3.5-9B" }?.setup
         expect(setup?.leaderID == "mac-a" && setup?.configurations.count == 2, "adopting writes both setups, this Mac leading")

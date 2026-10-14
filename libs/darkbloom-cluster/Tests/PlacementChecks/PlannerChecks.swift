@@ -63,8 +63,10 @@ func checkGateAgreement(_ checks: PlacementChecks) {
         { if case .gateCountsLess = heavy.fit(80 * gib) { return true } else { return false } }())
     checks.require("beyond the cache the kernel would give up: applications must release memory, and protected cache is not promised",
         { if case .afterApplicationsRelease(let bytes) = heavy.fit(100 * gib) { return bytes == 100 * gib - heavy.kernelWouldGiveBytes } else { return false } }())
-    checks.require("beyond everything but the kernel's cache minimum: only a restart",
-        { if case .afterRestart = heavy.fit(200 * gib) { return true } else { return false } }())
+    checks.require("beyond everything but the kernel's cache minimum: the minimum is named as the kernel's share of unwired memory, not as something only a restart empties",
+        { if case .afterRestart = heavy.fit(200 * gib) { return true } else { return false } }()
+            && ClusterPlacementExplanation.describe(heavy.fit(200 * gib)).contains("in proportion to the memory that is not wired")
+            && !ClusterPlacementExplanation.describe(heavy.fit(200 * gib)).contains("Only a restart"))
     checks.require("beyond everything that is not wired: never",
         { if case .never = heavy.fit(253 * gib) { return true } else { return false } }())
     checks.require("a requirement beyond physical memory is answered: never",
@@ -125,7 +127,8 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("27B layout: 64 layers, its registered bytes, fifteen cuts",
         big.layerCount == 64 && big.wholeModelLoadedBytes == 15_132_802_048 && big.admittedCuts == Array(stride(from: 4, through: 60, by: 4))
             && big.structuralCuts == big.admittedCuts && big.runtimeModelID == "registered_qwen38_27b")
-    // The runtime executes no tensor-parallel mode yet, so neither row lists one.
+    // The runtime executes no tensor-parallel mode yet, so neither row lists one; every other mode, the
+    // pipeline's speculative rounds included (the last rank runs the row's head).
     let executed = ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode }
     checks.require("both list every generation mode the runtime executes (no tensor-parallel one yet) and both prefill schedules",
         nine.generationModes == executed && big.generationModes == executed
@@ -165,7 +168,8 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
     var result: [ClusterPlacementCandidate] = []
     for order in [[devices[0], devices[1]], [devices[1], devices[0]]] {
         for cut in cuts {
-            for mode in layout.generationModes {
+            // The hand-off modes are planned only under the opt-in (sharded deployments only by default).
+            for mode in layout.generationModes where policy.handOffModes || !mode.isHandOff {
                 result.append(try ClusterPlacementPlanner.evaluate(devices: order, cuts: [cut], mode: mode,
                     prefillSchedule: .oneChunkLookahead, layout: layout, policy: policy))
             }
@@ -324,7 +328,8 @@ func checkDeviceMixes(_ nine: ClusterModelLayout, _ big: ClusterModelLayout, _ c
         let text = ClusterPlacementExplanation.describe(large, devices: devices, layout: mimo).joined(separator: "\n")
         checks.require("cache-heavy pair: the output names free pages, applications and the kernel's cache minimum apart, and says the gate decides at load",
             text.contains("Nothing has to close") && text.contains("applications would have to release")
-                && text.contains("as its minimum (not reclaimable short of a restart)") && text.contains("The load gate on each Mac decides when it loads"))
+                && text.contains("as its minimum now (a share of the memory that is not wired: it falls as memory is wired, not when applications close)")
+                && !text.contains("short of a restart") && text.contains("The load gate on each Mac decides when it loads"))
         // Cache that is in use (active) is not counted by the gate, and the plan says the same.
         let busy = [try SyntheticMac(physicalGiB: 256, freeGiB: 0.3, inactiveCacheGiB: 20, activeCacheGiB: 170, wiredGiB: 8).device("a"), devices[1]]
         let busyResult = try checkRule("256 GiB Mac whose cache is active, 27B", busy, big, checks)

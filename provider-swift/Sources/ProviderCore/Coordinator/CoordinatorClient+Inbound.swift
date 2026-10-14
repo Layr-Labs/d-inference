@@ -49,7 +49,7 @@ extension CoordinatorClient {
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
         profileAnchor: SuspendingClock.Instant = .now,
-        sourceConnection: NWConnection? = nil
+        connection: NWConnection? = nil
     ) async {
         // Native-pair public frames are consumed before the ordinary codec on
         // member connections; solo connections never carry them. One that
@@ -58,11 +58,11 @@ extension CoordinatorClient {
             do {
                 let wall = Date().timeIntervalSince1970 * 1_000_000_000
                 guard wall > 0, wall < Double(Int64.max) else { throw NativePairMemberError.deadline }
-                if try consumeNativePairFrame(data, sourceConnection: sourceConnection,
+                if try consumeNativePairFrame(data, sourceConnection: connection,
                     receivedAt: DispatchTime.now().uptimeNanoseconds, wallUnixNanoseconds: Int64(wall)) { return }
             } catch {
                 detachNativePairMember()
-                sourceConnection?.cancel()
+                connection?.cancel()
                 return
             }
         }
@@ -210,7 +210,12 @@ extension CoordinatorClient {
             ))
 
         case .appAttestShadow(let payload):
-            eventContinuation?.yield(.appAttestShadow(payload))
+            guard let connection, nwConnection === connection, sessionRegistered, !shutdownRequested else { return }
+            eventContinuation?.yield(.appAttestShadow(payload,
+                reply: appAttestShadowReply(to: payload, on: connection)))
+
+        case .appAttestResume(let challenge):
+            if let connection { answerAppAttestResume(challenge, on: connection) }
 
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(

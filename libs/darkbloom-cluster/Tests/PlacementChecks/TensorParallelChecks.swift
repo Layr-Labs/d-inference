@@ -333,9 +333,9 @@ private func checkTensorParallelPair(_ big: ClusterModelLayout, golden: URL, _ c
     for (label, micro) in [("a keyed exchange (~350 us, the explicit-sync class)", 350.0), ("a native-all-sum-class 45 us", 45.0)] {
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy(),
             link: linkCosts(reductionMicroseconds: micro))
-        checks.require("tensor parallel M3 Ultra + M5 Ultra, no shard probe, \(label): not chosen (predicted slower), the phase split stays",
+        checks.require("tensor parallel M3 Ultra + M5 Ultra, no shard probe, \(label): not chosen (predicted slower), a pipeline stays (sharded by default)",
             result.chosen.map { !$0.mode.usesTensorParallelDecode } == true && result.tensorParallel?.verdict == .predictedSlower
-                && result.chosen?.mode.isPhaseSplit == true)
+                && result.chosen.map { $0.mode == .pipeline || $0.mode == .pipelineCompactDecode } == true)
     }
     // Even with a shard probe like the M5 Max's (a half stepping in 84.5 % of
     // the whole: 25.1 against 29.7 ms) on both, the faster Mac alone wins.

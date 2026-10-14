@@ -133,6 +133,9 @@ func classifierChecks() {
         ("Cannot inspect the provider instance lock", [], .localProviderRunning),
         ("GPT-OSS stage load exceeds the allocator limit: needs 9 of 8 bytes", [], .memoryGateRefused),
         ("The follower member did not connect over the link control channel (is `darkbloom cluster link-follower` running on the other Mac?)", [], .followerNotConnected),
+        // The plain wording of the one-command path keeps the classifier's phrase (A/B3 of the fix list).
+        ("The other Mac did not answer over the cable. Make sure it is on; it rejoins by itself. (The follower member did not connect over the link control channel.)", [], .followerNotConnected),
+        ("Darkbloom changed on this Mac since the cluster was set up: run `darkbloom cluster` again; it sets up again by itself. (The installed worker's runtime description differs from the saved capability.)", [], .workerRuntimeMismatch),
         ("Native key relay deadline expired", [], .bootstrapStalled),
         ("Installed executable bytes differ from the expected binary SHA-256", [], .workerRuntimeMismatch),
         ("Unsupported worker protocol version", [], .versionMismatch),
@@ -212,7 +215,7 @@ func classifierChecks() {
         check(hit.isEmpty, "B-gate \(g.code) asks for no SSH set-up or network setting\(hit.isEmpty ? "" : ": \(hit)")")
     }
     for g in ["host_key_unknown", "host_identity_changed", "no_matching_host_key", "login_rejected"].compactMap({ ClusterGuidance.guidance(code: $0) }) {
-        check(g.steps.first?.contains("darkbloom cluster setup") == true, "B-gate \(g.code) leads with the SSH-free pairing")
+        check(g.steps.first?.contains("darkbloom cluster") == true, "B-gate \(g.code) leads with the SSH-free pairing")
     }
 }
 
@@ -487,12 +490,35 @@ func statusChecks() throws {
     check(snapshot.lines.contains { $0.contains("Rank 1 (mirrored over the link)") && $0.contains("STALE") }, "E17 status lines show it")
 }
 
+// MARK: F. A planned stop is not an incident
+
+func stopCauseChecks() {
+    // The leader was asked to stop (a drain, `darkbloom stop`, Ctrl-C): its own workers' exit that follows
+    // must not turn the fence the other Mac reads into "a rank was lost".
+    let planned = ClusterSessionStopCause.fenceCause(unrequested: true, requestedFirst: true, lastFailure: nil)
+    check(planned == ClusterSessionStopCause.requested, "F1 a stop asked for first keeps the requested cause when its workers' exit follows")
+    check(ClusterSessionStopCause.fenceCause(unrequested: false, requestedFirst: true, lastFailure: nil) == ClusterSessionStopCause.requested,
+          "F2 a requested stop fences with the requested cause")
+    let lost = ClusterSessionStopCause.fenceCause(unrequested: true, requestedFirst: false, lastFailure: nil)
+    check(lost == "the session stopped: a rank was lost", "F3 a stop nobody asked for still says a rank was lost")
+    check(ClusterSessionStopCause.fenceCause(unrequested: true, requestedFirst: false, lastFailure: "request failed: x")
+          == "the session stopped: request failed: x", "F4 and names the request failure when there is one")
+    // The follower reads the fence its link endpoint reports ("leader fenced: <cause>").
+    check(ClusterSessionStopCause.isRequestedStop(fenceReason: "leader fenced: " + planned), "F5 the follower reads a requested stop as planned")
+    check(!ClusterSessionStopCause.isRequestedStop(fenceReason: "leader fenced: " + lost), "F6 a lost rank is not read as planned")
+    check(!ClusterSessionStopCause.isRequestedStop(fenceReason: "leader fenced"), "F7 a fence without a cause is not read as planned")
+    check(!ClusterSessionStopCause.isRequestedStop(fenceReason: "leader replay or gap"), "F8 a protocol fence is not read as planned")
+    check(!ClusterSessionStopCause.isRequestedStop(fenceReason: "leader fenced: the session is stopping because x"),
+          "F9 only the exact requested cause is planned")
+}
+
 do {
     try incidentChecks()
     classifierChecks()
     try telemetryChecks()
     try protocolChecks()
     try statusChecks()
+    stopCauseChecks()
 } catch {
     failures += 1
     output.write(Data("FAIL unexpected error: \(error)\n".utf8))

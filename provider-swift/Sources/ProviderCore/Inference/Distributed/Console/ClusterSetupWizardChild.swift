@@ -79,12 +79,12 @@ enum ClusterSetupChild {
             return "the other Mac's host key is not the one the setup pins"
         }
         if text.contains("permission denied") {
-            return "the other Mac did not accept this Mac's key, or this Mac could not unlock it (a passphrase kept in the login keychain is handed out only while the keychain is unlocked)"
+            return "the other Mac refused this Mac (developer route)"
         }
         if text.contains("timed out") || text.contains("no route to host") || text.contains("host is down") {
             return "the other Mac did not answer (asleep, cable out, or another address)"
         }
-        if text.contains("connection refused") { return "the other Mac refused the connection: is Remote Login on there?" }
+        if text.contains("connection refused") { return "the other Mac refused the connection (developer route)" }
         if text.contains("could not resolve") { return "the other Mac's name did not resolve" }
         if outcome.status == 127 || text.contains("no such file") || text.contains("not found") {
             return "Darkbloom is not installed on the other Mac at the path the setup names"

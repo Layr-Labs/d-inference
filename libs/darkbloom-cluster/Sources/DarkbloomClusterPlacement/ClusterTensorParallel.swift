@@ -33,13 +33,20 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     /// nil or empty: equal shards only. The family derives them from its own
     /// plan (each part divides in whole units with at least one per rank).
     public let shareOptions: [[Int]]?
+    /// How many indivisible groups (of heads and the channels they own) the
+    /// plan can hand out unequally at any split, so that a faster Mac takes
+    /// more of every layer: shares are then whole groups out of this many.
+    /// Nil, the default, means only `shareOptions` (or equal shares).
+    public let shareUnits: Int?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
-                partialBytesPerToken: Int, stateDividesByHeads: Bool, shareOptions: [[Int]]? = nil) {
+                partialBytesPerToken: Int, stateDividesByHeads: Bool, shareOptions: [[Int]]? = nil,
+                shareUnits: Int? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.stateDividesByHeads = stateDividesByHeads
         self.shareOptions = shareOptions?.isEmpty == true ? nil : shareOptions
+        self.shareUnits = shareUnits
     }
 
     /// Each share option as fractions of the model (equal first).
@@ -100,6 +107,7 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
               f.partialBytesPerToken > 0, f.partialBytesPerToken <= 1 << 24,
               (f.shareOptions ?? []).count <= 32,
               (f.shareOptions ?? []).allSatisfy({ $0.count == 2 && $0.allSatisfy({ (1...64).contains($0) }) }),
+              f.shareUnits.map({ (2...4096).contains($0) }) ?? true,
               layerDividedBytes.count == layout.layerCount, layerReplicatedBytes.count == layout.layerCount,
               zip(zip(layerDividedBytes, layerReplicatedBytes), layout.layers).allSatisfy({ pair, layer in
                   pair.0 >= 0 && pair.1 >= 0 && pair.0 + pair.1 == layer.weights.loadedBytes }),

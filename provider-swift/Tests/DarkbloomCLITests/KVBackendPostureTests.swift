@@ -27,6 +27,21 @@ struct KVBackendPostureTests {
 
     // MARK: - status
 
+    @Test("status and doctor distinguish actual live precision from checkpoint encoding")
+    func precisionObservationsStayIndependent() {
+        let slot = DaemonState.SlotPosture(model: "model", kvBackend: "contiguous",
+            kvQuantization: "native", kvCheckpointQuantization: "balanced",
+            checkpointBackendLayout: "compressed-native-test-layout")
+        let line = KVBackendPosture.slotLine(slot)
+        #expect(line.contains("live_kv=native checkpoint_kv=balanced"))
+        #expect(line.contains("layout=compressed-native-test-layout"))
+        let check = KVPostureDiagnosis.backendCheck(slots: [slot])
+        #expect(check.detail.contains("live_kv=native checkpoint_kv=balanced"))
+        let disabled = DaemonState.SlotPosture(model: "uncached", kvBackend: "paged", kvQuantization: "native")
+        #expect(KVBackendPosture.slotLine(disabled).contains("checkpoint_kv=off"))
+        #expect(!KVBackendPosture.slotLine(.init(model: "older", kvBackend: "paged")).contains("live_kv="))
+    }
+
     @Test("status names the resolved backend for paged, contiguous, and failed slots")
     func statusReportsBackendPerSlot() {
         let lines = KVBackendPosture.statusLines(

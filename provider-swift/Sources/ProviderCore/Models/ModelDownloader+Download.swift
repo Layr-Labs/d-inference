@@ -118,10 +118,17 @@ extension ModelDownloader {
         }
 
         let renderer = ProgressRenderer()
+        let byteProgress = self.byteProgress
+        let alreadyValidBytes = zip(jobs, alreadyValid).reduce(Int64(0)) { $0 + ($1.1 ? $1.0.file.sizeBytes : 0) }
         // Start the render loop as a detached task.
         let renderTask = Task.detached { [renderer, progress] in
             while !Task.isCancelled {
-                renderer.render(progress.allProgress)
+                if let byteProgress {
+                    let files = progress.allProgress
+                    byteProgress(alreadyValidBytes + files.reduce(Int64(0)) { $0 + $1.downloadedBytes }, manifest.totalSizeBytes)
+                } else {
+                    renderer.render(progress.allProgress)
+                }
                 try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
             }
         }
@@ -158,11 +165,11 @@ extension ModelDownloader {
 
             // Stop the render loop and print the final summary.
             renderTask.cancel()
-            renderer.finish(progress.allProgress)
+            if byteProgress == nil { renderer.finish(progress.allProgress) }
         } catch {
             renderTask.cancel()
             // One last render so the user sees where things stopped.
-            renderer.render(progress.allProgress)
+            if byteProgress == nil { renderer.render(progress.allProgress) }
             // Keep staging ONLY if it holds resumable content (a completed file or
             // a `.part` prefix); otherwise remove the empty husk so a first-file
             // failure doesn't leave a stray staging dir behind. (A promoted file is

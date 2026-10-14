@@ -147,8 +147,15 @@ public enum ServingPerformanceProfiles {
     /// against its exact verified assistant/configuration; arbitrary process
     /// tuning still cannot borrow a reviewed default curve.
     static func runtimeOverridesAreAbsent(_ environment: [String: String]) -> Bool {
-        !environment.keys.contains {
-            $0.hasPrefix("DARKBLOOM_CBV2_") || $0.hasPrefix("DARKBLOOM_QWEN4_")
+        !environment.keys.contains { key in
+            if key == EngineV2KVQuantizationPolicy.environmentKey {
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(environment[key] ?? "")) != .native
+            }
+            if key == EngineV2KVQuantizationPolicy.checkpointEnvironmentKey {
+                return (try? EngineV2KVQuantizationPolicy.parseSelection(
+                    environment[key] ?? "", purpose: .checkpoint)) == nil
+            }
+            return key.hasPrefix("DARKBLOOM_CBV2_") || key.hasPrefix("DARKBLOOM_QWEN4_")
         }
     }
 

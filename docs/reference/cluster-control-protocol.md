@@ -1,14 +1,14 @@
 # Experimental cluster control protocol
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-13
 
 Exact member-role and native-pair public-control shapes on the provider
 WebSocket, as staged in draft pull requests: the provider side in this
 repository, the coordinator side in `Layr-Labs/darkbloom-platform`.
-Since the repositories split, coordinator code is no longer developed here:
-a path under `coordinator/` on this page that is not in this repository's
-retained copy names a file in that repository, and its own copy of this page
-is the reference for coordinator behaviour. Member registration and negotiation are implemented end to end
+Since the repositories split, coordinator code is no longer developed or kept
+here: a `darkbloom-platform:coordinator/` path on this page names a file in that
+repository, and its own copy of this page is the reference for coordinator
+behaviour. Member registration and negotiation are implemented end to end
 (provider client and coordinator); native-pair authorization is implemented
 on the coordinator and mirrored by the Swift codec; a provider whose saved
 setup carries a pair approval registers its cluster membership and installs
@@ -44,7 +44,7 @@ inventory, a separate cluster inventory and a fresh connection nonce.
 The coordinator queues the acknowledgment as the last step of handling
 `register` (`darkbloom-platform:coordinator/api/provider/cluster_member.go`,
 `acknowledgeClusterMember`, called from `providerReadLoop` in
-`coordinator/api/provider/session.go`): after every step that can refuse the
+`darkbloom-platform:coordinator/api/provider/session.go`): after every step that can refuse the
 connection, including native-pair attachment when a runtime catalog is
 configured, so a refused member never observes an acceptance. The frame carries
 the registry's own record of the connection
@@ -126,7 +126,7 @@ coordinator's estimate of that moment, five seconds after the session stopped
 (the member's own cleanup deadline is three). `ServingReady` is true while a
 request from the pair's account would be handed to the leader. The owner reads
 the same listing at
-[`GET /v1/me/cluster-pairs`](api-contracts.md#owner-cluster-views).
+[`GET /v1/me/cluster-pairs`](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/reference/api-contracts.md#owner-cluster-views).
 
 ## Serving a pair
 
@@ -137,20 +137,20 @@ registered, and answers with the ordinary accept, chunk, complete and error
 frames. The follower's connection is never a candidate and is never sent an
 inference request. Routing is enabled by the same operator configuration as
 pair formation (`Registry.EnableClusterPairRouting`, called from
-`coordinator/api/server.go`); without it no member connection is ever a
+`darkbloom-platform:coordinator/api/server.go`); without it no member connection is ever a
 candidate.
 
 | Condition | Rule | Source |
 |---|---|---|
-| Whose requests | Only a request authenticated as the account that owns both members and scoped to that account's own machines: `X-Darkbloom-Route: self` or `prefer`, or a self-route-only key. For every other request the pair is neither a candidate nor capacity; the request is answered exactly as if the pair did not exist. The handoff authorization repeats the check | `darkbloom-platform:coordinator/registry/pair_routing.go`, `clusterPairServesOwnerAccountOnly` / `requestPairLocked`; `coordinator/registry/inference_authorization.go`, `Authorize` |
+| Whose requests | Only a request authenticated as the account that owns both members and scoped to that account's own machines: `X-Darkbloom-Route: self` or `prefer`, or a self-route-only key. For every other request the pair is neither a candidate nor capacity; the request is answered exactly as if the pair did not exist. The handoff authorization repeats the check | `darkbloom-platform:coordinator/registry/pair_routing.go`, `clusterPairServesOwnerAccountOnly` / `requestPairLocked`; `darkbloom-platform:coordinator/registry/inference_authorization.go`, `Authorize` |
 | Serving | The exact pair is active, both key confirmations were relayed, and the leader's own heartbeat is not `draining` and reports one slot for the pair model in state `idle` or `running`. Until then, and whatever else the slot reports, the pair is a capacity wait (`pair_not_ready`), never a cold-load target | `pair_routing.go`, `pairCandidateGate`; `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `MarkVerifiedPairKeysRelayed` |
-| Trust | The leader passes the public routing gates with no owner relaxation: the trust floor, private-only admission and the catalog apply to a pair exactly as to the public fleet | `coordinator/registry/scheduler.go`, `routingLocked` |
+| Trust | The leader passes the public routing gates with no owner relaxation: the trust floor, private-only admission and the catalog apply to a pair exactly as to the public fleet | `darkbloom-platform:coordinator/registry/scheduler.go`, `routingLocked` |
 | Request faults | The leader's cooldowns, breaker and ejection keep a request from being routed to it while they last. They do not end the pair and do not keep two members from pairing: membership is an identity and trust decision, as is the member's `draining` status | `pair_routing.go`, `pairMemberLiveLocked`; `darkbloom-platform:coordinator/registry/verified_pair_membership.go`, `verifiedPairMemberLocked` |
 | Remaining lifetime | A request is admitted only while the pair's remaining fixed lifetime covers the coordinator's estimate of it: prompt tokens at the leader's prefill rate plus the token allowance at its decode rate, capped at half the 300-second lifetime. Otherwise it is a capacity wait for the next pair (`pair_lifetime`) | `pair_routing.go`, `pairRequestBudget` / `pairRequestLifetimeCap` |
 | Binding | The attempt records the exact pair it was reserved on with its pending debit. It is handed over only while that same pair is still serving; a later pair on the same connection is a different reservation | `scheduler.go`, `commit`; `inference_authorization.go`, `Authorize` |
 | Pair's own work | The leader of an active pair may hold requests reserved on that pair and at most one slot, for the pair model, in state `idle` or `running`. Anything else on the leader, including that slot in any other state, and anything at all on the follower, ends the pair as before | `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked`; `pair_routing.go`, `pairLeaderHoldsOnlyPairWorkLocked` |
 | Pair end | When the relay cancels a session whose leader is still attached (fixed lifetime, a cancel, a lost follower, lost trust), every request still reserved on the pair is removed from the leader at once and given the coordinator's `provider disconnected` terminal with the health-neutral restart cause, and the leader is then sent a `cancel` for each. Only the request's error channel is used, because the leader's read loop may still be delivering a chunk for it. The request fails over as it does when a provider restarts gracefully: to another eligible provider if there is one, otherwise as HTTP 502. The leader's health trackers are not struck. When the leader's own connection is what ended, its disconnect fails its requests instead, with the cause that says how the socket ended. A request that arrives while the cluster is re-forming waits in the queue for the next pair | `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `Cancel`; `pair_routing.go`, `failPairRequests` |
-| Owner preflights | The owner's self-route preflight, alias resolution and forced-`tool_choice` check ask the pair through its leader on the same terms. A quarantined pair whose owners must have retired, and which a connected member has still not released, is no longer reported as serving | `scheduler.go`, `OwnedProviderSummary`; `coordinator/registry/model_aliases.go`, `structuralBuildLocked`; `pair_routing.go`, `ledPairLocked` |
+| Owner preflights | The owner's self-route preflight, alias resolution and forced-`tool_choice` check ask the pair through its leader on the same terms. A quarantined pair whose owners must have retired, and which a connected member has still not released, is no longer reported as serving | `scheduler.go`, `OwnedProviderSummary`; `darkbloom-platform:coordinator/registry/model_aliases.go`, `structuralBuildLocked`; `pair_routing.go`, `ledPairLocked` |
 
 A member connection is not a provider of the public fleet. Neither connection
 of a pair is counted in `/v1/models` provider counts or model availability,
@@ -159,10 +159,10 @@ counted as fleet capacity, eligible for base rewards, a warm-pool or load
 target, sent a capacity probe or sent an autopilot control lease, whether or
 not the pair is serving
 (`pair_routing.go`, `listedForModelLocked`;
-`coordinator/registry/verification.go`, `ForEachProviderVerification`;
-`coordinator/registry/provider_snapshot.go`, `providerRewardSnapshotLocked`;
-`coordinator/registry/capacity_quotes.go`, `capacityQuoteReady`;
-`coordinator/registry/autopilot_activation.go`, `refreshControlLeases`). In its
+`darkbloom-platform:coordinator/registry/verification.go`, `ForEachProviderVerification`;
+`darkbloom-platform:coordinator/registry/provider_snapshot.go`, `providerRewardSnapshotLocked`;
+`darkbloom-platform:coordinator/registry/capacity_quotes.go`, `capacityQuoteReady`;
+`darkbloom-platform:coordinator/registry/autopilot_activation.go`, `refreshControlLeases`). In its
 owner's own views the pair is counted once, through the leader, for the pair
 model. Every request a pair serves is its owner's self-route traffic, so it
 settles free: no charge, no payout and no public usage row.
@@ -279,12 +279,12 @@ this protocol (`darkbloom-platform:coordinator/protocol/native_pair.go`, `Signin
 | Catalog | At most 64 immutable entries; each binds runtime, model, resources, profile, plan, chips, schedule, limits and expiry | `darkbloom-platform:coordinator/registry/native_pair_approval.go`, `NewNativeRuntimeCatalog` |
 | Relay | At most 64 sessions, 16 queued/in-flight frames and 1,048,576 bytes per rank; one control write capped at five seconds and the unchanged membership expiry | `darkbloom-platform:coordinator/registry/native_pair_types.go`; `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `enqueueLocked` / `writeLoop` |
 | Revocation or failure | Closes admission and publishes cancellation; active device holds are released by both original owner-cleanup observations | `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `Cancel`; `darkbloom-platform:coordinator/registry/verified_pair_lifecycle.go`, `ObserveVerifiedPairOwnerReleased` |
-| Trust loss | A hard or transient untrust, a failed challenge or challenge timeouts at the deroute limit, an attestation or trust-level downgrade, lost SIP verification, a revoked runtime or code proof, and a release-policy generation change each close the grant at once instead of at the next revalidation; a later recovery never revives it. A periodic challenge that verifies does not: the verifier's clear-and-regrant of release evidence leaves the grant open, and validation refuses it while the evidence is absent | `coordinator/registry/attestation_policy.go`, `markUntrusted` / `SetTrustLevel` / `RecordChallengeFailure` / `SetReleasePolicyGeneration`; `coordinator/registry/provider_evidence.go`, `SetAttested` / `SetChallengeVerifiedSIP`; `coordinator/registry/provider_capabilities.go`, `ReconcileAttestedRuntimeCapabilities`; `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked` |
+| Trust loss | A hard or transient untrust, a failed challenge or challenge timeouts at the deroute limit, an attestation or trust-level downgrade, lost SIP verification, a revoked runtime or code proof, and a release-policy generation change each close the grant at once instead of at the next revalidation; a later recovery never revives it. A periodic challenge that verifies does not: the verifier's clear-and-regrant of release evidence leaves the grant open, and validation refuses it while the evidence is absent | `darkbloom-platform:coordinator/registry/attestation_policy.go`, `markUntrusted` / `SetTrustLevel` / `RecordChallengeFailure` / `SetReleasePolicyGeneration`; `darkbloom-platform:coordinator/registry/provider_evidence.go`, `SetAttested` / `SetChallengeVerifiedSIP`; `darkbloom-platform:coordinator/registry/provider_capabilities.go`, `ReconcileAttestedRuntimeCapabilities`; `darkbloom-platform:coordinator/registry/verified_pair_reservation.go`, `validateVerifiedPairLocked` |
 | Abandoned quarantine | A member whose original connection left the registry can never deliver its observation. Once every member has either delivered it or departed, the hold is released 40 seconds after the fixed membership expiry: the member's own 30-second preparation limit bounds how far an owner's lifetime deadline can trail the expiry, whatever shorter window the coordinator grants, and the rest covers native cleanup. A member that is still connected and owes its observation is never released by time alone. The relay drops its record of a released session at the next selection | `darkbloom-platform:coordinator/registry/verified_pair_lifecycle.go`, `releaseAbandonedQuarantineLocked`; `darkbloom-platform:coordinator/registry/verified_pair_types.go`, `verifiedPairOwnerRetirementLimit`; `darkbloom-platform:coordinator/registry/native_pair_relay.go`, `removeReleasedSessionsLocked` |
 | Relay completion | `WaitControlStopped` joins public-relay workers only; it is not proof of native or lease cleanup | `darkbloom-platform:coordinator/registry/native_pair_types.go`, `WaitControlStopped` |
-| Member eligibility | Cluster members and pair-held devices are excluded from ordinary routing, warming and load planning. The one exception is the leader of a pair its owner's request may use; see [serving a pair](#serving-a-pair) | `coordinator/registry/gate_reason.go`, `GateMemberOnly`/`GatePairReserved`/`GatePairNotReady`/`GatePairLifetime`; `model_load_warm.go`, `warmplan` reasons |
-| Model commands | `load_model`, `prefetch_model` and a nonempty `desired_models` are refused for a cluster member or a pair-held device, and a pair is not reserved while one is being written; the empty `desired_models` revoke still passes. A member is offered no desired models, so it only ever receives that empty set | `darkbloom-platform:coordinator/registry/verified_pair_commands.go`, `beginVerifiedPairAwareModelCommand`; `coordinator/registry/model_commands.go`, `SendLoadModel` / `SendPrefetchModel` / `sendDesiredModels` / `DesiredModelsForProvider` |
+| Member eligibility | Cluster members and pair-held devices are excluded from ordinary routing, warming and load planning. The one exception is the leader of a pair its owner's request may use; see [serving a pair](#serving-a-pair) | `darkbloom-platform:coordinator/registry/gate_reason.go`, `GateMemberOnly`/`GatePairReserved`/`GatePairNotReady`/`GatePairLifetime`; `model_load_warm.go`, `warmplan` reasons |
+| Model commands | `load_model`, `prefetch_model` and a nonempty `desired_models` are refused for a cluster member or a pair-held device, and a pair is not reserved while one is being written; the empty `desired_models` revoke still passes. A member is offered no desired models, so it only ever receives that empty set | `darkbloom-platform:coordinator/registry/verified_pair_commands.go`, `beginVerifiedPairAwareModelCommand`; `darkbloom-platform:coordinator/registry/model_commands.go`, `SendLoadModel` / `SendPrefetchModel` / `sendDesiredModels` / `DesiredModelsForProvider` |
 
 The [security explanation](../architecture/security/encryption.md) owns the
-trust and encryption boundary. The [routing explanation](../architecture/routing.md)
+trust and encryption boundary. The [platform routing explanation](https://github.com/Layr-Labs/darkbloom-platform/blob/master/docs/architecture/routing.md)
 owns reservation and quarantine behavior.

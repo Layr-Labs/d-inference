@@ -18,11 +18,8 @@
 // the cells the operator wants; one of them not happening is a broken
 // promise, and the release headline number lives at B=8.
 //
-// The `auto` half matters just as much: `auto` promised nothing about the
-// backend, so a run that could not build one is an ordinary bad run and
-// must keep its existing exit status. Widening the failure to `auto` would
-// start failing scripts that are green today. That asymmetry is the one
-// `EngineV2KVBackendPolicy.degradesPagedFailure` already encodes.
+// Native `auto` keeps its existing fallback contract. Quantized `auto`
+// requires paged storage, so missing cells cannot report successful coverage.
 
 import ArgumentParser
 import ProviderBenchmark
@@ -53,23 +50,25 @@ private func coverage(
 @Suite("benchmark sweep exit status")
 struct BenchmarkSweepExitTests {
 
-    @Test("backend help describes exact-model auto selection and its fallback contract")
-    func backendHelpDescribesCandidateAuto() throws {
+    @Test("backend help distinguishes quantized paged requirements and native auto fallback")
+    func backendHelpDescribesNativeAndQuantizedAuto() throws {
         let defaults = try Benchmark.parse([])
         #expect(defaults.kvBackend == "auto")
+        #expect(defaults.kvQuantization == nil)
         let help = Benchmark.helpMessage().split(whereSeparator: \.isWhitespace).joined(separator: " ")
         #expect(help.contains("auto|contiguous|paged (default auto)"))
-        #expect(help.contains("Candidate auto selects paged only for exact model IDs "
-            + "qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8, "
-            + "and EigenLabs/Qwen3.8-27B-4bit-mtp; all other models use contiguous"))
-        #expect(help.contains("Automatic paged failures and the version-bound crash-loop guard "
-            + "still fall back to contiguous"))
+        #expect(help.contains("Live quantization makes auto require paged storage for supported targets"))
+        #expect(help.contains("Use --kv-quantization native for a native control or contiguous rollback"))
+        #expect(help.contains("Quantized construction refuses unavailable paged storage"))
+        #expect(help.contains("native auto retains its exact-model backend policy and observable fallback"))
         #expect(help.contains("automatic fallback can produce different resolved backends"))
         #expect(help.contains("An explicit paged selection FAILS the run rather than degrading"))
         #expect(help.contains("DARKBLOOM_CBV2_PAGED_KV=0 and capability/span-mask vetoes "
-            + "can still force contiguous"))
-        #expect(help.contains("Candidate rollout is not yet validated"))
-        #expect(help.contains("docs/design/qwen-first-paged-ssd-rollout.md"))
+            + "require native precision to serve contiguous"))
+        #expect(help.contains("Live attention KV precision: balanced (K4/V4), k8v4, k8v8 or native"))
+        #expect(help.contains("MiMo always remains native"))
+        #expect(help.contains("Ordinary scalar MLX.generate does not exercise production KV compression"))
+        #expect(help.contains("use --runtime-generation"))
         #expect(!help.contains("resolves to CONTIGUOUS as of v0.8.1"))
         #expect(!help.contains("never measure different arms"))
     }
@@ -97,11 +96,40 @@ struct BenchmarkSweepExitTests {
         #expect(message?.contains("no KV byte headroom") == true)
     }
 
-    @Test("auto keeps its old exit status even with zero decode cells")
+    @Test("native auto keeps its old exit status even with zero decode cells")
     func autoDoesNotFail() {
         // The narrow scope of the change. `auto` degrades by design; a
         // failed auto run stays exit 0 exactly as it does today.
-        #expect(Benchmark.sweepFailureMessage(backend: .auto, failure: failure()) == nil)
+        #expect(Benchmark.sweepFailureMessage(
+            backend: .auto, kvQuantization: .native, failure: failure()) == nil)
+    }
+
+    @Test("quantized auto refuses zero and partial decode coverage",
+          arguments: [EngineV2KVQuantizationSelection.balanced, .k8v4, .k8v8])
+    func quantizedAutoMissingCellsFail(precision: EngineV2KVQuantizationSelection) throws {
+        let empty = try #require(Benchmark.sweepFailureMessage(
+            backend: .auto, kvQuantization: precision, failure: failure("auto")))
+        #expect(empty.contains("--kv-backend auto --kv-quantization \(precision.rawValue)"))
+        #expect(empty.contains("produced no decode cells"))
+        #expect(empty.contains("kernel_preflight: ineligible head dim"))
+        let partial = try #require(Benchmark.sweepFailureMessage(
+            backend: .auto, kvQuantization: precision, failure: nil, coverage: coverage()))
+        #expect(partial.contains("B=8") && partial.contains("1 of 4"))
+        #expect(partial.contains("physical_capacity"))
+        #expect(Benchmark.sweepFailureMessage(
+            backend: .auto, kvQuantization: precision, failure: nil,
+            coverage: coverage(unmeasured: [])) == nil)
+    }
+
+    @Test("scheduler prefill rejects singleton-only cells before runtime loading")
+    @MainActor
+    func schedulerPrefillRequiresMeasuredPromptLengths() async throws {
+        var invalid = try Benchmark.parse(["--scheduler-prefill", "--prefill-lengths", "1"])
+        await #expect(throws: ExitCode(2)) { try await invalid.run() }
+        let valid = try Benchmark.parse(["--scheduler-prefill", "--prefill-lengths", "2,128"])
+        #expect(valid.schedulerPrefillOptionError() == nil)
+        let sweep = try Benchmark.parse(["--sweep", "--prefill-lengths", "1"])
+        #expect(sweep.schedulerPrefillOptionError() == nil)
     }
 
     @Test("a sweep that produced cells succeeds for every selection")
@@ -145,11 +173,11 @@ struct BenchmarkSweepExitTests {
         #expect(text.contains("B=8"))
     }
 
-    @Test("auto with an unmeasured cell still exits 0")
+    @Test("native auto with an unmeasured cell still exits 0")
     func autoPartialCoverageSucceeds() {
         // Nil message ⇒ `runThroughputSweep` returns normally ⇒ 0.
         #expect(Benchmark.sweepFailureMessage(
-            backend: .auto, failure: nil, coverage: coverage()) == nil)
+            backend: .auto, kvQuantization: .native, failure: nil, coverage: coverage()) == nil)
         #expect(ExitCode.success.rawValue == 0)
     }
 

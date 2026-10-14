@@ -241,7 +241,7 @@ final class Qwen35CheckpointRetentionFixture: @unchecked Sendable {
             completePrefixCache: store, mtpDrafter: assistant,
             mtpConfig: assistant == nil ? CBv2MTPConfig() : .init(
                 enabled: true, maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens, verificationMode: .rectangular),
-            kvBackend: .paged, environment: environment)
+            kvBackend: .paged, checkpointQuantization: .native, environment: environment)
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil,
                      "dense Qwen3.5 serving must resolve to native paged KV without fallback")
         if store != nil {

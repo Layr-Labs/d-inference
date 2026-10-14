@@ -6,6 +6,10 @@ extension Start {
     /// A distributed leader loads only verified tokenizer metadata here. Its
     /// local native owner child acquires the shared device exclusion.
     func runLocalDistributed() async throws {
+        // Signals first: a stop that arrives while this rank 0 is still starting (its member loop, its preparation, the
+        // wait for its follower) is latched and acted on at once instead of being lost before a handler exists.
+        let signals = try DistributedStartSignals()
+        defer { signals.close() }
         let configPath = try configOptions.config.map {
             URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
         } ?? ConfigManager.defaultConfigPath()
@@ -13,10 +17,12 @@ extension Start {
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
+        try signals.requireNotTerminated()
         let member = try await makeClusterMemberLoop(reference: factory.reference, stopOnDisconnect: true)
         // A session that stops without being asked says so at once: the wait
         // for its workers that follows can be the whole progress limit.
         let announce: @Sendable (DistributedInstalledStopNotice) -> Void = { printError($0.message) }
+        try signals.requireNotTerminated()
         let session = try await factory.prepare()
         session.installStopNoticeHandler(announce)
         // A stop first lets a running request end at its next token, then
@@ -33,8 +39,8 @@ extension Start {
 
         // Keep the existing endpoint/PID and sleep-prevention ownership. The
         // cluster leader never takes the native device gate from its own child.
-        let signals = try DistributedStartSignals()
-        defer { signals.close() }
+        // (The signal handler was installed first thing; a stop latched before
+        // this point runs as soon as it is attached below.)
 
         let memberTask = Task { try await member.run() }
         let memberExit = Task {

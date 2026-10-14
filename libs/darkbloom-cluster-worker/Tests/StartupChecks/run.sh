@@ -100,7 +100,7 @@ mimo mimo-baseline-stops-at-the-missing-model 1 "" "Worker requires a registered
 mimo mimo-cut-outside-the-model-refused 1 "Worker requires a registered model ID, rank0|1" "" -- --cut 48
 mimo mimo-every-boundary-is-in-its-row 1 "" "Worker requires a registered model ID" -- --cut 31
 mimo mimo-deep-cut-is-in-its-row 1 "" "Worker requires a registered model ID" -- --cut 40
-mimo mimo-phase-split-is-not-in-its-row 1 "generation mode must be one the registered model lists" "" -- --generation-mode phase_split_v1
+mimo mimo-phase-split-mtp-is-not-in-its-row 1 "generation mode must be one the registered model lists" "" -- --generation-mode phase_split_mtp_v1
 mimo mimo-compact-mode-reaches-the-model 1 "" "generation mode must be" -- --generation-mode pipeline_compact_decode_v1
 mimo mimo-has-no-recording-runtime 1 "Only the dense adapter has a recording runtime" "" -- --evidence-directory "$work/evidence"
 mimo mimo-residency-switch-refused-without-the-flag 1 "$mimoresidency is a qualification switch" "" "$mimoresidency=off" --

@@ -44,6 +44,8 @@ public struct PairConfiguration: Sendable {
     public static let phaseSplitMode = "phase_split_v1"
     /// The phase split with the model's speculative head on rank 1.
     public static let phaseSplitMTPMode = "phase_split_mtp_v1"
+    /// The pipeline with the model's speculative head on the last rank.
+    public static let pipelineMTPMode = "pipeline_mtp_v1"
     /// The worker argument the speculative head's fixed depth is declared with.
     public static let speculativeDepthArgument = "--mtp-depth"
     /// The pipeline with four transfers per decode step instead of eleven.
@@ -101,8 +103,8 @@ public struct PairConfiguration: Sendable {
     /// `pipeline_v1`, or `phase_split_v1`: pair prefill, then rank 0 hands its
     /// request state to rank 1, which decodes alone. Declared to both workers.
     public var generationMode: String
-    /// `phase_split_mtp_v1` only: the speculative head's draft depth, declared
-    /// to both workers. Nil: the worker's default (the product's maximum).
+    /// `phase_split_mtp_v1` or `pipeline_mtp_v1` only: the speculative head's draft depth, declared
+    /// to both workers. Nil: the worker's default (the family's standard terms).
     public var speculativeDepth: Int?
     /// Requests run one after another in the same loaded session, each with
     /// its own request ID. The first is the warm-up of a timing run.
@@ -288,10 +290,11 @@ public struct PairConfiguration: Sendable {
         }
         try require(Self.isCoordinator(coordinator), "coordinator must be IPV4:PORT with a unicast address")
         try require(["serial_v1", "one_chunk_lookahead_v1"].contains(prefillSchedule), "unknown prefill schedule")
-        try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode, Self.phaseSplitMTPMode]
-            .contains(generationMode), "unknown generation mode")
-        try require(speculativeDepth.map { (1...4).contains($0) && generationMode == Self.phaseSplitMTPMode } ?? true,
-            "a speculative depth is 1...4 and only with phase_split_mtp_v1")
+        try require([Self.pipelineMode, Self.pipelineCompactDecodeMode, Self.phaseSplitMode, Self.phaseSplitMTPMode,
+                     Self.pipelineMTPMode].contains(generationMode), "unknown generation mode")
+        try require(speculativeDepth.map { (1...4).contains($0)
+                && [Self.phaseSplitMTPMode, Self.pipelineMTPMode].contains(generationMode) } ?? true,
+            "a speculative depth is 1...4 and only with phase_split_mtp_v1 or pipeline_mtp_v1")
         try require((1...Self.maximumRepetitions).contains(repetitions), "repetitions must be 1...\(Self.maximumRepetitions)")
         try require(repetitions == 1 || !recording, "a recording run takes one request; repeat with --evidence none")
         try require(followRequests.isEmpty || !recording, "follow-up requests run with --evidence none")
@@ -326,11 +329,15 @@ public struct PairConfiguration: Sendable {
         if let faultRank, let faultValue {
             // A prompt-prefix SSD fault applies to any mode and to serving requests.
             let prefixSSDFault = faultValue.hasPrefix("prefix_ssd_")
+            // A model with no recording runtime runs its phase split only as a serving run; its
+            // hand-off fault is that run's input (the worker refuses one it cannot commit).
+            let handoffRun = [Self.phaseSplitMode, Self.phaseSplitMTPMode].contains(generationMode)
+                && (recording || QualificationRequest.registeredModel(request.modelID)?.hasRecordingRuntime == false)
             try require((0...1).contains(faultRank)
-                && (prefixSSDFault || (recording && [Self.phaseSplitMode, Self.phaseSplitMTPMode].contains(generationMode)))
+                && (prefixSSDFault || handoffRun)
                 && (1...96).contains(faultValue.utf8.count)
                 && faultValue.utf8.allSatisfy { (48...57).contains($0) || (97...122).contains($0) || [58, 61, 95].contains($0) },
-                "a fault is a recording phase-split run's input (or a prefix_ssd_ fault in any run): "
+                "a fault is a recording phase-split run's input (a serving one for a model with no recording runtime; a prefix_ssd_ fault in any run): "
                     + "RANK and name=value of lowercase letters, digits, '_', ':'")
         }
         for (name, ssd) in [("local", localPrefixSSD), ("remote", remotePrefixSSD)] {

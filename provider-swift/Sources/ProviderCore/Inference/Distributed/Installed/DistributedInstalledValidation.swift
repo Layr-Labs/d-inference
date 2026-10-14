@@ -91,7 +91,7 @@ struct DistributedInstalledValidation: Sendable {
             var value = stat()
             if url.deletingLastPathComponent().lastPathComponent == "cluster-pairing", url.lastPathComponent.hasPrefix("edge-"),
                lstat(path, &value) != 0, errno == ENOENT {
-                throw ClusterConfigurationError.invalid("The link key of this Mac's pairing is gone: the Macs were unpaired. Pair them again with `darkbloom cluster pair`, then save the setup again.")
+                throw ClusterConfigurationError.invalid("Run `darkbloom cluster` on both Macs; it pairs again by itself. (The link key of this Mac's pairing is gone: the Macs were unpaired.)")
             }
             throw error
         }

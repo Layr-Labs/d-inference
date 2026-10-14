@@ -68,7 +68,7 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     for (name, layout, cut) in [("9B", nine, 16), ("27B", big, 32)] {
         // A layout from a plan tool before this change (no credit): every mode ties on time, and the head on
         // the M5 is preferred ahead of headroom, where the old order chose the pipeline on headroom.
-        let uncredited = try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: try withoutCredit(layout))
+        let uncredited = try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: try withoutCredit(layout), policy: handOffPolicy())
         let pipelineTime = try ClusterPlacementPlanner.evaluate(devices: [m3, m5], cuts: [cut], mode: .pipeline,
             prefillSchedule: .oneChunkLookahead, layout: layout).rested.requestSeconds
         checks.require("\(name), M3 Ultra + M5, a layout with no credit: phase_split_mtp_v1 at cut \(cut) on equal time, the M5 decoding",
@@ -77,13 +77,13 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         let quiet = ClusterPlacementExplanation.describe(uncredited, devices: [m3, m5], layout: try withoutCredit(layout)).joined(separator: "\n")
         checks.require("\(name), a layout with no credit: the plan says the head runs as on one Mac and no speed-up is counted",
             quiet.contains("names no measured speed-up, so the times above are those of plain decode"))
-        let credited = ClusterPlacementExplanation.describe(try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: layout),
+        let credited = ClusterPlacementExplanation.describe(try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: layout, policy: handOffPolicy()),
             devices: [m3, m5], layout: layout).joined(separator: "\n")
         checks.require("\(name): the plan names the credit and why the M5 has it",
             credited.contains("credited with \(String(format: "%.2f", layout.speculativeDecodeFactor ?? 0))x its plain decode")
                 && credited.contains("mac-b's GPU is of the first generation with matrix accelerators (Apple M5)"))
         for leader in [nil, "mac-a"] {
-            var policy = ClusterPlacementPolicy(); policy.leader = leader
+            var policy = handOffPolicy(); policy.leader = leader
             let result = try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: layout, policy: policy)
             checks.require("\(name), M3 Ultra + M5, nothing measured\(leader.map { ", led by \($0)" } ?? ""): phase_split_mtp_v1 at cut \(cut), the M3 Ultra first and the M5 decoding",
                 result.chosen?.mode == .phaseSplitMTP && result.chosen?.cut == cut
@@ -121,7 +121,7 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     // (d) the decoding Mac. The mirrored 27B (the M5 leading, the M3 Ultra decoding) is not credited: the
     // plain phase split or the pipeline is chosen, never the head on the M3 Ultra.
     do {
-        var policy = ClusterPlacementPolicy(); policy.leader = "mac-b"
+        var policy = handOffPolicy(); policy.leader = "mac-b"
         let mirrored = try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: big, policy: policy)
         checks.require("27B led by the M5 (the M3 Ultra decoding): no head on the M3 Ultra",
             mirrored.chosen.map { !$0.mode.usesSpeculativeHead && $0.ranks.map(\.device) == ["mac-b", "mac-a"] } ?? false)
@@ -131,7 +131,7 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         checks.require("27B mirrored: at one cut the plain phase split ranks before the same split with the head on the M3 Ultra",
             plainSplit != nil && (headSplit == nil || plainSplit! < headSplit!))
         let text = ClusterPlacementExplanation.describe(try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: big,
-            policy: { var p = ClusterPlacementPolicy(); p.leader = "mac-b"; p.modes = [.phaseSplit, .phaseSplitMTP]; return p }()),
+            policy: { var p = handOffPolicy(); p.leader = "mac-b"; p.modes = [.phaseSplit, .phaseSplitMTP]; return p }()),
             devices: [m3, m5], layout: big).joined(separator: "\n")
         checks.require("27B mirrored, phase splits only: the plan says the head is not credited on the M3 Ultra and why",
             text.contains("speculative (MTP) head is not credited on mac-a") && text.contains("generation before Apple M5")
@@ -140,13 +140,13 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     // Two M3 Ultras: nothing credits the head; two M5s: the head is credited whichever decodes.
     do {
         let a = try SyntheticMac.idle(256).device("a", chip: "Apple M3 Ultra"), b = try SyntheticMac.idle(256).device("b", chip: "Apple M3 Ultra")
-        let result = try checkRule("two M3 Ultras, 27B with its head", [a, b], big, checks)
+        let result = try checkRule("two M3 Ultras, 27B with its head", [a, b], big, checks, policy: handOffPolicy())
         checks.require("two M3 Ultras: the head is never chosen", result.chosen.map { !$0.mode.usesSpeculativeHead } ?? false)
         let c = try SyntheticMac.idle(128).device("c", chip: "Apple M5 Max"), d = try SyntheticMac.idle(256).device("d", chip: "Apple M5 Ultra")
-        let fives = try checkRule("an M5 Max and an M5 Ultra, 27B with its head", [c, d], big, checks)
+        let fives = try checkRule("an M5 Max and an M5 Ultra, 27B with its head", [c, d], big, checks, policy: handOffPolicy())
         checks.require("two M5s: the head is chosen", fives.chosen?.mode == .phaseSplitMTP)
-        _ = try checkRule("M3 Ultra + M5, 9B with its head", [m3, m5], nine, checks)
-        _ = try checkRule("M3 Ultra + M5, 27B with its head", [m3, m5], big, checks)
+        _ = try checkRule("M3 Ultra + M5, 9B with its head", [m3, m5], nine, checks, policy: handOffPolicy())
+        _ = try checkRule("M3 Ultra + M5, 27B with its head", [m3, m5], big, checks, policy: handOffPolicy())
     }
     // (c) ahead of headroom: the M5's headroom is the smallest under any phase split, and the head still wins.
     do {
@@ -155,7 +155,7 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         checks.require("the head's split keeps less headroom than the pipeline and is chosen anyway (the rule is ahead of headroom)",
             headed.smallestHeadroomShare < pipeline.smallestHeadroomShare && headed.smallestHeadroomShare >= 0.10)
         // With no credit at all, equal times: the plain modes come first, headroom decides among them.
-        var policy = ClusterPlacementPolicy(); policy.modes = [.pipeline, .phaseSplitMTP]
+        var policy = handOffPolicy(); policy.modes = [.pipeline, .phaseSplitMTP]
         let unknownChips = [try SyntheticMac.idle(256).device("a"), try SyntheticMac.idle(128).device("b")]
         let uncredited = try ClusterPlacementPlanner.plan(devices: unknownChips, layout: big, policy: policy)
         checks.require("chips of no known generation: plain decode is preferred and the pipeline is kept", uncredited.chosen?.mode == .pipeline)
@@ -165,13 +165,13 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         let need = try ClusterPlacementPlanner.evaluate(devices: [m3, m5], cuts: [32], mode: .phaseSplitMTP,
             prefillSchedule: .oneChunkLookahead, layout: big).ranks[1].needBytes
         let tight = SyntheticMac(physicalGiB: 128, freeGiB: Double(need) * 1.05 / Double(gib), inactiveCacheGiB: 0, wiredGiB: 6)
-        let result = try ClusterPlacementPlanner.plan(devices: [m3, try tight.device("mac-b", chip: "Apple M5 Max")], layout: big)
+        let result = try ClusterPlacementPlanner.plan(devices: [m3, try tight.device("mac-b", chip: "Apple M5 Max")], layout: big, policy: handOffPolicy())
         checks.require("an M5 with under a tenth in reserve for the whole model: a placement that fits comfortably is chosen over the head",
             (result.chosen?.smallestHeadroomShare ?? 0) >= 0.10 && result.chosen?.mode.usesSpeculativeHead == false)
     }
     // One Mac alone: the M5 alone runs its head as the product does; the M3 Ultra alone decodes plainly.
     do {
-        let result = try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: big)
+        let result = try ClusterPlacementPlanner.plan(devices: [m3, m5], layout: big, policy: handOffPolicy())
         let five = result.alone.first { $0.device == "mac-b" }!, three = result.alone.first { $0.device == "mac-a" }!
         checks.require("alone: the M5 is predicted with its head and the M3 Ultra without, and the M5 holds the head",
             abs(five.rested.decodeTokensPerSecond - 1.56) < 1e-9 && three.rested.decodeTokensPerSecond == 1
@@ -189,11 +189,11 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     do {
         let pair = [try SyntheticMac.idle(256).device("mac-a", speed: slow, chip: "Apple M3 Ultra"),
                     try SyntheticMac.idle(128).device("mac-b", speed: fast, chip: "Apple M5 Max")]
-        let rested = try ClusterPlacementPlanner.plan(devices: pair, layout: big)
+        let rested = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: handOffPolicy())
         checks.require("measured: rested, the M5's measured 46.3 with the head beats every plain mode; the head is chosen with the M5 decoding",
             rested.chosen?.mode == .phaseSplitMTP && rested.chosen?.ranks.last?.device == "mac-b"
                 && abs((rested.chosen?.rested.decodeTokensPerSecond ?? 0) - 46.3) < 1e-9)
-        var sustainedPolicy = ClusterPlacementPolicy(); sustainedPolicy.regime = .sustained
+        var sustainedPolicy = handOffPolicy(); sustainedPolicy.regime = .sustained
         let sustained = try ClusterPlacementPlanner.plan(devices: pair, layout: big, policy: sustainedPolicy)
         checks.require("measured: sustained, the heat-soaked M5's 22.5 with the head loses to its 26.7 without; the head is not chosen",
             sustained.chosen.map { !$0.mode.usesSpeculativeHead } ?? false && rested.chosenForOtherRegime?.mode.usesSpeculativeHead == false)
@@ -207,7 +207,7 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
             rested: .init(prefillTokensPerSecond: 728, decodeTokensPerSecond: 27.8, speculativeDecodeTokensPerSecond: 25), sustained: nil, explanation: "constructed")
         let swapped = [try SyntheticMac.idle(256).device("mac-a", speed: m3Fast, chip: "Apple M3 Ultra"),
                        try SyntheticMac.idle(128).device("mac-b", speed: m5Slow, chip: "Apple M5 Max")]
-        let measuredRule = try ClusterPlacementPlanner.plan(devices: swapped, layout: big)
+        let measuredRule = try ClusterPlacementPlanner.plan(devices: swapped, layout: big, policy: handOffPolicy())
         checks.require("measured: the head goes where it measured faster, whatever the generation",
             measuredRule.chosen?.mode == .phaseSplitMTP && measuredRule.chosen?.ranks.last?.device == "mac-a")
     }
@@ -245,4 +245,12 @@ func checkSpeculativeCredit(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
         checks.require("a device assumed equal to the measuring one gets no rate with the head",
             assumed[1].source == .assumedEqual && assumed[1].rested.speculativeDecodeTokensPerSecond == nil)
     }
+}
+
+/// The speculative head rides on the phase split, kept but off by default
+/// (sharded deployments only, 2026-10-13): these checks hold it to its
+/// behaviour under the explicit hand-off opt-in.
+private func handOffPolicy() -> ClusterPlacementPolicy {
+    var policy = ClusterPlacementPolicy(); policy.handOffModes = true
+    return policy
 }

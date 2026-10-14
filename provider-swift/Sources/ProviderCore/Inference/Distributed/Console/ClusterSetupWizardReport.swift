@@ -39,6 +39,8 @@ public struct ClusterSetupReport: Codable, Sendable, Equatable {
     public var checks: [ClusterSetupCheck]
     /// What this Mac pinned in the pairing ceremony over the link (S17); nil when it never paired.
     public var linkPairings: ClusterSetupLinkPairings?
+    /// Free bytes on the disk of this Mac's model store (a copy of a model checks it before it starts); nil when unknown.
+    public var modelStoreFreeBytes: Int64?
 
     public init(observedAt: String, version: String, mac: ClusterSetupMac, link: ClusterSetupLink, saved: ClusterSetupSaved,
                 inbox: ClusterSetupSetupSummary?, inboxError: String? = nil, journal: ClusterDeviceJournalObservation, memoryGuard: ClusterSetupMemoryGuard,
@@ -306,10 +308,21 @@ public struct ClusterSetupLocalModel: Codable, Sendable, Equatable {
     /// The manifest's aggregate digest: the artifact's identity.
     public var artifactSHA256: String
     public var totalBytes: Int64
+    /// The manifest's files digest (`ClusterCatalogArtifact.filesDigest`: names, sizes and digests), which binds the
+    /// file names the aggregate digest does not cover; nil from a build that does not report it.
+    public var filesSHA256: String?
 
-    public init(folder: String, modelID: String, version: String, artifactSHA256: String, totalBytes: Int64) {
+    public init(folder: String, modelID: String, version: String, artifactSHA256: String, totalBytes: Int64, filesSHA256: String? = nil) {
         self.folder = folder; self.modelID = modelID; self.version = version
-        self.artifactSHA256 = artifactSHA256; self.totalBytes = totalBytes
+        self.artifactSHA256 = artifactSHA256; self.totalBytes = totalBytes; self.filesSHA256 = filesSHA256
+    }
+
+    /// The same catalog entry: model ID, version and aggregate digest. Two entries can share every file and so the
+    /// digest (the catalog's gemma-4-26b and gemma-4-26b-8bit); the runtime tells them apart by the manifest. When both
+    /// sides report their files digest, the file names must match too (a folder of renamed files is another thing).
+    public func sameEntry(_ other: ClusterSetupLocalModel) -> Bool {
+        artifactSHA256 == other.artifactSHA256 && modelID == other.modelID && version == other.version
+            && (filesSHA256 == nil || other.filesSHA256 == nil || filesSHA256 == other.filesSHA256)
     }
 }
 

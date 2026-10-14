@@ -18,7 +18,6 @@ class ReleaseResolutionTests(unittest.TestCase):
             shutil.copy2(Path(__file__).parent / name, self.root / "scripts" / name)
         for name, content in (
             ("provider-swift/Sources/ProviderCore/ProviderCore.swift", 'public static let version = "0.9.0"'),
-            ("coordinator/api/server.go", 'var LatestProviderVersion = "0.9.0"'),
         ):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,11 +75,50 @@ class ReleaseResolutionTests(unittest.TestCase):
                 self.assertEqual(values, {})
         self.assertFalse((self.root / "unexpected-command").exists())
 
-    def test_validation_requires_matching_provider_and_coordinator_versions(self):
-        (self.root / "coordinator/api/server.go").write_text('var LatestProviderVersion = "0.9.1"\n')
+    def test_missing_malformed_or_ambiguous_provider_version_fails_before_outputs(self):
+        source = self.root / "provider-swift/Sources/ProviderCore/ProviderCore.swift"
+        for content in (None, "", 'public static let version = "invalid"',
+                        'public static let version = "0.9.0"\npublic static let version = "0.9.0"'):
+            with self.subTest(content=content):
+                if content is None:
+                    source.unlink()
+                else:
+                    source.write_text(content)
+                result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(values, {})
+
+    def test_retained_coordinator_version_does_not_control_provider_release(self):
+        source = self.root / "coordinator/api/server.go"
+        source.parent.mkdir(parents=True)
+        source.write_text('var LatestProviderVersion = "0.9.1"\n')
         result, values = self.resolve(RELEASE_VALIDATION_ONLY="true")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(values, {})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "0.9.0")
+        self.assertEqual(values["publish"], "false")
+        shutil.rmtree(self.root / "coordinator")
+        result, values = self.resolve(GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag",
+                                      GITHUB_REF_NAME="v0.9.0", RELEASE_ENVIRONMENT="prod")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["version"], "0.9.0")
+        self.assertEqual(values["publish"], "true")
+
+    def test_source_tag_and_binary_versions_must_match(self):
+        cases = [
+            ([], True),
+            (["v0.9.0"], True),
+            (["0.9.0", "darkbloom 0.9.0"], True),
+            (["0.9.0", "0.9.0"], True),
+            (["v0.9.1"], False),
+            (["0.9.0", "darkbloom 0.9.1"], False),
+            (["0.9.0", "unexpected 0.9.0"], False),
+        ]
+        for arguments, succeeds in cases:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(["bash", "scripts/check-release-version.sh", *arguments],
+                                        cwd=self.root, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+
 
 
 if __name__ == "__main__":

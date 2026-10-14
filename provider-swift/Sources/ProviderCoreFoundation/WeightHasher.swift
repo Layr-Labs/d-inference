@@ -21,7 +21,7 @@ public struct WeightHasher: Sendable {
     /// Buffer size for streaming file reads (64 KB).
     private static let bufferSize = 65536
     /// Keep each streaming buffer small even if the constant changes later.
-    private static let maxStreamingBufferSize = 1024 * 1024
+    static let maxStreamingBufferSize = 1024 * 1024
     /// Last-resort whole-file reads are only acceptable for small metadata files.
     static let maxWholeFileFallbackBytes: UInt64 = 64 * 1024 * 1024
 
@@ -175,6 +175,12 @@ public struct WeightHasher: Sendable {
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
+        // The cache-off reader first: same bytes, same digest, nothing left
+        // resident (see `hashSingleFileUncached`). Every reader below stays
+        // as the fallback for files a raw open() cannot read.
+        if let digest = hashSingleFileUncached(at: url) {
+            return digest
+        }
         // Reuse InputStream's fixed 64 KiB buffer by default
         // before trying FileHandle's per-read Data allocation. Preserve the
         // full digest and every existing fallback; never skip integrity work.
@@ -200,6 +206,35 @@ public struct WeightHasher: Sendable {
         }
         var hasher = SHA256()
         hasher.update(data: data)
+        return hasher.finalize()
+    }
+
+    /// Reads with the file cache off (`F_NOCACHE`), in chunks of the largest
+    /// streaming buffer allowed. A read through the cache leaves every byte it
+    /// read resident: hashing a 172 GB model on a 256 GB Mac fills the cache
+    /// with it, and the host memory gate of a cluster rank then refuses that
+    /// very model's load until the cache ages out (measured on an M5 Ultra
+    /// leader, 2026-10-13: 213 GiB of cache, 23 GiB free after the hash). The
+    /// cluster worker's verifier and the cable copy read the same way. Nil
+    /// when the file cannot be opened or read this way (the caller falls back).
+    static func hashSingleFileUncached(at url: URL) -> SHA256Digest? {
+        guard isStreamingBufferSizeAllowed(maxStreamingBufferSize) else { return nil }
+        let descriptor = open(url.resolvingSymlinksInPath().path, O_RDONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        guard fcntl(descriptor, F_NOCACHE, 1) != -1 else { return nil }
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: maxStreamingBufferSize, alignment: 16_384)
+        defer { buffer.deallocate() }
+        var hasher = SHA256()
+        while true {
+            let count = read(descriptor, buffer, maxStreamingBufferSize)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if count == 0 { break }
+            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer, count: count))
+        }
         return hasher.finalize()
     }
 

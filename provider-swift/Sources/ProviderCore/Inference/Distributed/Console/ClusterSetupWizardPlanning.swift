@@ -58,17 +58,18 @@ enum ClusterSetupPlanning {
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
                        measurements: [ClusterSpeedMeasurement], leader: String?? = .none,
-                       served: [ClusterServedSpeedRecords.Entry] = []) -> [Decision] {
+                       served: [ClusterServedSpeedRecords.Entry] = [], peerMayReceive: Bool = false) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
         let sessionLeader: String? = leader ?? localMemberID
         let peerID = description.members.first { $0.id != localMemberID }?.id ?? "the other Mac"
         return readings.map { reading in
-            let onOther = peerModels.contains { $0.artifactSHA256 == reading.model.artifactSHA256 }
+            let onOther = peerModels.contains { $0.sameEntry(reading.model) }
             func blocked(_ reason: String) -> Decision {
                 .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: reason, plan: nil), setup: nil, capability: nil)
             }
-            guard onOther else { return blocked("not on \(peerID): copy it there first") }
+            // The onboarding copies a model the other Mac lacks over the cable (or it is downloaded) before the setup is synced.
+            guard onOther || peerMayReceive else { return blocked("Not on the other Mac: copy it there first.") }
             let layout: ClusterModelLayout
             switch reading.layout {
             case .success(let value): layout = value
@@ -82,6 +83,12 @@ enum ClusterSetupPlanning {
             guard !reading.tokenizerFiles.isEmpty else { return blocked("its manifest names no tokenizer file") }
             let pair = pairDescription(description, folder: reading.model.folder, publicModelID: reading.model.modelID,
                 capabilitySHA256: capability.sha256, tokenizerFiles: reading.tokenizerFiles)
+            // A model this pair may not serve (no grant, withheld, or another artifact than the qualified one) is not
+            // offered: a start would be refused on both Macs. Planning still runs for the wizard's own detail, but the
+            // choice carries the refusal as its blocker.
+            if pairServingRefused(capability.record, publicModelID: reading.model.modelID) {
+                return blocked(notQualified)
+            }
             do {
                 var decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
                     localProfile: localProfile, peerProfile: peerProfile, layout: layout, measurements: measurements, leader: sessionLeader,
@@ -93,32 +100,64 @@ enum ClusterSetupPlanning {
                         measurements: measurements, leader: sessionLeader, served: served)
                 }
                 guard let chosen = decided.result.chosen else {
-                    return blocked(refusalWords(decided.result, localMemberID: localMemberID))
+                    // Macs by chip and memory, as pairing shows them, never by member ID.
+                    let names = [localMemberID: "\(localProfile.chip), \(localProfile.physicalMemoryBytes >> 30) GB",
+                                 peerID: "\(peerProfile.chip), \(peerProfile.physicalMemoryBytes >> 30) GB"]
+                    return blocked(refusalWords(decided.result, localMemberID: localMemberID, names: names))
+                }
+                // Offered only when each Mac's start would serve the chosen placement: a model or mode family its
+                // records withhold is planned (the plan still answers whether the pair could hold it) but never offered.
+                let chips = [localMemberID: localProfile.chip, peerID: peerProfile.chip]
+                if let refusal = ClusterPairServingGrants.startRefusal(
+                    chosen.ranks.map { chips[$0.device].flatMap { ClusterChipClass(chipName: $0) } },
+                    cuts: chosen.cuts, mode: chosen.mode, runtimeModelID: capability.record.runtimeModelID,
+                    publicModelID: reading.model.modelID, artifactSHA256: capability.record.artifactSHA256) {
+                    return blocked("not served on this pair by this build: "
+                        + ClusterConsoleText.bounded(refusal.description, maximum: 200))
                 }
                 let plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
                     profiles: [localMemberID: localProfile, peerID: peerProfile])
-                return .init(option: .init(model: reading.model, onOtherMac: true, blocker: nil, plan: plan), setup: decided.setup,
+                return .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan), setup: decided.setup,
                     capability: (capability.data, capability.sha256))
+            } catch is ClusterPairServingRefusal {
+                // The grant allows neither order of these two Macs' chips.
+                return blocked(notQualified)
             } catch {
-                return blocked("planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 200)))")
+                return blocked("Planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))).")
             }
         }
     }
 
-    static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String) -> String {
+    /// The plain blocker for a model the pair may not serve with this build.
+    static let notQualified = "Not yet qualified on this pair of Macs."
+
+    /// The model's pair-serving grant refuses it outright for this build (independent of which Mac leads).
+    static func pairServingRefused(_ capability: ClusterRuntimeCapability, publicModelID: String) -> Bool {
+        do {
+            _ = try ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: publicModelID,
+                                                   artifactSHA256: capability.artifactSHA256)
+            return false
+        } catch {
+            return true
+        }
+    }
+
+    /// Why a model is not offered, plain action or fact first (the screen cuts long reasons).
+    static func refusalWords(_ result: ClusterPlacementResult, localMemberID: String, names: [String: String] = [:]) -> String {
+        func name(_ device: String) -> String { names[device] ?? device }
         if let excluded = result.unqualifiedPossible, excluded > 0 {
             let alone = result.alone.first(where: { $0.fit.possible })
-                .map { "; \($0.device) holds it alone: serve it on that Mac with `darkbloom start`" } ?? ""
-            return "no split that fits has passed this model's cross-cable check on these chips (it diverged at another split)" + alone
+                .map { " \(name($0.device)) can serve it alone in single-Mac Darkbloom." } ?? ""
+            return notQualified + alone
         }
         if let alone = result.alone.first(where: { $0.fit.possible }) {
-            return "no split this Mac leads holds it, but \(alone.device) holds it alone: serve it on that Mac with `darkbloom start`"
+            return "\(name(alone.device)) can serve it alone in single-Mac Darkbloom."
         }
         if let refusal = result.refusal {
             let total = ClusterSetupScreen.gib(refusal.modelLoadedBytes)
-            return "too large for this pair: it needs \(total) and no split fits even with every application closed"
+            return "Too large for these Macs together: it needs \(total), even with every application closed."
         }
-        return "no placement this Mac leads fits on this pair now"
+        return "Too large for these Macs together right now."
     }
 
     static func summary(_ result: ClusterPlacementResult, chosen: ClusterPlacementCandidate, lines: [String], localMemberID: String,
@@ -169,7 +208,7 @@ enum ClusterSetupPlanning {
         case .afterApplicationsRelease(let bytes):
             return "\(device) needs \(ClusterSetupScreen.gib(bytes)) more free: quit applications there first"
         case .afterRestart(let bytes):
-            return "\(device) is \(ClusterSetupScreen.gib(bytes)) short even with every application closed: only a restart frees the kernel's file cache"
+            return "\(device) is \(ClusterSetupScreen.gib(bytes)) short even with every application closed: the kernel keeps that much file cache as its minimum (a share of the memory that is not wired), which closing applications does not lower; a restart empties the cache"
         case .never(let bytes):
             return "\(device) cannot hold this range: \(ClusterSetupScreen.gib(bytes)) short of what it has at all"
         }

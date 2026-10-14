@@ -229,9 +229,11 @@ struct PrefixDiskTierTests {
         rekeyed.close()
         let planA = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "plan-a"))
         #expect(FileManager.default.fileExists(atPath: planA.path))
-        // Another plan on this rank: plan-a's directory goes, unrelated files stay.
+        // Another plan on this rank: plan-a's live record is kept (a switch back
+        // restores it, finding F5/S4) inside the budget; unrelated files stay.
         let other = try openTier(configuration(root, key: Data(repeating: 9, count: 32)), plan: "plan-b")
-        #expect(other.stats.sweptPlans == 1 && !FileManager.default.fileExists(atPath: planA.path))
+        #expect(other.stats.sweptPlans == 0 && FileManager.default.fileExists(atPath: planA.path))
+        #expect(other.stats.keptOtherRecords == 1 && other.stats.keptOtherBytes > 0)
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
         other.close()
         // Switched off with a root: every plan directory goes.
@@ -489,5 +491,173 @@ struct PrefixDiskTierTests {
         resident.setBudget(expected - 1)
         #expect(resident.bytesInUse == 0 && resident.count == 0)
         tier.close()
+    }
+
+    /// Finding S3: the rolling-day write counter is saved as "<start> <bytes>\n"
+    /// and was parsed with the newline still on the bytes, so every reopen
+    /// started the day at zero and the daily cap held per process. It now
+    /// survives a reopen and still refuses a write past the cap. Finding S7:
+    /// the counter and the key check are owner-only, as the records are.
+    @Test func theDailyWriteWindowSurvivesAReopenAndStillRefusesPastTheCap() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try openTier(configuration(root))
+        first.persist(scope: "s", tokens: Array(0..<40), states: states(committed: 39, frontiers: [], seed: 1), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 20) && first.recordCount == 1)
+        let windowURL = first.directory.appendingPathComponent("write-window")
+        let saved = try String(contentsOf: windowURL, encoding: .utf8)
+        let parts = saved.split(whereSeparator: { $0.isWhitespace })
+        let start = try #require(Double(parts[0])), bytes = try #require(Int(parts[1]))
+        #expect(bytes == first.stats.persistedBytes)
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: first.directory.path).first { $0.hasSuffix(".dbpx") })
+        let data = try QwenStagePrefixDiskIO.open(url: first.directory.appendingPathComponent(name),
+            keys: QwenStagePrefixDiskKeys(master: Data(repeating: 7, count: 32))).header.dataBytes
+        for file in ["write-window", "key-check"] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: first.directory.appendingPathComponent(file).path)
+            #expect((attributes[.posixPermissions] as? Int) == 0o600)
+        }
+        first.close()
+        // Reopened the same day with a cap one byte short of a second record of
+        // the same shape: the saved bytes count, so the writer refuses it.
+        let capped = try openTier(configuration(root) { $0.maximumWriteBytesPerDay = data + 64 * 1024 + bytes - 1 })
+        capped.persist(scope: "s", tokens: Array(1000..<1040), states: states(committed: 39, frontiers: [], seed: 2), blockTokens: block)
+        #expect(capped.drain(timeoutSeconds: 20))
+        #expect(capped.recordCount == 1 && capped.stats.droppedPersists == 1 && capped.stats.persisted == 0)
+        capped.close()
+        // With room under the same cap plus one record, the window keeps adding on.
+        let roomy = try openTier(configuration(root) { $0.maximumWriteBytesPerDay = data + 64 * 1024 + bytes })
+        roomy.persist(scope: "s", tokens: Array(2000..<2040), states: states(committed: 39, frontiers: [], seed: 3), blockTokens: block)
+        #expect(roomy.drain(timeoutSeconds: 20) && roomy.stats.persisted == 1)
+        let after = try String(contentsOf: windowURL, encoding: .utf8).split(whereSeparator: { $0.isWhitespace })
+        #expect(Double(after[0]) == start && Int(after[1]) == bytes + roomy.stats.persistedBytes)
+        roomy.close()
+    }
+
+    /// Finding R2: unit reads were F_NOCACHE preads at misaligned offsets into
+    /// unaligned buffers, which leaves larger units in the page cache. Every
+    /// unit is now read through its page-aligned superset into page-aligned
+    /// memory, and the restored state is unchanged.
+    @Test func restoreReadsArePageAlignedAndExact() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(400..<440), scope = "s"
+        var captured = states(committed: 39, frontiers: [16, 32], seed: 8)
+        for index in captured.indices where captured[index].committedTokens == 39 {
+            captured[index].speculativeHistory = history(frontier: 39, seed: 4)
+        }
+        let tier = try openTier(configuration(root))
+        tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 1)
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).first { $0.hasSuffix(".dbpx") })
+        let url = tier.directory.appendingPathComponent(name)
+        let opened = try QwenStagePrefixDiskIO.open(url: url, keys: QwenStagePrefixDiskKeys(master: Data(repeating: 7, count: 32)))
+        #expect(opened.dataStart % QwenStagePrefixDiskIO.readAlignment != 0)
+        final class Reads: @unchecked Sendable {
+            let lock = NSLock(); var calls: [(offset: Int, buffer: UInt)] = []
+        }
+        for frontier in [39, 32, 16] {
+            let reads = Reads()
+            let restored = try QwenStagePrefixDiskIO.restore(url: url, opened: opened, frontier: frontier,
+                readCall: { fd, buffer, count, offset in
+                    reads.lock.withLock { reads.calls.append((Int(offset), UInt(bitPattern: buffer))) }
+                    return Darwin.pread(fd, buffer, count, offset)
+                }, check: {})
+            let original = captured.first { $0.committedTokens == frontier }!
+            #expect(same(restored, original) && sameHistory(restored.speculativeHistory, original.speculativeHistory))
+            #expect(!reads.calls.isEmpty)
+            #expect(reads.calls.allSatisfy { $0.offset % QwenStagePrefixDiskIO.readAlignment == 0
+                && $0.buffer % UInt(QwenStagePrefixDiskIO.readAlignment) == 0 })
+        }
+        // The superset of a range: aligned down and up, clipped at the end of the file.
+        #expect(QwenStagePrefixDiskIO.alignedExtent(start: 37_982, length: 1_048_592, fileSize: 2_000_000) == (32_768, 1_064_960))
+        #expect(QwenStagePrefixDiskIO.alignedExtent(start: 16_384, length: 16_384, fileSize: 40_000) == (16_384, 16_384))
+        #expect(QwenStagePrefixDiskIO.alignedExtent(start: 30_000, length: 9_000, fileSize: 39_000) == (16_384, 22_616))
+        tier.close()
+    }
+
+    /// Finding storage:S2 / reads:R6: the decoding rank's speculative history
+    /// at each kept frontier is a view of one kept copy (the decoder's
+    /// `prefixHistory(at:)`), and version 1 wrote a whole copy per frontier.
+    /// A record now stores it once (rows of the deepest history in block
+    /// units, and its tokens) and every frontier restores exactly the view it
+    /// had; histories that are not views of one copy keep version 1.
+    @Test func theSpeculativeHistoryIsStoredOncePerRecordAndRestoresExactly() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(500..<540), scope = "scope|chunk=8", prompt = 40, width = 4
+        // One kept copy as the decoder holds it: hidden [1, prompt-1, 4], tokens [1, prompt-1], last [1, 1, 4].
+        let keptHidden = (MLXArray(0..<((prompt - 1) * width)).asType(.float32) * 0.5 + 3).reshaped([1, prompt - 1, width]).asType(.bfloat16)
+        let keptTokens = MLXArray((1..<prompt).map { Int32($0 * 3) }).reshaped([1, prompt - 1])
+        let keptLast = (MLXArray(0..<width).asType(.float32) - 9).reshaped([1, 1, width]).asType(.bfloat16)
+        eval(keptHidden, keptTokens, keptLast)
+        var captured = states(committed: 39, frontiers: [16, 32], seed: 11)
+        for index in captured.indices {
+            captured[index].speculativeHistory = QwenMTPPrefixHistory.view(hidden: keptHidden, tokens: keptTokens, last: keptLast,
+                prompt: prompt, frontier: captured[index].committedTokens)
+        }
+        let tier = try openTier(configuration(root))
+        tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 1)
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).first { $0.hasSuffix(".dbpx") })
+        let opened = try QwenStagePrefixDiskIO.open(url: tier.directory.appendingPathComponent(name),
+            keys: QwenStagePrefixDiskKeys(master: Data(repeating: 7, count: 32)))
+        #expect(opened.header.version == 2)
+        // Attention (2 x heads x 39 rows) and recurrent units as before; the history once:
+        // 39 hidden rows plus the last row, and 38 tokens, instead of three copies.
+        let tag = QwenStagePrefixDiskFormat.tagBytes, row = width * 2
+        let attention = 2 * ((39 + block - 1) / block) * tag + 2 * heads * 39 * headDim * 2
+        let recurrent = 3 * (2 * tag + 12 * 4 + 16 * 4)
+        let once = ((39 + block - 1) / block) * tag + 39 * row + (38 * 4 + tag)
+        #expect(opened.header.dataBytes == attention + recurrent + once)
+        for frontier in [39, 32, 16] {
+            let restored = try #require(try tier.restore(scope: scope, tokens: tokens, frontier: frontier, check: {}))
+            let original = captured.first { $0.committedTokens == frontier }!
+            #expect(same(restored, original))
+            #expect(sameHistory(restored.speculativeHistory, original.speculativeHistory))
+        }
+        tier.close()
+    }
+
+    /// Finding F5/S4: opening another plan (a model, mode, cut or build switch)
+    /// deleted every other plan's records on the Mac, so switching back started
+    /// cold. Other plans' live records are now kept inside this rank's one
+    /// budget: a switch back restores them; when all plans together exceed the
+    /// budget the other plans' oldest records go first; expired ones and the
+    /// directories they leave empty go at load.
+    @Test func aPlanSwitchKeepsTheOtherPlansLiveRecordsWithinOneBudget() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokensA = Array(0..<40), tokensB = Array(1000..<1040)
+        let first = try openTier(configuration(root), plan: "model-a")
+        first.persist(scope: "s", tokens: tokensA, states: states(committed: 39, frontiers: [16], seed: 1), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 20) && first.recordCount == 1)
+        let recordBytes = first.stats.persistedBytes
+        first.close()
+        let planA = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "model-a"))
+        // The other model loads and serves: model-a's record stays on disk.
+        let second = try openTier(configuration(root), plan: "model-b")
+        #expect(FileManager.default.fileExists(atPath: planA.path))
+        second.persist(scope: "s", tokens: tokensB, states: states(committed: 39, frontiers: [16], seed: 2), blockTokens: block)
+        #expect(second.drain(timeoutSeconds: 20) && second.recordCount == 1)
+        second.close()
+        // Switching back restores model-a's prompt from the SSD tier.
+        let back = try openTier(configuration(root), plan: "model-a")
+        #expect(back.frontiers(scope: "s", tokens: tokensA, maximumFrontier: 39) == [39, 16])
+        #expect(try back.restore(scope: "s", tokens: tokensA, frontier: 39, check: {}) != nil)
+        back.close()
+        // One budget for all plans: with room for about one record, model-a's
+        // load drops model-b's (the other plan's) record first and keeps its own.
+        let tight = try openTier(configuration(root) { $0.byteBudget = recordBytes + recordBytes / 2 }, plan: "model-a")
+        #expect(tight.recordCount == 1 && tight.frontiers(scope: "s", tokens: tokensA, maximumFrontier: 39).first == 39)
+        let planB = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "model-b"))
+        let planBRecords = try FileManager.default.contentsOfDirectory(atPath: planB.appendingPathComponent("rank0").path)
+            .filter { $0.hasSuffix(".dbpx") }
+        #expect(planBRecords.isEmpty)
+        tight.close()
+        // Past the TTL another plan's records are deleted at load, and its directory with them.
+        usleep(1_100_000)
+        let later = try openTier(configuration(root) { $0.ttlSeconds = 1 }, plan: "model-c")
+        #expect(!FileManager.default.fileExists(atPath: planA.path) && !FileManager.default.fileExists(atPath: planB.path))
+        later.close()
     }
 }

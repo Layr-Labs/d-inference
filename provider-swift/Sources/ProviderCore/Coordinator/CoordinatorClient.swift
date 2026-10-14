@@ -59,6 +59,10 @@ public actor CoordinatorClient {
     /// immediately instead of `await`-ing each TCP ACK — that is what unblocks
     /// per-stream inference-chunk throughput under concurrent load.
     internal var nwConnection: NWConnection?
+    internal var appAttestResumeNonce: String?
+    internal var appAttestResumeAnswered = false
+    /// Captures the existing process key, never a key serialized in config.
+    internal let appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)?
 
     /// Serial queue that drives the NWConnection state machine, receive
     /// callbacks, send completions, and pong handlers. Kept off the cooperative
@@ -103,6 +107,19 @@ public actor CoordinatorClient {
     /// Set when member acceptance never arrives, arrives late, or is refused.
     /// The reconnect loop exits instead of cycling an unacknowledged member.
     internal var memberRoleFailure = false
+    /// When a starting member's registration wait gives up (set by its
+    /// `ProviderLoop`); nil when nothing waits. Before it, a reconnect is
+    /// never scheduled past it (CoordinatorClient+MemberRegistration).
+    internal var memberRegistrationDeadline: ContinuousClock.Instant?
+    /// Why the latest connection attempt could not reach the coordinator at
+    /// all; nil once an attempt's transport was ready.
+    internal var memberUnreachableReason: String?
+    /// The reconnect the wait's deadline placed, and the end of its own
+    /// terms (handshake, then the connection's negotiation window).
+    internal var memberFinalAttemptUntil: ContinuousClock.Instant?
+    /// The end of the current attempt's own terms (its handshake's window,
+    /// then its connection's negotiation window); nil between attempts.
+    internal var memberAttemptUntil: ContinuousClock.Instant?
 
     /// The member control installed before the first connection, and its
     /// attachment to the current accepted connection. The attachment is nil
@@ -131,7 +148,8 @@ public actor CoordinatorClient {
         config: CoordinatorClientConfig,
         stats: AtomicProviderStats,
         state: ProviderState,
-        liveAPNsToken: (@Sendable () -> String?)? = nil
+        liveAPNsToken: (@Sendable () -> String?)? = nil,
+        appAttestResumeResponder: (@Sendable (AppAttestResumeChallenge, String) throws -> AppAttestResumeResponse)? = nil
     ) {
         self.config = config
         self.ordinaryServingModelIDs = Set(config.models.map(\.id))
@@ -142,6 +160,7 @@ public actor CoordinatorClient {
                 modelID: $0.id, available: config.runtimeCapabilities)
         })
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
+        self.appAttestResumeResponder = appAttestResumeResponder
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode
@@ -260,6 +279,8 @@ public actor CoordinatorClient {
         detachNativePairMember()
         guard let connection = nwConnection else { return }
         nwConnection = nil
+        appAttestResumeNonce = nil
+        appAttestResumeAnswered = false
         // Best-effort close frame: enqueue a .goingAway close frame so the
         // coordinator sees a clean WS shutdown. Then cancel immediately —
         // don't gate on the close frame flushing, because if the connection is

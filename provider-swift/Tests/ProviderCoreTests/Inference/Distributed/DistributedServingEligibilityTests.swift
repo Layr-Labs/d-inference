@@ -24,14 +24,16 @@ import DarkbloomClusterProtocol
         #expect(DistributedServingEligibility.memberCapabilities(chipFamily: .m5) == [.appleM5])
     }
 
-    /// The 27B on an M3 Ultra and an M5 Max, in either order: the grant lists
-    /// both classes for both roles, so every rank of both placements passes on
-    /// its own Mac, although neither member meets the single-Mac requirements.
+    /// The 27B on an M3 Ultra and an M5 Max, in either order, in the mode
+    /// family both orders' checks ran (the hand-off family): every rank of both
+    /// placements passes on its own Mac, although neither member meets the
+    /// single-Mac requirements.
     @Test func grantAllowsAnM3UltraRankAndAnM5MaxRankForThe27B() throws {
         for placement in [[ClusterChipClass.appleM3Ultra, .appleM5Max], [.appleM5Max, .appleM3Ultra]] {
-            try ClusterPairServingGrants.requirePlacement(placement, runtimeModelID: q27, publicModelID: q27Public)
+            try ClusterPairServingGrants.requirePlacement(placement, runtimeModelID: q27, publicModelID: q27Public, mode: .phaseSplit)
             for (rank, chipClass) in placement.enumerated() {
-                try ClusterPairServingGrants.requireRank(rank, of: 2, chipClass: chipClass, runtimeModelID: q27, publicModelID: q27Public)
+                try ClusterPairServingGrants.requireRank(rank, of: 2, chipClass: chipClass, runtimeModelID: q27, publicModelID: q27Public,
+                                                         mode: .phaseSplitMTP)
             }
         }
         let grant = try ClusterPairServingGrants.grant(runtimeModelID: q27, publicModelID: q27Public)
@@ -51,7 +53,7 @@ import DarkbloomClusterProtocol
             let chipClass = cls(chip)
             for rank in 0..<2 {
                 let refused = refusal { try ClusterPairServingGrants.requireRank(rank, of: 2, chipClass: chipClass,
-                    runtimeModelID: q27, publicModelID: q27Public) }
+                    runtimeModelID: q27, publicModelID: q27Public, mode: .phaseSplit) }
                 let role: ClusterPairServingRole = rank == 1 ? .decodingRank : .pipelineRank
                 let allowed: [ClusterChipClass] = rank == 1 ? [.appleM3Ultra, .appleM5Max, .appleM5Ultra] : [.appleM3Ultra, .appleM5Max]
                 #expect(refused?.reason == .classNotAllowed(rank: rank, role: role, chipClass: chipClass,
@@ -62,18 +64,19 @@ import DarkbloomClusterProtocol
             }
             // A placement with one unlisted rank is refused as a whole.
             #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, chipClass],
-                runtimeModelID: q27, publicModelID: q27Public) } != nil)
+                runtimeModelID: q27, publicModelID: q27Public, mode: .phaseSplit) } != nil)
         }
-        // The M5 Ultra decodes the 9B and the 27B (its cross-cable checks ran as rank 1), and leads neither.
+        // The M5 Ultra decodes the 9B and the 27B with MTP after a phase split (its checks ran it as rank 1), and leads neither.
         for model in [("registered_qwen35_9b", "Qwen3.5-9B"), (q27, q27Public)] {
-            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model.0, publicModelID: model.1)
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model.0, publicModelID: model.1, mode: .phaseSplitMTP)
             #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra],
-                runtimeModelID: model.0, publicModelID: model.1) } != nil, "\(model.1) led by the M5 Ultra")
+                runtimeModelID: model.0, publicModelID: model.1, mode: .phaseSplitMTP) } != nil, "\(model.1) led by the M5 Ultra")
         }
         // A grant restricts by role: the 9B ran with the M3 Ultra leading only.
-        try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B")
+        try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B",
+                                                      mode: .phaseSplit)
         let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra],
-            runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B") }
+            runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B", mode: .phaseSplit) }
         #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]))
         // A chip with no class (a virtual machine, an unknown name) is refused.
         let unknown = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: nil, runtimeModelID: q27, publicModelID: q27Public) }
@@ -107,16 +110,16 @@ import DarkbloomClusterProtocol
 
     /// The grant is keyed by the runtime's model, which a setup cannot rename.
     @Test func renamingTheModelChangesNothing() throws {
-        try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: q27, publicModelID: "renamed/public-id")
+        try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: q27, publicModelID: "renamed/public-id", mode: .phaseSplit)
         let renamed = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: self.cls("Apple M4 Max"),
-            runtimeModelID: q27, publicModelID: "renamed/public-id") }
+            runtimeModelID: q27, publicModelID: "renamed/public-id", mode: .phaseSplit) }
         #expect(renamed?.description.contains("renamed/public-id") == true && renamed?.description.contains(q27) == true)
         // The 27B's public name on another runtime model gets that model's decision.
         let future = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM5Max,
             runtimeModelID: "registered_future", publicModelID: q27Public) }
         #expect(future?.reason == .noGrant && future?.description.contains("has no grant") == true)
         let nine = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM3Ultra,
-            runtimeModelID: "registered_qwen35_9b", publicModelID: q27Public) }
+            runtimeModelID: "registered_qwen35_9b", publicModelID: q27Public, mode: .phaseSplit) }
         #expect(nine?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM3Ultra, allowed: [.appleM5Max, .appleM5Ultra]))
     }
 
@@ -151,7 +154,11 @@ import DarkbloomClusterProtocol
         }
         for grant in ClusterPairServingGrants.granted {
             #expect(!grant.decodingRankChipClasses.isEmpty && !grant.pipelineRankChipClasses.isEmpty && !grant.evidence.isEmpty)
-            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: grant.runtimeModelID, publicModelID: "p")
+            // Every placement a passed check ran is admitted, at its cuts and in its mode.
+            for qualification in grant.qualifications {
+                try ClusterPairServingGrants.requirePlacement(qualification.chipClasses, runtimeModelID: grant.runtimeModelID,
+                                                              publicModelID: "p", cuts: qualification.cuts, mode: qualification.mode)
+            }
         }
         for (model, reason) in ClusterPairServingGrants.withheld {
             let refused = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p") }
@@ -162,11 +169,57 @@ import DarkbloomClusterProtocol
         // The records this build ships: every one is used, and they decide the models the runs decided.
         #expect(!ClusterPairServingGrants.records.isEmpty && ClusterPairServingGrants.decisions.ignored == 0)
         #expect(Set(granted) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
-                                 "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"])
+                                 "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning", "registered_mimo_v26_flash_mopd"])
         // registered_gemma4_26b has no record of its own: the two that named it ran the 8-bit artifact and are not shipped.
         #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gpt_oss_20b",
                                                                 "registered_gemma4_26b_8bit", "registered_gemma4_26b_qat_4bit"])
         #expect(ClusterPairServingGrants.withheld["registered_gpt_oss_20b"]?.contains("diverged at cuts 4, 8 and 10") == true)
+    }
+
+    /// MiMo's grant follows its records, family by family: the pipeline ran
+    /// with the M5 Ultra leading and the M3 Ultra holding the last layers and
+    /// the head (cuts 47 and 14, both framings; short, 4,096 and 16,384
+    /// prompts against the M5 Ultra's own reference), and the phase split (a
+    /// hand-off mode, off by default) with the M3 Ultra taking a prefill share
+    /// and the M5 Ultra, which holds every layer, decoding (cut 8, 2026-10-14,
+    /// the pair route and the alone route). No MiMo check failed, so its records
+    /// restrict no shape; each family is granted only in the order it ran, and
+    /// another chip class is refused.
+    @Test func mimoIsGrantedInTheOrdersItsChecksRan() throws {
+        let model = "registered_mimo_v26_flash_mopd"
+        let grant = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p",
+            artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034")
+        #expect(grant.pipelineRankChipClasses == [.appleM3Ultra, .appleM5Ultra]
+            && grant.decodingRankChipClasses == [.appleM3Ultra, .appleM5Ultra])
+        let shapes = Set(grant.qualifications.map { "\($0.chipClasses.map(\.rawValue)) \($0.cuts) \($0.mode.rawValue)" })
+        for expected: ClusterPairServingQualification in [
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [14], mode: .pipeline),
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline),
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipelineCompactDecode),
+            .init(chipClasses: [.appleM3Ultra, .appleM5Ultra], cuts: [8], mode: .phaseSplit)] {
+            #expect(shapes.contains("\(expected.chipClasses.map(\.rawValue)) \(expected.cuts) \(expected.mode.rawValue)"))
+        }
+        #expect(grant.evidence.hasPrefix("17 passing cross-cable qualification records"))
+        #expect(!ClusterPairServingGrants.records(runtimeModelID: model).restrictsShapes)
+        try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
+                                                      cuts: [47], mode: .pipeline)
+        let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p",
+                                                                               mode: .pipeline) }
+        #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM3Ultra, allowed: [.appleM5Ultra]))
+        // MiMo's hand-off records (phase split at cut 8, the M5 Ultra decoding) grant that family alone, in the
+        // order they ran (the family is off by default and planned only under the opt-in); the pipeline's order is not one.
+        try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p",
+                                                      cuts: [8], mode: .phaseSplit)
+        let handOff = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
+                                                                              cuts: [47], mode: .phaseSplit) }
+        #expect(handOff != nil)
+        let other = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p",
+                                                                            mode: .pipeline) }
+        #expect(other?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]))
+        // Another artifact under the same registered model is not what the records ran.
+        let foreign = refusal { _ = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p", artifactSHA256: String(repeating: "0", count: 64)) }
+        #expect(foreign?.reason == .artifactNotQualified(installed: String(repeating: "0", count: 64),
+                                                         qualified: ["2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034"]))
     }
 
     /// The product serves a model on a pair only with both halves: the grant
@@ -185,14 +238,26 @@ import DarkbloomClusterProtocol
                 _ = try Table.servingBudgets(runtimeModelID: model, publicModelID: q27Public)
             }
         }
-        // The orders the other families' checks ran: the M3 Ultra leads, the M5 Max or the M5 Ultra decodes.
-        // The mirrored order of each is refused, for the rank whose class its role does not list.
+        // The orders the other families' hand-off checks ran: the M3 Ultra leads, the M5 Max or the M5 Ultra decodes.
+        // The mirrored order of each is refused in that family, for the rank whose class its role does not list.
         for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"] {
-            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p")
-            let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: model, publicModelID: "p") }
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p", mode: .phaseSplit)
+            let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Max, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
+                                                                                   mode: .phaseSplit) }
             #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]), "\(model)")
-            let decoding = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM3Ultra, runtimeModelID: model, publicModelID: "p") }
+            let decoding = refusal { try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: .appleM3Ultra, runtimeModelID: model, publicModelID: "p",
+                                                                              mode: .phaseSplitMTP) }
             #expect(decoding?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM3Ultra, allowed: [.appleM5Max, .appleM5Ultra]), "\(model)")
+        }
+        // In the pipeline on the M3 Ultra and the M5 Ultra each family is granted the order the planner chose and its check ran
+        // (2026-10-14): the M5 Ultra leads the A3Bs and Bonsai, the M3 Ultra leads Nemotron, the 9B and the 27B.
+        for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b"] {
+            try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p", mode: .pipeline)
+        }
+        for model in ["registered_nemotron35_lightning", "registered_qwen35_9b", q27] {
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p", mode: .pipeline)
+            #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
+                                                                            mode: .pipeline) } != nil, "\(model)")
         }
     }
 
@@ -224,10 +289,11 @@ import DarkbloomClusterProtocol
         #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [0], mode: .pipeline).isWellFormed)
         #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [20, 16], mode: .pipeline).isWellFormed)
         #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [16, 20], mode: .pipeline).isWellFormed)
-        // Modes are spelled as the coordinator's plan modes.
+        // Modes are spelled as the coordinator's plan modes (`pipeline_mtp_v1` needs the
+        // coordinator's protocol.ClusterPlanModes to list it before a plan may name it).
         #expect(Set(ClusterGenerationMode.allCases.map(\.rawValue))
             == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1",
-                "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"])
+                "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1", "pipeline_mtp_v1"])
         // Tensor parallel cuts no layer range; its hybrid names its prefill cut.
         #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [], mode: .tensorParallel).isWellFormed)
         #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [16], mode: .tensorParallel).isWellFormed)

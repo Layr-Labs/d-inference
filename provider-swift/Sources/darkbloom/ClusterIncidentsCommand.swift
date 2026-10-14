@@ -6,7 +6,7 @@ extension Cluster {
     /// The durable incident log (PROD-PLAN S24): `~/.darkbloom/cluster/incidents.json`.
     struct Incidents: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "incidents",
-            abstract: "Show this Mac's cluster incidents with their guidance, or dismiss one.")
+            abstract: "Show this Mac's cluster incidents with their guidance, or dismiss one.", shouldDisplay: false)
         @Option(help: "Show only incidents after this sequence number (the cursor a reader keeps).")
         var since: UInt64 = 0
         @Flag(help: "Include dismissed and superseded incidents.") var all = false

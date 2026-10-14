@@ -107,7 +107,7 @@ import DarkbloomClusterProtocol
             do { _ = try ClusterCapabilityRecord.decode(newerData, writtenBy: "the worker (capability.json)"); throw ClusterConfigurationError.invalid("unreadable record accepted") }
             catch let ClusterConfigurationError.invalid(message) {
                 try require(message.contains("cannot read the capability record written by the worker (capability.json)")
-                    && message.contains("not built from the same tree") && message.contains("cluster configure"), "Mixed install not explained: \(message)")
+                    && message.contains("not built from the same tree") && message.contains("run `darkbloom cluster` again"), "Mixed install not explained: \(message)")
             }
         }
         var selectedLookahead = object; selectedLookahead["prefillSchedule"] = "one_chunk_lookahead_v1"

@@ -69,6 +69,16 @@ struct QwenMTPStatistics: Encodable, Equatable {
     /// instead of observed in this request (0: the head saw only this
     /// request's computed rows).
     var restoredHistoryTokens = 0
+    /// `pipeline_mtp_v1`, the last rank: time spent waiting for rank 0's
+    /// window rows, verifying them, and keeping the round (both stages and
+    /// the head). Nil under a phase split, whose line stays as it was.
+    var pipelineNanoseconds: PipelineTimes?
+
+    struct PipelineTimes: Encodable, Equatable {
+        var wait: UInt64 = 0
+        var verify: UInt64 = 0
+        var settle: UInt64 = 0
+    }
 
     init(depth: Int) {
         self.depth = depth
@@ -87,7 +97,10 @@ struct QwenMTPStatistics: Encodable, Equatable {
          "mtp_accepted_by_position=" + acceptedByPosition.map(String.init).joined(separator: "-"),
          "mtp_build_ns=\(buildNanoseconds)", "mtp_evaluate_ns=\(evaluateNanoseconds)", "mtp_settle_ns=\(settleNanoseconds)",
          "mtp_history_restored=\(restoredHistoryTokens)"]
+            + (pipelineNanoseconds.map { ["mtp_wait_ns=\($0.wait)", "mtp_verify_ns=\($0.verify)",
+                                          "mtp_round_settle_ns=\($0.settle)"] } ?? [])
     }
+
 }
 
 /// How the consumer stage of a decoding rank yields its pre-norm hidden rows.
@@ -150,6 +163,9 @@ final class QwenMTPHead {
         let activeBytesAdded: Int
         let loadNanoseconds: UInt64
         let blockSize: Int
+        /// `pipeline_mtp_v1`: bytes of the token embedding copy this rank read
+        /// beside its stage (0 under a phase split, which borrows the producer's).
+        var embeddingCopyBytes = 0
     }
 
     let assistant: Qwen35InlineMTPAssistant
@@ -161,7 +177,9 @@ final class QwenMTPHead {
     private let consumerNorm: RMSNorm
     private let consumerHead: Linear
 
-    init(modelDirectory: URL, sourceConfiguration: Data, manifest: Data,
+    /// Phase split: the decoding rank holds both stages; the head borrows the
+    /// producer stage's own embedding module.
+    convenience init(modelDirectory: URL, sourceConfiguration: Data, manifest: Data,
          producer: LoadedQwenLayerStage, consumer: LoadedQwenLayerStage, check: () throws -> Void) throws {
         guard producer.stageIndex == 0, consumer.stageIndex == 1,
               producer.plan.fingerprint == consumer.plan.fingerprint,
@@ -175,6 +193,29 @@ final class QwenMTPHead {
         guard !(embedding is QwenStageResidualEmbedding) else {
             throw ProbeError("Producer stage has no token embedding")
         }
+        try self.init(modelDirectory: modelDirectory, sourceConfiguration: sourceConfiguration, manifest: manifest,
+            embedding: embedding, embeddingCopyBytes: 0, consumer: consumer, started: started, before: before, check: check)
+    }
+
+    /// `pipeline_mtp_v1`: the last rank holds only the consumer stage. The
+    /// head's target embedding is a copy of the producer stage's token
+    /// embedding, read through this rank's verified checkpoint with the stage
+    /// (`QwenEmbeddingCopy`); final norm and output head are the consumer's.
+    convenience init(modelDirectory: URL, sourceConfiguration: Data, manifest: Data,
+         embeddingCopy: QwenEmbeddingCopy, consumer: LoadedQwenLayerStage, check: () throws -> Void) throws {
+        guard consumer.stageIndex == 1, sha256(sourceConfiguration) == consumer.receipt.sourceConfigurationSHA256,
+              embeddingCopy.verifiedAggregateSHA256 == consumer.receipt.verifiedAggregateSHA256,
+              embeddingCopy.planFingerprint == consumer.plan.fingerprint else {
+            throw ProbeError("Speculative head needs the consumer stage and an embedding copy of one verified source")
+        }
+        try self.init(modelDirectory: modelDirectory, sourceConfiguration: sourceConfiguration, manifest: manifest,
+            embedding: embeddingCopy.module, embeddingCopyBytes: embeddingCopy.bytes, consumer: consumer,
+            started: embeddingCopy.startedUptimeNanoseconds, before: embeddingCopy.activeBytesBefore, check: check)
+    }
+
+    private init(modelDirectory: URL, sourceConfiguration: Data, manifest: Data, embedding: Embedding,
+                 embeddingCopyBytes: Int, consumer: LoadedQwenLayerStage, started: UInt64, before: Int,
+                 check: () throws -> Void) throws {
         consumerEmbedding = try Self.module(consumer.model, "model.embed_tokens")
         consumerNorm = try Self.module(consumer.model, "model.norm")
         consumerHead = try Self.module(consumer.model, "lm_head")
@@ -226,7 +267,8 @@ final class QwenMTPHead {
         headSHA256 = files.sha256
         receipt = .init(tensorFiles: shards, tensorFileBytes: shardBytes, filesRehashedAfterLoad: reread,
             activeBytesAdded: after > before ? after - before : 0,
-            loadNanoseconds: DispatchTime.now().uptimeNanoseconds - started, blockSize: assistant.blockSize)
+            loadNanoseconds: DispatchTime.now().uptimeNanoseconds - started, blockSize: assistant.blockSize,
+            embeddingCopyBytes: embeddingCopyBytes)
     }
 
     func tap(observe: @escaping (_ tokens: MLXArray, _ hidden: MLXArray) throws -> Void) -> QwenLayerStageHiddenTap {

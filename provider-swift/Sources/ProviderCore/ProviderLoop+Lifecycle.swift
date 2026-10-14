@@ -99,7 +99,10 @@ extension ProviderLoop {
         }
         lifecycleStatus.remaining = lifecycleRemaining
         lifecycleStatus.coordinatorAcknowledged = acknowledged
-        if request.force {
+        let workerRetired = await stopAppAttestWorkerAndWait()
+        if !workerRetired {
+            lifecycleStatus.outcome = .timedOut
+        } else if request.force {
             lifecycleStatus.outcome = .forced
             servingDrain.drained()
         } else if nativeOwnersDrained, lifecycleRemaining == 0 && (acknowledged || coordinatorClient == nil) {
@@ -180,6 +183,7 @@ extension ProviderLoop {
     ) async -> Bool {
         if servingDrain.phase == .drained {
             guard await drainNativeMiMoOwners() else { return false }
+            guard await stopAppAttestWorkerAndWait() else { return false }
             if coordinatorEventLoopStarted {
                 await releaseClusterMemberSessionBeforeClose()
                 await coordinatorClient?.shutdown()
@@ -201,6 +205,7 @@ extension ProviderLoop {
         // the already-drained path: retain pending/faulted owners and refuse
         // shutdown success until their actual transaction retirement finishes.
         guard await drainNativeMiMoOwners() else { return false }
+        guard await stopAppAttestWorkerAndWait() else { return false }
         if coordinatorEventLoopStarted {
             await releaseClusterMemberSessionBeforeClose()
             await coordinatorClient?.shutdown()

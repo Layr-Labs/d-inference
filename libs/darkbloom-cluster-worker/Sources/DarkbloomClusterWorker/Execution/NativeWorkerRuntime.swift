@@ -31,9 +31,10 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
                 speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane,
                 prefixSSDKey: prefixSSDKey))
         case .mimoV26:
-            guard speculativeTerms == nil else { throw WorkerFailure.invalid("MiMo has no speculative decoding on a pair") }
-            owner = .mimoV26(try .load(configuration, generationMode: generationMode, qualification: qualification,
-                dataPlane: dataPlane))
+            // `--mtp-depth` is parsed once for every family; MiMo's own terms bound it (1...3).
+            owner = .mimoV26(try .load(configuration, generationMode: generationMode,
+                speculativeDepth: speculativeTerms?.depth, qualification: qualification, dataPlane: dataPlane,
+                prefixSSDKey: prefixSSDKey))
         case .gptoss:
             throw WorkerFailure.invalid("GPT-OSS runs on its own worker runtime, not the native wrapper")
         }

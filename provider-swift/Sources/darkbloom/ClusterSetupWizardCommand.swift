@@ -3,17 +3,24 @@ import ArgumentParser
 import ProviderCore
 
 extension Cluster.Setup {
-    /// Whether bare `darkbloom cluster` opens the setup wizard: only on a
-    /// terminal at both ends that can draw a screen, and not with an option
-    /// that asks for the unattended line-by-line flow (`--json`, `--yes`,
-    /// `--temporary`) or for printed output (`--plain`). As `darkbloom
-    /// cluster setup` it is always the line-by-line flow. `--dry-run` opens
-    /// the wizard with the link fix limited to its preview.
-    static func opensWizard(arguments: [String], json: Bool, yes: Bool, temporary: Bool, plain: Bool,
-                            inputIsTerminal: Bool, outputIsTerminal: Bool, terminalType: String?) -> Bool {
-        !json && !yes && !temporary && !plain && inputIsTerminal && outputIsTerminal
-            && Cluster.Console.drawsScreens(terminalType) && !arguments.dropFirst().contains("setup")
+    /// What `darkbloom cluster` (and `darkbloom cluster setup`) runs. On a terminal it is the onboarding, whatever
+    /// the terminal type: the onboarding prints plain lines and reads keys through termios, so it needs no screen
+    /// drawing. The line-by-line link setup is kept only for the options that ask for it (`--json`, `--yes`,
+    /// `--temporary`, `--dry-run`, the hidden `--link-only`) and for `darkbloom cluster link`. With no terminal and
+    /// none of those, one line says where to run it. `--wizard` (hidden, developer) opens the earlier six-step
+    /// wizard where the terminal can draw it.
+    enum Entry: Equatable { case onboarding, wizard, linkSetup, needsTerminal }
+
+    static func entry(json: Bool, yes: Bool, temporary: Bool, dryRun: Bool, linkOnly: Bool, wizard: Bool,
+                      inputIsTerminal: Bool, outputIsTerminal: Bool, terminalType: String?) -> Entry {
+        if wizard, inputIsTerminal, outputIsTerminal, Cluster.Console.drawsScreens(terminalType), !json, !yes, !temporary { return .wizard }
+        if json || yes || temporary || dryRun || linkOnly { return .linkSetup }
+        guard inputIsTerminal && outputIsTerminal else { return .needsTerminal }
+        return .onboarding
     }
+
+    /// The one line `darkbloom cluster` prints when it is not run in a terminal.
+    static let needsTerminalLine = "Run `darkbloom cluster` in a Terminal window on this Mac."
 
     /// The pair the wizard was given, all four options or none.
     func wizardPair() throws -> ClusterSetupRecord.Pair? {
@@ -82,7 +89,10 @@ extension Cluster.Setup {
     /// The service settings both the onboarding and `darkbloom cluster service` use.
     static func serviceSettings(config: String?, modelDir: String?, worker: String?) throws -> ClusterService.Settings {
         let wizard = try liveSettings(config: config, pair: nil, dryRun: false, modelDir: modelDir, worker: worker)
-        return ClusterService.Settings(wizard: wizard, leaderArguments: wizard.sessionArguments, followerArguments: wizard.followerSessionArguments)
+        // Degraded serving on this Mac alone (failover): the ordinary single-Mac local server with this Mac's own
+        // configuration and identity; the cluster service adds the model and the port.
+        return ClusterService.Settings(wizard: wizard, leaderArguments: wizard.sessionArguments, followerArguments: wizard.followerSessionArguments,
+            soloArguments: ["start", "--local"] + (config.map { ["--config", $0] } ?? []))
     }
 
     /// Bare `darkbloom cluster` on a terminal: the leader-first onboarding.

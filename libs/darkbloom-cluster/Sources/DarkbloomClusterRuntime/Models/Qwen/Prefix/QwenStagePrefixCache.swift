@@ -220,9 +220,10 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     /// The deepest frontier this rank holds for `tokens` under `scope`, at
-    /// most `maximumFrontier` (0: none), as `frontiers(...).first` but hashing
-    /// prefixes from the deepest held frontier down only until one matches (a
-    /// repeat hashes once). Does not touch recency.
+    /// most `maximumFrontier` (0: none), as `frontiers(...).first`. Every held
+    /// frontier's key comes from one pass over the prompt
+    /// (`QwenStagePrefixKeys`, finding F10: one full hash per held frontier
+    /// was quadratic in the prompt). Does not touch recency.
     func deepestFrontier(scope: String, tokens: [Int], maximumFrontier: Int) -> Int {
         guard enabled else { return 0 }
         let limit = min(maximumFrontier, tokens.count)
@@ -233,11 +234,23 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
                 keys[entry.state.committedTokens, default: []].insert(entry.key)
             }
         }
-        for frontier in keys.keys.sorted(by: >)
-        where keys[frontier]?.contains(Self.key(scope: scope, tokens: tokens[0..<frontier])) == true {
-            return frontier
-        }
-        return 0
+        let computed = prefixKeys(scope: scope, tokens: tokens, frontiers: Set(keys.keys))
+        return keys.keys.sorted(by: >).first { frontier in
+            computed[frontier].map { keys[frontier]?.contains($0) == true } ?? false
+        } ?? 0
+    }
+
+    /// Prompt tokens fed to prefix hashers by lookups, for tests and
+    /// diagnostics: one pass hashes at most the deepest frontier asked for.
+    var lookupHashedTokens: Int { lock.withLock { hashedTokens } }
+    private var hashedTokens = 0
+
+    /// The shared keys of `tokens` at `frontiers` in one pass (each equals
+    /// `key(scope:tokens:)` of that prefix).
+    private func prefixKeys(scope: String, tokens: [Int], frontiers: Set<Int>) -> [Int: String] {
+        guard let deepest = frontiers.filter({ $0 > 0 && $0 <= tokens.count }).max() else { return [:] }
+        lock.withLock { hashedTokens += deepest }
+        return QwenStagePrefixKeys.keys(scope: scope, tokens: tokens, frontiers: frontiers)
     }
 
     /// The idle refresh: the budget follows `roomBytes`, the admissible room
@@ -308,11 +321,20 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         hook?()
     }
 
-    /// Before a request captures up to `bytes`: evicts least recently used
-    /// entries until the entries and that capture fit the budget together.
-    /// A reused entry was just used, so it goes last.
+    /// Before a request captures up to `bytes`: drops grid frontiers (least
+    /// recently used first, other prompts' before the newest's) until the
+    /// entries and that capture fit the budget together. It never drops a
+    /// prompt's deepest frontier, what an exact repeat needs (finding F3: on
+    /// the 27B's decoding rank a long prompt's capture plan of up to 32
+    /// frontiers evicted every other prompt's deepest frontier first, so
+    /// repeats of a few long documents never hit although their deepest
+    /// frontiers fit the budget). Once the request retired, `insert` keeps
+    /// the budget: the capture's own grid goes before another prompt's
+    /// deepest frontier. Memory stays bounded meanwhile: the capture is
+    /// charged in the request's reservation, and a live refusal still evicts
+    /// any entry (`yieldingMemory`).
     func makeRoom(forCapture bytes: Int) {
-        lock.withLock { evictLocked(reserving: max(0, bytes)) }
+        lock.withLock { evictLocked(reserving: max(0, bytes), gridOnly: true) }
     }
 
     private func remove(_ entry: Entry) {
@@ -325,14 +347,14 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
         }
     }
 
-    private func evictLocked(reserving: Int) {
+    private func evictLocked(reserving: Int, gridOnly: Bool = false) {
         // Over the prompt count: the least recently used prompt goes whole
         // (thinning other prompts' grids would not lower the count).
         while prompts.count > promptLimit, let prompt = leastRecentlyUsedPromptLocked() {
             for entry in entries.values where entry.prompt == prompt { remove(entry); evictions += 1 }
         }
         while entries.count > entryLimit || (held > 0 && held > budget - min(budget, reserving)),
-              let victim = victimLocked() {
+              let victim = victimLocked(gridOnly: gridOnly) {
             remove(victim); evictions += 1
         }
     }
@@ -345,16 +367,19 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     }
 
     /// The next entry to evict: the least recently used grid frontier of a
-    /// prompt other than the most recently used one; when there is none, the
-    /// least recently used entry. A prompt's deepest frontier (what an exact
-    /// repeat needs) outlives the grid of every other prompt.
-    private func victimLocked() -> Entry? {
+    /// prompt other than the most recently used one; then the most recently
+    /// used prompt's own grid (its shallowest first); only when no grid
+    /// frontier is left, the least recently used entry (a whole prompt's
+    /// deepest frontier), and never one with `gridOnly`. A prompt's deepest
+    /// frontier (what an exact repeat needs) outlives every grid frontier,
+    /// the newest prompt's included (finding F3).
+    private func victimLocked(gridOnly: Bool = false) -> Entry? {
         guard let newest = entries.values.max(by: { $0.lastUse < $1.lastUse }) else { return nil }
-        func thinnable(_ entry: Entry) -> Bool {
-            entry.prompt != newest.prompt && entry.state.committedTokens < (prompts[entry.prompt]?.deepest ?? 0)
-        }
-        return entries.values.filter(thinnable).min(by: { $0.lastUse < $1.lastUse })
-            ?? entries.values.min(by: { $0.lastUse < $1.lastUse })
+        func grid(_ entry: Entry) -> Bool { entry.state.committedTokens < (prompts[entry.prompt]?.deepest ?? 0) }
+        let byRecency: (Entry, Entry) -> Bool = { ($0.lastUse, $0.state.committedTokens) < ($1.lastUse, $1.state.committedTokens) }
+        if let other = entries.values.filter({ $0.prompt != newest.prompt && grid($0) }).min(by: byRecency) { return other }
+        if let own = entries.values.filter({ $0.prompt == newest.prompt && grid($0) }).min(by: byRecency) { return own }
+        return gridOnly ? nil : entries.values.min(by: byRecency)
     }
 
     /// Prompts held now (for tests and diagnostics).
@@ -390,15 +415,10 @@ public final class QwenStagePrefixCache: @unchecked Sendable {
     func frontiers(scope: String, tokens: [Int], maximumFrontier: Int) -> [Int] {
         guard enabled else { return [] }
         let held = lock.withLock { entries.values.filter { $0.scope == scope && $0.state.committedTokens <= maximumFrontier } }
-        var keys: [Int: String] = [:]
-        var found: [Int] = []
-        for entry in held {
-            let frontier = entry.state.committedTokens
-            guard frontier > 0, frontier <= tokens.count else { continue }
-            let key = keys[frontier] ?? Self.key(scope: scope, tokens: tokens[0..<frontier])
-            keys[frontier] = key
-            if key == entry.key { found.append(frontier) }
-        }
+            .filter { $0.state.committedTokens > 0 && $0.state.committedTokens <= tokens.count }
+        // One pass over the prompt for every held frontier (finding F10).
+        let keys = prefixKeys(scope: scope, tokens: tokens, frontiers: Set(held.map(\.state.committedTokens)))
+        let found = held.filter { keys[$0.state.committedTokens] == $0.key }.map(\.state.committedTokens)
         return Array(Set(found).sorted(by: >).prefix(Self.maximumOffered))
     }
 

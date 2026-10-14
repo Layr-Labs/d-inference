@@ -32,7 +32,7 @@ struct MiMoResidentAdmission {
               sha256(configBytes) == spec.configurationSHA256,
               sha256(manifestBytes) == spec.manifestSHA256 else {
             throw ProbeError("Resident MiMo load requires the registered model's closed identity, one of its cuts, "
-                + "the serial prefill schedule and a bounded local lifetime")
+                + "one of its prefill schedules and a bounded local lifetime")
         }
         // Before any model construction or native environment cache is used.
         arithmetic = try MiMoArithmeticEnvironment.admit(environment)
@@ -45,23 +45,29 @@ struct MiMoResidentAdmission {
         profile = try spec.profile()
     }
 
-    func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64) throws -> QwenLayerStageGenerationRequest {
+    /// `decodingRankHoldsEveryLayer`: the loaded mode is a phase split, whose
+    /// decoding rank holds every layer and may serve a request alone.
+    func request(_ value: ClusterWorkerReservation, id: UUID, now: UInt64,
+                 decodingRankHoldsEveryLayer: Bool = false) throws -> QwenLayerStageGenerationRequest {
         guard value.profileID == profile.identifier, value.capacityLimitBytes > 0,
               value.stopTokenIDs == Array(Set(value.stopTokenIDs)).sorted(),
               configuration.admitsRequestDeadline(value.deadlineUptimeNanoseconds, now: now) else {
             throw ProbeError("Resident reservation has wrong profile, stop IDs, capacity or local deadline")
         }
-        // No rank of this family holds every layer: every request uses the pair.
-        guard value.route == nil else { throw ProbeError("This family serves no request on one rank alone") }
+        // Only a phase split's decoding rank holds every layer; under a pipeline
+        // every request uses the pair.
+        guard value.route == nil || decodingRankHoldsEveryLayer else {
+            throw ProbeError("Under a pipeline no MiMo rank holds every layer: no request is served on one rank alone")
+        }
         return try .init(profile: profile, requestID: id, promptTokenIDs: value.promptTokenIDs,
             chunkSize: value.chunkSize, outputCount: value.outputCount, stopTokenIDs: Set(value.stopTokenIDs),
-            sampling: value.sampling)
+            sampling: value.sampling, route: value.route)
     }
 
     /// Rank, local path and local uptime are intentionally absent. Everything
     /// both ranks must have been told the same is here, before either loads.
     func loadAgreementFingerprint(mode: QwenResidentGenerationMode, transport: ClusterTransport,
-                                  residency: Bool, measuredGate: Bool) throws -> String {
+                                  residency: Bool, measuredGate: Bool, speculative: MiMoMTPTerms? = nil) throws -> String {
         let identity = configuration.identity
         return sha256(try canonicalJSONData([
             "mimo-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
@@ -69,6 +75,7 @@ struct MiMoResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue, configuration.prefillSchedule.rawValue,
             mode.rawValue, transport.rawValue,
+        ] + (speculative?.loadAgreementFields ?? []) + [
             // Each rank's own limit differs with its stage; the policy both run under is common.
             "residency=\(residency ? MiMoStageResidency.policy : "off")", "measuredGate=\(measuredGate)",
         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
@@ -86,26 +93,46 @@ struct MiMoResidentAdmission {
 /// and the allocator limit must cover what is resident plus the allowance.
 struct MiMoResidentRequestAllowance {
     let budget: MiMoRequestStateBudget
-    var reservedBytes: Int { budget.reservedBytes }
+    /// Rank 1 of `pipeline_mtp_v1`: the speculative head's request state at
+    /// the allocator's bound (`MiMoMTPHead.requestBytes`); 0 otherwise.
+    var speculativeBytes = 0
+    var reservedBytes: Int { budget.reservedBytes + speculativeBytes }
     let watch = QwenDenseStageLoadWatch("Resident request")
 
+    /// `phaseSplit`: rank 1 holds the state of every layer (its own range and
+    /// the producer's it adopts or prefills alone), and the producer's state
+    /// exists on both sides while it moves (`handoffBytes`, on each rank).
     static func derive(specification: MiMoRegisteredSpecification, plan: MiMoLayerStagePlan, rank: Int,
-                       maximumTokens: Int, chunkSize: Int) throws -> Self {
+                       maximumTokens: Int, chunkSize: Int, phaseSplit: Bool = false,
+                       speculativeBytes: Int = 0) throws -> Self {
         guard plan.stages.count == 2, (0...1).contains(rank) else {
             throw ProbeError("Resident MiMo request allowance requires an admitted two-stage Plan")
         }
-        return .init(budget: try .estimate(specification: specification, layers: plan.stages[rank].sourceRange,
+        guard speculativeBytes >= 0, speculativeBytes == 0 || (rank == 1 && !phaseSplit) else {
+            throw ProbeError("Only the last rank of a speculative pipeline holds a speculative head's request state")
+        }
+        let layers = phaseSplit && rank == 1 ? 0..<plan.stages[1].sourceRange.upperBound : plan.stages[rank].sourceRange
+        let own = try MiMoRequestStateBudget.estimate(specification: specification, layers: layers,
             rank: rank, maximumTokens: maximumTokens, chunkSize: chunkSize,
-            bound: QwenResidentResourceEnvironment.allocationBound))
+            bound: QwenResidentResourceEnvironment.allocationBound)
+        guard phaseSplit else { return .init(budget: own, speculativeBytes: speculativeBytes) }
+        let moving = try MiMoRequestStateBudget.estimate(specification: specification, layers: plan.stages[0].sourceRange,
+            rank: 0, maximumTokens: maximumTokens, chunkSize: chunkSize, bound: QwenResidentResourceEnvironment.allocationBound)
+        return .init(budget: try own.adding(handoffBytes: try QwenLongPrefillCheckedBytes.sum([
+            moving.fullAttentionStateBytes, moving.slidingStateBytes])))
     }
 
-    func requireLive() throws {
+    /// `additionalNativeBytes`: what the request may add beyond its state
+    /// (its prompt-prefix capture), charged in both checks.
+    func requireLive(additionalNativeBytes: Int = 0) throws {
         try QwenResidentResourceEnvironment.require()
+        guard additionalNativeBytes >= 0 else { throw ProbeError("Resident MiMo request charge is negative") }
         let os = try QwenDenseStageLoadResources.observeOS()
         let free = max(QwenDenseStageLoadPolicy.minimumAdmissibleBytes,
-            try QwenLongPrefillCheckedBytes.sum([reservedBytes, QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
+            try QwenLongPrefillCheckedBytes.sum([reservedBytes, additionalNativeBytes,
+                QwenDenseStageLoadPolicy.loadingHeadroomBytes]))
         let allocator = try QwenLongPrefillCheckedBytes.sum([QwenDenseStageLoadResources.observeNative().activeBytes,
-            QwenDenseStageLoadResources.observeNative().cacheBytes, reservedBytes,
+            QwenDenseStageLoadResources.observeNative().cacheBytes, reservedBytes, additionalNativeBytes,
             QwenDenseStageLoadPolicy.allocatorHeadroomBytes])
         guard try watch.admits(os, bytes: free) else { throw ProbeError("Resident MiMo request was refused") }
         guard QwenDenseStageLoadResources.observeNative().allocatorLimitBytes >= allocator else {

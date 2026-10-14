@@ -20,15 +20,36 @@ public struct ModelDownloader: Sendable {
         public let bytesTotal: Int64?
     }
 
-    /// CDN root for model artifacts. Override with `DARKBLOOM_R2_CDN_URL` for
-    /// transition/testing against alternate buckets.
-    public static let defaultR2CDNURL = "https://models.darkbloom.ai"
+    /// Build-default CDN root for model artifacts (`BuildEnvironment.current`).
+    public static let defaultR2CDNURL = BuildEnvironment.current.modelCDNURL
+
+    /// The CDN this process downloads from: the explicit value, then a
+    /// non-empty `DARKBLOOM_R2_CDN_URL`, then `defaultR2CDNURL`. Trailing
+    /// slashes are trimmed from the overrides.
+    public static func resolveCDNURL(
+        explicit: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        let slash = CharacterSet(charactersIn: "/")
+        if let explicit { return explicit.trimmingCharacters(in: slash) }
+        if let value = environment["DARKBLOOM_R2_CDN_URL"], !value.isEmpty {
+            return value.trimmingCharacters(in: slash)
+        }
+        return defaultR2CDNURL
+    }
 
     internal let r2CDNURL: String
     internal let urlSession: URLSession
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
+    /// When set, the foreground download reports (bytes so far, total bytes) here about four times a second instead
+    /// of drawing its own progress bars (a caller that owns the screen, like `darkbloom cluster`, shows the progress).
+    public var byteProgress: (@Sendable (Int64, Int64) -> Void)?
+    /// When true, downloaded bytes are written and verified with the file cache off (F_NOCACHE writes, uncached
+    /// per-file and aggregate hashing), as the cluster's model copy over the cable does, so fetching a model does not
+    /// take memory from a model load. Off by default: single-Mac downloads keep their behaviour.
+    public var uncachedWrites = false
 
     public init(
         r2CDNURL: String? = nil,
@@ -37,12 +58,7 @@ public struct ModelDownloader: Sendable {
         concurrency: Int = 4,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = []
     ) {
-        if let r2CDNURL { self.r2CDNURL = r2CDNURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
-        else if let env = ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"], !env.isEmpty {
-            self.r2CDNURL = env.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        } else {
-            self.r2CDNURL = ModelDownloader.defaultR2CDNURL
-        }
+        self.r2CDNURL = Self.resolveCDNURL(explicit: r2CDNURL)
         self.urlSession = urlSession
         self.catalogClient = catalogClient
         self.concurrency = max(1, concurrency)

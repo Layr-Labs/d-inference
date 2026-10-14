@@ -26,6 +26,10 @@ import Foundation
 /// The tensor-parallel modes are listed by a runtime only when it executes
 /// them; a placement planner predicts them from the model layout's
 /// tensor-parallel facts and chooses one only where it is predicted faster.
+/// `pipelineMTP`: the pipeline, with decode as speculative rounds: the last
+/// rank also holds the model's head (and a copy of its token embedding),
+/// drafts, and both ranks verify the window of drafts in one forward each.
+/// Only a model whose artifact ships a head the last rank can run lists it.
 public enum ClusterGenerationMode: String, Codable, CaseIterable, Sendable {
     case pipeline = "pipeline_v1"
     case pipelineCompactDecode = "pipeline_compact_decode_v1"
@@ -33,16 +37,28 @@ public enum ClusterGenerationMode: String, Codable, CaseIterable, Sendable {
     case phaseSplitMTP = "phase_split_mtp_v1"
     case tensorParallel = "tensor_parallel_v1"
     case pipelinePrefillTensorDecode = "pipeline_prefill_tensor_decode_v1"
+    case pipelineMTP = "pipeline_mtp_v1"
 
     /// Rank 0 hands its request state to rank 1 after the prompt, and rank 1
     /// holds every layer.
     public var isPhaseSplit: Bool { self == .phaseSplit || self == .phaseSplitMTP }
-    /// Rank 1 drafts and verifies with the model's speculative head.
-    public var usesSpeculativeHead: Bool { self == .phaseSplitMTP }
+    /// The last rank drafts with the model's speculative head and the window
+    /// is verified by the target (a phase split + MTP, or the pipeline with
+    /// speculative rounds).
+    public var usesSpeculativeHead: Bool { self == .phaseSplitMTP || self == .pipelineMTP }
     /// Decode runs on every rank at once over equal shards of every layer.
     public var usesTensorParallelDecode: Bool { self == .tensorParallel || self == .pipelinePrefillTensorDecode }
     /// Prefill runs by tensor parallel too: no layer range is cut.
     public var usesTensorParallelPrefill: Bool { self == .tensorParallel }
+    /// The request state changes owner after the prompt (a phase split, with
+    /// or without the head, or the pipeline-prefill/tensor-decode hybrid).
+    /// Kept, but off by default (owner, 2026-10-13: sharded deployments
+    /// only): a planner considers these only behind an explicit opt-in.
+    public var isHandOff: Bool { isPhaseSplit || self == .pipelinePrefillTensorDecode }
+    /// Every member shards the model for every token and no state changes
+    /// owner: a pipeline (with or without compact decode framing) or tensor
+    /// parallel. What a planner chooses by default.
+    public var isSharded: Bool { !isHandOff }
     /// How many layer cuts a placement of `ranks` ranks in this mode has:
     /// none for tensor parallel, one fewer than the ranks for every other mode.
     public func layerCutCount(ranks: Int) -> Int { usesTensorParallelPrefill ? 0 : max(0, ranks - 1) }

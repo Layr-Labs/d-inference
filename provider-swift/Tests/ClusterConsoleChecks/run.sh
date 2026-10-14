@@ -45,6 +45,9 @@ for task_source in "$task_sources"/Inference/Distributed/Console/*.swift; do
     *) task_console+=("$task_source") ;;
   esac
 done
+# The setup record keeps the derived control leader (pure, Foundation only).
+task_console+=("$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift"
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift")
 
 build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
 build_module DarkbloomClusterPlacement "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift
@@ -86,7 +89,9 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterInstalledMetadataChecks.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift \
-  "${task_console[@]}"
+  "${task_console[@]}" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioningLink.swift"
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)

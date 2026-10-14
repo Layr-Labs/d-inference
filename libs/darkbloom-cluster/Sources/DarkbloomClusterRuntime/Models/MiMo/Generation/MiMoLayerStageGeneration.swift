@@ -23,27 +23,41 @@ struct MiMoRequestEvidence: Encodable, Equatable {
 /// A successful return follows both native request-state retirements. On
 /// error this retires local state and throws; the owner must fence the peer
 /// out of band before it claims retirement or releases anything.
+///
+/// With `prefixCache`, both ranks first agree a prompt-prefix plan before the
+/// first forward (`agreeMiMoStagePrefixPlan`): reuse the deepest frontier both
+/// hold, restored on both or neither, and keep this prompt's frontiers once
+/// both ranks retired cleanly (`storeMiMoStagePrefix`).
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-    agreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
+    agreement unplannedAgreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
+    prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
     try MLX.withError { nativeError in
         func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
         do {
-            try requireMiMoGenerationSource(loaded: loaded, plan: plan, agreement: agreement, collective: collective)
+            try requireMiMoGenerationSource(loaded: loaded, plan: plan, agreement: unplannedAgreement,
+                                            collective: collective)
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
-                material: { .generation(agreementFingerprint: agreement.fingerprint) },
+                material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
                 disagreementMessage: "Generation membership/request/source readiness differs",
-                scope: .request(.requestAgreement, requestID: agreement.request.requestID,
-                    agreementFingerprint: agreement.fingerprint, "generation-readiness"), check: checked)
+                scope: .request(.requestAgreement, requestID: unplannedAgreement.request.requestID,
+                    agreementFingerprint: unplannedAgreement.fingerprint, "generation-readiness"), check: checked)
+            // Prefix plan, before the first forward. The planned agreement keeps
+            // the request's fingerprint; only where prompt frames start and end moves.
+            let planned = try agreeMiMoStagePrefixPlan(cache: prefixCache, loaded: loaded, plan: plan,
+                agreement: unplannedAgreement, collective: collective, recordsSteps: recordsSteps, check: checked)
+            let agreement = planned.agreement
+            let session: MiMoLayerStageSession? = planned.session
+            let captureLimit = beginMiMoStagePrefixCapture(cache: prefixCache, session: planned.session)
+            defer { prefixCache?.endCapture() }
             let control = QwenLayerStageGenerationControl(agreement: agreement)
-            let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
-            var session: MiMoLayerStageSession?
+            let transport: QwenLayerStageGenerationTransport
+            do { transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective) }
+            catch { try? planned.session.cancel(); throw error }
             do {
-                let owned = try MiMoLayerStageSession(stage: loaded, plan: plan, generationRequest: agreement.request,
-                                                      recordsSteps: recordsSteps)
-                session = owned
+                let owned = planned.session
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
                 while control.phase == .frame {
@@ -107,15 +121,25 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 guard control.isRetired, !control.isFailed, !transport.isFailed else {
                     throw ProbeError("Generation both-rank retirement is incomplete")
                 }
-                return (QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
+                let stored = storeMiMoStagePrefix(cache: prefixCache, session: owned, agreement: agreement,
+                    rank: collective.rank, captureLimit: captureLimit)
+                var result = QwenLayerStageGenerationResult(agreementFingerprint: agreement.fingerprint,
                     membershipEpoch: agreement.descriptor.membershipEpoch, identity: owned.identity,
                     selectedTokenIDs: selectedTokens, tokenChainSHA256: control.tokenChainSHA256,
                     completedFrames: control.completedFrames, committedTokens: control.committedTokens,
-                    finishReason: reason), evidence)
+                    finishReason: reason)
+                if let prefixCache {
+                    let summary = planned.summary
+                    result.prefixCache = .init(reusedPromptTokens: summary.reusedPromptTokens,
+                        restoredTier: summary.restoredTier, agreedPromptTokens: summary.agreedPromptTokens,
+                        splitFinalToken: summary.splitFinalToken, storedFrontiers: stored, cacheEntries: prefixCache.count)
+                }
+                return (result, evidence)
             } catch {
                 // Prefer a recorded native fault before any cleanup.
                 var primary: Error = error
                 do { try nativeError.check() } catch { primary = error }
+                session?.prefixCapture?.discard()
                 control.cancel(); transport.retire()
                 do { try session?.cancel() }
                 catch { throw ProbeError("Generation failed (\(primary)); local retirement also failed (\(error))") }

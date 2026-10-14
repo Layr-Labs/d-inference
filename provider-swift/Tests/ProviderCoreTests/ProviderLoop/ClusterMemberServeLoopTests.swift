@@ -101,14 +101,17 @@ struct ClusterMemberServeLoopTests {
             #expect(registration.clusterModels?.map(\.id) == [ClusterMemberServeFixture.modelId])
             #expect(registration.memberRegistrationNonce?.count == 64)
 
-            // Sending the registration is not acceptance: the wait must expire.
-            await #expect(throws: ClusterMemberControlError.negotiationFailed) {
-                try await fixture.loop.waitForClusterMemberRegistration(
-                    until: .now.advanced(by: .milliseconds(300)))
+            // Sending the registration is not acceptance: nothing connects, and
+            // a wait whose deadline passes while this connection's negotiation
+            // window is open runs to that window, never past it.
+            let waiting = Task {
+                try await fixture.loop.waitForClusterMemberRegistration(until: .now.advanced(by: .milliseconds(300)))
             }
+            try await Task.sleep(for: .milliseconds(600))
             #expect(await fixture.loop.memberConnectionID == nil)
 
-            try await fixture.accept(registration)
+            try await fixture.mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+            try await waiting.value
             #expect(await fixture.loop.memberConnectionID != nil)
         }
     }
@@ -229,6 +232,28 @@ struct ClusterMemberServeLoopTests {
             await fixture.cleanUp(task); throw error
         }
         await fixture.cleanUp(task)
+    }
+
+    /// A connection reached just before the wait's deadline (a coordinator
+    /// back a moment earlier) keeps its own negotiation window: an in-window
+    /// acceptance arriving after the deadline connects the member. The wait
+    /// reported a role refusal at its deadline instead.
+    @Test func aNegotiationOpenAtTheDeadlineRunsToItsWindow() async throws {
+        try await withMemberServeLoop(stopOnDisconnect: true) { fixture, _ in
+            let started = ContinuousClock.now
+            let coordinator = Task {
+                let registration = try await fixture.awaitRegistration()
+                try await ContinuousClock().sleep(until: started.advanced(by: .milliseconds(2_500)))
+                try await fixture.mock.pushClusterMemberAcceptance(nonce: try #require(registration.memberRegistrationNonce))
+            }
+            do {
+                try await fixture.loop.waitForClusterMemberRegistration(until: started.advanced(by: .milliseconds(1_500)))
+            } catch { coordinator.cancel(); throw error }
+            try await coordinator.value
+            #expect(await fixture.loop.memberConnectionID != nil)
+            #expect(ContinuousClock.now - started < .seconds(10))
+            #expect(fixture.mock.snapshot().registers.count == 1)
+        }
     }
 
     @Test func acceptedLeaderLoopEndsWhenItsControlConnectionDrops() async throws {

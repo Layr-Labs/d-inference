@@ -136,9 +136,12 @@ struct ClusterMemberRegistrationTests {
         guard case .unreachable = await client.memberRegistrationProgress(now: now.advanced(by: .seconds(1))) else {
             Issue.record("an unreachable coordinator must not read as a refusal"); return
         }
+        // A ready transport (final or not) runs to its own negotiation window;
+        // a reached coordinator that has not accepted by then did not accept.
         let negotiation = ClusterMemberNegotiation(now: now)
         await client.noteMemberTransportReady(negotiation)
-        #expect(await client.memberRegistrationProgress(now: now) == .notAccepted)
+        #expect(await client.memberRegistrationProgress(now: now) == .finalAttempt(until: negotiation.deadline))
+        #expect(await client.memberRegistrationProgress(now: negotiation.deadline) == .notAccepted)
     }
 
     @Test func staleNegotiationTimerCannotRefuseReplacement() async throws {

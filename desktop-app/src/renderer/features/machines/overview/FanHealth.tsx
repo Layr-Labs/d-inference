@@ -1,6 +1,7 @@
 import type { CoolingData } from '../../../../shared/contracts';
 import { count } from '../../../format';
 import { FanGlyph, rpmLabel } from '../../../components/FanGlyph';
+import { coolingStale } from '../../cooling/status';
 import styles from './overview.module.css';
 
 const ratio = (fan: CoolingData['fans'][number]) => (fan.max_rpm > 0 ? fan.rpm / fan.max_rpm : 0);
@@ -9,6 +10,8 @@ function fanReading(cooling?: CoolingData) {
   if (!cooling) return { value: 'Checking…', detail: 'Reading fan sensors.' };
   if (cooling.error || cooling.mode === 'unavailable')
     return { value: 'Unavailable', detail: cooling.error || 'Fan status is unavailable.' };
+  if (coolingStale(cooling))
+    return { value: 'Unavailable', detail: 'The last fan reading is out of date.' };
   if (!cooling.fans.length) return { value: 'No fans', detail: 'macOS manages cooling.' };
   const { fans } = cooling;
   const lead = fans.reduce((fastest, fan) => (ratio(fan) > ratio(fastest) ? fan : fastest));
@@ -40,7 +43,7 @@ export function FanHealth({ cooling }: { cooling?: CoolingData }) {
     <div className={styles.cell}>
       <div className={styles.cellLabel}>
         <span>Fans</span>
-        {cooling?.temperature != null && (
+        {cooling?.temperature != null && !coolingStale(cooling) && (
           <span title="GPU temperature">{Math.round(cooling.temperature)}°C GPU</span>
         )}
       </div>

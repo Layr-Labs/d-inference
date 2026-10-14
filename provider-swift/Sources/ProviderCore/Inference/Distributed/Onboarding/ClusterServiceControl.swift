@@ -6,34 +6,38 @@ import DarkbloomClusterProtocol
 /// what this Mac runs for each mode (its part, degraded serving alone, or nothing), and `darkbloom cluster` commands
 /// forwarded from any member to the leader.
 extension ClusterService {
-    enum PartWant: Equatable {
-        /// Leave whatever runs as it is (the leader waits for its members to confirm).
-        case keep
-        case none
-        /// This Mac's part of the saved setup.
-        case cluster
-        /// Degraded: the model on this Mac alone.
-        case solo(String)
-    }
+    typealias PartWant = ClusterControlPartChoice
 
     /// The rank lease's own cadence and time-to-live (S03): the control lease renews and expires with it.
     static var leaseRenewSeconds: Double { Double(ClusterWorkerLease.renewNanoseconds) / 1e9 }
     static var leaseTTLSeconds: Double { Double(ClusterWorkerLease.ttlNanoseconds) / 1e9 }
 
-    static func monotonicSeconds() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+    /// The control clock keeps counting through system sleep (a woken leader must not count a member that left
+    /// during the sleep as present).
+    static func monotonicSeconds() -> Double { ClusterControlClock.seconds() }
 
-    func partWanted(serving: Bool, hasSetup: Bool, model: String?) -> PartWant {
+    /// Owner decision 6's absence grace before serving alone: 600 s; a DEBUG (developer) build may shorten it for tests.
+    static var soloGraceSeconds: Double {
+        #if DEBUG
+        ClusterControlSoloGrace.seconds(environment: ProcessInfo.processInfo.environment, debugBuild: true)
+        #else
+        ClusterControlSoloGrace.seconds(environment: [:], debugBuild: false)
+        #endif
+    }
+
+    func partWanted(serving: Bool, hasSetup: Bool, model: String?, runningSolo: Bool) -> PartWant {
         let now = Self.monotonicSeconds()
         // Until this Mac's control is derived (the first ticks after a start) nothing starts: a restarted leader
         // whose claim was superseded while it was away must not start its part before it learns so.
-        guard let mode = lock.withLock({ control?.mode(now: now) }), let node = lock.withLock({ control }) else { return .keep }
-        switch mode {
-        case .following: return serving && hasSetup && node.leaderRunsCluster ? .cluster : .none
-        case .cluster: return serving && hasSetup ? .cluster : .none
-        case .confirming: return .keep
-        case .idle, .cannotServe: return .none
-        case .alone: return serving ? model.map { .solo($0) } ?? .none : .none
-        }
+        guard let node = lock.withLock({ control }) else { return .keep }
+        return ClusterControlPartChoice.want(mode: node.mode(now: now), serving: serving, hasSetup: hasSetup,
+                                             leaderRunsCluster: node.leaderRunsCluster, runningSolo: runningSolo, model: model)
+    }
+
+    /// Whether this Mac may act as the leader now (`ClusterControlNode.leadershipConfirmed`).
+    func leadershipConfirmed() -> Bool {
+        let now = Self.monotonicSeconds()
+        return lock.withLock { control?.leadershipConfirmed(now: now) ?? false }
     }
 
     func leadsAndRunsCluster() -> Bool {
@@ -137,7 +141,7 @@ extension ClusterService {
         members.append(local)
         let claim = start.claim
         let node = ClusterControlNode(localID: local.memberID, members: members, claim: claim, rankOrder: rankOrder(),
-                                      now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds)
+                                      now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds, soloGrace: Self.soloGraceSeconds)
         lock.withLock { if control == nil { control = node } }
     }
 
@@ -160,7 +164,8 @@ extension ClusterService {
             let node = control!
             let names = node.members.mapValues(\.name)
             let line = ClusterControlWords.line(node.mode(now: now), names: names, model: record?.leadership?.modelName)
-            let running = node.leads && node.mode(now: now) == .cluster && (record?.leadership?.serving ?? false)
+            // Members run their parts while the cluster runs and while the leader waits for a member inside the grace.
+            let running = node.leads && ClusterControlPartChoice.leaseSaysRunning(mode: node.mode(now: now), serving: record?.leadership?.serving ?? false)
             // Each member's fit for the model alone, as the plan's adopter recorded it, travels with the lease.
             let facts = node.members.values.map { fact -> ClusterControlMember in
                 var fact = fact
@@ -242,19 +247,23 @@ extension ClusterService {
     /// Read under `lock` by `status()`.
     func controlStatusLocked(model: String?) -> ClusterServiceStatus.Control? {
         guard let node = control else { return nil }
-        let mode = node.mode(now: Self.monotonicSeconds())
+        let now = Self.monotonicSeconds()
+        let mode = node.mode(now: now)
         let word: String
+        var soloIn: Int?
         switch mode {
         case .following: word = "following"
         case .confirming: word = "confirming"
         case .cluster: word = "cluster"
         case .idle: word = "idle"
+        case .waiting(_, let seconds, _): word = "waiting"; soloIn = seconds
         case .alone: word = "alone"
         case .cannotServe: word = "cannotServe"
         }
         return .init(leaderID: node.claim.leaderID, leaderName: node.members[node.claim.leaderID]?.name ?? node.claim.leaderID,
                      term: node.claim.term, reason: node.claim.reason, leads: node.leads,
-                     line: ClusterControlWords.line(mode, names: node.members.mapValues(\.name), model: model), mode: word)
+                     line: ClusterControlWords.line(mode, names: node.members.mapValues(\.name), model: model), mode: word,
+                     confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn)
     }
 
     // MARK: - Forwarded `darkbloom cluster` commands
@@ -266,11 +275,33 @@ extension ClusterService {
         if let refusal = ClusterControlRouting.refusal(localID: node.localID, claim: node.claim, names: node.members.mapValues(\.name)) {
             return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: node.claim.leaderID)
         }
+        // A command that acts as the leader waits until this Mac's claim is confirmed (a restarted Mac whose saved claim
+        // was superseded steps down on the first refusal and refuses instead of acting).
+        if Self.actsAsLeader(request.op) {
+            let deadline = Self.monotonicSeconds() + Self.leaseTTLSeconds + 5
+            while !leadershipConfirmed(), Self.monotonicSeconds() < deadline, lock.withLock({ control?.leads ?? false }) { usleep(250_000) }
+            guard let now = lock.withLock({ control }) else { return .init(lines: ["This Mac's cluster service is stopping."], failed: true) }
+            if let refusal = ClusterControlRouting.refusal(localID: now.localID, claim: now.claim, names: now.members.mapValues(\.name)) {
+                return .init(lines: ["The command did not run: " + refusal + "."], failed: true, leaderID: now.claim.leaderID)
+            }
+            guard leadershipConfirmed() else {
+                return .init(lines: ["The command did not run: this Mac's leadership is not confirmed yet; run `darkbloom cluster` again."], failed: true,
+                             leaderID: now.claim.leaderID)
+            }
+        }
         // One forwarded command at a time: the plan a member chose from is the one it adopts.
         controlCommands.lock()
         defer { controlCommands.unlock() }
         say("control: running `\(request.op.rawValue)` for \(node.members[pairing.peerMemberID]?.name ?? "the other Mac")")
         return controlLive.execute(request, leaderID: node.localID)
+    }
+
+    /// Commands that change what the cluster runs or its setup: run only by a confirmed leader.
+    static func actsAsLeader(_ op: ClusterControlRequest.Operation) -> Bool {
+        switch op {
+        case .reachMembers, .adopt, .serve, .stop: return true
+        case .status, .planModels, .readiness, .test, .verifyTeardown: return false
+        }
     }
 
     /// This Mac's verify-teardown summary (no cluster process, wired memory at its idle baseline, no journal or bootstrap left).
@@ -281,6 +312,9 @@ extension ClusterService {
             var line = "\(name): " + (report.passed ? "teardown verified, nothing left" : "teardown NOT clean: " + report.reasons.joined(separator: "; "))
             if let wired = report.wired {
                 line += " (wired \((wired.samples.min() ?? 0) >> 20) MiB, baseline \(wired.baselineBytes >> 20) MiB)"
+            }
+            if !report.otherClusters.isEmpty {
+                line += "; \(report.otherClusters.count) cluster process(es) of another cluster home not counted"
             }
             return [line]
         } catch {

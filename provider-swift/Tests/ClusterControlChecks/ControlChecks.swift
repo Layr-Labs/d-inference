@@ -27,6 +27,12 @@ import Darwin
         onboardingDriverKeepsClaimUntilAPlan()
         aloneVerdictsBoundToThePlan()
         rePairedWithAnotherMac()
+        restartedLeaderActsOnlyWhenConfirmed()
+        soloOnlyAfterTheAbsenceGrace()
+        leaderFaultWaitsForTheGraceThenReforms()
+        soloGraceSetting()
+        partChoice()
+        continuousClockAndWake()
         print("control checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -143,13 +149,16 @@ import Darwin
         var leaders: [String] { nodes.keys.sorted().filter { up.contains($0) && nodes[$0]!.leads } }
     }
 
-    static func pair(aloneA: Bool, aloneB: Bool) -> Bus {
+    /// `grace`: the absence grace before serving alone (owner decision 6); 0 here unless a check is about the grace.
+    static func pair(aloneA: Bool, aloneB: Bool, grace: Double = 0) -> Bus {
         // Rank 0 = A (M3 Ultra), rank 1 = B (M5 Ultra) decodes; B started the onboarding (it does not matter).
         let members = [mac("mac-aaaaaaaaaaaa", "Apple M3 Ultra, 256 GB", 256, 80, alone: aloneA),
                        mac("mac-bbbbbbbbbbbb", "Apple M5 Ultra, 256 GB", 256, 80, alone: aloneB)]
         let plan = ["mac-aaaaaaaaaaaa", "mac-bbbbbbbbbbbb"]
         var nodes = [String: ClusterControlNode]()
-        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30) }
+        for m in members {
+            nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30, soloGrace: grace)
+        }
         return Bus(nodes: nodes, up: Set(nodes.keys))
     }
 
@@ -194,7 +203,7 @@ import Darwin
         for t in stride(from: 25.0, through: 100, by: 5) { bus.step(t) }
         expect(bus.nodes[B]!.leads && bus.nodes[B]!.claim.term == 1, "B leads term 1")
         // A comes back from its persisted (now stale) claim: it believes it leads term 0, but must not act on it.
-        bus.nodes[A] = ClusterControlNode(localID: A, members: stale.members, claim: stale.claim, rankOrder: stale.rankOrder, now: 101, ttl: 30)
+        bus.nodes[A] = ClusterControlNode(localID: A, members: stale.members, claim: stale.claim, rankOrder: stale.rankOrder, now: 101, ttl: 30, soloGrace: 0)
         bus.up.insert(A)
         expect(bus.nodes[A]!.mode(now: 101) == .confirming, "a restarted leader runs nothing before its claim is confirmed")
         var modesOfA = [ClusterControlNode.Mode]()
@@ -253,7 +262,7 @@ import Darwin
                        mac("mac-333333333333", "Apple M2 Max, 64 GB", 64, 38, alone: false)]
         let plan = ["mac-111111111111", "mac-222222222222", "mac-333333333333"]
         var nodes = [String: ClusterControlNode]()
-        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30) }
+        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30, soloGrace: 0) }
         var bus = Bus(nodes: nodes, up: Set(nodes.keys))
         for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
         expect(bus.leaders == ["mac-111111111111"], "rank 0 leads three")
@@ -265,7 +274,7 @@ import Darwin
         guard case .cannotServe = bus.nodes["mac-333333333333"]!.mode(now: 120) else { return expect(false, "M2 Max cannot hold it alone") }
         // Only rank 0 lost, both survivors up: they agree on one successor without talking to each other.
         nodes = [:]
-        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30) }
+        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30, soloGrace: 0) }
         bus = Bus(nodes: nodes, up: Set(nodes.keys))
         for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
         bus.up.remove("mac-111111111111")
@@ -279,7 +288,7 @@ import Darwin
         let members = (1...4).map { mac("mac-00000000000\($0)", "Apple M2 Max, 64 GB", 64, 38, alone: false) }
         let plan = members.map(\.memberID)
         var nodes = [String: ClusterControlNode]()
-        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30) }
+        for m in members { nodes[m.memberID] = ClusterControlNode(localID: m.memberID, members: members, claim: nil, rankOrder: plan, now: 0, ttl: 30, soloGrace: 0) }
         var bus = Bus(nodes: nodes, up: Set(nodes.keys))
         for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
         expect(bus.leaders == ["mac-000000000001"] && bus.nodes["mac-000000000001"]!.mode(now: 20) == .cluster, "four form")
@@ -294,7 +303,7 @@ import Darwin
 
     static func startupGrace() {
         let members = [mac(A, "Apple M3 Ultra, 256 GB", 256, 80, alone: true), mac(B, "Apple M5 Ultra, 256 GB", 256, 80, alone: true)]
-        var node = ClusterControlNode(localID: A, members: members, claim: nil, rankOrder: [A, B], now: 1000, ttl: 30)
+        var node = ClusterControlNode(localID: A, members: members, claim: nil, rankOrder: [A, B], now: 1000, ttl: 30, soloGrace: 0)
         expect(node.mode(now: 1000) == .confirming && node.mode(now: 1029) == .confirming, "no member heard yet: wait, do not serve alone")
         expect(node.mode(now: 1030) == .alone(missing: [B]), "after one time-to-live with nobody: alone")
         _ = node.tick(now: 1031)
@@ -381,5 +390,188 @@ import Darwin
         for t in stride(from: 0.0, through: 120, by: 5) { bus.step(t) }
         expect(!bus.log.contains { $0.contains("took over") }, "no take-over while both answer: \(bus.log)")
         expect(bus.leaders == [A] && bus.nodes[A]!.mode(now: 120) == .cluster, "rank 0 leads the new pair: \(bus.leaders)")
+    }
+
+    // MARK: - Finish (2026-10-13 night): confirmation before acting, solo after the absence grace, continuous clock
+
+    /// (a) A Mac restarted from a persisted leader claim acts as the leader (a model change, a setup write, a stop) only
+    /// once the members confirmed its claim, or once the confirmation window (one time-to-live) passed with no member
+    /// reachable. A claim superseded while it was away is refused and it steps down having acted on nothing.
+    static func restartedLeaderActsOnlyWhenConfirmed() {
+        let members = [mac(A, "Apple M3 Ultra, 256 GB", 256, 80, alone: true), mac(B, "Apple M5 Ultra, 256 GB", 256, 80, alone: true)]
+        let term1 = ClusterControlClaim(term: 1, leaderID: A, members: [A, B], reason: "rank 0 of the adopted plan")
+        // Superseded while away: B leads term 2; A restarts believing it leads term 1.
+        var a = ClusterControlNode(localID: A, members: members, claim: term1, rankOrder: [A, B], now: 0, ttl: 30)
+        var b = ClusterControlNode(localID: B, members: members, claim: .init(term: 2, leaderID: B, members: [A, B], reason: "failover"),
+                                   rankOrder: [A, B], now: 0, ttl: 30)
+        expect(a.leads && !a.leadershipConfirmed(now: 0) && !a.leadershipConfirmed(now: 29), "a restarted leader is unconfirmed before any answer")
+        let (refused, _) = b.receiveLease(from: A, offered: term1, running: false, facts: members, now: 1)
+        _ = a.receiveAnswer(from: B, sent: term1, answer: refused, now: 1)
+        expect(!a.leads && !a.leadershipConfirmed(now: 1) && !a.leadershipConfirmed(now: 100), "refused: it steps down, never confirmed")
+        // Its claim is still current: confirmed once the member accepts it, not before.
+        var a2 = ClusterControlNode(localID: A, members: members, claim: term1, rankOrder: [A, B], now: 0, ttl: 30)
+        var b1 = ClusterControlNode(localID: B, members: members, claim: term1, rankOrder: [A, B], now: 0, ttl: 30)
+        expect(!a2.leadershipConfirmed(now: 2), "not before the member answered")
+        let (accepted, _) = b1.receiveLease(from: A, offered: term1, running: false, facts: members, now: 2)
+        _ = a2.receiveAnswer(from: B, sent: term1, answer: accepted, now: 2)
+        expect(a2.leadershipConfirmed(now: 2), "confirmed by the member")
+        // Nobody reachable: it may act only once the window passed (the member's time-to-live from the start).
+        var a3 = ClusterControlNode(localID: A, members: members, claim: term1, rankOrder: [A, B], now: 100, ttl: 30)
+        _ = a3.tick(now: 110)
+        expect(!a3.leadershipConfirmed(now: 129.5), "inside the window with nobody answering: not yet")
+        expect(a3.leadershipConfirmed(now: 130), "the window passed with no member reachable")
+        // A follower is never a confirmed leader; before a plan (onboarding, term 0) the same rule holds.
+        expect(!b1.leadershipConfirmed(now: 500), "a follower never acts as the leader")
+        let onboarding = ClusterControlClaim(term: 0, leaderID: B, members: [A, B], reason: "drove the onboarding")
+        var drive = ClusterControlNode(localID: B, members: members, claim: onboarding, rankOrder: nil, now: 0, ttl: 30)
+        var other = ClusterControlNode(localID: A, members: members, claim: onboarding, rankOrder: nil, now: 0, ttl: 30)
+        expect(!drive.leadershipConfirmed(now: 1), "term 0: not before the other Mac answered")
+        let (yes, _) = other.receiveLease(from: B, offered: onboarding, running: false, facts: members, now: 1)
+        _ = drive.receiveAnswer(from: A, sent: onboarding, answer: yes, now: 1)
+        expect(drive.leadershipConfirmed(now: 1), "term 0: confirmed by the other Mac")
+    }
+
+    /// (3) Owner decision 6: control fails over at lease expiry, but serving alone starts only after the absence grace
+    /// (600 s by default); until then the leader keeps its part ready for the other Mac and says how long until solo.
+    static func soloOnlyAfterTheAbsenceGrace() {
+        var bus = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        bus.up.remove(B)   // the member's service stops; its last answer was at 20, absent from 50
+        var modes = [Double: ClusterControlNode.Mode]()
+        for t in stride(from: 21.0, through: 700, by: 1) { bus.step(t); modes[t] = bus.nodes[A]!.mode(now: t) }
+        expect(bus.leaders == [A], "rank 0 keeps leading")
+        expect(modes[49] == .cluster, "inside the member's time-to-live: still the cluster: \(String(describing: modes[49]))")
+        expect(modes[60] == .waiting(missing: [B], soloInSeconds: 590, canServeAlone: true), "waits, with the time until solo: \(String(describing: modes[60]))")
+        expect(modes[649] == .waiting(missing: [B], soloInSeconds: 1, canServeAlone: true), "one second before the grace ends: \(String(describing: modes[649]))")
+        expect(modes[650] == .alone(missing: [B]), "serving alone exactly when the grace ends: \(String(describing: modes[650]))")
+        let line = ClusterControlWords.line(modes[60]!, names: [B: "Apple M5 Ultra, 256 GB"], model: "m")
+        expect(line.contains("Apple M5 Ultra, 256 GB") && line.contains("alone in 9 min 50 s"), "status says how long until solo: \(line)")
+        let cannot = ClusterControlWords.line(.waiting(missing: [B], soloInSeconds: 45, canServeAlone: false), names: [:], model: "m")
+        expect(cannot.contains("cannot hold") && cannot.contains("45 s"), "words when it cannot serve alone: \(cannot)")
+        // The member returns before the grace (its service restarts from its saved claim): the pair re-forms, nobody went solo.
+        var back = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { back.step(t) }
+        back.up.remove(B)
+        for t in stride(from: 21.0, through: 299, by: 1) { back.step(t) }
+        let saved = back.nodes[B]!.persisted
+        back.nodes[B] = ClusterControlNode(localID: B, members: saved.members, claim: saved.claim, rankOrder: saved.rankOrder, now: 300, ttl: 30, soloGrace: 600)
+        back.up.insert(B)
+        var wentAlone = false
+        for t in stride(from: 300.0, through: 400, by: 1) {
+            back.step(t)
+            for id in [A, B] { if case .alone = back.nodes[id]!.mode(now: t) { wentAlone = true } }
+        }
+        expect(!wentAlone, "returned before the grace: nobody served alone")
+        expect(back.leaders == [A] && back.nodes[A]!.mode(now: 400) == .cluster, "re-formed under rank 0: \(back.nodes[A]!.mode(now: 400))")
+        expect(back.nodes[B]!.mode(now: 400) == .following(leaderID: A) && back.nodes[B]!.leaderRunsCluster, "the member follows the running cluster")
+        // A member that cannot hold the model alone: waits the grace too, then states it and runs nothing.
+        var weak = pair(aloneA: false, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { weak.step(t) }
+        weak.up.remove(B)
+        for t in stride(from: 21.0, through: 660, by: 1) { weak.step(t) }
+        expect(weak.nodes[A]!.mode(now: 640) == .waiting(missing: [B], soloInSeconds: 10, canServeAlone: false), "waits: \(weak.nodes[A]!.mode(now: 640))")
+        guard case .cannotServe = weak.nodes[A]!.mode(now: 660) else { return expect(false, "after the grace: cannot serve: \(weak.nodes[A]!.mode(now: 660))") }
+    }
+
+    /// (3) The leader's service stops: control moves to the survivor at lease expiry (30 s), the survivor waits the grace
+    /// before serving alone, and a leader back before the grace re-forms the pair with nobody serving alone.
+    static func leaderFaultWaitsForTheGraceThenReforms() {
+        var bus = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        let stale = bus.nodes[A]!.persisted
+        bus.up.remove(A)
+        var tookOverAt: Double?
+        var wentAlone = false
+        for t in stride(from: 21.0, through: 199, by: 1) {
+            bus.step(t)
+            if tookOverAt == nil, bus.nodes[B]!.leads { tookOverAt = t }
+            if case .alone = bus.nodes[B]!.mode(now: t) { wentAlone = true }
+        }
+        expect(tookOverAt == 50, "control fails over at lease expiry: \(String(describing: tookOverAt))")
+        expect(bus.nodes[B]!.mode(now: 60) == .waiting(missing: [A], soloInSeconds: 590, canServeAlone: true), "then waits the grace: \(bus.nodes[B]!.mode(now: 60))")
+        expect(!wentAlone, "no solo inside the grace")
+        bus.nodes[A] = ClusterControlNode(localID: A, members: stale.members, claim: stale.claim, rankOrder: stale.rankOrder, now: 200, ttl: 30, soloGrace: 600)
+        bus.up.insert(A)
+        for t in stride(from: 200.0, through: 260, by: 1) {
+            bus.step(t)
+            for id in [A, B] { if case .alone = bus.nodes[id]!.mode(now: t) { wentAlone = true } }
+        }
+        expect(!wentAlone, "the leader came back before the grace: nobody served alone")
+        expect(bus.leaders == [A] && bus.nodes[A]!.mode(now: 260) == .cluster, "re-formed under rank 0: \(bus.leaders)")
+        // The leader never returns: the survivor serves alone once the grace ends (it noticed the absence at 50).
+        var gone = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { gone.step(t) }
+        gone.up.remove(A)
+        for t in stride(from: 21.0, through: 650, by: 1) { gone.step(t) }
+        expect(gone.nodes[B]!.mode(now: 649) == .waiting(missing: [A], soloInSeconds: 1, canServeAlone: true), "\(gone.nodes[B]!.mode(now: 649))")
+        expect(gone.nodes[B]!.mode(now: 650) == .alone(missing: [A]), "solo after the grace: \(gone.nodes[B]!.mode(now: 650))")
+    }
+
+    /// (3) The grace is universal (no model, chip or member input) and only a developer (DEBUG) build may shorten it.
+    static func soloGraceSetting() {
+        typealias G = ClusterControlSoloGrace
+        expect(ClusterControlNode.defaultSoloGraceSeconds == 600, "owner decision 6: 10 minutes")
+        expect(G.seconds(environment: [:], debugBuild: true) == 600, "no override: 600 s")
+        expect(G.seconds(environment: [G.environmentKey: "45"], debugBuild: true) == 45, "developer override")
+        expect(G.seconds(environment: [G.environmentKey: "45"], debugBuild: false) == 600, "a release build ignores the override")
+        for bad in ["-1", "abc", "nan", "100000", ""] {
+            expect(G.seconds(environment: [G.environmentKey: bad], debugBuild: true) == 600, "invalid override \(bad) ignored")
+        }
+    }
+
+    /// What this Mac runs for each mode, and whether the leader's lease tells members the cluster runs.
+    static func partChoice() {
+        typealias P = ClusterControlPartChoice
+        let waiting = ClusterControlNode.Mode.waiting(missing: [B], soloInSeconds: 100, canServeAlone: true)
+        expect(P.want(mode: waiting, serving: true, hasSetup: true, leaderRunsCluster: false, runningSolo: false, model: "m") == .cluster,
+               "waiting: keep this Mac's part ready so the pair re-forms")
+        expect(P.want(mode: waiting, serving: true, hasSetup: true, leaderRunsCluster: false, runningSolo: true, model: "m") == .keep,
+               "waiting while already alone (a member flapped): the solo server stays")
+        expect(P.want(mode: .alone(missing: [B]), serving: true, hasSetup: true, leaderRunsCluster: false, runningSolo: false, model: "m") == .solo("m"), "alone: solo")
+        expect(P.want(mode: .alone(missing: [B]), serving: false, hasSetup: true, leaderRunsCluster: false, runningSolo: false, model: "m") == .none, "stopped: nothing")
+        expect(P.want(mode: .confirming, serving: true, hasSetup: true, leaderRunsCluster: false, runningSolo: false, model: "m") == .keep, "confirming: keep")
+        expect(P.want(mode: .following(leaderID: A), serving: true, hasSetup: true, leaderRunsCluster: true, runningSolo: false, model: "m") == .cluster, "following a running cluster")
+        expect(P.want(mode: .following(leaderID: A), serving: true, hasSetup: true, leaderRunsCluster: false, runningSolo: false, model: "m") == .none, "following a stopped cluster")
+        expect(P.want(mode: .cannotServe(missing: [B], reason: "x"), serving: true, hasSetup: true, leaderRunsCluster: false, runningSolo: false, model: "m") == .none, "cannot serve")
+        expect(P.want(mode: .cluster, serving: true, hasSetup: false, leaderRunsCluster: false, runningSolo: false, model: "m") == .none, "no setup")
+        expect(P.leaseSaysRunning(mode: waiting, serving: true) && P.leaseSaysRunning(mode: .cluster, serving: true), "waiting and cluster: members keep their parts")
+        expect(!P.leaseSaysRunning(mode: .confirming, serving: true) && !P.leaseSaysRunning(mode: .alone(missing: [B]), serving: true)
+               && !P.leaseSaysRunning(mode: .cluster, serving: false), "otherwise members run nothing")
+    }
+
+    /// (c) The control clock keeps counting through system sleep; a woken leader does not count a member that went away
+    /// while it slept as present, and a woken member gives its leader one time-to-live awake before it takes over.
+    static func continuousClockAndWake() {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let continuous = Double(mach_continuous_time()) * Double(timebase.numer) / Double(timebase.denom) / 1e9
+        let clock = ClusterControlClock.seconds()
+        expect(abs(clock - continuous) < 0.05, "the control clock is the continuous clock: \(clock) vs \(continuous)")
+        let uptime = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9
+        expect(clock >= uptime - 0.05, "never behind uptime (ahead by the time this Mac slept): \(clock) vs \(uptime)")
+        // The leader sleeps from 20 to 3620; its member went away meanwhile.
+        var bus = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        bus.up.remove(B)
+        bus.step(3620)
+        expect(!bus.nodes[A]!.present(now: 3620).contains(B), "woken: the gone member is not present")
+        expect(bus.nodes[A]!.mode(now: 3620) == .waiting(missing: [B], soloInSeconds: 600, canServeAlone: true),
+               "woken: not the cluster; solo only after a full grace from the wake: \(bus.nodes[A]!.mode(now: 3620))")
+        // Both slept; the member wakes 11 s before the leader: no take-over, the leader renews and the cluster runs on.
+        var both = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { both.step(t) }
+        both.up.remove(A)
+        for t in stride(from: 3620.0, through: 3630, by: 1) { both.step(t) }
+        both.up.insert(A)
+        for t in stride(from: 3631.0, through: 3700, by: 1) { both.step(t) }
+        expect(!both.log.contains { $0.contains("took over") }, "no take-over right after a wake: \(both.log)")
+        expect(both.leaders == [A] && both.nodes[A]!.mode(now: 3700) == .cluster, "the pair runs on: \(both.nodes[A]!.mode(now: 3700))")
+        // The leader is really gone at the wake: passed over one time-to-live after the wake.
+        var gone = pair(aloneA: true, aloneB: true, grace: 600)
+        for t in stride(from: 0.0, through: 20, by: 5) { gone.step(t) }
+        gone.up.remove(A)
+        var at: Double?
+        for t in stride(from: 3620.0, through: 3700, by: 1) { gone.step(t); if at == nil, gone.nodes[B]!.leads { at = t } }
+        expect(at == 3650, "take-over one time-to-live after the wake: \(String(describing: at))")
     }
 }

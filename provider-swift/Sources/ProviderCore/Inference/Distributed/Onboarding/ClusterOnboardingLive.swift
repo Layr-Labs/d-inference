@@ -108,6 +108,23 @@ final class OnboardingLive: @unchecked Sendable {
 
     var forwards: Bool { if case .forward = route() { return true } else { return false } }
 
+    /// Before this Mac acts as the leader (reaches the members to choose a model, adopts a setup, starts or stops the
+    /// cluster): while its saved claim says it leads, wait until its cluster service confirmed that claim with the
+    /// members, or the confirmation window passed with none reachable. A restarted Mac whose claim was superseded
+    /// steps down meanwhile, and the command is then forwarded to the current leader instead of running here.
+    func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10) -> ClusterOnboardingFailure? {
+        let deadline = Date().addingTimeInterval(seconds)
+        while true {
+            guard case .local = route(), let pairing = try? ClusterSetupLinkExchange.pairing(),
+                  currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID else { return nil }
+            if let control = ClusterService.publishedLive()?.control, control.leads, control.confirmed == true { return nil }
+            guard Date() < deadline else {
+                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(peerName) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `darkbloom cluster` again in a moment.")
+            }
+            usleep(250_000)
+        }
+    }
+
     /// Runs `request` on the control leader over the link control channel and returns its answer as it is.
     func forward(_ request: ClusterControlRequest, seconds: Double = 60) -> Result<ClusterControlReply, ClusterOnboardingFailure> {
         guard case .forward(let to) = route() else { return .failure(.init("This Mac leads: nothing to forward.")) }
@@ -292,6 +309,7 @@ final class OnboardingLive: @unchecked Sendable {
     // MARK: - The leader
 
     func reachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
+        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
         guard forwards else { return localReachMembers(say) }
         say("Asking the control leader, \(leaderName), over the cable…")
         let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
@@ -369,6 +387,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
+        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
         guard forwards else { return localAdopt(index) }
         return forward(.init(op: .adopt, index: index), seconds: 240).map(\.lines)
     }
@@ -423,6 +442,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
+        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
         guard forwards else { return localServe() }
         return forward(.init(op: .serve)).map(\.lines)
     }
@@ -484,10 +504,17 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
     func readinessOnce() -> (ready: ClusterOnboardingReady?, line: String) {
-        if let control = ClusterService.published()?.control, control.mode == "alone" {
-            if ClusterService.soloAnswers() { return (.init(servedBy: here, port: ClusterService.soloPort), control.line) }
-            return (nil, control.line + " (loading)")
+        let published = ClusterService.published()
+        if let control = published?.control, control.mode == "alone" {
+            // Only THIS service's solo server counts as ready, never whatever answers on the port.
+            switch ClusterService.soloReadiness(published) {
+            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort), control.line)
+            case .loading: return (nil, control.line + " (loading)")
+            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(here)'s solo server cannot serve there)")
+            }
         }
+        // Inside the absence grace: not ready, and the line says how long until this Mac serves alone.
+        if let control = published?.control, control.mode == "waiting" { return (nil, control.line) }
         let now = session()
         var line: String
         if let session = now.session, session.observed {
@@ -523,7 +550,10 @@ final class OnboardingLive: @unchecked Sendable {
         let text = "Name three colors."
         let answer: ClusterServicePromptAnswer
         if ClusterService.published()?.control?.mode == "alone" {
-            // Degraded: this Mac serves alone on its own loopback.
+            // Degraded: this Mac serves alone on its own loopback, once its own solo server holds the port.
+            guard ClusterService.soloReadiness(ClusterService.published()) == .ready else {
+                return .failure(.init("\(here) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))
+            }
             answer = ClusterService.prompt(context, text: text, port: ClusterService.soloPort)
         } else if context.savedConfiguration().configuration?.role == .leader {
             answer = ClusterService.prompt(context, text: text)
@@ -556,7 +586,7 @@ final class OnboardingLive: @unchecked Sendable {
 
     func localStatus() -> [String] {
         var lines = [String]()
-        if let control = ClusterService.published()?.control, control.mode == "alone" || control.mode == "cannotServe" {
+        if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
             lines.append((here == "this Mac" ? "" : here + ": ") + control.line + ".")
             lines.append("Control leader: \(here) (term \(control.term): \(control.reason)).")
             return lines
@@ -582,6 +612,7 @@ final class OnboardingLive: @unchecked Sendable {
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {
+        if let failure = awaitConfirmedLeadership() { return .failure(failure) }
         guard forwards else { return localStop() }
         return forward(.init(op: .stop)).map(\.lines)
     }

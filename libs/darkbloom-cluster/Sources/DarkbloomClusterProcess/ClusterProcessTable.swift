@@ -126,6 +126,56 @@ public enum ClusterProcessTable {
         return result
     }
 
+    /// The TCP ports `identifier` listens on (IPv4 or IPv6), read from the kernel's descriptor table without touching
+    /// the sockets. Empty for a process this user cannot inspect. This names WHICH process serves a port, which an
+    /// answer on the port alone cannot (any program may listen there).
+    public static func listeningTCPPorts(of identifier: Int32) -> Set<Int> {
+        guard identifier > 0 else { return [] }
+        let size = proc_pidinfo(identifier, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return [] }
+        let count = Int(size) / MemoryLayout<proc_fdinfo>.stride + 16
+        var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: count)
+        let filled = descriptors.withUnsafeMutableBytes { proc_pidinfo(identifier, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count)) }
+        guard filled > 0 else { return [] }
+        var ports = Set<Int>()
+        for entry in descriptors.prefix(Int(filled) / MemoryLayout<proc_fdinfo>.stride) where entry.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let wanted = Int32(MemoryLayout<socket_fdinfo>.stride)
+            guard proc_pidfdinfo(identifier, entry.proc_fd, PROC_PIDFDSOCKETINFO, &info, wanted) == wanted,
+                  info.psi.soi_kind == SOCKINFO_TCP, info.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_LISTEN else { continue }
+            // The local port is kept in network byte order.
+            ports.insert(Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport))))
+        }
+        return ports
+    }
+
+    /// Every live process this user can inspect that descends from `identifier` (children, their children, ...).
+    public static func descendants(of identifier: Int32) -> [Int32] {
+        let capacity = Int(proc_listallpids(nil, 0))
+        guard identifier > 0, capacity > 0 else { return [] }
+        var identifiers = [Int32](repeating: 0, count: capacity + 64)
+        let filled = identifiers.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard filled > 0 else { return [] }
+        var children: [Int32: [Int32]] = [:]
+        for candidate in identifiers.prefix(Int(filled)) where candidate > 0 {
+            if let info = bsdInfo(candidate), info.pbi_status != UInt32(SZOMB) { children[Int32(info.pbi_ppid), default: []].append(candidate) }
+        }
+        var result: [Int32] = [], queue = children[identifier] ?? []
+        while let next = queue.popLast() {
+            guard !result.contains(next) else { continue }
+            result.append(next)
+            queue += children[next] ?? []
+        }
+        return result.sorted()
+    }
+
+    /// The full path of the executable `identifier` runs; nil when it cannot be read.
+    public static func executablePath(of identifier: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        guard identifier > 0, proc_pidpath(identifier, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
     static func executableName(_ identifier: Int32) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
         guard proc_pidpath(identifier, &buffer, UInt32(buffer.count)) > 0 else { return nil }

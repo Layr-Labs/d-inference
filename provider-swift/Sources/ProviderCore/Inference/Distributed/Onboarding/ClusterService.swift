@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import DarkbloomClusterRemote
+import DarkbloomClusterProcess
 
 /// What one Mac's cluster service reports to its leader.
 public struct ClusterServiceStatus: Codable, Sendable, Equatable {
@@ -13,6 +14,11 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var restartInSeconds: Int?
         /// The last error line this Mac's part printed (its log), when its last run ended.
         public var lastError: String?
+        /// While it runs: its process, when that process started (seconds since 1970, as the process table reads it, so
+        /// a recycled process number never passes for it), and whether it is the solo server (degraded serving alone).
+        public var pid: Int32? = nil
+        public var startedAt: Double? = nil
+        public var solo: Bool? = nil
     }
     public struct Session: Codable, Sendable, Equatable {
         public var observed: Bool
@@ -34,6 +40,8 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     public var session: Session?
     /// The derived control leader as this Mac knows it: the leader's name, the term, and what this Mac runs, in words.
     public var control: Control?
+    /// The cluster service that published this status (a status left by a service that ended is not current).
+    public var servicePID: Int32? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String
@@ -42,8 +50,12 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
         public var leads: Bool
         /// `ClusterControlWords.line` for this Mac's mode.
         public var line: String
-        /// "cluster", "following", "confirming", "idle", "alone" or "cannotServe".
+        /// "cluster", "following", "confirming", "idle", "waiting", "alone" or "cannotServe".
         public var mode: String
+        /// This Mac leads and its claim is confirmed (or no member was reachable within the window): it may act as the leader.
+        public var confirmed: Bool? = nil
+        /// "waiting": seconds until this Mac serves alone (owner decision 6's absence grace).
+        public var soloInSeconds: Int? = nil
     }
 }
 
@@ -116,6 +128,7 @@ public final class ClusterService: @unchecked Sendable {
     private var child: Process?
     private var childSetup: String?
     private var childStarted = Date.distantPast
+    private var childStartedAt: Double?
     private var starts = 0
     private var lastEnd: String?
     private var nextStart = Date.distantPast
@@ -362,12 +375,28 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
+    /// How often a part that has not ended yet is sent SIGTERM again while it is waited for.
+    static let stopResendSeconds: Double = 5
+
     /// Degraded serving alone listens where `start --local` listens by default, on this Mac's loopback.
     public static let soloPort = 8000
 
-    /// Whether the solo server answers its model list (it loaded and serves).
-    static func soloAnswers() -> Bool {
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(soloPort)/v1/models")!)
+    /// What the solo port shows: THIS service's solo server (the published solo child, checked by its start time so a
+    /// recycled process number never counts, or a process it started) holding the listening socket and answering its
+    /// model list; that server still loading; or another program answering there (never taken for ours).
+    public enum SoloReadiness: Equatable { case ready, loading, foreign }
+
+    static func soloReadiness(_ status: ClusterServiceStatus?, port: Int = soloPort) -> SoloReadiness {
+        guard let child = status?.child, child.running, child.solo == true, let pid = child.pid, let startedAt = child.startedAt,
+              let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return .loading }
+        let ours = ([pid] + ClusterProcessTable.descendants(of: pid)).contains { ClusterProcessTable.listeningTCPPorts(of: $0).contains(port) }
+        guard soloAnswers(port: port) else { return .loading }
+        return ours ? .ready : .foreign
+    }
+
+    /// Whether a server answers its model list on the solo port (whichever program it is: see `soloReadiness`).
+    static func soloAnswers(port: Int = soloPort) -> Bool {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
         request.timeoutInterval = 3
         if let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let prepared = request
@@ -413,8 +442,11 @@ public final class ClusterService: @unchecked Sendable {
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning ?? false, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
-                    lastError: child?.isRunning == true ? nil : Self.lastError()),
-                session: session, control: controlStatusLocked(model: record?.leadership?.modelName))
+                    lastError: child?.isRunning == true ? nil : Self.lastError(),
+                    pid: child?.isRunning == true ? child?.processIdentifier : nil,
+                    startedAt: child?.isRunning == true ? childStartedAt : nil,
+                    solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : nil),
+                session: session, control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
         }
     }
 
@@ -443,6 +475,15 @@ public final class ClusterService: @unchecked Sendable {
         return try? JSONDecoder().decode(ClusterServiceStatus.self, from: data)
     }
 
+    /// The published status only while the service that wrote it runs now (holds the lock and its pid file names it);
+    /// nil otherwise, e.g. the file a stopped service left behind.
+    public static func publishedLive() -> ClusterServiceStatus? {
+        guard running(), let status = published(), let writer = status.servicePID, let pidFile = try? paths().pid,
+              let text = try? String(contentsOf: pidFile, encoding: .utf8),
+              Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) == writer else { return nil }
+        return status
+    }
+
     // MARK: - This Mac's part
 
     private func supervise(say: @Sendable (String) -> Void) {
@@ -450,8 +491,9 @@ public final class ClusterService: @unchecked Sendable {
         let saved = context.savedConfiguration()
         let reference = try? saved.reference.get()
         let serving = record?.leadership?.serving ?? false
+        let runningSolo = lock.withLock { child != nil && childSetup?.hasPrefix("solo:") == true }
         let want = partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
-                              model: saved.configuration?.publicModelID ?? record?.leadership?.modelName)
+                              model: saved.configuration?.publicModelID ?? record?.leadership?.modelName, runningSolo: runningSolo)
         // What runs is keyed: "cluster:<setup digest>" (this Mac's part of the saved setup) or "solo:<model>"
         // (degraded serving on this Mac alone). A part of another key is stopped before the wanted one starts.
         let key: String?
@@ -510,7 +552,8 @@ public final class ClusterService: @unchecked Sendable {
             lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30) }
             return
         }
-        lock.withLock { child = process; childSetup = key; childStarted = Date(); starts += 1 }
+        let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)
+        lock.withLock { child = process; childSetup = key; childStarted = Date(); childStartedAt = startedAt; starts += 1 }
         say("started \(what) (pid \(process.processIdentifier))")
     }
 
@@ -518,8 +561,16 @@ public final class ClusterService: @unchecked Sendable {
     private func stopChild(say: @Sendable (String) -> Void, seconds: Double) -> Bool {
         guard let running = lock.withLock({ child }) else { return true }
         if running.isRunning { running.terminate() }
-        let deadline = Date().addingTimeInterval(seconds)
-        while running.isRunning, Date() < deadline { usleep(100_000) }
+        let started = Date()
+        let deadline = started.addingTimeInterval(seconds)
+        var resent = 0
+        while running.isRunning, Date() < deadline {
+            usleep(100_000)
+            // A part asked to stop while it was still starting may have had SIGTERM ignored before its handler existed
+            // (an ignored disposition survives exec): SIGTERM again, never SIGKILL (its handler makes repeats harmless).
+            let due = Int(Date().timeIntervalSince(started) / Self.stopResendSeconds)
+            if due > resent, running.isRunning { resent = due; kill(running.processIdentifier, SIGTERM) }
+        }
         let clean = !running.isRunning
         if clean { lock.withLock { child = nil; childSetup = nil; lastEnd = "stopped" } }
         say(clean ? "this Mac's part stopped" : "this Mac's part is still releasing after \(Int(seconds)) s")

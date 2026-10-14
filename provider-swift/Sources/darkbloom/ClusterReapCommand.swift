@@ -41,6 +41,9 @@ extension Cluster {
                     print("wired memory: lowest sample \(wired.samples.min()! >> 20) MiB, baseline \(wired.baselineBytes >> 20) MiB (\(wired.baseline)), tolerance \(wired.toleranceBytes >> 20) MiB")
                 }
                 print("device journal: \(report.journal)")
+                if !report.otherClusters.isEmpty {
+                    print("not counted: \(report.otherClusters.count) cluster process(es) of another cluster home (another identity's or install's, or a check's)")
+                }
             }
             if !report.passed { throw ExitCode.failure }
         }

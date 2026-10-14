@@ -29,15 +29,23 @@ import Foundation
 //
 // A leader acts on the cluster only once every member of the plan confirmed
 // its claim in this process's lifetime (a restarted leader whose claim was
-// superseded while it was away never starts a part). A leader left alone after
-// the lease's time-to-live serves the model alone when the planner said it
-// holds it alone ("degraded: serving on this Mac alone"), and otherwise states
-// that it cannot serve and runs nothing. When the missing member answers
-// again, the leader re-derives with it present and hands leadership over when
-// derivation picks it: the pair re-forms with no question asked.
+// superseded while it was away never starts a part), and acts as the leader
+// at all (a model change, a setup write, a stop) only once its claim is
+// confirmed or the confirmation window passed with no member reachable.
+// Control fails over at the lease's time-to-live; serving ALONE waits for the
+// absence grace (owner decision 6: 10 minutes of peer or link absence): until
+// then the leader keeps its part ready for the missing member and says how
+// long until it serves alone, and a member back before the grace re-forms the
+// pair with nobody serving alone. After the grace it serves the model alone
+// when the planner said it holds it alone ("degraded: serving on this Mac
+// alone"), and otherwise states that it cannot serve and runs nothing. When the
+// missing member answers again, the leader re-derives with it present and
+// hands leadership over when derivation picks it: the pair re-forms with no
+// question asked.
 //
-// Pure (Foundation only): times are seconds on any monotonic clock, so checks
-// drive 2-4 synthetic members through failover, return and split brain.
+// Pure (Foundation only): times are seconds on the continuous clock
+// (`ClusterControlClock`, counting through system sleep), so checks drive 2-4
+// synthetic members through failover, return, sleep and split brain.
 
 /// One member's detected facts, as the leader is derived from them.
 public struct ClusterControlMember: Codable, Sendable, Equatable {
@@ -115,7 +123,10 @@ public struct ClusterControlNode: Sendable, Equatable {
         case cluster
         /// The leader with no plan adopted yet: nothing to run.
         case idle
-        /// The leader, alone of the plan after the others' leases expired, and the planner said it holds the model alone.
+        /// The leader with plan members absent past their time-to-live, inside the absence grace: it keeps its part
+        /// ready so the cluster re-forms when they return, and serves alone (or states it cannot) in `soloInSeconds`.
+        case waiting(missing: [String], soloInSeconds: Int, canServeAlone: Bool)
+        /// The leader, alone of the plan after the absence grace, and the planner said it holds the model alone.
         case alone(missing: [String])
         /// The members present cannot serve the plan: a stated failure, nothing runs.
         case cannotServe(missing: [String], reason: String)
@@ -156,10 +167,23 @@ public struct ClusterControlNode: Sendable, Equatable {
     private var awaited: String
     private var pendingHandOver: ClusterControlClaim?
     public let ttl: Double
+    /// Owner decision 6: how long a plan member must be absent before this Mac serves alone.
+    public let soloGrace: Double
+    /// When this Mac (its ticks) first saw each member absent; cleared when it answers again.
+    private var absentSince: [String: Double] = [:]
+    private var lastTick: Double?
+    /// The first tick after a gap no renewal could cross (system sleep, a suspended process): nobody could renew
+    /// meanwhile, so a leader gets one time-to-live awake from here before it is passed over.
+    private var awakeSince = -Double.infinity
+
+    /// 10 minutes (owner decision 6), for every model, Mac and member count.
+    public static let defaultSoloGraceSeconds: Double = 600
 
     /// `claim` as persisted, or nil before the first one (term 0: derived among the known members).
-    public init(localID: String, members: [ClusterControlMember], claim: ClusterControlClaim?, rankOrder: [String]?, now: Double, ttl: Double) {
+    public init(localID: String, members: [ClusterControlMember], claim: ClusterControlClaim?, rankOrder: [String]?, now: Double, ttl: Double,
+                soloGrace: Double = ClusterControlNode.defaultSoloGraceSeconds) {
         self.localID = localID
+        self.soloGrace = soloGrace
         self.members = Dictionary(members.map { ($0.memberID, $0) }, uniquingKeysWith: { _, b in b })
         self.rankOrder = rankOrder
         self.ttl = ttl
@@ -179,6 +203,16 @@ public struct ClusterControlNode: Sendable, Equatable {
     }
 
     public var leads: Bool { claim.leaderID == localID }
+
+    /// This Mac may act as the leader (change the model, write a setup, stop the cluster): it leads, and every other
+    /// member the claim names confirmed the claim in this process's lifetime or did not answer within its time-to-live
+    /// (the confirmation window passed with no member reachable). A restarted Mac whose persisted claim was superseded
+    /// learns so from the first refusal and steps down having acted on nothing.
+    public func leadershipConfirmed(now: Double) -> Bool {
+        guard leads else { return false }
+        let present = present(now: now)
+        return claim.members.filter { $0 != localID }.allSatisfy { confirmed.contains($0) || !present.contains($0) }
+    }
 
     public mutating func learn(_ member: ClusterControlMember) { members[member.memberID] = member }
 
@@ -256,6 +290,9 @@ public struct ClusterControlNode: Sendable, Equatable {
 
     /// What is due now: renewals and a hand-over on the leader, a take-over on a member whose leader's lease expired.
     public mutating func tick(now: Double) -> [Action] {
+        if let last = lastTick, now - last >= ttl / 3 { awakeSince = now }
+        lastTick = now
+        defer { noteAbsences(now: now) }
         if leads {
             let others = claim.members.filter { $0 != localID }
             var actions: [Action] = others.isEmpty ? [] : [.lease(claim, to: others)]
@@ -270,7 +307,8 @@ public struct ClusterControlNode: Sendable, Equatable {
             }
             return actions
         }
-        guard now - (heard[awaited] ?? -Double.infinity) >= ttl else { return [] }
+        // A gap no renewal could cross (system sleep) is not silence: the leader gets one time-to-live awake.
+        guard now - max(heard[awaited] ?? -Double.infinity, awakeSince) >= ttl else { return [] }
         // The awaited leader's lease expired: derive among the members the claim named, without every expired leader.
         let previous = awaited
         expired.insert(previous)
@@ -294,6 +332,13 @@ public struct ClusterControlNode: Sendable, Equatable {
         return []
     }
 
+    private mutating func noteAbsences(now: Double) {
+        let present = present(now: now)
+        for id in Set(claim.members + (rankOrder ?? [])) where id != localID {
+            if present.contains(id) { absentSince[id] = nil } else if absentSince[id] == nil { absentSince[id] = now }
+        }
+    }
+
     /// What this Mac's service should run now.
     public func mode(now: Double) -> Mode {
         guard leads else { return .following(leaderID: claim.leaderID) }
@@ -304,8 +349,15 @@ public struct ClusterControlNode: Sendable, Equatable {
         let missing = others.filter { !present.contains($0) }
         // Every member answers within its time-to-live: wait for each to confirm this claim.
         if missing.isEmpty { return .confirming }
+        let alonePossible = plan.contains(localID) && plan.filter({ present.contains($0) }) == [localID] && members[localID]?.holdsModelAlone == true
+        // The grace counts from the most recent loss (a member not yet seen absent by a tick: from now).
+        let since = missing.map { absentSince[$0] ?? now }.max() ?? now
+        let remaining = soloGrace - (now - since)
+        if remaining > 0 {
+            return .waiting(missing: missing, soloInSeconds: Int(remaining.rounded(.up)), canServeAlone: alonePossible)
+        }
+        if alonePossible { return .alone(missing: missing) }
         if plan.contains(localID), plan.filter({ present.contains($0) }) == [localID] {
-            if members[localID]?.holdsModelAlone == true { return .alone(missing: missing) }
             return .cannotServe(missing: missing, reason: "this Mac cannot hold the model alone")
         }
         return .cannotServe(missing: missing, reason: "a plan for the members still present is not built (re-plan with fewer members)")
@@ -375,8 +427,67 @@ public enum ClusterControlAloneVerdicts {
     }
 }
 
+/// The control clock: seconds that keep counting through system sleep (`CLOCK_MONOTONIC_RAW`, the continuous mach
+/// clock). Uptime stops while a Mac sleeps, so a woken leader would count a member that left during the sleep as present.
+public enum ClusterControlClock {
+    public static func seconds() -> Double { Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1e9 }
+}
+
+/// Owner decision 6's absence grace before serving alone: universal (no model, chip or member input). Only a developer
+/// (DEBUG) build may shorten it for tests, through `environmentKey`, between 0 and 3600 s.
+public enum ClusterControlSoloGrace {
+    public static let environmentKey = "DARKBLOOM_DEBUG_CLUSTER_SOLO_GRACE_SECONDS"
+    public static func seconds(environment: [String: String], debugBuild: Bool) -> Double {
+        guard debugBuild, let raw = environment[environmentKey], let value = Double(raw), value.isFinite, value >= 0, value <= 3600 else {
+            return ClusterControlNode.defaultSoloGraceSeconds
+        }
+        return value
+    }
+}
+
+/// What a Mac's service runs for its mode.
+public enum ClusterControlPartChoice: Sendable, Equatable {
+    /// Leave whatever runs as it is.
+    case keep
+    case none
+    /// This Mac's part of the saved setup.
+    case cluster
+    /// Degraded: the model on this Mac alone.
+    case solo(String)
+
+    public static func want(mode: ClusterControlNode.Mode, serving: Bool, hasSetup: Bool, leaderRunsCluster: Bool, runningSolo: Bool,
+                            model: String?) -> ClusterControlPartChoice {
+        switch mode {
+        case .following: return serving && hasSetup && leaderRunsCluster ? .cluster : .none
+        case .cluster: return serving && hasSetup ? .cluster : .none
+        // Inside the absence grace this Mac's part stays ready for the member's return; a solo server already running
+        // (the member came and went again) stays rather than being swapped back and forth.
+        case .waiting: return runningSolo ? .keep : serving && hasSetup ? .cluster : .none
+        case .confirming: return .keep
+        case .idle, .cannotServe: return .none
+        case .alone: return serving ? model.map { .solo($0) } ?? .none : .none
+        }
+    }
+
+    /// Whether the leader's lease tells its members that the cluster runs (they run their parts only then): while it
+    /// runs as planned, and while it waits inside the absence grace for a member to return.
+    public static func leaseSaysRunning(mode: ClusterControlNode.Mode, serving: Bool) -> Bool {
+        guard serving else { return false }
+        switch mode {
+        case .cluster, .waiting: return true
+        default: return false
+        }
+    }
+}
+
 /// The words for a mode, one line for `darkbloom cluster` and the service log.
 public enum ClusterControlWords {
+    /// "9 min 50 s", "45 s".
+    public static func duration(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        return value >= 60 ? "\(value / 60) min" + (value % 60 == 0 ? "" : " \(value % 60) s") : "\(value) s"
+    }
+
     public static func line(_ mode: ClusterControlNode.Mode, names: [String: String], model: String?) -> String {
         func name(_ id: String) -> String { names[id] ?? id }
         let what = model ?? "the model"
@@ -385,6 +496,11 @@ public enum ClusterControlWords {
         case .confirming: return "leading; waiting for every member to confirm"
         case .cluster: return "leading the cluster"
         case .idle: return "leading; no model chosen yet"
+        case .waiting(let missing, let seconds, let canServeAlone):
+            let gone = missing.map(name).joined(separator: ", ")
+            return canServeAlone
+                ? "\(gone) is gone; this Mac serves \(what) alone in \(duration(seconds)) unless it returns first (the cluster re-forms by itself when it is back)"
+                : "\(gone) is gone; this Mac cannot hold \(what) alone, so nothing of it runs after \(duration(seconds)) unless it returns first"
         case .alone(let missing):
             return "degraded: serving on this Mac alone (\(missing.map(name).joined(separator: ", ")) is gone; the cluster re-forms by itself when it is back)"
         case .cannotServe(let missing, let reason):

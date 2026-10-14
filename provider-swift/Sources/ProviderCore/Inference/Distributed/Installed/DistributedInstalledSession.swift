@@ -318,6 +318,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
             let leader = try DistributedInstalledLinkLeader(configuration: configuration)
             lock.withLock { self.link = leader }
             link = leader
+            // A stop that came before the link existed is seen here; one during the wait cancels it (`beginStop`).
+            try requireStarting()
             try leader.waitForFollower(until: min(startupDeadline, DispatchTime.now().uptimeNanoseconds + 30_000_000_000))
         }
         let credentials: [Data?] = keysDataPlane
@@ -441,6 +443,8 @@ public final class DistributedInstalledSession: @unchecked Sendable {
         }
         if let notice { let value = stopNotice; notifications.async { notice(value) } }
         result.1?.cancel()
+        // A rank 0 still waiting for its follower stops waiting now (a stop during start must not wait for that deadline).
+        lock.withLock { link }?.cancelStart()
         // The fence names its cause on the other Mac as well (S24).
         let cause = lock.withLock { abnormalStop ? "the session stopped: " + (pair?.lastRequestFailure ?? "a rank was lost") : "the session is stopping" }
         for endpoint in result.0 { endpoint.requestNativeCleanup(reason: cause) }

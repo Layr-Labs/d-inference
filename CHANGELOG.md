@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased — release notes without tag signatures
-
-- Publish provider release notes from the release tag's subject and body only. A signed tag's SSH or PGP signature block was included in the published notes (provider 0.9.20 shows it as encoded bullet points); it stays available from git as verification data.
-
 Unreleased changes live in [`changelog.d/`](changelog.d/README.md). Ordinary
 pull requests add one fragment; release preparation alone updates this file.
 

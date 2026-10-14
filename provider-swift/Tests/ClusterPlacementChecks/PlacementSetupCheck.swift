@@ -654,6 +654,8 @@ import Foundation
         require("a diverged record of the rounds withholds the family and credits nothing", factor("registered_divergedrounds") == nil)
         require("a pipeline record's figure is no speculative credit", factor("registered_plainonly") == nil)
         require("records of another artifact credit nothing", factor("registered_rounds", artifact: hash("z")) == nil)
+        require("a member's roster plan may name the rounds (protocol.ClusterPlanModes)",
+            ClusterPlan.modes.contains(ClusterGenerationMode.pipelineMTP.rawValue))
         require("the rounds are plannable where their family is granted",
             ClusterPairServingGrants.plannable([ClusterChipClass(chipName: "Apple M3 Ultra"), ClusterChipClass(chipName: "Apple M5 Ultra")],
                 cuts: [8], mode: .pipelineMTP, runtimeModelID: "registered_rounds", decisions: decisions))

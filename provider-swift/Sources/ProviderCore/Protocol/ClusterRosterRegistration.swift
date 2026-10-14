@@ -278,7 +278,10 @@ public struct ClusterPlan: Codable, Sendable, Equatable {
     }
 
     /// The generation modes a plan may name (`protocol.ClusterPlanModes`).
-    public static let modes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"]
+    /// `pipeline_mtp_v1` (a pipeline's speculative rounds, planned by default
+    /// where its records pass and measured it faster) needs the coordinator's
+    /// list to name it too before a role-aware coordinator accepts such a plan.
+    public static let modes = ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1", "pipeline_mtp_v1"]
 
     enum CodingKeys: String, CodingKey {
         case policySHA256 = "policy_sha256"

@@ -18,8 +18,10 @@ import Foundation
             try checks.yes("actual-native-metadata-matches-golden-profile-and-four-plans") {
                 let value = try QwenResidentCapabilityMetadata.describe(configuration: configuration, manifest: manifest, runtimeBinarySHA256: binary)
                 try capabilityCheck(value.supportedPrefillSchedules == [.serial, .oneChunkLookahead], "Adapter schedules differ")
-                try capabilityCheck(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP],
-                    "Adapter generation modes differ")
+                // The dense Qwen rows run tensor parallel too (`QwenTensorParallelResidentRuntime`, round 6e).
+                try capabilityCheck(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP,
+                                                                       .tensorParallel, .pipelineMTP],
+                    "Adapter generation modes differ (\(value.supportedGenerationModes.map(\.rawValue)))")
                 try capabilityCheck(value.speculation == ClusterRuntimeCapability.decodingRankSpeculation,
                     "A row with the speculative phase split must advertise the decoding rank's speculation")
                 var current = try JSONSerialization.jsonObject(with: ClusterRuntimeCapabilityCodec.encode(value)) as! [String: Any]
@@ -39,7 +41,7 @@ import Foundation
                     manifest: try Data(contentsOf: fixtures.appendingPathComponent("registered-qwen38-27b.manifest.json")),
                     runtimeBinarySHA256: binary)
                 try capabilityCheck(large.runtimeModelID == "registered_qwen38_27b"
-                    && large.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP]
+                    && large.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel, .pipelineMTP]
                     && large.speculation == ClusterRuntimeCapability.decodingRankSpeculation
                     && large.partitions.count == 15, "The 27B capability differs from its resident row")
                 try capabilityCheck(try ClusterRuntimeCapabilityCodec.decode(ClusterRuntimeCapabilityCodec.encode(large)) == large,

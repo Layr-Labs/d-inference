@@ -48,7 +48,7 @@
   --control-hover-filter: brightness(0.9);
 }
 /* An off switch's track needs more weight on white to stay visible. */
-:root[data-theme='light'] .switch {
+:root[data-theme='light'] .switch:not(:checked) {
   --switch-track: rgba(var(--contrast-rgb), 0.3);
   --switch-track-hover: rgba(var(--contrast-rgb), 0.38);
 }

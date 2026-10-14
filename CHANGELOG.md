@@ -3,6 +3,7 @@
 ## Unreleased — desktop light and dark theme contrast
 
 - Make light- and dark-theme text and controls readable: selected schedule days and text selection (dark text on blue in light theme), the Home fan status (dark blue on dark in dark theme), the fan heat warning in light theme, progress bars, the fan-speed slider track, and off switches in light theme. Show a focus ring on the Macs search field and complete (unclipped) rings on My Macs tabs and Home's Mac rows, and follow macOS appearance changes on onboarding and the startup screen too.
+- Keep enabled switches blue in both themes and preserve the active appearance choice across macOS changes and screen navigation when preference storage is unavailable.
 
 ## Unreleased — desktop hardware load
 

@@ -99,7 +99,9 @@ public enum ClusterPlacementFlow {
         }
         // A pipeline's speculative rounds, lossless by their passing records,
         // are credited the speed-up those records measured until this pair has
-        // served them (owner rule: on by default where lossless and faster).
+        // served the same placement both with and without them (the served
+        // calibration's only source of the factor; owner rule: on by default
+        // where lossless and faster).
         let recordedRounds = ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: runtimeModelID,
             artifactSHA256: artifactSHA256)
         policy.recordedPipelineSpeculativeFactor = recordedRounds
@@ -138,7 +140,7 @@ public enum ClusterPlacementFlow {
             lines.append("Speculative rounds")
             lines.append("  " + String(format: "Pipeline speculative rounds are credited %.2fx", recordedRounds)
                 + " over the plain pipeline: the decode speed-up this model's passing qualification records measured. "
-                + "Requests this pair serves replace that figure with its own.")
+                + "This pair's own figure replaces it once the pair has served the same placement both with and without the rounds.")
         }
         if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
         if records.restrictsShapes {

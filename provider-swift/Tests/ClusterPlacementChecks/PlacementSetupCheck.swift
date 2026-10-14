@@ -110,6 +110,12 @@ import Foundation
         require("chips of no known generation: no phase-split head; the recorded rounds are planned with their credit (chose \(unknown.result.chosen?.mode.rawValue ?? "-"))",
             unknown.result.chosen?.mode == .pipelineMTP
                 && unknown.lines.contains { $0.contains("Pipeline speculative rounds are credited") })
+        // The served calibration credits the rounds only from the same placement served both with and without them
+        // (`ClusterServedCalibration.measurements(entries:)`); a pair that serves the rounds by default never serves
+        // the plain pipeline there, so the line must not promise that serving alone replaces the records' figure.
+        require("the credit line names when this pair's own figure replaces the records' (the same placement served both ways)",
+            unknown.lines.contains { $0.contains("Pipeline speculative rounds are credited") && $0.contains("both with and without") }
+                && !unknown.lines.contains { $0.contains("Requests this pair serves replace that figure") })
         // By default (no opt-in) the same Macs and layout shard the model: no phase split, both Macs hold layers,
         // the plan lists every sharded candidate with its prediction and reason, and names the opt-in.
         let name = ClusterHandOffModes.environmentName

@@ -344,7 +344,7 @@ extension ClusterConsoleCheck {
         let plain = ConsoleFixtures.snapshot(link: ConsoleFixtures.bridgedLink, saved: ConsoleFixtures.savedSetup(),
             candidate: ConsoleFixtures.candidate()).plainLines.joined(separator: "\n")
         for sentence in ["Readiness: link portBridgedWithoutAddress", "Next: run `darkbloom cluster` in a terminal on this Mac and approve the macOS prompt",
-                         "Cluster fixture-cluster: this Mac is peer-0", "`darkbloom cluster configure`, or `a` in the console, approves it.",
+                         "Cluster fixture-cluster: this Mac is peer-0", "Press a in the console to approve it.",
                          "Local leader: not observed.", "Join: A member in this build declines every pairing"] {
             expect(plain.contains(sentence), "the plain output lacks: \(sentence)")
         }

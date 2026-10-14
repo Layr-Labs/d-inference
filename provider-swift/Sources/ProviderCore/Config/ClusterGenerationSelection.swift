@@ -20,8 +20,7 @@ enum ClusterGenerationSelection {
                                capability: ClusterRuntimeCapability) throws {
         guard let peer = peers.first(where: { !supportedModes(for: $0, capability: capability).contains(mode) }) else { return }
         let advertised = supportedModes(for: peer, capability: capability).map(\.rawValue).joined(separator: ", ")
-        throw ClusterConfigurationError.invalid("Generation mode \(mode.rawValue) is not advertised by the worker of member \(peer.id) "
-            + "(\(peer.workerExecutable), build \(peer.runtimeBinarySHA256.prefix(12))), which advertises: \(advertised.isEmpty ? "nothing in the saved record" : advertised). "
-            + "Name one of the advertised modes, or install a worker that supports \(mode.rawValue) on both Macs and run `darkbloom cluster configure` again.")
+        throw ClusterConfigurationError.invalid("Run `darkbloom cluster` again; it re-plans by itself. (Generation mode \(mode.rawValue) is not advertised "
+            + "by the worker of member \(peer.id), build \(peer.runtimeBinarySHA256.prefix(12)), which advertises: \(advertised.isEmpty ? "nothing in the saved record" : advertised).)")
     }
 }

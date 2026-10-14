@@ -75,7 +75,7 @@ public struct ClusterConfiguration: Codable, Sendable, Equatable {
     /// launches itself over SSH: the two would contend for the same device.
     func requireOrdinarySessionRoute() throws {
         guard nativeMember == nil else {
-            throw ClusterConfigurationError.invalid("This setup is saved for coordinator pairing (nativeMember); run `darkbloom start --cluster-member`, or save a setup without it for a local distributed session")
+            throw ClusterConfigurationError.invalid("Run `darkbloom cluster` again; it sets the cluster up by itself. (This setup is saved for coordinator pairing and cannot run a local distributed session.)")
         }
     }
 

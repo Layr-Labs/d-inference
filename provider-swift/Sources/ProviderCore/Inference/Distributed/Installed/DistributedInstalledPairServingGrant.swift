@@ -228,7 +228,7 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
             return model + " diverged from its single-Mac reference in a cross-cable check at some placement, so a pair serves it only "
                 + "at placements a check passed in (each rank's chip class, the cut, the mode): \(qualified). "
                 + "Rank \(rank) of this placement runs on \(chipClass.rawValue) at cut \(cuts.map(String.init).joined(separator: "/")) "
-                + "in \(mode.rawValue), which no passed check covers. Plan again (`darkbloom cluster plan` keeps to the passed placements); "
+                + "in \(mode.rawValue), which no passed check covers; "
                 + "a placement is added only after a cross-cable check of it passes." + policy
         }
     }

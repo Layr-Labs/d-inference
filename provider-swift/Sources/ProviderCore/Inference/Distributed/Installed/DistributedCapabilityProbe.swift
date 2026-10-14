@@ -18,7 +18,7 @@ enum DistributedCapabilityProbe {
         let described = try ClusterCapabilityRecord.decode(bytes, writtenBy: "the installed worker (\(executable.url.path))")
         guard described == plan.capability,
               ClusterConfigurationCodec.sha256(bytes) == plan.configuration.capabilitySHA256 else {
-            throw ClusterConfigurationError.invalid("Installed runtime description differs from the saved capability: the worker or the model's metadata changed since this setup was saved. Run `darkbloom cluster configure` again with this worker's own description.")
+            throw ClusterConfigurationError.invalid("Darkbloom changed on this Mac since the cluster was set up: run `darkbloom cluster` again; it sets up again by itself. (The installed worker's runtime description differs from the saved capability.)")
         }
         try executable.requireUnchanged()
         try DistributedInstalledFiles.check(deadline)

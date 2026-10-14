@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -69,7 +69,12 @@ The loop suite also checks serial calibration across three resident engines
 without another capacity tick, stops that chain for foreground work or draining,
 and runs the production load-completion epilogue
 with a real activity receipt and parked inference waiter to verify scheduling
-precedes waiter resumption. The epilogue test does not load model weights.
+prioritizes the newly loaded slot before waiter resumption even when another
+resident engine is eligible. The epilogue test does not load model weights.
+`finalCellPostureChangeDiscardsOnlyCalibration` holds the final measured cell,
+changes its injected posture, and checks that only that cell's staged evidence
+is discarded, independently published serving observations survive, and the
+bootstrap succeeds on a later retry.
 `ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
 through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
 catalog IDs with both automatic paged selection and explicit contiguous KV.

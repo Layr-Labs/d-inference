@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -132,7 +132,9 @@ it after construction releases its device-work receipt. Capacity ticks retry
 when loading, foreground work or device posture initially prevents calibration.
 An uncancelled calibration retirement schedules the next eligible resident
 slot immediately; the process-wide owner still permits only one session at a
-time. Ordinary load completion schedules before resuming its parked requests.
+time. Ordinary load completion offers the newly loaded slot first before
+resuming its parked requests; existing foreground or calibration ownership
+can still defer it.
 `refreshModelCalibration` asks the loaded bridge's `startModelCalibrationIfNeeded`
 to measure its actual serving configuration. Ordinary `EngineV2` autoregressive engines, including dense and
 MoE Qwens, and standalone `CBv2NativeBlockEngine` slots run an excluded
@@ -169,6 +171,13 @@ heartbeats. Memory floors, concurrency ceilings and deadline enforcement remain
 unchanged. Scheduling is asynchronous: registration and customer service do not
 wait for the full calibration plan to finish. See the calibration entries in the
 [code map](#code-map) for the enforcing paths and symbols.
+
+Each cell stages its numeric prefill/decode observations until all its requests
+have retired. Posture is checked before the cell and again before publication.
+A failed, cancelled or non-nominal cell discards its own staged observations
+and leaves the bootstrap retryable, including for the final cell. Earlier valid
+cells and independent serving observations remain intact. Serving observations
+still publish immediately, through the same rate/EWMA application helper.
 
 ### One request through the engine
 
@@ -1076,6 +1085,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Calibration scheduling | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelCalibration.swift` (`refreshModelCalibration`); `provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift` (`finishStartupPreload`); `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`run`); `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift` (`finishOrdinaryModelLoad`) |
 | Calibration plan and retry gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibration.swift` (`startModelCalibrationIfNeeded`, `runModelCalibration`); `provider-swift/Sources/ProviderCore/Inference/Performance/ModelCalibrationPolicy.swift` (`startup`, `bootstrap`, `maintenance`) |
 | Calibration evidence and foreground priority | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EnginePerformanceMeasurements.swift` (`EnginePerformanceMeasurements`); `provider-swift/Sources/ProviderCore/Inference/Performance/IdleCalibrationCoordinator.swift` (`startIfIdle`, `beginForeground`) |
+| Per-cell evidence publication | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+RateObservations.swift` (`recordRateObservation`, `applyRateObservation`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+ModelCalibrationRequests.swift` (`runModelCalibrationCell`) |
 | Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |

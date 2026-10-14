@@ -66,21 +66,12 @@ extension EngineV2Bridge {
         }
         let name = saved > 0 ? "reuse_prefill"
             : sample.overlap.contended ? "contended_prefill" : "isolated_prefill"
-        let resetIsolated = name == "isolated_prefill" && isolatedPrefillEvidenceExpired(at: sample.at)
-        let resetPrefill = saved == 0
-            && performanceMeasurements.freshRate("isolated_prefill", now: sample.at) == nil
-            && performanceMeasurements.freshRate("contended_prefill", now: sample.at) == nil
-        let aggregate = calibration == nil || (calibration?.width == 1 && !sample.overlap.contended)
-        performanceMeasurements.observe(name, tps: tps, prompt: work,
-            context: usage.promptTokens, cache: saved > 0 ? "reused" : "cold",
-            overlap: sample.overlap, at: sample.at,
-            deadlinePostureEpoch: sample.deadlineRateEvidence?.currentEpoch(), recordAggregate: aggregate,
-            restartEstimate: calibration != nil && aggregate)
-        guard aggregate, saved == 0 else { return }
-        if resetIsolated || calibration != nil { isolatedPrefillEwmaInitialized = false }
-        if resetPrefill || calibration != nil { prefillEwmaInitialized = false }
-        updatePrefillTpsEwma(tps, isolated: !sample.overlap.contended)
-        if name == "isolated_prefill" { prefillEvidenceRecovery.observe(id) }
+        recordRateObservation(EngineRateObservation(
+            phase: name, tps: tps, prompt: work, context: usage.promptTokens,
+            cache: saved > 0 ? "reused" : "cold", overlap: sample.overlap, at: sample.at,
+            postureEpoch: sample.deadlineRateEvidence?.currentEpoch(),
+            aggregate: calibration == nil || (calibration?.width == 1 && !sample.overlap.contended)),
+            requestID: id)
     }
 
     func updatePrefillTpsEwma(_ tps: Double, isolated: Bool) {
@@ -139,16 +130,13 @@ extension EngineV2Bridge {
         let cached = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens) > 0
         if let tps = Self.engineDecodeRate(usage: usage, nativeBlock: usesNativeBlockTiming),
             let observedAt = Self.engineObservationInstant(timing: usage.timing, now: now) {
-            let aggregate = calibration == nil || (calibration?.width == 1 && !overlap.contended)
-            if aggregate && (calibration != nil || performanceMeasurements.rateExpiration("decode").map { observedAt > $0 } == true) {
-                ewmaInitialized = false
-            }
-            if aggregate { updateDecodeTpsEwma(tps) }
-            performanceMeasurements.observe("decode", tps: tps, prompt: state.promptTokens,
+            recordRateObservation(EngineRateObservation(
+                phase: "decode", tps: tps, prompt: state.promptTokens,
                 context: state.promptTokens + completion, cache: cached ? "reused" : "cold",
                 overlap: overlap, at: observedAt,
-                deadlinePostureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(), recordAggregate: aggregate,
-                restartEstimate: calibration != nil && aggregate)
+                postureEpoch: state.prefillReceipt?.deadlineRateEvidence?.currentEpoch(),
+                aggregate: calibration == nil || (calibration?.width == 1 && !overlap.contended)),
+                requestID: id)
         }
         if calibration != nil { performanceUpdates?.notify(); return }
         performanceMeasurements.observe("delivered_decode", tps: deliveredTps,

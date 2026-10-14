@@ -6,7 +6,7 @@ import Testing
 @Suite("Automatic model calibration", .serialized)
 struct ModelCalibrationTests {
     private func fixture(budget: GlobalKVCacheBudget? = nil, gate: RecoveryStepGate? = nil,
-        gateOnRequest: Int? = nil)
+        gateOnRequest: Int? = nil, posturePermitsWork: @escaping @Sendable () -> Bool = { true })
         throws -> (EngineV2Bridge, CBv2NativeBlockEngine, GlobalKVCacheBudget) {
         let tokenizer = ModelCalibrationTokenizer()
         let budget = budget ?? GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -20,7 +20,7 @@ struct ModelCalibrationTests {
             })
         let bridge = EngineV2Bridge(engine: engine, modelId: "mimo-calibration-fixture",
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [], maxConcurrentRequests: 4,
-            kvBytesPerToken: 1, kvBudget: budget)
+            kvBytesPerToken: 1, kvBudget: budget, calibrationPosturePermitsWork: posturePermitsWork)
         return (bridge, engine, budget)
     }
 
@@ -71,6 +71,38 @@ struct ModelCalibrationTests {
         if started { await bridge.waitForCalibrationTest() }
         #expect(await bridge.calibrationRetryStateTest().0)
         #expect(await bridge.calibrationCountersTest() == counters)
+        await bridge.shutdown()
+    }
+
+    @Test("a final-cell posture change discards staged rates and permits a later bootstrap",
+        arguments: [false, true])
+    func finalCellPostureChangeDiscardsOnlyCalibration(servingEvidence: Bool) async throws {
+        let posture = CalibrationPostureSwitch()
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        let (bridge, engine, budget) = try fixture(gate: gate, gateOnRequest: 3,
+            posturePermitsWork: { posture.permitsWork })
+        #expect(await bridge.startModelCalibrationIfNeeded())
+        try await waitForEntry(gate)
+        posture.setPermitsWork(false)
+        if servingEvidence { await bridge.recordIndependentRateEvidenceTest() }
+        let before = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(before.isolatedPrefill?.sampleCount == (servingEvidence ? 2 : 1))
+        gate.release()
+        await bridge.waitForCalibrationTest()
+        let after = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(after.isolatedPrefill?.sampleCount == before.isolatedPrefill?.sampleCount)
+        #expect(after.isolatedPrefill?.tokensPerSecond == before.isolatedPrefill?.tokensPerSecond)
+        #expect(after.decode?.sampleCount == before.decode?.sampleCount)
+        #expect(after.decode?.tokensPerSecond == before.decode?.tokensPerSecond)
+        let (complete, retryAt) = await bridge.calibrationRetryStateTest()
+        #expect(!complete)
+        #expect(await bridge.pendingCalibrationEvidenceCountTest() == 0)
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        posture.setPermitsWork(true)
+        #expect(await bridge.startModelCalibrationIfNeeded(now: try #require(retryAt)))
+        await bridge.waitForCalibrationTest()
+        #expect(await bridge.calibrationRetryStateTest().0)
         await bridge.shutdown()
     }
 
@@ -270,6 +302,16 @@ struct ModelCalibrationTests {
 }
 
 private extension EngineV2Bridge {
+    func recordIndependentRateEvidenceTest() {
+        for phase in ["isolated_prefill", "decode"] {
+            recordRateObservation(EngineRateObservation(phase: phase, tps: 4_321,
+                prompt: 512, context: 544, cache: "cold", overlap: .init(), at: .now,
+                postureEpoch: nil, aggregate: true), requestID: "independent-serving-evidence")
+        }
+    }
+
+    func pendingCalibrationEvidenceCountTest() -> Int { modelCalibration.pendingObservations.count }
+
     func waitForServingRetirementTest(requestId: String) async {
         await pumpTasks[requestId]?.value
     }
@@ -289,4 +331,11 @@ private extension EngineV2Bridge {
     func calibrationCountersTest() -> [Int64] {
         [prefillTokensTotal, prefillRequestsTotal, generatedTokensTotal, generationRequestsTotal]
     }
+}
+
+private final class CalibrationPostureSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var allowed = true
+    var permitsWork: Bool { lock.withLock { allowed } }
+    func setPermitsWork(_ value: Bool) { lock.withLock { allowed = value } }
 }

@@ -1,7 +1,8 @@
 import Foundation
 
 extension EngineV2Bridge {
-    func runModelCalibrationCell(_ cell: ModelCalibrationPolicy.Cell, tokens: [Int]) async -> Bool {
+    func runModelCalibrationCell(_ cell: ModelCalibrationPolicy.Cell, tokens: [Int],
+        requireNominalPosture: Bool) async -> Bool {
         let ids = (0..<cell.width).map { _ in "calibration-" + UUID().uuidString }
         for id in ids { modelCalibration.requests[id] = cell }
         let timer = Task { [weak self] in
@@ -9,8 +10,14 @@ extension EngineV2Bridge {
             catch { return }
             await self?.interruptModelCalibration(ids)
         }
-        defer { timer.cancel(); for id in ids { modelCalibration.requests.removeValue(forKey: id) } }
-        return await withTaskCancellationHandler {
+        defer {
+            timer.cancel()
+            for id in ids {
+                modelCalibration.requests.removeValue(forKey: id)
+                modelCalibration.pendingObservations.removeValue(forKey: id)
+            }
+        }
+        let successful = await withTaskCancellationHandler {
             await withTaskGroup(of: Bool.self) { group in
                 for id in ids {
                     group.addTask { await self.runModelCalibrationRequest(id, cell: cell, tokens: tokens) }
@@ -22,6 +29,19 @@ extension EngineV2Bridge {
         } onCancel: {
             Task { await self.interruptModelCalibration(ids) }
         }
+        guard successful, !Task.isCancelled, !modelCalibration.interrupted,
+            canSubmitWithNativeOwner(),
+            !requireNominalPosture || calibrationPosturePermitsWork() else { return false }
+        // Every pump and reservation has retired. Publish the cell atomically
+        // on this actor; an invalid cell cannot roll back unrelated serving evidence.
+        let observations = ids.flatMap { id in
+            (modelCalibration.pendingObservations[id] ?? []).map { (id, $0) }
+        }.sorted { $0.1.at < $1.1.at }
+        for (id, observation) in observations {
+            applyRateObservation(observation, requestID: id, calibration: true)
+        }
+        performanceUpdates?.notify()
+        return true
     }
 
     private func runModelCalibrationRequest(_ id: String, cell: ModelCalibrationPolicy.Cell,

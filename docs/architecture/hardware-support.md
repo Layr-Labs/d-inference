@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -339,6 +339,7 @@ budgets. It does not lower activation or OS reserves, raise concurrency limits,
 or create a separate memory allowance. Only one calibration session runs on the
 Mac at a time. After an uncancelled session retires, the next eligible resident
 engine can start without waiting for a capacity tick.
+An ordinary load offers its new engine first when that owner is available.
 
 A customer request takes a foreground lease, cancels any current calibration,
 and waits for its actual retirement before admission. A consumer terminal event
@@ -355,6 +356,10 @@ token totals. The detailed probe plan and retry/posture gates are documented in
 [model startup calibration](inference.md#model-startup-calibration). These are
 provider-local changes; capacity wire fields and the external platform's memory
 contract are unchanged.
+Calibration observations are staged per cell and published only after all
+requests retire and the completion posture check passes. A cancelled or
+non-nominal cell discards those observations and remains retryable; valid
+earlier measurements and independently published serving evidence survive.
 
 ### Cross-repository agreement
 

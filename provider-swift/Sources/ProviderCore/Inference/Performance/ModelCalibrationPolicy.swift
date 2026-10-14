@@ -55,6 +55,7 @@ enum ModelCalibrationPolicy {
 struct ModelCalibrationState {
     var task: Task<Void, Never>?
     var requests: [String: ModelCalibrationPolicy.Cell] = [:]
+    var pendingObservations: [String: [EngineRateObservation]] = [:]
     var bootstrapCompleted = false
     var nextAttempt: ContinuousClock.Instant?
     var interrupted = false

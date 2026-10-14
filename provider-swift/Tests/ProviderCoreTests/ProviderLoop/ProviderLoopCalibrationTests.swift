@@ -128,19 +128,24 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
-    @Test("successful load completion schedules calibration before waking parked inference")
+    @Test("successful load completion prioritizes its slot before waking parked inference")
     func loadWaiterObservesScheduledCalibration() async throws {
         let fixture = try await ServeLoopFixture.make()
         let gate = RecoveryStepGate()
-        defer { gate.release() }
+        let olderGate = RecoveryStepGate()
+        defer { gate.release(); olderGate.release() }
         let bridge = try await installCalibrationSlot(fixture, gate: gate)
+        let older = try await installCalibrationSlot(fixture, gate: olderGate, modelID: "000-older-model")
         let scheduled = try await fixture.loop.completeLoadWithWaitingInference(bridge: bridge)
         #expect(scheduled)
+        #expect(!(await older.hasScheduledCalibration()))
         gate.release()
+        olderGate.release()
         _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
         await fixture.mock.shutdown()
         await fixture.bridge.shutdown()
         await bridge.shutdown()
+        await older.shutdown()
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 

@@ -867,7 +867,7 @@ extension ProviderLoop {
         // Construction is over. Release its activity receipt before calibration,
         // then schedule before any parked inference can enter the loaded engine.
         deviceActivity.finish()
-        if startupPreloadTask == nil { await refreshModelCalibration() }
+        if startupPreloadTask == nil { await refreshModelCalibration(prioritizing: modelID) }
         for waiter in loadingWaiters.removeValue(forKey: modelID) ?? [] {
             waiter.resume()
         }

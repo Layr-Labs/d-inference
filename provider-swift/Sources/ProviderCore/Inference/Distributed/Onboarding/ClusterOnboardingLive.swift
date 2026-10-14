@@ -371,12 +371,39 @@ final class OnboardingLive: @unchecked Sendable {
         guard let peer = lock.withLock({ peerReport }), let choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
             return .failure(.init("Nothing to adopt: plan again."))
         }
-        let result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
-        guard result.succeeded else { return .failure(.init(result.lines)) }
+        var lines = [String]()
+        if leadership?.serving == true {
+            // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
+            // (each part releases its memory), then changes the setup; `serve` starts the new one.
+            if case .failure(let failure) = localStop() { return .failure(failure) }
+            lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
+            guard drained(seconds: 300) else {
+                return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+            }
+        }
+        var result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
+        // The device lease is released a moment after the part's process ends.
+        for _ in 0..<10 where !result.succeeded && result.lines.joined(separator: " ").contains("lease is currently held") {
+            sleep(3)
+            result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
+        }
+        guard result.succeeded else { return .failure(.init(lines + result.lines)) }
         lock.withLock { chosenTitle = choice.title }
         // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease).
         try? store.updateRecord { $0.aloneHolders = choice.alone.sorted() }
-        return .success(result.lines)
+        return .success(lines + result.lines)
+    }
+
+    /// Both Macs' parts ended (this Mac's service publishes its own; the other Mac's is asked over the link).
+    func drained(seconds: Double) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            let own = ClusterService.published()?.child.running == false
+            let peer = (try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))?.child.running == false
+            if own && peer { return true }
+            sleep(2)
+        }
+        return false
     }
 
     func command(_ command: ClusterServiceCommand, seconds: Double = 30) throws -> Data {

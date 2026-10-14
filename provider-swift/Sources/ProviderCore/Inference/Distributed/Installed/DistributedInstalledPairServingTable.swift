@@ -45,8 +45,8 @@ struct DistributedInstalledServingRefusal: Error, Equatable, CustomStringConvert
 }
 
 /// The registered models the installed path knows, one row each: the time
-/// budgets a pair serves the model with. Whether a pair may serve the model,
-/// and on which chip classes, is its grant (`ClusterPairServingGrants`), not
+/// budgets a pair serves the model with. Whether a pair may serve the model
+/// (on any Apple silicon) is its grant (`ClusterPairServingGrants`), not
 /// this table.
 ///
 /// A row is keyed by the runtime's own model identity, which comes from the
@@ -222,8 +222,11 @@ enum DistributedInstalledPairServingTable {
         shutdownAcknowledgementNanoseconds: 10_000_000_000, stopMarginNanoseconds: 30_000_000_000,
         cleanStopWaitNanoseconds: 40_000_000_000))
 
-    /// One row for every model with a pair-serving grant, in the grants' order,
-    /// and none for a model whose grant is withheld.
+    /// One row per model the installed path has measured budgets for, each of
+    /// them granted. A granted model without a row (since grants are
+    /// chip-agnostic, GPT-OSS 20B and Gemma 4 26B QAT4) is not
+    /// offered and its start is refused, until its budgets are measured or
+    /// derived (`ClusterPlacementBudgets.derive`, not wired yet).
     static let rows = [qwen35, qwen38, qwen35A3B, qwen36A3B, bonsai2, nemotron35, mimoV26]
 
     /// The budgets of a model this build has a row for; a refusal for every other model.

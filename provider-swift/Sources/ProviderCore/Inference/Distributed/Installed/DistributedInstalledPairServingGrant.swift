@@ -5,22 +5,22 @@ import DarkbloomClusterProtocol
 
 /// The chip class of one Mac: its chip family and tier, spelled
 /// `apple_m3_ultra`, `apple_m5_max`, `apple_m4` (no tier word for the base
-/// chip). A pair-serving grant lists the chip classes each role may run on
-/// (owner decision D4); across classes a pair passes on the owner's near-tie
-/// rule. The coordinator derives the same class, by the same rule, from a
-/// member's attested chip name for its own per-role grant
-/// (`decoding_rank_chip_classes`, `pipeline_rank_chip_classes`).
+/// chip). A pair-serving grant lists no chip class (owner, 2026-10-14: chips
+/// and memory do not gate what is offered): a passing record approves its
+/// mode family on any class, and a class matters only as part of a chip
+/// combination a diverged record ran (`ClusterPairQualificationRecords`).
+/// A Mac whose chip has no class (not Apple silicon as the system names it,
+/// a virtual machine) cannot run a rank.
 ///
 /// A chip class is not a member's registered numerics class
 /// (`device_profile.numerics_class`, which also names the GPU architecture,
-/// the Metal library and the operating system). That one is what a cluster
-/// approval's `allowed_numerics_classes` and a parity qualification's
-/// `numerics_classes` compare; it is not an input here.
+/// the Metal library and the operating system). That one is what a parity
+/// qualification's `numerics_classes` compare; it is not an input here.
 ///
 /// A class is read from the chip's own name on the Mac that runs the rank.
 /// It is never taken from a capability record, a saved setup, a peer or a
 /// runtime capability: a kernel capability such as `mlx_nax` is not a class
-/// and does not make one, so claiming it opens nothing.
+/// and does not make one.
 public struct ClusterChipClass: Hashable, Comparable, Sendable, CustomStringConvertible {
     public let rawValue: String
 
@@ -39,8 +39,14 @@ public struct ClusterChipClass: Hashable, Comparable, Sendable, CustomStringConv
     }
 
     /// This Mac's class, from the kernel's brand string: no GPU, no child
-    /// process. Nil when the chip has no class.
-    public static func local() -> ClusterChipClass? {
+    /// process. Nil when the chip has no class. A debug build may be told to
+    /// check ranks as another chip (`ClusterBenchChip`, developer bench only);
+    /// a release build never reads it.
+    public static func local(environment: [String: String] = ProcessInfo.processInfo.environment,
+                             debugBuild: Bool = ClusterBenchChip.isDebugBuild) -> ClusterChipClass? {
+        if let bench = ClusterBenchChip.chipName(environment: environment, debugBuild: debugBuild) {
+            return ClusterChipClass(chipName: bench)
+        }
         var size = 0
         guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 1, size <= 256 else { return nil }
         var buffer = [UInt8](repeating: 0, count: size)
@@ -52,7 +58,8 @@ public struct ClusterChipClass: Hashable, Comparable, Sendable, CustomStringConv
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
-/// What a rank does in a placement, which is what a grant restricts.
+/// What a rank does in a placement (named in a refusal; a grant does not
+/// restrict roles).
 public enum ClusterPairServingRole: String, Sendable, CaseIterable {
     /// The last rank. It holds the model's final layers and head and selects
     /// every token; under a phase split it decodes alone with every layer, and
@@ -120,20 +127,18 @@ extension ClusterGenerationMode {
     }
 }
 
-/// One placement a cross-cable check ran and passed under the near-tie rule:
-/// each rank's chip class in rank order, the layer cuts and the generation
-/// mode, read from a qualification record the runner wrote
-/// (`ClusterPairQualificationRecord`). It has the shape of the coordinator's
-/// parity qualification record (one class per rank in rank order, `cuts`,
-/// `mode`), with chip classes where that record names each rank's registered
-/// numerics class.
+/// One placement a cross-cable check ran: each rank's chip class in rank
+/// order, the layer cuts and the generation mode, read from a qualification
+/// record the runner wrote (`ClusterPairQualificationRecord`). It has the shape
+/// of the coordinator's parity qualification record (one class per rank in
+/// rank order, `cuts`, `mode`), with chip classes where that record names each
+/// rank's registered numerics class.
 ///
-/// A grant's role classes come from its qualifications only: a class reaches
-/// a role when a passed check ran it in that role, in that mode family. The
-/// cut is not part of the provider's decision (a pair is planned from each
-/// Mac's detected hardware, at whatever cut fits); the mode family is (owner
-/// sign-off O9). Public traffic is bounded to the exact classes, cuts and mode
-/// by the coordinator's parity qualification.
+/// A passed placement is evidence for its model, artifact and mode family on
+/// any Apple silicon (owner, 2026-10-14: chips and memory do not gate what is
+/// offered); a diverged one restricts only its own chip combination and shape
+/// (`ClusterPairQualificationRecords`). Public traffic is bounded to the exact
+/// classes, cuts and mode by the coordinator's parity qualification.
 public struct ClusterPairServingQualification: Sendable, Equatable {
     public let chipClasses: [ClusterChipClass]
     public let cuts: [Int]
@@ -141,6 +146,9 @@ public struct ClusterPairServingQualification: Sendable, Equatable {
 
     /// The mode family this placement's check speaks for.
     public var family: ClusterPairServingModeFamily { mode.servingFamily }
+
+    /// The chip combination: the classes regardless of rank order.
+    public var combination: [ClusterChipClass] { chipClasses.sorted() }
 
     /// The shape the coordinator requires of a parity qualification: two or
     /// more ranks, one cut fewer than the ranks, cuts positive and ascending.
@@ -150,18 +158,19 @@ public struct ClusterPairServingQualification: Sendable, Equatable {
     }
 }
 
-/// One registered model's grant to be served by a pair: the mode families it
-/// may run in and, per family, the chip classes each role may run on, derived
-/// from the placements its cross-cable checks passed in. A placement is served
-/// only in a granted family and only when every rank's class is listed for its
-/// role in that family. Keyed by the runtime's own model identity, which comes from the
-/// worker's capability record and which a setup cannot rename; the public
-/// model identity only names the model in a refusal.
+/// One registered model's grant to be served by a pair: the mode families its
+/// passing cross-cable checks ran, each approved for any detected Apple
+/// silicon the planner can place it on. No chip class is listed for any role:
+/// a chip decides nothing here except through a diverged record of its exact
+/// combination (`ClusterPairQualificationRecords`), and memory decides only
+/// what fits (the planner and each Mac's load gate). Keyed by the runtime's
+/// own model identity, which comes from the worker's capability record and
+/// which a setup cannot rename; the public model identity only names the
+/// model in a refusal.
 ///
-/// This is the provider's half of owner decision 4 (operator approval per
-/// model with allowed chip classes per rank). Public traffic also needs the
-/// coordinator's promotable parity qualification for the exact classes, cuts
-/// and mode; a placement without one serves its owner only.
+/// Public traffic also needs the coordinator's cluster approval and, for the
+/// exact classes, cuts and mode, its promotable parity qualification; a
+/// placement without one serves its owner only.
 public struct ClusterPairServingGrant: Sendable, Equatable {
     public let runtimeModelID: String
     /// The placements the grant rests on: the passed checks of its granted
@@ -169,8 +178,8 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     public let qualifications: [ClusterPairServingQualification]
     /// The same runs in plain words.
     public let evidence: String
-    /// The families with a diverged record, and why: never served, whatever
-    /// the other families' records say.
+    /// The families with a diverged record and no passing one, and why: never
+    /// served, on any chips, until a check of the family passes.
     public let withheldFamilies: [ClusterPairServingModeFamily: String]
 
     public init(runtimeModelID: String, qualifications: [ClusterPairServingQualification], evidence: String,
@@ -182,58 +191,30 @@ public struct ClusterPairServingGrant: Sendable, Equatable {
     /// The mode families a pair may serve this model in, in order.
     public var families: [ClusterPairServingModeFamily] { Set(qualifications.map(\.family)).sorted() }
 
-    /// Every class a qualification ran as its last rank, in any granted family
-    /// (what the grant says in words; a decision uses `chipClasses(for:family:)`).
-    public var decodingRankChipClasses: Set<ClusterChipClass> { Set(qualifications.compactMap(\.chipClasses.last)) }
-    /// Every class a qualification ran at a rank before its last, in any granted family.
-    public var pipelineRankChipClasses: Set<ClusterChipClass> { Set(qualifications.flatMap { $0.chipClasses.dropLast() }) }
-
-    /// Every class a role ran in, in any granted family.
-    public func chipClasses(for role: ClusterPairServingRole) -> Set<ClusterChipClass> {
-        switch role {
-        case .decodingRank: decodingRankChipClasses
-        case .pipelineRank: pipelineRankChipClasses
-        }
-    }
-
-    /// The classes a role may run on in one mode family: the classes a passed
-    /// check of that family ran in that role. Empty for a family the grant
-    /// does not have.
-    public func chipClasses(for role: ClusterPairServingRole, family: ClusterPairServingModeFamily) -> Set<ClusterChipClass> {
-        let runs = qualifications.filter { $0.family == family }
-        switch role {
-        case .decodingRank: return Set(runs.compactMap(\.chipClasses.last))
-        case .pipelineRank: return Set(runs.flatMap { $0.chipClasses.dropLast() })
-        }
-    }
-
-    /// Whether some granted family lists every rank's class for its role; a
-    /// rank with no class decides nothing here.
-    func admitsOrder(_ classes: [ClusterChipClass?]) -> Bool {
-        families.contains { family in
-            classes.enumerated().allSatisfy { rank, chipClass in
-                guard let chipClass, let role = ClusterPairServingRole.of(rank: rank, rankCount: classes.count) else { return true }
-                return chipClasses(for: role, family: family).contains(chipClass)
-            }
-        }
-    }
-
-    /// Every class some rank may have.
-    public var chipClasses: Set<ClusterChipClass> { decodingRankChipClasses.union(pipelineRankChipClasses) }
+    /// The chip classes the grant's passing checks ran on, in any role: what
+    /// the evidence says in words. Not a list of allowed chips: any detected
+    /// Apple silicon may run any rank of a granted family.
+    public var qualifiedChipClasses: Set<ClusterChipClass> { Set(qualifications.flatMap(\.chipClasses)) }
 }
 
 /// Every cross-cable check of one model on record, passed and failed, each
 /// in the shape of a parity qualification (each rank's chip class in rank
 /// order, the cuts, the mode).
 ///
-/// The universal rule these records carry: a model whose numerics depend on
-/// the shape of its placement shows it by failing a check at some shape, on
-/// any chips. From then on the cut and the mode are part of what a pair may
-/// run in that mode family: a placement of the family is planned only when a
-/// passed check ran exactly its shape, and the family is not served (its grant
-/// is withheld). A family with no failed check is restricted by role, chip
-/// class and family only (`ClusterPairServingGrant`). Records decide; no model
-/// or chip is named by the rule.
+/// The universal rule these records carry (owner, 2026-10-14): a model whose
+/// numerics depend on the shape of its placement shows it by failing a check
+/// at some shape on some chips. What diverged is then withheld exactly:
+///
+/// - on the chip combination that diverged (its classes in any rank order),
+///   a placement of that mode family is served only at a shape a passed check
+///   ran exactly (classes in rank order, cuts, mode) and that no check of the
+///   family diverged at;
+/// - on any combination, a rank whose own class ran a diverged shape at that
+///   rank refuses that exact shape (rank count, cuts, family): a Mac checks
+///   its rank with its own class only and cannot see its partner's;
+/// - every other placement is left to the grant (any Apple silicon).
+///
+/// Records decide; no model or chip is named by the rule.
 public struct ClusterPairQualificationRecords: Sendable, Equatable {
     public let runtimeModelID: String
     public let passed: [ClusterPairServingQualification]
@@ -242,36 +223,68 @@ public struct ClusterPairQualificationRecords: Sendable, Equatable {
     /// Some mode family of the model has a failed check.
     public var restrictsShapes: Bool { !failed.isEmpty }
 
-    /// The families a failed check restricts to their passed shapes.
+    /// The families some failed check restricts.
     public var restrictedFamilies: Set<ClusterPairServingModeFamily> { Set(failed.map(\.family)) }
 
     public func restricts(_ family: ClusterPairServingModeFamily) -> Bool { failed.contains { $0.family == family } }
 
-    /// A whole placement's shape: when its mode's family has a failed check,
-    /// a passed check ran exactly it. A family the records restrict not is
-    /// admitted here (its grant decides).
-    public func admits(chipClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode) -> Bool {
-        guard restricts(mode.servingFamily) else { return true }
-        let classes = chipClasses.compactMap { $0 }
-        guard classes.count == chipClasses.count else { return false }
-        return passed.contains { $0.chipClasses == classes && $0.cuts == cuts && $0.mode == mode }
+    /// Whether a failed check of this family ran this chip combination.
+    public func restrictsCombination(_ classes: [ClusterChipClass], family: ClusterPairServingModeFamily) -> Bool {
+        let combination = classes.sorted()
+        return failed.contains { $0.family == family && $0.combination == combination }
     }
 
-    /// One rank's half of `admits`, decided on the Mac that runs the rank
-    /// with only its own class: some passed check ran a placement of this many
-    /// ranks with this class at this rank, at these cuts, in this mode.
+    /// A whole placement: every classed rank's own half (`admitsRank`) and, on
+    /// a chip combination that diverged, a passed check of exactly this shape
+    /// that no failed check shares. A rank with no class (a test profile, a
+    /// virtual machine) is left to its own start, which refuses it, unless the
+    /// classed ranks could be a combination that diverged.
+    public func admits(chipClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode) -> Bool {
+        let family = mode.servingFamily
+        guard restricts(family) else { return true }
+        for (rank, chipClass) in chipClasses.enumerated() {
+            if let chipClass, !admitsRank(rank, of: chipClasses.count, chipClass: chipClass, cuts: cuts, mode: mode) { return false }
+        }
+        let classes = chipClasses.compactMap { $0 }
+        guard classes.count == chipClasses.count else {
+            // Unknown ranks: refuse when the known ones fit inside a combination that diverged.
+            return !failed.contains { q in
+                q.family == family && q.chipClasses.count == chipClasses.count && Self.isSubMultiset(classes, of: q.chipClasses)
+            }
+        }
+        guard restrictsCombination(classes, family: family) else { return true }
+        let divergedHere = failed.contains { $0.family == family && $0.chipClasses == classes && $0.cuts == cuts }
+        return !divergedHere && passed.contains { $0.chipClasses == classes && $0.cuts == cuts && $0.mode == mode }
+    }
+
+    /// One rank's half of `admits`, decided on the Mac that runs the rank with
+    /// only its own class: no failed check of this family ran this class at
+    /// this rank of a placement of this many ranks at these cuts.
     public func admitsRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass, cuts: [Int],
                            mode: ClusterGenerationMode) -> Bool {
-        guard restricts(mode.servingFamily) else { return true }
-        return passed.contains { q in
-            q.chipClasses.count == rankCount && q.chipClasses.indices.contains(rank) && q.chipClasses[rank] == chipClass
-                && q.cuts == cuts && q.mode == mode
+        let family = mode.servingFamily
+        return !failed.contains { q in
+            q.family == family && q.chipClasses.count == rankCount && q.chipClasses.indices.contains(rank)
+                && q.chipClasses[rank] == chipClass && q.cuts == cuts
         }
     }
 
+    static func isSubMultiset(_ part: [ClusterChipClass], of whole: [ClusterChipClass]) -> Bool {
+        var left = whole
+        for item in part {
+            guard let index = left.firstIndex(of: item) else { return false }
+            left.remove(at: index)
+        }
+        return true
+    }
+
     /// The passed shapes in plain words.
-    public var passedShapesText: String {
-        passed.isEmpty ? "none" : passed.map { q in
+    public var passedShapesText: String { Self.shapesText(passed) }
+    /// The diverged shapes in plain words.
+    public var failedShapesText: String { Self.shapesText(failed) }
+
+    static func shapesText(_ runs: [ClusterPairServingQualification]) -> String {
+        runs.isEmpty ? "none" : runs.map { q in
             q.chipClasses.map(\.rawValue).joined(separator: " then ") + " at cut " + q.cuts.map(String.init).joined(separator: "/")
                 + " (" + q.mode.rawValue + ")"
         }.joined(separator: "; ")
@@ -287,12 +300,12 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         case withheld(String)
         /// The placement has fewer than two ranks, or the rank is outside it.
         case placementShape(rank: Int, rankCount: Int)
-        /// The Mac that runs this rank has a chip with no chip class.
+        /// The Mac that runs this rank has a chip with no chip class (not
+        /// Apple silicon as the system names it, or a virtual machine).
         case unknownChip(rank: Int, role: ClusterPairServingRole)
-        /// This rank's class is not listed for its role.
-        case classNotAllowed(rank: Int, role: ClusterPairServingRole, chipClass: ClusterChipClass, allowed: [ClusterChipClass])
-        /// The model's grant restricts shapes, and no passed check ran this
-        /// rank's class at this rank with these cuts in this mode.
+        /// The model diverged at some placement, and this rank's class at this
+        /// rank with these cuts in this mode is a placement that diverged, or
+        /// the combination that diverged at a shape no passed check ran.
         case shapeNotQualified(rank: Int, chipClass: ClusterChipClass, cuts: [Int], mode: ClusterGenerationMode, qualified: String)
         /// The model has records, but none of them ran the installed artifact.
         case artifactNotQualified(installed: String, qualified: [String])
@@ -311,19 +324,16 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
         switch reason {
         case .noGrant:
             return model + " has no grant to be served by a pair in this darkbloom: no cross-cable qualification record of it has passed. "
-                + "A pair serves a model only under a grant derived from the records of passing runs, which list the chip classes each rank may run on." + policy
+                + "A pair serves a model only under a grant derived from the records of passing runs; a passing run on any Macs approves "
+                + "its mode family on any Apple silicon." + policy
         case .withheld(let why):
             return model + " is not granted pair serving: \(why)." + policy
         case .placementShape(let rank, let rankCount):
             return model + " cannot be placed: rank \(rank) of a placement of \(rankCount) ranks. A pair-serving grant applies to two or more ranks in order."
         case .unknownChip(let rank, let role):
-            return model + " cannot run rank \(rank) (the \(role.words)) on this Mac: its chip has no chip class, so no grant can list it. "
-                + "A chip class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not make one." + policy
-        case .classNotAllowed(let rank, let role, let chipClass, let allowed):
-            return model + " is granted pair serving with the \(role.words) on \(allowed.map(\.rawValue).joined(separator: " or ")); "
-                + "rank \(rank) of this placement is that rank and runs on \(chipClass.rawValue). "
-                + "A chip class is the chip family and tier read on the Mac that runs the rank; a kernel capability such as mlx_nax does not change it. "
-                + "Choose a placement whose ranks run on the listed classes; a class is added only after a cross-cable check on it passes." + policy
+            return model + " cannot run rank \(rank) (the \(role.words)) on this Mac: its chip is not Apple silicon as the system names it "
+                + "(a virtual machine's chip is not), so this build cannot check the rank. "
+                + "The chip family and tier are read on the Mac that runs the rank; a kernel capability such as mlx_nax does not make one." + policy
         case .artifactNotQualified(let installed, let qualified):
             return model + " is installed as artifact \(installed.prefix(12)), and its cross-cable qualification records ran "
                 + (qualified.isEmpty ? "no artifact" : "only " + qualified.map { String($0.prefix(12)) }.joined(separator: ", "))
@@ -338,11 +348,11 @@ public struct ClusterPairServingRefusal: Error, Equatable, CustomStringConvertib
                 + "A check of one mode family is no evidence for another (a phase split hands the request to one Mac; a pipeline, a speculative "
                 + "round and a tensor-parallel split each compute differently); a family is added only after a cross-cable check in it passes." + policy
         case .shapeNotQualified(let rank, let chipClass, let cuts, let mode, let qualified):
-            return model + " diverged from its single-Mac reference in a cross-cable check at some placement, so a pair serves it only "
-                + "at placements a check passed in (each rank's chip class, the cut, the mode): \(qualified). "
+            return model + " diverged from its single-Mac reference in a cross-cable check, so the chips and shapes that diverged are withheld; "
+                + "on that chip combination a pair serves it only at placements a check passed in: \(qualified). "
                 + "Rank \(rank) of this placement runs on \(chipClass.rawValue) at cut \(cuts.map(String.init).joined(separator: "/")) "
-                + "in \(mode.rawValue), which no passed check covers; "
-                + "a placement is added only after a cross-cable check of it passes." + policy
+                + "in \(mode.rawValue), which is one of them or no passed check covers; other Macs, or another cut, are served."
+                + policy
         }
     }
 }
@@ -352,28 +362,25 @@ extension ClusterPairServingRole {
 }
 
 /// The pair-serving decisions a set of qualification records gives, one per
-/// registered model that has a record (owner decision D4, accepted with "all
-/// models" on 2026-10-09; "universal mechanisms", 2026-10-11; mode-bound,
-/// owner sign-off O9): nothing here names a model, a chip or an order. Each
+/// registered model that has a record (owner decision D4; "universal
+/// mechanisms", 2026-10-11; mode-bound, owner sign-off O9; chip-agnostic,
+/// owner 2026-10-14): nothing here names a model, a chip or an order. Each
 /// mode family of a model (`ClusterPairServingModeFamily`) is
 ///
-/// - withheld when any of the family's records diverged (a token other than
-///   the reference's where the reference had no near tie), at any cut or
-///   order: a grant admits a family at every cut the planner may choose, so
-///   one cut that diverged withholds it even where another passed;
-/// - otherwise granted on the placements of its passing records: a class
-///   reaches a role in that family when a passing run of the family ran it in
-///   that role (a record of a chip no longer on a bench still grants that
-///   chip, and only it);
+/// - granted when some record of the family passed, on any chips: a pass is
+///   evidence for the model, its artifact and that family on any Apple
+///   silicon the planner can place it on (a pass that a divergence of the
+///   very same shape contradicts is no evidence and grants nothing);
+/// - withheld when its records diverged and none passed;
 /// - and otherwise (no record, or only inconclusive ones) not granted.
+///
+/// A diverged record of a granted family withholds only what it ran: its
+/// chip combination is served only at shapes a check passed in, and its exact
+/// rank-shapes are refused (`ClusterPairQualificationRecords`).
 ///
 /// A model is granted when some family is; withheld when no family is granted
 /// and some family diverged; undecided otherwise, which refuses it as having
 /// no grant.
-///
-/// Every model's passed and diverged placements are also kept as shapes
-/// (`shapes(runtimeModelID:)`): a model with a diverged record is planned and
-/// started only at a shape a record passed in (`ClusterPairQualificationRecords`).
 ///
 /// A record is used only when it is consistent (`isConsistent`: the runner's
 /// rule re-derived, two Macs' transport, ranks and cuts in order) and every
@@ -433,20 +440,27 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
         failedShapes = diverged.mapValues { runs in
             unique(runs.compactMap { record, classes in record.mode.map { .init(chipClasses: classes, cuts: record.cuts, mode: $0) } })
         }
-        // Each family with a diverged record is withheld, with its own reason.
-        let withheldFamilies = diverged.mapValues { runs in
-            Dictionary(grouping: runs) { $0.0.mode!.servingFamily }.mapValues { Self.withholding($0) }
+        // A pass contradicted by a divergence of the same shape (chips in rank order, cuts, mode family) is no
+        // evidence for anything: it grants nothing, and the divergence stands.
+        let contradicted = { (model: String, run: ClusterPairServingQualification) -> Bool in
+            (diverged[model] ?? []).contains { record, classes in
+                classes == run.chipClasses && record.cuts == run.cuts && record.mode?.servingFamily == run.family
+            }
         }
         var granted: [ClusterPairServingGrant] = []
         for model in passed.keys.sorted() {
-            let closed = withheldFamilies[model] ?? [:]
-            let kept = (passed[model] ?? []).filter { closed[$0.1.family] == nil }
-            guard !kept.isEmpty else { continue }
-            let runs = unique(kept.map(\.1)).sorted {
+            let evidence = (passed[model] ?? []).filter { !contradicted(model, $0.1) }
+            guard !evidence.isEmpty else { continue }
+            let runs = unique(evidence.map(\.1)).sorted {
                 Self.order($0.cuts, $0.mode.rawValue, $0.chipClasses) < Self.order($1.cuts, $1.mode.rawValue, $1.chipClasses)
             }
+            let passedFamilies = Set(runs.map(\.family))
+            // A family withheld as a whole: it diverged and nothing of it passed.
+            let closed = Dictionary(grouping: (diverged[model] ?? []).filter { !passedFamilies.contains($0.0.mode!.servingFamily) }) {
+                $0.0.mode!.servingFamily
+            }.mapValues { Self.withholding($0) }
             granted.append(ClusterPairServingGrant(runtimeModelID: model, qualifications: runs,
-                evidence: Self.evidence(records: kept.count, placements: runs), withheldFamilies: closed))
+                evidence: Self.evidence(records: evidence.count, placements: runs), withheldFamilies: closed))
         }
         self.granted = granted
         // A model is withheld as a whole only when no family of it is granted.
@@ -470,7 +484,7 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
         let modes = Set(placements.map(\.mode.rawValue)).sorted().joined(separator: ", ")
         let families = Set(placements.map(\.family)).sorted().map(\.description).joined(separator: ", ")
         return "\(records) passing cross-cable qualification record\(records == 1 ? "" : "s") (near-tie rule against single-Mac references): "
-            + orders.joined(separator: "; ") + "; cuts \(cuts); modes \(modes); granted mode families \(families)"
+            + orders.joined(separator: "; ") + "; cuts \(cuts); modes \(modes); granted mode families \(families), on any Apple silicon"
     }
 
     /// Why a model whose records diverged is withheld: the first divergence
@@ -480,9 +494,9 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
         let cuts = Array(Set(ordered.flatMap { $0.0.cuts })).sorted().map(String.init)
         let cutWords = cuts.count == 1 ? "cut \(cuts[0])" : "cuts " + cuts.dropLast().joined(separator: ", ") + " and " + cuts.last!
         guard let (record, classes) = ordered.first, let failure = record.firstFailure else {
-            return "its cross-cable check diverged at \(cutWords)"
+            return "its cross-cable check diverged at \(cutWords) and no passing check of it stands"
         }
-        var detail = "its cross-cable check diverged at \(cutWords) (first: \(placementWords(classes)), cut \(record.cuts.map(String.init).joined(separator: ",")), "
+        var detail = "its cross-cable check diverged at \(cutWords) and no passing check of it stands (first: \(placementWords(classes)), cut \(record.cuts.map(String.init).joined(separator: ",")), "
             + "\(record.generationMode), \(record.promptTokens)-token request"
         if let index = failure.firstDivergenceIndex { detail += ", output \(index)" }
         if let gap = failure.gapInULPs {
@@ -499,8 +513,8 @@ public struct ClusterPairServingDecisions: Sendable, Equatable {
 /// single-Mac references): the near-tie rule decides each record
 /// (`acceptedCrossClassVerdicts`), `ClusterPairServingDecisions` decides each
 /// model. Single-Mac serving requirements (`ModelRuntimeRequirements`) are
-/// separate and unchanged. Adding a chip, an order or a model is adding the
-/// runner's record of a passing run, not editing a table.
+/// separate and unchanged. Adding a model or a mode family is adding the
+/// runner's record of a passing run, not editing a table; no chip is listed.
 public enum ClusterPairServingGrants {
     /// The comparator verdicts a cross-cable check may have and pass.
     /// `diverged` and `incomparable` fail it.
@@ -514,7 +528,7 @@ public enum ClusterPairServingGrants {
     public static let decisions = ClusterPairServingDecisions(records: records)
 
     public static var granted: [ClusterPairServingGrant] { decisions.granted }
-    /// Registered models whose records diverged, and why.
+    /// Registered models whose records diverged and none passed, and why.
     public static var withheld: [String: String] { decisions.withheld }
 
     /// The artifact a record of `runtimeModelID` must have run for an
@@ -572,7 +586,10 @@ public enum ClusterPairServingGrants {
     }
 
     /// One rank of a placement, checked on the Mac that runs it with that
-    /// Mac's own chip class. Every rank checked this way is the whole placement.
+    /// Mac's own chip class. Any Apple silicon may run any rank of a granted
+    /// family; a rank whose class ran a diverged shape at this rank refuses
+    /// that exact shape. The chip combination is checked where every rank's
+    /// class is known (`startRefusal`, `plannable`, `requirePlacement`).
     public static func requireRank(_ rank: Int, of rankCount: Int, chipClass: ClusterChipClass?,
                                    runtimeModelID: String, publicModelID: String, artifactSHA256: String? = nil,
                                    cuts: [Int]? = nil, mode: ClusterGenerationMode? = nil,
@@ -597,12 +614,8 @@ public enum ClusterPairServingGrants {
         guard grant.families.contains(family) else {
             throw refuse(.modeNotQualified(rank: rank, mode: mode, granted: grant.families))
         }
-        let allowed = grant.chipClasses(for: role, family: family)
-        guard allowed.contains(chipClass) else {
-            throw refuse(.classNotAllowed(rank: rank, role: role, chipClass: chipClass, allowed: allowed.sorted()))
-        }
-        // A shape-restricted family needs the placement's shape: a caller that
-        // does not give it is refused rather than admitted at any cut.
+        // A family with a diverged record needs the placement's shape: a
+        // caller that does not give it is refused rather than admitted at any cut.
         let checks = records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions)
         if checks.restricts(family) {
             guard let cuts, checks.admitsRank(rank, of: rankCount, chipClass: chipClass, cuts: cuts, mode: mode) else {
@@ -612,34 +625,40 @@ public enum ClusterPairServingGrants {
         }
     }
 
+    /// The combination half of a placement, where every rank's class is known:
+    /// nil, or the refusal for a chip combination that diverged at a shape no
+    /// passed check ran.
+    static func combinationRefusal(_ rankClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode,
+                                   runtimeModelID: String, publicModelID: String, artifactSHA256: String?,
+                                   decisions: ClusterPairServingDecisions) -> ClusterPairServingRefusal? {
+        let checks = records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions)
+        guard checks.restricts(mode.servingFamily), !checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode) else { return nil }
+        let rank = rankClasses.count - 1
+        guard let last = rankClasses.compactMap({ $0 }).last else { return nil }
+        return .init(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+            reason: .shapeNotQualified(rank: rank, chipClass: rankClasses[rank] ?? last, cuts: cuts, mode: mode, qualified: checks.passedShapesText))
+    }
+
     /// Whether the planner may consider a placement of this model: the rule a
-    /// start applies, from the chip names the profiles carry. A family with a
-    /// failed check is planned only at the shapes a check passed in (and
-    /// refused when started); a model with a grant is planned only in a granted
-    /// family, with every classed rank listed for its role in that family; a
-    /// rank with no class (a test profile, a virtual machine) and a model with
-    /// no grant at all are left to the start, which refuses them.
+    /// start applies, from the chip names the profiles carry. A model with a
+    /// grant is planned only in a granted family; a family with a diverged
+    /// record keeps to `ClusterPairQualificationRecords.admits`; a rank with
+    /// no class (a test profile, a virtual machine) and a model with no grant
+    /// at all are left to the start, which refuses them.
     public static func plannable(_ rankClasses: [ClusterChipClass?], cuts: [Int], mode: ClusterGenerationMode,
                                  runtimeModelID: String, artifactSHA256: String? = nil,
                                  decisions: ClusterPairServingDecisions = decisions) -> Bool {
         let checks = records(runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256, decisions: decisions)
-        if checks.restricts(mode.servingFamily) { return checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode) }
+        if checks.restricts(mode.servingFamily), !checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode) { return false }
         let scoped = Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID)
         guard let grant = scoped.granted.first(where: { $0.runtimeModelID == runtimeModelID }) else { return true }
-        let family = mode.servingFamily
-        guard grant.families.contains(family) else { return false }
-        return rankClasses.enumerated().allSatisfy { rank, chipClass in
-            guard let chipClass, let role = ClusterPairServingRole.of(rank: rank, rankCount: rankClasses.count) else { return true }
-            return grant.chipClasses(for: role, family: family).contains(chipClass)
-        }
+        return grant.families.contains(mode.servingFamily)
     }
 
     /// What the start would refuse of a planned placement (each rank's chip
     /// class in rank order, its cuts and mode), nil when every rank's own
-    /// check would admit it: the model's grant (a model withheld as a whole is
-    /// refused here, as at the start), its mode family, each rank's class for
-    /// its role and, for a shape-restricted family, the shape. A plan may
-    /// exist where `plannable` admits a passed shape of a withheld family; the
+    /// check and the combination check admit it: the model's grant, its mode
+    /// family and, for a family with a diverged record, the shape. The
     /// onboarding offers a model only when this is nil, so it offers exactly
     /// what a start serves. A rank whose chip has no class (a test profile, a
     /// virtual machine) is left to its own start, as in `plannable`.
@@ -654,7 +673,8 @@ public enum ClusterPairServingGrants {
                                 publicModelID: publicModelID, artifactSHA256: artifactSHA256, cuts: cuts, mode: mode,
                                 decisions: decisions)
             }
-            return nil
+            return combinationRefusal(rankClasses, cuts: cuts, mode: mode, runtimeModelID: runtimeModelID,
+                                      publicModelID: publicModelID, artifactSHA256: artifactSHA256, decisions: decisions)
         } catch let refusal as ClusterPairServingRefusal {
             return refusal
         } catch {
@@ -675,14 +695,11 @@ public enum ClusterPairServingGrants {
                             runtimeModelID: runtimeModelID, publicModelID: publicModelID, cuts: cuts, mode: mode,
                             decisions: decisions)
         }
-        // Each rank's half holds; under shape restriction the classes must
-        // also come from one passed check together.
-        let checks = records(runtimeModelID: runtimeModelID, decisions: decisions)
-        if let cuts, let mode, checks.restricts(mode.servingFamily), let last = rankClasses.last.flatMap({ $0 }),
-           !checks.admits(chipClasses: rankClasses, cuts: cuts, mode: mode) {
-            throw ClusterPairServingRefusal(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-                reason: .shapeNotQualified(rank: rankClasses.count - 1, chipClass: last, cuts: cuts, mode: mode,
-                    qualified: checks.passedShapesText))
+        // Each rank's half holds; on a chip combination that diverged the
+        // classes must also come from one passed check together.
+        if let cuts, let mode, let refusal = combinationRefusal(rankClasses, cuts: cuts, mode: mode, runtimeModelID: runtimeModelID,
+                                                                publicModelID: publicModelID, artifactSHA256: nil, decisions: decisions) {
+            throw refusal
         }
     }
 }

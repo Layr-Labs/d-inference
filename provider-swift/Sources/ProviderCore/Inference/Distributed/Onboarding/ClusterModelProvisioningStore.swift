@@ -88,10 +88,12 @@ extension ClusterModelCopyTrust {
     /// Every artifact digest this build's bundled qualification records name.
     static let pinnedArtifacts: Set<String> = Set(ClusterPairServingGrants.records.map(\.artifactSHA256))
 
-    /// The artifacts a pair may serve with this build (a granted model's records): what the onboarding offers to copy
-    /// from another Mac or to download, so nobody waits for bytes these Macs could not serve together.
+    /// The artifacts a pair may serve with this build (a granted model's records, for a model the installed path has
+    /// time budgets for): what the onboarding offers to copy from another Mac or to download, so nobody waits for bytes
+    /// these Macs could not serve together.
     static let servableArtifacts: Set<String> = {
-        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID))
+        let rows = Set(DistributedInstalledPairServingTable.rows.map(\.runtimeModelID))
+        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID)).intersection(rows)
         return Set(ClusterPairServingGrants.records.filter { granted.contains($0.runtimeModelID) }.map(\.artifactSHA256))
     }()
 

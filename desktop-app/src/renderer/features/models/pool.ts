@@ -84,7 +84,7 @@ export function phaseCopy(status: AutopilotStatus, running: boolean): PhaseCopy 
       label: 'Paused',
       tone: 'warning',
       detail:
-        'Loaded models stay as they are and pins still protect theirs. Resume to let Autopilot change what’s loaded again.',
+        'Loaded models stay as they are, and models kept in memory stay loaded. Resume to let Autopilot change what’s loaded again.',
     };
   switch (status.phase) {
     case 'active':

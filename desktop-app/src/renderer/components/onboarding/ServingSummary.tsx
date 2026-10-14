@@ -46,7 +46,7 @@ export function ServingSummary({
       ? {
           icon: <Layers size={15} />,
           text: pinned.length
-            ? 'Keeps pinned models loaded and manages the rest as demand changes.'
+            ? 'Keeps the models you choose in memory and manages the rest as demand changes.'
             : 'Chooses which downloaded models stay in memory as demand changes.',
         }
       : {

@@ -74,7 +74,7 @@ export function ManualModels({
       {note}
       <div className="model-memory">
         <div>
-          <span className="muted">Native load allowance</span>
+          <span className="muted">Memory available for models</span>
           <strong>{gb(state.memory.free_for_load_gb)}</strong>
         </div>
         <div className="memory-track">

@@ -10,7 +10,7 @@ import styles from './advancedOptions.module.css';
 const pinCopy: Record<StartMethod, { title: string; lead: string; noun: string }> = {
   autopilot: {
     title: 'Keep a model always on',
-    lead: 'A pinned model stays loaded, so it’s always ready on this Mac and its local endpoint. Autopilot manages the rest.',
+    lead: 'A model kept in memory stays loaded, so it’s always ready on this Mac and its local endpoint. Autopilot manages the rest.',
     noun: 'pinned',
   },
   manual: {

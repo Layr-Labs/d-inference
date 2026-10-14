@@ -57,7 +57,7 @@ it('pins models to keep them always on and sends the pins with Autopilot', async
   fireEvent.click(pin(/GPT-OSS 20B/));
   expect(within(panel).getByText('2 pinned · at least 22.5 GB of 64 GB memory')).toBeVisible();
   expect(screen.getByRole('region', { name: 'What happens next' })).toHaveTextContent(
-    'Keeps pinned models loaded and manages the rest as demand changes.',
+    'Keeps the models you choose in memory and manages the rest as demand changes.',
   );
   fireEvent.click(screen.getByRole('button', { name: /Start serving with Autopilot/ }));
   await waitFor(() => expect(done).toHaveBeenCalledOnce());
@@ -82,7 +82,7 @@ it('runs locally only with at least one pinned model and no account', async () =
   fireEvent.click(screen.getByRole('radio', { name: /Use models locally/ }));
   const start = screen.getByRole('button', { name: /Start local models/ });
   expect(start).toBeDisabled();
-  expect(screen.getByText('Pin a model to run it locally.')).toBeVisible();
+  expect(screen.getByText('Keep a model in memory to run it locally.')).toBeVisible();
   fireEvent.click(pin(/GPT-OSS 20B/));
   expect(start).toBeEnabled();
   expect(screen.getByText('Local only doesn’t need a Darkbloom account.')).toBeVisible();

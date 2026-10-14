@@ -40,6 +40,7 @@ import Foundation
             try checkRequestRoutes(inputs, checks)
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
+            try checkBenchCap(checks)
             try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }

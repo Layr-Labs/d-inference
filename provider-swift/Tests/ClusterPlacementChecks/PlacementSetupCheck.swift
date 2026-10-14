@@ -107,6 +107,51 @@ import Foundation
         require("chips of no known generation keep the plain plan", unknown.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
     }
 
+    /// The developer bench cap (`ClusterPlannerBenchCap`, test only): an explicit environment variable that, in a
+    /// debug build, lowers what the planner believes each member can give a model, so a large pair is planned as a
+    /// smaller pair would be. A release build refuses it; the load gates never see it.
+    static func benchCap(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                         slowTwo: [ClusterPlacementDevice]) throws {
+        let name = ClusterPlannerBenchCap.environmentName
+        require("bench cap: the variable is named as a developer bench override", name.hasPrefix("DARKBLOOM_DEV_BENCH_"))
+        require("bench cap: unset, nothing is capped in either build", try ClusterPlannerBenchCap.capBytes(environment: [:], debugBuild: true) == nil
+            && ClusterPlannerBenchCap.capBytes(environment: [:], debugBuild: false) == nil)
+        require("bench cap: a debug build reads whole GiB", try ClusterPlannerBenchCap.capBytes(environment: [name: "96"], debugBuild: true) == 96 * gib)
+        refuses("bench cap: a release build refuses the override", because: "not available in a release build") {
+            _ = try ClusterPlannerBenchCap.capBytes(environment: [name: "96"], debugBuild: false)
+        }
+        for bad in ["", "abc", "0", "-8", "1e3", "9.5", " 96", "99999999"] {
+            refuses("bench cap: \"\(bad)\" is refused", because: "whole number of GiB") {
+                _ = try ClusterPlannerBenchCap.capBytes(environment: [name: bad], debugBuild: true)
+            }
+        }
+        let plain = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [:], benchDebugBuild: true)
+        require("bench cap: uncapped, a member holds the 5 GiB fixture whole", plain.result.alone.contains { $0.fit == .now }
+            && !plain.lines.contains { $0.contains("Developer bench cap") })
+        // Capped to 10 GiB each, no member can hold the model and its request alone: the plan is a real split.
+        let capped = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+            environment: [name: "10"], benchDebugBuild: true)
+        require("bench cap: capped to 10 GiB, neither member holds the model alone", capped.result.alone.allSatisfy { !$0.fit.possible })
+        require("bench cap: capped to 10 GiB, the chosen plan is a split in which no rank holds every layer and each fits the cap",
+            capped.result.chosen.map { chosen in !chosen.mode.isPhaseSplit && chosen.ranks.count == 2
+                && chosen.ranks.allSatisfy { $0.needBytes <= 10 * gib && $0.endLayer > $0.firstLayer } } == true && capped.setup != nil)
+        require("bench cap: the plan says the cap is on, that it is test only and that the load gates are unchanged",
+            capped.lines.contains { $0.contains("Developer bench cap") && $0.contains(name) }
+                && capped.lines.contains { $0.contains("test only") } && capped.lines.contains { $0.contains("load gate") && $0.contains("unchanged") })
+        refuses("bench cap: a release build refuses to plan with the override set", because: "not available in a release build") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+                environment: [name: "10"], benchDebugBuild: false)
+        }
+        refuses("bench cap: a cap below the load gate's own minimum is refused", because: "below the load gate's minimum") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout,
+                environment: [name: "2"], benchDebugBuild: true)
+        }
+    }
+
     /// The universal rule of qualification records (`ClusterPairQualificationRecords`): a model with a failed
     /// cross-cable check on record is planned and started only at shapes a check passed in. Synthetic records of
     /// two to four ranks on several chips; then the registered GPT-OSS records through the guided step's own
@@ -335,6 +380,7 @@ import Foundation
         try speculativeHeadByDefault(layout: layout, description: description, capability: capability,
             capabilityHash: capabilityHash, slowTwo: slowTwo)
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
+        try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,

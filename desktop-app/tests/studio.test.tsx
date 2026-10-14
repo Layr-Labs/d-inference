@@ -48,3 +48,12 @@ it('reports a failed copy instead of claiming it was copied', async () => {
   expect(screen.queryByText('Copied')).not.toBeInTheDocument();
   expect(screen.getByText('Couldn’t copy to the clipboard.')).toBeVisible();
 });
+
+it('confirms only the value that was copied', async () => {
+  api.copy.mockResolvedValue(undefined);
+  render(<Studio backend={backendWith(serving())} />);
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Copy base URL' })));
+  expect(screen.getByRole('button', { name: 'Base URL copied' })).toBeVisible();
+  expect(screen.getByRole('button', { name: /Copy example/ })).toBeVisible();
+  expect(screen.queryByText('Copied')).not.toBeInTheDocument();
+});

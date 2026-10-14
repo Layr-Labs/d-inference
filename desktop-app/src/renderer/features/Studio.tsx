@@ -14,7 +14,8 @@ export function Studio({
   const state = backend.state!;
   const [mode, setMode] = useState('combined');
   const [revealed, setKey] = useState<string>();
-  const [copied, setCopied] = useState(false);
+  // Which value was just copied, so only that button confirms it.
+  const [copied, setCopied] = useState<'url' | 'example' | null>(null);
   const [problem, setProblem] = useState('');
   const models = state.models.filter((model) => model.downloaded && model.eligible);
   const endpoint = state.endpoint;
@@ -26,12 +27,12 @@ export function Studio({
   const example = served.length && !served.includes(model) ? served[0] : model;
   // A key belongs to the running endpoint; it is never left on screen after the endpoint stops.
   const key = endpoint ? revealed : undefined;
-  const copy = async (value: string) => {
+  const copy = async (value: string, what: 'url' | 'example') => {
     try {
       setProblem('');
       await api?.copy(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      setCopied(what);
+      setTimeout(() => setCopied((current) => (current === what ? null : current)), 1600);
     } catch {
       setProblem('Couldn’t copy to the clipboard.');
     }
@@ -116,10 +117,10 @@ export function Studio({
           {endpoint && (
             <button
               className="icon-button"
-              aria-label="Copy base URL"
-              onClick={() => void copy(endpoint.base_url)}
+              aria-label={copied === 'url' ? 'Base URL copied' : 'Copy base URL'}
+              onClick={() => void copy(endpoint.base_url, 'url')}
             >
-              <Copy size={16} />
+              {copied === 'url' ? <Check size={16} /> : <Copy size={16} />}
             </button>
           )}
         </div>
@@ -147,8 +148,9 @@ export function Studio({
       <section className="section">
         <div className="section-title">
           <h2>Make a request</h2>
-          <Button disabled={!endpoint} onClick={() => void copy(curl)}>
-            {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy example'}
+          <Button disabled={!endpoint} onClick={() => void copy(curl, 'example')}>
+            {copied === 'example' ? <Check size={15} /> : <Copy size={15} />}{' '}
+            {copied === 'example' ? 'Copied' : 'Copy example'}
           </Button>
         </div>
         <pre className="code-block">{curl}</pre>

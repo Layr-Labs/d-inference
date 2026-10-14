@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop Studio endpoint model and key
 
-- Default Studio's model to the one the local endpoint serves, so the copied example request targets a served model and Apply serving mode does not switch models unless you choose another. Remove a revealed API key from the screen when the endpoint stops, and report clipboard or key-read failures instead of showing "Copied".
+- Default Studio's model to the one the local endpoint serves, so the copied example request targets a served model and Apply serving mode does not switch models unless you choose another. Remove a revealed API key from the screen when the endpoint stops, and report clipboard or key-read failures instead of showing "Copied". Copying the base URL now confirms on its own button instead of on Copy example.
 
 ## Unreleased — desktop hardware load
 

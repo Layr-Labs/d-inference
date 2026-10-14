@@ -1,19 +1,23 @@
 # Keep a cluster member always on
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
-Run each Mac of a coordinator-paired cluster as an ordinary background
-service, the way a solo `darkbloom start` runs: it starts at login, waits for
-the Thunderbolt link, restarts the member after a failure with backoff, updates
-together with the other member, and asks for macOS permissions once.
+`darkbloom cluster` on each Mac does all of this. Nothing below is needed: it
+explains what the onboarding sets up and how to check it.
+
+Each Mac of a cluster runs an ordinary background service, the way a solo
+`darkbloom start` runs: it starts at login, waits for the Thunderbolt link,
+restarts this Mac's part after a failure with backoff, and asks for macOS
+permissions once.
 
 ## The cluster service starts at login (`darkbloom cluster`)
 
 The guided onboarding needs none of the steps below: `darkbloom cluster`, on
 the leader and on every member, installs this Mac's cluster service (the
 process that answers the paired Mac over the link and runs this Mac's part)
-as a per-user LaunchAgent, so after a reboot or a log out and in the cluster
-comes back by itself, with no command run on either Mac.
+as a per-user LaunchAgent, so once each Mac is logged in again after a reboot
+the cluster comes back by itself, with no command run on either Mac (see
+[After a restart or a power cut](#after-a-restart-or-a-power-cut)).
 
 - launchd runs `darkbloom cluster service --supervise`: the same supervisor as
   below, around `darkbloom cluster service`. A service that ends is restarted
@@ -53,6 +57,7 @@ comes back by itself, with no command run on either Mac.
 - Logs: `~/.darkbloom/cluster-setup/service.log` (`cluster service supervisor:`
   and `cluster service:` lines); this Mac's part logs to `rank.log` beside it.
 
+
 ### Check after a reboot (owner)
 
 1. Pair and serve once with `darkbloom cluster` on both Macs (the leader picks
@@ -70,79 +75,23 @@ comes back by itself, with no command run on either Mac.
    restart, `darkbloom status` shows no cluster service line except
    `not running and not set to start at login` on a paired Mac.
 
-## Prerequisites
 
-- A saved coordinator-paired setup on each Mac
-  ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)).
-  `darkbloom start --cluster-member` must already work in the foreground.
-- The cluster link set up once on each Mac (step 2 of `darkbloom cluster`,
-  or `darkbloom cluster link --fix`): one administrator approval gives the
-  Thunderbolt port Darkbloom's own link service with its own IPv4 address,
-  which RDMA needs. macOS keeps that service across reboots and updates, so it
-  is not asked again; `darkbloom cluster link` reports `ready` when it is done.
-- The signed, notarized Darkbloom release installed by the installer
-  ([installation](installation.md)). A locally built binary works, but macOS
-  treats every new ad-hoc build as a new program and asks again (see
-  [permissions](#permissions-asked-once)).
-- Both Macs signed in to the same account and logged in to a desktop session
-  (the service is a per-user LaunchAgent, like the solo provider).
+### After a restart or a power cut
 
-## Steps
+The cluster service is a login agent: it needs the logged-in session for its
+keys and attestation, so it starts when the Mac is logged in. `darkbloom cluster`
+says which applies to each Mac, from its own settings:
 
-1. On each Mac, install the member as a service:
+- Automatic login on: "After a restart or power cut, this Mac comes back by
+  itself and serves again (automatic login is on)."
+- FileVault on: "After a restart or power cut, this Mac serves again once
+  someone logs in (FileVault keeps the disk locked until then)."
+- Otherwise: "After a restart or power cut, this Mac serves again once someone
+  logs in. To make it automatic, turn on automatic login (System Settings →
+  Users & Groups; needs FileVault off)."
 
-   ```bash
-   darkbloom start --cluster-member --always-on
-   ```
-
-   This replaces any running provider service on that Mac (after a drain) with
-   the provider LaunchAgent (`io.darkbloom.provider`) and arms the watchdog
-   (`io.darkbloom.watchdog`). launchd runs `darkbloom start --cluster-member
-   --supervise`, the supervisor, which runs the member.
-   The command ends with a **Permissions** line: either macOS will ask once,
-   or the reasons it will not (an ad-hoc build, an executable outside
-   `Darkbloom.app`, a release without the Local Network usage string).
-   Run it in Terminal on that Mac's own screen, so you are there when macOS asks.
-2. The first time the member reaches the link, macOS shows
-   **"Darkbloom" would like to find and connect to devices on your local
-   network**. Click **Allow** on each Mac where it appears. This is the only
-   permission step; it is not repeated after restarts, reboots or updates.
-3. Wait for the pair: the coordinator forms it once both members have
-   registered.
-
-## Verify
-
-- `darkbloom status` on each Mac prints a line such as
-  `cluster member supervisor: running; member pid 1234 up 310 s; runs 1, quick failures 0/3, guard teardowns 0/6`.
-- `~/.darkbloom/provider.log` shows `cluster-member supervisor:` lines: the
-  permissions verdict (`permissions: asked once (...)`), the link wait, each
-  member start, and the reason and wait of every restart.
-- The coordinator lists the pair as serving.
-
-## What the supervisor does
-
-| Situation | Behaviour |
-|---|---|
-| Boot, port not ready | Waits for this Mac's cluster port before the member registers: port active, its own IPv4 address, and the IPv4-mapped GID that RDMA needs published (rechecks every 5 s; RDMA off or absent: every 60 s with the fix in the log) |
-| Coordinator unreachable at boot or restarting | The member keeps reconnecting; this is not counted as a failure |
-| Member exits or is killed (anything the supervisor did not ask for, a clean exit included) | Restarts it after 15 s, doubling to 300 s; a run of 120 s or more resets the wait |
-| Three runs in a row each shorter than 120 s | Stops restarting and parks, holding no memory, until `darkbloom restart` |
-| JACCL guard teardown (exit 75) | Restarts without counting a startup failure; six inside 120 s mean the link is flapping and it parks |
-| Member alive but its heartbeat is 75 s old (after a 180 s start grace) | Asks it to stop (SIGTERM), then restarts it; SIGKILL only if it ignored SIGTERM for 300 s |
-| The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
-| An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |
-| A pair forms | The leader runs one greedy 8-token warmup request before the pair accepts work; if it fails or takes over 300 s the pair is retired and formed again (`DARKBLOOM_CLUSTER_WARMUP=0` turns this off) |
-| Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together |
-| `darkbloom stop` | Drains, stops the member and keeps it stopped across reboots |
-| Before every run, and at the member's own start and end | Orphan sweep: a worker or owner whose parent is gone is given its own contract to end, then SIGTERM, SIGKILL only after the kill margin; a stranded device journal is cleared once nothing it names runs; bootstrap directories whose socket no process holds any more are removed (read from the descriptor tables; nothing connects). One log line when it found something (`darkbloom cluster reap --json` runs the same sweep by hand) |
-
-The policies are ported from the owner's ThunderMLX restart loop and live in
-`provider-swift/Sources/ProviderCore/Service/ClusterSupervision/`; the process
-is `provider-swift/Sources/darkbloom/ClusterMemberSupervisor.swift`. After a
-stop, `darkbloom cluster verify-teardown --json` says whether anything is left on
-this Mac (processes, wired memory against a baseline, the journal, bootstrap
-directories) and exits 1 when it is not clean; `darkbloom cluster cancel-all`
-force-cancels every request served on this Mac without the leader or SSH.
+Darkbloom does not switch to a system daemon for this: with FileVault on, the
+disk stays locked until someone logs in, so a daemon would not help.
 
 ## Permissions asked once
 
@@ -152,8 +101,8 @@ system setting:
 
 | Permission | Why the member needs it | What makes it once |
 |---|---|---|
-| Local Network privacy | The follower dials the leader over the Thunderbolt link (a local network address). A member started by hand in a shell runs under that shell's approval (or a remote-login exemption on a bench rig), which is why it works there while the same binary started by launchd is refused (`Local network prohibited`) until Darkbloom itself is approved. | The LaunchAgent runs the executable inside `Darkbloom.app` (the recorded path is the resolved one, not the `~/.darkbloom/bin` symlink); the app carries `CFBundleIdentifier` `io.darkbloom.provider` and `NSLocalNetworkUsageDescription`, and is Developer-ID signed, notarized and stapled. The approval follows that signed identity, so updates keep it. The owner and worker processes the member starts inherit it. No configuration profile can pre-approve Local Network, so one click per Mac is the minimum. |
-| Cluster link setup (administrator approval) | RDMA over Thunderbolt needs an IPv4 address on the cable port itself (JACCL refuses a port without an IPv4-mapped GID); macOS leaves the port in the Thunderbolt Bridge with none. | Done once per Mac from step 2 of `darkbloom cluster` (or `darkbloom cluster link --fix`): one macOS administrator approval adds Darkbloom's own link service to the port. macOS keeps the service through reboots and updates; the supervisor only waits for it at boot and never changes it. |
+| Local Network privacy | The follower dials the leader over the Thunderbolt link (a local network address). A member started by hand in a shell runs under that shell's approval, which is why it works there while the same binary started by launchd is refused (`Local network prohibited`) until Darkbloom itself is approved. | The LaunchAgent runs the executable inside `Darkbloom.app` (the recorded path is the resolved one, not the `~/.darkbloom/bin` symlink); the app carries `CFBundleIdentifier` `io.darkbloom.provider` and `NSLocalNetworkUsageDescription`, and is Developer-ID signed, notarized and stapled. The approval follows that signed identity, so updates keep it. The owner and worker processes the member starts inherit it. No configuration profile can pre-approve Local Network, so one click per Mac is the minimum. |
+| Cluster link setup (administrator approval) | The cable port needs Darkbloom's own link service for RDMA. | Done once per Mac with the onboarding's one macOS approval. macOS keeps the service through reboots and updates; the supervisor only waits for it at boot and never changes it. |
 | Application firewall (when on) | A rank that listens: by default only the leader (rank 0) listens; a follower only dials out. | With **Automatically allow downloaded signed software** on (the macOS default), any Developer-ID-signed program may accept connections without an alert. The release signs the main executable and the cluster worker and placement tool it ships in `Contents/Helpers`, under their own identifiers. An ad-hoc build is not covered and raises one alert per new build. |
 
 The release workflow (`.github/workflows/release-swift.yml`) writes the usage
@@ -186,41 +135,24 @@ outside the bundle is not Developer-ID signed: on a Mac whose rank listens
 with the firewall on, it can raise a firewall alert per build when it opens
 the JACCL coordinator socket.
 
+
 ## Owner steps not automated
 
 These need the owner at the Mac or an owner decision; Darkbloom changes no
 system setting:
 
-1. Approve the Local Network alert once on each Mac (step 2). If it was
-   dismissed: **System Settings → Privacy & Security → Local Network**, turn on
-   **Darkbloom**.
-2. Unattended reboots: a LaunchAgent starts only when the user's session
-   starts. For a Mac to return to serving after a power cut with nobody there,
-   it must log in automatically (**System Settings → Users & Groups →
-   Automatically log in as**), which macOS offers only with FileVault off.
-   Otherwise serving resumes when the owner logs in.
+1. Approve the Local Network alert once on each Mac. If it was dismissed:
+   **System Settings → Privacy & Security → Local Network**, turn on
+   **Darkbloom**, then run `darkbloom cluster` again.
+2. Unattended reboots: the service starts only when the user's session starts.
+   For a Mac to return to serving after a power cut with nobody there, it must
+   log in automatically (**System Settings → Users & Groups → Automatically log
+   in as**), which macOS offers only with FileVault off. Otherwise serving
+   resumes when the owner logs in; `darkbloom cluster` says which applies.
 3. If the firewall is set to **Block all incoming connections**, a listening
-   rank cannot work; keep the default placement (the leader listens) or allow
-   Darkbloom under **Firewall → Options**.
+   rank cannot work; allow Darkbloom under **Firewall → Options**.
 4. Reboot test, after the first approval: reboot both Macs, log in, and check
-   that `darkbloom status` shows the supervisor running and the pair serving
-   with no alert on either Mac.
-5. Signing and notarization (owner identity): the release workflow signs the
-   cluster helpers with `scripts/sign-cluster-helpers.sh` (Developer ID
-   certificate from the release secrets), then the app, and notarizes it. To
-   sign a locally packaged app the same way, run
-   `scripts/sign-cluster-helpers.sh <Darkbloom.app> <keychain> "<Developer ID
-   Application identity>" <team id> provider-swift/entitlements-cluster-worker.plist`
-   before signing the app; no agent holds or uses the identity.
-6. Release check, once per Mac with someone at the screen: install the signed
-   release, `darkbloom start --cluster-member --always-on`, answer the one
-   Local Network alert, then reboot, restart the member 20 times and update to
-   a second signed build: no further alert.
-7. Check the installed identity on each Mac:
-   `codesign -dv --verbose=2 ~/.darkbloom/Darkbloom.app` (authority
-   `Developer ID Application`), `spctl -a -vv ~/.darkbloom/Darkbloom.app`
-   (accepted, notarized) and
-   `plutil -extract NSLocalNetworkUsageDescription raw ~/.darkbloom/Darkbloom.app/Contents/Info.plist`.
+   that `darkbloom cluster` shows the cluster serving with no alert on either Mac.
 
 ## Troubleshooting
 
@@ -231,3 +163,104 @@ system setting:
 | Follower never connects; log shows `Local network prohibited` | **Privacy & Security → Local Network** | Turn on Darkbloom; an ad-hoc build needs this per build |
 | A firewall alert after an update | `codesign -dv` on the listening binary | The binary is not Developer-ID signed; install the release build |
 | Install or provider log says `permissions: not asked once` | The listed reasons | Install the signed release (a locally built binary is ad-hoc signed and outside `Darkbloom.app`) |
+
+## Developer: a coordinator-paired member as a service
+
+Nothing in this section is part of the user path; `darkbloom cluster` replaces
+it. It documents the developer route that runs `darkbloom start
+--cluster-member` under the provider's own LaunchAgent.
+
+### Prerequisites
+
+- A saved coordinator-paired setup on each Mac
+  ([coordinator-paired member](../reference/configuration.md#coordinator-paired-member)).
+  `darkbloom start --cluster-member` must already work in the foreground.
+- The cluster link set up once on each Mac (the onboarding's one macOS
+  approval): the Thunderbolt port gets Darkbloom's own link service with its
+  own IPv4 address, which RDMA needs (JACCL refuses a port without an
+  IPv4-mapped GID). macOS keeps that service across reboots and updates;
+  `darkbloom cluster link` reports `ready` when it is done.
+- The signed, notarized Darkbloom release installed by the installer
+  ([installation](installation.md)). A locally built binary works, but macOS
+  treats every new ad-hoc build as a new program and asks again (see
+  [permissions](#permissions-asked-once)).
+- Both Macs signed in to the same account and logged in to a desktop session
+  (the service is a per-user LaunchAgent, like the solo provider).
+
+### Steps
+
+1. On each Mac, install the member as a service:
+
+   ```bash
+   darkbloom start --cluster-member --always-on
+   ```
+
+   This replaces any running provider service on that Mac (after a drain) with
+   the provider LaunchAgent (`io.darkbloom.provider`) and arms the watchdog
+   (`io.darkbloom.watchdog`). launchd runs `darkbloom start --cluster-member
+   --supervise`, the supervisor, which runs the member.
+   The command ends with a **Permissions** line: either macOS will ask once,
+   or the reasons it will not (an ad-hoc build, an executable outside
+   `Darkbloom.app`, a release without the Local Network usage string).
+   Run it in Terminal on that Mac's own screen, so you are there when macOS asks.
+2. The first time the member reaches the link, macOS shows
+   **"Darkbloom" would like to find and connect to devices on your local
+   network**. Click **Allow** on each Mac where it appears. This is the only
+   permission step; it is not repeated after restarts, reboots or updates.
+3. Wait for the pair: the coordinator forms it once both members have
+   registered.
+
+### Verify
+
+- `darkbloom status` on each Mac prints a line such as
+  `cluster member supervisor: running; member pid 1234 up 310 s; runs 1, quick failures 0/3, guard teardowns 0/6`.
+- `~/.darkbloom/provider.log` shows `cluster-member supervisor:` lines: the
+  permissions verdict (`permissions: asked once (...)`), the link wait, each
+  member start, and the reason and wait of every restart.
+- The coordinator lists the pair as serving.
+
+
+### What the supervisor does
+
+| Situation | Behaviour |
+|---|---|
+| Boot, port not ready | Waits for this Mac's cluster port before the member registers: port active, its own IPv4 address, and the IPv4-mapped GID that RDMA needs published (rechecks every 5 s; RDMA off or absent: every 60 s with the fix in the log) |
+| Coordinator unreachable at boot or restarting | The member keeps reconnecting; this is not counted as a failure |
+| Member exits or is killed (anything the supervisor did not ask for, a clean exit included) | Restarts it after 15 s, doubling to 300 s; a run of 120 s or more resets the wait |
+| Three runs in a row each shorter than 120 s | Stops restarting and parks, holding no memory, until `darkbloom restart` |
+| JACCL guard teardown (exit 75) | Restarts without counting a startup failure; six inside 120 s mean the link is flapping and it parks |
+| Member alive but its heartbeat is 75 s old (after a 180 s start grace) | Asks it to stop (SIGTERM), then restarts it; SIGKILL only if it ignored SIGTERM for 300 s |
+| The leader's pair engine stays wedged (its own watchdog's verdict) for 180 s | Same recycle |
+| An active request made no progress at all for `clamp(120, 120 + prompt tokens / 1000, 900)` s (when the member reports one) | Same recycle |
+| A pair forms | The leader runs one greedy 8-token warmup request before the pair accepts work; if it fails or takes over 300 s the pair is retired and formed again (`DARKBLOOM_CLUSTER_WARMUP=0` turns this off) |
+| Cluster update slot (every 30 min, at an offset fixed by the cluster ID, the same on both Macs) | If a release is available: drains the member, installs, restarts from the new binary; both Macs do this together |
+| `darkbloom stop` | Drains, stops the member and keeps it stopped across reboots |
+| Before every run, and at the member's own start and end | Orphan sweep: a worker or owner whose parent is gone is given its own contract to end, then SIGTERM, SIGKILL only after the kill margin; a stranded device journal is cleared once nothing it names runs; bootstrap directories whose socket no process holds any more are removed (read from the descriptor tables; nothing connects). One log line when it found something (`darkbloom cluster reap --json` runs the same sweep by hand) |
+
+The policies are ported from the owner's ThunderMLX restart loop and live in
+`provider-swift/Sources/ProviderCore/Service/ClusterSupervision/`; the process
+is `provider-swift/Sources/darkbloom/ClusterMemberSupervisor.swift`. After a
+stop, `darkbloom cluster verify-teardown --json` says whether anything is left on
+this Mac (processes, wired memory against a baseline, the journal, bootstrap
+directories) and exits 1 when it is not clean; `darkbloom cluster cancel-all`
+force-cancels every request served on this Mac without the leader or SSH.
+
+
+### Signing and the release check (owner identity)
+
+1. Signing and notarization (owner identity): the release workflow signs the
+   cluster helpers with `scripts/sign-cluster-helpers.sh` (Developer ID
+   certificate from the release secrets), then the app, and notarizes it. To
+   sign a locally packaged app the same way, run
+   `scripts/sign-cluster-helpers.sh <Darkbloom.app> <keychain> "<Developer ID
+   Application identity>" <team id> provider-swift/entitlements-cluster-worker.plist`
+   before signing the app; no agent holds or uses the identity.
+2. Release check, once per Mac with someone at the screen: install the signed
+   release, `darkbloom start --cluster-member --always-on`, answer the one
+   Local Network alert, then reboot, restart the member 20 times and update to
+   a second signed build: no further alert.
+3. Check the installed identity on each Mac:
+   `codesign -dv --verbose=2 ~/.darkbloom/Darkbloom.app` (authority
+   `Developer ID Application`), `spctl -a -vv ~/.darkbloom/Darkbloom.app`
+   (accepted, notarized) and
+   `plutil -extract NSLocalNetworkUsageDescription raw ~/.darkbloom/Darkbloom.app/Contents/Info.plist`.

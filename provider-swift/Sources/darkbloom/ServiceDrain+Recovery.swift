@@ -35,4 +35,20 @@ extension ServiceDrain {
         }
 
     }
+
+    /// Run a drained relaunch and restore crash recovery on every exit after the
+    /// drain has committed. A relaunch that stopped the old instance but failed
+    /// to start the new one otherwise propagates without re-arming, leaving the
+    /// provider down with automatic recovery disabled. Re-arm runs on both the
+    /// success and failure path, before the caller waits on startup. The
+    /// drain-timeout fence in `prepare` is unaffected: it throws before any
+    /// relaunch is attempted.
+    static func relaunchDrainedProvider(
+        explicitConfig: String?,
+        rearm: (String?) -> Void = { ServiceDrain.rearmWatchdog(explicitConfig: $0) },
+        relaunch: () async throws -> Void
+    ) async throws {
+        defer { rearm(explicitConfig) }
+        try await relaunch()
+    }
 }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -176,6 +176,13 @@ can exceed that wall time. Bootstrap error 37 (operation in progress) is a
 failure, not confirmation that the replacement started.
 Source: `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`
 (`unloadService`, `waitForServiceRemoval`, `loadService`).
+
+When that relaunch fails after the old instance is gone, for example when
+`loadService` throws, `restart` and a `darkbloom update` restart re-arm crash
+recovery before reporting the error, so the watchdog can recover the provider
+(`provider-swift/Sources/darkbloom/ServiceDrain+Recovery.swift`
+(`ServiceDrain.relaunchDrainedProvider`)). A drain timeout is the exception and
+still leaves recovery disabled pending a retry or `--force`.
 
 `start --schedule` requires interactive stdin and stdout. Its confirmed draft
 stays in memory until model selection succeeds; cancellation or an empty/failed

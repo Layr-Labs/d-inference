@@ -34,8 +34,10 @@ struct Restart: AsyncParsableCommand {
         let session = try await ServiceDrain.prepare(options: drain)
         defer { session.release() }
         do {
-            try await ServiceDrain.stopDrainedProvider(unloadService: false)
-            try LaunchAgent.restartAfterDrain()
+            try await ServiceDrain.relaunchDrainedProvider(explicitConfig: configOptions.config) {
+                try await ServiceDrain.stopDrainedProvider(unloadService: false)
+                try LaunchAgent.restartAfterDrain()
+            }
         } catch LaunchAgentError.notInstalled {
             printError("Provider is not running. Start it with `darkbloom start`.")
             throw ExitCode.failure
@@ -45,8 +47,6 @@ struct Restart: AsyncParsableCommand {
         } else {
             print("Provider started.")
         }
-
-        ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
 
         // Let startup/update confirmation acquire its own process lease.
         session.release()

@@ -1,3 +1,4 @@
+import type { NativeModel } from '../../../shared/contracts';
 import { useState } from 'react';
 import { shortModelName } from '../../format';
 import { compact } from '../../format';
@@ -5,21 +6,27 @@ import { money, percent, type InsightSlice, type ProviderInsights } from './type
 import { metricLabel, metricValue, type InsightMetric } from './EarningsTimeline';
 import styles from './insights.module.css';
 
-function rowLabel(row: InsightSlice, dimension: 'models' | 'machines') {
+// Settled models may have left the catalog, so the catalog name is used only when it is known.
+function rowLabel(row: InsightSlice, dimension: 'models' | 'machines', models: NativeModel[]) {
   if (dimension === 'machines' && row.id === 'this-mac') return 'This Mac';
   if (dimension === 'models')
     return row.id === 'base_reward'
       ? 'Base rewards'
-      : shortModelName(row.id) || 'Unspecified model';
+      : models.find((model) => model.id === row.id)?.display_name ||
+          shortModelName(row.id) ||
+          'Unspecified model';
   return row.id ? `Mac ${row.id.slice(0, 8)}` : 'Account-level rewards / unassigned';
 }
 
 export function EarningsBreakdown({
   data,
   metric,
+  models = [],
 }: {
   data: ProviderInsights;
   metric: InsightMetric;
+  /** The local catalog, for model display names. */
+  models?: NativeModel[];
 }) {
   const [dimension, setDimension] = useState<'models' | 'machines'>('models');
   const [showAll, setShowAll] = useState(false);
@@ -56,7 +63,7 @@ export function EarningsBreakdown({
       {(showAll ? rows : rows.slice(0, 6)).map((row) => (
         <details className={styles.breakdownRow} key={row.id}>
           <summary>
-            <span title={row.id}>{rowLabel(row, dimension)}</span>
+            <span title={row.id}>{rowLabel(row, dimension, models)}</span>
             <span className={styles.shareTrack}>
               <i
                 style={{ width: `${total > 0 ? percent(metricValue(row, metric), total) : 0}%` }}
@@ -79,7 +86,9 @@ export function EarningsBreakdown({
       ))}
       {rows.length > 6 && (
         <button className={styles.textButton} type="button" onClick={() => setShowAll(!showAll)}>
-          {showAll ? 'Show fewer' : `Show all ${rows.length} ${dimension}`}
+          {showAll
+            ? 'Show fewer'
+            : `Show all ${rows.length} ${dimension === 'models' ? 'models' : 'Macs'}`}
         </button>
       )}
       {dimension === 'machines' && (

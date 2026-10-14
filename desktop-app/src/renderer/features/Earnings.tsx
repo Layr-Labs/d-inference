@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
@@ -15,6 +15,15 @@ export function Earnings({ backend }: { backend: BackendState }) {
   const [window, setWindow] = useState<'7d' | '30d'>('7d');
   const [metric, setMetric] = useState<InsightMetric>('earnings');
   const [copied, setCopied] = useState(false);
+  const copyTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(copyTimeout.current);
+    };
+  }, []);
   const { data, error, available, refresh } = useInsights(backend.state!, window);
   const copy = async () => {
     if (!data) return;
@@ -35,7 +44,13 @@ export function Earnings({ backend }: { backend: BackendState }) {
     ];
     try {
       await api?.copy(rows.join('\n'));
+      if (!mounted.current) return;
+      clearTimeout(copyTimeout.current);
       setCopied(true);
+      copyTimeout.current = setTimeout(() => {
+        copyTimeout.current = undefined;
+        setCopied(false);
+      }, 1600);
     } catch {
       backend.setError('Could not copy earnings history.');
     }
@@ -138,7 +153,7 @@ export function Earnings({ backend }: { backend: BackendState }) {
             </button>
           </div>
           <EarningsTimeline days={data.days} metric={metric} partial={!data.history_complete} />
-          <EarningsBreakdown data={data} metric={metric} />
+          <EarningsBreakdown data={data} metric={metric} models={backend.state!.models} />
           {data.lifetime.completion_tokens !== null && (
             <TokenMilestones tokens={data.lifetime.completion_tokens} />
           )}

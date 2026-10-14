@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Earnings labels
+
+- Name models in the Earnings breakdown by their catalog names (for example “GPT-OSS 20B”), falling back to the settled ID for models no longer in the catalog; say “Show all N Macs” in the By Mac view; and clear Copy CSV's “Copied” confirmation 1.6 seconds after the latest successful copy instead of keeping it until the period changes.
 ## Unreleased — desktop layout fit at narrow widths
 
 - Fix layout defects found at the desktop window's smaller sizes: 30-day earnings bars and Stats chart hover targets lost width to default button padding, a long waitlist email widened the onboarding page past the window, the Stats Activity table hid its Earned column below about 1000 px, Settings drew a double rule between sections, and chart times used a leading zero ("06:39 PM") unlike the rest of the app.

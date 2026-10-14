@@ -862,7 +862,9 @@ extension ProviderLoop {
 
     /// Hand a completed load to calibration while retaining the transition gate.
     func finishModelLoad(modelID: String, deviceActivity: WholeMacUnboundedActivity) async throws {
-        try Task.checkCancellation()
+        // Publication already committed the resident slot. Caller cancellation
+        // must not report a failed load while leaving that usable slot installed.
+        // Lifecycle/owner invalidation still prevents releasing success waiters.
         if isShuttingDown { throw CancellationError() }
         guard let expectedBridge = modelSlots[modelID]?.engineV2,
             !modelsUnloading.contains(modelID) else { throw CancellationError() }
@@ -871,7 +873,6 @@ extension ProviderLoop {
         // the target bridge has had its atomic calibration-start opportunity.
         deviceActivity.finish()
         if startupPreloadTask == nil { await scheduleLoadedModelCalibration(modelID: modelID) }
-        try Task.checkCancellation()
         if isShuttingDown { throw CancellationError() }
         guard modelSlots[modelID]?.engineV2 === expectedBridge,
             !modelsUnloading.contains(modelID) else { throw CancellationError() }

@@ -342,7 +342,9 @@ engine can start without waiting for a capacity tick.
 Ordinary and native MiMo loads offer their new engine first when that owner is
 available. The completed construction activity ends before that handoff, but
 the load-transition gate remains closed until the scheduling attempt returns.
-A cancellation/native-owner recheck precedes waking parked load requests.
+Slot identity, shutdown and native-owner checks precede waking parked load
+requests. Once completed publication reaches this handoff, cancelling its
+caller does not fail the already resident slot.
 
 A customer request takes a foreground lease, cancels any current calibration,
 and waits for its actual retirement before admission. A consumer terminal event

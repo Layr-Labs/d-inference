@@ -168,10 +168,14 @@ retired weights.
 Only completed, uncached, isolated receipts seed solo rates. Batched measurements
 populate workload buckets without replacing solo admission rates. Calibration
 produces no served-request/output-token counters; its actual in-flight work stays
-visible until retirement. Fresh evidence is published through existing capacity
+visible until retirement. Prefill receipts retain their calibration identity
+after cell cleanup, so delayed callback consumption cannot turn a cancelled
+probe into serving counters or rate evidence. Fresh evidence is published through existing capacity
 heartbeats. Memory floors, concurrency ceilings and deadline enforcement remain
 unchanged. Scheduling is asynchronous: registration and customer service do not
-wait for the full calibration plan to finish. See the calibration entries in the
+wait for the full calibration plan to finish. Once completed slot publication
+reaches this handoff, cancelling its load caller does not turn the resident slot into a failed
+load; shutdown and slot-owner validity checks still apply. See the calibration entries in the
 [code map](#code-map) for the enforcing paths and symbols.
 
 Each cell stages its numeric prefill/decode observations until all its requests

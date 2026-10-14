@@ -13,6 +13,11 @@ extension EngineV2Bridge {
     /// publish a second observation.
     func consumePrefillReceipt(id: String, receipt: EnginePrefillReceipt) {
         guard let sample = receipt.take() else { return }
+        let calibration = receipt.calibrationCell
+        // Engine retirement does not join the callback's actor Task. Discard a
+        // late calibration receipt after cell validation/cleanup; never publish
+        // it as independent serving evidence or count it as customer work.
+        guard calibration == nil || modelCalibration.requests[id] != nil else { return }
         if prefillEvidenceRecovery.owner == id {
             // The SDK callback proves prompt completion even if cache reuse or
             // contention prevents a new cold rate. Keep the ordinary lease and
@@ -20,7 +25,6 @@ extension EngineV2Bridge {
             serviceBudget?.reduceExclusiveAllowance(ownerID: serviceOwnerPrefix + ":" + id,
                 concurrency: prefillEvidenceRecovery.servingConcurrency)
         }
-        let calibration = modelCalibration.requests[id]
         guard calibration?.warmup != true else { return }
         let usage = sample.usage
         let saved = max(usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)

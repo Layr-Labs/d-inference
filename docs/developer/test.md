@@ -72,7 +72,9 @@ with a real activity receipt and parked inference waiter to verify scheduling
 prioritizes the newly loaded slot before waiter resumption even when another
 resident engine is eligible. A blocked handoff checks that both load-transition
 state and parked waiters remain held across the bridge actor hop. These epilogue
-tests do not load model weights. The native MiMo lifetime suite separately loads
+checks also cancel the load owner during that hop and require committed slot
+publication to complete successfully, releasing both classes of waiters.
+These epilogue tests do not load model weights. The native MiMo lifetime suite separately loads
 its real tiny transaction-backed model and verifies publication releases the
 construction activity before calibration can acquire ownership, then retires
 the real owner. This is ownership coverage, not full-model calibration quality.
@@ -80,6 +82,10 @@ the real owner. This is ownership coverage, not full-model calibration quality.
 changes its injected posture, and checks that only that cell's staged evidence
 is discarded, independently published serving observations survive, and the
 bootstrap succeeds on a later retry.
+`lateCancelledPrefillRetainsProvenance` captures the production receipt of a
+blocked warmup or measured probe, cancels and joins the real engine request,
+then delivers an unconsumed prefill sample after cell cleanup. Neither serving
+counters nor rate evidence may change.
 `ProductionModelCalibrationTests` builds tiny real dense and MoE Qwen models
 through `EngineV2SlotFactory.makeProductionBundle`, using the three affected
 catalog IDs with both automatic paged selection and explicit contiguous KV.

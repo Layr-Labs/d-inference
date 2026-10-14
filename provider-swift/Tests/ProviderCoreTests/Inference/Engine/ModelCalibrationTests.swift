@@ -74,6 +74,44 @@ struct ModelCalibrationTests {
         await bridge.shutdown()
     }
 
+    @Test("a prefill callback consumed after cancelled-cell retirement remains calibration",
+        arguments: [1, 2])
+    func lateCancelledPrefillRetainsProvenance(requestNumber: Int) async throws {
+        let gate = RecoveryStepGate()
+        defer { gate.release() }
+        let (bridge, engine, budget) = try fixture(gate: gate, gateOnRequest: requestNumber)
+        #expect(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false))
+        try await waitForEntry(gate)
+        let (id, receipt) = try #require(await bridge.activeCalibrationReceiptTest())
+        let task = await bridge.cancelModelCalibration()
+        let until = ContinuousClock.now + .seconds(5)
+        while !(await bridge.wasCalibrationInterruptedTest()), ContinuousClock.now < until {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(await bridge.wasCalibrationInterruptedTest())
+        gate.release()
+        await task?.value
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
+        #expect(await bridge.pendingCalibrationEvidenceCountTest() == 0)
+        let before = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        let counters = await bridge.calibrationCountersTest()
+
+        // Deliver an unconsumed sample after cleanup to reproduce the ordering
+        // seen when the callback's actor Task is delayed past retirement.
+        var usage = CBv2Usage(promptTokens: 128, completionTokens: 0)
+        usage.timing.prefillFirstLaunchNanos = 1_000_000
+        usage.timing.promptComputedNanos = 21_000_000
+        receipt.complete(usage)
+        await bridge.consumePrefillReceipt(id: id, receipt: receipt)
+        let after = try #require(await bridge.backendSlotCapacity().performanceMeasurements)
+        #expect(after.isolatedPrefill?.sampleCount == before.isolatedPrefill?.sampleCount)
+        #expect(after.contendedPrefill?.sampleCount == before.contendedPrefill?.sampleCount)
+        #expect(after.workloadBuckets.count == before.workloadBuckets.count)
+        #expect(await bridge.calibrationCountersTest() == counters)
+        #expect(await bridge.pendingCalibrationEvidenceCountTest() == 0)
+        await bridge.shutdown()
+    }
+
     @Test("a final-cell posture change discards staged rates and permits a later bootstrap",
         arguments: [false, true])
     func finalCellPostureChangeDiscardsOnlyCalibration(servingEvidence: Bool) async throws {
@@ -302,6 +340,12 @@ struct ModelCalibrationTests {
 }
 
 private extension EngineV2Bridge {
+    func activeCalibrationReceiptTest() -> (String, EnginePrefillReceipt)? {
+        guard let id = modelCalibration.requests.keys.first,
+            let receipt = active[id]?.prefillReceipt else { return nil }
+        return (id, receipt)
+    }
+
     func recordIndependentRateEvidenceTest() {
         for phase in ["isolated_prefill", "decode"] {
             recordRateObservation(EngineRateObservation(phase: phase, tps: 4_321,

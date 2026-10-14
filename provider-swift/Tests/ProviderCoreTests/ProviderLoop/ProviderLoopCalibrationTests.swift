@@ -149,8 +149,9 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
-    @Test("the load transition stays closed while calibration ownership is handed off")
-    func loadTransitionGateRemainsClosedDuringHandoff() async throws {
+    @Test("the load transition stays closed while calibration ownership is handed off",
+        arguments: [false, true])
+    func loadTransitionGateRemainsClosedDuringHandoff(cancelLoadOwner: Bool) async throws {
         let fixture = try await ServeLoopFixture.make()
         let computeGate = RecoveryStepGate()
         let handoffGate = RecoveryStepGate()
@@ -168,8 +169,12 @@ struct ProviderLoopCalibrationTests {
         let (loading, modelWaiters, gateWaiters) = await fixture.loop.calibrationHandoffState()
         #expect(loading)
         #expect(modelWaiters == 1 && gateWaiters == 1)
+        if cancelLoadOwner { completion.cancel() }
         handoffGate.release()
         #expect(try await completion.value)
+        #expect(await fixture.loop.hasPublishedCalibrationSlot())
+        let (stillLoading, remainingModelWaiters, remainingGateWaiters) = await fixture.loop.calibrationHandoffState()
+        #expect(!stillLoading && remainingModelWaiters == 0 && remainingGateWaiters == 0)
         computeGate.release()
         _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
         await fixture.mock.shutdown()
@@ -207,6 +212,8 @@ private extension EngineV2Bridge {
     func hasScheduledCalibration() -> Bool { modelCalibration.task != nil || modelCalibration.bootstrapCompleted }
 }
 private extension ProviderLoop {
+    func hasPublishedCalibrationSlot() -> Bool { modelSlots[ServeLoopFixture.modelId] != nil }
+
     func calibrationHandoffState() -> (Bool, Int, Int) {
         (isLoadingAny, loadingWaiters[ServeLoopFixture.modelId]?.count ?? 0, loadGateWaiters.count)
     }

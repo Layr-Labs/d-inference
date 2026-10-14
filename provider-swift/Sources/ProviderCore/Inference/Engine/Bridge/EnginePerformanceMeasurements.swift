@@ -55,6 +55,8 @@ final class EnginePrefillReceipt: @unchecked Sendable {
     let activityID: UUID
     let deadlineRateEvidence: DeadlineRateEvidence?
     let measurementPurpose: EngineMeasurementPurpose
+    /// Survives cell cleanup: a delayed callback must never become serving work.
+    let calibrationCell: ModelCalibrationPolicy.Cell?
     private let isolationGuard: CBv2FirstContentEvidenceGuard?
     /// Set only by a native owner-bound submission. This distinguishes its
     /// target-decoder work from text and legacy vision without trusting input
@@ -71,8 +73,10 @@ final class EnginePrefillReceipt: @unchecked Sendable {
         deadlineRateEvidence: DeadlineRateEvidence? = nil,
         isolationGuard: CBv2FirstContentEvidenceGuard? = nil,
         measurementPurpose: EngineMeasurementPurpose = .serving,
+        calibrationCell: ModelCalibrationPolicy.Cell? = nil,
         nativeCausalMedia: Bool = false, nativeRateEvidence: NativeMediaRateEvidence? = nil) {
         self.measurementPurpose = measurementPurpose
+        self.calibrationCell = calibrationCell
         self.activity = activity
         self.deadlineRateEvidence = deadlineRateEvidence
         self.isolationGuard = isolationGuard

@@ -564,6 +564,7 @@ extension EngineV2Bridge {
             deadlineRateEvidence: deadlineProfile == nil ? nil : serviceBudget?.captureDeadlineRateEvidence(),
             isolationGuard: prefillEvidenceRecovery.owner == id ? prefillEvidenceRecovery.evidenceGuard : calibrationGuard,
             measurementPurpose: measurementPurpose,
+            calibrationCell: modelCalibration.requests[id],
             nativeCausalMedia: nativeCausalMedia,
             nativeRateEvidence: nativeMediaEvidence)
         cbv2Request.onPrefillCompleted = { [weak self, prefillReceipt] usage in

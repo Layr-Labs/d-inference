@@ -172,6 +172,13 @@ import CryptoKit
         plan = P.plan(totalBytes: size, leader: Mac(name: "A", holding: .complete(folder: "m"), freeBytes: nil),
             members: [Mac(name: "B", holding: .complete(folder: "m"), freeBytes: nil)], linkBytesPerSecond: tb, catalogHasIt: true)
         expect(plan.ready && P.lines(plan).isEmpty, "every Mac has it: ready, nothing to say")
+        // A download and a copy are asked for once: the prompt carries the total size and, when every rate is known, the time.
+        let both = P.plan(totalBytes: 6_100_000_000, leader: .init(name: "A", holding: .missing, freeBytes: nil),
+            members: [.init(name: "B", holding: .missing, freeBytes: nil)], linkBytesPerSecond: 3e9, downloadBytesPerSecond: 1e8, catalogHasIt: true)
+        expect(P.lines(both).last == "In all: 12.2 GB, about 63 s", "the total of a download and a copy: \(P.lines(both))")
+        let unknown = P.plan(totalBytes: 6_100_000_000, leader: .init(name: "A", holding: .missing, freeBytes: nil),
+            members: [.init(name: "B", holding: .missing, freeBytes: nil)], linkBytesPerSecond: nil, catalogHasIt: true)
+        expect(P.lines(unknown).last == "In all: 12.2 GB", "no time when a rate is not measured yet: \(P.lines(unknown))")
         // A resumed copy moves only what is left.
         plan = P.plan(totalBytes: size, leader: Mac(name: "A", holding: .complete(folder: "m"), freeBytes: nil),
             members: [Mac(name: "B", holding: .partial(bytes: size - 1_000_000_000), freeBytes: nil)], linkBytesPerSecond: 1e9, catalogHasIt: true)

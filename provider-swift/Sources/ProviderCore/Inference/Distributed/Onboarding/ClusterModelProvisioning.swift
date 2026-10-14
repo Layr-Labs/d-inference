@@ -304,8 +304,23 @@ public enum ClusterModelProvisioning {
         return String(format: "about %.1f h", seconds / 3600)
     }
 
-    /// The plan in words, one line per Mac that has something to do.
+    /// The plan in words, one line per Mac that has something to do, then the total when more than one step moves
+    /// bytes (a download and a copy are asked for once, with both in one prompt).
     public static func lines(_ plan: ClusterModelProvisioningPlan) -> [String] {
+        stepLines(plan) + (totalLine(plan).map { [$0] } ?? [])
+    }
+
+    /// "In all: 32.6 GB, about 3 min" for a plan with more than one moving step; nil otherwise. The time is given
+    /// only when every step's rate is known (measured on these Macs).
+    public static func totalLine(_ plan: ClusterModelProvisioningPlan) -> String? {
+        let moving = plan.steps.filter { $0.source != .present }
+        guard moving.count > 1 else { return nil }
+        let bytes = moving.reduce(Int64(0)) { $0 + $1.bytes }
+        let seconds = moving.allSatisfy { $0.seconds != nil } ? moving.compactMap(\.seconds).reduce(0, +) : nil
+        return "In all: \(gigabytes(bytes))" + (seconds.map { ", " + duration($0) } ?? "")
+    }
+
+    static func stepLines(_ plan: ClusterModelProvisioningPlan) -> [String] {
         plan.steps.compactMap { step in
             let eta = step.seconds.map { ", " + duration($0) } ?? ""
             let line: String

@@ -97,13 +97,16 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// `lease`: the leader's serving intent (its record's `leadership.serving`), recorded by a Mac that accepts the lease
     /// (`ClusterControlIntent`), so a start or stop survives control moving to another Mac. Nil from an older build.
     public var serving: Bool?
+    /// `serve`: the leader's deployment line for `model` (mode and each Mac's share), recorded by the member so it shows
+    /// the same line when it leads (`ClusterOnboardingDeployment.recorded`). Nil from an older build.
+    public var deployment: String?
     public init(op: Operation, model: String? = nil, text: String? = nil, cache: ClusterCacheSettingsSync? = nil,
                 clusterID: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
                 facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil,
-                serving: Bool? = nil) {
+                serving: Bool? = nil, deployment: String? = nil) {
         self.op = op; self.model = model; self.text = text; self.cache = cache; self.clusterID = clusterID
         self.claim = claim; self.running = running; self.facts = facts
-        self.alonePlan = alonePlan; self.control = control; self.serving = serving
+        self.alonePlan = alonePlan; self.control = control; self.serving = serving; self.deployment = deployment
     }
 }
 

@@ -83,9 +83,13 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     /// It does not fit in the Macs' free memory now: what frees it, in plain words ("Quit apps on <Mac> first").
     /// Nil when it fits now. Choices that fit are listed first, so enter picks one that fits.
     public var fitRemedy: String?
+    /// The model's id (`title` is its catalog display name when the catalog gave one); nil from an older build.
+    public var modelID: String?
 
-    public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil) {
+    public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil,
+                modelID: String? = nil) {
         self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision; self.fitRemedy = fitRemedy
+        self.modelID = modelID
     }
 }
 
@@ -137,6 +141,21 @@ public enum ClusterOnboardingDeployment {
     public static func line(model: String, mode: String, shares: [Share]) -> String {
         let macs = shares.count == 2 ? "both Macs" : "\(shares.count) Macs"
         return "Serving \(model) across \(macs): \(modeWords(mode)), \(sharesWords(mode: mode, shares: shares))"
+    }
+
+    /// A model as the screens name it: its catalog display name ("MiMo V2.6 Flash"), its id only when the catalog gave
+    /// no name for it (it did not answer, or the model is not listed).
+    public static func title(modelID: String, displayNames: [String: String]) -> String {
+        guard let name = displayNames[modelID]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return modelID }
+        return name
+    }
+
+    /// The deployment line a Mac records when the leader starts the cluster: the line the start carries, so whichever
+    /// Mac leads later (the plan's rank 0 may be the other Mac) shows the same mode and layers. A start that names a
+    /// model but carries no line (an older leader) drops the recorded one, which may be another model's; a start that
+    /// names no model changes nothing.
+    public static func recorded(afterStartOf model: String?, deployment: String?, recorded: String?) -> String? {
+        model == nil ? recorded : deployment
     }
 
     /// One model choice in one line: "6.1 GB · pipeline · M3 Ultra 16 layers / M5 Ultra 16 layers · about 90 tokens/s".
@@ -562,7 +581,10 @@ public enum ClusterOnboardingDriver {
             return 1
         }
         if justPaired { console.say(localNetworkLine) }
-        if resume.serving, !justPaired {
+        // Serving, or stopped after a model was chosen: the same menu as on a member (a stopped leader is offered `v`,
+        // whether both Macs released their memory, as well as `m`). Only a leader that never chose a model goes
+        // straight to the choice.
+        if !justPaired, resume.serving || resume.modelName != nil {
             console.say("This Mac leads the cluster.")
             return menu(resume, operations, console)
         }
@@ -675,7 +697,7 @@ public enum ClusterOnboardingDriver {
                 if offer.leaderDownloads {
                     console.say("Planning \(choice.title) now that it is on this Mac…")
                     guard case .success(let again) = operations.planModels(),
-                          let index = again.firstIndex(where: { $0.title == choice.title }) else {
+                          let index = again.firstIndex(where: { ($0.modelID ?? $0.title) == (choice.modelID ?? choice.title) }) else {
                         console.say("\(choice.title) could not be planned after the download. Run `darkbloom cluster` here again.")
                         return 1
                     }

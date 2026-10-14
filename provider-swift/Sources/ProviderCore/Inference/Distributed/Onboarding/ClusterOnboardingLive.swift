@@ -496,13 +496,18 @@ final class OnboardingLive: @unchecked Sendable {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
+            // The catalog, fetched once: each model is shown by its display name (its id when the catalog has none or
+            // does not answer), and the catalog's downloadable models are offered below.
+            let catalogAll = fetchCatalog()
+            let names = Dictionary(catalogAll.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
             var keys = [(folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?)]()
             let choices = options.map { option -> ClusterOnboardingModelChoice in
                 let gigabytes = String(format: "%.1f GB", Double(option.model.totalBytes) / 1e9)
-                let title = option.model.modelID
+                let modelID = option.model.modelID
+                let title = ClusterOnboardingDeployment.title(modelID: modelID, displayNames: names)
                 guard let plan = option.plan else {
-                    keys.append((option.model.folder, "", title, [], nil, nil))
-                    return .init(title: title, lines: [], blocker: option.blocker ?? "Not offered on these Macs.")
+                    keys.append((option.model.folder, "", modelID, [], nil, nil))
+                    return .init(title: title, lines: [], blocker: option.blocker ?? "Not offered on these Macs.", modelID: modelID)
                 }
                 let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer, localName: localName)
                 // One line: size, how it is split (the planner's choice), each Mac's share, the expected speed.
@@ -513,11 +518,11 @@ final class OnboardingLive: @unchecked Sendable {
                 let speed = plan.absolute ? "about \(Int(plan.decodeTokensPerSecond.rounded())) tokens/s\(plan.measured ? "" : " (estimate)")" : nil
                 let line = ClusterOnboardingDeployment.choiceLine(size: gigabytes, mode: plan.mode, shares: shares, speed: speed)
                 let deployment = ClusterOnboardingDeployment.line(model: title, mode: plan.mode, shares: shares)
-                keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), title, plan.alone.filter(\.holds).map(\.memberID),
+                keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), modelID, plan.alone.filter(\.holds).map(\.memberID),
                              deployment, plan))
                 // A running model is stopped (its memory released) before a new one starts, so its memory is no reason here.
                 let remedy = leadership?.serving == true || plan.fitsNow ? nil : Self.fitRemedy(plan, localName: localName, peerName: peerName)
-                return .init(title: title, lines: [line], blocker: option.blocker, provision: offer, fitRemedy: remedy)
+                return .init(title: title, lines: [line], blocker: option.blocker, provision: offer, fitRemedy: remedy, modelID: modelID)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
             var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String], deployment: String?, plan: ClusterSetupPlanSummary?))]()
@@ -537,12 +542,13 @@ final class OnboardingLive: @unchecked Sendable {
                     leader: .init(name: "\(localName) (this Mac)", holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
                     members: [.init(name: peerName, holding: .complete(folder: model.folder), freeBytes: nil)],
                     linkBytesPerSecond: measuredCopyRate, catalogHasIt: false)
-                ordered.append((.init(title: model.modelID, lines: ["on \(peerName) only: planned once it is on this Mac too"], blocker: nil,
+                ordered.append((.init(title: ClusterOnboardingDeployment.title(modelID: model.modelID, displayNames: names),
+                    lines: ["on \(peerName) only: planned once it is on this Mac too"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
-                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan))),
+                        quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.modelID),
                     (model.folder, "", model.modelID, [], nil, nil)))
             }
-            for model in catalogModels(peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
+            for model in catalogModels(catalogAll, peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
                 && ClusterModelCopyTrust.servableArtifacts.contains(model.aggregateSHA256 ?? "") {
                 catalog[ordered.count] = model
                 ordered.append((downloadChoice(model, peer: peer, localName: localName), ("", "", model.id, [], nil, nil)))
@@ -627,20 +633,26 @@ final class OnboardingLive: @unchecked Sendable {
             leader: .init(name: "\(localName) (this Mac)", holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: local)),
             members: [.init(name: peerName, holding: .missing, freeBytes: peer.modelStoreFreeBytes)],
             linkBytesPerSecond: measuredCopyRate, catalogHasIt: true)
-        return .init(title: model.id, lines: ["not on these Macs yet: \(ClusterModelProvisioning.gigabytes(bytes)) from Darkbloom's catalog; planned once it is on this Mac"],
+        return .init(title: ClusterOnboardingDeployment.title(modelID: model.id, displayNames: [model.id: model.displayName]),
+            lines: ["not on these Macs yet: \(ClusterModelProvisioning.gigabytes(bytes)) from Darkbloom's catalog; planned once it is on this Mac"],
             blocker: nil, provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
-            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)))
+            quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan)), modelID: model.id)
     }
 
-    /// The catalog models this Mac could fetch for the cluster (a verified manifest, small enough for both Macs'
-    /// memory together); empty when the catalog does not answer within a few seconds.
-    func catalogModels(peer: ClusterSetupReport) -> [CatalogModel] {
+    /// Darkbloom's catalog of text models, as single-Mac Darkbloom reads it; empty when it does not answer within a few seconds.
+    func fetchCatalog() -> [CatalogModel] {
         guard let config = try? ConfigManager.load(from: settings.service.wizard.providerConfiguration) else { return [] }
         let client = ModelCatalogClient(coordinatorURL: config.coordinator.url)
         let box = ClusterOnboardingMailbox<[CatalogModel]>()
         let done = DispatchSemaphore(value: 0)
         Task.detached { box.post((try? await client.fetchCatalog(typeFilter: "text")) ?? []); done.signal() }
         guard done.wait(timeout: .now() + 6) == .success, let models = box.take().first else { return [] }
+        return models
+    }
+
+    /// The catalog models this Mac could fetch for the cluster (a verified manifest, small enough for both Macs'
+    /// memory together); empty when the catalog does not answer within a few seconds.
+    func catalogModels(_ models: [CatalogModel], peer: ClusterSetupReport) -> [CatalogModel] {
         let memory = Double(context.snapshot().local.mac.physicalMemoryBytes + peer.mac.physicalMemoryBytes)
         return models.filter { $0.r2Prefix != nil && $0.aggregateSHA256 != nil && Double($0.totalSizeBytes ?? Int64($0.sizeGb * 1e9)) < memory * 0.75 }
             .sorted { ($0.totalSizeBytes ?? 0) < ($1.totalSizeBytes ?? 0) }.prefix(32).map { $0 }
@@ -860,7 +872,7 @@ final class OnboardingLive: @unchecked Sendable {
         let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
-            _ = try command(.init(op: .serve, model: title))
+            _ = try command(.init(op: .serve, model: title, deployment: leadership?.deployment))
         } catch let failure as ClusterSetupFailure {
             return .failure(.init(["\(peerName) was not started yet: \(failure.text)", Self.startsWhenItAnswers(peerName)]))
         } catch {

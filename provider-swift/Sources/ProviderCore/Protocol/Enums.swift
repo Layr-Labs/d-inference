@@ -10,7 +10,7 @@ public enum ProviderStatus: String, Codable, Sendable {
     case draining
 }
 
-public enum ChipFamily: String, Codable, Sendable {
+public enum ChipFamily: String, Codable, Sendable, CaseIterable {
     case m1 = "M1"
     case m2 = "M2"
     case m3 = "M3"

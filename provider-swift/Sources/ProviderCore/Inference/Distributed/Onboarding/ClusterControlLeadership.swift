@@ -55,12 +55,17 @@ public struct ClusterControlMember: Codable, Sendable, Equatable {
     public var name: String
     public var memoryBytes: UInt64
     public var gpuCores: Int
-    /// The planner's verdict for the chosen model on this member alone; nil before a model is chosen.
+    /// Whether this member may serve the chosen model alone (`ClusterControlSoloAdmission`): the planner's verdict,
+    /// narrowed by the member's own check; nil before a model is chosen.
     public var holdsModelAlone: Bool?
+    /// Why the member cannot serve the chosen model alone although the planner said it holds it, in words (the member's
+    /// own check: single-Mac Darkbloom refuses the model on its hardware, or its solo server kept ending); nil otherwise.
+    public var aloneRefusal: String?
 
-    public init(memberID: String, name: String, memoryBytes: UInt64, gpuCores: Int, holdsModelAlone: Bool? = nil) {
+    public init(memberID: String, name: String, memoryBytes: UInt64, gpuCores: Int, holdsModelAlone: Bool? = nil,
+                aloneRefusal: String? = nil) {
         self.memberID = memberID; self.name = name; self.memoryBytes = memoryBytes; self.gpuCores = gpuCores
-        self.holdsModelAlone = holdsModelAlone
+        self.holdsModelAlone = holdsModelAlone; self.aloneRefusal = aloneRefusal
     }
 }
 
@@ -376,7 +381,10 @@ public struct ClusterControlNode: Sendable, Equatable {
         }
         if alonePossible { return .alone(missing: missing) }
         if plan.contains(localID), plan.filter({ present.contains($0) }) == [localID] {
-            return .cannotServe(missing: missing, reason: "this Mac cannot hold the model alone")
+            if let refusal = members[localID]?.aloneRefusal {
+                return .cannotServe(missing: missing, reason: "this Mac cannot serve it alone (\(refusal)), so it waits for the other Mac")
+            }
+            return .cannotServe(missing: missing, reason: "this Mac cannot hold the model alone, so it waits for the other Mac")
         }
         return .cannotServe(missing: missing, reason: "it re-forms when the other Mac is back")
     }
@@ -442,6 +450,60 @@ public enum ClusterControlAloneVerdicts {
         guard case .accepted = answer, let forPlan, let savedPlan, forPlan == savedPlan,
               facts.contains(where: { $0.holdsModelAlone != nil }) else { return nil }
         return (facts.filter { $0.holdsModelAlone == true }.map(\.memberID).sorted(), forPlan)
+    }
+}
+
+/// F14: whether this Mac may serve the saved model alone in degraded mode, decided on the Mac itself before any solo
+/// server starts. Any one of three facts says no:
+/// - the planner's verdict for the saved plan (`ClusterControlAloneVerdicts`: the model fits this Mac's admissible memory);
+/// - the runtime requirements single-Mac Darkbloom enforces for the model (`start --local` serves no model whose required
+///   runtime capabilities this Mac lacks): every requirement this Mac's hardware settles (the chip family) is checked here;
+///   one only the runtime's own probe settles is left to the solo server, and the next fact catches its refusal;
+/// - the solo server's own record on this Mac: one that ended soon after its start `maximumQuickEnds` times in a row is
+///   not started again for this plan (a refusal nothing predicted), instead of restarting every 30 s for ever.
+/// Universal: capability names come from the product's own requirements and detector, never a model or chip table here.
+public enum ClusterControlSoloAdmission {
+    public struct Verdict: Sendable, Equatable {
+        public var holds: Bool?
+        public var refusal: String?
+        public init(holds: Bool?, refusal: String?) { self.holds = holds; self.refusal = refusal }
+    }
+
+    /// Solo-server ends in a row, each sooner than `quickEndSeconds` after its start, before it is not started again.
+    public static let maximumQuickEnds = 3
+    /// The supervisor's own rule: a part that ran this long was healthy (its restart backoff resets too).
+    public static let quickEndSeconds: Double = 120
+
+    /// The required capabilities this Mac's hardware settles and lacks (sorted); empty when the model may be tried here.
+    public static func missingHardware(required: Set<String>, hardwareSettled: Set<String>, hardware: Set<String>) -> [String] {
+        required.intersection(hardwareSettled).subtracting(hardware).sorted()
+    }
+
+    public static func decide(planned: Bool?, missingHardware: [String], quickEnds: Int) -> Verdict {
+        guard let planned else { return .init(holds: nil, refusal: nil) }
+        guard planned else { return .init(holds: false, refusal: nil) }
+        if !missingHardware.isEmpty {
+            return .init(holds: false, refusal: "single-Mac Darkbloom serves this model only on a Mac with "
+                         + missingHardware.map(words).joined(separator: " and "))
+        }
+        if quickEnds >= maximumQuickEnds {
+            return .init(holds: false, refusal: "its single-Mac server ended \(quickEnds) times right after starting")
+        }
+        return .init(holds: true, refusal: nil)
+    }
+
+    /// The count after a solo server ended `ranSeconds` after its start.
+    public static func quickEnds(after count: Int, ranSeconds: Double) -> Int {
+        ranSeconds < quickEndSeconds ? count + 1 : 0
+    }
+
+    /// A runtime capability in words (its raw name when it has none here).
+    public static func words(_ capability: String) -> String {
+        switch capability {
+        case "apple_m5": return "an Apple M5 chip"
+        case "mlx_nax": return "the GPU's neural accelerators"
+        default: return "the \(capability) capability"
+        }
     }
 }
 
@@ -534,7 +596,8 @@ public enum ClusterControlWords {
         return value >= 60 ? "\(value / 60) min" + (value % 60 == 0 ? "" : " \(value % 60) s") : "\(value) s"
     }
 
-    public static func line(_ mode: ClusterControlNode.Mode, names: [String: String], model: String?) -> String {
+    /// `aloneRefusal`: this Mac's own reason it cannot serve the model alone (`ClusterControlMember.aloneRefusal`).
+    public static func line(_ mode: ClusterControlNode.Mode, names: [String: String], model: String?, aloneRefusal: String? = nil) -> String {
         func name(_ id: String) -> String { names[id] ?? id }
         let what = model ?? "the model"
         switch mode {
@@ -546,11 +609,17 @@ public enum ClusterControlWords {
             let gone = missing.map(name).joined(separator: ", ")
             return canServeAlone
                 ? "\(gone) is gone; this Mac serves \(what) alone in \(duration(seconds)) unless it returns first (the cluster re-forms by itself when it is back)"
-                : "\(gone) is gone; this Mac cannot hold \(what) alone, so nothing of it runs after \(duration(seconds)) unless it returns first"
+                : aloneRefusal.map { "\(gone) is gone; this Mac cannot serve \(what) alone (\($0)), so nothing of it runs after \(duration(seconds)) unless it returns first; it waits for \(gone)" }
+                ?? "\(gone) is gone; this Mac cannot hold \(what) alone, so nothing of it runs after \(duration(seconds)) unless it returns first"
         case .alone(let missing):
             return "degraded: serving on this Mac alone (\(missing.map(name).joined(separator: ", ")) is gone; the cluster re-forms by itself when it is back)"
         case .cannotServe(let missing, let reason):
-            return "not serving \(what): \(missing.map(name).joined(separator: ", ")) is gone and \(reason); nothing of the model runs"
+            let gone = missing.map(name).joined(separator: ", ")
+            if let aloneRefusal, reason.contains(aloneRefusal) {
+                return "not serving \(what): \(gone) is gone and this Mac cannot serve \(what) alone (\(aloneRefusal)); nothing of the model runs here, "
+                    + "it waits for \(gone) and the cluster re-forms by itself when it is back"
+            }
+            return "not serving \(what): \(gone) is gone and \(reason); nothing of the model runs"
         }
     }
 }

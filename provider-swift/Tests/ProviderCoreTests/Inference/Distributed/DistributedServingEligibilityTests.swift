@@ -180,21 +180,34 @@ import DarkbloomClusterProtocol
     /// Ultra's own reference): exactly the order that ran. No MiMo check failed,
     /// so its records restrict no shape (the rule a failed check, like GPT-OSS's,
     /// turns on); the mirrored order and any other chip are refused.
-    @Test func mimoIsGrantedInTheOrderItsChecksRan() throws {
+    /// MiMo's grant follows its records: the pipeline ran with the M5 Ultra
+    /// leading (cuts 47 and 14, both framings), and the phase split with the
+    /// M3 Ultra taking a prefill share and the M5 Ultra, which holds every
+    /// layer, decoding (cut 8, 2026-10-14, the pair route and the alone route).
+    /// So either Mac may take either role on this pair; another chip class
+    /// is still refused.
+    @Test func mimoIsGrantedInTheOrdersItsChecksRan() throws {
         let model = "registered_mimo_v26_flash_mopd"
         let grant = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p",
             artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034")
-        #expect(grant.pipelineRankChipClasses == [.appleM5Ultra] && grant.decodingRankChipClasses == [.appleM3Ultra])
-        #expect(grant.qualifications == [.init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [14], mode: .pipeline),
-                                         .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline)])
-        #expect(grant.evidence.hasPrefix("6 passing cross-cable qualification records"))
+        #expect(grant.pipelineRankChipClasses == [.appleM3Ultra, .appleM5Ultra]
+            && grant.decodingRankChipClasses == [.appleM3Ultra, .appleM5Ultra])
+        let shapes = Set(grant.qualifications.map { "\($0.chipClasses.map(\.rawValue)) \($0.cuts) \($0.mode.rawValue)" })
+        for expected: ClusterPairServingQualification in [
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [14], mode: .pipeline),
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline),
+            .init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipelineCompactDecode),
+            .init(chipClasses: [.appleM3Ultra, .appleM5Ultra], cuts: [8], mode: .phaseSplit)] {
+            #expect(shapes.contains("\(expected.chipClasses.map(\.rawValue)) \(expected.cuts) \(expected.mode.rawValue)"))
+        }
+        #expect(grant.evidence.hasPrefix("17 passing cross-cable qualification records"))
         #expect(!ClusterPairServingGrants.records(runtimeModelID: model).restrictsShapes)
         try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
                                                       cuts: [47], mode: .pipeline)
-        let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p") }
-        #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM3Ultra, allowed: [.appleM5Ultra]))
+        try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p",
+                                                      cuts: [8], mode: .phaseSplit)
         let other = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p") }
-        #expect(other?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]))
+        #expect(other?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra, .appleM5Ultra]))
         // Another artifact under the same registered model is not what the records ran.
         let foreign = refusal { _ = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p", artifactSHA256: String(repeating: "0", count: 64)) }
         #expect(foreign?.reason == .artifactNotQualified(installed: String(repeating: "0", count: 64),

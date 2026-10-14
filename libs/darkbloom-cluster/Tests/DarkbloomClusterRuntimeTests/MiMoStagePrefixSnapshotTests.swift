@@ -232,4 +232,49 @@ struct MiMoStagePrefixSnapshotTests {
         withdrawn.withdraw()
         #expect(withdrawn.states().isEmpty && !withdrawn.keepsPrompt)
     }
+
+    // Review finding (2026-10-14): the first capture's cost stands for the
+    // stage's later requests (`QwenStagePrefixCache.record`) and sizes their
+    // reservation charge. A first prompt shorter than the window measured its
+    // short tails, so every later frontier (a full window per sliding layer)
+    // was charged less than it holds.
+    @Test func aCaptureChargesEveryFrontierAFullWindowOfEachSlidingLayer() throws {
+        let (plan, models) = try Self.stages(cut: 2)
+        let long = MiMoStagePrefixCapture(frontiers: Self.capturePlan(promptCount: Self.prompt.count))
+        _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
+                         captures: [long, MiMoStagePrefixCapture(frontiers: [])])
+        // Three tokens: the only frontier, 2, is shorter than the window of three.
+        let shortPrompt = Array(Self.prompt.prefix(3))
+        #expect(Self.capturePlan(promptCount: shortPrompt.count) == [2])
+        let short = MiMoStagePrefixCapture(frontiers: [2])
+        _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: shortPrompt, start: 0,
+                         captures: [short, MiMoStagePrefixCapture(frontiers: [])])
+        #expect(short.states().map(\.committedTokens) == [2])
+        #expect(short.states().first?.recurrent.values.allSatisfy { $0.conv.dim(2) == 2 } == true)
+        let longCost = try #require(long.cost), shortCost = try #require(short.cost)
+        #expect(longCost.recurrentBytesPerFrontier > 0)
+        #expect(shortCost.recurrentBytesPerFrontier == longCost.recurrentBytesPerFrontier)
+        #expect(shortCost.attentionBytesPerToken == longCost.attentionBytesPerToken)
+    }
+
+    // A longer prompt that shares a grid frontier with a kept prompt (a chat's
+    // next turn) restores it and prefills the rest in the frames its own cold
+    // run has from there: bit for bit that cold run, on every cut.
+    @Test(arguments: [1, 2, 3])
+    func aLongerPromptRestoresASharedGridFrontierBitForBit(cut: Int) throws {
+        let (plan, models) = try Self.stages(cut: cut)
+        // Nineteen tokens: frames end at 4, ..., 16, 18 and 19; kept 8, 16 and 18.
+        let first = Array(Self.prompt.prefix(19))
+        let frontiers = Self.capturePlan(promptCount: first.count)
+        #expect(frontiers == [8, 16, 18])
+        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        _ = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: first, start: 0,
+                         captures: captures)
+        let longer = Self.prompt + [11, 29, 47, 3, 88, 52]
+        let cold = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: longer, start: 0)
+        let shared = try captures.map { capture in try #require(capture.states().first { $0.committedTokens == 16 }) }
+        let rows = try Self.run(models, plan: plan, caches: try Self.restored(models, plan: plan, states: shared),
+                                prompt: longer, start: 16)
+        #expect(Self.bits(rows) == Self.bits(cold), "cut \(cut): the longer prompt from the shared frontier 16")
+    }
 }

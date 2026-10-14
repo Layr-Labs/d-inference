@@ -122,6 +122,26 @@ enum MiMoStagePrefixSnapshot {
         eval(caches.flatMap { $0.innerState() })
     }
 
+    /// What one frontier's sliding tails hold once every ring is full: each
+    /// layer's bytes per kept position times its own window, whatever the
+    /// frontier they were taken at.
+    static func windowTailBytes(_ sliding: [Int: (keys: MLXArray, values: MLXArray)], caches: [KVCache],
+                                globalLayers: [Int]) throws -> Int {
+        var total = 0
+        for (cache, layer) in zip(caches, globalLayers) {
+            guard case .sliding(let window) = try kind(cache), let tail = sliding[layer] else { continue }
+            let positions = tail.keys.dim(2)
+            guard positions > 0, tail.values.dim(2) == positions else {
+                throw ProbeError("MiMo prefix capture kept an empty sliding tail")
+            }
+            let perPosition = (tail.keys.nbytes + tail.values.nbytes + positions - 1) / positions
+            let full = perPosition.multipliedReportingOverflow(by: window)
+            guard !full.overflow else { throw ProbeError("MiMo prefix tail size overflows") }
+            total = try QwenLongPrefillCheckedBytes.sum([total, full.partialValue])
+        }
+        return total
+    }
+
     /// A new array with its own storage and the same bits.
     private static func owned(_ array: MLXArray) -> MLXArray { array * MLXArray(1).asType(array.dtype) }
 
@@ -170,9 +190,12 @@ final class MiMoStagePrefixCapture {
         let planned = frontiers.sorted()
         if kept == nil {
             let rows = state.full.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
-            let tails = state.sliding.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
-            // A ring holds at most its window: the tail at the deepest frontier
-            // costs what it costs here once the prompt is past the window.
+            // Every frontier is charged a full window per sliding layer: a tail
+            // taken before the prompt filled the window is shorter than every
+            // later one, and this cost also stands for the stage's later
+            // requests (`QwenStagePrefixCache.record`: the first one stands).
+            let tails = try MiMoStagePrefixSnapshot.windowTailBytes(state.sliding, caches: caches,
+                                                                     globalLayers: globalLayers)
             let measured = QwenStagePrefixCaptureCost(attentionBytesPerToken: (rows + frontier - 1) / frontier,
                 recurrentBytesPerFrontier: tails, historyBytesPerToken: 0)
             cost = measured

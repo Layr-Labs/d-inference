@@ -149,9 +149,39 @@ struct ProviderLoopCalibrationTests {
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
+    @Test("the load transition stays closed while calibration ownership is handed off")
+    func loadTransitionGateRemainsClosedDuringHandoff() async throws {
+        let fixture = try await ServeLoopFixture.make()
+        let computeGate = RecoveryStepGate()
+        let handoffGate = RecoveryStepGate()
+        defer { computeGate.release(); handoffGate.release() }
+        let bridge = try await installCalibrationSlot(fixture, gate: computeGate, postureProbe: {
+            if !handoffGate.entered { handoffGate.block() }
+            return true
+        })
+        let completion = Task { try await fixture.loop.completeLoadWithWaitingInference(bridge: bridge) }
+        let until = ContinuousClock.now + .seconds(5)
+        while !handoffGate.entered && ContinuousClock.now < until {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(handoffGate.entered)
+        let (loading, modelWaiters, gateWaiters) = await fixture.loop.calibrationHandoffState()
+        #expect(loading)
+        #expect(modelWaiters == 1 && gateWaiters == 1)
+        handoffGate.release()
+        #expect(try await completion.value)
+        computeGate.release()
+        _ = await fixture.loop.drainAndShutdown(timeoutSeconds: 5)
+        await fixture.mock.shutdown()
+        await fixture.bridge.shutdown()
+        await bridge.shutdown()
+        try? FileManager.default.removeItem(at: fixture.directory)
+    }
+
     private func installCalibrationSlot(_ fixture: ServeLoopFixture, gate: RecoveryStepGate,
         afterSelfTest: Bool = false, postureAllows: Bool = true,
-        modelID: String = ServeLoopFixture.modelId) async throws -> EngineV2Bridge {
+        modelID: String = ServeLoopFixture.modelId,
+        postureProbe: (@Sendable () -> Bool)? = nil) async throws -> EngineV2Bridge {
         let tokenizer = ModelCalibrationTokenizer()
         let selection = ModelCalibrationSessionGate(gate: gate, requestNumber: afterSelfTest ? 2 : 1)
         let engine = try CBv2NativeBlockEngine(tokenizer: tokenizer, kvBytesCapacity: 1 << 20,
@@ -161,7 +191,7 @@ struct ProviderLoopCalibrationTests {
             })
         let bridge = await EngineV2Bridge(engine: engine, modelId: modelID,
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [], kvBytesPerToken: 1,
-            kvBudget: fixture.loop.kvBudget, calibrationPosturePermitsWork: { postureAllows })
+            kvBudget: fixture.loop.kvBudget, calibrationPosturePermitsWork: postureProbe ?? { postureAllows })
         _ = await fixture.runtime.unregister(modelId: modelID)
         await fixture.runtime.register(modelId: modelID, bridge: bridge)
         await fixture.loop.installModelSlotForTesting(modelId: modelID,
@@ -177,6 +207,10 @@ private extension EngineV2Bridge {
     func hasScheduledCalibration() -> Bool { modelCalibration.task != nil || modelCalibration.bootstrapCompleted }
 }
 private extension ProviderLoop {
+    func calibrationHandoffState() -> (Bool, Int, Int) {
+        (isLoadingAny, loadingWaiters[ServeLoopFixture.modelId]?.count ?? 0, loadGateWaiters.count)
+    }
+
     func completeLoadWithWaitingInference(bridge: EngineV2Bridge) async throws -> Bool {
         let id = ServeLoopFixture.modelId
         modelsLoading.insert(id)
@@ -195,12 +229,17 @@ private extension ProviderLoop {
             }
             return await bridge.hasScheduledCalibration()
         }
-        while loadingWaiters[id]?.isEmpty != false { await Task.yield() }
-        await finishOrdinaryModelLoad(modelID: id, deviceActivity: activity)
+        let gateWaiter = Task {
+            await withCheckedContinuation { loadGateWaiters.append($0) }
+            return !isLoadingAny
+        }
+        while loadingWaiters[id]?.isEmpty != false || loadGateWaiters.isEmpty { await Task.yield() }
+        try await finishModelLoad(modelID: id, deviceActivity: activity)
         let result = try await waiter.value
+        let gateOpened = await gateWaiter.value
         await prefetchCoordinator?.shutdown(timeout: .seconds(5))
         prefetchCoordinator = nil
-        return result
+        return result && gateOpened
     }
 }
 #endif

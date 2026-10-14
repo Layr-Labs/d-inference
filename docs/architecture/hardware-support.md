@@ -339,7 +339,10 @@ budgets. It does not lower activation or OS reserves, raise concurrency limits,
 or create a separate memory allowance. Only one calibration session runs on the
 Mac at a time. After an uncancelled session retires, the next eligible resident
 engine can start without waiting for a capacity tick.
-An ordinary load offers its new engine first when that owner is available.
+Ordinary and native MiMo loads offer their new engine first when that owner is
+available. The completed construction activity ends before that handoff, but
+the load-transition gate remains closed until the scheduling attempt returns.
+A cancellation/native-owner recheck precedes waking parked load requests.
 
 A customer request takes a foreground lease, cancels any current calibration,
 and waits for its actual retirement before admission. A consumer terminal event

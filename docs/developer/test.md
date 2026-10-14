@@ -70,7 +70,12 @@ without another capacity tick, stops that chain for foreground work or draining,
 and runs the production load-completion epilogue
 with a real activity receipt and parked inference waiter to verify scheduling
 prioritizes the newly loaded slot before waiter resumption even when another
-resident engine is eligible. The epilogue test does not load model weights.
+resident engine is eligible. A blocked handoff checks that both load-transition
+state and parked waiters remain held across the bridge actor hop. These epilogue
+tests do not load model weights. The native MiMo lifetime suite separately loads
+its real tiny transaction-backed model and verifies publication releases the
+construction activity before calibration can acquire ownership, then retires
+the real owner. This is ownership coverage, not full-model calibration quality.
 `finalCellPostureChangeDiscardsOnlyCalibration` holds the final measured cell,
 changes its injected posture, and checks that only that cell's staged evidence
 is discarded, independently published serving observations survive, and the

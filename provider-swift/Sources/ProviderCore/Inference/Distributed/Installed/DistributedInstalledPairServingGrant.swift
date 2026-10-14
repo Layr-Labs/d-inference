@@ -571,6 +571,24 @@ public enum ClusterPairServingGrants {
         Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID).shapes(runtimeModelID: runtimeModelID)
     }
 
+    /// The decode speed-up a pipeline's speculative rounds (`pipeline_mtp_v1`)
+    /// are credited with before this pair has served them: the smallest that
+    /// the installed artifact's passing records of the rounds measured over the
+    /// plain pipeline of their placement
+    /// (`ClusterPairQualificationRecord.measuredPipelineSpeculativeSpeedup`).
+    /// Nil unless the model is granted the `pipeline_speculative` family (a
+    /// diverged record withholds it, and then nothing is credited) and some
+    /// passing record measured it. The planner credits it only where the
+    /// decoding rank has no served measurement of its own.
+    public static func recordedPipelineSpeculativeFactor(runtimeModelID: String, artifactSHA256: String? = nil,
+                                                         decisions: ClusterPairServingDecisions = decisions) -> Double? {
+        let scoped = Self.decisions(decisions, artifactSHA256: artifactSHA256, runtimeModelID: runtimeModelID)
+        guard let grant = scoped.granted.first(where: { $0.runtimeModelID == runtimeModelID }),
+              grant.families.contains(.pipelineSpeculative), grant.withheldFamilies[.pipelineSpeculative] == nil else { return nil }
+        return scoped.records.filter { $0.runtimeModelID == runtimeModelID }
+            .compactMap(\.measuredPipelineSpeculativeSpeedup).filter { $0.isFinite && $0 > 0 }.min()
+    }
+
     /// The PUBLIC grant: the mode families a model's passing records qualify
     /// for public traffic (the coordinator's parity qualification still decides
     /// each placement); a refusal for every other model. With `artifactSHA256`

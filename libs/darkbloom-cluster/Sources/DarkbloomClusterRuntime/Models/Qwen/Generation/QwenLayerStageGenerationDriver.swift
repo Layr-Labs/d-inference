@@ -33,9 +33,13 @@ func runQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
 /// pass the exact allowance derived for that reservation and retain all existing
 /// build/source/arithmetic, deadline and cancellation checks. There is no default
 /// diagnostic mode or permissive resource callback. Do not time this as serving.
+///
+/// `speculativeRounds` (`pipeline_mtp_v1`): the request runs its rounds as
+/// served, and rank 1 also records one step per selected token from the row
+/// that token was taken from (`QwenRecordedStep`): the accepted timeline.
 func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
     producerStage: LoadedQwenLayerStage? = nil, speculativeHead: QwenMTPHead? = nil,
-    plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
+    speculativeRounds: QwenMTPTerms? = nil, plan: QwenLayerStagePlan, agreement: QwenLayerStageGenerationAgreement,
     collective: Collective, resources makeResources: () throws -> QwenGenerationDiagnosticResources,
     phaseSplitFault: QwenPhaseSplitFault? = nil, prefixCache: QwenStagePrefixCache? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
@@ -57,7 +61,7 @@ func recordQwenLayerStageGenerationRequest(loaded: LoadedQwenLayerStage,
         rank: collective.rank, resources: resources)
     defer { capture.discard() }
     let (result, handedOver) = try runQwenLayerStageGenerationCore(loaded: loaded, producerStage: producerStage,
-        speculativeHead: speculativeHead, plan: plan, agreement: agreement,
+        speculativeHead: speculativeHead, speculativeRounds: speculativeRounds, plan: plan, agreement: agreement,
         collective: collective, diagnostics: capture, phaseSplitFault: phaseSplitFault, prefixCache: prefixCache,
         onCommittedToken: onCommittedToken, check: check)
     // The core has validated both retirement acknowledgements and its final
@@ -116,13 +120,10 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             // The decoding rank of a speculative phase split, and the last rank
             // of a speculative pipeline, hold the head; no other rank, and no
             // other request, may be handed one. A pipeline's rounds are the
-            // agreement's decode framing, on both ranks.
-            guard unplannedAgreement.speculativeRoundsFraming == speculativeRounds?.pipelineDecodeFraming,
-                  speculativeRounds == nil || (unplannedAgreement.phaseSplit == nil && diagnostics == nil),
-                  (speculativeHead != nil) == ((unplannedAgreement.speculativeHead != nil || speculativeRounds != nil)
-                      && collective.rank == 1) else {
-                throw ProbeError("Speculative head differs from this rank's agreed role")
-            }
+            // agreement's decode framing, on both ranks; a recording request
+            // runs them too (its rank 1 records the accepted timeline).
+            try requireQwenSpeculativeRole(agreement: unplannedAgreement, rounds: speculativeRounds,
+                holdsHead: speculativeHead != nil, rank: collective.rank)
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                 material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
@@ -200,6 +201,7 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             }
             defer { prefixCache?.endCapture() }
             diagnostics?.request = agreement.request
+            diagnostics?.recordsSteps = speculativeRounds != nil && collective.rank == 1
             let control = QwenLayerStageGenerationControl(agreement: agreement)
             let transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective)
             var producer: QwenGenerationLookaheadProducer?
@@ -228,13 +230,13 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                             let outcome: QwenPipelineMTPGeneration.Outcome
                             if collective.rank == 0 {
                                 outcome = try QwenPipelineMTPGeneration.runProducer(session: owned, control: control,
-                                    terms: speculativeRounds, collective: collective,
+                                    terms: speculativeRounds, collective: collective, recording: diagnostics,
                                     onCommittedToken: onCommittedToken, check: checked)
                             } else {
                                 guard let decoder else { throw ProbeError("Speculative rounds need the head on rank 1") }
                                 try decoder.begin(firstToken: selectedTokens[0])
                                 outcome = try QwenPipelineMTPGeneration.runConsumer(session: owned, decoder: decoder,
-                                    control: control, collective: collective, check: checked)
+                                    control: control, collective: collective, recording: diagnostics, check: checked)
                             }
                             selectedTokens += outcome.selected
                             finalDecision = outcome.finalDecision
@@ -276,6 +278,10 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
                             transport: transport, check: checked)
                         let selected = try control.takeCommittedToken()
                         selectedTokens.append(selected)
+                        // A recorded speculative pipeline's first token: its step, from this frame's row.
+                        if let diagnostics, diagnostics.recordsSteps, let row {
+                            try diagnostics.captureStep(row, frame: expected.frame, tokenID: selected, check: checked)
+                        }
                         // The scalar agreement is complete. No next forward can run
                         // while this callback is active or before decision agreement.
                         let decision: QwenLayerStageGenerationDecisionPacket
@@ -417,6 +423,20 @@ private func runQwenLayerStageGenerationCore(loaded: LoadedQwenLayerStage,
             try nativeError.check()
             throw error
         }
+    }
+}
+
+/// The decoding rank of a speculative phase split, and the last rank of a
+/// speculative pipeline, hold the head; no other rank, and no other request,
+/// may be handed one. A pipeline's rounds are the agreement's decode framing
+/// on both ranks, never a phase split's. A recording request runs its rounds
+/// as a served one does (its rank 1 records the accepted timeline).
+func requireQwenSpeculativeRole(agreement: QwenLayerStageGenerationAgreement, rounds: QwenMTPTerms?,
+                                holdsHead: Bool, rank: Int) throws {
+    guard agreement.speculativeRoundsFraming == rounds?.pipelineDecodeFraming,
+          rounds == nil || agreement.phaseSplit == nil,
+          holdsHead == ((agreement.speculativeHead != nil || rounds != nil) && rank == 1) else {
+        throw ProbeError("Speculative head differs from this rank's agreed role")
     }
 }
 

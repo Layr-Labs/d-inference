@@ -185,6 +185,66 @@ struct QwenPipelineSpeculativeTests {
         }
     }
 
+    /// A recording request runs the rounds too (pp-mtp-cache item 7 refused it):
+    /// the last rank holds the head, rank 0 never does, and rounds never frame a
+    /// phase split.
+    @Test func aRecordingRunsTheRoundsWithTheHeadOnTheLastRankOnly() throws {
+        let request = try F.request()
+        let terms = try QwenMTPTerms(depth: 4)
+        let rounds = try F.agreement(request, framing: terms.pipelineDecodeFraming)
+        try requireQwenSpeculativeRole(agreement: rounds, rounds: terms, holdsHead: true, rank: 1)
+        try requireQwenSpeculativeRole(agreement: rounds, rounds: terms, holdsHead: false, rank: 0)
+        #expect(throws: ProbeError.self) { try requireQwenSpeculativeRole(agreement: rounds, rounds: terms, holdsHead: true, rank: 0) }
+        #expect(throws: ProbeError.self) { try requireQwenSpeculativeRole(agreement: rounds, rounds: terms, holdsHead: false, rank: 1) }
+        // Terms the agreement does not frame, or rounds without terms, are refused.
+        #expect(throws: ProbeError.self) {
+            try requireQwenSpeculativeRole(agreement: rounds, rounds: try QwenMTPTerms(depth: 2), holdsHead: true, rank: 1)
+        }
+        #expect(throws: ProbeError.self) { try requireQwenSpeculativeRole(agreement: rounds, rounds: nil, holdsHead: false, rank: 1) }
+        let plain = try F.agreement(request, framing: nil)
+        try requireQwenSpeculativeRole(agreement: plain, rounds: nil, holdsHead: false, rank: 1)
+        #expect(throws: ProbeError.self) { try requireQwenSpeculativeRole(agreement: plain, rounds: nil, holdsHead: true, rank: 1) }
+    }
+
+    /// A recorded step is the row's digest over its native bytes and its four
+    /// highest candidates, exact widenings, highest first, ties by lower token:
+    /// what a qualification step carries, so the near-tie rule reads every
+    /// accepted token of a speculative pipeline.
+    @Test func aRecordedStepIsTheRowsDigestAndHighestCandidates() throws {
+        let vocabulary = 10
+        let values: [Float] = [0.5, 3.0, -1.0, 2.0, 3.0, 1.0, 0.0, 2.5, -2.0, 1.5]
+        let row = MLXArray(values).reshaped([1, vocabulary]).asType(.bfloat16)
+        eval(row)
+        let request = try F.request()
+        let frame = try request.frame(sequence: request.prefillFrameCount + 2)
+        let step = try QwenRecordedStep(row, ordinal: 3, frame: frame, tokenID: 1, vocabularySize: vocabulary,
+            rowDType: "bfloat16", sampled: false)
+        #expect(step.topTokenIDs == [1, 4, 7, 3] && step.topLogits == [3.0, 3.0, 2.5, 2.0])
+        #expect(step.maximumTieCount == 2 && step.ordinal == 3 && step.tokenID == 1)
+        #expect(step.rowSHA256 == sha256(row.asData(access: .copy).data) && step.rowDType == "bfloat16")
+        #expect(step.frameSequence == frame.sequence && step.committedTokens == frame.tokenOffset + frame.tokenCount)
+        // The qualification step's field names, so a pair report reads it as one.
+        let encoded = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(step)) as? [String: Any]
+        #expect(Set(encoded?.keys.map { $0 } ?? []) == ["ordinal", "frameSequence", "committedTokens", "tokenID",
+            "topTokenIDs", "topLogits", "maximumTieCount", "rowSHA256", "rowDType"])
+        // A greedy token that is not its row's top candidate is refused; a sampled draw is not.
+        #expect(throws: ProbeError.self) {
+            _ = try QwenRecordedStep(row, ordinal: 3, frame: frame, tokenID: 7, vocabularySize: vocabulary,
+                rowDType: "bfloat16", sampled: false)
+        }
+        _ = try QwenRecordedStep(row, ordinal: 3, frame: frame, tokenID: 7, vocabularySize: vocabulary,
+            rowDType: "bfloat16", sampled: true)
+        // Another dtype or width than the profile's is refused.
+        #expect(throws: ProbeError.self) {
+            _ = try QwenRecordedStep(row, ordinal: 3, frame: frame, tokenID: 1, vocabularySize: vocabulary,
+                rowDType: "float16", sampled: false)
+        }
+        #expect(throws: ProbeError.self) {
+            _ = try QwenRecordedStep(row, ordinal: 3, frame: frame, tokenID: 1, vocabularySize: vocabulary + 1,
+                rowDType: "bfloat16", sampled: false)
+        }
+    }
+
     /// The copy's module is the producer stage's declared affine table:
     /// looking a token up gives the rows the packed table dequantizes to.
     @Test func theEmbeddingCopyIsTheDeclaredAffineTable() throws {

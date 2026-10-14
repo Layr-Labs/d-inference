@@ -76,6 +76,8 @@ import Foundation
           darkbloom-cluster-pair-check record --pair PAIR-REPORT.json --reference REPORT.json [--reference REPORT.json]...
               --output NEW-RECORD.jsonl [--near-tie-ulps N] [--allow-cut-difference yes]
               [--allow-schedule-difference yes] [--allow-profile-difference yes]
+              [--timing-mode TIMED-PAIR-REPORT.json --timing-plain TIMED-PAIR-REPORT.json
+               (decode of timed runs of the same placement and request in the record's mode and as pipeline_v1)]
         """
 
     /// `--name value` pairs; names in `repeated` may occur more than once.
@@ -565,7 +567,8 @@ extension PairCheck {
     /// one grants it.
     static func record(_ arguments: [String]) throws {
         let fields = try parse(arguments, allowed: ["--pair", "--reference", "--output", "--near-tie-ulps",
-            "--allow-cut-difference", "--allow-schedule-difference", "--allow-profile-difference"], repeated: ["--reference"])
+            "--allow-cut-difference", "--allow-schedule-difference", "--allow-profile-difference",
+            "--timing-mode", "--timing-plain"], repeated: ["--reference"])
         guard let pairPath = fields["--pair"]?.first, let output = fields["--output"]?.first,
               let referencePaths = fields["--reference"], !referencePaths.isEmpty else { throw Failure(usage) }
         let threshold = try fields["--near-tie-ulps"]?.first.map { text -> Float in
@@ -579,11 +582,25 @@ extension PairCheck {
         let record = try PairQualificationRecords.make(
             pairReport: QualificationFiles.read(URL(fileURLWithPath: pairPath), maximumBytes: QualificationReportFiles.maximumBytes),
             references: referencePaths.map { try QualificationFiles.read(URL(fileURLWithPath: $0), maximumBytes: QualificationReportFiles.maximumBytes) },
-            comparator: comparator)
+            comparator: comparator, timing: try timingReports(fields))
         try QualificationFiles.writeNew(Data((try record.encodedLine() + "\n").utf8), to: URL(fileURLWithPath: output))
         let chips = record.ranks.map(\.chip).joined(separator: " + ")
         print("\(record.runtimeModelID) on \(chips), cut \(record.cuts.map(String.init).joined(separator: ",")), \(record.generationMode): "
             + record.comparisons.map(\.verdict).joined(separator: ", ") + (record.passed ? " -> passes the near-tie rule" : " -> FAILS the near-tie rule"))
+        if let measured = record.measuredDecode {
+            print(String(format: "measured decode: %.1f tok/s in %@ vs %.1f tok/s as the plain pipeline (%.2fx)",
+                measured.modeTokensPerSecond, record.generationMode, measured.plainPipelineTokensPerSecond, measured.speedup))
+        }
+    }
+
+    /// Both timing reports, or neither.
+    static func timingReports(_ fields: [String: [String]]) throws -> (mode: Data, plain: Data)? {
+        let mode = fields["--timing-mode"]?.first, plain = fields["--timing-plain"]?.first
+        guard (mode == nil) == (plain == nil) else { throw Failure("--timing-mode and --timing-plain go together") }
+        guard let mode, let plain else { return nil }
+        let bound = QualificationReportFiles.maximumBytes
+        return (try QualificationFiles.read(URL(fileURLWithPath: mode), maximumBytes: bound),
+                try QualificationFiles.read(URL(fileURLWithPath: plain), maximumBytes: bound))
     }
 }
 

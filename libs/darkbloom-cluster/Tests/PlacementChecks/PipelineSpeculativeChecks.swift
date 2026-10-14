@@ -197,4 +197,45 @@ func checkQwenPipelineSpeculative(_ golden: URL, _ checks: PlacementChecks) thro
     let slower = try plan(["--served", try served(plain: 30.0, rounds: 27.0).path])
     checks.require("27B: rounds served slower than plain: the planner keeps a plain pipeline mode (chose \(slower.mode))",
         slower.mode == ClusterGenerationMode.pipeline.rawValue || slower.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
+
+    // Before this pair has served anything: a passing qualification record of the rounds that measured
+    // them faster than the plain pipeline credits them (owner rule: on by default where lossless and
+    // measured faster); a figure at or below 1 credits nothing that wins; this pair's own served
+    // figure replaces the record's. Constructed speeds on both recorded profiles.
+    do {
+        func device(_ label: String, decode: Double, served: Double? = nil) throws -> ClusterPlacementDevice {
+            ClusterPlacementDevice(label: label, profile: try ClusterDeviceProfile.decode(
+                Data(contentsOf: pair.appendingPathComponent("profile-\(label).json"))),
+                speed: ClusterDeviceSpeed(source: .measured, absolute: true,
+                    rested: .init(prefillTokensPerSecond: 1000, decodeTokensPerSecond: decode, pipelineSpeculativeFactor: served),
+                    sustained: nil, explanation: "constructed"))
+        }
+        func chosen(recorded: Double?, served: Double? = nil) throws -> (mode: ClusterGenerationMode?, decode: Double) {
+            var policy = ClusterPlacementPolicy()
+            policy.modes = [.pipeline, .pipelineCompactDecode, .pipelineMTP]
+            policy.recordedPipelineSpeculativeFactor = recorded
+            // A served figure is the decoding Mac's own: given to both, whichever decodes.
+            let result = try ClusterPlacementPlanner.plan(devices: [try device("mac-a", decode: 30, served: served),
+                try device("mac-b", decode: 40, served: served)], layout: layout, policy: policy)
+            return (result.chosen?.mode, result.chosen?.rested.decodeTokensPerSecond ?? 0)
+        }
+        let none = try chosen(recorded: nil), recorded = try chosen(recorded: 1.84)
+        checks.require("27B, nothing served, no record measured the rounds: a plain pipeline mode (chose \(none.mode?.rawValue ?? "-"))",
+            none.mode.map { !$0.usesSpeculativeHead } ?? false)
+        checks.require("27B, nothing served, a passing record measured the rounds 1.84x: pipeline_mtp_v1 is chosen by default "
+            + "(chose \(recorded.mode?.rawValue ?? "-"), decode \(recorded.decode) vs \(none.decode))",
+            recorded.mode == .pipelineMTP && recorded.decode > none.decode * 1.5)
+        let slower = try chosen(recorded: 0.9)
+        checks.require("27B, a record that measured the rounds slower: a plain pipeline mode (chose \(slower.mode?.rawValue ?? "-"))",
+            slower.mode.map { !$0.usesSpeculativeHead } ?? false)
+        let overruled = try chosen(recorded: 1.84, served: 0.9)
+        checks.require("27B, this pair served the rounds slower than plain: its own figure overrules the record's "
+            + "(chose \(overruled.mode?.rawValue ?? "-"))", overruled.mode.map { !$0.usesSpeculativeHead } ?? false)
+        checks.require("the record's figure is used only without a served one, and never as a head rate",
+            ClusterSpeculativeCredit.pipelineFactor(.init(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1), recorded: 1.84) == 1.84
+                && ClusterSpeculativeCredit.pipelineFactor(.init(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1,
+                    pipelineSpeculativeFactor: 0.9), recorded: 1.84) == 0.9
+                && ClusterSpeculativeCredit.pipelineFactor(.init(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1,
+                    speculativeDecodeTokensPerSecond: 80), recorded: nil) == nil)
+    }
 }

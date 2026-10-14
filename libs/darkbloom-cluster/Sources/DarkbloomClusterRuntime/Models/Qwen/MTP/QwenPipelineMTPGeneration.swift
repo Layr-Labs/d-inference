@@ -73,6 +73,7 @@ enum QwenPipelineMTPGeneration {
     /// Rank 0: run each window rank 1 asks for, check what it keeps, publish.
     static func runProducer(session: QwenLayerStageSession, control: QwenLayerStageGenerationControl,
                             terms: QwenMTPTerms, collective: Collective,
+                            recording: QwenGenerationDiagnosticCapture? = nil,
                             onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
         guard collective.rank == 0, agreement.speculativeRoundsFraming == terms.pipelineDecodeFraming else {
@@ -121,6 +122,7 @@ enum QwenPipelineMTPGeneration {
                 var accepted = 0
                 var published: QwenLayerStageGenerationDecisionPacket?
                 for (index, token) in result.content.tokenIDs.enumerated() {
+                    let frame = try request.frame(sequence: control.completedFrames)
                     let decision = try QwenPhaseSplitGeneration.replay(tokenID: token, payloadSHA256: rows[index],
                         control: control) { value in
                         try check()
@@ -129,6 +131,10 @@ enum QwenPipelineMTPGeneration {
                         return proceed
                     }
                     selected.append(token); accepted += 1; published = decision
+                    // A recording's final frame: rank 0 owns no row of it.
+                    if let recording, control.phase == .retiring {
+                        try recording.captureFinalRow(nil, frame: frame, tokenID: token, check: check)
+                    }
                     if decision.content.decision != .proceed { break }
                 }
                 guard let published else { throw ProbeError("Speculative round kept no token") }
@@ -153,6 +159,7 @@ enum QwenPipelineMTPGeneration {
     /// 0's publication.
     static func runConsumer(session: QwenLayerStageSession, decoder: QwenMTPDecoder,
                             control: QwenLayerStageGenerationControl, collective: Collective,
+                            recording: QwenGenerationDiagnosticCapture? = nil,
                             check: () throws -> Void) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
         guard collective.rank == 1, agreement.speculativeRoundsFraming == decoder.terms.pipelineDecodeFraming else {
@@ -233,9 +240,19 @@ enum QwenPipelineMTPGeneration {
                 var lastDecision: QwenLayerStageGenerationDecisionPacket?
                 for index in 0..<verdict.acceptedCount {
                     let proceed = index + 1 < verdict.acceptedCount || verdict.decision == .proceed
+                    let frame = try request.frame(sequence: control.completedFrames)
                     lastDecision = try QwenPhaseSplitGeneration.replay(tokenID: kept.tokens[index],
                         payloadSHA256: rows[index], control: control) { _ in proceed }
                     selected.append(kept.tokens[index])
+                    // A recording keeps each accepted token's own column (the
+                    // accepted timeline) and the last one's whole row.
+                    if let recording {
+                        let row = logits[0..., index, 0...]
+                        try recording.captureStep(row, frame: frame, tokenID: kept.tokens[index], check: check)
+                        if control.phase == .retiring {
+                            try recording.captureFinalRow(row, frame: frame, tokenID: kept.tokens[index], check: check)
+                        }
+                    }
                 }
                 guard let lastDecision, lastDecision.content.decision == verdict.decision,
                       control.selectedTokenCount == verdict.selectedTokenCount,

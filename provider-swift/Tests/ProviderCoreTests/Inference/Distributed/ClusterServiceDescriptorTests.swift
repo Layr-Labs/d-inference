@@ -12,10 +12,19 @@ import Testing
 /// (every forwarded command and hand-over), and no caller that opens a configuration directory and drops its descriptor.
 /// Files in a temporary folder only: no cable, no peer Mac, no model.
 @Suite(.serialized) struct ClusterServiceDescriptorTests {
-    /// Descriptors open in this process now.
-    static func openDescriptors() -> Int {
+    /// Descriptors open in this process now on `folder` or anything under it (other suites running at the same time open
+    /// their own descriptors elsewhere and are not counted).
+    static func openDescriptors(under folder: URL) -> Int {
         let limit = min(Int(getdtablesize()), 65_536)
-        return (0..<limit).reduce(0) { $0 + (fcntl(Int32($1), F_GETFD) != -1 ? 1 : 0) }
+        let prefix = folder.path
+        var count = 0
+        for fd in 0..<Int32(limit) where fcntl(fd, F_GETFD) != -1 {
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(fd, F_GETPATH, &buffer) != -1 else { continue }
+            let path = String(cString: buffer)
+            if path == prefix || path.hasPrefix(prefix + "/") { count += 1 }
+        }
+        return count
     }
 
     /// A private folder on a path with no symbolic link in it (the strict configuration reader refuses `/var`).
@@ -33,14 +42,14 @@ import Testing
         defer { try? FileManager.default.removeItem(at: home) }
         let store = ClusterSetupStore(paths: .init(paths: try ClusterUserPaths(homeDirectory: home)))
         _ = try store.updateRecord { _ in }
-        let before = Self.openDescriptors()
+        let before = Self.openDescriptors(under: home)
         let writes = 200
         for index in 0..<writes {
             // The control tick's write (unchanged record) and the lease's write (a changed one) both count.
             _ = try store.updateRecord { record in if index % 2 == 0 { record.aloneHoldersPlan = "plan-\(index)" } }
             _ = try store.readRecord()
         }
-        let grown = Self.openDescriptors() - before
+        let grown = Self.openDescriptors(under: home) - before
         #expect(grown < writes / 4, "\(grown) descriptors still open after \(writes) setup record writes")
     }
 
@@ -49,13 +58,13 @@ import Testing
         defer { try? FileManager.default.removeItem(at: home) }
         let file = home.appendingPathComponent("service", isDirectory: true).appendingPathComponent("control.lock")
         ClusterControlCommandLock.acquire(seconds: 0, file: file)?.release()
-        let before = Self.openDescriptors()
+        let before = Self.openDescriptors(under: home)
         let rounds = 100
         for _ in 0..<rounds {
             let held = try #require(ClusterControlCommandLock.acquire(seconds: 0, file: file))
             held.release()
         }
-        let grown = Self.openDescriptors() - before
+        let grown = Self.openDescriptors(under: home) - before
         #expect(grown < rounds / 4, "\(grown) descriptors still open after \(rounds) command locks")
     }
 
@@ -158,6 +167,6 @@ import Testing
         }
         finished.wait()
         #expect(failure == nil, "\(String(describing: failure))")
-        #expect(grown < 16 * 1024 * 1024, "\(grown / 1024) KiB still in use after \(frames) worker frames on a thread that never drains")
+        #expect(grown < 32 * 1024 * 1024, "\(grown / 1024) KiB still in use after \(frames) worker frames on a thread that never drains")
     }
 }

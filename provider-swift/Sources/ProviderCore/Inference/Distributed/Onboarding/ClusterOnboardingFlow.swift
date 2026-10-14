@@ -271,9 +271,17 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// when that is the other Mac the line names it (this Mac's own loopback serves nothing).
     public var apiLine: String { "API at http://localhost:\(port) on \(servedBy)" }
 
+    /// The local-serving line as this screen shows it. The part that serves words it for its own Mac ("this Mac's
+    /// API"); on the screen of the other Mac (a member's status, or a leader whose API moved) it is that Mac's API,
+    /// which `apiLine` names just above.
+    public var noticeLine: String? {
+        guard let notice else { return nil }
+        return servedBy == "this Mac" ? notice : notice.replacingOccurrences(of: "this Mac's API", with: "that Mac's API")
+    }
+
     /// The deployment line, then where the API is, then (serving locally only) the plain local-serving line.
     public func lines(model: String) -> [String] {
-        [deployment ?? "Serving \(model) across both Macs", apiLine] + (notice.map { [$0] } ?? [])
+        [deployment ?? "Serving \(model) across both Macs", apiLine] + (noticeLine.map { [$0] } ?? [])
     }
 }
 

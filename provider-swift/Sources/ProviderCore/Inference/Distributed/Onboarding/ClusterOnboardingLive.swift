@@ -1078,10 +1078,13 @@ final class OnboardingLive: @unchecked Sendable {
         } else if let session = now.session, session.observed {
             if session.ready {
                 // The deployment first, then where the API is.
-                let ready = ClusterOnboardingReady(servedBy: now.local ? here : peerName, port: session.port ?? 0, deployment: leadership?.deployment)
+                // The local-serving line is worded for the screen it lands on (`noticeLine`): a member's status says
+                // that Mac's API, as the API line above names it.
+                let ready = ClusterOnboardingReady(servedBy: now.local ? here : peerName, port: session.port ?? 0, deployment: leadership?.deployment,
+                                                   notice: now.local ? ClusterService.servingNotice() : now.child?.notice)
                 lines.append(ready.lines(model: model)[0] + ".")
                 lines.append(ready.apiLine + " (\(session.readyRanks) of \(session.ranks) parts ready).")
-                if let notice = now.local ? ClusterService.servingNotice() : now.child?.notice { lines.append(notice + ".") }
+                if let notice = ready.noticeLine { lines.append(notice + ".") }
             } else {
                 lines.append("\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
             }

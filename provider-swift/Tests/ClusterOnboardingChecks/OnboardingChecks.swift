@@ -303,6 +303,15 @@ import Darwin
             == "API at http://localhost:8100 on Apple M3 Ultra, 256 GB", "serving there: that Mac named")
         expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000).lines(model: "Qwen3.5-9B")
             == ["Serving Qwen3.5-9B across both Macs", "API at http://localhost:8000 on this Mac"], "no plan known: still one plain line")
+        // The local-serving line speaks of the Mac whose API serves: on the screen of the Mac that does not hold the
+        // API (a member's status, or a leader whose API moved) it is that Mac's API, never "this Mac's".
+        let notice = "Serving locally on this Mac's API; public serving needs a coordinator with cluster support"
+        expect(ClusterOnboardingReady(servedBy: "this Mac", port: 8000, notice: notice).lines(model: "Qwen3.5-9B").last == notice,
+            "local serving here: this Mac's API")
+        let there = ClusterOnboardingReady(servedBy: "Apple M3 Ultra, 256 GB", port: 8000, notice: notice).lines(model: "Qwen3.5-9B")
+        expect(there.last == "Serving locally on that Mac's API; public serving needs a coordinator with cluster support",
+            "local serving there: that Mac's API, got \(there)")
+        expect(!there.contains { $0.contains("this Mac's API") }, "local serving there: no line says this Mac's API")
     }
 
     /// The leader's cluster service keeps each member on the leader's serving state (serve or stop, and the model),

@@ -11,6 +11,15 @@ struct MiMoRequestEvidence: Encodable, Equatable {
     let lastRowSHA256: String?
     /// Rank 1, when step evidence was asked for: one record per selected token.
     var steps: [MiMoStepEvidence] = []
+    /// Rank 1 of `pipeline_mtp_v1`: the speculative rounds' counts and times.
+    var speculative: MiMoMTPStatistics? = nil
+}
+
+/// What a `pipeline_mtp_v1` request runs with on one rank: the agreed terms,
+/// and on rank 1 the loaded head.
+struct MiMoSpeculativeDecode {
+    let terms: MiMoMTPTerms
+    let head: MiMoMTPHead?
 }
 
 /// Runs one request on an already exclusively owned, admitted resident MiMo
@@ -30,14 +39,14 @@ struct MiMoRequestEvidence: Encodable, Equatable {
 /// both ranks retired cleanly (`storeMiMoStagePrefix`).
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
     agreement unplannedAgreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
-    prefixCache: QwenStagePrefixCache? = nil,
+    prefixCache: QwenStagePrefixCache? = nil, speculative: MiMoSpeculativeDecode? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
     try MLX.withError { nativeError in
         func checked() throws { try nativeError.check(); try check(); try nativeError.check() }
         do {
             try requireMiMoGenerationSource(loaded: loaded, plan: plan, agreement: unplannedAgreement,
-                                            collective: collective)
+                                            collective: collective, speculative: speculative)
             try checked()
             _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                 material: { .generation(agreementFingerprint: unplannedAgreement.fingerprint) },
@@ -56,13 +65,44 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
             let transport: QwenLayerStageGenerationTransport
             do { transport = try QwenLayerStageGenerationTransport(agreement: agreement, collective: collective) }
             catch { try? planned.session.cancel(); throw error }
+            var decoder: MiMoMTPDecoder?
+            defer { decoder?.release() }
             do {
                 let owned = planned.session
+                if let speculative, collective.rank == 1 {
+                    // The head observes the prompt rows this request computes. After a
+                    // restored prefix that is only the rest of the prompt: drafts stay
+                    // verified by the target (tokens unaffected), only acceptance drops.
+                    guard let head = speculative.head else { throw ProbeError("Speculative decode needs the head on rank 1") }
+                    let owner = try MiMoMTPDecoder(head: head, terms: speculative.terms, request: agreement.request)
+                    decoder = owner
+                    owned.promptObserver = { tokens, hidden in try owner.observePrompt(tokens: tokens, hidden: hidden) }
+                }
                 var selectedTokens = [Int]()
                 var finalDecision: QwenLayerStageGenerationDecisionPacket?
+                var discardedDecodeForwards = 0
+                var speculativeStatistics: MiMoMTPStatistics?
                 while control.phase == .frame {
                     try autoreleasepool {
                         try checked()
+                        if let speculative, control.selectedTokenCount > 0 {
+                            // The prompt and the first token ran as frames; decode runs as rounds.
+                            let outcome: MiMoMTPGeneration.Outcome
+                            if collective.rank == 0 {
+                                outcome = try MiMoMTPGeneration.runProducer(session: owned, control: control,
+                                    terms: speculative.terms, collective: collective,
+                                    onCommittedToken: onCommittedToken, check: checked)
+                            } else {
+                                try decoder!.begin(firstToken: selectedTokens[0])
+                                outcome = try MiMoMTPGeneration.runConsumer(session: owned, decoder: decoder!,
+                                    control: control, collective: collective, check: checked)
+                            }
+                            selectedTokens += outcome.selected
+                            finalDecision = outcome.finalDecision
+                            discardedDecodeForwards = outcome.discardedDecodeForwards
+                            speculativeStatistics = outcome.statistics
+                            return
+                        }
                         let expected = try control.beginFrame()
                         if agreement.compactDecode, expected.frame.phase == .decode {
                             let step = try runMiMoCompactDecodeFrame(session: owned, control: control,
@@ -111,8 +151,9 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                 try checked()
                 let evidence = MiMoRequestEvidence(rank: collective.rank,
                     boundaryChainSHA256: owned.boundaryChainSHA256, lastRowSHA256: owned.lastRowSHA256,
-                    steps: owned.steps)
-                try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken)
+                    steps: owned.steps, speculative: speculativeStatistics)
+                try owned.finishGeneration(reason, selectedTokenCount: control.selectedTokenCount, lastTokenID: lastToken,
+                    discardedDecodeForwards: discardedDecodeForwards)
                 guard owned.isClosed, !owned.isFailed else { throw ProbeError("Generation native state failed retirement") }
                 try control.acknowledgeRetirement(rank: collective.rank, disposition: .retired)
                 try transport.exchangeRetirement(decision: finalDecision, check: checked)
@@ -153,7 +194,11 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
 }
 
 private func requireMiMoGenerationSource(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
-    agreement: QwenLayerStageGenerationAgreement, collective: Collective) throws {
+    agreement: QwenLayerStageGenerationAgreement, collective: Collective, speculative: MiMoSpeculativeDecode?) throws {
+    guard agreement.speculativeRoundsFraming == speculative?.terms.decodeFraming,
+          speculative == nil || (!agreement.compactDecode && (collective.rank == 0) == (speculative?.head == nil)) else {
+        throw ProbeError("Generation speculative rounds differ from this rank's loaded head and terms")
+    }
     let source = agreement.descriptor, receipt = loaded.receipt
     guard collective.size == 2, (0...1).contains(collective.rank), loaded.stageIndex == collective.rank,
           plan.stages.count == 2, source.planFingerprint == plan.fingerprint,

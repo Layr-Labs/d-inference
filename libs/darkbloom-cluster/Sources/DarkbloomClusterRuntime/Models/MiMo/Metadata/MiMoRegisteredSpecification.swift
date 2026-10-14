@@ -52,9 +52,11 @@ struct MiMoRegisteredSpecification {
     /// The row once listed twelve the pair it was written on could place.
     var supportedCuts: [Int] { Array(1..<layers) }
     let supportedPrefillSchedules: [ClusterPrefillSchedule]
-    /// The pipeline and its compact decode framing. No phase split: the rank
-    /// that would decode alone would have to hold all `sourceBytes`, which is
-    /// the single-Mac case this pair exists to avoid.
+    /// The pipeline, its compact decode framing, and the pipeline with the
+    /// artifact's own three next-N heads on the last rank (`pipeline_mtp_v1`:
+    /// decode as speculative rounds, `MiMoMTPGeneration`). No phase split: the
+    /// rank that would decode alone would have to hold all `sourceBytes`,
+    /// which is the single-Mac case this pair exists to avoid.
     let supportedGenerationModes: [ClusterGenerationMode]
 
     // The earlier fixed reservation every profile started with; the row's
@@ -93,7 +95,7 @@ struct MiMoRegisteredSpecification {
             fullKeyValueHeads: 4, slidingKeyValueHeads: 8, keyWidth: 192, valueWidth: 128,
             declaredContextTokens: 1_048_576,
             supportedPrefillSchedules: [.serial],
-            supportedGenerationModes: [.pipeline, .pipelineCompactDecode]),
+            supportedGenerationModes: [.pipeline, .pipelineCompactDecode, .pipelineMTP]),
     ]
 
     static func specification(_ model: MiMoRegisteredModel) throws -> Self {

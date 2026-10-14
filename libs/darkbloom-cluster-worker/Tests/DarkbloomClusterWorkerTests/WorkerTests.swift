@@ -353,7 +353,7 @@ final class WorkerTests: XCTestCase {
         // The catalog the worker checks against is the runtime's own row; the 9B and 27B ship a head.
         for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_ternary_bonsai_2_27b"] {
             XCTAssertEqual(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes,
-                           [.pipeline, .pipelineCompactDecode, .phaseSplit] + (model.contains("bonsai") ? [] : [.phaseSplitMTP]), model)
+                           [.pipeline, .pipelineCompactDecode, .phaseSplit] + (model.contains("bonsai") ? [] : [.phaseSplitMTP, .pipelineMTP]), model)
         }
     }
 

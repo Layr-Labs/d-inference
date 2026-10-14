@@ -6,8 +6,9 @@ import Foundation
 /// layer owns its attention state and only the residual crosses a boundary,
 /// so every layer boundary is a structural cut; the registered row lists the
 /// ones admitted. The embedded MTP heads, the vision tower, the audio encoder
-/// and the speech embeddings belong to no stage. The modes have no phase
-/// split, so no rank is ever asked to hold the whole text model. Pure
+/// and the speech embeddings belong to no stage (the last rank of
+/// `pipeline_mtp_v1` holds the heads beside its stage). The modes have no
+/// phase split, so no rank is ever asked to hold the whole text model. Pure
 /// metadata: no checkpoint payload and no GPU.
 struct MiMoPlacementFamily: ClusterPlacementFamily {
     let specification: MiMoRegisteredSpecification
@@ -78,6 +79,12 @@ struct MiMoPlacementFamily: ClusterPlacementFamily {
         let s = specification, heads = 64
         return .init(bytesPerQuery: heads * s.valueWidth * 4, bytesPerQueryKey: heads * 4,
             keyWindow: layers[layer].attention == "full" ? nil : s.slidingWindow + MiMoRegisteredSpecification.maximumChunkTokens)
+    }
+
+    /// The artifact's three trained next-N heads: the last rank of
+    /// `pipeline_mtp_v1` loads them (and a copy of the embedding) beside its stage.
+    func isSpeculativeHead(storedTensor name: String) -> Bool {
+        name.hasPrefix(MiMoLayerStagePlan.sourceNamespace + "model.mtp.")
     }
 
     /// The text tensors (every indexed tensor no stage excludes) are the

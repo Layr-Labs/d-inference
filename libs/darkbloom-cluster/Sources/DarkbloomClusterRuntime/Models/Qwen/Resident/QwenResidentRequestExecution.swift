@@ -81,7 +81,10 @@ enum QwenResidentRequestExecution {
                     activeAtStart: Int? = nil,
                     onCommittedToken: (Int, Int, Int) throws -> Bool
     ) throws -> (QwenResidentGenerationCompletion, QwenGenerationDiagnosticEvidence?) {
-        guard generationMode.isPhaseSplit == (phaseSplitAllowance != nil),
+        // A phase split charges its hand-off on both ranks; a speculative
+        // pipeline charges its verify windows (and on rank 1 the head's
+        // request state) on both ranks.
+        guard (generationMode.isPhaseSplit || generationMode == .pipelineMTP) == (phaseSplitAllowance != nil),
               (generationMode.isPhaseSplit && collective.rank == 1) == (producerStage != nil),
               generationMode.usesSpeculativeHead == (speculativeTerms != nil),
               (generationMode.usesSpeculativeHead && collective.rank == 1) == (speculativeHead != nil) else {
@@ -103,7 +106,9 @@ enum QwenResidentRequestExecution {
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
             numericalPolicySHA256: admission.arithmeticSHA256, prefillPolicy: reserved.prefillPolicy,
             phaseSplit: split, compactDecode: generationMode == .pipelineCompactDecode,
-            speculativeHead: speculativeTerms)
+            speculativeHead: generationMode.isPhaseSplit ? speculativeTerms : nil,
+            speculativeRoundsFraming: generationMode == .pipelineMTP ? speculativeTerms?.pipelineDecodeFraming : nil)
+        let speculativeRounds = generationMode == .pipelineMTP ? speculativeTerms : nil
         var lastResourceCheck: UInt64 = 0, ordinal = 0
         // The prompt-prefix capture still charged to this request (zero once withdrawn).
         var captureCharge = reserved.prefixCaptureBytes
@@ -161,7 +166,7 @@ enum QwenResidentRequestExecution {
         } else {
             result = try runQwenLayerStageGenerationRequest(loaded: stage.loaded,
                 producerStage: producerStage?.loaded, speculativeHead: speculativeHead,
-                plan: admission.plan, agreement: agreement, collective: collective, prefixCache: prefixCache,
+                speculativeRounds: speculativeRounds, plan: admission.plan, agreement: agreement, collective: collective, prefixCache: prefixCache,
                 onCommittedToken: committedToken, check: check)
             evidence = nil
         }
@@ -185,6 +190,13 @@ enum QwenResidentRequestExecution {
         if let summary = result.phaseSplit, summary.handoffPerformed {
             completion.telemetry = .init(handoffNanoseconds: summary.handoffNanoseconds,
                 handoffBytes: summary.handoffLogicalBytes, mtpDrafted: summary.mtp?.drafted, mtpAccepted: summary.mtp?.accepted)
+        }
+        if let rounds = result.speculativeRounds {
+            // The last rank's rounds, for whoever launched this worker.
+            log((["darkbloom-pipeline-speculative-v1", "rank=\(collective.rank)",
+                  "request=\(reserved.request.requestID.uuidString.lowercased())"] + rounds.diagnosticFields)
+                .joined(separator: " "))
+            completion.telemetry = .init(mtpDrafted: rounds.drafted, mtpAccepted: rounds.accepted)
         }
         return (completion, evidence)
     }

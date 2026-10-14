@@ -98,7 +98,8 @@ private func checkGoldenPlanSet(profiles directory: URL, layouts: URL, label: St
         let printed = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--hand-off-modes", "--json"],
             sampleDevice: { throw ProbeError("The golden plans take every device from a recorded profile") })
         let bytes = Data((printed + "\n").utf8)
-        checks.require("\(label) \(name): under the hand-off opt-in the plan is byte-for-byte the one both Macs' plan tools printed", sha256(bytes) == want.planSHA256)
+        checks.require("\(label) \(name): under the hand-off opt-in the plan is byte-for-byte the one both Macs' plan tools printed (printed \(sha256(bytes)))",
+            sha256(bytes) == want.planSHA256)
         // The default shards: the same Macs and layout plan a pipeline or tensor parallel, every member holding layers.
         let sharded = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--json"],
             sampleDevice: { throw ProbeError("The golden plans take every device from a recorded profile") })

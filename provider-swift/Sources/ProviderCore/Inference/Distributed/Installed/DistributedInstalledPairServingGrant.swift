@@ -113,6 +113,7 @@ extension ClusterGenerationMode {
     public var servingFamily: ClusterPairServingModeFamily {
         switch self {
         case .pipeline, .pipelineCompactDecode: .pipeline
+        case .pipelineMTP: .pipelineSpeculative
         case .tensorParallel: .tensorParallel
         case .phaseSplit, .phaseSplitMTP, .pipelinePrefillTensorDecode: .handOff
         }

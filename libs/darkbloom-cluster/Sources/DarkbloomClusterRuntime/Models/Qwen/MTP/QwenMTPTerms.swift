@@ -38,11 +38,33 @@ public struct QwenMTPTerms: Equatable, Sendable, Encodable {
         }
     }
 
+    /// The depth a session of `mode` runs when it declares none. Under
+    /// `pipeline_mtp_v1` every window row crosses the cable and runs through
+    /// both stages, so a deeper window costs on both ranks.
+    static func standard(for model: QwenRegisteredDenseModel, mode: QwenResidentGenerationMode) -> QwenMTPTerms {
+        guard mode == .pipelineMTP else { return standard(for: model) }
+        return standard(for: model)
+    }
+
     /// Bound into the resident load agreement, after the mode's own fields.
     /// `headSHA256` names the head's tensor files by their manifest digests.
     func loadAgreementFields(headSHA256: String) -> [String] {
         [schema, "depth=\(depth)", "verification=\(verification)", "head=\(headSHA256)"]
     }
 
+    /// `pipeline_mtp_v1`: the request agreement's decode framing. Both ranks
+    /// frame decode as rounds: the last rank drafts, both stages verify the
+    /// window `[last, d1 ... dk]` in one forward each, and every kept token is
+    /// the target's own choice at its column (the greedy argmax, or for a
+    /// sampled request the product's keyed target sample at that output
+    /// index). Distinct from MiMo's framing, so a Qwen round is never a MiMo one.
+    var pipelineDecodeFraming: String {
+        "speculative_rounds_v1|depth=\(depth)|qwen_pipeline_window_target_prefix_v1"
+    }
+
     private enum CodingKeys: String, CodingKey { case schema, depth, verification }
+}
+
+extension QwenMTPTerms: PipelineSpeculativeRoundTerms {
+    static var roundFamily: String { "qwen" }
 }

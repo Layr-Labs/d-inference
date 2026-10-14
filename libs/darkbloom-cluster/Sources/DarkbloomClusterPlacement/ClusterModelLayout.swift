@@ -95,6 +95,18 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     /// rank of `tensor_parallel_v1` (or the hybrid's decode) holds. Nil when
     /// the family has no plan, or in a layout written before it was derived.
     public fileprivate(set) var tensorParallel: ClusterTensorParallelLayout? = nil
+
+    /// What the last rank of a speculative mode holds beside its stages, each
+    /// tensor in whole pages: the model's head, and under a pipeline (where the
+    /// last rank never holds the first range) a copy of the token embedding
+    /// the head looks its drafts up in (the ingress). Zero for other modes or
+    /// a model without a head; `largestTensorBytes` is the largest of them.
+    public func speculativeHolding(mode: ClusterGenerationMode, pageSizeBytes: Int) -> (bytes: Int, largestTensorBytes: Int) {
+        guard mode.usesSpeculativeHead, let head = speculativeHead else { return (0, 0) }
+        let parts = mode.isPhaseSplit ? [head] : [head, ingress]
+        return (parts.reduce(0) { $0 + $1.loadedBytes + $1.tensorCount * pageSizeBytes },
+                parts.map(\.largestTensorBytes).max() ?? 0)
+    }
     /// Stage-0 layer counts the installed runtime admits for this model.
     public let admittedCuts: [Int]
     /// Stage-0 layer counts the family's stage plan could cut at. A superset

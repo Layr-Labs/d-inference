@@ -89,14 +89,16 @@ struct QwenResidentModelDefinition {
         case .qwen35NineB, .qwen38TwentySevenB:
             // Both artifacts ship the product's inline speculative head
             // (`mtplx_mtp.included`, one dense decoder layer under `mtp.`),
-            // which the decoding rank of a phase split runs as the product does.
-            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
+            // which the decoding rank of a phase split runs as the product does,
+            // and the last rank of a speculative pipeline beside its stage (with
+            // a copy of the token embedding).
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP]
         case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B:
             // Both artifacts ship the product's inline head too (one routed-
             // expert decoder layer under `mtp.`, split gate and up as the SDK's
             // `Qwen35MTPDecoderLayer` keys them); the decoding rank runs it the
-            // same way.
-            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP]
+            // same way, and so does the last rank of a speculative pipeline.
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP]
         case .ternaryBonsai2TwentySevenB:
             // The Prism pack's state has the 27B's shapes in F32; the hand-off
             // carries each component in the profile's activation dtype. Its

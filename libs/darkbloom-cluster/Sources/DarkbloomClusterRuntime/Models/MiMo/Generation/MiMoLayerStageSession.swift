@@ -39,6 +39,12 @@ final class MiMoLayerStageSession {
     /// This request's prompt-prefix capture (`MiMoStagePrefixCapture`); nil
     /// when the prefix cache is off or the plan split no final token.
     var prefixCapture: MiMoStagePrefixCapture?
+    /// Stage 1 of `pipeline_mtp_v1`: told every committed prompt chunk's
+    /// tokens and the post-final-norm rows the stage computed for them, after
+    /// the chunk committed (the speculative head's history).
+    var promptObserver: ((_ tokens: [Int], _ normalizedHidden: MLXArray) throws -> Void)?
+    /// Rows of a verify window that ran but are not yet kept (`openWindow`).
+    private var windowRows: Int?
 
     var committedTokens: Int { schedule.committedTokens }
 
@@ -120,7 +126,9 @@ final class MiMoLayerStageSession {
     }
 
     private func requireOpen() throws {
-        guard !isClosed, !isFailed, caches != nil else { throw ProbeError("MiMo stage request state is retired or failed") }
+        guard !isClosed, !isFailed, caches != nil, windowRows == nil else {
+            throw ProbeError("MiMo stage request state is retired, failed or inside a verify window")
+        }
     }
 
     private func perform(tokens: [Int], frame: QwenLayerStageFrame, incoming: QwenLayerStageBoundary?,
@@ -169,14 +177,11 @@ final class MiMoLayerStageSession {
                     payloadSHA256: digest, array: residual))
             }
             let wantsLogits = frame.phase == .decode || frame.finalPromptChunk
-            let output: MLXArray = try {
-                let result = try stage.model.forward(embeddings: incoming!.array, cache: caches,
-                                                     logitsStart: count - 1)
-                // An intermediate prompt chunk projects no vocabulary row: a
-                // reduction over the whole normalized trunk proves every row ran.
-                return wantsLogits ? result.logits[0..., -1, 0...]
-                    : result.normalizedHiddenStates.sum(axes: [1, 2]).reshaped(-1, 1)
-            }()
+            let result = try stage.model.forward(embeddings: incoming!.array, cache: caches, logitsStart: count - 1)
+            // An intermediate prompt chunk projects no vocabulary row: a
+            // reduction over the whole normalized trunk proves every row ran.
+            let output = wantsLogits ? result.logits[0..., -1, 0...]
+                : result.normalizedHiddenStates.sum(axes: [1, 2]).reshaped(-1, 1)
             eval([output] + roots()); try checked()
             try requireFrontier(after: schedule.committedTokens + count)
             guard output.shape == [1, wantsLogits ? stage.vocabularySize : 1],
@@ -186,6 +191,11 @@ final class MiMoLayerStageSession {
             try schedule.commit(frame)
             try capturePrefix(after: frame)
             chain(incoming!.payloadSHA256)
+            if frame.phase == .prefill, let promptObserver {
+                // The rows were evaluated with the frame; the head's own work is
+                // queued here and joins the stream behind them.
+                try promptObserver(tokens, result.normalizedHiddenStates); try checked()
+            }
             if wantsLogits {
                 Stream.gpu.synchronize(); try checked()
                 let bytes = output.asData().data
@@ -208,6 +218,129 @@ final class MiMoLayerStageSession {
     private func capturePrefix(after frame: QwenLayerStageFrame) throws {
         guard frame.phase == .prefill, let prefixCapture, let caches else { return }
         try prefixCapture.capture(at: frame.tokenOffset + frame.tokenCount, caches: caches, globalLayers: globalLayers)
+    }
+
+    // MARK: Verify windows (`pipeline_mtp_v1`)
+
+    /// Stage 0: one verify window `[last, d1 ... dk]` from the committed
+    /// frontier, through the stage's ordinary multi-token forward (the path
+    /// a prompt chunk takes). The caches advance by every row; nothing is
+    /// committed until `settleWindow` keeps a prefix. Returns the residual
+    /// `[1, n, H]` (evaluated, owned, compact) and each row's digest.
+    func openWindow(_ tokens: [Int], offset: Int,
+                    check: () throws -> Void) throws -> (residual: MLXArray, rowSHA256: [String]) {
+        do {
+            try requireWindowable(tokens, offset: offset, producer: true)
+            return try MLX.withError { error in
+                func checked() throws { try error.check(); try check() }
+                let caches = caches!, count = tokens.count, last = stage.layerCount - 1
+                let input = MLXArray(tokens.map(Int32.init)).reshaped([1, count])
+                let output = try stage.model.forward(inputIDs: input, cache: caches, captureLayers: [last])
+                guard let residual = output.layerFeatures[last] else {
+                    throw ProbeError("MiMo stage 0 produced no residual for the verify window")
+                }
+                eval([residual] + caches.flatMap { $0.innerState() }); try checked()
+                windowRows = count
+                try requireFrontier(after: schedule.committedTokens + count)
+                guard residual.shape == [1, count, hiddenSize], residual.dtype == stage.activationDType else {
+                    throw ProbeError("MiMo verify window residual differs from the native contract")
+                }
+                Stream.gpu.synchronize(); try checked()
+                let rows = try MiMoWindowRows.rowSHA256(residual)
+                try checked()
+                return (residual, rows)
+            }
+        } catch { try fail(error) }
+    }
+
+    /// Stage 1: the same window from the producer's residual. Returns the
+    /// logits of every row `[1, n, V]` and the post-final-norm rows `[1, n, H]`
+    /// (lazy; the caller evaluates them with its own work).
+    func openWindow(_ tokens: [Int], offset: Int, residual: MLXArray,
+                    check: () throws -> Void) throws -> (logits: MLXArray, hidden: MLXArray, roots: [MLXArray]) {
+        do {
+            try requireWindowable(tokens, offset: offset, producer: false)
+            guard residual.shape == [1, tokens.count, hiddenSize], residual.dtype == stage.activationDType else {
+                throw ProbeError("MiMo verify window residual differs from the native contract")
+            }
+            return try MLX.withError { error in
+                try error.check(); try check()
+                let caches = caches!
+                let result = try stage.model.forward(embeddings: residual, cache: caches, logitsStart: 0)
+                windowRows = tokens.count
+                return (result.logits, result.normalizedHiddenStates, caches.flatMap { $0.innerState() })
+            }
+        } catch { try fail(error) }
+    }
+
+    /// After the window's evaluation: the caches stand at the frontier plus
+    /// every window row.
+    func confirmWindow(check: () throws -> Void) throws {
+        do {
+            guard let rows = windowRows else { throw ProbeError("MiMo stage has no verify window to confirm") }
+            try requireFrontier(after: schedule.committedTokens + rows)
+            try check()
+        } catch { try fail(error) }
+    }
+
+    /// Keeps the window's first `keeping` rows: every cache is rolled back by
+    /// the rest (`MiMoWindowRollback`), then each kept row commits as the
+    /// decode frame it stands for, its residual digest extending the chain.
+    func settleWindow(keeping: Int, rowSHA256: [String], check: () throws -> Void) throws {
+        do {
+            guard let rows = windowRows, (1...rows).contains(keeping), rowSHA256.count >= keeping,
+                  let caches else {
+                throw ProbeError("MiMo verify window keeps rows it did not run")
+            }
+            try MLX.withError { error in
+                try MiMoWindowRollback.trim(caches, by: rows - keeping)
+                eval(caches.flatMap { $0.innerState() })
+                try error.check(); try check()
+            }
+            windowRows = nil
+            for index in 0..<keeping {
+                let frame = try schedule.admitDecode(offset: schedule.committedTokens)
+                try schedule.commit(frame)
+                chain(rowSHA256[index])
+            }
+            try requireFrontier(after: schedule.committedTokens)
+            try check()
+        } catch { try fail(error) }
+    }
+
+    /// Stage 1, after `settleWindow`: the last row a token was selected from,
+    /// and with step evidence one record per kept row (`rowSHA256` are the
+    /// residual rows' digests, as a plain step records its boundary).
+    func recordWindowRows(logits: MLXArray, keeping: Int, rowSHA256: [String], check: () throws -> Void) throws {
+        guard stage.stageIndex == 1, keeping >= 1, logits.ndim == 3, logits.dim(1) >= keeping,
+              rowSHA256.count >= keeping else {
+            throw ProbeError("MiMo verify window records rows it did not keep")
+        }
+        let indices = recordsSteps ? Array(0..<keeping) : [keeping - 1]
+        for index in indices {
+            let row = logits[0..., index, 0...]
+            let bytes = row.asData().data
+            let digest = sha256(bytes)
+            if recordsSteps {
+                let dtype = String(describing: row.dtype)
+                steps.append(.init(ordinal: steps.count, boundarySHA256: rowSHA256[index], rowSHA256: digest,
+                    rowDType: dtype, top: try MiMoStepEvidence.candidates(rowBytes: bytes, dtype: dtype)))
+            }
+            if index == keeping - 1 { lastRowSHA256 = digest }
+            try check()
+        }
+    }
+
+    private func requireWindowable(_ tokens: [Int], offset: Int, producer: Bool) throws {
+        try requireOpen()
+        guard windowRows == nil, producer == (stage.stageIndex == 0), (1...4).contains(tokens.count),
+              tokens.allSatisfy({ (0..<stage.vocabularySize).contains($0) }),
+              offset == schedule.committedTokens, schedule.committedPromptTokens == request.promptCount,
+              offset + tokens.count <= request.maximumTokens,
+              let caches, caches.allSatisfy({ $0.offset == offset }) else {
+            throw ProbeError("MiMo verify window differs from the committed decode frontier")
+        }
+        _ = try schedule.admitDecode(offset: offset)
     }
 
     private func chain(_ payloadSHA256: String) {
@@ -239,11 +372,15 @@ final class MiMoLayerStageSession {
     }
 
     /// Called only after both ranks agree to EOS, length or client stop.
+    /// `discardedDecodeForwards`: kept window rows whose tokens a client stop
+    /// left unpublished (`pipeline_mtp_v1`); 0 otherwise.
     func finishGeneration(_ reason: QwenLayerStageGenerationFinishReason,
-                          selectedTokenCount: Int, lastTokenID: Int) throws {
+                          selectedTokenCount: Int, lastTokenID: Int, discardedDecodeForwards: Int = 0) throws {
         do {
             try requireOpen()
-            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID)
+            guard windowRows == nil else { throw ProbeError("MiMo stage finished with an unsettled verify window") }
+            try schedule.finish(reason, selectedTokenCount: selectedTokenCount, lastTokenID: lastTokenID,
+                discardedDecodeForwards: discardedDecodeForwards)
             try retire(failed: false)
         } catch { try fail(error) }
     }

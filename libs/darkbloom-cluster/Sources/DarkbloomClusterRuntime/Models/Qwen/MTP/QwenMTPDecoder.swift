@@ -254,6 +254,84 @@ final class QwenMTPDecoder {
         return Emitted(tokens: [token], payloadSHA256: [produced.payloadSHA256], logits: row, round: false)
     }
 
+    // MARK: pipeline_mtp_v1 (the last rank holds only the consumer stage)
+
+    /// The drafts of the next window from `lastToken` with `remaining` tokens
+    /// left before the output limit: `depth` of them, fewer when fewer tokens
+    /// are left (every window row may then be kept), or none (a plain step)
+    /// when there is no carry, one token is left, or the request's sampler
+    /// cannot verify drafts (history-dependent transforms, as the product
+    /// gates them). Once a plain step dropped the carry, the rest of the
+    /// request decodes plainly: the head has not seen the rows it skipped.
+    /// Evaluated before return: rank 0 needs the token IDs.
+    func draft(lastToken: Int, remaining: Int, check: () throws -> Void) throws -> [Int] {
+        guard !released, remaining >= 1 else { throw ProbeError("Speculative decode stepped past its request") }
+        let verifiable = request.sampler?.admitsSpeculativeVerification ?? true
+        let depth = min(terms.depth, remaining - 1)
+        guard verifiable, let carry, carry.token == lastToken, depth >= 1 else {
+            self.carry = nil
+            return []
+        }
+        let started = DispatchTime.now().uptimeNanoseconds
+        let seed = MLXArray([Int32(lastToken)]).reshaped([1, 1])
+        var feed = (tokens: seed, hidden: carry.hidden)
+        var drafted: [MLXArray] = []
+        for _ in 0..<depth {
+            let next = head.assistant.draftStep(tokens: feed.tokens, hidden: feed.hidden, shortlist: nil,
+                requestState: state)
+            let token = next.tokens.reshaped([1, 1])
+            drafted.append(token)
+            feed = (token, next.hidden)
+        }
+        let drafts = concatenated(drafted, axis: 1)
+        eval([drafts] + head.assistant.evaluationTargets(for: state))
+        try check()
+        let ids = drafts.asArray(Int32.self).map(Int.init)
+        guard ids.count == depth, ids.allSatisfy({ (0..<request.profile.vocabularySize).contains($0) }) else {
+            throw ProbeError("Speculative head drafted a token outside the vocabulary")
+        }
+        statistics.buildNanoseconds += DispatchTime.now().uptimeNanoseconds - started
+        return ids
+    }
+
+    /// After the consumer stage kept `tokens` of the window (`hidden`: its
+    /// pre-norm rows of the whole window): the head keeps the verified
+    /// history (`finalizeRound`, as the product's finalize) and the carry moves
+    /// to the last kept row. `roots` (the stage's settled roots) are
+    /// evaluated in the same pass.
+    func finalize(drafts: [Int], tokens: [Int], acceptedDrafts: Int, hidden: MLXArray,
+                  alsoEvaluate roots: [MLXArray] = []) throws {
+        guard !released, !tokens.isEmpty, hidden.ndim == 3, hidden.dim(1) >= tokens.count,
+              tokens.count <= drafts.count + 1, (0...(tokens.count - 1)).contains(acceptedDrafts) else {
+            throw ProbeError("Speculative head finalized rows the window did not keep")
+        }
+        statistics.emittedTokens += tokens.count
+        if drafts.isEmpty {
+            // A plain step: nothing to finalize, and no carry from here on.
+            carry = nil
+            statistics.plainSteps += 1
+            eval(roots)
+            return
+        }
+        let draftArray = MLXArray(drafts.map(Int32.init)).reshaped([1, drafts.count])
+        head.assistant.finalizeRound(requestState: state, confirmedInputTokens: 1 + acceptedDrafts,
+            committedDraftTokens: draftArray[0..., 0 ..< acceptedDrafts],
+            committedTargetHidden: hidden[0..., 0 ..< acceptedDrafts, 0...])
+        let carryHidden = hidden[0..., (tokens.count - 1) ..< tokens.count, 0...]
+        eval(roots + head.assistant.evaluationTargets(for: state) + [carryHidden])
+        carry = (tokens[tokens.count - 1], carryHidden)
+        statistics.rounds += 1
+        for position in 0..<min(acceptedDrafts + 1, drafts.count) { statistics.examinedByPosition[position] += 1 }
+        for position in 0..<acceptedDrafts { statistics.acceptedByPosition[position] += 1 }
+    }
+
+    /// The last rank's round times (`QwenMTPStatistics.pipelineNanoseconds`).
+    func recordTimes(wait: UInt64, verify: UInt64, settle: UInt64) {
+        var times = statistics.pipelineNanoseconds ?? .init()
+        times.wait += wait; times.verify += verify; times.settle += settle
+        statistics.pipelineNanoseconds = times
+    }
+
     /// The running check withdrew this request's prefix capture: the kept
     /// history goes with it, and `begin` keeps none. Drafts never depend on it.
     func dropKeptHistory() { keepsHistory = false; keptHistory = nil }

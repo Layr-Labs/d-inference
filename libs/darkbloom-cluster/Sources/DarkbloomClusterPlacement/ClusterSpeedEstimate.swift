@@ -16,25 +16,37 @@ public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     /// step shrinks with the weights is the chip's own (`ClusterDecodeSplit`).
     public let tensorShardPrefillTokensPerSecond: Double?
     public let tensorShardDecodeTokensPerSecond: Double?
+    /// The decode speed-up a pipeline's speculative rounds (`pipeline_mtp_v1`)
+    /// served with this device as the decoding rank: what one placement served
+    /// with the rounds over what the same placement served plainly
+    /// (`ClusterServedCalibration`). A separate figure from
+    /// `speculativeDecodeTokensPerSecond`: every rank verifies a pipeline's
+    /// window, so neither says anything about the other. Nil when not served;
+    /// never transferred from another device.
+    public let pipelineSpeculativeFactor: Double?
     public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double,
-                speculativeDecodeTokensPerSecond: Double? = nil,
+                speculativeDecodeTokensPerSecond: Double? = nil, pipelineSpeculativeFactor: Double? = nil,
                 tensorShardPrefillTokensPerSecond: Double? = nil, tensorShardDecodeTokensPerSecond: Double? = nil) {
         self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
         self.speculativeDecodeTokensPerSecond = speculativeDecodeTokensPerSecond
+        self.pipelineSpeculativeFactor = pipelineSpeculativeFactor
         self.tensorShardPrefillTokensPerSecond = tensorShardPrefillTokensPerSecond
         self.tensorShardDecodeTokensPerSecond = tensorShardDecodeTokensPerSecond
     }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
-            && [speculativeDecodeTokensPerSecond, tensorShardPrefillTokensPerSecond, tensorShardDecodeTokensPerSecond]
-                .allSatisfy { $0.map { $0.isFinite && $0 > 0 } ?? true }
+            && [speculativeDecodeTokensPerSecond, pipelineSpeculativeFactor, tensorShardPrefillTokensPerSecond,
+                tensorShardDecodeTokensPerSecond].allSatisfy { $0.map { $0.isFinite && $0 > 0 } ?? true }
     }
-    /// True when a rate beyond the plain two is present (schema v2).
+    /// True when a figure beyond the plain two rates is present (schema v2):
+    /// a speculative rate, the served pipeline speed-up or a shard rate.
     var extended: Bool {
-        speculativeDecodeTokensPerSecond != nil || tensorShardPrefillTokensPerSecond != nil
-            || tensorShardDecodeTokensPerSecond != nil
+        speculativeDecodeTokensPerSecond != nil || pipelineSpeculativeFactor != nil
+            || tensorShardPrefillTokensPerSecond != nil || tensorShardDecodeTokensPerSecond != nil
     }
+    /// True when either speculative figure is present.
+    var carriesSpeculative: Bool { speculativeDecodeTokensPerSecond != nil || pipelineSpeculativeFactor != nil }
     /// The same rates without the speculative and shard ones: what may be
     /// said of another device scaled from these.
     var withoutSpeculative: ClusterSpeedRates {
@@ -67,10 +79,10 @@ public struct ClusterSpeedKey: Codable, Hashable, Sendable {
 /// ran once reports no sustained figure, and the planner says it used a
 /// rested one.
 ///
-/// Schema v2 adds optional rates per regime: decode with the model's
-/// speculative head, and prefill and decode of a tensor-parallel shard; a
-/// record without any is written as v1, byte for byte as before, and a v1
-/// record still loads.
+/// Schema v2 adds optional figures per regime: decode with the model's
+/// speculative head, the served pipeline speed-up (`pipelineSpeculativeFactor`),
+/// and prefill and decode of a tensor-parallel shard; a record without any is
+/// written as v1, byte for byte as before, and a v1 record still loads.
 public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public static let schemaName = "darkbloom_cluster_speed_measurement_v1"
     public static let schemaNameV2 = "darkbloom_cluster_speed_measurement_v2"
@@ -107,7 +119,7 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        // A v1 record cannot carry a speculative or shard rate; a v2 record may.
+        // A v1 record cannot carry a speculative, served-speed-up or shard figure; a v2 record may.
         let speculative = rested.extended || (sustained?.extended ?? false)
         guard schema == Self.schemaNameV2 || (schema == Self.schemaName && !speculative),
               promptTokens > 0, chunkTokens > 0, layerCount > 0,

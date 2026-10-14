@@ -125,7 +125,8 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("27B layout: 64 layers, its registered bytes, fifteen cuts",
         big.layerCount == 64 && big.wholeModelLoadedBytes == 15_132_802_048 && big.admittedCuts == Array(stride(from: 4, through: 60, by: 4))
             && big.structuralCuts == big.admittedCuts && big.runtimeModelID == "registered_qwen38_27b")
-    // The runtime executes no tensor-parallel mode yet, so neither row lists one.
+    // The runtime executes no tensor-parallel mode yet, so neither row lists one; every other mode, the
+    // pipeline's speculative rounds included (the last rank runs the row's head).
     let executed = ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode }
     checks.require("both list every generation mode the runtime executes (no tensor-parallel one yet) and both prefill schedules",
         nine.generationModes == executed && big.generationModes == executed

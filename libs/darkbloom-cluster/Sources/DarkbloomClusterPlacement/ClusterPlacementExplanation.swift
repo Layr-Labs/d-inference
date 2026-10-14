@@ -104,7 +104,8 @@ public enum ClusterPlacementExplanation {
     public static func speed(_ label: String, _ speed: ClusterDeviceSpeed) -> String {
         let unit = speed.absolute ? " tok/s" : " (relative)"
         func head(_ rates: ClusterSpeedRates) -> String {
-            rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? ""
+            (rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? "")
+                + (rates.pipelineSpeculativeFactor.map { String(format: " (pipeline speculative rounds served %.2fx)", $0) } ?? "")
         }
         var text = "\(label): prefill \(rate(speed.rested.prefillTokensPerSecond))\(unit) and decode "
             + "\(rate(speed.rested.decodeTokensPerSecond))\(unit)\(head(speed.rested)) rested"
@@ -143,6 +144,7 @@ public enum ClusterPlacementExplanation {
         case .phaseSplitMTP: modeText = "phase split with speculative decoding (the last rank, which holds every layer and the model's MTP head, drafts and verifies alone)"
         case .tensorParallel: modeText = "tensor parallel (each rank holds an equal share of every layer; both run every token and sum their partials over the keyed data plane)"
         case .pipelinePrefillTensorDecode: modeText = "pipeline prefill, then tensor-parallel decode (after the first token each rank hands the other the state of the heads it does not keep)"
+        case .pipelineMTP: modeText = "pipeline with speculative decoding (the last rank holds the model's MTP head and drafts; every rank verifies the drafts in one window)"
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines

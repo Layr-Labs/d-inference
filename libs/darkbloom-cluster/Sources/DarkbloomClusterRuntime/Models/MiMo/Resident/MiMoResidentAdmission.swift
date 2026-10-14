@@ -61,7 +61,7 @@ struct MiMoResidentAdmission {
     /// Rank, local path and local uptime are intentionally absent. Everything
     /// both ranks must have been told the same is here, before either loads.
     func loadAgreementFingerprint(mode: QwenResidentGenerationMode, transport: ClusterTransport,
-                                  residency: Bool, measuredGate: Bool) throws -> String {
+                                  residency: Bool, measuredGate: Bool, speculative: MiMoMTPTerms? = nil) throws -> String {
         let identity = configuration.identity
         return sha256(try canonicalJSONData([
             "mimo-resident-load-v1", identity.membershipEpoch.uuidString.lowercased(), identity.modelID,
@@ -69,6 +69,7 @@ struct MiMoResidentAdmission {
             plan.fingerprint, profile.fingerprint, arithmeticSHA256, jaccl.fingerprint,
             configuration.allocatorPolicy.rawValue, configuration.prefillSchedule.rawValue,
             mode.rawValue, transport.rawValue,
+        ] + (speculative?.loadAgreementFields ?? []) + [
             // Each rank's own limit differs with its stage; the policy both run under is common.
             "residency=\(residency ? MiMoStageResidency.policy : "off")", "measuredGate=\(measuredGate)",
         ] + identity.peers.flatMap { [$0.id, $0.buildSHA256] }))
@@ -86,17 +87,23 @@ struct MiMoResidentAdmission {
 /// and the allocator limit must cover what is resident plus the allowance.
 struct MiMoResidentRequestAllowance {
     let budget: MiMoRequestStateBudget
-    var reservedBytes: Int { budget.reservedBytes }
+    /// Rank 1 of `pipeline_mtp_v1`: the speculative head's request state at
+    /// the allocator's bound (`MiMoMTPHead.requestBytes`); 0 otherwise.
+    var speculativeBytes = 0
+    var reservedBytes: Int { budget.reservedBytes + speculativeBytes }
     let watch = QwenDenseStageLoadWatch("Resident request")
 
     static func derive(specification: MiMoRegisteredSpecification, plan: MiMoLayerStagePlan, rank: Int,
-                       maximumTokens: Int, chunkSize: Int) throws -> Self {
+                       maximumTokens: Int, chunkSize: Int, speculativeBytes: Int = 0) throws -> Self {
         guard plan.stages.count == 2, (0...1).contains(rank) else {
             throw ProbeError("Resident MiMo request allowance requires an admitted two-stage Plan")
         }
+        guard speculativeBytes >= 0, speculativeBytes == 0 || rank == 1 else {
+            throw ProbeError("Only the last rank holds a speculative head's request state")
+        }
         return .init(budget: try .estimate(specification: specification, layers: plan.stages[rank].sourceRange,
             rank: rank, maximumTokens: maximumTokens, chunkSize: chunkSize,
-            bound: QwenResidentResourceEnvironment.allocationBound))
+            bound: QwenResidentResourceEnvironment.allocationBound), speculativeBytes: speculativeBytes)
     }
 
     /// `additionalNativeBytes`: what the request may add beyond its state

@@ -42,13 +42,17 @@ struct QwenLayerStageGenerationAgreement {
     /// consumed or token acknowledgements.
     let compactDecode: Bool
     static let compactDecodeFraming = "combined_frames_v1"
+    /// Decode runs as speculative rounds through both stages of a pipeline
+    /// (`pipeline_mtp_v1`): the framing names the round terms both ranks hold.
+    /// Nil for every other request, whose bytes it leaves unchanged.
+    let speculativeRoundsFraming: String?
 
     init(request: QwenLayerStageGenerationRequest, membershipEpoch: UUID,
          source: QwenLayerStageWireSourceIdentity, consumerStageFingerprint: String,
          rankBuildSHA256: [String], numericalPolicySHA256: String,
          prefillPolicy: QwenResidentPrefillPolicy = .serial,
          phaseSplit: QwenPhaseSplitPlan? = nil, compactDecode: Bool = false,
-         speculativeHead: QwenMTPTerms? = nil) throws {
+         speculativeHead: QwenMTPTerms? = nil, speculativeRoundsFraming: String? = nil) throws {
         guard rankBuildSHA256.count == 2,
               (rankBuildSHA256 + [consumerStageFingerprint, numericalPolicySHA256]).allSatisfy(qwenStageWireIsSHA256),
               consumerStageFingerprint != source.producerStageFingerprint else {
@@ -66,11 +70,16 @@ struct QwenLayerStageGenerationAgreement {
         guard speculativeHead == nil || (phaseSplit != nil && !compactDecode) else {
             throw ProbeError("A speculative head runs only on the decoding rank of a phase-split request")
         }
+        guard speculativeRoundsFraming.map({ !$0.isEmpty && $0.utf8.count <= 256 && phaseSplit == nil && !compactDecode
+                && speculativeHead == nil }) ?? true else {
+            throw ProbeError("Speculative rounds frame the decode of a plain pipeline request only")
+        }
         self.request = request
         self.prefillPolicy = prefillPolicy
         self.phaseSplit = phaseSplit
         self.compactDecode = compactDecode
         self.speculativeHead = speculativeHead
+        self.speculativeRoundsFraming = speculativeRoundsFraming
         descriptor = .init(membershipEpoch: membershipEpoch.uuidString.lowercased(),
             requestID: request.requestID.uuidString.lowercased(), requestFingerprint: request.fingerprint,
             profileFingerprint: request.profile.fingerprint,
@@ -81,7 +90,8 @@ struct QwenLayerStageGenerationAgreement {
             rankBuildSHA256: rankBuildSHA256, numericalPolicySHA256: numericalPolicySHA256,
             prefillSchedulingPolicy: prefillPolicy == .serial ? nil : prefillPolicy.rawValue,
             mtpEnabled: speculativeHead != nil, phaseSplit: phaseSplit?.terms,
-            speculativeHead: speculativeHead, decodeFraming: compactDecode ? Self.compactDecodeFraming : nil)
+            speculativeHead: speculativeHead,
+            decodeFraming: compactDecode ? Self.compactDecodeFraming : speculativeRoundsFraming)
         fingerprint = try qwenGenerationFingerprint("agreement", descriptor)
         initialTokenChainSHA256 = sha256(Data(("qwen-generation-history-v1|" + fingerprint + "|"
             + qwenGenerationTokenHash(request.promptTokenIDs)).utf8))

@@ -15,10 +15,12 @@ extension QwenResidentRuntime {
     /// qualification switches in its environment. The default refuses them: a
     /// switch that is present and not permitted stops the load here, by name.
     ///
-    /// `speculativeTerms` applies only to `phase_split_mtp_v1` (default: the
-    /// row's own depth, `QwenMTPTerms.standard(for:)`); both ranks bind them
-    /// into the load agreement together with the digest of the head's
-    /// verified files.
+    /// `speculativeTerms` applies only to `phase_split_mtp_v1` and
+    /// `pipeline_mtp_v1` (default: the row's own depth,
+    /// `QwenMTPTerms.standard(for:mode:)`); both ranks bind them into the load
+    /// agreement together with the digest of the head's verified files. Under
+    /// `pipeline_mtp_v1` rank 1 reads the head and a copy of the token
+    /// embedding beside its stage (`QwenEmbeddingCopy`); rank 0 holds no head.
     ///
     /// `dataPlane` (S16): this rank's credential. When present, the two ranks
     /// key their data plane right after the group exists, each verifying the
@@ -88,7 +90,7 @@ extension QwenResidentRuntime {
             guard let model = QwenRegisteredDenseModel(rawValue: admission.runtimeModelID) else {
                 throw ProbeError("Speculative decoding needs a registered resident row; \(admission.runtimeModelID) is not one")
             }
-            speculativeTerms = requestedTerms ?? .standard(for: model)
+            speculativeTerms = requestedTerms ?? .standard(for: model, mode: mode)
         } else { speculativeTerms = nil }
         let headFiles: QwenMTPHeadFiles? = mode.usesSpeculativeHead
             ? try QwenMTPHeadFiles(modelDirectory: directory, manifest: admission.manifestBytes) : nil
@@ -170,9 +172,21 @@ extension QwenResidentRuntime {
                     let sharesVerification = mode.isPhaseSplit && collective.rank == 1
                     if sharesVerification { VerifiedCheckpointReuse.begin() }
                     defer { if sharesVerification { VerifiedCheckpointReuse.end() } }
+                    var embeddingCopy: QwenEmbeddingCopy?
                     try autoreleasepool {
-                        let value = try admission.loadResidentStage(check: checked, constructed: { _ in })
-                        retired = value.loaded.model; stage = value
+                        if mode == .pipelineMTP, collective.rank == 1 {
+                            // The last rank of a speculative pipeline reads a copy of
+                            // the token embedding with its stage, through the same
+                            // verified checkpoint, for the head.
+                            guard let qwen = admission as? QwenResidentAdmission else {
+                                throw ProbeError("Speculative pipeline rounds need a registered Qwen row")
+                            }
+                            let value = try loadQwenResidentStageWithEmbeddingCopy(qwen, check: checked)
+                            retired = value.stage.loaded.model; stage = value.stage; embeddingCopy = value.embedding
+                        } else {
+                            let value = try admission.loadResidentStage(check: checked, constructed: { _ in })
+                            retired = value.loaded.model; stage = value
+                        }
                     }
                     guard let loaded = stage else { throw ProbeError("Resident loader returned no stage") }
                     // The layers the constructed stage holds are the plan's (oMLX U#3638).
@@ -227,6 +241,25 @@ extension QwenResidentRuntime {
                                 + " active_added=\(head.receipt.activeBytesAdded) load_ns=\(head.receipt.loadNanoseconds)")
                         }
                     }
+                    if mode == .pipelineMTP, collective.rank == 1 {
+                        // After the stage: the head borrows the embedding copy and the
+                        // consumer stage's final norm and output head.
+                        guard let copy = embeddingCopy else { throw ProbeError("The embedding copy was not read") }
+                        let head = try autoreleasepool {
+                            try QwenMTPHead(modelDirectory: directory, sourceConfiguration: admission.configBytes,
+                                manifest: admission.manifestBytes, embeddingCopy: copy, consumer: loaded.loaded,
+                                check: checked)
+                        }
+                        embeddingCopy = nil
+                        guard head.headSHA256 == headFiles?.sha256 else {
+                            throw ProbeError("Speculative head files differ from the agreed head")
+                        }
+                        speculativeHead = head
+                        log("darkbloom-speculative-head-v1 rank=1 mode=\(mode.rawValue) depth=\(speculativeTerms?.depth ?? 0)"
+                            + " files=\(head.receipt.tensorFiles.count) file_bytes=\(head.receipt.tensorFileBytes)"
+                            + " embedding_copy_bytes=\(head.receipt.embeddingCopyBytes)"
+                            + " active_added=\(head.receipt.activeBytesAdded) load_ns=\(head.receipt.loadNanoseconds)")
+                    }
                     // Each loaded stage's shared KV storage (Qwen 3.5 stages; other
                     // families keep their per-request contiguous storage).
                     for value in [loaded.loaded] + (producerStage.map { [$0.loaded] } ?? []) {
@@ -272,7 +305,7 @@ extension QwenResidentRuntime {
                         + " charge_at_admitted=\(admitted.allowance.reservedBytes)"
                         + " transient_at_admitted=\(admitted.allowance.transientBytes)")
                     try checked()
-                    if mode.isPhaseSplit {
+                    if mode.isPhaseSplit || mode.usesSpeculativeHead {
                         // Sizes only, for whoever launched this worker.
                         let afterLoad = Memory.snapshot()
                         log("darkbloom-resident-load-v1 rank=\(collective.rank) mode=\(mode.rawValue)"

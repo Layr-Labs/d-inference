@@ -25,4 +25,6 @@ struct QwenLayerStageGenerationResult: Encodable {
     var phaseSplit: QwenPhaseSplitSummary? = nil
     /// Nil is omitted. The prefix plan both ranks agreed and what this rank kept.
     var prefixCache: QwenStagePrefixSummary? = nil
+    /// Nil is omitted. Rank 1 of `pipeline_mtp_v1`: the rounds' counts and times.
+    var speculativeRounds: QwenMTPStatistics? = nil
 }

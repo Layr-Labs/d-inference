@@ -42,6 +42,8 @@ public final class MiMoResidentRuntime {
     private var reservation: Reservation?
     private var processLeaseOwned = true
     private var recordsSteps = false
+    /// `pipeline_mtp_v1`: the agreed terms, and on rank 1 the loaded head.
+    private var speculative: MiMoSpeculativeDecode?
 
     private struct Reservation {
         let request: QwenLayerStageGenerationRequest
@@ -96,8 +98,12 @@ public final class MiMoResidentRuntime {
     /// `prefixSSDKey`: the 32-byte key of this rank's prompt-prefix SSD tier,
     /// as the worker received it on its input (never from the environment);
     /// nil leaves the tier off (`QwenStagePrefixDiskConfiguration`).
+    /// `speculativeDepth` (`pipeline_mtp_v1` only): the head's fixed draft
+    /// depth, 1...3; nil means `MiMoMTPTerms.standard` (depth 2). Both ranks must
+    /// be given the same.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,
+                            speculativeDepth: Int? = nil,
                             qualification: QwenResidentQualificationSwitches = .refused,
                             dataPlane credential: ClusterDataPlaneCredential? = nil,
                             prefixSSDKey: Data? = nil) throws -> MiMoResidentRuntime {
@@ -144,9 +150,18 @@ public final class MiMoResidentRuntime {
             throw ProbeError("Generation mode \(mode.rawValue) is not in the resident row of "
                 + admission.specification.model.rawValue)
         }
+        let speculativeTerms: MiMoMTPTerms?
+        if mode.usesSpeculativeHead {
+            speculativeTerms = try speculativeDepth.map { try MiMoMTPTerms(depth: $0) } ?? .standard
+        } else {
+            guard speculativeDepth == nil else { throw ProbeError("A speculative depth needs \(ClusterGenerationMode.pipelineMTP.rawValue)") }
+            speculativeTerms = nil
+        }
         let control = QwenResidentControl(deadline: configuration.deadlineUptimeNanoseconds, lease: configuration.lease)
         try QwenResidentProcessLease.shared.acquire()
         var stage: LoadedMiMoLayerStage?
+        var head: MiMoMTPHead?
+        var headInventorySHA256: String?
         var residency: MiMoStageResidency?
         weak var retired: Module?
         let prefixCache = QwenStagePrefixCache.fromEnvironment(environment)
@@ -179,7 +194,7 @@ public final class MiMoResidentRuntime {
                                                        transport: collective.transport)
             }
             let plainAgreement = try admission.loadAgreementFingerprint(mode: mode, transport: transport,
-                residency: keepsResidency, measuredGate: measuredGate)
+                residency: keepsResidency, measuredGate: measuredGate, speculative: speculativeTerms)
             let loadAgreement = credential == nil ? plainAgreement
                 : sha256(try canonicalJSONData([plainAgreement] + ClusterDataPlaneAgreement.loadAgreementFields))
             if let credential {
@@ -202,6 +217,13 @@ public final class MiMoResidentRuntime {
                         verified = DispatchTime.now().uptimeNanoseconds
                         stage = try loadMiMoResidentStage(source: source, stageIndex: configuration.rank,
                             check: checked, constructed: { retired = $0 })
+                        if speculativeTerms != nil {
+                            // Both ranks name the head's tensors; the last rank reads them.
+                            headInventorySHA256 = try MiMoMTPHead.inventory(source: source).0.sha256
+                            if configuration.rank == 1, let consumer = stage {
+                                head = try MiMoMTPHead(source: source, consumer: consumer, check: checked)
+                            }
+                        }
                     }
                     guard let loaded = stage else { throw ProbeError("Resident MiMo loader returned no stage") }
                     // The layers the constructed stage holds are the plan's (oMLX U#3638).
@@ -210,10 +232,16 @@ public final class MiMoResidentRuntime {
                         firstGlobalLayer: ownStage.sourceRange.lowerBound, rank: collective.rank,
                         model: admission.specification.model.rawValue))
                     let finished = DispatchTime.now().uptimeNanoseconds
+                    func speculativeBytes(_ chunk: Int) throws -> Int {
+                        guard let head, let speculativeTerms else { return 0 }
+                        return try head.requestBytes(chunkSize: chunk, depth: speculativeTerms.depth,
+                            bound: QwenResidentResourceEnvironment.allocationBound)
+                    }
                     let maximum = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                         plan: admission.plan, rank: collective.rank,
                         maximumTokens: admission.profile.maximumContextTokens,
-                        chunkSize: admission.profile.maximumChunkTokens)
+                        chunkSize: admission.profile.maximumChunkTokens,
+                        speculativeBytes: try speculativeBytes(admission.profile.maximumChunkTokens))
                     try configuration.allocatorPolicy.prepareReady(
                         synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                         snapshot: {
@@ -226,7 +254,8 @@ public final class MiMoResidentRuntime {
                     // useful request; each request is gated again when reserved.
                     func allowance(_ context: Int, _ chunk: Int) throws -> MiMoResidentRequestAllowance {
                         try MiMoResidentRequestAllowance.derive(specification: admission.specification,
-                            plan: admission.plan, rank: collective.rank, maximumTokens: context, chunkSize: chunk)
+                            plan: admission.plan, rank: collective.rank, maximumTokens: context, chunkSize: chunk,
+                            speculativeBytes: try speculativeBytes(chunk))
                     }
                     guard let admitted = try LayerStageContextGate.admitted(profile: admission.profile, charge: { context, _, chunk in
                         .init(reservedBytes: try allowance(context, chunk).reservedBytes, extraNativeBytes: 0, extraHostBytes: 0)
@@ -255,7 +284,8 @@ public final class MiMoResidentRuntime {
                     if keepsResidency {
                         Stream.gpu.synchronize(); Stream.cpu.synchronize(); try checked()
                         residency = try MiMoStageResidency(bytes: try QwenLongPrefillCheckedBytes.sum([
-                            loaded.receipt.loadedTensorBytes, maximum.reservedBytes]))
+                            loaded.receipt.loadedTensorBytes, maximum.reservedBytes,
+                            head.map { $0.receipt.headBytes + $0.receipt.embeddingBytes } ?? 0]))
                         try checked()
                     }
                     let afterLoad = Memory.snapshot()
@@ -273,8 +303,19 @@ public final class MiMoResidentRuntime {
                         "gate=\(measuredGate ? "measured" : "enforced")",
                     ]
                     log(loadFields.joined(separator: " "))
+                    if let speculativeTerms {
+                        let receipt = head?.receipt
+                        log(["darkbloom-mimo-speculative-head-v1", "rank=\(collective.rank)", "depth=\(speculativeTerms.depth)",
+                             "head_tensors=\(receipt?.headTensors ?? 0)", "head_bytes=\(receipt?.headBytes ?? 0)",
+                             "embedding_bytes=\(receipt?.embeddingBytes ?? 0)",
+                             "active_added=\(receipt?.activeBytesAdded ?? 0)",
+                             "load_ms=\((receipt?.loadNanoseconds ?? 0) / 1_000_000)",
+                             "request_bytes_at_chunk=\(maximum.speculativeBytes)",
+                             "inventory_sha256=\(headInventorySHA256 ?? "none")"].joined(separator: " "))
+                    }
                     let loadedIdentity = sha256(try canonicalJSONData([loadAgreement,
-                        loaded.receipt.storageCommitmentSHA256, loaded.receipt.sourceParameterLayoutSHA256]))
+                        loaded.receipt.storageCommitmentSHA256, loaded.receipt.sourceParameterLayoutSHA256]
+                        + (headInventorySHA256.map { ["speculative-head=" + $0] } ?? [])))
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                         disagreementMessage: "Resident MiMo peers did not load matching verified stage commitments",
@@ -306,6 +347,7 @@ public final class MiMoResidentRuntime {
                 stage: stage!, residency: residency, capacity: capacity, lifecycle: lifecycle, generationMode: mode,
                 prefixCache: prefixCache)
             runtime.recordsSteps = recordsSteps
+            runtime.speculative = speculativeTerms.map { MiMoSpeculativeDecode(terms: $0, head: head) }
             return runtime
         } catch {
             let primary = error; control.fail()
@@ -313,7 +355,7 @@ public final class MiMoResidentRuntime {
                 try MLX.withError { nativeError in
                     Stream.gpu.synchronize(); Stream.cpu.synchronize()
                     try residency?.end(); residency = nil
-                    stage = nil
+                    head = nil; stage = nil
                     Memory.clearCache(); try nativeError.check()
                 }
                 guard retired == nil else { throw ProbeError("Resident MiMo failed-load model remains retained") }
@@ -336,9 +378,15 @@ public final class MiMoResidentRuntime {
         // Nothing below allocates: a throw is a refusal of this request alone.
         return try control.reserving(requestID, rank: collective.rank, deadline: value.deadlineUptimeNanoseconds) {
             guard let stage else { throw ProbeError("Resident model already released") }
+            let chunk = min(request.chunkSize, request.promptCount)
+            var headBytes = 0
+            if let speculative, let head = speculative.head {
+                headBytes = try head.requestBytes(chunkSize: chunk, depth: speculative.terms.depth,
+                    bound: QwenResidentResourceEnvironment.allocationBound)
+            }
             let allowance = try MiMoResidentRequestAllowance.derive(specification: admission.specification,
                 plan: admission.plan, rank: collective.rank, maximumTokens: request.maximumTokens,
-                chunkSize: min(request.chunkSize, request.promptCount))
+                chunkSize: chunk, speculativeBytes: headBytes)
             guard allowance.reservedBytes <= value.capacityLimitBytes,
                   allowance.reservedBytes <= baseReady.requestCapacityBytes else {
                 throw ProbeError("Resident reservation exceeds its additional owner capacity ceiling")
@@ -428,7 +476,8 @@ public final class MiMoResidentRuntime {
             consumerStageFingerprint: admission.plan.stages[1].fingerprint,
             rankBuildSHA256: admission.configuration.identity.peers.map(\.buildSHA256),
             numericalPolicySHA256: admission.arithmeticSHA256,
-            compactDecode: generationMode == .pipelineCompactDecode)
+            compactDecode: generationMode == .pipelineCompactDecode,
+            speculativeRoundsFraming: speculative?.terms.decodeFraming)
         var lastResourceCheck: UInt64 = 0, ordinal = 0
         var captureCharge = reserved.prefixCaptureBytes
         func check() throws {
@@ -448,6 +497,7 @@ public final class MiMoResidentRuntime {
         var firstToken: UInt64?
         let (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
             agreement: agreement, collective: collective, recordsSteps: recordsSteps, prefixCache: prefixCache,
+            speculative: speculative,
             onCommittedToken: { token in
                 let current = ordinal; ordinal += 1
                 if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
@@ -477,6 +527,11 @@ public final class MiMoResidentRuntime {
         ]
         for step in evidence.steps { log(step.line(rank: collective.rank)) }
         log(requestFields.joined(separator: " "))
+        if let statistics = evidence.speculative {
+            log((["darkbloom-mimo-speculative-v1", "rank=\(collective.rank)",
+                  "request=\(reserved.request.requestID.uuidString.lowercased())"] + statistics.diagnosticFields)
+                .joined(separator: " "))
+        }
         // S16: the session's record counters and key generations so far.
         collective.logDataPlaneStatus()
         var completion = QwenResidentGenerationCompletion(requestID: reserved.request.requestID, finishReason: reason,
@@ -507,7 +562,7 @@ public final class MiMoResidentRuntime {
                     prefixCache.disk?.close()
                     prefixCache.sweep()
                     try residency?.end(); residency = nil
-                    reservation = nil; stage = nil
+                    reservation = nil; speculative = nil; stage = nil
                     guard model == nil else { throw ProbeError("Resident MiMo model remains retained") }
                     Memory.clearCache(); try error.check()
                     Stream.gpu.synchronize(); Stream.cpu.synchronize(); try error.check()

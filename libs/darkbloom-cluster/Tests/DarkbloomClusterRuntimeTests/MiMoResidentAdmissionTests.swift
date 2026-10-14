@@ -85,8 +85,9 @@ struct MiMoResidentAdmissionTests {
         #expect(spec.layers == 48 && spec.hidden == 4096 && spec.vocabulary == 152_576)
         #expect(spec.supportedCuts == Array(1...47))
         #expect(spec.supportedPrefillSchedules == [.serial])
-        // No phase split: the rank that decodes alone would hold the whole model.
-        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
+        // No phase split: the rank that decodes alone would hold the whole model. The last rank
+        // may hold the artifact's next-N heads beside its stage (`pipeline_mtp_v1`).
+        #expect(spec.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
         #expect(spec.maximumManifestPayloadBytes == 172_863_462_401 && spec.maximumStageTensorBytes == 167_264_120_704)
         #expect(try MiMoRegisteredSpecification.specification(runtimeModelID: "registered_mimo_v26_flash_mopd").model == .v26FlashMOPD)
         #expect(try MiMoRegisteredSpecification.specification(configuration: Self.fixture("configuration")).model == .v26FlashMOPD)
@@ -332,7 +333,7 @@ struct MiMoResidentAdmissionTests {
         #expect(value.partitions.map { $0.stages[0].sourceLayerEnd } == spec.supportedCuts)
         #expect(value.partitions.allSatisfy { $0.stages[1].sourceLayerEnd == 48 })
         #expect(value.supportedPrefillSchedules == [.serial])
-        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
+        #expect(value.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
         #expect(value.arithmeticPolicyID == "mimo_v26_text_ordinary_cache_bf16_defaults_v1")
         let plan = try MiMoLayerStagePlan(configuration: Self.fixture("configuration"), cut: 32)
         #expect(try value.selection(planSHA256: plan.fingerprint).stages.map(\.stagePlanSHA256) == plan.stages.map(\.fingerprint))
@@ -394,10 +395,10 @@ struct MiMoResidentAdmissionTests {
         }
         let nine = try #require(ClusterResidentModelCatalog.entry(runtimeModelID: "registered_qwen35_9b"))
         #expect(nine.supportedCuts == [4, 8, 12, 16] && nine.layerCount == 32)
-        #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP])
+        #expect(nine.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP])
         let mimo = try ClusterResidentModelCatalog.entry(configuration: Self.fixture("configuration"))
         #expect(mimo.family == .mimoV26 && mimo.layerCount == 48 && mimo.supportedCuts == Array(1...47))
-        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode])
+        #expect(mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP])
         #expect(ClusterResidentModelCatalog.entry(runtimeModelID: "mimo-v2.6-flash-mopd") == nil)
         #expect(throws: (any Error).self) { _ = try ClusterResidentModelCatalog.entry(configuration: Data("{}".utf8)) }
         let described = try ClusterResidentModelCatalog.describe(configuration: Self.fixture("configuration"),

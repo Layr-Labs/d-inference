@@ -459,8 +459,8 @@ struct ClusterWorkerProtocolTests {
     /// terms both ranks bind, and the qualification records that may carry them.
     static func tensorParallelModes() throws {
         try check(ClusterGenerationMode.allCases.map(\.rawValue) == ["pipeline_v1", "pipeline_compact_decode_v1",
-            "phase_split_v1", "phase_split_mtp_v1", "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"],
-            "tensor-parallel modes follow the existing four, in order, with fixed wire names")
+            "phase_split_v1", "phase_split_mtp_v1", "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1", "pipeline_mtp_v1"],
+            "tensor-parallel modes follow the existing four, then the pipeline's speculative rounds, in order, with fixed wire names")
         try check(ClusterGenerationMode.tensorParallel.usesTensorParallelDecode
             && ClusterGenerationMode.pipelinePrefillTensorDecode.usesTensorParallelDecode
             && !ClusterGenerationMode.phaseSplit.usesTensorParallelDecode && !ClusterGenerationMode.pipeline.usesTensorParallelDecode,

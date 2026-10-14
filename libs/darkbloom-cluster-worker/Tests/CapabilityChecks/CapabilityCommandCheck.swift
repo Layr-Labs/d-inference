@@ -107,15 +107,17 @@ import Foundation
                     "The Nemotron capability does not round-trip within the byte bound")
             }
             // A second adapter, through the one catalog the worker's command asks: MiMo's own
-            // row, its own session bound and no phase split. Described without MLX, like the others.
+            // row, its own session bound, the pipeline modes, the speculative rounds and the phase split
+            // (a hand-off mode the planner considers only behind the explicit opt-in), serial and
+            // lookahead prefill. Described without MLX, like the others.
             try checks.yes("registered-mimo-is-described-from-its-own-row") {
                 let mimoConfiguration = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.configuration.json"))
                 let mimoManifest = try Data(contentsOf: fixtures.appendingPathComponent("registered-mimo-v26-flash-mopd.manifest.json"))
                 let mimo = try ClusterResidentModelCatalog.describe(configuration: mimoConfiguration, manifest: mimoManifest,
                                                                     runtimeBinarySHA256: binary)
                 try capabilityCheck(mimo.adapterID == "mimo-v26-layer-stage" && mimo.runtimeModelID == "registered_mimo_v26_flash_mopd"
-                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .pipelineMTP]
-                    && mimo.supportedPrefillSchedules == [.serial]
+                    && mimo.supportedGenerationModes == [.pipeline, .pipelineCompactDecode, .phaseSplit, .pipelineMTP]
+                    && mimo.supportedPrefillSchedules == [.serial, .oneChunkLookahead]
                     && mimo.partitions.map { $0.stages[0].sourceLayerEnd } == Array(1...47)
                     && mimo.partitions.allSatisfy { $0.stages.count == 2 && $0.stages[1].sourceLayerEnd == 48 },
                     "The MiMo capability differs from its resident row")

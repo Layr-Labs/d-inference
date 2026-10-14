@@ -34,6 +34,13 @@ public struct ClusterOnboardingResume: Sendable, Equatable {
     /// The leader asked the cluster to serve (kept across restarts).
     public var serving: Bool
     public var modelName: String?
+    /// On a member: the derived control leader's name (commands typed here run there).
+    public var leaderName: String?
+    /// Why derivation picked the leader, and its term.
+    public var leaderReason: String?
+    public var term: UInt64?
+    /// What this Mac's own service runs now, in words (`ClusterControlWords`).
+    public var localLine: String?
 
     public init(role: ClusterOnboardingRole? = nil, peerName: String? = nil, serving: Bool = false, modelName: String? = nil) {
         self.role = role; self.peerName = peerName; self.serving = serving; self.modelName = modelName
@@ -41,26 +48,31 @@ public struct ClusterOnboardingResume: Sendable, Equatable {
 }
 
 /// One Mac as the leader shows it before the model is chosen.
-public struct ClusterOnboardingMachine: Sendable, Equatable {
+public struct ClusterOnboardingMachine: Codable, Sendable, Equatable {
     public var name: String
     public var memoryGB: Int
     public var gpuCores: Int?
     public var leads: Bool
     public var models: Int
+    /// The member's stable identity (from its Secure Enclave key pin), so a forwarded answer can mark "this Mac".
+    public var memberID: String?
+    /// The Mac whose screen shows the line.
+    public var here: Bool
 
-    public init(name: String, memoryGB: Int, gpuCores: Int?, leads: Bool, models: Int) {
+    public init(name: String, memoryGB: Int, gpuCores: Int?, leads: Bool, models: Int, memberID: String? = nil, here: Bool? = nil) {
         self.name = name; self.memoryGB = memoryGB; self.gpuCores = gpuCores; self.leads = leads; self.models = models
+        self.memberID = memberID; self.here = here ?? leads
     }
 
     public var line: String {
         let gpu = gpuCores.map { " · \($0)-core GPU" } ?? ""
-        let what = leads ? "leads (this Mac)" : "member"
+        let what = leads && here ? "leads (this Mac)" : leads ? "leads" : here ? "member (this Mac)" : "member"
         return "  \(name) · \(memoryGB) GB\(gpu) · \(models) model\(models == 1 ? "" : "s") · \(what)"
     }
 }
 
 /// One model the leader may choose, with the planner's placement in words.
-public struct ClusterOnboardingModelChoice: Sendable, Equatable {
+public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     public var title: String
     /// Where each part runs and what the planner expects, one fact per line.
     public var lines: [String]
@@ -96,7 +108,7 @@ public struct ClusterOnboardingLinkResult: Sendable, Equatable {
     public init(ready: Bool, exitCode: Int32) { self.ready = ready; self.exitCode = exitCode }
 }
 
-public struct ClusterOnboardingReady: Sendable, Equatable {
+public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// "this Mac" or the other Mac's name: where the serving API listens.
     public var servedBy: String
     public var port: Int
@@ -161,6 +173,8 @@ public struct ClusterOnboardingOperations: Sendable {
     /// The cluster as it is now, for a leader that opens `darkbloom cluster` again.
     public var status: @Sendable () -> [String]
     public var stop: @Sendable () -> Result<[String], ClusterOnboardingFailure>
+    /// Each Mac's verify-teardown summary (after a stop: no cluster process, wired memory at baseline).
+    public var verifyTeardown: @Sendable () -> Result<[String], ClusterOnboardingFailure>
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -174,11 +188,12 @@ public struct ClusterOnboardingOperations: Sendable {
                 waitReady: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> Result<ClusterOnboardingReady, ClusterOnboardingFailure>,
                 testRequest: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
                 status: @escaping @Sendable () -> [String],
-                stop: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>) {
+                stop: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
+                verifyTeardown: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .success([]) }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
-        self.status = status; self.stop = stop
+        self.status = status; self.stop = stop; self.verifyTeardown = verifyTeardown
     }
 }
 
@@ -345,9 +360,10 @@ public enum ClusterOnboardingDriver {
         }
     }
 
-    /// A member: it is never asked anything; it says where to continue.
+    /// A member: `darkbloom cluster` works here too. Every command runs on the derived control leader, forwarded over
+    /// the link control channel, and its answer is shown here.
     static func member(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
-        let leader = resume.peerName ?? "the leading Mac"
+        let leader = resume.leaderName ?? resume.peerName ?? "the leading Mac"
         console.say("This Mac is a member of the cluster led by \(leader).")
         switch operations.ensureService() {
         case .success(let line): console.say(line)
@@ -355,9 +371,9 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say(line) }
             return 1
         }
-        if resume.serving { console.say("\(leader) has it serving\(resume.modelName.map { " " + $0 } ?? "").") }
-        console.say("Nothing to do here: continue on \(leader).")
-        return 0
+        if let reason = resume.leaderReason { console.say("The control leader is derived, not chosen: \(reason)\(resume.term.map { " (term \($0))" } ?? "").") }
+        console.say("Commands typed here run on \(leader) over the cable.")
+        return menu(resume, operations, console)
     }
 
     /// The leader: the model and options, the sync, the start, serving.
@@ -371,31 +387,49 @@ public enum ClusterOnboardingDriver {
         }
         if resume.serving, !justPaired {
             console.say("This Mac leads the cluster.")
-            for line in operations.status() { console.say("  " + line) }
-            console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving.")
-            while true {
-                guard let key = console.key(milliseconds: 60_000) else {
-                    if console.closed { return 0 }
-                    continue
-                }
-                switch key {
-                case "\r", "\n", "q", "Q": return 0
-                case "t", "T": return test(operations, console) ? 0 : 1
-                case "s", "S":
-                    switch operations.stop() {
-                    case .success(let lines):
-                        for line in lines { console.say(line) }
-                        return 0
-                    case .failure(let failure):
-                        for line in failure.lines { console.say(line) }
-                        return 1
-                    }
-                case "m", "M": return chooseAndServe(operations, console)
-                default: continue
-                }
-            }
+            return menu(resume, operations, console)
         }
         return chooseAndServe(operations, console)
+    }
+
+    /// Status, then one key: the same on every member (a member's commands are forwarded to the leader).
+    static func menu(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
+        for line in operations.status() { console.say("  " + line) }
+        if resume.serving {
+            console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to verify teardown.")
+        } else {
+            console.say("Not serving. Press m to choose a model and serve, v to verify teardown, enter to leave it as it is.")
+        }
+        while true {
+            guard let key = console.key(milliseconds: 60_000) else {
+                if console.closed { return 0 }
+                continue
+            }
+            switch key {
+            case "\r", "\n", "q", "Q": return 0
+            case "t" where resume.serving, "T" where resume.serving: return test(operations, console) ? 0 : 1
+            case "s" where resume.serving, "S" where resume.serving:
+                switch operations.stop() {
+                case .success(let lines):
+                    for line in lines { console.say(line) }
+                    return 0
+                case .failure(let failure):
+                    for line in failure.lines { console.say(line) }
+                    return 1
+                }
+            case "v", "V":
+                switch operations.verifyTeardown() {
+                case .success(let lines):
+                    for line in lines { console.say("  " + line) }
+                    return 0
+                case .failure(let failure):
+                    for line in failure.lines { console.say(line) }
+                    return 1
+                }
+            case "m", "M": return chooseAndServe(operations, console)
+            default: continue
+            }
+        }
     }
 
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
@@ -487,7 +521,7 @@ public enum ClusterOnboardingDriver {
         }
         let tested = test(operations, console)
         console.say("")
-        console.say("Done. This Mac leads the cluster: run `darkbloom cluster` here to see it, change the model or stop it.")
+        console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it (commands go to the control leader).")
         console.say("Nothing else is needed on the other Mac. After a Mac restarts, run `darkbloom cluster` on it once (it asks nothing).")
         return tested ? 0 : 1
     }

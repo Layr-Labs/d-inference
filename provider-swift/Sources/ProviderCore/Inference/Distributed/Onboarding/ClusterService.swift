@@ -32,15 +32,40 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     public var child: Child
     /// Only on the Mac that runs rank 0.
     public var session: Session?
+    /// The derived control leader as this Mac knows it: the leader's name, the term, and what this Mac runs, in words.
+    public var control: Control?
+    public struct Control: Codable, Sendable, Equatable {
+        public var leaderID: String
+        public var leaderName: String
+        public var term: UInt64
+        public var reason: String
+        public var leads: Bool
+        /// `ClusterControlWords.line` for this Mac's mode.
+        public var line: String
+        /// "cluster", "following", "confirming", "idle", "alone" or "cannotServe".
+        public var mode: String
+    }
 }
 
 /// One command from the leader to a member's cluster service.
 public struct ClusterServiceCommand: Codable, Sendable, Equatable {
-    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt }
+    /// `lease`: the control leader's renewal or hand-over (control listener only). `control`: a `darkbloom cluster`
+    /// command forwarded from any member to the control leader. `teardown`: this Mac's verify-teardown summary.
+    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt, lease, control, teardown }
     public var op: Operation
     public var model: String?
     public var text: String?
-    public init(op: Operation, model: String? = nil, text: String? = nil) { self.op = op; self.model = model; self.text = text }
+    /// The sender's control claim: a serve or stop from a Mac whose claim is superseded is refused.
+    public var claim: ClusterControlClaim?
+    /// `lease`: whether the leader runs the cluster now (members run their parts only then).
+    public var running: Bool?
+    public var facts: [ClusterControlMember]?
+    public var control: ClusterControlRequest?
+    public init(op: Operation, model: String? = nil, text: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
+                facts: [ClusterControlMember]? = nil, control: ClusterControlRequest? = nil) {
+        self.op = op; self.model = model; self.text = text; self.claim = claim; self.running = running; self.facts = facts
+        self.control = control
+    }
 }
 
 /// A test request's answer, sent back over the link.
@@ -73,15 +98,19 @@ public final class ClusterService: @unchecked Sendable {
         /// `start --local --distributed` and `cluster link-follower`, with the provider configuration.
         public var leaderArguments: [String]
         public var followerArguments: [String]
-        public init(wizard: ClusterSetupOperations.LiveSettings, leaderArguments: [String], followerArguments: [String]) {
+        /// Degraded serving on this Mac alone: `start --local` with the provider configuration (the model is added).
+        public var soloArguments: [String]
+        public init(wizard: ClusterSetupOperations.LiveSettings, leaderArguments: [String], followerArguments: [String],
+                    soloArguments: [String] = ["start", "--local"]) {
             self.wizard = wizard; self.leaderArguments = leaderArguments; self.followerArguments = followerArguments
+            self.soloArguments = soloArguments
         }
     }
 
     let settings: Settings
     let context: LiveContext
     let store: ClusterSetupStore
-    private let lock = NSLock()
+    let lock = NSLock()
     private var child: Process?
     private var childSetup: String?
     private var childStarted = Date.distantPast
@@ -90,15 +119,26 @@ public final class ClusterService: @unchecked Sendable {
     private var nextStart = Date.distantPast
     private var backoff: Double = 3
     private var responder: ClusterSetupLinkExchange.Responder?
-    private var stopping = false
+    var stopping = false
     private var syncing = false
     private var nextSync = Date.distantPast
+    // Derived control (ClusterServiceControl.swift).
+    var control: ClusterControlNode?
+    var controlResponder: ClusterSetupLinkExchange.Responder?
+    var leaseInFlight = false
+    var nextLease: Double = 0
+    var lastModeLine: String?
+    var localHardware: (name: String, memoryBytes: UInt64, gpuCores: Int)?
+    let controlCommands = NSLock()
+    lazy var controlLive: OnboardingLive = OnboardingLive(context: context, store: store,
+        settings: .init(service: settings, serviceArguments: []))
 
     public init(settings: Settings) throws {
         var wizard = settings.wizard
         wizard.derivedPlacement = true
         wizard.answersOverLink = false
-        self.settings = Settings(wizard: wizard, leaderArguments: settings.leaderArguments, followerArguments: settings.followerArguments)
+        self.settings = Settings(wizard: wizard, leaderArguments: settings.leaderArguments, followerArguments: settings.followerArguments,
+            soloArguments: settings.soloArguments)
         let paths = try ClusterUserPaths()
         store = ClusterSetupStore(paths: .init(paths: paths))
         context = LiveContext(paths: paths, store: store, settings: wizard,
@@ -173,6 +213,8 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { stop.wait(); ticker.signal() }
         while !stopped {
             ensureResponder(say: say)
+            ensureControlResponder(say: say)
+            controlTick(say: say)
             supervise(say: say)
             syncMembers(say: say)
             publish()
@@ -181,6 +223,7 @@ public final class ClusterService: @unchecked Sendable {
         lock.withLock { stopping = true }
         say("stopping")
         lock.withLock { responder }?.stop()
+        lock.withLock { controlResponder }?.stop()
         let clean = stopChild(say: say, seconds: 300)
         say(clean ? "stopped" : "stopped with this Mac's part still releasing")
         return clean
@@ -209,9 +252,13 @@ public final class ClusterService: @unchecked Sendable {
         }
     }
 
-    /// This Mac follows the Mac it paired with.
-    private func followsPeer(_ pairing: ClusterSetupLinkExchange.Pairing) -> Bool {
-        guard let leadership = try? store.readRecord().leadership else { return false }
+    /// This Mac follows the Mac it paired with: the derived control leader is that Mac (before the service has
+    /// derived anything, the Mac that drove the onboarding).
+    func followsPeer(_ pairing: ClusterSetupLinkExchange.Pairing) -> Bool {
+        if let claim = lock.withLock({ control?.claim }) { return claim.leaderID == pairing.peerMemberID }
+        guard let record = try? store.readRecord() else { return false }
+        if let claim = record.control?.claim { return claim.leaderID == pairing.peerMemberID }
+        guard let leadership = record.leadership else { return false }
         return leadership.role == ClusterOnboardingRole.member.rawValue && leadership.leaderPin == pairing.peerPin
     }
 
@@ -220,8 +267,7 @@ public final class ClusterService: @unchecked Sendable {
     /// Mac's own supervision never waits on the cable. A member that missed a start or a stop follows once it
     /// answers again.
     private func syncMembers(say: @escaping @Sendable (String) -> Void) {
-        guard let record = try? store.readRecord(), let leadership = record.leadership,
-              leadership.role == ClusterOnboardingRole.leader.rawValue else { return }
+        guard let record = try? store.readRecord(), let leadership = record.leadership, leadsAndRunsCluster() else { return }
         let begin: Bool = lock.withLock {
             guard !syncing, !stopping, Date() >= nextSync else { return false }
             syncing = true
@@ -234,7 +280,10 @@ public final class ClusterService: @unchecked Sendable {
             defer { self?.lock.withLock { self?.syncing = false } }
             guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin,
                   let selection = try? context.linkSelection() else { return }
+            let claim = self?.lock.withLock { self?.control?.claim }
             func send(_ command: ClusterServiceCommand, seconds: Double) -> ClusterServiceStatus? {
+                var command = command
+                command.claim = claim
                 guard let body = try? JSONEncoder().encode(command),
                       let reply = try? ClusterSetupLinkExchange.command(pairing: pairing, selection: selection, peerAddress: nil,
                           body: body, seconds: seconds).reply else { return nil }
@@ -278,6 +327,9 @@ public final class ClusterService: @unchecked Sendable {
         case .status:
             return try encoder.encode(status())
         case .serve, .stop:
+            if let sent = command.claim, let own = lock.withLock({ control?.claim }), own.supersedes(sent) {
+                throw ClusterSetupFailure("the Mac that asked no longer leads: term \(own.term) superseded its term \(sent.term)")
+            }
             guard followsPeer(pairing) else { throw ClusterSetupFailure("this Mac does not follow the Mac that asked") }
             try store.updateRecord {
                 $0.leadership?.serving = command.op == .serve
@@ -288,13 +340,35 @@ public final class ClusterService: @unchecked Sendable {
             return try encoder.encode(status())
         case .prompt:
             return try encoder.encode(Self.prompt(context, text: command.text ?? "Name three colors."))
+        case .control:
+            guard let request = command.control else { throw ClusterSetupFailure("a control command names no request") }
+            return try encoder.encode(executeControl(request, pairing: pairing, say: say))
+        case .teardown:
+            return try encoder.encode(Self.teardownLines())
+        case .lease:
+            throw ClusterSetupFailure("leases go to the control listener")
+        }
+    }
+
+    /// Degraded serving alone listens where `start --local` listens by default, on this Mac's loopback.
+    public static let soloPort = 8000
+
+    /// Whether the solo server answers its model list (it loaded and serves).
+    static func soloAnswers() -> Bool {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(soloPort)/v1/models")!)
+        request.timeoutInterval = 3
+        if let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let prepared = request
+        return blockingWizard {
+            guard let (_, response) = try? await URLSession.shared.data(for: prepared) else { return false }
+            return (response as? HTTPURLResponse)?.statusCode == 200
         }
     }
 
     /// One test request through this Mac's serving API, collected.
-    static func prompt(_ context: LiveContext, text: String) -> ClusterServicePromptAnswer {
+    static func prompt(_ context: LiveContext, text: String, port: Int? = nil) -> ClusterServicePromptAnswer {
         let collected = ClusterOnboardingMailbox<ClusterSetupPromptEvent>()
-        context.prompt(text: String(text.prefix(400)), maxTokens: 48) { collected.post($0) }
+        context.prompt(text: String(text.prefix(400)), maxTokens: 48, port: port) { collected.post($0) }
         var answer = ClusterServicePromptAnswer(text: "", tokens: 0)
         for event in collected.take() {
             switch event {
@@ -328,7 +402,7 @@ public final class ClusterService: @unchecked Sendable {
                 child: .init(running: child?.isRunning ?? false, starts: starts, lastEnd: lastEnd,
                     restartInSeconds: child == nil && wait > 0 ? Int(wait.rounded(.up)) : nil,
                     lastError: child?.isRunning == true ? nil : Self.lastError()),
-                session: session)
+                session: session, control: controlStatusLocked(model: record?.leadership?.modelName))
         }
     }
 
@@ -363,7 +437,18 @@ public final class ClusterService: @unchecked Sendable {
         let record = try? store.readRecord()
         let saved = context.savedConfiguration()
         let reference = try? saved.reference.get()
-        let desired = (record?.leadership?.serving ?? false) && reference != nil && saved.configuration != nil
+        let serving = record?.leadership?.serving ?? false
+        let want = partWanted(serving: serving, hasSetup: reference != nil && saved.configuration != nil,
+                              model: saved.configuration?.publicModelID ?? record?.leadership?.modelName)
+        // What runs is keyed: "cluster:<setup digest>" (this Mac's part of the saved setup) or "solo:<model>"
+        // (degraded serving on this Mac alone). A part of another key is stopped before the wanted one starts.
+        let key: String?
+        switch want {
+        case .keep: return
+        case .none: key = nil
+        case .cluster: key = reference.map { "cluster:" + $0.sha256 }
+        case .solo(let model): key = "solo:" + model
+        }
         let (running, setup, ended) = lock.withLock { () -> (Process?, String?, Bool) in
             (child, childSetup, child.map { !$0.isRunning } ?? false)
         }
@@ -375,18 +460,31 @@ public final class ClusterService: @unchecked Sendable {
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
-            say("this Mac's part ended (\(end)) after \(Int(ran)) s; " + (desired ? "starting it again" : "not serving"))
+            say("this Mac's \(setup?.hasPrefix("solo:") == true ? "solo server" : "part") ended (\(end)) after \(Int(ran)) s; "
+                + (key != nil ? "starting it again" : "not serving"))
             return
         }
-        if let running, !desired || setup != reference?.sha256 {
-            say(desired ? "the setup changed: restarting this Mac's part" : "the leader stopped serving: stopping this Mac's part")
+        if let running, key == nil || setup != key {
+            let solo = setup?.hasPrefix("solo:") == true
+            say(key == nil ? (solo ? "stopping the solo server" : "the leader stopped serving: stopping this Mac's part")
+                : key!.hasPrefix("solo:") ? "serving alone: stopping this Mac's part first"
+                : solo ? "the cluster re-forms: stopping the solo server first" : "the setup changed: restarting this Mac's part")
             _ = running
             _ = stopChild(say: say, seconds: 300)
+            if key != nil { lock.withLock { nextStart = .distantPast; backoff = 3 } }
             return
         }
-        guard running == nil, desired, let configuration = saved.configuration, let reference,
-              lock.withLock({ !stopping && Date() >= nextStart }) else { return }
-        let arguments = configuration.role == .leader ? settings.leaderArguments : settings.followerArguments
+        guard running == nil, let key, lock.withLock({ !stopping && Date() >= nextStart }) else { return }
+        let arguments: [String]
+        let what: String
+        if case .solo(let model) = want {
+            arguments = settings.soloArguments + ["--model", model, "--port", String(Self.soloPort)]
+            what = "degraded: serving \(model) on this Mac alone"
+        } else {
+            guard let configuration = saved.configuration else { return }
+            arguments = configuration.role == .leader ? settings.leaderArguments : settings.followerArguments
+            what = "this Mac's part: " + (configuration.role == .leader ? "rank 0 and the serving API" : "rank \(configuration.localRank)")
+        }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments
@@ -396,12 +494,12 @@ public final class ClusterService: @unchecked Sendable {
             if let handle = try? FileHandle(forWritingTo: log) { handle.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle }
         }
         do { try process.run() } catch {
-            say("this Mac's part could not start: \(error)")
+            say("\(what) could not start: \(error)")
             lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30) }
             return
         }
-        lock.withLock { child = process; childSetup = reference.sha256; childStarted = Date(); starts += 1 }
-        say("started this Mac's part: \(configuration.role == .leader ? "rank 0 and the serving API" : "rank \(configuration.localRank)") (pid \(process.processIdentifier))")
+        lock.withLock { child = process; childSetup = key; childStarted = Date(); starts += 1 }
+        say("started \(what) (pid \(process.processIdentifier))")
     }
 
     /// SIGTERM, then wait: a rank that holds a model releases it itself.

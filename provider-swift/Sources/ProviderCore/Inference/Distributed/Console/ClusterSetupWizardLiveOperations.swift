@@ -631,9 +631,14 @@ final class LiveContext: @unchecked Sendable {
 
     // MARK: - Test prompt
 
-    func prompt(text: String, maxTokens: Int, events: @escaping @Sendable (ClusterSetupPromptEvent) -> Void) {
-        let status = blockingWizard { await ClusterDiagnostics.status(providerConfiguration: self.configuration) }
-        guard let port = status.live?.boundPort else { return events(.failed("the leader's status names no listener")) }
+    func prompt(text: String, maxTokens: Int, port given: Int? = nil, events: @escaping @Sendable (ClusterSetupPromptEvent) -> Void) {
+        // `given`: a server whose port is known (degraded serving alone); otherwise the cluster session's own listener.
+        let port: Int
+        if let given { port = given } else {
+            let status = blockingWizard { await ClusterDiagnostics.status(providerConfiguration: self.configuration) }
+            guard let bound = status.live?.boundPort else { return events(.failed("the leader's status names no listener")) }
+            port = Int(bound)
+        }
         guard let model = savedConfiguration().configuration?.publicModelID else { return events(.failed("no saved setup names the model")) }
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
         request.httpMethod = "POST"

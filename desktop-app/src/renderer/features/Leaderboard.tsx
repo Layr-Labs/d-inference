@@ -58,7 +58,7 @@ export function Leaderboard({ backend }: { backend: BackendState }) {
         <>
           <section className={styles.podium} aria-label="Top three providers">
             {leaders.slice(0, 3).map((leader) => (
-              <Provider key={leader.name} leader={leader} featured />
+              <Provider key={`${leader.rank}:${leader.name}`} leader={leader} featured />
             ))}
           </section>
           {leaders.length > 3 && (
@@ -68,7 +68,7 @@ export function Leaderboard({ backend }: { backend: BackendState }) {
                 <span>Annualized pace</span>
               </div>
               {leaders.slice(3, visible).map((leader) => (
-                <Provider key={leader.name} leader={leader} />
+                <Provider key={`${leader.rank}:${leader.name}`} leader={leader} />
               ))}
             </section>
           )}

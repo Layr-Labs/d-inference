@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop Leaderboard loading and network totals
 
-- Refresh the Leaderboard's network map totals while the page is open, as its "Refreshes every 30 seconds" caption says; they previously stayed at the last Home visit. Show "Loading rankings…" until rankings first load and "No rankings yet" for an empty result, instead of "Leaderboard unavailable", and do not call failed first network statistics "last known totals".
+- Refresh the Leaderboard's network map totals while the page is open, as its "Refreshes every 30 seconds" caption says; they previously stayed at the last Home visit. Show "Loading rankings…" until rankings first load and "No rankings yet" for an empty result, instead of "Leaderboard unavailable", and do not call failed first network statistics "last known totals". Providers that share a pseudonym no longer collide in the rankings list.
 
 ## Unreleased — desktop hardware load
 

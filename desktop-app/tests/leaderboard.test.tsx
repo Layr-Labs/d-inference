@@ -106,3 +106,19 @@ it('refreshes the network map’s totals while the Leaderboard is open', async (
   const { pageResources } = await import('../src/renderer/data/pageResources');
   expect(pageResources('leaderboard')).toEqual(expect.arrayContaining(['leaderboard', 'network']));
 });
+
+it('renders providers that share a pseudonym without key collisions', () => {
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args.join(' '));
+  try {
+    const leaders = backend()
+      .leaders!.slice(0, 5)
+      .map((leader) => ({ ...leader, name: 'same-name' }));
+    render(<Leaderboard backend={{ ...backend(), leaders }} />);
+    expect(screen.getAllByText('same-name')).toHaveLength(5);
+    expect(errors.filter((error) => String(error).includes('same key'))).toEqual([]);
+  } finally {
+    console.error = original;
+  }
+});

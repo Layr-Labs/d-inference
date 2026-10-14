@@ -405,7 +405,9 @@ final class LiveContext: @unchecked Sendable {
         if settings.derivedPlacement, let store = modelsDirectory() {
             // `darkbloom cluster` needs no model folder: the models single-Mac Darkbloom installed are cloned into the
             // cluster's store (no new blocks), so both the leader and its members list them by digest.
-            for installed in ClusterProductModelStore.installed() { _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store)) }
+            for installed in ClusterProductModelStore.installed() {
+                _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store), providerConfiguration: configuration)
+            }
         }
         let doctor = blockingWizard { await ClusterDiagnostics.doctor(providerConfiguration: self.configuration, localLink: link) }
         let savedSetup: ClusterConsoleSavedSetup

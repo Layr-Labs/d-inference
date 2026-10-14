@@ -54,6 +54,8 @@ private final class OnboardingLive: @unchecked Sendable {
     private var choices: [(folder: String, key: String, title: String)] = []
     /// Choices that are catalog models no Mac has yet (by choice index).
     private var catalogChoices: [Int: CatalogModel] = [:]
+    /// Choices that only the other Mac has (by choice index): it sends them here first.
+    private var peerChoices: [Int: ClusterSetupLocalModel] = [:]
     private var chosenTitle: String?
 
     init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings) {
@@ -233,7 +235,9 @@ private final class OnboardingLive: @unchecked Sendable {
         guard let peer = lock.withLock({ peerReport }) else { return .failure(.init("The other Mac has not answered yet.")) }
         // The models single-Mac Darkbloom installed on this Mac are cluster models too (cloned in: no new blocks).
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
-        for installed in ClusterProductModelStore.installed() { _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store) }
+        for installed in ClusterProductModelStore.installed() {
+            _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration)
+        }
         switch context.plan(peer: peer) {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
@@ -262,14 +266,26 @@ private final class OnboardingLive: @unchecked Sendable {
             var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String))]()
             let pairs = Array(zip(choices, keys))
             ordered += pairs.filter { $0.0.blocker == nil }
-            var catalog = [Int: CatalogModel]()
-            let held = Set((options.map(\.model.artifactSHA256)))
+            var catalog = [Int: CatalogModel](), fromPeer = [Int: ClusterSetupLocalModel]()
+            var held = Set((options.map(\.model.artifactSHA256)))
+            // Models only the other Mac has: it copies them here over the cable, then this Mac plans them.
+            for model in peer.models where !held.contains(model.artifactSHA256) {
+                held.insert(model.artifactSHA256)
+                fromPeer[ordered.count] = model
+                let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
+                    leader: .init(name: "\(localName) (this Mac)", holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
+                    members: [.init(name: peerName, holding: .complete(folder: model.folder), freeBytes: nil)],
+                    linkBytesPerSecond: measuredCopyRate, catalogHasIt: false)
+                ordered.append((.init(title: model.modelID, lines: ["on \(peerName) only: planned once it is on this Mac too"], blocker: nil,
+                    provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker)),
+                    (model.folder, "", model.modelID)))
+            }
             for model in catalogModels(peer: peer) where !held.contains(model.aggregateSHA256 ?? "") {
                 catalog[ordered.count] = model
                 ordered.append((downloadChoice(model, peer: peer, localName: localName), ("", "", model.id)))
             }
             ordered += pairs.filter { $0.0.blocker != nil }
-            lock.withLock { self.choices = ordered.map(\.1); self.catalogChoices = catalog }
+            lock.withLock { self.choices = ordered.map(\.1); self.catalogChoices = catalog; self.peerChoices = fromPeer }
             return .success(ordered.map(\.0))
         }
     }
@@ -330,6 +346,11 @@ private final class OnboardingLive: @unchecked Sendable {
         var lines = [String]()
         var folder = choice.folder
         do {
+            if let model = lock.withLock({ peerChoices[index] }) {
+                lines.append(try receiveFromPeer(model, store: store, progress: progress))
+                if case .reached(let report, _) = context.reachPeer() { lock.withLock { peerReport = report } }
+                return .success(lines)
+            }
             if let model = lock.withLock({ catalogChoices[index] }) {
                 folder = try downloadOnThisMac(model, store: store, progress: progress)
                 lines.append("\(model.id) is on this Mac now (downloaded from Darkbloom's catalog and verified, as `darkbloom` downloads models).")
@@ -373,6 +394,41 @@ private final class OnboardingLive: @unchecked Sendable {
         return "Copying \(model) to \(peer) over the Thunderbolt cable: \(String(format: "%.1f", Double(sent) / 1e9)) of \(ClusterModelProvisioning.gigabytes(total)), \(String(format: "%.2f", rate / 1e9)) GB/s\(left)"
     }
 
+    /// The other Mac sends a model only it has: asked over the link, it copies it into this Mac's store (this Mac's
+    /// cluster service verifies every file); this Mac follows the staged bytes for the progress.
+    func receiveFromPeer(_ model: ClusterSetupLocalModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
+        _ = try command(.init(op: .sendModel, model: model.folder, text: model.artifactSHA256), seconds: 30)
+        let started = Date()
+        let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
+        let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
+        var lastLine = Date.distantPast
+        while Date() < deadline {
+            if let data = ClusterModelStore.readSmall(store.appendingPathComponent(model.folder).appendingPathComponent("manifest.json")),
+               let artifact = try? ClusterCatalogArtifact.parse(manifest: data), artifact.aggregateSHA256 == model.artifactSHA256 {
+                let seconds = Date().timeIntervalSince(started)
+                return "\(peerName) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to this Mac over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
+            }
+            if Date().timeIntervalSince(lastLine) >= 1 {
+                lastLine = Date()
+                let bytes = Self.stagedBytes(staging)
+                progress(Self.copyLine(model: model.modelID, to: "this Mac", sent: bytes, total: model.totalBytes, seconds: Date().timeIntervalSince(started))
+                    .replacingOccurrences(of: "Copying", with: "Receiving"))
+            }
+            usleep(250_000)
+        }
+        throw ClusterSetupFailure("\(model.modelID) did not arrive from \(peerName) in time; run `darkbloom cluster` here again (the copy resumes)")
+    }
+
+    static func stagedBytes(_ directory: URL) -> Int64 {
+        guard let names = FileManager.default.enumerator(atPath: directory.path) else { return 0 }
+        var total: Int64 = 0
+        for case let name as String in names {
+            var info = stat()
+            if lstat(directory.appendingPathComponent(name).path, &info) == 0, info.st_mode & S_IFMT == S_IFREG { total += Int64(info.st_size) }
+        }
+        return total
+    }
+
     /// Downloads a catalog model exactly as single-Mac Darkbloom does (verified manifest, resumable, into the
     /// product's model store), then clones it into the cluster's store. Returns its folder there.
     func downloadOnThisMac(_ model: CatalogModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
@@ -381,9 +437,16 @@ private final class OnboardingLive: @unchecked Sendable {
         var downloader = ModelDownloader(catalogClient: catalog, runtimeCapabilities: capabilities)
         let started = Date()
         let lastLine = ClusterOnboardingMailbox<Date>()
+        let verifying = ClusterOnboardingMailbox<Bool>()
         downloader.byteProgress = { done, total in
             let now = Date()
-            if let last = lastLine.take().last, now.timeIntervalSince(last) < 1, done < total { lastLine.post(last); return }
+            if done >= total {
+                // Every byte is here; the downloader checks each file and the aggregate digest before it publishes.
+                if verifying.take().isEmpty { progress("Downloaded \(ClusterModelProvisioning.gigabytes(total)); checking every file against the catalog manifest…") }
+                verifying.post(true)
+                return
+            }
+            if let last = lastLine.take().last, now.timeIntervalSince(last) < 1 { lastLine.post(last); return }
             lastLine.post(now)
             let rate = Double(done) / max(now.timeIntervalSince(started), 0.001)
             progress("Downloading \(model.id) from Darkbloom's catalog: \(ClusterModelProvisioning.gigabytes(done)) of \(ClusterModelProvisioning.gigabytes(total)), \(String(format: "%.0f", rate / 1e6)) MB/s")
@@ -400,7 +463,7 @@ private final class OnboardingLive: @unchecked Sendable {
         guard let installed = ClusterProductModelStore.installed().first(where: { $0.artifact.aggregateSHA256 == model.aggregateSHA256 }) else {
             throw ClusterSetupFailure("\(model.id) downloaded, but the product's model store does not list it")
         }
-        _ = try ClusterProductModelStore.cloneIntoClusterStore(installed, store: store)
+        _ = try ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration)
         guard case .complete(let folder) = ClusterModelStore.holding(store: store, artifact: installed.artifact) else {
             throw ClusterSetupFailure("\(model.id) could not be placed in the cluster's model store")
         }

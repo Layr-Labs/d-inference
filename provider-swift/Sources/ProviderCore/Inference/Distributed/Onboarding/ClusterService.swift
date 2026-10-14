@@ -36,7 +36,7 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
 
 /// One command from the leader to a member's cluster service.
 public struct ClusterServiceCommand: Codable, Sendable, Equatable {
-    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt }
+    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt, sendModel }
     public var op: Operation
     public var model: String?
     public var text: String?
@@ -275,7 +275,7 @@ public final class ClusterService: @unchecked Sendable {
         return digest
     }
 
-    private func command(_ data: Data, pairing: ClusterSetupLinkExchange.Pairing, say: @Sendable (String) -> Void) throws -> Data {
+    private func command(_ data: Data, pairing: ClusterSetupLinkExchange.Pairing, say: @escaping @Sendable (String) -> Void) throws -> Data {
         let command = try JSONDecoder().decode(ClusterServiceCommand.self, from: data)
         let encoder = JSONEncoder()
         switch command.op {
@@ -292,6 +292,28 @@ public final class ClusterService: @unchecked Sendable {
             return try encoder.encode(status())
         case .prompt:
             return try encoder.encode(Self.prompt(context, text: command.text ?? "Name three colors."))
+        case .sendModel:
+            // The leader lacks a model this Mac has: this Mac sends it over the cable (the leader's service verifies it).
+            guard let folder = command.model, let digest = command.text, let name = ClusterCatalogArtifact.safeFolder(folder) else {
+                throw ClusterSetupFailure("no model named")
+            }
+            let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
+            guard let data = ClusterModelStore.readSmall(store.appendingPathComponent(name).appendingPathComponent("manifest.json")),
+                  let artifact = try? ClusterCatalogArtifact.parse(manifest: data), artifact.aggregateSHA256 == digest else {
+                throw ClusterSetupFailure("this Mac does not have that model")
+            }
+            let selection = try context.linkSelection()
+            say("sending \(name) to the paired Mac over the cable")
+            Thread.detachNewThread {
+                do {
+                    let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
+                        source: store.appendingPathComponent(name), folder: name) { _, _ in }
+                    say("sent \(name): \(ClusterModelProvisioning.gigabytes(outcome.sentBytes)) in \(String(format: "%.1f", outcome.seconds)) s")
+                } catch {
+                    say("sending \(name) stopped: \(error)")
+                }
+            }
+            return Data("{\"sending\":true}".utf8)
         }
     }
 

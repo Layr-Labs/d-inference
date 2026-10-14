@@ -177,7 +177,7 @@ final class ClusterModelCopyClient: @unchecked Sendable {
         let chunk = ClusterSetupLinkExchange.provisionChunkBytes
         let window = ClusterSetupLinkExchange.provisionWindowBytes / chunk
         let started = Date()
-        var sent: Int64 = 0, chunks: Int64 = 0, lastReport = Date.distantPast
+        var sent: Int64 = 0, chunks: Int64 = 0, lastReport = Date()
         for (index, file) in artifact.files.enumerated() where state.offsets[index] < file.sizeBytes {
             var offset = state.offsets[index]
             while offset < file.sizeBytes {

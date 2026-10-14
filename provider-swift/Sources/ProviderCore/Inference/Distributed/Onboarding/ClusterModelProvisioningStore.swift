@@ -35,13 +35,37 @@ enum ClusterProductModelStore {
         }
     }
 
+    /// The catalog's exact manifest bytes for a model (the cluster worker pins the registered manifest's own bytes; the
+    /// product store keeps a re-encoded receipt), checked to name the same artifact; nil when the catalog does not answer.
+    static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5) -> Data? {
+        guard let config = try? ConfigManager.load(from: providerConfiguration),
+              let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
+              let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = seconds
+        let box = ClusterOnboardingMailbox<Data>()
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            if let data, (response as? HTTPURLResponse)?.statusCode == 200, data.count <= ClusterCatalogArtifact.maximumManifestBytes { box.post(data) }
+            done.signal()
+        }.resume()
+        guard done.wait(timeout: .now() + seconds + 1) == .success, let data = box.take().first,
+              let parsed = try? ClusterCatalogArtifact.parse(manifest: data), parsed.aggregateSHA256 == artifact.aggregateSHA256,
+              parsed.files == artifact.files else { return nil }
+        return data
+    }
+
     /// Clones a product-store model into the cluster's store under its folder name; nil when it is there already.
-    static func cloneIntoClusterStore(_ installed: Installed, store: URL) throws -> String? {
-        let artifact = installed.artifact
+    /// `providerConfiguration` names the catalog whose exact manifest bytes are written beside the files.
+    static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil) throws -> String? {
+        var artifact = installed.artifact
         if case .complete = ClusterModelStore.holding(store: store, artifact: artifact) { return nil }
         let folder = artifact.folderName
         let destination = store.appendingPathComponent(folder)
         guard !FileManager.default.fileExists(atPath: destination.path) else { return nil }
+        if let providerConfiguration, let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact) {
+            artifact.manifest = exact
+        }
         let staging = store.appendingPathComponent(".darkbloom-clone-" + String(artifact.aggregateSHA256.prefix(32)))
         try? FileManager.default.removeItem(at: staging)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)

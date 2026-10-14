@@ -601,6 +601,23 @@ import Foundation
             shipped27?.chipClasses(for: .decodingRank, family: .handOff).contains(m5u) == true
                 && shipped27?.chipClasses(for: .decodingRank, family: .pipeline).contains(m5u) == pipelineOnPair
                 && shipped27?.chipClasses(for: .pipelineRank, family: .pipeline).contains(m3) == true)
+        // The pipeline on the M3 Ultra and the M5 Ultra, in the order each family's check ran at the planner's cut
+        // (records of 2026-10-14; MiMo's of 2026-10-13); GPT-OSS and the Gemma 4 artifacts stay withheld in the pipeline.
+        func servesPipeline(_ model: String, _ order: [ClusterChipClass]) -> Bool {
+            (try? ClusterPairServingGrants.requirePlacement(order, runtimeModelID: model, publicModelID: "p", mode: .pipeline)) != nil
+        }
+        for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_nemotron35_lightning"] {
+            require("shipped: \(model) pipeline with the M3 Ultra leading the M5 Ultra only", servesPipeline(model, [m3, m5u]) && !servesPipeline(model, [m5u, m3]))
+        }
+        for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_mimo_v26_flash_mopd"] {
+            require("shipped: \(model) pipeline with the M5 Ultra leading the M3 Ultra only", servesPipeline(model, [m5u, m3]) && !servesPipeline(model, [m3, m5u]))
+        }
+        require("shipped: Bonsai pipeline in both orders (cut 32 led by the M3 Ultra, cut 56 by the M5 Ultra)",
+            servesPipeline("registered_ternary_bonsai_2_27b", [m3, m5u]) && servesPipeline("registered_ternary_bonsai_2_27b", [m5u, m3]))
+        for model in ["registered_gpt_oss_20b", "registered_gemma4_26b_qat_4bit", "registered_gemma4_26b_8bit"] {
+            require("shipped: \(model) stays withheld", !servesPipeline(model, [m3, m5u]) && !servesPipeline(model, [m5u, m3])
+                && ClusterPairServingGrants.withheld[model] != nil)
+        }
     }
 
     /// Grants come from qualification records only, for any chips and any

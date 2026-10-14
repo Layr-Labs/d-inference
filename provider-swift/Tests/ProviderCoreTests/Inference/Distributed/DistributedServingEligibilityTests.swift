@@ -237,6 +237,16 @@ import DarkbloomClusterProtocol
                                                                               mode: .phaseSplitMTP) }
             #expect(decoding?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM3Ultra, allowed: [.appleM5Max, .appleM5Ultra]), "\(model)")
         }
+        // In the pipeline on the M3 Ultra and the M5 Ultra each family is granted the order the planner chose and its check ran
+        // (2026-10-14): the M5 Ultra leads the A3Bs and Bonsai, the M3 Ultra leads Nemotron, the 9B and the 27B.
+        for model in ["registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b", "registered_ternary_bonsai_2_27b"] {
+            try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p", mode: .pipeline)
+        }
+        for model in ["registered_nemotron35_lightning", "registered_qwen35_9b", q27] {
+            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p", mode: .pipeline)
+            #expect(refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
+                                                                            mode: .pipeline) } != nil, "\(model)")
+        }
     }
 
     /// Each grant rests on placements in the shape of the coordinator's parity

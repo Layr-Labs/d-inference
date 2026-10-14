@@ -164,6 +164,31 @@ it('requires an update the routing floor rejects and offers it only when compati
   expect(unavailable.steps[0]).toMatchObject({ id: 'update', actions: [] });
 });
 
+it('waits for a running update instead of offering the required update again', async () => {
+  const snapshot = await state();
+  const updating = assess(
+    {
+      ...snapshot,
+      operations: [
+        {
+          id: 'update',
+          action: 'update',
+          state: 'running',
+          started_at: 1,
+          message: '',
+          cancellable: false,
+        },
+      ],
+    },
+    connected,
+    { required: true, available: true },
+  );
+  expect(updating).toMatchObject({ tone: 'pending', status: 'Updating Darkbloom' });
+  expect(updating.steps).toEqual([
+    expect.objectContaining({ id: 'operation', title: 'Updating Darkbloom', actions: [] }),
+  ]);
+});
+
 it('uses current facts instead of authorization event text or processing counts', async () => {
   const snapshot = {
     ...(await state()),

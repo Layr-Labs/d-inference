@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop first-launch eligibility on fresh installs
+
+- Confirm eligible Macs during first-launch onboarding on a fresh install. The runtime reports measured memory only for downloaded models, so with nothing downloaded every Mac read "We couldn't confirm everything". Models not yet on the Mac now count by catalog size, as the runtime's own fit check does. Memory is reported as failing only when every reported model needs more than the Mac has.
 ## Unreleased — desktop preview API recovery
 
 - Let Darkbloom Preview relaunch after a crash or force quit. The bundled API it left running held the native service lock, so every new API exited and the app stayed on "Could not connect" until the leftover process was killed by hand. The next launch now stops that API, verified by recorded pid and exact bundled command, before starting a new one. Startup failures show the API's last error line instead of a generic message.

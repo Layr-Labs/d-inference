@@ -2,7 +2,7 @@
  "Qwen3.5-9B-2026-09-03-r1": {
   "cut": 16,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "d659b522810eaeb0ab73b41017603484ba7a3af7453097f2f51f394f750603ca",
+  "planSHA256": "093f096d4cc2450066247c9e9acea0020b54feb0fec2e90a251817b3b03c66d2",
   "ranks": [
    {
     "device": "mac-a",
@@ -22,7 +22,7 @@
  "Qwen3.8-27B-4bit-mtp-2026-09-03-r1": {
   "cut": 32,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "2a16bbc720e41e7ffc189978a59c9f7ebaecef3a0e2d23715b5b9b3f1e6c8962",
+  "planSHA256": "d338cf26d443839584326985fb4b000ec33d9325e28bb011355518385afc1d8e",
   "ranks": [
    {
     "device": "mac-a",
@@ -162,7 +162,7 @@
  "qwen3.5-35b-a3b-2026-08-25-r1": {
   "cut": 20,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "7bc11421cb9c3c6aeae6b7df8794268001fe314ad86a5e9637dbacbda393b13f",
+  "planSHA256": "85fd8df5884fd61e445b29f3ea60bafc16f91ba096a77ae39e0f9132e2793d6e",
   "ranks": [
    {
     "device": "mac-a",
@@ -182,7 +182,7 @@
  "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1": {
   "cut": 20,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "a7025e6cccf507090f712ac5fa78e2e41a759d075015cffa46cf427d994ccff1",
+  "planSHA256": "f9003549876a5954d4b133dbe355801b601ab26cd0cc69d3008f87da384e07ea",
   "ranks": [
    {
     "device": "mac-a",

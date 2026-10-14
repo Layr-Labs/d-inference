@@ -135,3 +135,61 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
             result.chosen.map { !$0.mode.usesSpeculativeHead } ?? false)
     }
 }
+
+/// `pipeline_mtp_v1` for the Qwen 27B (its inline head under `mtp.` on the
+/// last rank, beside a copy of the token embedding): the layout read from the
+/// artifact's real headers (golden) now lists the mode; the last rank is
+/// charged exactly the head and the embedding copy; with no measured speed-up
+/// the planner keeps the plain pipeline, and only the same placement's served
+/// records (plain and with rounds) credit the rounds. Phase split modes are
+/// left out of the planner's choice here, as the owner's sharded-only default does.
+func checkQwenPipelineSpeculative(_ golden: URL, _ checks: PlacementChecks) throws {
+    let file = golden.appendingPathComponent("layouts/Qwen3.8-27B-4bit-mtp-2026-09-03-r1.json")
+    let layout = try ClusterModelLayout.decode(Data(contentsOf: file))
+    let page = 16_384
+    checks.require("27B: the row lists pipeline_mtp_v1 beside the phase split's head mode",
+        layout.generationModes.contains(.pipelineMTP) && layout.generationModes.contains(.phaseSplitMTP))
+    let head = 238_930_944 + 31 * page, embedding = 715_161_600 + 3 * page
+    let holding = layout.speculativeHolding(mode: .pipelineMTP, pageSizeBytes: page)
+    checks.require("27B pipeline_mtp_v1: the last rank holds the head (31 tensors) and the embedding copy (3), in whole pages",
+        holding.bytes == head + embedding && holding.largestTensorBytes == 635_699_200)
+    let held = ClusterPlacementHoldings.weightsBytes(layout: layout, boundaries: [8], mode: .pipelineMTP, pageSizeBytes: page)
+    let plain = ClusterPlacementHoldings.weightsBytes(layout: layout, boundaries: [8], mode: .pipeline, pageSizeBytes: page)
+    checks.require("27B at cut 8: only the last rank holds more, by exactly that charge",
+        held[0] == plain[0] && held[1] == plain[1] + holding.bytes)
+
+    let pair = golden.appendingPathComponent("pairs/m3ultra-m5ultra", isDirectory: true)
+    let peers = ["mac-a", "mac-b"].flatMap { ["--peer", "\($0)=" + pair.appendingPathComponent("profile-\($0).json").path] }
+    let sharded = ["--modes", [ClusterGenerationMode.pipeline, .pipelineCompactDecode, .pipelineMTP].map(\.rawValue).joined(separator: ",")]
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("qwen-pipeline-mtp-\(getpid())", isDirectory: true)
+    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    func plan(_ extra: [String]) throws -> (mode: String, explanation: String) {
+        let printed = try ClusterPlacementTool.run(["plan", "--layout", file.path] + peers + sharded + ["--json"] + extra,
+            sampleDevice: { throw ProbeError("recorded profiles only") })
+        let value = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
+        let chosen = (value?["result"] as? [String: Any])?["chosen"] as? [String: Any]
+        return (chosen?["mode"] as? String ?? "-", (value?["explanation"] as? [String] ?? []).joined(separator: "\n"))
+    }
+    let free = try plan([])
+    checks.require("27B, sharded modes, nothing measured: the planner keeps a plain pipeline mode (chose \(free.mode))",
+        free.mode == ClusterGenerationMode.pipeline.rawValue || free.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
+    func served(plain: Double, rounds: Double) throws -> URL {
+        func entries(_ mode: ClusterGenerationMode, _ decode: Double) -> [ClusterServedSpeedRecords.Entry] {
+            (0..<3).map { index in
+                .init(setup: .init(modelID: layout.runtimeModelID, mode: mode.rawValue, cut: "0-8|8-64", ranks: ["mac-a", "mac-b"]),
+                      sample: .init(route: .pair, member: nil, promptTokens: 1024, outputTokens: 64, firstTokenSeconds: 1.0,
+                                    decodeTokensPerSecond: decode + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
+            }
+        }
+        let url = scratch.appendingPathComponent("served-\(plain)-\(rounds).json")
+        try ClusterServedSpeedRecords(entries: entries(.pipeline, plain) + entries(.pipelineMTP, rounds)).encoded().write(to: url)
+        return url
+    }
+    let faster = try plan(["--served", try served(plain: 30.0, rounds: 45.0).path])
+    checks.require("27B: the same placement served 1.5x faster with rounds: the planner chooses pipeline_mtp_v1 (chose \(faster.mode))",
+        faster.mode == ClusterGenerationMode.pipelineMTP.rawValue && faster.explanation.contains("credited to mac-b"))
+    let slower = try plan(["--served", try served(plain: 30.0, rounds: 27.0).path])
+    checks.require("27B: rounds served slower than plain: the planner keeps a plain pipeline mode (chose \(slower.mode))",
+        slower.mode == ClusterGenerationMode.pipeline.rawValue || slower.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
+}

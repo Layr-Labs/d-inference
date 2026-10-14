@@ -125,8 +125,8 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("27B layout: 64 layers, its registered bytes, fifteen cuts",
         big.layerCount == 64 && big.wholeModelLoadedBytes == 15_132_802_048 && big.admittedCuts == Array(stride(from: 4, through: 60, by: 4))
             && big.structuralCuts == big.admittedCuts && big.runtimeModelID == "registered_qwen38_27b")
-    // Every mode but the pipeline's speculative rounds, which only MiMo's row lists so far.
-    let denseModes = ClusterGenerationMode.allCases.filter { $0 != .pipelineMTP }
+    // Every mode, the pipeline's speculative rounds included (the last rank runs the row's head).
+    let denseModes = ClusterGenerationMode.allCases
     checks.require("both list every generation mode a dense row runs and both prefill schedules",
         nine.generationModes == denseModes && big.generationModes == denseModes
             && nine.prefillSchedules == [.serial, .oneChunkLookahead])

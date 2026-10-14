@@ -90,7 +90,7 @@ public final class MiMoResidentRuntime {
     /// must be in the registered model's row. `qualification` says whether
     /// this process may honour the qualification switches in its environment.
     /// `speculativeDepth` (`pipeline_mtp_v1` only): the head's fixed draft
-    /// depth, 1...3; nil means the product drafter's maximum. Both ranks must
+    /// depth, 1...3; nil means `MiMoMTPTerms.standard` (depth 2). Both ranks must
     /// be given the same.
     public static func load(_ configuration: QwenResidentLoadConfiguration,
                             generationMode mode: QwenResidentGenerationMode = .pipeline,

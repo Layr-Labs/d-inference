@@ -104,7 +104,7 @@ public struct PairConfiguration: Sendable {
     /// request state to rank 1, which decodes alone. Declared to both workers.
     public var generationMode: String
     /// `phase_split_mtp_v1` or `pipeline_mtp_v1` only: the speculative head's draft depth, declared
-    /// to both workers. Nil: the worker's default (the product's maximum).
+    /// to both workers. Nil: the worker's default (the family's standard terms).
     public var speculativeDepth: Int?
     /// Requests run one after another in the same loaded session, each with
     /// its own request ID. The first is the warm-up of a timing run.

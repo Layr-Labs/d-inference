@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Play, Terminal } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
-import { Button, Header, Status } from '../components/UI';
+import { Button, Header, Notice, Status } from '../components/UI';
 
 export function Studio({
   backend,
@@ -13,18 +13,63 @@ export function Studio({
 }) {
   const state = backend.state!;
   const [mode, setMode] = useState('combined');
-  const [key, setKey] = useState<string>();
-  const [copied, setCopied] = useState(false);
+  const [revealed, setKey] = useState<{ identity: string; key: string }>();
+  const keySession = useRef<{ identity: string; alive: boolean; request: number } | null>(null);
+  // Which value was just copied, so only that button confirms it.
+  const [copied, setCopied] = useState<'url' | 'example' | null>(null);
+  const [problem, setProblem] = useState('');
   const models = state.models.filter((model) => model.downloaded && model.eligible);
-  const [selected, setSelected] = useState('');
-  const model = selected || models[0]?.id || '';
   const endpoint = state.endpoint;
-  const copy = async (value: string) => {
-    await api?.copy(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1600);
+  // Local credentials are independent of account sign-in. Ordinary snapshots and model
+  // changes preserve a reveal; endpoint/runtime changes require another explicit Reveal.
+  const keyIdentity =
+    endpoint?.authenticated && backend.status.state === 'ready'
+      ? JSON.stringify([state.installation_id, state.activity.started_at, endpoint.base_url])
+      : undefined;
+  useEffect(() => {
+    setKey(undefined);
+    if (!keyIdentity) return;
+    const current = { identity: keyIdentity, alive: true, request: 0 };
+    keySession.current = current;
+    return () => {
+      current.alive = false;
+      if (keySession.current === current) keySession.current = null;
+    };
+  }, [keyIdentity]);
+  // Default to what the endpoint serves now, so the example works as copied and applying the
+  // serving mode does not switch models unless the user chooses another.
+  const served = endpoint?.models.filter((id) => models.some((model) => model.id === id)) ?? [];
+  const [selected, setSelected] = useState('');
+  const model = selected || served[0] || models[0]?.id || '';
+  const example = served.length && !served.includes(model) ? served[0] : model;
+  // Also mask during the render that precedes effect cleanup for a changed endpoint.
+  const key = revealed?.identity === keyIdentity ? revealed?.key : undefined;
+  const toggleKey = async () => {
+    const current = keySession.current;
+    if (!keyIdentity || !current?.alive || current.identity !== keyIdentity) return;
+    const request = ++current.request;
+    if (key) return setKey(undefined);
+    try {
+      setProblem('');
+      const value = await api?.read<{ key: string }>('endpoint-key');
+      if (current.alive && current.request === request)
+        setKey(value?.key ? { identity: current.identity, key: value.key } : undefined);
+    } catch {
+      if (current.alive && current.request === request)
+        setProblem('Couldn’t read the API key. Try again.');
+    }
   };
-  const curl = `curl ${endpoint?.base_url || 'http://127.0.0.1:8000/v1'}/chat/completions \\\n  -H 'Authorization: Bearer <your-local-api-key>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: 'Hello' }] })}'`;
+  const copy = async (value: string, what: 'url' | 'example') => {
+    try {
+      setProblem('');
+      await api?.copy(value);
+      setCopied(what);
+      setTimeout(() => setCopied((current) => (current === what ? null : current)), 1600);
+    } catch {
+      setProblem('Couldn’t copy to the clipboard.');
+    }
+  };
+  const curl = `curl ${endpoint?.base_url || 'http://127.0.0.1:8000/v1'}/chat/completions \\\n  -H 'Authorization: Bearer <your-local-api-key>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model: example, messages: [{ role: 'user', content: 'Hello' }] })}'`;
   return (
     <>
       <Header
@@ -104,33 +149,32 @@ export function Studio({
           {endpoint && (
             <button
               className="icon-button"
-              aria-label="Copy base URL"
-              onClick={() => void copy(endpoint.base_url)}
+              aria-label={copied === 'url' ? 'Base URL copied' : 'Copy base URL'}
+              onClick={() => void copy(endpoint.base_url, 'url')}
             >
-              <Copy size={16} />
+              {copied === 'url' ? <Check size={16} /> : <Copy size={16} />}
             </button>
           )}
         </div>
         <div className="setting-row">
           <span>API key</span>
           <code>{key || '••••••••••••••••'}</code>
-          <Button
-            disabled={!endpoint}
-            onClick={async () => {
-              if (key) setKey(undefined);
-              else setKey((await api?.read<{ key: string }>('endpoint-key'))?.key);
-            }}
-          >
+          <Button disabled={!keyIdentity} onClick={() => void toggleKey()}>
             {key ? 'Hide' : 'Reveal'}
           </Button>
         </div>
-        <small className="muted">Requires an API key. Accessible only on this Mac.</small>
+        <small className="muted">
+          {endpoint?.authenticated === false ? 'No API key required.' : 'Requires an API key.'}{' '}
+          Accessible only on this Mac.
+        </small>
+        {problem && <Notice>{problem}</Notice>}
       </section>
       <section className="section">
         <div className="section-title">
           <h2>Make a request</h2>
-          <Button disabled={!endpoint} onClick={() => void copy(curl)}>
-            {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy example'}
+          <Button disabled={!endpoint} onClick={() => void copy(curl, 'example')}>
+            {copied === 'example' ? <Check size={15} /> : <Copy size={15} />}{' '}
+            {copied === 'example' ? 'Copied' : 'Copy example'}
           </Button>
         </div>
         <pre className="code-block">{curl}</pre>

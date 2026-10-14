@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Studio endpoint model and key
+
+- Default Studio's model to the one the local endpoint serves, so the copied example request targets a served model and Apply serving mode does not switch models unless you choose another. Clear revealed API keys and ignore stale key-read results when the endpoint stops, changes or disconnects, requiring a fresh Reveal after it returns. Report clipboard or key-read failures instead of showing "Copied". Copying the base URL now confirms on its own button instead of on Copy example.
 ## Unreleased — desktop Cooling readings and thresholds
 
 - Stop showing a cooling reading older than a minute as the current GPU temperature and spinning fans; the Cooling page now shows them as unavailable, matching its status and Home's fan indicator. Show a threshold set from the CLI between the 5 °C presets as itself, so the selected value is exactly what Enable provider cooling submits, and keep CLI-set speed and threshold within the whole-number ranges the desktop action accepts.

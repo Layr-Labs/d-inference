@@ -122,7 +122,8 @@ struct PhaseSplitContractTests {
     @Test func modeIsDeclaredNeverGuessed() throws {
         // One closed list, shared with the worker's flag and the capability record.
         #expect(QwenResidentGenerationMode.allCases.map(\.rawValue)
-            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"])
+            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1",
+                "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"])
         #expect(ClusterGenerationMode(rawValue: "phase_split_v1") == QwenResidentGenerationMode.phaseSplit)
         // A misspelt or empty declaration is no mode at all; nothing maps it to the default.
         for bad in ["phase-split", "", "phase_split", "PHASE_SPLIT_V1", "pipeline"] { #expect(ClusterGenerationMode(rawValue: bad) == nil) }

@@ -115,14 +115,17 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
     }
 
     /// Whether the record is one a grant may rest on, pass or fail: the schema,
-    /// two or more ranks in order on two Macs' transport, one cut fewer than
-    /// the ranks (positive, ascending), a known mode, and `passed` equal to
-    /// the rule.
+    /// two or more ranks in order on two Macs' transport, the cuts the mode
+    /// implies (`ClusterGenerationMode.layerCutCount`: one fewer than the
+    /// ranks, or none for tensor parallel; positive, ascending), a known mode,
+    /// and `passed` equal to the rule.
     public var isConsistent: Bool {
-        schema == Self.schemaName && !runtimeModelID.isEmpty && ranks.count >= 2
+        guard let mode else { return false }
+        return schema == Self.schemaName && !runtimeModelID.isEmpty && ranks.count >= 2
             && ranks.map(\.rank) == Array(0..<ranks.count) && ranks.allSatisfy { !$0.chip.isEmpty }
-            && chunkTokens > 0 && cuts.count == ranks.count - 1 && cuts.allSatisfy { $0 > 0 } && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
-            && mode != nil && transport == Self.crossCableTransport && passed == passesNearTieRule
+            && chunkTokens > 0 && cuts.count == mode.layerCutCount(ranks: ranks.count)
+            && cuts.allSatisfy { $0 > 0 } && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
+            && transport == Self.crossCableTransport && passed == passesNearTieRule
             && comparisons.allSatisfy { $0.nearTieThresholdULPs >= 0 && $0.nearTieThresholdULPs.isFinite }
     }
 

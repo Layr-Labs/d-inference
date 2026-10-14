@@ -319,7 +319,7 @@ import Foundation
                 }, arithmeticPolicyID: "qwen_cbv2_query128_bf16_tf32_default_v1",
                 arithmeticPolicySHA256: hash("fake-arithmetic"),
                 supportedPrefillSchedules: [.serial, .oneChunkLookahead],
-                supportedGenerationModes: pipelineOnly ? [.pipeline] : ClusterGenerationMode.allCases)
+                supportedGenerationModes: pipelineOnly ? [.pipeline] : ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode })
             try FileHandle.standardOutput.write(contentsOf: ClusterRuntimeCapabilityCodec.encode(capability))
             exit(0)
         } catch { exit(1) }

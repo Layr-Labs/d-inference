@@ -226,7 +226,12 @@ import DarkbloomClusterProtocol
         #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max, .appleM5Max], cuts: [16, 20], mode: .pipeline).isWellFormed)
         // Modes are spelled as the coordinator's plan modes.
         #expect(Set(ClusterGenerationMode.allCases.map(\.rawValue))
-            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1"])
+            == ["pipeline_v1", "pipeline_compact_decode_v1", "phase_split_v1", "phase_split_mtp_v1",
+                "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"])
+        // Tensor parallel cuts no layer range; its hybrid names its prefill cut.
+        #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [], mode: .tensorParallel).isWellFormed)
+        #expect(!ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [16], mode: .tensorParallel).isWellFormed)
+        #expect(ClusterPairServingQualification(chipClasses: [.appleM3Ultra, .appleM5Max], cuts: [16], mode: .pipelinePrefillTensorDecode).isWellFormed)
     }
 
     @Test func rolesAndPlacementShape() {

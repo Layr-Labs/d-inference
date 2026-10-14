@@ -54,8 +54,8 @@ private struct Conversation {
 struct ClusterWorkerProtocolTests {
     static func main() throws {
         try roundTrips(); try malformedJSON(); try framing(); try lifecycle(); try refusals(); try replayAndDeadlines(); try receivingRank()
-        try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes()
-        print("{\"passed\":true,\"groups\":11,\"modelExecution\":false,\"localPipeIO\":true}")
+        try promptCache(); try servingContextAndGiveBack(); try sampling(); try lanes(); try tensorParallelModes()
+        print("{\"passed\":true,\"groups\":12,\"modelExecution\":false,\"localPipeIO\":true}")
     }
     /// Round-2 fixes: the serving context travels in readiness and in every
     /// keep-warm answer; a refused reservation and a reservation given back
@@ -451,5 +451,54 @@ struct ClusterWorkerProtocolTests {
         try peer.accept(.init(membershipEpoch: epoch, sequence: 2, requestID: a, event: .finished(.eos)), now: 10)
         try peer.accept(.init(membershipEpoch: epoch, sequence: 3, requestID: a, event: .retired(.clean)), now: 10)
         try check(peer.activeRequestIDs.isEmpty, "Rank 1 lane retired")
+    }
+
+    /// Tensor parallel (`tensor_parallel_v1`) and its hybrid
+    /// (`pipeline_prefill_tensor_decode_v1`): new closed cases after the four
+    /// existing ones, their wire names fixed, the layer cuts each implies, the
+    /// terms both ranks bind, and the qualification records that may carry them.
+    static func tensorParallelModes() throws {
+        try check(ClusterGenerationMode.allCases.map(\.rawValue) == ["pipeline_v1", "pipeline_compact_decode_v1",
+            "phase_split_v1", "phase_split_mtp_v1", "tensor_parallel_v1", "pipeline_prefill_tensor_decode_v1"],
+            "tensor-parallel modes follow the existing four, in order, with fixed wire names")
+        try check(ClusterGenerationMode.tensorParallel.usesTensorParallelDecode
+            && ClusterGenerationMode.pipelinePrefillTensorDecode.usesTensorParallelDecode
+            && !ClusterGenerationMode.phaseSplit.usesTensorParallelDecode && !ClusterGenerationMode.pipeline.usesTensorParallelDecode,
+            "both tensor-parallel modes decode by tensor parallel; no other mode does")
+        try check(!ClusterGenerationMode.tensorParallel.isPhaseSplit && !ClusterGenerationMode.pipelinePrefillTensorDecode.isPhaseSplit
+            && !ClusterGenerationMode.tensorParallel.usesSpeculativeHead,
+            "a tensor-parallel mode is not a phase split and runs no speculative head")
+        try check(ClusterGenerationMode.tensorParallel.layerCutCount(ranks: 2) == 0
+            && ClusterGenerationMode.pipelinePrefillTensorDecode.layerCutCount(ranks: 2) == 1
+            && ClusterGenerationMode.pipeline.layerCutCount(ranks: 3) == 2,
+            "tensor parallel cuts no layer range; the hybrid's prefill and every other mode cut ranks - 1 times")
+        let terms = ClusterTensorParallelTerms.current
+        try check(terms.partialsDType == "float32" && terms.shardRule == "equal_heads_and_channels_v1"
+            && terms.reduction == "keyed_exchange_sum_v1" && terms.ranks == 2,
+            "the bound terms: float32 partials, equal shards by heads and channels, a keyed exchange-and-add reduction, two ranks")
+        try check(terms.loadAgreementFields == ["cluster-tensor-parallel-v1", "float32", "equal_heads_and_channels_v1",
+            "keyed_exchange_sum_v1", "2"], "the terms are bound into the load agreement field by field")
+        var bf16 = terms; bf16.partialsDType = "bfloat16"
+        try check(bf16.loadAgreementFields != terms.loadAgreementFields, "another partials dtype is another agreement")
+        try check(ClusterGenerationMode.tensorParallel.tensorParallelTerms == terms
+            && ClusterGenerationMode.pipelinePrefillTensorDecode.tensorParallelTerms == terms
+            && ClusterGenerationMode.phaseSplit.tensorParallelTerms == nil, "only the tensor-parallel modes carry terms")
+        func record(_ mode: String, cuts: [Int]) -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: "registered_qwen38_27b", artifactSHA256: String(repeating: "a", count: 64),
+                ranks: [.init(rank: 0, chip: "Apple M3 Ultra", operatingSystem: "27.2"),
+                        .init(rank: 1, chip: "Apple M5 Ultra", operatingSystem: "27.0.1")],
+                cuts: cuts, generationMode: mode, prefillSchedule: "serial_v1", chunkTokens: 512, promptTokens: 1024,
+                outputTokens: 128, transport: "jaccl", pairReportSHA256: String(repeating: "b", count: 64),
+                pairReportCreatedUTC: "2026-10-14T05:00:00Z",
+                comparisons: [.init(referenceChip: "Apple M3 Ultra", verdict: "exact", firstDivergenceIndex: nil,
+                    gapInULPs: nil, nearTieThresholdULPs: 4, allowed: ["cut", "schedule", "profile"])],
+                producer: "darkbloom-cluster-tp-check record")
+        }
+        try check(record("tensor_parallel_v1", cuts: []).isConsistent, "a tensor-parallel record has no cut and is consistent")
+        try check(!record("tensor_parallel_v1", cuts: [32]).isConsistent, "a tensor-parallel record with a cut is not")
+        try check(record("pipeline_prefill_tensor_decode_v1", cuts: [32]).isConsistent, "a hybrid record has its prefill cut")
+        try check(!record("pipeline_prefill_tensor_decode_v1", cuts: []).isConsistent, "a hybrid record without a cut is not")
+        try check(!record("pipeline_v1", cuts: []).isConsistent && record("pipeline_v1", cuts: [32]).isConsistent,
+            "a pipeline record still needs its cut")
     }
 }

@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Home screen-reader announcements
+
+- Stop Home's chip from re-announcing a 20-word activity summary to screen readers every five seconds. The live region now speaks only when the chip's state changes (for example stopped to serving); the full summary with current numbers stays available to screen readers without interrupting.
 ## Unreleased — desktop plain-language copy
 
 - Replace implementation terms in desktop copy: Settings no longer says "Managed by the Swift backend" or "Settings changed in the backend", and manual model selection says "Memory available for models" instead of "Native load allowance". Describe pinned models as models kept in memory everywhere, matching the Keep in memory controls.

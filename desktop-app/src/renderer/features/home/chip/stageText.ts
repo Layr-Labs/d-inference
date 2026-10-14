@@ -66,6 +66,11 @@ export function stageText({
               Math.round((tokensPerSecond ?? 0) / 10) * 10
             } tokens per second.`
       }${machine}`;
+  // Spoken by the live region: state only. The numbers change every second and would make a
+  // screen reader repeat this sentence indefinitely; they stay in `summary` and the readouts.
+  const announcement = !powered
+    ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.`
+    : `${anatomy.name}: ${preview ? PHASE_TEXT[stats.phase].toLowerCase() : 'live activity'}.`;
   return {
     mode: modeText(provider, measured !== null, preview, reading.fresh),
     measured: measured !== null,
@@ -81,5 +86,6 @@ export function stageText({
         (names.length > MODELS_SHOWN ? ` +${names.length - MODELS_SHOWN}` : '')
       : 'No model loaded',
     summary,
+    announcement,
   };
 }

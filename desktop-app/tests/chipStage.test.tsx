@@ -128,4 +128,14 @@ describe('ChipStage', () => {
     expect(within(stage).getByText('GPU busy').nextSibling).toHaveTextContent('—');
     expect(within(stage).queryByText('Live from this Mac')).not.toBeInTheDocument();
   });
+
+  it('announces only state changes, not the second-by-second numbers', async () => {
+    const state = await previewState();
+    render(<ChipStage state={state} preview />);
+    const live = stageFor(state).querySelector('[aria-live]')!;
+    expect(live.textContent).toMatch(new RegExp(`^${state.machine.chip}: `));
+    expect(live.textContent).not.toMatch(/in progress|tokens per second|busy/);
+    // The detail is still there for screen readers, outside the live region.
+    expect(within(stageFor(state)).getByText(/in progress, \d+ waiting/)).toBeInTheDocument();
+  });
 });

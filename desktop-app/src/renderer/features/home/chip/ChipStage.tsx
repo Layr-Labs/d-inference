@@ -93,7 +93,7 @@ export function ChipStage({
     stats,
     measured: live ? readout : null,
   });
-  const summary = usePoliteSummary(text.summary);
+  const announcement = usePoliteSummary(text.announcement);
   const choose = (next: ChipVariant) => {
     setVariant(next);
     writeVariant(next);
@@ -175,8 +175,9 @@ export function ChipStage({
           )}
         </aside>
       </div>
+      <p className={styles.srOnly}>{text.summary}</p>
       <p className={styles.srOnly} aria-live="polite">
-        {summary}
+        {announcement}
       </p>
     </section>
   );

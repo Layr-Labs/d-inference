@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Leaderboard loading and network totals
+
+- Refresh the Leaderboard's network map totals while the page is open, as its "Refreshes every 30 seconds" caption says; they previously stayed at the last Home visit. Show "Loading rankings…" until rankings first load and "No rankings yet" for an empty result, instead of "Leaderboard unavailable", and do not call failed first network statistics "last known totals". Providers that share a pseudonym no longer collide in the rankings list.
 ## Unreleased — desktop dialog keyboard focus
 
 - Keep keyboard focus inside desktop dialogs when their content changes, such as sign-in moving from "Continue in browser" to approval or cancellation. Only the topmost dialog handles Escape, Tab and focus recovery when dialogs overlap; closing it restores focus without disturbing a dialog still open beneath it. Expandable details are reachable with Tab, and dialogs no longer pull focus back to their first button every few seconds while the app refreshes.

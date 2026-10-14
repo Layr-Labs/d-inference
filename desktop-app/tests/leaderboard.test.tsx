@@ -86,3 +86,39 @@ it('rejects old all-time rankings rather than annualizing the wrong window', () 
     parseLeaderboard({ metric: 'earnings', window: '24h', entries: [{ rank: 1 }] }),
   ).toThrow();
 });
+
+it('shows rankings as loading until the first read settles, and empty results as empty', () => {
+  const { rerender } = render(<Leaderboard backend={{ ...backend(), leaders: undefined }} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Loading rankings…');
+  expect(screen.queryByText('Leaderboard unavailable')).not.toBeInTheDocument();
+  rerender(<Leaderboard backend={{ ...backend(), leaders: [] }} />);
+  expect(screen.getByText('No rankings yet')).toBeInTheDocument();
+  expect(screen.queryByText('Leaderboard unavailable')).not.toBeInTheDocument();
+});
+
+it('does not call failed first network statistics “last known totals”', () => {
+  render(<NetworkMap network={{ error: 'Network statistics are unavailable.' }} />);
+  expect(screen.getByText('Network statistics unavailable · retrying')).toBeVisible();
+  expect(screen.queryByText(/Last known totals/)).not.toBeInTheDocument();
+});
+
+it('refreshes the network map’s totals while the Leaderboard is open', async () => {
+  const { pageResources } = await import('../src/renderer/data/pageResources');
+  expect(pageResources('leaderboard')).toEqual(expect.arrayContaining(['leaderboard', 'network']));
+});
+
+it('renders providers that share a pseudonym without key collisions', () => {
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args.join(' '));
+  try {
+    const leaders = backend()
+      .leaders!.slice(0, 5)
+      .map((leader) => ({ ...leader, name: 'same-name' }));
+    render(<Leaderboard backend={{ ...backend(), leaders }} />);
+    expect(screen.getAllByText('same-name')).toHaveLength(5);
+    expect(errors.filter((error) => String(error).includes('same key'))).toEqual([]);
+  } finally {
+    console.error = original;
+  }
+});

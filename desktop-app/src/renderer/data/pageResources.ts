@@ -12,8 +12,9 @@ export function pageResources(route: Route): Resource[] {
       return ['cloud', 'release', 'release-history'];
     case 'earnings':
       return ['cloud'];
+    // The page's network map shows the same live totals as Home's strip.
     case 'leaderboard':
-      return ['leaderboard'];
+      return ['leaderboard', 'network'];
     case 'updates':
       return ['release', 'release-history'];
     default:

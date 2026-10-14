@@ -96,7 +96,9 @@ export function NetworkMap({ network }: { network?: NetworkData }) {
         </dl>
         <span className={styles.freshness}>
           {network?.error
-            ? 'Last known totals · reconnecting'
+            ? network.total_tokens == null
+              ? 'Network statistics unavailable · retrying'
+              : 'Last known totals · reconnecting'
             : network
               ? 'Refreshes every 30 seconds'
               : 'Connecting to the network'}

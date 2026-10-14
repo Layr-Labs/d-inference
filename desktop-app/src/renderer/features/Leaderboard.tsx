@@ -38,6 +38,8 @@ function Provider({ leader, featured }: { leader: Leader; featured?: boolean }) 
 
 export function Leaderboard({ backend }: { backend: BackendState }) {
   const [visible, setVisible] = useState(10);
+  const leaders = backend.leaders ?? [];
+  const loading = backend.leaders === undefined && !backend.leaderError;
   return (
     <div className={styles.page}>
       <Header title="Leaderboard" description="The people powering Darkbloom." />
@@ -49,35 +51,43 @@ export function Leaderboard({ backend }: { backend: BackendState }) {
       {backend.leaderError && (
         <p role="status" className={styles.notice}>
           {backend.leaderError}
-          {backend.leaders.length ? ' Showing the last results.' : ''}
+          {leaders.length ? ' Showing the last results.' : ''}
         </p>
       )}
-      {backend.leaders.length ? (
+      {leaders.length ? (
         <>
           <section className={styles.podium} aria-label="Top three providers">
-            {backend.leaders.slice(0, 3).map((leader) => (
-              <Provider key={leader.name} leader={leader} featured />
+            {leaders.slice(0, 3).map((leader) => (
+              <Provider key={`${leader.rank}:${leader.name}`} leader={leader} featured />
             ))}
           </section>
-          {backend.leaders.length > 3 && (
+          {leaders.length > 3 && (
             <section className={styles.rankings} aria-label="Provider rankings">
               <div className={styles.listHeading}>
                 <span>Provider</span>
                 <span>Annualized pace</span>
               </div>
-              {backend.leaders.slice(3, visible).map((leader) => (
-                <Provider key={leader.name} leader={leader} />
+              {leaders.slice(3, visible).map((leader) => (
+                <Provider key={`${leader.rank}:${leader.name}`} leader={leader} />
               ))}
             </section>
           )}
-          {visible < backend.leaders.length && (
+          {visible < leaders.length && (
             <Button onClick={() => setVisible((count) => count + 10)}>Show more providers</Button>
           )}
           <p className={styles.note}>24-hour earnings × 365. A pace, not guaranteed income.</p>
         </>
-      ) : (
+      ) : loading ? (
+        <p role="status" className={styles.notice}>
+          Loading rankings…
+        </p>
+      ) : backend.leaderError ? (
         <Empty title="Leaderboard unavailable">
           Rankings will appear when the network responds.
+        </Empty>
+      ) : (
+        <Empty title="No rankings yet">
+          Providers appear here once they settle earnings in the past 24 hours.
         </Empty>
       )}
     </div>

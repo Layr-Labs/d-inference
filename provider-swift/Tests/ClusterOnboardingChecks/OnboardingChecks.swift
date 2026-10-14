@@ -24,6 +24,8 @@ import Darwin
         declinedCode()
         linkNotReady()
         memberAgain()
+        memberChangesModel()
+        memberVerifiesTeardown()
         leaderAgainServing()
         leaderPairedNotServing()
         noModelOffered()
@@ -160,7 +162,9 @@ import Darwin
                 usleep(30_000)
                 progress("Copied 6.1 GB in 2.6 s (2.35 GB/s); every file matched its manifest digest.")
                 return provisionResult
-            })
+            },
+            verifyTeardown: { recorder.note("verifyTeardown")
+                return .success(["Apple M3 Ultra, 256 GB: teardown verified, nothing left", "Apple M5 Ultra, 256 GB: teardown verified, nothing left"]) })
     }
 
     /// One driver run on a pseudo-terminal: the keys are typed only once the text before them is on screen.
@@ -339,22 +343,64 @@ import Darwin
         expect(recorder.all == ["checkLink"], "link not ready: nothing else ran")
     }
 
+    /// A member is not sent elsewhere: its commands run on the derived control leader (forwarded by the live operations).
+    static func memberResume(serving: Bool = true) -> ClusterOnboardingResume {
+        var resume = ClusterOnboardingResume(role: .member, peerName: "Apple M3 Ultra, 256 GB", serving: serving, modelName: "Qwen3.5-9B")
+        resume.leaderName = "Apple M3 Ultra, 256 GB"
+        resume.leaderReason = "rank 0 of the adopted plan: requests enter there and the coordinator registers it as the head"
+        resume.term = 2
+        return resume
+    }
+
     static func memberAgain() {
         let recorder = Recorder()
-        let run = TerminalRun(operations(recorder, resume: .init(role: .member, peerName: "Apple M5 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
-            pairEvents: [], pairResult: .failed([])))
-        expect(run.finish() == 0, "member again: exit 0 with no key")
-        expect(run.text.contains("Nothing to do here: continue on Apple M5 Ultra, 256 GB."), "member again: where to continue")
-        expect(recorder.all == ["ensureService"], "member again: no check, no pairing, no question: \(recorder.all)")
-        expect(run.keys == 0, "member again: zero keys")
+        let run = TerminalRun(operations(recorder, resume: memberResume(), pairEvents: [], pairResult: .failed([])))
+        expect(run.waitFor("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to verify teardown."),
+               "member again: the same menu as the leader")
+        let text = run.text
+        expect(text.contains("This Mac is a member of the cluster led by Apple M3 Ultra, 256 GB."), "member again: who leads")
+        expect(text.contains("The control leader is derived, not chosen: rank 0 of the adopted plan"), "member again: why it leads")
+        expect(text.contains("Commands typed here run on Apple M3 Ultra, 256 GB over the cable."), "member again: forwarding said")
+        expect(text.contains("  Serving Qwen3.5-9B from Apple M3 Ultra, 256 GB at 127.0.0.1:8000 (2 of 2 parts ready)."), "member again: the leader's status")
+        run.type("s")
+        expect(run.finish() == 0, "member again: stop from the member")
+        expect(run.text.contains("Both Macs stopped serving."), "member again: the leader's answer shown")
+        expect(recorder.all == ["ensureService", "status", "stop"], "member again: status then stop, no pairing: \(recorder.all)")
+        expect(run.keys == 1, "member again: one key")
         transcript("member-again", run.text, keys: run.keys)
+    }
+
+    static func memberChangesModel() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: memberResume(), pairEvents: [], pairResult: .failed([])))
+        expect(run.waitFor("v to verify teardown."), "member model change: menu")
+        run.type("m")
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "member model change: the leader's choices")
+        run.type("2\r")
+        expect(run.waitFor("Serve Qwen3.8-27B-4bit-mtp on both Macs?"), "member model change: second model")
+        run.type("y")
+        expect(run.finish() == 0, "member model change: served")
+        expect(recorder.all == ["ensureService", "status", "reachMembers", "planModels", "adopt 1", "serve", "waitReady", "testRequest"],
+               "member model change: every step through the operations (forwarded live): \(recorder.all)")
+        expect(run.text.contains("Done. Run `darkbloom cluster` on any of these Macs"), "member model change: any Mac")
+        transcript("member-changes-model", run.text, keys: run.keys)
+    }
+
+    static func memberVerifiesTeardown() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: memberResume(serving: false), pairEvents: [], pairResult: .failed([])))
+        expect(run.waitFor("Not serving. Press m to choose a model and serve, v to verify teardown, enter to leave it as it is."), "teardown: menu when stopped")
+        run.type("v")
+        expect(run.finish() == 0, "teardown: exit 0")
+        expect(run.text.contains("  Apple M5 Ultra, 256 GB: teardown verified, nothing left"), "teardown: each Mac's summary")
+        expect(recorder.all == ["ensureService", "status", "verifyTeardown"], "teardown: \(recorder.all)")
     }
 
     static func leaderAgainServing() {
         let recorder = Recorder()
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB", serving: true, modelName: "Qwen3.5-9B"),
             pairEvents: [], pairResult: .failed([])))
-        expect(run.waitFor("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving."), "leader again: the menu")
+        expect(run.waitFor("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to verify teardown."), "leader again: the menu")
         run.type("t")
         expect(run.finish() == 0, "leader again: test request")
         expect(recorder.all == ["ensureService", "status", "testRequest"], "leader again: no pairing, no plan: \(recorder.all)")

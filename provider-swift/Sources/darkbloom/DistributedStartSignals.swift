@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import ArgumentParser
 
 /// Process signals belong to the CLI. Install before starting native owners;
 /// a signal arriving before the serving task is attached remains latched.
@@ -9,7 +10,7 @@ final class DistributedStartSignals: @unchecked Sendable {
     // SIG_DFL is represented by a null function pointer on Darwin.
     private var previous: [(Int32, sig_t?)] = []
     private var action: (@Sendable () -> Void)?
-    private var terminated = false
+    private var terminatedLatch = false
     private var closed = false
 
     private enum SetupError: Error { case registrationTimedOut }
@@ -29,19 +30,29 @@ final class DistributedStartSignals: @unchecked Sendable {
         }
     }
 
+    /// Whether SIGTERM or SIGINT arrived (latched from the moment the handler was installed).
+    var terminated: Bool { lock.withLock { terminatedLatch } }
+
+    /// Before a start step that nothing could stop midway: a stop already asked for ends the start here.
+    func requireNotTerminated() throws {
+        guard terminated else { return }
+        FileHandle.standardError.write(Data("Stopped as asked, before serving started.\n".utf8))
+        throw ExitCode(143)
+    }
+
     func attach(_ action: @escaping @Sendable () -> Void) {
         let invoke = lock.withLock { () -> Bool in
             guard !closed else { return false }
             self.action = action
-            return terminated
+            return terminatedLatch
         }
         if invoke { action() }
     }
 
     private func receivedTermination() {
         let value = lock.withLock { () -> (@Sendable () -> Void)? in
-            guard !closed, !terminated else { return nil }
-            terminated = true
+            guard !closed, !terminatedLatch else { return nil }
+            terminatedLatch = true
             return action
         }
         value?()

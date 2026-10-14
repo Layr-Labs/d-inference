@@ -112,12 +112,21 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
         monitor.start()
     }
 
+    private let startCancellation = NSLock()
+    private var startCancelled = false
+
+    /// A stop while the session is still starting ends `waitForFollower` at once: a rank 0 told to stop while it
+    /// waits for a follower that is gone must not wait out the follower's deadline first.
+    func cancelStart() { startCancellation.withLock { startCancelled = true } }
+
     /// The follower member must be connected before its rank is opened; a
     /// session never waits on a member that is not there.
     func waitForFollower(until deadline: UInt64) throws {
-        let now = DispatchTime.now().uptimeNanoseconds
-        let seconds = deadline > now ? Double(deadline - now) / 1e9 : 0
-        guard peer.waitUntilConnected(timeout: .milliseconds(Int(seconds * 1000))) else {
+        switch ClusterStartWait.wait(until: deadline, cancelled: { startCancellation.withLock { startCancelled } },
+                                     attempt: { [peer] slice in peer.waitUntilConnected(timeout: .nanoseconds(Int(slice))) }) {
+        case .ready: return
+        case .cancelled: throw DistributedEngineError.shuttingDown
+        case .timedOut:
             throw ClusterConfigurationError.invalid("The follower member did not connect over the link control channel (is `darkbloom cluster link-follower` running on the other Mac?)")
         }
     }
@@ -134,6 +143,28 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
         followerStatus.stop()
         _ = try? peer.waitUntilAcknowledged(timeout: .seconds(2))
         host.stop()
+    }
+}
+
+/// A start-phase wait that ends when it is satisfied, at its deadline, or within one slice of being cancelled.
+enum ClusterStartWait {
+    enum Outcome: Equatable { case ready, cancelled, timedOut }
+
+    /// `attempt(n)` waits at most `n` nanoseconds and returns whether the awaited thing is there. `now` is the uptime clock
+    /// the deadline is on. An attempt that gives up early (a closed channel answers at once) is followed by a nap for
+    /// the rest of its slice, so the wait never spins.
+    static func wait(until deadline: UInt64, slice: UInt64 = 200_000_000, cancelled: () -> Bool, attempt: (UInt64) -> Bool,
+                     now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+                     nap: (UInt64) -> Void = { usleep(useconds_t(min($0 / 1000, 1_000_000))) }) -> Outcome {
+        while true {
+            if cancelled() { return .cancelled }
+            let current = now()
+            guard current < deadline else { return .timedOut }
+            let budget = min(slice, deadline - current)
+            if attempt(budget) { return .ready }
+            let spent = now() &- current
+            if spent < budget { nap(budget - spent) }
+        }
     }
 }
 

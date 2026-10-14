@@ -45,6 +45,9 @@ for task_source in "$task_sources"/Inference/Distributed/Console/*.swift; do
     *) task_console+=("$task_source") ;;
   esac
 done
+# The setup record keeps the derived control leader (pure, Foundation only).
+task_console+=("$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift"
+  "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift")
 
 build_module DarkbloomClusterProtocol "$task_cluster"/Sources/DarkbloomClusterProtocol/*.swift
 build_module DarkbloomClusterPlacement "$task_cluster"/Sources/DarkbloomClusterPlacement/*.swift

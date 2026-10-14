@@ -35,6 +35,9 @@ extension ClusterConsoleCheck {
         let linkEpoch = UUID(uuidString: epoch)!
         expect(X.exchangeEpoch(linkEpoch) != linkEpoch && X.exchangeEpoch(linkEpoch) == X.exchangeEpoch(linkEpoch),
                "the exchange is keyed under its own epoch, the same on both Macs, never the serving epoch")
+        expect(X.exchangeEpoch(linkEpoch, label: X.controlLabel) != X.exchangeEpoch(linkEpoch)
+               && X.exchangeEpoch(linkEpoch, label: X.controlLabel) != linkEpoch && X.controlPort != X.port,
+               "the control lease is keyed under an epoch and a port of its own, apart from the exchange and serving")
 
         final class Inbox: @unchecked Sendable {
             let lock = NSLock(); var received: [Data] = []

@@ -82,7 +82,10 @@ extension Cluster.Setup {
     /// The service settings both the onboarding and `darkbloom cluster service` use.
     static func serviceSettings(config: String?, modelDir: String?, worker: String?) throws -> ClusterService.Settings {
         let wizard = try liveSettings(config: config, pair: nil, dryRun: false, modelDir: modelDir, worker: worker)
-        return ClusterService.Settings(wizard: wizard, leaderArguments: wizard.sessionArguments, followerArguments: wizard.followerSessionArguments)
+        // Degraded serving on this Mac alone (failover): the ordinary single-Mac local server with this Mac's own
+        // configuration and identity; the cluster service adds the model and the port.
+        return ClusterService.Settings(wizard: wizard, leaderArguments: wizard.sessionArguments, followerArguments: wizard.followerSessionArguments,
+            soloArguments: ["start", "--local"] + (config.map { ["--config", $0] } ?? []))
     }
 
     /// Bare `darkbloom cluster` on a terminal: the leader-first onboarding.

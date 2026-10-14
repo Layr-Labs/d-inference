@@ -39,11 +39,12 @@ extension ClusterOnboardingOperations {
             testRequest: { live.testRequest() },
             status: { live.status() },
             stop: { live.stop() },
-            provision: { index, download, progress in live.provision(index, download: download, progress) })
+            provision: { index, download, progress in live.provision(index, download: download, progress) },
+            verifyTeardown: { live.verifyTeardown() })
     }
 }
 
-private final class OnboardingLive: @unchecked Sendable {
+final class OnboardingLive: @unchecked Sendable {
     let context: LiveContext
     let store: ClusterSetupStore
     let settings: ClusterOnboardingOperations.LiveSettings
@@ -51,12 +52,19 @@ private final class OnboardingLive: @unchecked Sendable {
     private var respond: (@Sendable (Bool) -> Void)?
     private var pendingAnswer: Bool?
     private var peerReport: ClusterSetupReport?
-    private var choices: [(folder: String, key: String, title: String)] = []
+    private var choices: [(folder: String, key: String, title: String, alone: [String])] = []
     /// Choices that are catalog models no Mac has yet (by choice index).
     private var catalogChoices: [Int: CatalogModel] = [:]
     /// Choices that only the other Mac has (by choice index): it sends them here first.
     private var peerChoices: [Int: ClusterSetupLocalModel] = [:]
     private var chosenTitle: String?
+    /// Set while this (leader) Mac answers a command forwarded from another member: its lines name this Mac by its
+    /// name instead of "this Mac", which would mean the Mac that shows them.
+    private var answeringForward = false
+    private lazy var ownName: String = ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
+
+    /// "this Mac", or this Mac's name in an answer shown on another member.
+    var here: String { lock.withLock { answeringForward } ? ownName : "this Mac" }
 
     init(context: LiveContext, store: ClusterSetupStore, settings: ClusterOnboardingOperations.LiveSettings) {
         self.context = context; self.store = store; self.settings = settings
@@ -68,7 +76,143 @@ private final class OnboardingLive: @unchecked Sendable {
     func resume() -> ClusterOnboardingResume {
         guard let leadership, let role = ClusterOnboardingRole(rawValue: leadership.role),
               let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin else { return .init() }
-        return .init(role: role, peerName: leadership.peerName, serving: leadership.serving, modelName: leadership.modelName)
+        // After onboarding the role is the derived control leadership, not who drove the screens.
+        let record = try? store.readRecord()
+        guard let claim = record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) else {
+            return .init(role: role, peerName: leadership.peerName, serving: leadership.serving, modelName: leadership.modelName)
+        }
+        let leads = claim.leaderID == pairing.localMemberID
+        var resume = ClusterOnboardingResume(role: leads ? .leader : .member, peerName: leadership.peerName, serving: leadership.serving,
+                                             modelName: leadership.modelName)
+        resume.leaderName = leads ? nil : leaderName
+        resume.leaderReason = claim.reason
+        resume.term = claim.term
+        resume.localLine = ClusterService.published()?.control?.line
+        return resume
+    }
+
+    // MARK: - Where a command runs (the derived control leader)
+
+    /// The control leader's name as this Mac knows it.
+    var leaderName: String {
+        guard let record = try? store.readRecord(), let claim = currentClaim(record) else { return peerName }
+        return record.control?.members.first { $0.memberID == claim.leaderID }?.name ?? peerName
+    }
+
+    /// The recorded claim while it belongs to the current pairing (never one of an earlier pairing with another Mac).
+    func currentClaim(_ record: ClusterSetupRecord?) -> ClusterControlClaim? {
+        guard let pairing = try? ClusterSetupLinkExchange.pairing() else { return nil }
+        return record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID)
+    }
+
+    func route() -> ClusterControlRouting.Route {
+        guard let pairing = try? ClusterSetupLinkExchange.pairing() else { return .local }
+        if let claim = currentClaim(try? store.readRecord()) { return ClusterControlRouting.route(localID: pairing.localMemberID, claim: claim) }
+        return leadership?.role == ClusterOnboardingRole.member.rawValue ? .forward(to: pairing.peerMemberID) : .local
+    }
+
+    var forwards: Bool { if case .forward = route() { return true } else { return false } }
+
+    /// Before this Mac acts as the leader (reaches the members to choose a model, adopts a setup, starts or stops the
+    /// cluster): while its saved claim says it leads, wait until its cluster service confirmed that claim with the
+    /// members, or the confirmation window passed with none reachable. A restarted Mac whose claim was superseded
+    /// steps down meanwhile, and the command is then forwarded to the current leader instead of running here.
+    func awaitConfirmedLeadership(seconds: Double = ClusterService.leaseTTLSeconds + 10) -> ClusterOnboardingFailure? {
+        let deadline = Date().addingTimeInterval(seconds)
+        while true {
+            guard case .local = route(), let pairing = try? ClusterSetupLinkExchange.pairing(),
+                  currentClaim(try? store.readRecord())?.leaderID == pairing.localMemberID else { return nil }
+            if let control = ClusterService.publishedLive()?.control, control.leads, control.confirmed == true { return nil }
+            guard Date() < deadline else {
+                return .init("This Mac's leadership is not confirmed yet (its cluster service has not heard from \(peerName) and the \(Int(ClusterService.leaseTTLSeconds)) s window has not passed); run `darkbloom cluster` again in a moment.")
+            }
+            usleep(250_000)
+        }
+    }
+
+    /// Runs `request` on the control leader over the link control channel and returns its answer as it is.
+    func forward(_ request: ClusterControlRequest, seconds: Double = 60) -> Result<ClusterControlReply, ClusterOnboardingFailure> {
+        forwardReply(request, seconds: seconds).flatMap { $0.failed ? .failure(.init($0.lines)) : .success($0) }
+    }
+
+    /// Runs one `darkbloom cluster` command where the control leader is now. `acting` (a model change, a start, a stop):
+    /// only once this Mac's own leadership is confirmed when it leads. When leadership moves while the command is sent
+    /// (a hand-over finishing on the other Mac), the Mac that no longer leads runs nothing and says so (`notLeader`), and
+    /// the command is routed again (up to 3 more times, 2 s apart) instead of failing or running where nobody leads.
+    func routed<T>(_ request: ClusterControlRequest, seconds: Double = 60, acting: Bool, forwarding: (() -> Void)? = nil,
+                   local: () -> Result<T, ClusterOnboardingFailure>, remote: (ClusterControlReply) -> T) -> Result<T, ClusterOnboardingFailure> {
+        var moved: ClusterOnboardingFailure?
+        for attempt in 0..<4 {
+            if attempt > 0 { sleep(2) }
+            if acting, let failure = awaitConfirmedLeadership() { return .failure(failure) }
+            if !forwards {
+                guard acting else { return local() }
+                // Acting here: hold this Mac's command lock (the service never hands leadership over meanwhile), and
+                // run only if this Mac still leads once it is held (a hand-over may have finished while it waited).
+                guard let held = ClusterControlCommandLock.acquire(seconds: 600) else {
+                    return .failure(.init("Another cluster command is still running on this Mac; run `darkbloom cluster` again."))
+                }
+                defer { held.release() }
+                if !forwards { return local() }
+                continue
+            }
+            forwarding?()
+            switch forwardReply(request, seconds: seconds) {
+            case .success(let reply) where reply.failed && reply.notLeader == true: moved = .init(reply.lines)
+            case .success(let reply): return reply.failed ? .failure(.init(reply.lines)) : .success(remote(reply))
+            case .failure(let failure): return .failure(failure)
+            }
+        }
+        return .failure(moved ?? .init("The control leader kept changing; run `darkbloom cluster` again."))
+    }
+
+    /// The leader's reply as it came, failed or not.
+    func forwardReply(_ request: ClusterControlRequest, seconds: Double) -> Result<ClusterControlReply, ClusterOnboardingFailure> {
+        guard case .forward(let to) = route() else { return .failure(.init("This Mac leads: nothing to forward.")) }
+        guard let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerMemberID == to else {
+            return .failure(.init("The control leader is not the Mac this one paired with (forwarding to a third Mac is not built)."))
+        }
+        do {
+            let data = try command(.init(op: .control, control: request), seconds: seconds)
+            return .success(try JSONDecoder().decode(ClusterControlReply.self, from: data))
+        } catch let failure as ClusterSetupFailure {
+            return .failure(.init("The control leader, \(leaderName), did not answer over the cable: \(failure.text)"))
+        } catch {
+            return .failure(.init("The control leader, \(leaderName), did not answer over the cable: \(error)"))
+        }
+    }
+
+    /// The leader's half: one forwarded command, run here as `darkbloom cluster` would run it on this Mac.
+    func execute(_ request: ClusterControlRequest, leaderID: String) -> ClusterControlReply {
+        lock.withLock { answeringForward = true }
+        defer { lock.withLock { answeringForward = false } }
+        func lines(_ result: Result<[String], ClusterOnboardingFailure>) -> ClusterControlReply {
+            switch result {
+            case .success(let lines): return .init(lines: lines, failed: false, leaderID: leaderID)
+            case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
+            }
+        }
+        switch request.op {
+        case .status: return .init(lines: localStatus(), failed: false, leaderID: leaderID)
+        case .reachMembers:
+            switch localReachMembers({ _ in }) {
+            case .success(let machines): return .init(lines: [], failed: false, leaderID: leaderID, machines: machines)
+            case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
+            }
+        case .planModels:
+            switch localPlanModels() {
+            case .success(let choices): return .init(lines: [], failed: false, leaderID: leaderID, choices: choices)
+            case .failure(let failure): return .init(lines: failure.lines, failed: true, leaderID: leaderID)
+            }
+        case .adopt: return lines(localAdopt(request.index ?? -1))
+        case .serve: return lines(localServe())
+        case .stop: return lines(localStop())
+        case .readiness:
+            let once = readinessOnce()
+            return .init(lines: [], failed: false, leaderID: leaderID, ready: once.ready, progress: once.line)
+        case .test: return lines(localTestRequest())
+        case .verifyTeardown: return lines(localVerifyTeardown())
+        }
     }
 
     // MARK: - Checks and the one approval
@@ -239,6 +383,18 @@ private final class OnboardingLive: @unchecked Sendable {
     // MARK: - The leader
 
     func reachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
+        let local = (try? ClusterSetupLinkExchange.pairing())?.localMemberID
+        return routed(.init(op: .reachMembers), seconds: 150, acting: true, forwarding: { say("Asking the control leader, \(self.leaderName), over the cable…") },
+                      local: { localReachMembers(say) }) { reply in
+            (reply.machines ?? []).map { machine in
+                var machine = machine
+                machine.here = machine.memberID != nil && machine.memberID == local
+                return machine
+            }
+        }
+    }
+
+    func localReachMembers(_ say: @escaping @Sendable (String) -> Void) -> Result<[ClusterOnboardingMachine], ClusterOnboardingFailure> {
         let deadline = Date().addingTimeInterval(120)
         var lastReason: String?
         var reached: (ClusterSetupReport, Double)?
@@ -257,15 +413,21 @@ private final class OnboardingLive: @unchecked Sendable {
         lock.withLock { peerReport = peer }
         say("\(peerName) answered over the cable in \(String(format: "%.1f", seconds)) s.")
         let local = context.snapshot().local
-        func machine(_ report: ClusterSetupReport, name: String, leads: Bool) -> ClusterOnboardingMachine {
+        func machine(_ report: ClusterSetupReport, name: String, leads: Bool, memberID: String?, here: Bool) -> ClusterOnboardingMachine {
             .init(name: name, memoryGB: report.mac.physicalMemoryBytes >> 30, gpuCores: report.mac.profile?.gpuCores, leads: leads,
-                models: report.models.count)
+                models: report.models.count, memberID: memberID, here: here)
         }
-        return .success([machine(local, name: ClusterPairingProvider.displayName(chipName: local.mac.chip), leads: true),
-                         machine(peer, name: peerName, leads: false)])
+        let pairing = try? ClusterSetupLinkExchange.pairing()
+        return .success([machine(local, name: ClusterPairingProvider.displayName(chipName: local.mac.chip), leads: true,
+                                 memberID: pairing?.localMemberID, here: true),
+                         machine(peer, name: peerName, leads: false, memberID: pairing?.peerMemberID, here: false)])
     }
 
     func planModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
+        routed(.init(op: .planModels), seconds: 240, acting: false, local: { localPlanModels() }) { $0.choices ?? [] }
+    }
+
+    func localPlanModels() -> Result<[ClusterOnboardingModelChoice], ClusterOnboardingFailure> {
         guard let peer = lock.withLock({ peerReport }) else { return .failure(.init("The other Mac has not answered yet.")) }
         // The models single-Mac Darkbloom installed on this Mac are cluster models too (cloned in: no new blocks).
         let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
@@ -276,19 +438,19 @@ private final class OnboardingLive: @unchecked Sendable {
         case .failed(let reason): return .failure(.init("Planning failed: \(reason)"))
         case .ready(let options):
             let localName = ClusterPairingProvider.displayName(chipName: context.snapshot().local.mac.chip)
-            var keys = [(folder: String, key: String, title: String)]()
+            var keys = [(folder: String, key: String, title: String, alone: [String])]()
             let choices = options.map { option -> ClusterOnboardingModelChoice in
                 let gigabytes = String(format: "%.1f GB", Double(option.model.totalBytes) / 1e9)
                 let title = option.model.modelID
                 guard let plan = option.plan else {
-                    keys.append((option.model.folder, "", title))
+                    keys.append((option.model.folder, "", title, []))
                     return .init(title: title, lines: [], blocker: option.blocker ?? "no plan")
                 }
-                keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), title))
+                keys.append((option.model.folder, ClusterSetupState.planKey(option.model, plan), title, plan.alone.filter(\.holds).map(\.memberID)))
                 let offer = option.onOtherMac != false ? nil : copyOffer(model: option.model, peer: peer, localName: localName)
                 let last = plan.ranks.map(\.rank).max() ?? 0
                 var lines = plan.ranks.map { rank in
-                    let name = rank.local ? "\(localName) (this Mac)" : peerName
+                    let name = rank.local ? (lock.withLock { answeringForward } ? localName : "\(localName) (this Mac)") : peerName
                     return "rank \(rank.rank)\(rank.rank == last ? " (decodes)" : rank.rank == 0 ? " (serving API)" : ""): \(name), layers \(rank.firstLayer)-\(rank.endLayer - 1)"
                 }
                 let speed = plan.absolute ? "about \(Int(plan.decodeTokensPerSecond.rounded())) tokens/s" : "speed not yet measured on these Macs"
@@ -297,7 +459,7 @@ private final class OnboardingLive: @unchecked Sendable {
                 return .init(title: title, lines: lines, blocker: option.blocker, provision: offer)
             }
             // Open choices first (the models this Mac has), then catalog models no Mac has yet, then the blocked ones.
-            var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String))]()
+            var ordered = [(ClusterOnboardingModelChoice, (folder: String, key: String, title: String, alone: [String]))]()
             let pairs = Array(zip(choices, keys))
             ordered += pairs.filter { $0.0.blocker == nil }
             var catalog = [Int: CatalogModel](), fromPeer = [Int: ClusterSetupLocalModel]()
@@ -317,12 +479,12 @@ private final class OnboardingLive: @unchecked Sendable {
                 ordered.append((.init(title: model.modelID, lines: ["on \(peerName) only: planned once it is on this Mac too"], blocker: nil,
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker,
                         quickSeconds: ClusterModelProvisioning.quickCopySeconds(plan))),
-                    (model.folder, "", model.modelID)))
+                    (model.folder, "", model.modelID, [])))
             }
             for model in catalogModels(peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
                 && ClusterModelCopyTrust.servableArtifacts.contains(model.aggregateSHA256 ?? "") {
                 catalog[ordered.count] = model
-                ordered.append((downloadChoice(model, peer: peer, localName: localName), ("", "", model.id)))
+                ordered.append((downloadChoice(model, peer: peer, localName: localName), ("", "", model.id, [])))
             }
             ordered += pairs.filter { $0.0.blocker != nil }
             lock.withLock { self.choices = ordered.map(\.1); self.catalogChoices = catalog; self.peerChoices = fromPeer }
@@ -532,23 +694,64 @@ private final class OnboardingLive: @unchecked Sendable {
     }
 
     func adopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
+        routed(.init(op: .adopt, index: index), seconds: 240, acting: true, local: { localAdopt(index) }) { $0.lines }
+    }
+
+    func localAdopt(_ index: Int) -> Result<[String], ClusterOnboardingFailure> {
         guard let peer = lock.withLock({ peerReport }), let choice = lock.withLock({ choices.indices.contains(index) ? choices[index] : nil }) else {
             return .failure(.init("Nothing to adopt: plan again."))
         }
-        let result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
-        guard result.succeeded else { return .failure(.init(result.lines)) }
+        var lines = [String]()
+        if leadership?.serving == true {
+            // A running part holds its Mac's setup and native device lease: a model change drains both Macs first
+            // (each part releases its memory), then changes the setup; `serve` starts the new one.
+            if case .failure(let failure) = localStop() { return .failure(failure) }
+            lines.append("Stopped both Macs' parts to change the model (each released its memory first).")
+            guard drained(seconds: 300) else {
+                return .failure(.init(lines + ["A part did not stop within 5 minutes, so the setup was not changed; run `darkbloom cluster` again."]))
+            }
+        }
+        var result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
+        // The device lease is released a moment after the part's process ends.
+        for _ in 0..<10 where !result.succeeded && result.lines.joined(separator: " ").contains("lease is currently held") {
+            sleep(3)
+            result = context.adopt(folder: choice.folder, planKey: choice.key, peer: peer)
+        }
+        guard result.succeeded else { return .failure(.init(lines + result.lines)) }
         lock.withLock { chosenTitle = choice.title }
-        return .success(result.lines)
+        // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease),
+        // bound to the plan just saved so a verdict never outlives its plan.
+        let plan = context.savedConfiguration().configuration?.selectedPlanSHA256
+        try? store.updateRecord { $0.aloneHolders = choice.alone.sorted(); $0.aloneHoldersPlan = plan }
+        return .success(lines + result.lines)
+    }
+
+    /// Both Macs' parts ended (this Mac's service publishes its own; the other Mac's is asked over the link).
+    func drained(seconds: Double) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            let own = ClusterService.published()?.child.running == false
+            let peer = (try? JSONDecoder().decode(ClusterServiceStatus.self, from: command(.init(op: .status), seconds: 10)))?.child.running == false
+            if own && peer { return true }
+            sleep(2)
+        }
+        return false
     }
 
     func command(_ command: ClusterServiceCommand, seconds: Double = 30) throws -> Data {
         guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterOnboardingFailure("This Mac is not paired.") }
+        var command = command
+        if command.claim == nil { command.claim = currentClaim(try? store.readRecord()) }
         return try ClusterSetupLinkExchange.command(pairing: pairing, selection: try context.linkSelection(), peerAddress: nil,
             body: try JSONEncoder().encode(command), seconds: seconds).reply
     }
 
     func serve() -> Result<[String], ClusterOnboardingFailure> {
-        let title = lock.withLock { chosenTitle }
+        routed(.init(op: .serve), acting: true, local: { localServe() }) { $0.lines }
+    }
+
+    func localServe() -> Result<[String], ClusterOnboardingFailure> {
+        let title = lock.withLock { chosenTitle } ?? context.savedConfiguration().configuration?.publicModelID
         do {
             try store.updateRecord { $0.leadership?.serving = true; if let title { $0.leadership?.modelName = title } }
             _ = try command(.init(op: .serve, model: title))
@@ -586,39 +789,75 @@ private final class OnboardingLive: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(900)
         var said: String?
         while Date() < deadline {
-            let now = session()
-            var line: String
-            if let session = now.session, session.observed {
-                if session.ready, let port = session.port {
-                    return .success(.init(servedBy: now.local ? "this Mac" : peerName, port: port))
+            var once: (ready: ClusterOnboardingReady?, line: String)
+            if forwards {
+                switch forward(.init(op: .readiness), seconds: 30) {
+                case .success(let reply): once = (reply.ready, reply.progress ?? "starting")
+                case .failure(let failure): once = (nil, failure.lines.joined(separator: " "))
                 }
-                line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
-            } else if let child = now.child, let end = child.lastEnd, !child.running {
-                line = "rank 0 on \(peerName) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
-            } else if let error = now.error {
-                line = "waiting for \(peerName): \(error)"
             } else {
-                line = "starting"
+                once = readinessOnce()
             }
-            // This Mac's own part, when it is the one that keeps ending.
-            if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, end != "stopped" {
-                line += "; this Mac's part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
-            }
-            // Members are asked for their own part only when rank 0 is here.
-            if now.local, let member = try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)),
-               !member.child.running, let end = member.child.lastEnd {
-                line += "; \(peerName)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
-            }
-            if line != said { progress(line); said = line }
+            if let ready = once.ready { return .success(ready) }
+            if once.line != said { progress(once.line); said = once.line }
             sleep(2)
         }
         return .failure(.init("The cluster did not report ready within 15 minutes (last: \(said ?? "nothing")); see ~/.darkbloom/cluster-setup/rank.log on each Mac."))
     }
 
+    /// One look at the cluster from the control leader: ready (where the serving API listens) or a progress line.
+    func readinessOnce() -> (ready: ClusterOnboardingReady?, line: String) {
+        let published = ClusterService.published()
+        if let control = published?.control, control.mode == "alone" {
+            // Only THIS service's solo server counts as ready, never whatever answers on the port.
+            switch ClusterService.soloReadiness(published) {
+            case .ready: return (.init(servedBy: here, port: ClusterService.soloPort), control.line)
+            case .loading: return (nil, control.line + " (loading)")
+            case .foreign: return (nil, control.line + " (another program answers on port \(ClusterService.soloPort), so \(here)'s solo server cannot serve there)")
+            }
+        }
+        // Inside the absence grace: not ready, and the line says how long until this Mac serves alone.
+        if let control = published?.control, control.mode == "waiting" { return (nil, control.line) }
+        let now = session()
+        var line: String
+        if let session = now.session, session.observed {
+            if session.ready, let port = session.port {
+                return (.init(servedBy: now.local ? here : peerName, port: port), "ready")
+            }
+            line = "\(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "")
+        } else if let child = now.child, let end = child.lastEnd, !child.running {
+            line = "rank 0 on \(peerName) ended (\(end)\(child.lastError.map { ": " + $0 } ?? "")); it starts again by itself"
+        } else if let error = now.error {
+            line = "waiting for \(peerName): \(error)"
+        } else {
+            line = "starting"
+        }
+        // This Mac's own part, when it is the one that keeps ending.
+        if let own = ClusterService.published()?.child, !own.running, let end = own.lastEnd, end != "stopped" {
+            line += "; this Mac's part ended (\(end)\(own.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+        }
+        // Members are asked for their own part only when rank 0 is here.
+        if now.local, let member = try? JSONDecoder().decode(ClusterServiceStatus.self, from: try command(.init(op: .status), seconds: 10)),
+           !member.child.running, let end = member.child.lastEnd {
+            line += "; \(peerName)'s part ended (\(end)\(member.child.lastError.map { ": " + $0 } ?? "")) and starts again by itself"
+        }
+        return (nil, line)
+    }
+
     func testRequest() -> Result<[String], ClusterOnboardingFailure> {
+        routed(.init(op: .test), seconds: 240, acting: false, local: { localTestRequest() }) { $0.lines }
+    }
+
+    func localTestRequest() -> Result<[String], ClusterOnboardingFailure> {
         let text = "Name three colors."
         let answer: ClusterServicePromptAnswer
-        if context.savedConfiguration().configuration?.role == .leader {
+        if ClusterService.published()?.control?.mode == "alone" {
+            // Degraded: this Mac serves alone on its own loopback, once its own solo server holds the port.
+            guard ClusterService.soloReadiness(ClusterService.published()) == .ready else {
+                return .failure(.init("\(here) serves alone, but its solo server is not answering on port \(ClusterService.soloPort) yet."))
+            }
+            answer = ClusterService.prompt(context, text: text, port: ClusterService.soloPort)
+        } else if context.savedConfiguration().configuration?.role == .leader {
             answer = ClusterService.prompt(context, text: text)
         } else {
             do {
@@ -637,11 +876,29 @@ private final class OnboardingLive: @unchecked Sendable {
     }
 
     func status() -> [String] {
+        var forwarded = false
+        var lines: [String]
+        switch routed(.init(op: .status), seconds: 30, acting: false, forwarding: { forwarded = true }, local: { .success(localStatus()) }, remote: { $0.lines }) {
+        case .success(let value): lines = value
+        case .failure(let failure): lines = failure.lines
+        }
+        if forwarded, let own = ClusterService.published()?.control { lines.append("This Mac: " + own.line + ".") }
+        return lines
+    }
+
+    func localStatus() -> [String] {
         var lines = [String]()
+        if let control = ClusterService.published()?.control, ["alone", "cannotServe", "waiting"].contains(control.mode) {
+            lines.append((here == "this Mac" ? "" : here + ": ") + control.line + ".")
+            lines.append("Control leader: \(here) (term \(control.term): \(control.reason)).")
+            return lines
+        }
         let model = leadership?.modelName ?? "the chosen model"
         let now = session()
-        if let session = now.session, session.observed {
-            lines.append(session.ready ? ClusterOnboardingReady(servedBy: now.local ? "this Mac" : peerName, port: session.port ?? 0).servingLine(model: model)
+        if leadership?.serving != true {
+            lines.append("Not serving (stopped)\(leadership?.modelName.map { "; the last model was " + $0 } ?? "").")
+        } else if let session = now.session, session.observed {
+            lines.append(session.ready ? ClusterOnboardingReady(servedBy: now.local ? here : peerName, port: session.port ?? 0).servingLine(model: model)
                 + " (\(session.readyRanks) of \(session.ranks) parts ready)."
                 : "\(model): \(session.readyRanks) of \(session.ranks) parts ready" + (session.detail.map { " (\($0))" } ?? "") + ".")
         } else if let error = now.error {
@@ -649,11 +906,33 @@ private final class OnboardingLive: @unchecked Sendable {
         } else {
             lines.append("\(model) is starting (both Macs keep trying by themselves).")
         }
-        lines.append("Member: \(peerName). This Mac leads.")
+        lines.append(here == "this Mac" ? "Member: \(peerName). This Mac leads." : "Members: \(here) (leads), \(peerName).")
+        if let control = ClusterService.published()?.control, control.leads {
+            lines.append("Control leader: \(ownName) (term \(control.term): \(control.reason)).")
+        }
         return lines
     }
 
     func stop() -> Result<[String], ClusterOnboardingFailure> {
+        routed(.init(op: .stop), acting: true, local: { localStop() }) { $0.lines }
+    }
+
+    func verifyTeardown() -> Result<[String], ClusterOnboardingFailure> {
+        routed(.init(op: .verifyTeardown), seconds: 60, acting: false, local: { localVerifyTeardown() }) { $0.lines }
+    }
+
+    /// Each Mac's verify-teardown summary: this one's, and the other's over the link.
+    func localVerifyTeardown() -> Result<[String], ClusterOnboardingFailure> {
+        var lines = ClusterService.teardownLines()
+        do {
+            lines += try JSONDecoder().decode([String].self, from: try command(.init(op: .teardown), seconds: 30))
+        } catch {
+            lines.append("\(peerName): did not answer (\((error as? ClusterSetupFailure)?.text ?? "\(error)"))")
+        }
+        return .success(lines)
+    }
+
+    func localStop() -> Result<[String], ClusterOnboardingFailure> {
         do {
             try store.updateRecord { $0.leadership?.serving = false }
             _ = try command(.init(op: .stop))

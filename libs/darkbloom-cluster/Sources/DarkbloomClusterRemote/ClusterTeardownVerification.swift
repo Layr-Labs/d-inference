@@ -41,6 +41,9 @@ public enum ClusterTeardownVerification {
         public let schema = "darkbloom_cluster_teardown_verification_v1"
         public let at: Double
         public let processes: [ProcessFinding]
+        /// Cluster processes of this user that belong to ANOTHER cluster home (another identity's workers, another
+        /// install's owners, a check's fake workers): listed, never counted against this cluster's teardown.
+        public var otherClusters: [ProcessFinding] = []
         public let wired: WiredFinding?
         /// absentOrEmpty, heldByLiveOwner, stranded, unreadable, notInspected or error:...
         public let journal: String
@@ -68,19 +71,57 @@ public enum ClusterTeardownVerification {
                      withinTolerance: excess <= tolerance, baseline: baselineBytes == nil ? "idle" : "given")
     }
 
-    /// Pure assembly from what was observed.
+    /// Which cluster processes are THIS cluster's: its workers carry this Mac's member identity among their peers
+    /// (every installed-session worker is started with `--peer0-id`/`--peer1-id`), and its owners run this install's
+    /// executable or own one of its workers. Anything else of this user (another identity's or another install's
+    /// processes, a check's fake workers) is listed apart and never fails this cluster's teardown. With no identity
+    /// known (no pairing) every cluster process counts, as before.
+    public struct Scope: Sendable, Equatable {
+        public var memberID: String?
+        /// Full paths of this install's owner executable (the process table's spelling and the resolved file).
+        public var ownerExecutables: Set<String>
+        public init(memberID: String?, ownerExecutables: Set<String>) { self.memberID = memberID; self.ownerExecutables = ownerExecutables }
+
+        public static func peerIDs(of entry: ClusterProcessTable.Entry) -> [String] {
+            entry.arguments.indices.compactMap { index in
+                ["--peer0-id", "--peer1-id"].contains(entry.arguments[index]) && index + 1 < entry.arguments.count ? entry.arguments[index + 1] : nil
+            }
+        }
+
+        /// `executablePath`: the entry's executable file (nil when unreadable).
+        public func includes(_ entry: ClusterProcessTable.Entry, among all: [ClusterProcessTable.Entry],
+                             executablePath: (Int32) -> String?) -> Bool {
+            guard let memberID else { return true }
+            switch ClusterOrphanReaper.role(of: entry) {
+            case .worker?: return Self.peerIDs(of: entry).contains(memberID)
+            case .owner?:
+                let paths = [executablePath(entry.processIdentifier), entry.arguments.first].compactMap { $0 }
+                if paths.contains(where: ownerExecutables.contains) { return true }
+                return all.contains { child in
+                    child.parentProcessIdentifier == entry.processIdentifier && ClusterOrphanReaper.role(of: child) == .worker
+                        && Self.peerIDs(of: child).contains(memberID)
+                }
+            case nil: return false
+            }
+        }
+    }
+
+    /// Pure assembly from what was observed. `scope` nil: every cluster process of this user counts.
     public static func report(at: Double, processes: [ClusterProcessTable.Entry], liveEpochs: Set<String>,
                               protectedProcessIdentifiers: Set<Int32>, wired: WiredFinding?, journal: String,
-                              staleBootstrapDirectories: [String]) -> Report {
-        var findings: [ProcessFinding] = []
+                              staleBootstrapDirectories: [String], scope: Scope? = nil,
+                              executablePath: (Int32) -> String? = { ClusterProcessTable.executablePath(of: $0) }) -> Report {
+        var findings: [ProcessFinding] = [], others: [ProcessFinding] = []
         for entry in processes {
             guard let role = ClusterOrphanReaper.role(of: entry), !protectedProcessIdentifiers.contains(entry.processIdentifier) else { continue }
             let epoch = ClusterOrphanReaper.membershipEpoch(of: entry)
             if let epoch, liveEpochs.contains(epoch) { continue }
-            findings.append(.init(processIdentifier: entry.processIdentifier, role: role.rawValue, membershipEpoch: epoch,
-                                  parentProcessIdentifier: entry.parentProcessIdentifier))
+            let finding = ProcessFinding(processIdentifier: entry.processIdentifier, role: role.rawValue, membershipEpoch: epoch,
+                                         parentProcessIdentifier: entry.parentProcessIdentifier)
+            if let scope, !scope.includes(entry, among: processes, executablePath: executablePath) { others.append(finding) } else { findings.append(finding) }
         }
         findings.sort { $0.processIdentifier < $1.processIdentifier }
+        others.sort { $0.processIdentifier < $1.processIdentifier }
         var reasons: [String] = []
         if !findings.isEmpty { reasons.append("\(findings.count) cluster process(es) still running") }
         if let wired, !wired.withinTolerance {
@@ -91,16 +132,18 @@ public enum ClusterTeardownVerification {
         if journal == "unreadable" { reasons.append("device journal holds bytes this build did not write") }
         if journal.hasPrefix("error:") { reasons.append(journal) }
         if !staleBootstrapDirectories.isEmpty { reasons.append("\(staleBootstrapDirectories.count) stale bootstrap director(ies)") }
-        return .init(at: at, processes: findings, wired: wired, journal: journal, staleBootstrapDirectories: staleBootstrapDirectories,
-                     rdma: "not enumerable from a user process; ends with the rank process (see processes and wired)",
-                     reasons: reasons, passed: reasons.isEmpty)
+        var report = Report(at: at, processes: findings, wired: wired, journal: journal, staleBootstrapDirectories: staleBootstrapDirectories,
+                            rdma: "not enumerable from a user process; ends with the rank process (see processes and wired)",
+                            reasons: reasons, passed: reasons.isEmpty)
+        report.otherClusters = others
+        return report
     }
 
     /// The live verification on this Mac. `samples` wired-memory readings
     /// `intervalNanoseconds` apart; `baselineWiredBytes` the reading taken
     /// before the session started, or nil for the idle baseline.
     public static func verify(liveEpochs: Set<String> = [], deviceDirectory: URL?, baselineWiredBytes: UInt64? = nil,
-                              samples: Int = 5, intervalNanoseconds: UInt64 = 1_000_000_000) -> Report {
+                              samples: Int = 5, intervalNanoseconds: UInt64 = 1_000_000_000, scope: Scope? = nil) -> Report {
         var readings: [UInt64] = []
         for index in 0..<max(1, samples) {
             if index > 0 {
@@ -124,6 +167,6 @@ public enum ClusterTeardownVerification {
         }
         return report(at: Date().timeIntervalSince1970, processes: ClusterProcessTable.running(), liveEpochs: liveEpochs,
                       protectedProcessIdentifiers: ClusterOrphanReaper.ownLineage(), wired: wired, journal: journal,
-                      staleBootstrapDirectories: ClusterOrphanReaper.staleBootstrapDirectories())
+                      staleBootstrapDirectories: ClusterOrphanReaper.staleBootstrapDirectories(), scope: scope)
     }
 }

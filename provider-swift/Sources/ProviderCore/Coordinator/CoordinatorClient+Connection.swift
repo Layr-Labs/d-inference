@@ -19,14 +19,18 @@ extension CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info(.coordinatorConnectionClosed)
+                // A clean close ends a final attempt too; it reconnects at once.
+                memberFinalAttemptUntil = nil
                 if memberRoleFailure { break }
                 backoff.reset()
                 continue
             } catch {
                 if shutdownRequested || memberRoleFailure { break }
 
+                // Placed before the event: a waiting member reads the
+                // attempt's outcome when it sees the disconnect.
+                let delay = nextMemberAwareReconnectDelay(backoff: backoff.nextDelay())
                 eventContinuation?.yield(.disconnected)
-                let delay = backoff.nextDelay()
                 let reachable = reachability.isReachable
                 logger.warning(.coordinatorConnectionFailed)
                 logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
@@ -150,7 +154,7 @@ extension CoordinatorClient {
         // is replaced (a connection that goes `.waiting`, `.preparing`, then
         // `.waiting` again): only the first terminal state resumes the wait.
         let handshake = HandshakeResumption()
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        do { try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready, .failed, .waiting, .cancelled:
@@ -189,6 +193,11 @@ extension CoordinatorClient {
                 }
             }
             connection.start(queue: self.connectionQueue)
+        } } catch {
+            // Not reached at all: a waiting member says so instead of
+            // reporting a role refusal (F11).
+            noteMemberAttemptUnreachable(error)
+            throw error
         }
 
         logger.info(.coordinatorTransportReady)
@@ -196,6 +205,7 @@ extension CoordinatorClient {
         // A member registration carries this connection's fresh negotiation
         // nonce; the coordinator's acceptance must echo it within ten seconds.
         memberNegotiation = config.executionRole == .clusterMember ? .init() : nil
+        noteMemberTransportReady(memberNegotiation)
         if let negotiation = memberNegotiation {
             memberTimeout = Task { [weak self] in
                 do { try await ContinuousClock().sleep(until: negotiation.deadline) } catch { return }

@@ -239,6 +239,9 @@ extension ProviderLoop {
             }
             return
         }
+        // A registration wait that began before the client existed keeps
+        // the client's first reconnects inside it as well.
+        await coordinator.setMemberRegistrationDeadline(memberRegistrationWaitDeadline)
         let (events, sendFn) = await coordinator.start()
         if Task.isCancelled || servingDrain.refusing {
             guard await shutdownBeforeRegistration() else {
@@ -463,7 +466,11 @@ extension ProviderLoop {
             // No grant or key is retained across a control connection boundary.
             memberConnectionID = nil
             state.refusingNewWork = true
-            finishMemberRegistrationWait(ClusterMemberControlError.connectionEnded)
+            // A refused or unanswered negotiation ended the client: a waiting
+            // start reports that, not a plain connection end.
+            let roleRefused = await coordinator.memberRoleFailure
+            finishMemberRegistrationWait(roleRefused ? ClusterMemberControlError.negotiationFailed
+                                                     : ClusterMemberControlError.connectionEnded)
             // The pair slot's engine shuts its owner down, so both ranks end
             // their work and each member's owner can release its device.
             await retireClusterPairSlot(reason: "member stopping")

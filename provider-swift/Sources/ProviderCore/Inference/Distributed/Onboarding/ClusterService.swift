@@ -338,8 +338,9 @@ public final class ClusterService: @unchecked Sendable {
                 $0.leadership?.serving = command.op == .serve
                 if let model = command.model { $0.leadership?.modelName = model }
                 if command.op == .serve {
+                    let recorded = $0.leadership?.deployment
                     $0.leadership?.deployment = ClusterOnboardingDeployment.recorded(afterStartOf: command.model, deployment: command.deployment,
-                                                                                     recorded: $0.leadership?.deployment)
+                                                                                     recorded: recorded)
                 }
             }
             say(command.op == .serve ? "the leader started the cluster" : "the leader stopped the cluster")

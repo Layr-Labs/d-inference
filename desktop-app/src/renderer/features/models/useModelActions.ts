@@ -88,7 +88,7 @@ export function useModelActions(backend: BackendState) {
         await run(enableAction(snapshot));
       }),
     pin: (model: NativeModel) =>
-      task(model.id, 'Pinning…', async () => {
+      task(model.id, 'Keeping in memory…', async () => {
         if (!snapshot.autopilot?.enabled) {
           label(model.id, model.downloaded ? 'Starting…' : 'Downloading…');
           await run({
@@ -101,12 +101,12 @@ export function useModelActions(backend: BackendState) {
           return;
         }
         await intoPool(model);
-        label(model.id, 'Pinning…');
+        label(model.id, 'Keeping in memory…');
         await run({ action: 'autopilot_pin', models: [model.id] });
       }),
     unpin: (model: NativeModel) =>
-      task(model.id, 'Unpinning…', async () => {
-        label(model.id, 'Unpinning…');
+      task(model.id, 'Updating…', async () => {
+        label(model.id, 'Updating…');
         await run({ action: 'autopilot_unpin', models: [model.id] });
       }),
     remove: (model: NativeModel) =>

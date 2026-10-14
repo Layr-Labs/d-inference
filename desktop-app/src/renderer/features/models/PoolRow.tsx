@@ -145,7 +145,7 @@ export function PoolRow({
                 aria-label={`Remove ${model.display_name}`}
                 title={
                   pinned
-                    ? 'Unpin it first'
+                    ? 'Stop keeping it in memory first'
                     : model.loaded || model.serving
                       ? 'Stop serving this model before removing it'
                       : 'Remove from this Mac'

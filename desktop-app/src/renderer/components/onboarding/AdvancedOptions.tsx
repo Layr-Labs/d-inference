@@ -10,8 +10,8 @@ import styles from './advancedOptions.module.css';
 const pinCopy: Record<StartMethod, { title: string; lead: string; noun: string }> = {
   autopilot: {
     title: 'Keep a model always on',
-    lead: 'A pinned model stays loaded, so it’s always ready on this Mac and its local endpoint. Autopilot manages the rest.',
-    noun: 'pinned',
+    lead: 'A model kept in memory stays loaded, so it’s always ready on this Mac and its local endpoint. Autopilot manages the rest.',
+    noun: 'kept in memory',
   },
   manual: {
     title: 'Models to serve',
@@ -20,8 +20,8 @@ const pinCopy: Record<StartMethod, { title: string; lead: string; noun: string }
   },
   local: {
     title: 'Keep a model always on',
-    lead: 'Local only runs just the models you pin, for your apps on this Mac’s local endpoint.',
-    noun: 'pinned',
+    lead: 'Local only runs just the models you keep in memory, for your apps on this Mac’s local endpoint.',
+    noun: 'kept in memory',
   },
 };
 

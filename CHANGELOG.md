@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop plain-language copy
+
+- Replace implementation terms in desktop copy: Settings no longer says "Managed by the Swift backend" or "Settings changed in the backend", and manual model selection says "Memory available for models" instead of "Native load allowance". Describe pinned models as models kept in memory everywhere, matching the Keep in memory controls.
 ## Unreleased — desktop Earnings labels
 
 - Name models in the Earnings breakdown by their catalog names (for example “GPT-OSS 20B”), falling back to the settled ID for models no longer in the catalog; say “Show all N Macs” in the By Mac view; and clear Copy CSV's “Copied” confirmation 1.6 seconds after the latest successful copy instead of keeping it until the period changes.

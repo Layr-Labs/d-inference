@@ -28,7 +28,7 @@ const copy: Record<StartMethod, { lead: string; start: string; empty: string }> 
   local: {
     lead: 'Run models for your own apps. This Mac won’t serve the network.',
     start: 'Start local models',
-    empty: 'Pin a model to run it locally.',
+    empty: 'Keep a model in memory to run it locally.',
   },
 };
 

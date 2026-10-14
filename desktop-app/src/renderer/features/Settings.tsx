@@ -77,7 +77,8 @@ export function Settings({
       />
       {changedElsewhere && (
         <Notice>
-          Settings changed in the backend. Reload before saving.
+          These settings were changed elsewhere, for example from the command line. Reload them
+          before saving.
           <Button
             onClick={() => {
               setBase(original);
@@ -112,7 +113,7 @@ export function Settings({
         <div className="setting-row">
           <span>
             <strong>Model storage</strong>
-            <small>Managed by the Swift backend.</small>
+            <small>Managed by the Darkbloom runtime.</small>
           </span>
           <code>{original.cache_path}</code>
         </div>

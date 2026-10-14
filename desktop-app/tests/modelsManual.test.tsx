@@ -22,7 +22,7 @@ function renderModels(state = poolSnapshot({ enabled: false, phase: 'off' })) {
 
 it('keeps the manual workflow while Autopilot is off', () => {
   const backend = renderModels();
-  expect(screen.getByText('Native load allowance')).toBeVisible();
+  expect(screen.getByText('Memory available for models')).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: /Show \d+ more models/ }));
   expect(screen.getByRole('checkbox', { name: 'Select Qwen 3.6 35B A3B' })).toBeDisabled();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Select Qwen 3.5 9B' }));

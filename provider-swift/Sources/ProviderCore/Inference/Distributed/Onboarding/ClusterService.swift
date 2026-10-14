@@ -82,6 +82,10 @@ public final class ClusterService: @unchecked Sendable {
     var stopping = false
     private var syncing = false
     private var nextSync = Date.distantPast
+    // Setting the cluster up again after a Darkbloom update (`checkForUpdate`).
+    private var updateInFlight = false
+    private var nextUpdateCheck = Date.distantPast
+    private var updatingLine: String?
     // Derived control (ClusterServiceControl.swift).
     var control: ClusterControlNode?
     var controlResponder: ClusterSetupLinkExchange.Responder?
@@ -192,6 +196,7 @@ public final class ClusterService: @unchecked Sendable {
             ensureResponder(say: say)
             supervise(say: say)
             syncMembers(say: say)
+            checkForUpdate(say: say)
             publish()
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
         }
@@ -507,7 +512,7 @@ public final class ClusterService: @unchecked Sendable {
         return lock.withLock {
             let reference = try? saved.reference.get()
             let wait = nextStart.timeIntervalSinceNow
-            return ClusterServiceStatus(role: record?.leadership?.role, serving: record?.leadership?.serving ?? false,
+            var value = ClusterServiceStatus(role: record?.leadership?.role, serving: record?.leadership?.serving ?? false,
                 modelName: record?.leadership?.modelName, sessionLeader: leads, localRank: configuration?.localRank,
                 setup: reference.map { String($0.sha256.prefix(12)) },
                 child: .init(running: child?.isRunning ?? false, starts: starts, lastEnd: lastEnd,
@@ -520,6 +525,60 @@ public final class ClusterService: @unchecked Sendable {
                 cacheSync: record?.leadership.flatMap { $0.role == ClusterOnboardingRole.member.rawValue
                     ? cacheStore.digest(leaderPin: $0.leaderPin) : nil },
                 control: controlStatusLocked(model: record?.leadership?.modelName), servicePID: getpid())
+            value.updating = updatingLine
+            return value
+        }
+    }
+
+    /// On the control leader, while the cluster serves: when a Darkbloom update changed a Mac's worker (its digest no
+    /// longer matches the saved setup's pin, so both Macs refuse their parts), the same model is planned again,
+    /// adopted, synced to the member and served, as `m` with the same model would, with nobody running a command.
+    /// Checked every `ClusterOnboardingUpdate.checkEverySeconds` on a thread of its own; holds the command lock so a
+    /// person's command and this never run at once.
+    private func checkForUpdate(say: @escaping @Sendable (String) -> Void) {
+        guard let leadership = (try? store.readRecord())?.leadership, leadership.serving, let model = leadership.modelName,
+              lock.withLock({ control?.leads == true }) else { return }
+        let begin: Bool = lock.withLock {
+            guard !updateInFlight, !stopping, Date() >= nextUpdateCheck else { return false }
+            updateInFlight = true
+            nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.checkEverySeconds)
+            return true
+        }
+        guard begin else { return }
+        let context = self.context
+        Thread.detachNewThread { [weak self] in
+            guard let self else { return }
+            defer { self.lock.withLock { self.updateInFlight = false; self.updatingLine = nil } }
+            guard let saved = context.savedConfiguration().configuration, saved.peers.indices.contains(saved.localRank) else { return }
+            let pinned = Dictionary(saved.peers.map { ($0.id, $0.runtimeBinarySHA256) }, uniquingKeysWith: { a, _ in a })
+            let local = saved.peers[saved.localRank]
+            var current: [String: String?] = [local.id: try? context.workerSHA256(local.workerExecutable)]
+            if case .reached = context.reachPeer(), let facts = context.peerFacts { current[facts.memberID] = facts.runtimeBinarySHA256 }
+            let changed = ClusterOnboardingUpdate.changed(pinned: pinned, current: current)
+            guard !changed.isEmpty else { return }
+            guard let held = ClusterControlCommandLock.acquire(seconds: 5) else { return }
+            defer { held.release() }
+            self.lock.withLock { self.updatingLine = ClusterOnboardingUpdate.statusLine }
+            self.publish()
+            say("Darkbloom changed on \(changed.count == 1 && changed[0] == local.id ? "this Mac" : changed.count == 1 ? "the other Mac" : "both Macs"): "
+                + "setting the cluster up again for \(model)")
+            func failed(_ lines: [String]) {
+                say("could not set the cluster up again after the update: " + lines.joined(separator: " "))
+                self.lock.withLock { self.nextUpdateCheck = Date().addingTimeInterval(ClusterOnboardingUpdate.retryAfterFailureSeconds) }
+            }
+            let live = self.controlLive
+            if case .failure(let failure) = live.localReachMembers({ _ in }) { return failed(failure.lines) }
+            let choices: [ClusterOnboardingModelChoice]
+            switch live.localPlanModels() {
+            case .success(let value): choices = value
+            case .failure(let failure): return failed(failure.lines)
+            }
+            guard let index = choices.firstIndex(where: { $0.title == model && $0.blocker == nil && $0.provision == nil }) else {
+                return failed(["\(model) is not offered on these Macs with this release: \(choices.first { $0.title == model }?.blocker ?? "not found")"])
+            }
+            if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
+            if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
+            say("set the cluster up again after the update: \(model) is starting on both Macs")
         }
     }
 

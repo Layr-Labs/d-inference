@@ -48,6 +48,8 @@ public struct ClusterServiceStatus: Codable, Sendable, Equatable {
     public var control: Control? = nil
     /// The cluster service that published this status (a status left by a service that ended is not current).
     public var servicePID: Int32? = nil
+    /// Set while the control leader sets the cluster up again by itself after a Darkbloom update (its line).
+    public var updating: String? = nil
     public struct Control: Codable, Sendable, Equatable {
         public var leaderID: String
         public var leaderName: String

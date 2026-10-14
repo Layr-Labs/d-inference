@@ -187,9 +187,37 @@ enum DistributedInstalledPairServingTable {
         shutdownAcknowledgementNanoseconds: 8_000_000_000, stopMarginNanoseconds: 25_000_000_000,
         cleanStopWaitNanoseconds: 20_000_000_000))
 
+    /// Registered MiMo V2.6 Flash (172.9 GB artifact, 155.8 GiB of text-model
+    /// tensors), granted in the order its cross-cable checks ran (its
+    /// qualification records, `ClusterPairServingGrants`). Pipeline only; the
+    /// figures are the pair's own across the cable (M3 Ultra + M5 Ultra,
+    /// 2026-10-12 at cut 31 and 2026-10-13 at the planner's cut 47).
+    ///
+    /// - Startup, 300 s. Both ranks were ready in 39.6 to 41.8 s at cut 47
+    ///   (the rank holding 47 layers verifies 163 GB in 12.8 s and loads it in
+    ///   25.9 s) and in 56.2 s at cut 31, where the slower Mac holds 107 GB.
+    ///   300 s is five times the slowest.
+    /// - First token, 10 s plus 4 ms per prompt token. The slower Mac prefills
+    ///   this model at about 325 tokens a second (3.1 ms per token, its staged
+    ///   reference at 4,096 tokens), rounded up. The pair's first token was
+    ///   3.9 s after 4,096 tokens and 17.4 s after 16,384 at cut 47, and 8.4 to
+    ///   10.0 s after 4,096 at cut 31; the budget at the 8,192-token limit is 42.8 s.
+    /// - Admission, 5 s.
+    /// - Shutdown acknowledgement, 10 s, and stop margin, 30 s: the largest
+    ///   weights of any row to release (163 GB on one rank); every recorded
+    ///   release ended with the stage released and the wired limit at 0.
+    /// - Clean-stop wait, 40 s: twice the first token expected at the longest
+    ///   prompt this build admits (8,192 tokens) on the slower placement.
+    static let mimoV26 = Row(runtimeModelID: "registered_mimo_v26_flash_mopd", budgets: .init(
+        startupAllowanceNanoseconds: 300_000_000_000,
+        firstTokenBaseMilliseconds: 10_000, firstTokenMillisecondsPerPromptToken: 4,
+        admissionWaitNanoseconds: 5_000_000_000,
+        shutdownAcknowledgementNanoseconds: 10_000_000_000, stopMarginNanoseconds: 30_000_000_000,
+        cleanStopWaitNanoseconds: 40_000_000_000))
+
     /// One row for every model with a pair-serving grant, in the grants' order,
     /// and none for a model whose grant is withheld.
-    static let rows = [qwen35, qwen38, qwen35A3B, qwen36A3B, bonsai2, nemotron35]
+    static let rows = [qwen35, qwen38, qwen35A3B, qwen36A3B, bonsai2, nemotron35, mimoV26]
 
     /// The budgets of a model this build has a row for; a refusal for every other model.
     static func servingBudgets(runtimeModelID: String, publicModelID: String) throws -> DistributedInstalledTimeBudgets {

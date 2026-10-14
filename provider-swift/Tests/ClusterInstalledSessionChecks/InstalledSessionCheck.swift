@@ -571,7 +571,9 @@ final class EndpointBox: @unchecked Sendable {
         let measured:[String:(prompt:Int,decode:Double,pairFirstToken:Double)]=["registered_qwen35_9b":(30_720,67,15.61),
             "registered_qwen38_27b":(30_720,23,39.91),"registered_qwen35_35b_a3b":(16_384,65,8.68),
             "registered_qwen36_35b_a3b":(16_384,65,8.33),"registered_ternary_bonsai_2_27b":(16_384,29,45.52),
-            "registered_nemotron35_lightning":(16_384,77,8.28)]
+            "registered_nemotron35_lightning":(16_384,77,8.28),
+            // MiMo at the planner's cut 47 (M5 Ultra rank 0, M3 Ultra rank 1), 2026-10-13 (evidence/mimo-qual-20261013/qual/mimo/p16k-*).
+            "registered_mimo_v26_flash_mopd":(16_384,39,17.40)]
         for row in Table.rows {
             let budgets=row.budgets
             guard let rates=measured[row.runtimeModelID] else { throw CheckFailure(message:"no measured rates for \(row.runtimeModelID)") }

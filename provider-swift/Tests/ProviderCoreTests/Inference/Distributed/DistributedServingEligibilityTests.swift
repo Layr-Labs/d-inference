@@ -151,7 +151,11 @@ import DarkbloomClusterProtocol
         }
         for grant in ClusterPairServingGrants.granted {
             #expect(!grant.decodingRankChipClasses.isEmpty && !grant.pipelineRankChipClasses.isEmpty && !grant.evidence.isEmpty)
-            try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: grant.runtimeModelID, publicModelID: "p")
+            // Every placement a passed check ran is admitted, at its cuts and in its mode.
+            for qualification in grant.qualifications {
+                try ClusterPairServingGrants.requirePlacement(qualification.chipClasses, runtimeModelID: grant.runtimeModelID,
+                                                              publicModelID: "p", cuts: qualification.cuts, mode: qualification.mode)
+            }
         }
         for (model, reason) in ClusterPairServingGrants.withheld {
             let refused = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p") }
@@ -162,11 +166,37 @@ import DarkbloomClusterProtocol
         // The records this build ships: every one is used, and they decide the models the runs decided.
         #expect(!ClusterPairServingGrants.records.isEmpty && ClusterPairServingGrants.decisions.ignored == 0)
         #expect(Set(granted) == ["registered_qwen35_9b", "registered_qwen38_27b", "registered_qwen35_35b_a3b", "registered_qwen36_35b_a3b",
-                                 "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning"])
+                                 "registered_ternary_bonsai_2_27b", "registered_nemotron35_lightning", "registered_mimo_v26_flash_mopd"])
         // registered_gemma4_26b has no record of its own: the two that named it ran the 8-bit artifact and are not shipped.
         #expect(Set(ClusterPairServingGrants.withheld.keys) == ["registered_gpt_oss_20b",
                                                                 "registered_gemma4_26b_8bit", "registered_gemma4_26b_qat_4bit"])
         #expect(ClusterPairServingGrants.withheld["registered_gpt_oss_20b"]?.contains("diverged at cuts 4, 8 and 10") == true)
+    }
+
+    /// MiMo V2.6 Flash is granted by its three passing records (M5 Ultra rank 0
+    /// with 47 layers, M3 Ultra rank 1 with the last layer and the head, cut 47,
+    /// pipeline; short, 4,096 and 16,384 prompts against the M5 Ultra's own
+    /// reference): exactly the order that ran. No MiMo check failed, so its
+    /// records restrict no shape (the rule a failed check, like GPT-OSS's,
+    /// turns on); the mirrored order and any other chip are refused.
+    @Test func mimoIsGrantedInTheOrderItsChecksRan() throws {
+        let model = "registered_mimo_v26_flash_mopd"
+        let grant = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p",
+            artifactSHA256: "2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034")
+        #expect(grant.pipelineRankChipClasses == [.appleM5Ultra] && grant.decodingRankChipClasses == [.appleM3Ultra])
+        #expect(grant.qualifications == [.init(chipClasses: [.appleM5Ultra, .appleM3Ultra], cuts: [47], mode: .pipeline)])
+        #expect(grant.evidence.hasPrefix("3 passing cross-cable qualification records"))
+        #expect(!ClusterPairServingGrants.records(runtimeModelID: model).restrictsShapes)
+        try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM3Ultra], runtimeModelID: model, publicModelID: "p",
+                                                      cuts: [47], mode: .pipeline)
+        let mirrored = refusal { try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, .appleM5Ultra], runtimeModelID: model, publicModelID: "p") }
+        #expect(mirrored?.reason == .classNotAllowed(rank: 0, role: .pipelineRank, chipClass: .appleM3Ultra, allowed: [.appleM5Ultra]))
+        let other = refusal { try ClusterPairServingGrants.requirePlacement([.appleM5Ultra, .appleM5Max], runtimeModelID: model, publicModelID: "p") }
+        #expect(other?.reason == .classNotAllowed(rank: 1, role: .decodingRank, chipClass: .appleM5Max, allowed: [.appleM3Ultra]))
+        // Another artifact under the same registered model is not what the records ran.
+        let foreign = refusal { _ = try ClusterPairServingGrants.grant(runtimeModelID: model, publicModelID: "p", artifactSHA256: String(repeating: "0", count: 64)) }
+        #expect(foreign?.reason == .artifactNotQualified(installed: String(repeating: "0", count: 64),
+                                                         qualified: ["2334547d8acc9898ad4a74570ce44d2b12390bbac8d4bc52c092eb5ad5cfe034"]))
     }
 
     /// The product serves a model on a pair only with both halves: the grant

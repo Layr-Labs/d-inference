@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Home provider states
+
+- Home's header no longer offers Start providing while the provider is starting, draining or stale: it shows Starting provider or Finishing requests (disabled) during transitions and Stop provider while a stale provider is still running. The chip's screen-reader summary says live activity only while live numbers are shown, otherwise naming why (waiting for live activity, finishing current requests, or status out of date), without a trailing space.
 ## Unreleased — desktop dialogs over window-drag areas
 
 - Close desktop dialogs when the dimmed background is clicked over the sidebar or top bar. Those areas move the window, and Electron let them take the click even under an open dialog, so the dialog, including sign-in, seemed impossible to close.

@@ -57,20 +57,30 @@ export function stageText({
     waiting = !shown ? null : preview ? stats.waiting : reading.inputs.waiting;
   const names = memory.models.map((model) => model.name);
   const machine = measured ? ` GPU ${measured.gpu} busy.` : '';
+  // A powered chip without current numbers says why instead of claiming live activity.
+  const activity = preview
+    ? PHASE_TEXT[stats.phase].toLowerCase()
+    : shown
+      ? 'live activity'
+      : provider === 'stale'
+        ? 'provider status out of date'
+        : provider === 'draining'
+          ? 'provider finishing current requests'
+          : 'waiting for live activity';
+  const numbers =
+    running === null
+      ? ''
+      : ` ${running} in progress, ${waiting} waiting, about ${
+          Math.round((tokensPerSecond ?? 0) / 10) * 10
+        } tokens per second.`;
   const summary = !powered
     ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.${machine}`
-    : `${anatomy.name}: ${preview ? PHASE_TEXT[stats.phase].toLowerCase() : 'live activity'}. ${
-        running === null
-          ? ''
-          : `${running} in progress, ${waiting} waiting, about ${
-              Math.round((tokensPerSecond ?? 0) / 10) * 10
-            } tokens per second.`
-      }${machine}`;
+    : `${anatomy.name}: ${activity}.${numbers}${machine}`;
   // Spoken by the live region: state only. The numbers change every second and would make a
   // screen reader repeat this sentence indefinitely; they stay in `summary` and the readouts.
   const announcement = !powered
     ? `${anatomy.name}: provider ${provider === 'starting' ? 'starting' : 'stopped'}.`
-    : `${anatomy.name}: ${preview ? PHASE_TEXT[stats.phase].toLowerCase() : 'live activity'}.`;
+    : `${anatomy.name}: ${activity}.`;
   return {
     mode: modeText(provider, measured !== null, preview, reading.fresh),
     measured: measured !== null,

@@ -483,7 +483,7 @@ struct ClusterWorkerProtocolTests {
         try check(ClusterGenerationMode.tensorParallel.tensorParallelTerms == terms
             && ClusterGenerationMode.pipelinePrefillTensorDecode.tensorParallelTerms == terms
             && ClusterGenerationMode.phaseSplit.tensorParallelTerms == nil, "only the tensor-parallel modes carry terms")
-        func record(_ mode: String, cuts: [Int]) -> ClusterPairQualificationRecord {
+        func record(_ mode: String, cuts: [Int], layout: String? = nil) -> ClusterPairQualificationRecord {
             .init(runtimeModelID: "registered_qwen38_27b", artifactSHA256: String(repeating: "a", count: 64),
                 ranks: [.init(rank: 0, chip: "Apple M3 Ultra", operatingSystem: "27.2"),
                         .init(rank: 1, chip: "Apple M5 Ultra", operatingSystem: "27.0.1")],
@@ -492,12 +492,20 @@ struct ClusterWorkerProtocolTests {
                 pairReportCreatedUTC: "2026-10-14T05:00:00Z",
                 comparisons: [.init(referenceChip: "Apple M3 Ultra", verdict: "exact", firstDivergenceIndex: nil,
                     gapInULPs: nil, nearTieThresholdULPs: 4, allowed: ["cut", "schedule", "profile"])],
-                producer: "darkbloom-cluster-tp-check record")
+                producer: "darkbloom-cluster-tp-check record", tensorParallelLayout: layout)
         }
-        try check(record("tensor_parallel_v1", cuts: []).isConsistent, "a tensor-parallel record has no cut and is consistent")
-        try check(!record("tensor_parallel_v1", cuts: [32]).isConsistent, "a tensor-parallel record with a cut is not")
-        try check(record("pipeline_prefill_tensor_decode_v1", cuts: [32]).isConsistent, "a hybrid record has its prefill cut")
-        try check(!record("pipeline_prefill_tensor_decode_v1", cuts: []).isConsistent, "a hybrid record without a cut is not")
+        let layout = "plan=qwen_dense_heads_and_channels_v1;partials=float32;shares=equal"
+        try check(record("tensor_parallel_v1", cuts: [], layout: layout).isConsistent, "a tensor-parallel record has no cut and is consistent")
+        try check(!record("tensor_parallel_v1", cuts: [32], layout: layout).isConsistent, "a tensor-parallel record with a cut is not")
+        try check(record("pipeline_prefill_tensor_decode_v1", cuts: [32], layout: layout).isConsistent, "a hybrid record has its prefill cut")
+        try check(!record("pipeline_prefill_tensor_decode_v1", cuts: [], layout: layout).isConsistent, "a hybrid record without a cut is not")
+        try check(!record("tensor_parallel_v1", cuts: []).isConsistent,
+            "a tensor-parallel record must name its layout (plan, partials, shares): it qualifies that layout only")
+        try check(!record("pipeline_v1", cuts: [32], layout: layout).isConsistent, "a pipeline record carries no tensor-parallel layout")
+        let line = try record("pipeline_v1", cuts: [32]).encodedLine()
+        try check(!line.contains("tensorParallelLayout"), "a record without a layout encodes as before (no new key)")
+        let decoded = try ClusterPairQualificationRecord.decodeLines(try record("tensor_parallel_v1", cuts: [], layout: layout).encodedLine())
+        try check(decoded.first?.tensorParallelLayout == layout && decoded.first?.isConsistent == true, "the layout round-trips")
         try check(!record("pipeline_v1", cuts: []).isConsistent && record("pipeline_v1", cuts: [32]).isConsistent,
             "a pipeline record still needs its cut")
     }

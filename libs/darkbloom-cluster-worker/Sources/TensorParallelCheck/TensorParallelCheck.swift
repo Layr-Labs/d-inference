@@ -12,6 +12,8 @@ import MLX
 //       [--shard-rank R (shard-local)] [--census yes|no (no peer: one decode step's primitives by name)]
 //       [--shares A:B (each rank's share weight; default 1:1 = equal shards)]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
+//   darkbloom-cluster-tp-check record --rank0 FILE --rank1 FILE --reference FILE [--reference FILE] --model-dir DIR
+//       --output FILE [--partials float32|bfloat16] [--near-tie-ulps U]   (appends one qualification record line)
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
 // reference); `simulated` is the single-process tensor-parallel oracle (the
@@ -127,12 +129,16 @@ struct Options {
     var deadlineSeconds = 900
     var outputCount: Int?
     var reference = ""
+    var references: [String] = []
+    var rank0 = ""
+    var rank1 = ""
+    var output = ""
     var candidate = ""
     var nearTieULPs: Float = 4
 
     init(_ arguments: [String]) throws {
-        guard let first = arguments.first, ["run", "compare"].contains(first) else {
-            throw Failure("usage: darkbloom-cluster-tp-check run|compare ...")
+        guard let first = arguments.first, ["run", "compare", "record"].contains(first) else {
+            throw Failure("usage: darkbloom-cluster-tp-check run|compare|record ...")
         }
         command = first
         var index = 1
@@ -171,7 +177,10 @@ struct Options {
             case "--census": census = try yesNo(try value())
             case "--deadline-seconds": deadlineSeconds = Int(try value()) ?? 0
             case "--output-count": outputCount = Int(try value())
-            case "--reference": reference = try value()
+            case "--reference": reference = try value(); references.append(reference)
+            case "--rank0": rank0 = try value()
+            case "--rank1": rank1 = try value()
+            case "--output": output = try value()
             case "--candidate": candidate = try value()
             case "--near-tie-ulps": nearTieULPs = Float(try value()) ?? -1
             default: throw Failure("unknown argument \(arguments[index])")
@@ -189,6 +198,11 @@ struct Options {
             if census && ["tp", "hybrid"].contains(mode) { throw Failure("the census runs only without a peer") }
             if Set(shares).count > 1 && ["full", "simulated", "hybrid"].contains(mode) {
                 throw Failure("unequal --shares apply to tp and shard-local only")
+            }
+        } else if command == "record" {
+            guard !rank0.isEmpty, !rank1.isEmpty, !references.isEmpty, !modelDirectory.isEmpty, !output.isEmpty,
+                  nearTieULPs >= 0, ["float32", "bfloat16"].contains(partials) else {
+                throw Failure("record needs --rank0, --rank1, --reference (one or more), --model-dir and --output")
             }
         } else {
             guard !reference.isEmpty, !candidate.isEmpty, nearTieULPs >= 0 else {
@@ -434,6 +448,33 @@ enum CompareCommand {
             let options = try Options(Array(CommandLine.arguments.dropFirst()))
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+            if options.command == "record" {
+                func read(_ path: String) throws -> Data {
+                    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+                    guard data.count < 64 << 20 else { throw Failure("\(path) is too large") }
+                    return data
+                }
+                let formatter = ISO8601DateFormatter()
+                let configuration = try read(options.modelDirectory + "/config.json")
+                let routed = ((try? JSONSerialization.jsonObject(with: configuration)) as? [String: Any])?["model_type"] as? String == "qwen3_5_moe"
+                let record = try QwenTensorParallelQualification.record(rank0: try read(options.rank0),
+                    rank1: try read(options.rank1), references: try options.references.map(read),
+                    configuration: configuration,
+                    planName: routed ? "qwen_moe_heads_and_expert_channels_v1" : "qwen_dense_heads_and_channels_v1",
+                    partialsDType: options.partials,
+                    nearTieULPs: options.nearTieULPs, createdUTC: formatter.string(from: Date()))
+                let line = try record.encodedLine() + "\n"
+                if !FileManager.default.fileExists(atPath: options.output) {
+                    guard FileManager.default.createFile(atPath: options.output, contents: nil,
+                        attributes: [.posixPermissions: 0o600]) else { throw Failure("could not create the record file") }
+                }
+                let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: options.output))
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data(line.utf8))
+                print(line, terminator: "")
+                Darwin.exit(record.passed ? 0 : 3)
+            }
             if options.command == "compare" {
                 let outcome = try CompareCommand.run(options)
                 print(String(decoding: try encoder.encode(outcome), as: UTF8.self))

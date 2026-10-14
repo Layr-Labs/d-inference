@@ -1,6 +1,8 @@
+import CryptoKit
 import DarkbloomClusterPlacement
 import DarkbloomClusterProtocol
 import Foundation
+
 
 /// Tensor parallel as a planner-chosen mode: the layout facts a family's plan
 /// derives from the artifact's own headers, the planner's prediction from each
@@ -19,6 +21,88 @@ func checkTensorParallel(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Pl
     try checkTensorParallelOlderMacs(big, checks)
     try checkTensorParallelServed(big, checks)
     try checkTensorParallelWeighted(big, checks)
+    try checkTensorParallelRecord(configuration: inputs.twentySeven.configuration, checks)
+}
+
+// MARK: - The qualification record of a tensor-parallel run
+
+/// `QwenTensorParallelQualification.record`: two passed rank reports over
+/// JACCL compared with single-Mac references give a consistent record of
+/// mode tensor_parallel_v1, no cut, the registered model and artifact, and
+/// the layout the run used; what cannot qualify is refused. Constructed
+/// reports (no model run): not a hardware pass.
+private func checkTensorParallelRecord(configuration: Data, _ checks: PlacementChecks) throws {
+    let sha = SHA256Hex.of(configuration)
+    let tokens = Array(100..<132)
+    func report(mode: String = "tp", role: String, rank: Int, size: Int, backend: String? = "jaccl", chip: String,
+                tokens: [Int], passed: Bool = true, agree: Bool? = true, shares: [Int]? = nil,
+                top: ([[Int]], [[Float]])? = nil, socket: Bool = false) -> Data {
+        var object: [String: Any] = ["schema": "darkbloom_cluster_tp_check_report_v1", "mode": mode, "role": role, "rank": rank,
+            "size": size, "correctnessOnly": socket, "chip": chip, "modelConfigurationSHA256": sha,
+            "modelID": "registered_qwen38_27b", "promptTokens": 1024, "promptTokenIDsSHA256": String(repeating: "c", count: 64),
+            "outputCount": tokens.count, "chunkSize": 512, "runs": [["tokenIDs": tokens]], "repeatsIdentical": true,
+            "passed": passed]
+        if let backend { object["backend"] = backend }
+        if let agree { object["ranksAgree"] = agree }
+        if let shares { object["shares"] = shares }
+        if let top { object["topTokenIDs"] = top.0; object["topLogits"] = top.1 }
+        return try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+    let r0 = report(role: "tp2-rank0", rank: 0, size: 2, chip: "Apple M3 Ultra", tokens: tokens)
+    let r1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens)
+    let refA = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M3 Ultra", tokens: tokens, agree: nil)
+    let refB = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M5 Ultra", tokens: tokens, agree: nil)
+    let plan = "qwen_dense_heads_and_channels_v1"
+    let record = try QwenTensorParallelQualification.record(rank0: r0, rank1: r1, references: [refA, refB],
+        configuration: configuration, planName: plan, partialsDType: "float32", createdUTC: "2026-10-14T07:00:00Z")
+    checks.require("tensor parallel record: two passed JACCL ranks against both Macs' references make a consistent, passed record of tensor_parallel_v1 with no cut, the registered 27B and its artifact, and the layout",
+        record.isConsistent && record.passed && record.generationMode == "tensor_parallel_v1" && record.cuts.isEmpty
+            && record.runtimeModelID == "registered_qwen38_27b" && record.artifactSHA256.count == 64
+            && record.ranks.map(\.chip) == ["Apple M3 Ultra", "Apple M5 Ultra"]
+            && record.tensorParallelLayout == "plan=\(plan);partials=float32;shares=equal"
+            && record.comparisons.map(\.verdict) == ["tokensEqualLogitsDiffer", "tokensEqualLogitsDiffer"]
+            && record.producer == "darkbloom-cluster-tp-check record")
+    // A near tie at the first difference passes; a real divergence is a failing record (it withholds).
+    var other = tokens; other[5] = 7
+    let tie = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M3 Ultra", tokens: other, agree: nil,
+        top: (Array(repeating: [7, 105], count: 32), Array(repeating: [20.0, 20.0], count: 32)))
+    let far = report(mode: "full", role: "full", rank: 0, size: 1, backend: nil, chip: "Apple M3 Ultra", tokens: other, agree: nil,
+        top: (Array(repeating: [7, 105], count: 32), Array(repeating: [20.0, 12.0], count: 32)))
+    let near = try QwenTensorParallelQualification.record(rank0: r0, rank1: r1, references: [tie], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    let diverged = try QwenTensorParallelQualification.record(rank0: r0, rank1: r1, references: [far], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    checks.require("tensor parallel record: a 0-ulp tie at the first difference passes; an 8-logit gap is a diverged (withholding) record",
+        near.passed && near.comparisons.first?.verdict == "divergedAtNearTie" && near.comparisons.first?.firstDivergenceIndex == 5
+            && !diverged.passed && diverged.outcome == .diverged && diverged.isConsistent)
+    // Weighted shares are named in the layout.
+    let w0 = report(role: "tp2-rank0", rank: 0, size: 2, chip: "Apple M3 Ultra", tokens: tokens, shares: [1, 3])
+    let w1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, shares: [1, 3])
+    let weighted = try QwenTensorParallelQualification.record(rank0: w0, rank1: w1, references: [refA], configuration: configuration,
+        planName: plan, partialsDType: "float32", createdUTC: "t")
+    checks.require("tensor parallel record: a weighted run's record names its shares (it qualifies 1:3 only)",
+        weighted.tensorParallelLayout == "plan=\(plan);partials=float32;shares=1:3")
+    // Refusals.
+    let socket0 = report(role: "tp2-rank0", rank: 0, size: 2, backend: "socket", chip: "Apple M3 Ultra", tokens: tokens, socket: true)
+    let socket1 = report(role: "tp2-rank1", rank: 1, size: 2, backend: "socket", chip: "Apple M3 Ultra", tokens: tokens, socket: true)
+    let failed1 = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, passed: false)
+    let otherShares = report(role: "tp2-rank1", rank: 1, size: 2, chip: "Apple M5 Ultra", tokens: tokens, shares: [1, 3])
+    for (label, a, b, refs, why) in [
+        ("two ranks on one Mac (local socket)", socket0, socket1, [refA], "not across two Macs"),
+        ("a rank that did not pass", r0, failed1, [refA], "not one passed"),
+        ("ranks of different shares", r0, otherShares, [refA], "not the same run"),
+        ("no reference", r0, r1, [Data](), "at least one single-Mac reference"),
+        ("a pair report as the reference", r0, r1, [r1], "not a single-Mac full report"),
+    ] as [(String, Data, Data, [Data], String)] {
+        checks.refuses("tensor parallel record: refuses \(label)", because: why) {
+            _ = try QwenTensorParallelQualification.record(rank0: a, rank1: b, references: refs, configuration: configuration,
+                planName: plan, partialsDType: "float32", createdUTC: "t")
+        }
+    }
+}
+
+enum SHA256Hex {
+    static func of(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 }
 
 // MARK: - Unequal Macs: weighted shares

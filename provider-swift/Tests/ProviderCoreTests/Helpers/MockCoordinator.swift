@@ -257,8 +257,10 @@ public final class MockCoordinator: @unchecked Sendable {
 
     /// Bring the server up on a system-assigned port and return the bound
     /// base URL. The WebSocket route is at `${baseURL}/ws/provider` (with
-    /// `ws://` scheme); HTTP routes use the returned URL directly.
-    public func start() async throws -> URL {
+    /// `ws://` scheme); HTTP routes use the returned URL directly. `port`
+    /// brings it up on a port a client is already retrying (a coordinator
+    /// that comes back).
+    public func start(port: Int = 0) async throws -> URL {
         // Hummingbird logs at .error during graceful shutdown ("Already
         // closed", child-channel cancellation) which pollutes the test
         // output without indicating a real problem. Crank the level so the
@@ -284,7 +286,7 @@ public final class MockCoordinator: @unchecked Sendable {
             router: router,
             server: .http1WebSocketUpgrade(webSocketRouter: router),
             configuration: .init(
-                address: .hostname("127.0.0.1", port: 0),
+                address: .hostname("127.0.0.1", port: port),
                 serverName: "MockCoordinator"
             ),
             onServerRunning: { @Sendable channel in

@@ -610,6 +610,9 @@ public actor ProviderLoop {
     internal var memberRegistrationWaiter: CheckedContinuation<Void, Error>?
     internal var memberRegistrationTimer: Task<Void, Never>?
     internal var memberRegistrationWaitID: UUID?
+    /// The current wait's deadline, handed to the coordinator client so its
+    /// reconnects stay inside it.
+    internal var memberRegistrationWaitDeadline: ContinuousClock.Instant?
     /// The pair slot this leader member serves (S09), at most one; nil on a
     /// follower and whenever the pair is not ready.
     internal var clusterPairSlot: ClusterPairSlotHandle?

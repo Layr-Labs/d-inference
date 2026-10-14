@@ -107,6 +107,19 @@ public actor CoordinatorClient {
     /// Set when member acceptance never arrives, arrives late, or is refused.
     /// The reconnect loop exits instead of cycling an unacknowledged member.
     internal var memberRoleFailure = false
+    /// When a starting member's registration wait gives up (set by its
+    /// `ProviderLoop`); nil when nothing waits. Before it, a reconnect is
+    /// never scheduled past it (CoordinatorClient+MemberRegistration).
+    internal var memberRegistrationDeadline: ContinuousClock.Instant?
+    /// Why the latest connection attempt could not reach the coordinator at
+    /// all; nil once an attempt's transport was ready.
+    internal var memberUnreachableReason: String?
+    /// The reconnect the wait's deadline placed, and the end of its own
+    /// terms (handshake, then the connection's negotiation window).
+    internal var memberFinalAttemptUntil: ContinuousClock.Instant?
+    /// The end of the current attempt's own terms (its handshake's window,
+    /// then its connection's negotiation window); nil between attempts.
+    internal var memberAttemptUntil: ContinuousClock.Instant?
 
     /// The member control installed before the first connection, and its
     /// attachment to the current accepted connection. The attachment is nil

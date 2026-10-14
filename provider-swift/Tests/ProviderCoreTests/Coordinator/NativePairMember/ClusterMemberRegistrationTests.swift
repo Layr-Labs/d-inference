@@ -101,6 +101,61 @@ struct ClusterMemberRegistrationTests {
         }
     }
 
+    /// A member's retries stay inside its registration wait: one its backoff
+    /// would place after the deadline is made at the deadline and is final.
+    /// No wait, a passed deadline, or a retry well inside it: unchanged.
+    @Test func memberReconnectNeverOutlivesTheRegistrationWait() {
+        let now = ContinuousClock.now
+        let inside = CoordinatorClient.memberReconnectDelay(backoff: 4, deadline: now.advanced(by: .seconds(10)), now: now)
+        #expect(inside.seconds == 4 && !inside.final)
+        let capped = CoordinatorClient.memberReconnectDelay(backoff: 12, deadline: now.advanced(by: .milliseconds(2_500)), now: now)
+        #expect(abs(capped.seconds - 2.5) < 1e-9 && capped.final)
+        let none = CoordinatorClient.memberReconnectDelay(backoff: 12, deadline: nil, now: now)
+        #expect(none.seconds == 12 && !none.final)
+        let passed = CoordinatorClient.memberReconnectDelay(backoff: 12, deadline: now, now: now.advanced(by: .seconds(1)))
+        #expect(passed.seconds == 12 && !passed.final)
+    }
+
+    /// The final retry's terms: its handshake gets one negotiation window
+    /// from its start, a ready transport its connection's own window; an
+    /// unreachable coordinator is reported as such, never as a refusal.
+    @Test func registrationProgressTracksTheFinalAttemptAndReachability() async {
+        let client = CoordinatorClient(config: memberConfig(role: .clusterMember),
+            stats: .init(), state: .init(), liveAPNsToken: { nil })
+        #expect(await client.memberRegistrationProgress() == .notAccepted)
+        let now = ContinuousClock.now
+        await client.setMemberRegistrationDeadline(now.advanced(by: .milliseconds(500)))
+        let delay = await client.nextMemberAwareReconnectDelay(backoff: 6, now: now)
+        #expect(abs(delay - 0.5) < 1e-9)
+        let terms = now.advanced(by: .milliseconds(500)).advanced(by: ClusterMemberNegotiation.window)
+        #expect(await client.memberRegistrationProgress(now: now) == .finalAttempt(until: terms))
+        await client.noteMemberAttemptUnreachable(CoordinatorError.connectionClosed(POSIXError(.ECONNREFUSED)))
+        // The attempt ended: its reconnect delay is computed past the deadline and is not final.
+        let after = await client.nextMemberAwareReconnectDelay(backoff: 12, now: now.advanced(by: .seconds(1)))
+        #expect(after == 12)
+        guard case .unreachable = await client.memberRegistrationProgress(now: now.advanced(by: .seconds(1))) else {
+            Issue.record("an unreachable coordinator must not read as a refusal"); return
+        }
+        // An attempt under way at the deadline (final or not) runs to its own
+        // terms: its handshake one window from its start, a ready transport
+        // its connection's window; a reached coordinator that has not
+        // accepted by then did not accept.
+        await client.noteMemberAttemptStarted(now: now)
+        #expect(await client.memberRegistrationProgress(now: now)
+            == .finalAttempt(until: now.advanced(by: ClusterMemberNegotiation.window)))
+        let negotiation = ClusterMemberNegotiation(now: now)
+        await client.noteMemberTransportReady(negotiation)
+        #expect(await client.memberRegistrationProgress(now: now) == .finalAttempt(until: negotiation.deadline))
+        #expect(await client.memberRegistrationProgress(now: negotiation.deadline) == .notAccepted)
+        // A reconnect begun after the deadline (not the final one) never
+        // extends the wait, whatever the coordinator does with it.
+        await client.noteMemberAttemptEnded()
+        let late = now.advanced(by: .seconds(1))
+        await client.noteMemberAttemptStarted(now: late)
+        await client.noteMemberTransportReady(ClusterMemberNegotiation(now: late))
+        #expect(await client.memberRegistrationProgress(now: late) == .notAccepted)
+    }
+
     @Test func staleNegotiationTimerCannotRefuseReplacement() async throws {
         let client = CoordinatorClient(config: memberConfig(role: .clusterMember),
             stats: .init(), state: .init(), liveAPNsToken: { nil })

@@ -72,45 +72,31 @@ enum ClusterProductModelStore {
     static func cloneIntoClusterStore(_ installed: Installed, store: URL, providerConfiguration: URL? = nil) throws -> String? {
         var artifact = installed.artifact
         if case .complete = ClusterModelStore.holding(store: store, artifact: artifact) { return nil }
-        let folder = artifact.folderName
-        let destination = store.appendingPathComponent(folder)
-        guard !FileManager.default.fileExists(atPath: destination.path) else { return nil }
+        guard !FileManager.default.fileExists(atPath: store.appendingPathComponent(artifact.folderName).path) else { return nil }
         if let providerConfiguration, let exact = catalogManifest(providerConfiguration: providerConfiguration, artifact: artifact) {
             artifact.manifest = exact
         }
-        let staging = store.appendingPathComponent(".darkbloom-clone-" + String(artifact.aggregateSHA256.prefix(32)))
-        try? FileManager.default.removeItem(at: staging)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        do {
-            for file in artifact.files {
-                let target = staging.appendingPathComponent(file.path)
-                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-                var info = stat()
-                let source = installed.directory.appendingPathComponent(file.path)
-                guard lstat(source.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, Int64(info.st_size) == file.sizeBytes else {
-                    throw ClusterSetupFailure("the product store's \(file.path) is missing or not its manifest size")
-                }
-                guard clonefile(source.path, target.path, UInt32(CLONE_NOFOLLOW)) == 0 else {
-                    throw ClusterSetupFailure("\(file.path) could not be cloned into the cluster's model store (errno \(errno)); the cluster store must be on the same disk as the product's models")
-                }
-            }
-            try artifact.manifest.write(to: staging.appendingPathComponent("manifest.json"))
-            guard rename(staging.path, destination.path) == 0 else { throw ClusterSetupFailure("the cloned folder could not be put in place") }
-            return folder
-        } catch {
-            try? FileManager.default.removeItem(at: staging)
-            throw error
-        }
+        // Own staging per call, exclusive rename: concurrent clones (onboarding and service) never mix files.
+        return try ClusterModelStore.cloneFolder(artifact: artifact, from: installed.directory, into: store)
     }
 }
 
-/// The protected-build trust check for a copied model: a build the catalog marks with required runtime capabilities
-/// (the Qwen3.8 27B builds) is accepted from another Mac only when this build's own qualification records pin its
-/// exact artifact digest; every other model is accepted on its manifest (each file then verified by digest).
-enum ClusterModelCopyTrust {
+/// The trust check for a copied model with this build's records (`ClusterModelCopyTrust.refusal(_:pinnedArtifacts:protected:)`):
+/// accepted from another Mac only when this build's qualification records pin its exact artifact digest; a build the
+/// catalog marks with required runtime capabilities (the protected builds) keeps its own refusal words.
+extension ClusterModelCopyTrust {
+    /// Every artifact digest this build's bundled qualification records name.
+    static let pinnedArtifacts: Set<String> = Set(ClusterPairServingGrants.records.map(\.artifactSHA256))
+
+    /// The artifacts a pair may serve with this build (a granted model's records): what the onboarding offers to copy
+    /// from another Mac or to download, so nobody waits for bytes these Macs could not serve together.
+    static let servableArtifacts: Set<String> = {
+        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID))
+        return Set(ClusterPairServingGrants.records.filter { granted.contains($0.runtimeModelID) }.map(\.artifactSHA256))
+    }()
+
     static func refusal(_ artifact: ClusterCatalogArtifact) -> String? {
-        guard !ModelRuntimeRequirements.requiredCapabilities(for: artifact.modelID).isEmpty else { return nil }
-        if ClusterPairQualificationRecordsBundled.jsonLines.contains("\"artifactSHA256\":\"\(artifact.aggregateSHA256)\"") { return nil }
-        return "\(artifact.modelID) is a protected build, and this build's qualification records do not pin the offered digest \(artifact.aggregateSHA256.prefix(12))…; it was not accepted"
+        refusal(artifact, pinnedArtifacts: pinnedArtifacts,
+                protected: !ModelRuntimeRequirements.requiredCapabilities(for: artifact.modelID).isEmpty)
     }
 }

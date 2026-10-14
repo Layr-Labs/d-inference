@@ -38,6 +38,13 @@ public struct ClusterCatalogArtifact: Sendable, Equatable {
     /// Where the catalog publishes the files (`r2_prefix`), when the manifest names it.
     public var r2Prefix: String?
 
+    /// The same catalog entry: model ID, version and aggregate digest. The digest alone is not an entry's identity: two
+    /// entries can share every file (the catalog's gemma-4-26b and gemma-4-26b-8bit do), and the runtime tells them
+    /// apart by the manifest.
+    public func sameEntry(modelID: String, version: String, aggregate: String) -> Bool {
+        aggregate == aggregateSHA256 && modelID == self.modelID && version == self.version
+    }
+
     /// The folder name the cluster's model store uses: the model ID's last part and the catalog version.
     public var folderName: String {
         let base = modelID.split(separator: "/").last.map(String.init) ?? modelID
@@ -141,14 +148,15 @@ public enum ClusterModelStore {
     /// Staging folders are hidden from every listing: a folder appears only after its last byte is verified.
     public static func stagingName(_ artifact: ClusterCatalogArtifact) -> String { ".darkbloom-incoming-" + String(artifact.aggregateSHA256.prefix(32)) }
 
-    /// The folders of `store` whose manifest names this artifact's aggregate digest (manifests only; the worker
-    /// verifies the weights before anything is served, and a copy verifies every byte as it arrives).
+    /// The folders of `store` whose manifest names this catalog entry (model ID, version, aggregate digest; manifests
+    /// only: the worker verifies the weights before anything is served, and a copy verifies every byte as it arrives).
     public static func holding(store: URL, artifact: ClusterCatalogArtifact) -> ClusterModelHolding {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
         for name in names where !name.hasPrefix(".") {
             guard let data = readSmall(store.appendingPathComponent(name).appendingPathComponent("manifest.json")),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  object["aggregate_sha256"] as? String == artifact.aggregateSHA256 else { continue }
+                  artifact.sameEntry(modelID: object["model_id"] as? String ?? "", version: object["version"] as? String ?? "",
+                                     aggregate: object["aggregate_sha256"] as? String ?? "") else { continue }
             return .complete(folder: name)
         }
         let staging = store.appendingPathComponent(stagingName(artifact))
@@ -360,7 +368,10 @@ public final class ClusterModelReceiver: @unchecked Sendable {
             } else { offsets.append(0) }
         }
         let left = zip(artifact.files, offsets).reduce(Int64(0)) { $0 + $1.0.sizeBytes - $1.1 }
-        let free = freeBytes(store)
+        var free = freeBytes(store)
+        if let short = free, short < left + ClusterModelProvisioning.reserveBytes, reclaimAbandonedStaging() {
+            free = freeBytes(store)
+        }
         if let free, free < left + ClusterModelProvisioning.reserveBytes {
             throw ClusterModelProvisioningError("this Mac has \(ClusterModelProvisioning.gigabytes(free)) free; the copy needs \(ClusterModelProvisioning.gigabytes(left)) and \(ClusterModelProvisioning.gigabytes(ClusterModelProvisioning.reserveBytes)) to spare")
         }
@@ -434,8 +445,9 @@ public final class ClusterModelReceiver: @unchecked Sendable {
         let wrote = artifact.manifest.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
         _ = fsync(fd); close(fd)
         guard wrote == artifact.manifest.count else { throw ClusterModelProvisioningError("the manifest could not be written") }
-        guard rename(staging.path, destination.path) == 0 else {
-            throw ClusterModelProvisioningError("the model folder could not be put in place (errno \(errno))")
+        // Exclusive: never replaces what appeared at the destination after `begin` (rename(2) would replace an empty folder).
+        guard renamex_np(staging.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw ClusterModelProvisioningError("the model folder could not be put in place (errno \(errno)); \(folder) appeared in this Mac's model store during the copy")
         }
         let parent = open(store.path, O_RDONLY | O_CLOEXEC)
         if parent >= 0 { _ = fsync(parent); close(parent) }
@@ -443,6 +455,21 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     }
 
     // MARK: Internals
+
+    /// Removes the hidden staging of copies of OTHER artifacts (abandoned: one copy runs at a time on a Mac), so
+    /// hidden bytes never starve the disk; this artifact's own staging stays for its resume. True when one went.
+    private func reclaimAbandonedStaging() -> Bool {
+        let own = staging.lastPathComponent
+        var reclaimed = false
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []
+        where name.hasPrefix(".darkbloom-incoming-") && name != own {
+            let url = store.appendingPathComponent(name)
+            var info = stat()
+            guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else { continue }
+            if (try? FileManager.default.removeItem(at: url)) != nil { reclaimed = true }
+        }
+        return reclaimed
+    }
 
     private func makeDirectory(_ url: URL) throws {
         var info = stat()
@@ -576,5 +603,86 @@ public enum ClusterModelTransferWire {
         for byte in data[start + 4..<start + 12] { offset = offset << 8 | UInt64(byte) }
         guard offset <= UInt64(Int64.max) else { return nil }
         return (Int(index), Int64(offset), data[(start + 12)...])
+    }
+}
+
+
+// MARK: - Trust
+
+/// Which artifacts a Mac accepts from another Mac. A copy is accepted only when this build's own qualification records
+/// (the only per-model data; a pair serves nothing they do not grant) pin its exact aggregate digest, so a paired peer
+/// can never place a self-consistent manifest of other files, under any model name, in this Mac's store; every file is
+/// then verified against that pinned identity as it arrives. A protected build (one the catalog marks with required
+/// runtime capabilities) keeps its own words. The records are passed in, so this stays pure.
+public enum ClusterModelCopyTrust {
+    public static func refusal(_ artifact: ClusterCatalogArtifact, pinnedArtifacts: Set<String>, protected: Bool) -> String? {
+        if pinnedArtifacts.contains(artifact.aggregateSHA256) { return nil }
+        let digest = String(artifact.aggregateSHA256.prefix(12))
+        if protected {
+            return "\(artifact.modelID) is a protected build, and this build's qualification records do not pin the offered digest \(digest)…; it was not accepted"
+        }
+        return "\(artifact.modelID) \(artifact.version) is not one this build's cluster runtime serves (its qualification records do not pin the offered digest \(digest)…); it was not accepted"
+    }
+}
+
+// MARK: - Single-Mac models in the cluster store
+
+extension ClusterModelStore {
+    /// Clones a model folder's files (APFS clones: no new blocks, each file single-linked) into `store` under its
+    /// folder name, with its manifest; nil when the store holds it already. Each call stages under its own hidden name
+    /// and the rename into place is exclusive, so two processes cloning at once (the onboarding and the cluster
+    /// service) never delete or mix each other's files: the folder appears whole, once, or not at all.
+    public static func cloneFolder(artifact: ClusterCatalogArtifact, from directory: URL, into store: URL) throws -> String? {
+        if case .complete = holding(store: store, artifact: artifact) { return nil }
+        let folder = artifact.folderName
+        let destination = store.appendingPathComponent(folder)
+        var existing = stat()
+        guard lstat(destination.path, &existing) != 0 else { return nil }
+        let prefix = ".darkbloom-clone-" + String(artifact.aggregateSHA256.prefix(32)) + "-"
+        sweepStaleClones(store: store, prefix: ".darkbloom-clone-")
+        let staging = store.appendingPathComponent(prefix + "\(getpid())-" + UUID().uuidString.prefix(8))
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        do {
+            for file in artifact.files {
+                let target = staging.appendingPathComponent(file.path)
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                var info = stat()
+                let source = directory.appendingPathComponent(file.path)
+                guard lstat(source.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, Int64(info.st_size) == file.sizeBytes else {
+                    throw ClusterModelProvisioningError("the source's \(file.path) is missing or not its manifest size")
+                }
+                guard clonefile(source.path, target.path, UInt32(CLONE_NOFOLLOW)) == 0 else {
+                    throw ClusterModelProvisioningError("\(file.path) could not be cloned into the cluster's model store (errno \(errno)); the cluster store must be on the same disk as the product's models")
+                }
+            }
+            let manifest = staging.appendingPathComponent("manifest.json")
+            let fd = open(manifest.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
+            guard fd >= 0 else { throw ClusterModelProvisioningError("the manifest could not be written") }
+            let wrote = artifact.manifest.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+            _ = fsync(fd); close(fd)
+            guard wrote == artifact.manifest.count else { throw ClusterModelProvisioningError("the manifest could not be written") }
+            guard renamex_np(staging.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+                let raced = errno == EEXIST
+                try? FileManager.default.removeItem(at: staging)
+                if raced { return nil }   // another process placed it first
+                throw ClusterModelProvisioningError("the cloned folder could not be put in place (errno \(errno))")
+            }
+            return folder
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
+    }
+
+    /// Clone staging an ended process left (older than an hour; clones hold no new blocks until their source goes).
+    static func sweepStaleClones(store: URL, prefix: String) {
+        let cutoff = Date().addingTimeInterval(-3600)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? [] where name.hasPrefix(prefix) {
+            let url = store.appendingPathComponent(name)
+            var info = stat()
+            guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(),
+                  Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }

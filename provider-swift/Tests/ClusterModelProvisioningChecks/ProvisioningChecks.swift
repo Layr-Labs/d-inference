@@ -30,6 +30,12 @@ import CryptoKit
         destinationOccupiedRefused()
         catalogIdentityChecked()
         wireRoundTrip()
+        // Review 2026-10-13 (adversarial): failing first on d2859ce60.
+        onlyPinnedArtifactsAccepted()
+        sameFilesOtherCatalogEntryIsNotHeld()
+        concurrentClonesNeverMix()
+        commitNeverReplacesAFolder()
+        abandonedStagingReclaimedForSpace()
         print("provisioning checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -310,6 +316,130 @@ import CryptoKit
             _ = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
                 trust: { _ in "a protected build: this Mac's catalog does not confirm it" })
         }
+    }
+
+    // MARK: - Review 2026-10-13
+
+    /// The receiving Mac accepts only an artifact this build's own qualification records pin (the records are the
+    /// only per-model data, and a pair serves nothing else): a paired peer cannot place a self-consistent manifest of
+    /// arbitrary files, under any model name, in another Mac's store. Protected builds keep their own words.
+    static func onlyPinnedArtifactsAccepted() {
+        let model = fixture()
+        let pinned: Set<String> = [model.artifact.aggregateSHA256]
+        expect(ClusterModelCopyTrust.refusal(model.artifact, pinnedArtifacts: pinned, protected: false) == nil, "a pinned artifact is accepted")
+        let forged = fixture(modelID: "mlx-community/Qwen3.5-9B")
+        let refusal = ClusterModelCopyTrust.refusal(forged.artifact, pinnedArtifacts: pinned, protected: false)
+        expect(refusal?.contains("qualification records do not pin") == true, "an unpinned artifact is refused before any byte: \(String(describing: refusal))")
+        let protectedRefusal = ClusterModelCopyTrust.refusal(forged.artifact, pinnedArtifacts: pinned, protected: true)
+        expect(protectedRefusal?.contains("protected build") == true, "a protected build keeps its words: \(String(describing: protectedRefusal))")
+        expect(ClusterModelCopyTrust.refusal(forged.artifact, pinnedArtifacts: [], protected: false) != nil, "no records: nothing is accepted")
+        let store = temporary("store")
+        refuses("qualification records do not pin") {
+            _ = try ClusterModelReceiver(artifact: forged.artifact, store: store, folder: forged.artifact.folderName, expectedAggregate: nil,
+                trust: { ClusterModelCopyTrust.refusal($0, pinnedArtifacts: pinned, protected: false) })
+        }
+        expect(((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).isEmpty, "nothing is staged for a refused artifact")
+    }
+
+    /// Two catalog entries can share every file and so the aggregate digest (the catalog's gemma-4-26b and
+    /// gemma-4-26b-8bit do; the runtime tells them apart by the manifest). A folder of one does not hold the other.
+    static func sameFilesOtherCatalogEntryIsNotHeld() {
+        let model = fixture()
+        let twin = renamed(model, modelID: "Example/Tiny-Model-8bit")
+        expect(twin.artifact.aggregateSHA256 == model.artifact.aggregateSHA256 && twin.manifest != model.manifest, "fixture: same files, other entry")
+        let store = temporary("store")
+        do {
+            let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil)
+            _ = try send(try ClusterModelSender(artifact: model.artifact, directory: source(model)), to: receiver, from: try receiver.begin().offsets)
+            _ = try receiver.commit()
+            expect(ClusterModelStore.holding(store: store, artifact: model.artifact) == .complete(folder: model.artifact.folderName), "its own entry is held")
+            expect(ClusterModelStore.holding(store: store, artifact: twin.artifact) == .missing,
+                "the other entry is not held by a folder of the first: \(ClusterModelStore.holding(store: store, artifact: twin.artifact))")
+            expect(model.artifact.sameEntry(modelID: model.artifact.modelID, version: model.artifact.version, aggregate: model.artifact.aggregateSHA256)
+                && !twin.artifact.sameEntry(modelID: model.artifact.modelID, version: model.artifact.version, aggregate: model.artifact.aggregateSHA256),
+                "sameEntry compares the model, the version and the digest")
+            let state = try ClusterModelReceiver(artifact: twin.artifact, store: store, folder: twin.artifact.folderName, expectedAggregate: nil).begin()
+            expect(!state.complete, "the other entry is received into its own folder")
+        } catch { expect(false, "same files, other entry: \(error)") }
+    }
+
+    static func renamed(_ model: (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact), modelID: String)
+        -> (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact) {
+        var object = try! JSONSerialization.jsonObject(with: model.manifest) as! [String: Any]
+        object["model_id"] = modelID
+        let manifest = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return (model.files, manifest, try! ClusterCatalogArtifact.parse(manifest: manifest))
+    }
+
+    /// The onboarding and the cluster service (two processes) may both clone a single-Mac model into the cluster
+    /// store at once: one must never delete the other's staging, and the folder appears whole or not at all.
+    static func concurrentClonesNeverMix() {
+        let model = fixture()
+        let from = source(model)
+        let store = temporary("store")
+        // Another process is part-way through the same clone (its staging under the shared name of d2859ce60).
+        let theirs = store.appendingPathComponent(".darkbloom-clone-" + String(model.artifact.aggregateSHA256.prefix(32)))
+        try! FileManager.default.createDirectory(at: theirs, withIntermediateDirectories: true)
+        try! Data("in progress".utf8).write(to: theirs.appendingPathComponent("config.json"))
+        do {
+            let folder = try ClusterModelStore.cloneFolder(artifact: model.artifact, from: from, into: store)
+            expect(folder == model.artifact.folderName, "cloned under its folder name")
+            expect(FileManager.default.fileExists(atPath: theirs.appendingPathComponent("config.json").path), "another clone's staging is left alone")
+            for (path, data) in model.files {
+                expect((try? Data(contentsOf: store.appendingPathComponent(model.artifact.folderName).appendingPathComponent(path))) == data, "clone: \(path)")
+            }
+            expect(ClusterModelStore.holding(store: store, artifact: model.artifact) == .complete(folder: model.artifact.folderName), "the clone is held")
+            // A second clone (the other process finishing later) neither fails loudly nor touches the placed folder.
+            expect(try ClusterModelStore.cloneFolder(artifact: model.artifact, from: from, into: store) == nil, "a second clone finds it there")
+            // A clone whose source lost a file leaves nothing behind.
+            let broken = source(model)
+            try FileManager.default.removeItem(at: broken.appendingPathComponent("tokenizer.json"))
+            let store2 = temporary("store2")
+            refuses("missing") { _ = try ClusterModelStore.cloneFolder(artifact: model.artifact, from: broken, into: store2) }
+            let left = ((try? FileManager.default.contentsOfDirectory(atPath: store2.path)) ?? [])
+            expect(left.isEmpty, "a failed clone leaves no folder and no staging: \(left)")
+        } catch { expect(false, "clone: \(error)") }
+    }
+
+    /// The rename into place is exclusive: a folder that appeared at the destination after `begin` (even an empty one)
+    /// is never replaced.
+    static func commitNeverReplacesAFolder() {
+        let model = fixture()
+        let store = temporary("store")
+        do {
+            let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil)
+            _ = try send(try ClusterModelSender(artifact: model.artifact, directory: source(model)), to: receiver, from: try receiver.begin().offsets)
+            try FileManager.default.createDirectory(at: store.appendingPathComponent(model.artifact.folderName), withIntermediateDirectories: false)
+            refuses("could not be put in place") { _ = try receiver.commit() }
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: store.appendingPathComponent(model.artifact.folderName).path)) ?? ["?"]
+            expect(names.isEmpty, "the folder that appeared is left as it was: \(names)")
+        } catch { expect(false, "exclusive commit: \(error)") }
+    }
+
+    /// An abandoned copy of another model (the person chose something else) stays hidden in the store; when the disk
+    /// is short it is reclaimed before the copy is refused, so hidden staging never starves the disk.
+    static func abandonedStagingReclaimedForSpace() {
+        let model = fixture(), other = fixture(modelID: "Example/Other-Model")
+        let store = temporary("store")
+        do {
+            let first = try ClusterModelReceiver(artifact: other.artifact, store: store, folder: other.artifact.folderName, expectedAggregate: nil)
+            _ = try send(try ClusterModelSender(artifact: other.artifact, directory: source(other)), to: first, from: try first.begin().offsets, stopAfterBytes: 1 << 20)
+            let abandoned = store.appendingPathComponent(ClusterModelStore.stagingName(other.artifact))
+            expect(FileManager.default.fileExists(atPath: abandoned.path), "fixture: an abandoned staging folder")
+            // Free space counts the abandoned bytes as used: without them the copy fits, with them it does not.
+            let need = model.artifact.totalBytes + ClusterModelProvisioning.reserveBytes
+            let receiver = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
+                freeBytes: { _ in FileManager.default.fileExists(atPath: abandoned.path) ? need - 1 : need })
+            let state = try receiver.begin()
+            expect(!state.complete, "the copy starts once the abandoned staging is reclaimed")
+            expect(!FileManager.default.fileExists(atPath: abandoned.path), "the abandoned staging was reclaimed")
+            // Its own staging is never reclaimed for itself (the resume is kept).
+            let again = try ClusterModelReceiver(artifact: model.artifact, store: store, folder: model.artifact.folderName, expectedAggregate: nil,
+                freeBytes: { _ in 1 })
+            refuses("free; the copy needs") { _ = try again.begin() }
+            expect(FileManager.default.fileExists(atPath: store.appendingPathComponent(ClusterModelStore.stagingName(model.artifact)).path),
+                "a copy's own staging stays for its resume")
+        } catch { expect(false, "reclaim: \(error)") }
     }
 
     static func wireRoundTrip() {

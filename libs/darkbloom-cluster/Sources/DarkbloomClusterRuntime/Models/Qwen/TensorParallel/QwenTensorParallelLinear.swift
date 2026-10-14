@@ -59,6 +59,35 @@ final class QwenTensorParallelRowLinear: QuantizedLinear {
     }
 }
 
+/// A routed-expert block on one rank: its experts' and shared expert's
+/// combined output is this rank's partial (every expert divided by channels,
+/// the router replicated), widened to float32, all-summed, rounded once.
+final class QwenTensorParallelBlockReduction: Module, UnaryLayer {
+    @ModuleInfo(key: "inner") var inner: Module
+    private let reduction: QwenTensorParallelRowLinear.Box
+    private let timing: QwenTensorParallelReductionTiming
+    private let partialDType: DType
+
+    init(_ inner: Module, reduction: QwenTensorParallelReduction, timing: QwenTensorParallelReductionTiming,
+         partialDType: DType) {
+        self.reduction = QwenTensorParallelRowLinear.Box(reduction)
+        self.timing = timing
+        self.partialDType = partialDType
+        self._inner.wrappedValue = inner
+        super.init()
+        freeze()
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let partial = (inner as! UnaryLayer)(x).asType(partialDType)
+        if timing == .explicit {
+            eval(partial)
+            Stream.gpu.synchronize()
+        }
+        return reduction.value.allSum(partial).asType(x.dtype)
+    }
+}
+
 /// Diagnostic only: a rank's shard with no peer. `allSum` returns this rank's
 /// partial unchanged, so outputs are wrong by construction; it measures one
 /// chip's share of the compute without any collective. Never a TP result.
@@ -179,10 +208,25 @@ enum QwenTensorParallelSlicer {
             default:
                 throw ProbeError("Tensor parallel slice: input columns of a non-quantized tensor (\(leaf))")
             }
-        case .expertRows, .expertInputColumns:
-            // The plan covers routed experts; the tensor-parallel runtime does
-            // not load them yet (QwenTensorParallelModel refuses the model type).
-            throw ProbeError("Tensor parallel slice: routed-expert cuts are not loaded by this runtime yet")
+        case .expertRows(let range):
+            // [experts, rows, ...]: every expert's rows (weight, scales and biases alike).
+            guard value.ndim == 3, range.lowerBound >= 0, range.upperBound <= value.dim(1), !range.isEmpty else {
+                throw ProbeError("Tensor parallel slice: expert rows \(range) do not fit \(value.shape)")
+            }
+            return take(value, MLXArray(range.map { Int32($0) }), axis: 1)
+        case .expertInputColumns(let logical):
+            guard value.ndim == 3 else { throw ProbeError("Tensor parallel slice: expert input columns of \(value.shape)") }
+            let divisor: Int
+            switch leaf {
+            case "weight": divisor = 32 / bits
+            case "scales", "biases": divisor = groupSize
+            default: throw ProbeError("Tensor parallel slice: expert input columns of a non-quantized tensor (\(leaf))")
+            }
+            guard logical.lowerBound % divisor == 0, logical.upperBound % divisor == 0,
+                  logical.upperBound / divisor <= value.dim(2) else {
+                throw ProbeError("Tensor parallel slice: expert columns \(logical) split a packed word or group")
+            }
+            return take(value, MLXArray(((logical.lowerBound / divisor) ..< (logical.upperBound / divisor)).map { Int32($0) }), axis: 2)
         }
     }
 }

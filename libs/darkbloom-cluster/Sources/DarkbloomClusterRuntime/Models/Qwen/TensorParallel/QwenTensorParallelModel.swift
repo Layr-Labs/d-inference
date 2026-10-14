@@ -57,10 +57,10 @@ public final class QwenTensorParallelModel {
         let started = DispatchTime.now().uptimeNanoseconds
         let configurationData = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
         guard let root = try JSONSerialization.jsonObject(with: configurationData) as? [String: Any],
-              root["model_type"] as? String == "qwen3_5",
+              ["qwen3_5", "qwen3_5_moe"].contains(root["model_type"] as? String ?? ""),
               let text = root["text_config"] as? [String: Any],
               let quantization = (root["quantization"] ?? root["quantization_config"]) as? [String: Any] else {
-            throw ProbeError("Tensor parallel load: expected a quantized qwen3_5 checkpoint with a text configuration")
+            throw ProbeError("Tensor parallel load: expected a quantized qwen3_5 or qwen3_5_moe checkpoint with a text configuration")
         }
         let size: Int, rank: Int
         switch role {
@@ -70,8 +70,8 @@ public final class QwenTensorParallelModel {
         }
         let plan = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: size,
                                               shares: shares)
-        if case .simulated = role, !plan.equalShares {
-            throw ProbeError("Tensor parallel load: the split-sum oracle covers equal shards only")
+        if case .simulated = role, !plan.equalShares || plan.routedExperts {
+            throw ProbeError("Tensor parallel load: the split-sum oracle covers dense equal shards only")
         }
         if case .shard = role {
             guard let reduction, reduction.size == size, reduction.rank == rank else {
@@ -83,10 +83,11 @@ public final class QwenTensorParallelModel {
 
         let constructed: [String: Any]
         if case .shard = role { constructed = plan.shardTextConfiguration(text, rank: rank) } else { constructed = plan.unshardedTextConfiguration(text) }
-        let wrapper: [String: Any] = ["model_type": "qwen3_5", "text_config": constructed]
+        let rootType = plan.routedExperts ? "qwen3_5_moe" : "qwen3_5"
+        let wrapper: [String: Any] = ["model_type": rootType, "text_config": constructed]
         let configuration = try JSONDecoder().decode(Qwen35Configuration.self,
             from: JSONSerialization.data(withJSONObject: wrapper, options: [.sortedKeys]))
-        let model = Qwen35Model(configuration)
+        let model: Qwen35Model = plan.routedExperts ? Qwen35MoEModel(configuration) : Qwen35Model(configuration)
 
         // Checkpoint tensors named by the index; the multi-token prediction
         // file and the vision tower are not part of the text model.
@@ -120,6 +121,9 @@ public final class QwenTensorParallelModel {
             }
         }
 
+        // Routed experts: the checkpoint's split switch_mlp gate/up become the
+        // fused gate_up the SDK constructs (per rank, after the cut).
+        if plan.routedExperts { weights = model.sanitize(weights: weights) }
         quantize(model: model) { path, _ in
             weights[path + ".scales"] != nil ? (plan.groupSize, plan.bits, .affine) : nil
         }
@@ -136,9 +140,20 @@ public final class QwenTensorParallelModel {
 
         // Row-parallel projections.
         let leaves = Dictionary(uniqueKeysWithValues: model.leafModules().flattened())
+        let blocks = Dictionary(model.namedModules(), uniquingKeysWith: { first, _ in first })
         var replacements: [(String, Module)] = []
         var extra: [MLXArray] = []
         for path in plan.rowParallelModulePaths() {
+            if plan.routedExperts, path.hasSuffix(".mlp") {
+                // The whole routed-expert block's output is this rank's partial.
+                guard case .shard = role, let block = blocks[path], block is UnaryLayer else {
+                    if case .full = role { continue }
+                    throw ProbeError("Tensor parallel load: \(path) is not a routed-expert block")
+                }
+                replacements.append((path, QwenTensorParallelBlockReduction(block, reduction: reduction!, timing: timing,
+                                                                            partialDType: partialDType)))
+                continue
+            }
             guard let source = leaves[path] as? QuantizedLinear else {
                 throw ProbeError("Tensor parallel load: \(path) is not a quantized projection")
             }

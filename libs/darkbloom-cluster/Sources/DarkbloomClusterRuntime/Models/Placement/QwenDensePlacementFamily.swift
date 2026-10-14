@@ -17,6 +17,13 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// One two-stage plan per position the plan's own rule allows.
     let plans: [Int: QwenLayerStagePlan]
     let structuralCuts: [Int]
+    /// The dense tensor-parallel plan (`QwenTensorParallelPlan`, two equal
+    /// shards by heads and channels) when it covers this artifact: a dense
+    /// `qwen3_5_text` model, affine 4- or 8-bit, an untied head, every head
+    /// and channel count divisible. Nil otherwise, with the plan's own reason
+    /// in `tensorParallelRefusal` (routed experts, a Prism pack, ...).
+    let tensorParallel: QwenTensorParallelPlan?
+    let tensorParallelRefusal: String?
 
     init(configuration: Data) throws {
         definition = try QwenResidentModelDefinition(configuration: configuration)
@@ -48,6 +55,35 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
             plans[cut] = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<cut, cut..<geometry.layers])
         }
         self.plans = plans; structuralCuts = cuts
+        do {
+            tensorParallel = try QwenTensorParallelPlan(textConfiguration: text,
+                quantization: root["quantization"] as? [String: Any] ?? [:], size: 2)
+            tensorParallelRefusal = nil
+        } catch {
+            tensorParallel = nil; tensorParallelRefusal = "\(error)"
+        }
+    }
+
+    var tensorParallelPlan: ClusterTensorParallelFamilyPlan? {
+        tensorParallel.map { plan in
+            // One reduction per row-parallel module of a layer (the mixer's
+            // output and the MLP's down projection), float32 partials of the
+            // residual width, and the head's distributed selection per step.
+            ClusterTensorParallelFamilyPlan(plan: "qwen_dense_heads_and_channels_v1", ranks: [plan.size],
+                reductionsPerLayer: plan.reductionsPerForward / plan.layerCount, reductionsPerStep: 1,
+                partialBytesPerToken: plan.hiddenSize * 4, stateDividesByHeads: true)
+        }
+    }
+
+    /// The plan's cut for a stored tensor (it is the same for every rank):
+    /// a whole tensor every rank holds, or rows or input columns divided.
+    func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? {
+        guard let plan = tensorParallel, let disposition = try? plan.disposition(key: name, rank: 0) else { return nil }
+        switch disposition {
+        case .skip: return nil
+        case .load(.replicate): return .replicated
+        case .load(.rows), .load(.inputColumns): return .divided
+        }
     }
 
     var runtimeModelID: String { definition.specification.model.rawValue }

@@ -91,6 +91,10 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
     /// the same phase split without it), where a decoding Mac is credited at
     /// all (`ClusterSpeculativeCredit`). Nil: the head is never credited.
     public fileprivate(set) var speculativeDecodeFactor: Double? = nil
+    /// The family's tensor-parallel plan over this artifact's bytes: what a
+    /// rank of `tensor_parallel_v1` (or the hybrid's decode) holds. Nil when
+    /// the family has no plan, or in a layout written before it was derived.
+    public fileprivate(set) var tensorParallel: ClusterTensorParallelLayout? = nil
     /// Stage-0 layer counts the installed runtime admits for this model.
     public let admittedCuts: [Int]
     /// Stage-0 layer counts the family's stage plan could cut at. A superset
@@ -176,6 +180,16 @@ public struct ClusterModelLayout: Codable, Equatable, Sendable {
               speculativeDecodeFactor == nil || generationModes.contains(.phaseSplitMTP) else {
             throw ClusterPlacementError("Model layout's speculative head is malformed")
         }
+        try tensorParallel?.validate(layout: self)
+    }
+
+    /// The same layout with tensor-parallel facts (a constructed layout, or
+    /// one read from a file written before they were derived); validated.
+    public func with(tensorParallel facts: ClusterTensorParallelLayout?) throws -> ClusterModelLayout {
+        var copy = self
+        copy.tensorParallel = facts
+        try copy.validate()
+        return copy
     }
 
     public func encoded() throws -> Data {
@@ -333,6 +347,11 @@ public protocol ClusterPlacementFamily {
     func isSpeculativeHead(storedTensor name: String) -> Bool
     /// See `ClusterModelLayout.speculativeDecodeFactor`.
     var speculativeDecodeFactor: Double? { get }
+    /// The family's tensor-parallel plan for this model; nil when it has none.
+    var tensorParallelPlan: ClusterTensorParallelFamilyPlan? { get }
+    /// How that plan treats a tensor some range loads; nil when the plan does
+    /// not cover it (the layout is then refused: a plan covers every tensor).
+    func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut?
     /// Relative compute cost of a layer. 1 for every layer unless the family
     /// has measured its kinds apart.
     func layerCost(_ layer: Int) -> Double
@@ -350,6 +369,8 @@ extension ClusterPlacementFamily {
     public func loadsAtBothEnds(storedTensor name: String) -> Bool { false }
     public func isSpeculativeHead(storedTensor name: String) -> Bool { false }
     public var speculativeDecodeFactor: Double? { nil }
+    public var tensorParallelPlan: ClusterTensorParallelFamilyPlan? { nil }
+    public func tensorParallelCut(ofStoredTensor name: String) -> ClusterTensorParallelTensorCut? { nil }
     public func layerCost(_ layer: Int) -> Double { 1 }
     public func prefillTransient(layer: Int) -> ClusterPlacementLayerTransient { .none }
 }
@@ -370,6 +391,24 @@ public enum ClusterModelLayoutBuilder {
         var layers = [ClusterModelLayout.Part](repeating: .init(), count: count)
         var ingress = ClusterModelLayout.Part(), egress = ClusterModelLayout.Part(), excluded = ClusterModelLayout.Part()
         var head = ClusterModelLayout.Part()
+        // Divided and replicated loaded bytes of each layer, then ingress and egress.
+        let tensorPlan = family.tensorParallelPlan
+        var tpLayers = [(divided: Int, replicated: Int)](repeating: (0, 0), count: count)
+        var tpIngress = (divided: 0, replicated: 0), tpEgress = (divided: 0, replicated: 0)
+        func tensorParallelCut(_ name: String) throws -> ClusterTensorParallelTensorCut? {
+            guard tensorPlan != nil else { return nil }
+            guard let cut = family.tensorParallelCut(ofStoredTensor: name) else {
+                throw ClusterPlacementError("The family's tensor-parallel plan does not cover tensor \(name)")
+            }
+            return cut
+        }
+        func add(_ cut: ClusterTensorParallelTensorCut?, _ loaded: Int, to part: inout (divided: Int, replicated: Int)) {
+            switch cut {
+            case .divided: part.divided += loaded
+            case .replicated: part.replicated += loaded
+            case nil: break
+            }
+        }
         for tensor in tensors {
             guard tensor.byteCount > 0 else { throw ClusterPlacementError("Tensor \(tensor.name) has no bytes") }
             let stages = try cuts.map { try family.stage(ofStoredTensor: tensor.name, cut: $0) }
@@ -383,6 +422,8 @@ public enum ClusterModelLayoutBuilder {
                 }
                 ingress.add(stored: tensor.byteCount, loaded: loaded, work: work)
                 egress.add(stored: 0, loaded: loaded, work: work)
+                let cut = try tensorParallelCut(tensor.name)
+                add(cut, loaded, to: &tpIngress); add(cut, loaded, to: &tpEgress)
                 continue
             }
             if stages.allSatisfy({ $0 == nil }) {
@@ -407,10 +448,13 @@ public enum ClusterModelLayoutBuilder {
                         + "the stage plan is not a contiguous layer pipeline")
                 }
                 layers[layer].add(stored: tensor.byteCount, loaded: loaded, work: work)
+                add(try tensorParallelCut(tensor.name), loaded, to: &tpLayers[layer])
             } else if stages.allSatisfy({ $0 == 0 }) {
                 ingress.add(stored: tensor.byteCount, loaded: loaded, work: work)
+                add(try tensorParallelCut(tensor.name), loaded, to: &tpIngress)
             } else if stages.allSatisfy({ $0 == 1 }) {
                 egress.add(stored: tensor.byteCount, loaded: loaded, work: work)
+                add(try tensorParallelCut(tensor.name), loaded, to: &tpEgress)
             } else {
                 throw ClusterPlacementError("Tensor \(tensor.name) changes stage with the cut but names no layer")
             }
@@ -443,6 +487,12 @@ public enum ClusterModelLayoutBuilder {
         var built = value
         built.speculativeHead = head.tensorCount > 0 ? head : nil
         built.speculativeDecodeFactor = family.speculativeDecodeFactor
+        built.tensorParallel = tensorPlan.map { plan in
+            ClusterTensorParallelLayout(family: plan, layerDividedBytes: tpLayers.map(\.divided),
+                layerReplicatedBytes: tpLayers.map(\.replicated), ingressDividedBytes: tpIngress.divided,
+                ingressReplicatedBytes: tpIngress.replicated, egressDividedBytes: tpEgress.divided,
+                egressReplicatedBytes: tpEgress.replicated)
+        }
         try built.validate()
         return built
     }

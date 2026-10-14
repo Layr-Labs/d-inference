@@ -58,14 +58,18 @@ public enum ClusterBenchChip {
 
 extension ClusterDeviceProfile {
     /// TEST ONLY (`ClusterBenchChip`): this profile with another chip name, for
-    /// planning. Memory, cores, speed index and power stay as detected.
+    /// planning. Memory, cores, speed index and power stay as detected. A
+    /// profile only carries a device index measured on its own chip and build,
+    /// so the measured index moves to the bench name with its figures unchanged
+    /// (else every Mac that has probed its speed fails validation).
     func renamedForBench(chip name: String) throws -> ClusterDeviceProfile {
         guard name != chip else { return self }
         var value = try ClusterDeviceProfile(chip: name, performanceCores: performanceCores, efficiencyCores: efficiencyCores,
             gpuCores: gpuCores, osVersion: osVersion, osBuild: osBuild, physicalMemoryBytes: physicalMemoryBytes,
             gpuRecommendedWorkingSetBytes: gpuRecommendedWorkingSetBytes, gpuMaximumBufferBytes: gpuMaximumBufferBytes,
             allocatorLimitBytes: allocatorLimitBytes, memory: memory, power: power, wiredLimitBytes: wiredLimitBytes)
-        value.speedIndex = speedIndex
+        value.speedIndex = speedIndex.map { ClusterDeviceIndex(chip: name, osBuild: $0.osBuild, benchmark: $0.benchmark,
+            prefillIndex: $0.prefillIndex, decodeIndex: $0.decodeIndex) }
         try value.validate()
         return value
     }

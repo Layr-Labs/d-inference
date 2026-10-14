@@ -343,6 +343,20 @@ import Foundation
         require("the plan says why, with the passed placements",
             decided.lines.contains("Qualified placements")
                 && decided.lines.contains { $0.contains("apple_m3_ultra then apple_m5_ultra at cut 12 (pipeline_v1)") })
+        // The developer bench chip on Macs that carry their measured device index (every Mac after its first probe):
+        // the profiles renamed for planning must still validate (hardware 2026-10-14, round 6d: "Device profile carries
+        // another Mac's speed index" refused every model the pair already held).
+        let renamed = try? ultra3.renamedForBench(chip: "Apple M4 Max")
+        require("bench chip: a renamed profile keeps its measured index, under the bench chip's name",
+            renamed?.chip == "Apple M4 Max" && renamed?.speedIndex?.chip == "Apple M4 Max"
+                && renamed?.speedIndex?.osBuild == ultra3.osBuild && renamed?.speedIndex?.benchmark == ultra3.speedIndex?.benchmark
+                && renamed?.speedIndex?.prefillIndex == ultra3.speedIndex?.prefillIndex
+                && renamed?.speedIndex?.decodeIndex == ultra3.speedIndex?.decodeIndex)
+        let benchIndexed = try? ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: ultra3, peerProfile: ultra5, layout: layout, environment: [ClusterBenchChip.environmentName: "Apple M4 Max"],
+            benchDebugBuild: true)
+        require("bench chip: two Macs that carry measured indices are planned as that chip",
+            benchIndexed?.result.chosen != nil && benchIndexed?.lines.contains { $0.contains("Developer bench chip") } == true)
         let elsewhere = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
             localProfile: ultra3, peerProfile: try profile(slowTwo[1], "Apple M4 Pro"), layout: layout, leader: "mac-one")
         require("GPT-OSS on a chip combination no check ran is planned by speed, never at a rank-shape the M3 Ultra diverged at",

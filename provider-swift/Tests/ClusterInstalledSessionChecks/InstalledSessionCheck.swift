@@ -575,8 +575,19 @@ final class EndpointBox: @unchecked Sendable {
         // A longer planned deadline gives a larger first-token share; the setup, not the model, decides.
         let longer=try InstalledFixture.make(root:f.root.appendingPathComponent("budget-long"),probe:f.probe,owner:f.owner,worker:f.worker,
             lifetimeSeconds:330).prepare()
-        try require(longer.plan.budgets.firstTokenMillisecondsPerPromptToken==40 && longer.plan.budgets.cleanStopWaitNanoseconds==120_000_000_000,
+        try require(longer.plan.budgets.firstTokenMillisecondsPerPromptToken==40 && longer.plan.budgets.cleanStopWaitNanoseconds==60_000_000_000,
             "a 330 s planned deadline: \(longer.plan.budgets)")
+        // Every derived timing is one the pair accepts: the pair refuses a wait above one minute before it looks at its
+        // workers (round 6f hardware: a 27B setup's clean-stop wait of 2 x the predicted request ended both ranks at
+        // startup with "Pair waits must be between one nanosecond and one minute").
+        for seconds in [60,330,900,3_600] {
+            let timing=DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds:seconds,maximumPromptTokens:8192,artifactBytes:15_100_000_000,
+                largestStageShare:0.75,lastRankLoadsEverything:false).budgets.pairTiming
+            do { _=try ClusterWorkerPair(workers:[],startupDeadline:0,timing:timing); try require(false,"an empty pair formed") }
+            catch ClusterWorkerOwnerError.invalid(let message) {
+                try require(message != "Pair waits must be between one nanosecond and one minute","a \(seconds) s deadline derives a timing the pair refuses: \(timing)")
+            }
+        }
         // Real artifact sizes: the startup allowance covers three times every ready time the pair recorded (pipeline and
         // phase split; seconds), and stays inside the protocol's hour.
         let sizes:[(String,Double,Double,Double)]=[("9B",5.0,7.3,12.3),("27B",15.1,13.7,23.0),("35B A3B",20.9,25.8,29.0),("36 A3B",21.3,25.1,30.6),

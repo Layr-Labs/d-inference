@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import DarkbloomClusterProtocol
+import DarkbloomClusterProcess
 @testable import ProviderCore
 
 /// The owner's flow (2026-10-14 08:45): detect -> pick a model -> memory check -> the planner picks tensor parallel or
@@ -194,6 +195,24 @@ import DarkbloomClusterProtocol
         #expect(floor.firstTokenBaseMilliseconds == 10_000 && floor.firstTokenMillisecondsPerPromptToken == 1)
     }
 
+    /// Every derived timing is one `ClusterWorkerPair` accepts (it refuses a wait above one minute before it looks at its
+    /// workers). Round 6f hardware: the 27B's setup derived a clean-stop wait above a minute and both ranks ended at
+    /// startup with "Pair waits must be between one nanosecond and one minute".
+    @Test func everyDerivedTimingIsOneThePairAccepts() {
+        for seconds in [1, 60, 330, 900, 3_600] {
+            let timing = DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds: seconds, maximumPromptTokens: 8192,
+                artifactBytes: Int64(15.1 * gb), largestStageShare: 0.75, lastRankLoadsEverything: false).budgets.pairTiming
+            do {
+                _ = try ClusterWorkerPair(workers: [], startupDeadline: 0, timing: timing)
+                Issue.record("an empty pair formed")
+            } catch ClusterWorkerOwnerError.invalid(let message) {
+                #expect(message != "Pair waits must be between one nanosecond and one minute", "\(seconds) s deadline: \(timing)")
+            } catch {
+                Issue.record("unexpected error \(error)")
+            }
+        }
+    }
+
     /// Every figure the per-model rows were sized from stays inside the derived budgets: the slowest ready time
     /// (pipeline and phase split) times three, and the pair's first token at its longest measured prompt for a setup
     /// whose deadline the planner derived from a prediction no faster than what was measured.
@@ -222,7 +241,7 @@ import DarkbloomClusterProtocol
             let allowance = Double(pipeline.firstTokenBaseMilliseconds + Int64(prompt) * pipeline.firstTokenMillisecondsPerPromptToken) / 1000
             #expect(allowance >= 3 * firstToken, "\(name): first token \(firstToken) s against \(allowance) s")
             #expect(pipeline.admissionWaitNanoseconds == 5_000_000_000)
-            #expect(pipeline.cleanStopWaitNanoseconds >= 10_000_000_000 && pipeline.cleanStopWaitNanoseconds <= 120_000_000_000)
+            #expect(pipeline.cleanStopWaitNanoseconds >= 10_000_000_000 && pipeline.cleanStopWaitNanoseconds <= 60_000_000_000)
             #expect(pipeline.shutdownAcknowledgementNanoseconds >= 2_000_000_000 && pipeline.stopMarginNanoseconds >= 15_000_000_000)
         }
     }

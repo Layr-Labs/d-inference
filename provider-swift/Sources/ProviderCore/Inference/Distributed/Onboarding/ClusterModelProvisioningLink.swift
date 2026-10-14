@@ -158,8 +158,9 @@ final class ClusterModelCopyClient: @unchecked Sendable {
     }
 
     /// Sends the model in `source` (verified against `artifact` file by file on the other side) into its store as
-    /// `folder`; `progress(bytes sent so far, bytes to send)` about once a second.
-    func copy(artifact: ClusterCatalogArtifact, source: URL, folder: String,
+    /// `folder`; `progress(bytes sent so far, bytes to send)` about once a second; `begun` once the other Mac took the
+    /// copy (before any byte flows), so a caller can answer as soon as it is under way or refused.
+    func copy(artifact: ClusterCatalogArtifact, source: URL, folder: String, begun: (@Sendable (ClusterModelReceiveState) -> Void)? = nil,
               progress: @escaping @Sendable (Int64, Int64) -> Void) throws -> Outcome {
         client.start()
         defer { client.stop() }
@@ -171,8 +172,9 @@ final class ClusterModelCopyClient: @unchecked Sendable {
         let begin = try JSONEncoder().encode(ClusterModelCopyBegin(manifest: artifact.manifest, folder: folder))
         let stateData = try request(tag: ClusterSetupLinkExchange.provisionBeginTag, begin, reply: ClusterSetupLinkExchange.provisionStateTag, seconds: 600)
         let state = try JSONDecoder().decode(ClusterModelReceiveState.self, from: stateData)
+        guard state.complete || state.offsets.count == artifact.files.count else { throw ClusterSetupFailure("the other Mac answered the copy with another file list") }
+        begun?(state)
         if state.complete { return .init(sentBytes: 0, seconds: 0, alreadyThere: true) }
-        guard state.offsets.count == artifact.files.count else { throw ClusterSetupFailure("the other Mac answered the copy with another file list") }
         let total = zip(artifact.files, state.offsets).reduce(Int64(0)) { $0 + $1.0.sizeBytes - $1.1 }
         let chunk = ClusterSetupLinkExchange.provisionChunkBytes
         let window = ClusterSetupLinkExchange.provisionWindowBytes / chunk
@@ -214,13 +216,14 @@ extension ClusterSetupLinkExchange {
     static func copyModel(pairing: Pairing, selection: ClusterLinkInterfaceSelection, peerAddress: ClusterLinkIPv4Address?,
                           artifact: ClusterCatalogArtifact, source: URL, folder: String,
                           port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
+                          begun: (@Sendable (ClusterModelReceiveState) -> Void)? = nil,
                           progress: @escaping @Sendable (Int64, Int64) -> Void) throws -> ClusterModelCopyClient.Outcome {
         try oneAtATime(seconds: 60) {
             var address = peerAddress
             if address == nil { address = ClusterLinkPairingDiscovery.find(selection: selection, port: port, seconds: 8).first?.address }
             guard let address else { throw ClusterSetupFailure("the other Mac's cluster service did not answer on the cable") }
             return try ClusterModelCopyClient(pairing: pairing, selection: selection, peerAddress: address, port: port, policy: policy)
-                .copy(artifact: artifact, source: source, folder: folder, progress: progress)
+                .copy(artifact: artifact, source: source, folder: folder, begun: begun, progress: progress)
         }
     }
 }

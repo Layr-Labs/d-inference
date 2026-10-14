@@ -63,7 +63,7 @@ enum ClusterSetupPlanning {
         let sessionLeader: String? = leader ?? localMemberID
         let peerID = description.members.first { $0.id != localMemberID }?.id ?? "the other Mac"
         return readings.map { reading in
-            let onOther = peerModels.contains { $0.artifactSHA256 == reading.model.artifactSHA256 }
+            let onOther = peerModels.contains { $0.sameEntry(reading.model) }
             func blocked(_ reason: String) -> Decision {
                 .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: reason, plan: nil), setup: nil, capability: nil)
             }

@@ -268,9 +268,13 @@ private final class OnboardingLive: @unchecked Sendable {
             ordered += pairs.filter { $0.0.blocker == nil }
             var catalog = [Int: CatalogModel](), fromPeer = [Int: ClusterSetupLocalModel]()
             var held = Set((options.map(\.model.artifactSHA256)))
-            // Models only the other Mac has: it copies them here over the cable, then this Mac plans them.
-            for model in peer.models where !held.contains(model.artifactSHA256) {
+            // Models only the other Mac has: it copies them here over the cable, then this Mac plans them. Only those a
+            // pair may serve with this build (its qualification records), so nobody waits for bytes these Macs could not serve.
+            var offered = options.map(\.model)
+            for model in peer.models where !offered.contains(where: { $0.sameEntry(model) })
+                && ClusterModelCopyTrust.servableArtifacts.contains(model.artifactSHA256) {
                 held.insert(model.artifactSHA256)
+                offered.append(model)
                 fromPeer[ordered.count] = model
                 let plan = ClusterModelProvisioning.plan(totalBytes: model.totalBytes,
                     leader: .init(name: "\(localName) (this Mac)", holding: .missing, freeBytes: ClusterModelStore.freeBytes(at: ClusterModelStoreLocation.defaultDirectory())),
@@ -280,7 +284,8 @@ private final class OnboardingLive: @unchecked Sendable {
                     provision: .init(lines: ClusterModelProvisioning.lines(plan), downloadAlternative: false, leaderDownloads: true, blocker: plan.blocker)),
                     (model.folder, "", model.modelID)))
             }
-            for model in catalogModels(peer: peer) where !held.contains(model.aggregateSHA256 ?? "") {
+            for model in catalogModels(peer: peer) where !held.contains(model.aggregateSHA256 ?? "")
+                && ClusterModelCopyTrust.servableArtifacts.contains(model.aggregateSHA256 ?? "") {
                 catalog[ordered.count] = model
                 ordered.append((downloadChoice(model, peer: peer, localName: localName), ("", "", model.id)))
             }
@@ -302,7 +307,7 @@ private final class OnboardingLive: @unchecked Sendable {
     }
 
     func holding(_ model: ClusterSetupLocalModel, in report: ClusterSetupReport) -> ClusterModelHolding {
-        report.models.first { $0.artifactSHA256 == model.artifactSHA256 }.map { .complete(folder: $0.folder) } ?? .missing
+        report.models.first { $0.sameEntry(model) }.map { .complete(folder: $0.folder) } ?? .missing
     }
 
     func copyOffer(model: ClusterSetupLocalModel, peer: ClusterSetupReport, localName: String) -> ClusterOnboardingProvisionOffer {
@@ -358,7 +363,8 @@ private final class OnboardingLive: @unchecked Sendable {
             let manifest = store.appendingPathComponent(folder).appendingPathComponent("manifest.json")
             guard let data = ClusterModelStore.readSmall(manifest) else { throw ClusterSetupFailure("this Mac's \(folder) has no readable manifest") }
             let artifact = try ClusterCatalogArtifact.parse(manifest: data)
-            if let peer = lock.withLock({ peerReport }), peer.models.contains(where: { $0.artifactSHA256 == artifact.aggregateSHA256 }) {
+            if let peer = lock.withLock({ peerReport }),
+               peer.models.contains(where: { artifact.sameEntry(modelID: $0.modelID, version: $0.version, aggregate: $0.artifactSHA256) }) {
                 lines.append("\(peerName) has it already (same catalog digest).")
                 return .success(lines)
             }
@@ -397,20 +403,28 @@ private final class OnboardingLive: @unchecked Sendable {
     /// The other Mac sends a model only it has: asked over the link, it copies it into this Mac's store (this Mac's
     /// cluster service verifies every file); this Mac follows the staged bytes for the progress.
     func receiveFromPeer(_ model: ClusterSetupLocalModel, store: URL, progress: @escaping @Sendable (String) -> Void) throws -> String {
+        // The other Mac answers once this Mac's service took (or refused) the copy, so a refusal shows at once.
         _ = try command(.init(op: .sendModel, model: model.folder, text: model.artifactSHA256), seconds: 30)
         let started = Date()
+        var lastBytes: Int64 = -1, lastChange = Date()
         let deadline = started.addingTimeInterval(120 + Double(model.totalBytes) / 50e6)
         let staging = store.appendingPathComponent(".darkbloom-incoming-" + String(model.artifactSHA256.prefix(32)))
         var lastLine = Date.distantPast
         while Date() < deadline {
             if let data = ClusterModelStore.readSmall(store.appendingPathComponent(model.folder).appendingPathComponent("manifest.json")),
-               let artifact = try? ClusterCatalogArtifact.parse(manifest: data), artifact.aggregateSHA256 == model.artifactSHA256 {
+               let artifact = try? ClusterCatalogArtifact.parse(manifest: data),
+               artifact.sameEntry(modelID: model.modelID, version: model.version, aggregate: model.artifactSHA256) {
                 let seconds = Date().timeIntervalSince(started)
                 return "\(peerName) copied \(ClusterModelProvisioning.gigabytes(model.totalBytes)) of \(model.modelID) to this Mac over the Thunderbolt cable in \(String(format: "%.1f", seconds)) s; every file matched the catalog manifest's SHA-256."
             }
             if Date().timeIntervalSince(lastLine) >= 1 {
                 lastLine = Date()
                 let bytes = Self.stagedBytes(staging)
+                if bytes != lastBytes { lastBytes = bytes; lastChange = Date() }
+                // Nothing new staged for 90 s: the other Mac stopped sending (its `darkbloom cluster` service says why).
+                if Date().timeIntervalSince(lastChange) > 90 {
+                    throw ClusterSetupFailure("\(peerName) stopped sending \(model.modelID) (nothing arrived for 90 s); run `darkbloom cluster` here again (the copy resumes)")
+                }
                 let seconds = Date().timeIntervalSince(started), rate = seconds > 0 ? Double(bytes) / seconds : 0
                 let left = rate > 0 && model.totalBytes > bytes ? ", " + ClusterModelProvisioning.duration(Double(model.totalBytes - bytes) / rate) + " left" : ""
                 if bytes > 0 {
@@ -463,7 +477,9 @@ private final class OnboardingLive: @unchecked Sendable {
         }
         done.wait()
         if let reason = failure.take().first { throw ClusterSetupFailure("The download of \(model.id) stopped: \(reason)") }
-        guard let installed = ClusterProductModelStore.installed().first(where: { $0.artifact.aggregateSHA256 == model.aggregateSHA256 }) else {
+        guard let installed = ClusterProductModelStore.installed().first(where: {
+            $0.artifact.aggregateSHA256 == model.aggregateSHA256 && $0.artifact.version == (model.version ?? $0.artifact.version)
+        }) else {
             throw ClusterSetupFailure("\(model.id) downloaded, but the product's model store does not list it")
         }
         _ = try ClusterProductModelStore.cloneIntoClusterStore(installed, store: store, providerConfiguration: settings.service.wizard.providerConfiguration)

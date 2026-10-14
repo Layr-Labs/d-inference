@@ -255,8 +255,14 @@ extension ClusterConsoleCheck {
         defer { member.stop() }
         final class Progress: @unchecked Sendable { let lock = NSLock(); var reports = [(Int64, Int64)]() }
         let progress = Progress()
+        final class Begun: @unchecked Sendable { let lock = NSLock(); var states = [ClusterModelReceiveState](); var reportsBefore = -1 }
+        let begun = Begun()
         let outcome = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
-            folder: "Tiny-Model-2026-10-13-r1", port: port, policy: .loopbackForTests) { sent, total in progress.lock.withLock { progress.reports.append((sent, total)) } }
+            folder: "Tiny-Model-2026-10-13-r1", port: port, policy: .loopbackForTests,
+            begun: { state in let before = progress.lock.withLock { progress.reports.count }; begun.lock.withLock { begun.states.append(state); begun.reportsBefore = before } }) { sent, total in
+                progress.lock.withLock { progress.reports.append((sent, total)) } }
+        expect(begun.lock.withLock { begun.states.count == 1 && !begun.states[0].complete && begun.reportsBefore == 0 },
+            "copy: `begun` fires once, before any byte, when the member took the copy")
         expect(!outcome.alreadyThere && outcome.sentBytes == artifact.totalBytes, "copy: every byte sent once (\(outcome.sentBytes) of \(artifact.totalBytes))")
         let placed = store.appendingPathComponent("Tiny-Model-2026-10-13-r1")
         for (path, data) in files { expect((try? Data(contentsOf: placed.appendingPathComponent(path))) == data, "copy: \(path) arrived byte for byte") }
@@ -279,6 +285,21 @@ extension ClusterConsoleCheck {
             expect("\(error)".contains("does not match its manifest digest"), "copy: the member names the digest mismatch: \(error)")
         }
         expect(!FileManager.default.fileExists(atPath: other.path), "copy: no folder appears for a refused copy")
+        // A copy the member refuses at its start (here: the folder holds something else) never reports `begun`, so the
+        // Mac asked to send answers the refusal at once.
+        let occupied = store.appendingPathComponent("Tiny-Model-occupied")
+        try FileManager.default.createDirectory(at: occupied, withIntermediateDirectories: true)
+        try Data("other".utf8).write(to: occupied.appendingPathComponent("notes.txt"))
+        final class Flag: @unchecked Sendable { let lock = NSLock(); var value = false }
+        let refusedBegun = Flag()
+        do {
+            _ = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
+                folder: "Tiny-Model-occupied", port: port, policy: .loopbackForTests, begun: { _ in refusedBegun.lock.withLock { refusedBegun.value = true } }) { _, _ in }
+            expect(false, "copy: an occupied folder must be refused")
+        } catch {
+            expect("\(error)".contains("with other contents"), "copy: the member names the occupied folder: \(error)")
+        }
+        expect(!refusedBegun.lock.withLock { refusedBegun.value }, "copy: a refused start never reports `begun`")
         // Only the paired Mac can send: another secret is never answered.
         do {
             _ = try X.copyModel(pairing: wrongSecret, selection: selection, peerAddress: nil, artifact: artifact, source: source,

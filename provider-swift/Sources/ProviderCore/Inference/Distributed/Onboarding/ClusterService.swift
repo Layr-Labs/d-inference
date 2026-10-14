@@ -304,14 +304,23 @@ public final class ClusterService: @unchecked Sendable {
             }
             let selection = try context.linkSelection()
             say("sending \(name) to the paired Mac over the cable")
+            // Answer once the leader's service took the copy (or refused it: its reason goes back at once, instead of
+            // the leader waiting for bytes that never come); the bytes then flow in the background.
+            let started = ClusterOnboardingMailbox<String?>()
+            let answered = DispatchSemaphore(value: 0)
             Thread.detachNewThread {
                 do {
                     let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
-                        source: store.appendingPathComponent(name), folder: name) { _, _ in }
+                        source: store.appendingPathComponent(name), folder: name, begun: { _ in started.post(nil); answered.signal() }) { _, _ in }
                     say("sent \(name): \(ClusterModelProvisioning.gigabytes(outcome.sentBytes)) in \(String(format: "%.1f", outcome.seconds)) s")
                 } catch {
                     say("sending \(name) stopped: \(error)")
+                    started.post(ClusterConsoleText.bounded(error)); answered.signal()
                 }
+            }
+            // Within the leader's 30 s command wait; a slow start (a long resume check) still answers "sending".
+            if answered.wait(timeout: .now() + 20) == .success, let refusal = started.take().first ?? nil {
+                throw ClusterSetupFailure("\(name) could not be sent: \(refusal)")
             }
             return Data("{\"sending\":true}".utf8)
         }

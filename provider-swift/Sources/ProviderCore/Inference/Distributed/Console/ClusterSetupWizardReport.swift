@@ -313,6 +313,12 @@ public struct ClusterSetupLocalModel: Codable, Sendable, Equatable {
         self.folder = folder; self.modelID = modelID; self.version = version
         self.artifactSHA256 = artifactSHA256; self.totalBytes = totalBytes
     }
+
+    /// The same catalog entry: model ID, version and aggregate digest. Two entries can share every file and so the
+    /// digest (the catalog's gemma-4-26b and gemma-4-26b-8bit); the runtime tells them apart by the manifest.
+    public func sameEntry(_ other: ClusterSetupLocalModel) -> Bool {
+        artifactSHA256 == other.artifactSHA256 && modelID == other.modelID && version == other.version
+    }
 }
 
 /// The pairings this Mac stored in the ceremony over the link (S17), by

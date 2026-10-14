@@ -224,6 +224,7 @@ public final class ClusterService: @unchecked Sendable {
         }
         while !stopped {
             ensureResponder(say: say)
+            supervise(say: say)
             syncMembers(say: say)
             publish()
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }

@@ -160,3 +160,8 @@
     flex-wrap: wrap;
   }
 }
+
+/* The table scrolls horizontally, which clips an outside focus ring. */
+.tableRow:focus-visible {
+  outline-offset: -2px;
+}

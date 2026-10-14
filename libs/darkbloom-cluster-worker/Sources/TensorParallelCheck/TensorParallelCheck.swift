@@ -242,7 +242,8 @@ enum RunCommand {
         let configurationSHA = sha256Hex(try Data(contentsOf: directory.appendingPathComponent("config.json")))
         let environment = ProcessInfo.processInfo.environment
         let recorded = ["MLX_METAL_FAST_SYNCH", "MLX_ENABLE_TF32", "DARKBLOOM_BF16_WEIGHTS",
-                        "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "MLX_QUANTIZED_CONSTANT_CACHE"]
+                        "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK", "MLX_QUANTIZED_CONSTANT_CACHE", "DARKBLOOM_TP_DIAG_COPY_WEIGHTS",
+                        "DARKBLOOM_QWEN35_FUSE_ELEMENTWISE"]
         let snapshot = Dictionary(uniqueKeysWithValues: recorded.compactMap { key in environment[key].map { (key, $0) } })
 
         var group: QwenTensorParallelGroup?

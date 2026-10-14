@@ -112,8 +112,14 @@ public final class QwenTensorParallelModel {
                 else { disposition = try plan.disposition(key: key, rank: 0) == .skip ? .skip : .load(.replicate) }
                 guard case .load(let cut) = disposition else { continue }
                 let leaf = String(key.split(separator: ".").last!)
-                let sliced = try QwenTensorParallelSlicer.cut(value, cut, leaf: leaf,
+                var sliced = try QwenTensorParallelSlicer.cut(value, cut, leaf: leaf,
                     groupSize: plan.groupSize, bits: plan.bits)
+                // Diagnostic only (DARKBLOOM_TP_DIAG_COPY_WEIGHTS=1): a whole tensor is
+                // materialized the way a shard's cut is (a gather into a new buffer),
+                // to tell a share's arithmetic from how its weights were made.
+                if cut == .replicate, Self.diagnosticCopyWeights, value.ndim >= 1 {
+                    sliced = take(value, MLXArray((0 ..< value.dim(0)).map { Int32($0) }), axis: 0)
+                }
                 // Materialize each cut now: the checkpoint tensor it came from is
                 // released before the next one is read.
                 eval(sliced)
@@ -225,6 +231,7 @@ public final class QwenTensorParallelModel {
     }
 
     static func now() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1e9 }
+    static let diagnosticCopyWeights = ProcessInfo.processInfo.environment["DARKBLOOM_TP_DIAG_COPY_WEIGHTS"] == "1"
     static func threadCPU() -> Double { Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)) / 1e9 }
 
     /// Diagnostic: the primitives of one decode step's graph after `prompt`, by name (MLX's own

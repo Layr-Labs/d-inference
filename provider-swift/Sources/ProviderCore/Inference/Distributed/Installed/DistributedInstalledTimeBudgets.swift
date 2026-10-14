@@ -59,9 +59,13 @@ struct DistributedInstalledBudgetPolicy: Sendable {
     /// The setup's request deadline is the planner's prediction for the
     /// longest request times `ClusterPlacementRequestLimits.Policy.margin`
     /// plus its base; the clean-stop wait is twice that prediction, within
-    /// bounds.
+    /// bounds. The ceiling is the pair's own longest wait
+    /// (`ClusterWorkerPairTiming.longestWaitNanoseconds`, one minute): the pair
+    /// refuses a longer one before it starts, so a request still running a
+    /// minute into a stop is cancelled.
     var requestDeadlineMargin = 3.0, requestDeadlineBaseSeconds = 30.0
-    var cleanStopFloorSeconds = 10.0, cleanStopCeilingSeconds = 120.0
+    var cleanStopFloorSeconds = 10.0
+    var cleanStopCeilingSeconds = Double(ClusterWorkerPairTiming.longestWaitNanoseconds) / 1e9
     /// Below the protocol's hour (`ClusterWorkerLimits.deadlineNanoseconds`).
     var startupCeilingSeconds = 3_540.0
     init() {}
@@ -83,7 +87,8 @@ extension DistributedInstalledTimeBudgets {
     ///   layer under a phase split) and materializing the largest stage at
     ///   floor rates, times the margin, within bounds;
     /// - shutdown and stop: by the stored bytes, within bounds;
-    /// - clean-stop wait: twice the predicted longest request, within bounds.
+    /// - clean-stop wait: twice the predicted longest request, within bounds
+    ///   (at most the pair's one-minute longest wait).
     ///
     /// `artifactBytes` is the verified manifest's total; nil (before the
     /// manifest is read) takes each bound's ceiling.
@@ -109,7 +114,8 @@ extension DistributedInstalledTimeBudgets {
             startup = policy.startupCeilingSeconds; shutdown = policy.shutdownCeilingSeconds; stopMargin = policy.stopMarginCeilingSeconds
         }
         let predictedLongest = max(0, (Double(requestTimeoutSeconds) - policy.requestDeadlineBaseSeconds) / policy.requestDeadlineMargin)
-        let cleanStop = min(policy.cleanStopCeilingSeconds, max(policy.cleanStopFloorSeconds, (2 * predictedLongest).rounded(.up)))
+        let pairLongest = Double(ClusterWorkerPairTiming.longestWaitNanoseconds) / 1e9
+        let cleanStop = min(pairLongest, policy.cleanStopCeilingSeconds, max(policy.cleanStopFloorSeconds, (2 * predictedLongest).rounded(.up)))
         let budgets = Self(startupAllowanceNanoseconds: nanoseconds(startup),
             firstTokenBaseMilliseconds: policy.firstTokenBaseMilliseconds, firstTokenMillisecondsPerPromptToken: perToken,
             admissionWaitNanoseconds: nanoseconds(policy.admissionWaitSeconds),

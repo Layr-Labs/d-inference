@@ -57,8 +57,9 @@ public struct ClusterWorkerPairTiming: Sendable, Equatable {
 
     public static let standard = ClusterWorkerPairTiming(admissionWaitNanoseconds: 5_000_000_000,
                                                          shutdownAcknowledgementNanoseconds: 2_000_000_000)
-    /// No answer wait is absent and no wait outlasts a minute.
-    static let longestWaitNanoseconds: UInt64 = 60_000_000_000
+    /// No answer wait is absent and no wait outlasts a minute. Public so a
+    /// caller that derives its waits keeps them within it.
+    public static let longestWaitNanoseconds: UInt64 = 60_000_000_000
     var isWithinLimits: Bool {
         [admissionWaitNanoseconds, shutdownAcknowledgementNanoseconds].allSatisfy { (1...Self.longestWaitNanoseconds).contains($0) }
             && cleanStopWaitNanoseconds <= Self.longestWaitNanoseconds

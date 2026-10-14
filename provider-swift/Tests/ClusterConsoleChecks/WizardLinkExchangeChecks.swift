@@ -99,6 +99,11 @@ extension ClusterConsoleCheck {
         }
         service.stop()
 
+        // A model copy (no manual download for clustering): the Mac that has the model sends it to a cluster service
+        // over the same pairing-keyed, encrypted channel; every file is verified there and the folder appears whole.
+        try modelCopyOverTheLink(pairing: { pairing(local: $0, peer: $1) }, wrongSecret: pairing(local: pinA, peer: pinB, secret: Data(repeating: 9, count: 32)),
+            pinA: pinA, pinB: pinB, selection: selection)
+
         // Two processes on one Mac asking the same paired Mac at once (the onboarding and the leader's cluster service):
         // the other Mac keeps one live session per edge and a newer one supersedes the older, so each request must wait
         // for the other instead of taking its session away. Both answers arrive.
@@ -213,4 +218,79 @@ extension ClusterConsoleCheck {
             expect(String(describing: error).contains("link secret"), "names the missing secret: \(error)")
         }
     }
+
+    static func modelCopyOverTheLink(pairing: (String, String) -> ClusterSetupLinkExchange.Pairing, wrongSecret: ClusterSetupLinkExchange.Pairing,
+                                     pinA: String, pinB: String, selection: ClusterLinkInterfaceSelection) throws {
+        typealias X = ClusterSetupLinkExchange
+        let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".copy-check-\(getpid())")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("leader/Tiny-Model-2026-10-13-r1"), store = base.appendingPathComponent("member-store")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        var generator = SystemRandomNumberGenerator()
+        // Larger than the window (32 MiB) and not a multiple of the chunk (4 MiB), plus small files.
+        let files: [(String, Data)] = [("config.json", Data("{\"num_hidden_layers\":2}".utf8)),
+            ("model-00001-of-00002.safetensors", Data((0..<(37 << 20) + 12_345).map { _ in UInt8.random(in: 0...255, using: &generator) })),
+            ("model-00002-of-00002.safetensors", Data((0..<4_000).map { _ in UInt8.random(in: 0...255, using: &generator) })),
+            ("tokenizer.json", Data("{}".utf8))]
+        var entries = [[String: Any]](), artifactFiles = [ClusterCatalogArtifact.File]()
+        for (path, data) in files {
+            try data.write(to: source.appendingPathComponent(path))
+            let digest = CryptoKitSHA.hex(data)
+            entries.append(["path": path, "size_bytes": data.count, "sha256": digest, "role": "weight"])
+            artifactFiles.append(.init(path: path, sizeBytes: Int64(data.count), sha256: digest))
+        }
+        let manifest = try JSONSerialization.data(withJSONObject: ["schema_version": 1, "model_id": "Example/Tiny-Model", "version": "2026-10-13-r1",
+            "r2_prefix": "v2/x/2026-10-13-r1", "aggregate_sha256": ClusterCatalogArtifact.aggregateDigest(artifactFiles),
+            "total_size_bytes": files.reduce(0) { $0 + $1.1.count }, "file_count": files.count, "files": entries], options: [.sortedKeys])
+        try manifest.write(to: source.appendingPathComponent("manifest.json"))
+        let artifact = try ClusterCatalogArtifact.parse(manifest: manifest)
+        final class Said: @unchecked Sendable { let lock = NSLock(); var lines = [String]() }
+        let said = Said()
+        let port: UInt16 = 45_883
+        let provisioner = ClusterModelProvisionResponder(store: { store }, trust: { _ in nil }, say: { line in said.lock.withLock { said.lines.append(line) } })
+        let member = try X.Responder(pairing: pairing(pinB, pinA), selection: selection, port: port, policy: .loopbackForTests,
+            answer: { throw ClusterSetupFailure("not asked") }, receive: { _ in "" }, command: { $0 },
+            provision: { tag, data in provisioner.handle(tag: tag, data) })
+        try member.start()
+        defer { member.stop() }
+        final class Progress: @unchecked Sendable { let lock = NSLock(); var reports = [(Int64, Int64)]() }
+        let progress = Progress()
+        let outcome = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
+            folder: "Tiny-Model-2026-10-13-r1", port: port, policy: .loopbackForTests) { sent, total in progress.lock.withLock { progress.reports.append((sent, total)) } }
+        expect(!outcome.alreadyThere && outcome.sentBytes == artifact.totalBytes, "copy: every byte sent once (\(outcome.sentBytes) of \(artifact.totalBytes))")
+        let placed = store.appendingPathComponent("Tiny-Model-2026-10-13-r1")
+        for (path, data) in files { expect((try? Data(contentsOf: placed.appendingPathComponent(path))) == data, "copy: \(path) arrived byte for byte") }
+        expect((try? Data(contentsOf: placed.appendingPathComponent("manifest.json"))) == manifest, "copy: the manifest is placed with the files")
+        expect(progress.lock.withLock { progress.reports.last.map { $0.0 == $0.1 } } == true, "copy: progress ends at the total")
+        expect(said.lock.withLock { said.lines.contains { $0.contains("in place, every file verified") } }, "copy: the member's service says it verified it")
+        // Again: the member has it, nothing is sent.
+        let again = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
+            folder: "Tiny-Model-2026-10-13-r1", port: port, policy: .loopbackForTests) { _, _ in }
+        expect(again.alreadyThere && again.sentBytes == 0, "copy: a second copy finds it there and sends nothing")
+        // Bytes that do not match the manifest (changed after it was taken): refused on the member, nothing placed.
+        let other = store.appendingPathComponent("Tiny-Model-copy")
+        var changed = files[1].1; changed[5_000_000] ^= 0x5A
+        try changed.write(to: source.appendingPathComponent(files[1].0))
+        do {
+            _ = try X.copyModel(pairing: pairing(pinA, pinB), selection: selection, peerAddress: nil, artifact: artifact, source: source,
+                folder: "Tiny-Model-copy", port: port, policy: .loopbackForTests) { _, _ in }
+            expect(false, "copy: changed bytes must be refused")
+        } catch {
+            expect("\(error)".contains("does not match its manifest digest"), "copy: the member names the digest mismatch: \(error)")
+        }
+        expect(!FileManager.default.fileExists(atPath: other.path), "copy: no folder appears for a refused copy")
+        // Only the paired Mac can send: another secret is never answered.
+        do {
+            _ = try X.copyModel(pairing: wrongSecret, selection: selection, peerAddress: nil, artifact: artifact, source: source,
+                folder: "Tiny-Model-other", port: port, policy: .loopbackForTests) { _, _ in }
+            expect(false, "copy: a sender without the pairing's secret must be refused")
+        } catch {
+            expect(!FileManager.default.fileExists(atPath: store.appendingPathComponent("Tiny-Model-other").path), "copy: nothing from an unpaired sender")
+        }
+    }
+}
+
+import CryptoKit
+enum CryptoKitSHA {
+    static func hex(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 }

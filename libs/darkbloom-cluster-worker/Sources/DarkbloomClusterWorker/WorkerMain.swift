@@ -20,6 +20,11 @@ import Foundation
             }
             let now = DispatchTime.now().uptimeNanoseconds
             let configuration = try WorkerConfiguration(arguments: arguments, now: now)
+            // Before anything native: tensor parallel's collective wait (MLX reads it once).
+            if let line = WorkerCollectiveSynchronization.apply(mode: configuration.generationMode,
+                                                                environment: ProcessInfo.processInfo.environment) {
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            }
             // Before anything native: a qualification switch in the environment
             // of a worker that was not started with the test flag ends it here.
             let environment = ProcessInfo.processInfo.environment

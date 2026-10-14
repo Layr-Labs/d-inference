@@ -2,6 +2,21 @@ import { Plus, X } from 'lucide-react';
 import type { Schedule } from '../../shared/contracts';
 import { Button } from './UI';
 const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const time = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** The first reason the runtime would reject this schedule (ScheduleConfig.validate), if any. */
+export function scheduleProblem(schedule: Schedule): string | undefined {
+  if (!schedule.enabled) return undefined;
+  if (!schedule.windows.length) return 'Add a time window, or turn off the weekly schedule.';
+  const index = schedule.windows.findIndex(
+    (window) => !window.days.length || !time.test(window.start) || !time.test(window.end),
+  );
+  if (index < 0) return undefined;
+  const window = schedule.windows[index];
+  return window.days.length
+    ? `Enter a start and end time for window ${index + 1}.`
+    : `Choose at least one day for window ${index + 1}.`;
+}
 export function ScheduleEditor({
   value,
   onChange,
@@ -119,6 +134,11 @@ export function ScheduleEditor({
           <p className="muted schedule-note">
             An end time before the start runs overnight. Equal times make a 24-hour window.
           </p>
+          {scheduleProblem(value) && (
+            <p className="warning-text" role="alert">
+              {scheduleProblem(value)}
+            </p>
+          )}
         </>
       )}
     </section>

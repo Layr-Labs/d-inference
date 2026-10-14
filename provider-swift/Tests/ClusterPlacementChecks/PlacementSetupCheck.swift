@@ -60,8 +60,9 @@ import Foundation
         for (member, data) in setup.configurations { try data.write(to: output.appendingPathComponent(member + ".setup.json")) }
     }
 
-    /// MTP on by default on a planner-built setup (PERF-BACKLOG item 2): with
-    /// the row's credit and the head in the layout (as the plan tool now reads
+    /// MTP with the phase split, under the hand-off opt-in (`ClusterHandOffModes`;
+    /// off by default since 2026-10-13, sharded deployments only): with the
+    /// row's credit and the head in the layout (as the plan tool now reads
     /// them), the guided step saves `phase_split_mtp_v1` in both setups with
     /// the M5 decoding, and never the head on the M3 Ultra.
     static func speculativeHeadByDefault(layout: ClusterModelLayout, description: ClusterPairDescription,
@@ -84,13 +85,13 @@ import Foundation
         let m5 = try chip(slowTwo[0], "Apple M5 Max"), m3 = try chip(slowTwo[1], "Apple M3 Ultra")
         for (who, local, peer) in [("mac-one", m5, m3), ("mac-two", m3, m5)] {
             let decided = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: who,
-                localProfile: local, peerProfile: peer, layout: headed)
+                localProfile: local, peerProfile: peer, layout: headed, environment: handOff)
             let configurations = try decided.setup.map { setup in
                 try setup.configurations.values.map {
                     try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: capabilityHash)
                 }
             } ?? []
-            require("planned from \(who): the head by default, the M3 Ultra leading and the M5 decoding, saved by name in both setups",
+            require("planned from \(who) under the hand-off opt-in: the head, the M3 Ultra leading and the M5 decoding, saved by name in both setups",
                 decided.result.chosen?.mode == .phaseSplitMTP && decided.setup?.leaderID == "mac-two"
                     && configurations.count == 2 && configurations.allSatisfy { $0.generationMode == .phaseSplitMTP }
                     && decided.lines.contains { $0.contains("It decodes with the model's speculative (MTP) head") })
@@ -99,13 +100,46 @@ import Foundation
         // lead it, so the mirrored order is refused at plan time instead of being saved without the head.
         refuses("led by the M5, the 9B fixture's grant refuses the order", because: "pipeline-only rank on apple_m3_ultra") {
             _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
-                localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one")
+                localProfile: m5, peerProfile: m3, layout: headed, leader: "mac-one", environment: handOff)
         }
         // Two Macs of no known generation: nothing prefers the head, the setup is what it was.
         let unknown = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
-            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed)
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: headed, environment: handOff)
         require("chips of no known generation keep the plain plan", unknown.result.chosen.map { !$0.mode.usesSpeculativeHead } == true)
+        // By default (no opt-in) the same Macs and layout shard the model: no phase split, both Macs hold layers,
+        // the plan lists every sharded candidate with its prediction and reason, and names the opt-in.
+        let name = ClusterHandOffModes.environmentName
+        require("hand-off modes: unset, \"0\" and \"off\" are off; \"1\" and \"on\" opt in",
+            try !ClusterHandOffModes.enabled(environment: [:]) && !ClusterHandOffModes.enabled(environment: [name: "0"])
+                && !ClusterHandOffModes.enabled(environment: [name: "off"]) && ClusterHandOffModes.enabled(environment: [name: "1"])
+                && ClusterHandOffModes.enabled(environment: [name: "on"]))
+        for bad in ["yes", "2", "true ", "ON"] {
+            refuses("hand-off modes: \"\(bad)\" is refused", because: "sharded deployments only") {
+                _ = try ClusterHandOffModes.enabled(environment: [name: bad])
+            }
+        }
+        for (who, local, peer) in [("mac-one", m5, m3), ("mac-two", m3, m5)] {
+            let sharded = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: who,
+                localProfile: local, peerProfile: peer, layout: headed, environment: [:])
+            let configurations = try sharded.setup.map { setup in
+                try setup.configurations.values.map {
+                    try ClusterConfigurationCodec.decode($0, capability: capability, capabilitySHA256: capabilityHash)
+                }
+            } ?? []
+            require("planned from \(who), default: a sharded mode with layers on both Macs, saved by name in both setups (never a phase split)",
+                sharded.result.chosen.map { $0.mode.isSharded && $0.ranks.allSatisfy { $0.endLayer > $0.firstLayer } } == true
+                    && configurations.count == 2 && configurations.allSatisfy { $0.generationMode.map { !$0.isHandOff } ?? true })
+            require("planned from \(who), default: the plan lists the sharded candidates and names the opt-in",
+                sharded.lines.contains("Sharded deployment candidates") && sharded.lines.contains { $0.contains("pipeline: chosen") }
+                    && sharded.lines.contains { $0.contains(name + "=1") && $0.contains("never offered in the onboarding") })
+        }
+        refuses("hand-off modes: a malformed setting stops the plan instead of planning something else", because: name) {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: m5, peerProfile: m3, layout: headed, environment: [name: "yes"])
+        }
     }
+
+    static let handOff = [ClusterHandOffModes.environmentName: "1"]
 
     /// The developer bench cap (`ClusterPlannerBenchCap`, test only): an explicit environment variable that, in a
     /// debug build, lowers what the planner believes each member can give a model, so a large pair is planned as a
@@ -319,7 +353,8 @@ import Foundation
         let description = try ClusterPairDescription.decode(JSONSerialization.data(withJSONObject: descriptionObject))
 
         func setup(_ devices: [ClusterPlacementDevice], modes: [ClusterGenerationMode]? = [.pipeline]) throws -> (ClusterPlacementSetup, ClusterPlacementCandidate) {
-            var policy = ClusterPlacementPolicy(); policy.modes = modes
+            // A phase split named here is planned under the hand-off opt-in (off by default).
+            var policy = ClusterPlacementPolicy(); policy.modes = modes; policy.handOffModes = modes?.contains { $0.isHandOff } ?? false
             guard let chosen = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy).chosen else {
                 throw ClusterConfigurationError.invalid("check: no placement")
             }

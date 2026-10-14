@@ -34,6 +34,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -D DARKBLOOM_CLUSTER_FIXTURE_ARTIFACTS -par
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementSetup.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementFlow.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlannerBenchCap.swift" \
+  "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterHandOffModes.swift" \
   "$task_provider/Sources/ProviderCore/Inference/Distributed/Placement/ClusterPlacementRequestLimits.swift" \
   "$task_provider/Tests/ClusterPlacementChecks/PlacementSetupCheck.swift" -o "$task_build/setup-check"
 # PLACEMENT_CHECK_KEEP=/ABS/DIR keeps the built check and its two libraries

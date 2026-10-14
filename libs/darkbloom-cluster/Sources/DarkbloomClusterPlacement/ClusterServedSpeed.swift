@@ -312,10 +312,14 @@ public enum ClusterServedCalibration {
         return try devices.compactMap { device -> ClusterSpeedMeasurement? in
             guard device.speed.absolute else { return nil }
             let base = device.speed.rested
-            let shardDecode = decodeFactor.map { 1 / (ClusterDecodeSplit(rates: base).shareStepSeconds(ranks: devices.count) * $0) }
+            // What the plan predicted for this rank: its shard probe, else its measured hardware (`ClusterHardwarePrior`).
+            let split = ClusterDecodeSplit(rates: base,
+                hardwareWeightSeconds: ClusterHardwarePrior.weightSeconds(profile: device.profile, layout: layout))
+            let shardDecode = decodeFactor.map { 1 / (split.shareStepSeconds(ranks: devices.count) * $0) }
                 ?? base.tensorShardDecodeTokensPerSecond
-            let shardPrefill = prefillFactor.map { (base.tensorShardPrefillTokensPerSecond ?? base.prefillTokensPerSecond) / $0 }
-                ?? base.tensorShardPrefillTokensPerSecond
+            let predictedShardPrefill = base.tensorShardPrefillTokensPerSecond
+                ?? (split.fromHardware == true ? base.prefillTokensPerSecond * Double(devices.count) : base.prefillTokensPerSecond)
+            let shardPrefill = prefillFactor.map { predictedShardPrefill / $0 } ?? base.tensorShardPrefillTokensPerSecond
             let prompt = Int(median(pair.map { Double($0.promptTokens) }) ?? Double(layout.maximumChunkTokens))
             return try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: device.profile.chip,
                     osBuild: device.profile.osBuild, runtimeBinarySHA256: runtimeBinarySHA256,

@@ -44,6 +44,8 @@ public final class MiMoResidentRuntime {
     private var reservation: Reservation?
     private var processLeaseOwned = true
     private var recordsSteps = false
+    /// A qualification run's hand-off fault (`MiMoQualificationFault`); nil in every installed worker.
+    private var handoffFault: QwenPhaseSplitFault?
 
     private struct Reservation {
         let request: QwenLayerStageGenerationRequest
@@ -128,6 +130,8 @@ public final class MiMoResidentRuntime {
             throw ProbeError("\(name) is a qualification switch and this process was not started with "
                 + "\(QwenResidentQualificationSwitches.permittingArgument) yes; it is refused, not ignored")
         }
+        // Admitted before anything loads: committed under a phase split, refused otherwise.
+        let handoffFault = try MiMoQualificationFault.admit(environment: environment, qualification: qualification, mode: mode)
         // Recording alone changes no decision, so it is not part of what the ranks agree.
         let measuredGate = QwenDenseStageLoadMeasurement.shared.waivesRefusals
         let directory = configuration.modelDirectory
@@ -300,6 +304,7 @@ public final class MiMoResidentRuntime {
                 stage: stage!, producer: producer, residency: residency, capacity: capacity, lifecycle: lifecycle,
                 generationMode: mode)
             runtime.recordsSteps = recordsSteps
+            runtime.handoffFault = handoffFault
             return runtime
         } catch {
             let primary = error; control.fail()
@@ -419,7 +424,7 @@ public final class MiMoResidentRuntime {
         var firstToken: UInt64?
         let (result, evidence) = try runMiMoLayerStageGenerationRequest(loaded: stage, plan: admission.plan,
             agreement: agreement, collective: collective, recordsSteps: recordsSteps, producerStage: producer,
-            onCommittedToken: { token in
+            handoffFault: agreement.phaseSplit == nil ? nil : handoffFault, onCommittedToken: { token in
                 let current = ordinal; ordinal += 1
                 if firstToken == nil { firstToken = DispatchTime.now().uptimeNanoseconds }
                 return try onCommittedToken(current, token, reserved.request.promptCount + current)

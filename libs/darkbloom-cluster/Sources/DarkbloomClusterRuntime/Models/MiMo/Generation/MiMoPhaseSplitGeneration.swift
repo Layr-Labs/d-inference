@@ -23,7 +23,7 @@ enum MiMoPhaseSplitGeneration {
 
     static func run(producerStage: LoadedMiMoLayerStage?, plan: MiMoLayerStagePlan, split: QwenPhaseSplitPlan,
                     control: QwenLayerStageGenerationControl, transport: QwenLayerStageGenerationTransport,
-                    session: MiMoLayerStageSession, selectedTokens: inout [Int],
+                    session: MiMoLayerStageSession, selectedTokens: inout [Int], fault: QwenPhaseSplitFault? = nil,
                     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void) throws -> Outcome {
         let alone = control.agreement.request.decodingRankAlone
         let frontierSelected = alone ? 0 : split.terms.handoffSelectedTokens
@@ -44,12 +44,12 @@ enum MiMoPhaseSplitGeneration {
         let before = QwenPhaseSplitGeneration.memory()
         if transport.rank == 0 {
             return try publish(split: split, control: control, transport: transport, session: session,
-                selectedTokens: &selectedTokens, started: started, before: before,
+                selectedTokens: &selectedTokens, started: started, before: before, fault: fault,
                 onCommittedToken: onCommittedToken, check: check, handoffCheck: handoffCheck)
         }
         return try decodeAlone(producerStage: producerStage, plan: plan, split: split, control: control,
             transport: transport, session: session, selectedTokens: &selectedTokens, started: started, before: before,
-            check: check, handoffCheck: handoffCheck)
+            fault: fault, check: check, handoffCheck: handoffCheck)
     }
 
     /// Rank 1, serving a request alone: both stages prefill the whole prompt
@@ -116,7 +116,7 @@ enum MiMoPhaseSplitGeneration {
     /// Rank 0: export, send, release, then publish what rank 1 relays.
     private static func publish(split: QwenPhaseSplitPlan, control: QwenLayerStageGenerationControl,
         transport: QwenLayerStageGenerationTransport, session: MiMoLayerStageSession,
-        selectedTokens: inout [Int], started: UInt64, before: QwenPhaseSplitSummary.Memory,
+        selectedTokens: inout [Int], started: UInt64, before: QwenPhaseSplitSummary.Memory, fault: QwenPhaseSplitFault?,
         onCommittedToken: (Int) throws -> Bool, check: () throws -> Void, handoffCheck: () throws -> Void
     ) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
@@ -140,7 +140,7 @@ enum MiMoPhaseSplitGeneration {
                 let sender = try QwenPhaseSplitHandoffSender(agreement: agreement, tokenChainSHA256: control.tokenChainSHA256,
                     components: try session.handoffComponents(split: split, check: handoffCheck))
                 exported = DispatchTime.now().uptimeNanoseconds
-                try transport.sendHandoff(sender, fault: nil, check: handoffCheck)
+                try transport.sendHandoff(sender, fault: fault, check: handoffCheck)
                 return sender.header.fingerprint
             }
             // Rank 1 holds the verified state; this rank's copy is released now.
@@ -193,7 +193,7 @@ enum MiMoPhaseSplitGeneration {
     private static func decodeAlone(producerStage: LoadedMiMoLayerStage?, plan: MiMoLayerStagePlan,
         split: QwenPhaseSplitPlan, control: QwenLayerStageGenerationControl,
         transport: QwenLayerStageGenerationTransport, session: MiMoLayerStageSession,
-        selectedTokens: inout [Int], started: UInt64, before: QwenPhaseSplitSummary.Memory,
+        selectedTokens: inout [Int], started: UInt64, before: QwenPhaseSplitSummary.Memory, fault: QwenPhaseSplitFault?,
         check: () throws -> Void, handoffCheck: () throws -> Void
     ) throws -> Outcome {
         let agreement = control.agreement, request = agreement.request
@@ -208,7 +208,7 @@ enum MiMoPhaseSplitGeneration {
         }
         let receiver = try QwenPhaseSplitHandoffReceiver(agreement: agreement, tokenChainSHA256: control.tokenChainSHA256)
         let intake = QwenPhaseSplitHandoffIntake(receiver: receiver)
-        if !alone { try transport.receiveHandoff(intake, fault: nil, check: handoffCheck) }
+        if !alone { try transport.receiveHandoff(intake, fault: fault, check: handoffCheck) }
         let received = DispatchTime.now().uptimeNanoseconds
         let adopted: MiMoLayerStageSession
         if let aloneFirst {

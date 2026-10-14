@@ -29,7 +29,7 @@ struct MiMoRequestEvidence: Encodable, Equatable {
 /// out of band before it claims retirement or releases anything.
 func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMoLayerStagePlan,
     agreement: QwenLayerStageGenerationAgreement, collective: Collective, recordsSteps: Bool = false,
-    producerStage: LoadedMiMoLayerStage? = nil,
+    producerStage: LoadedMiMoLayerStage? = nil, handoffFault: QwenPhaseSplitFault? = nil,
     onCommittedToken: (Int) throws -> Bool, check: () throws -> Void
 ) throws -> (result: QwenLayerStageGenerationResult, evidence: MiMoRequestEvidence) {
     try MLX.withError { nativeError in
@@ -106,7 +106,7 @@ func runMiMoLayerStageGenerationRequest(loaded: LoadedMiMoLayerStage, plan: MiMo
                     // retired inside; only the retirement exchange is left.
                     let outcome = try MiMoPhaseSplitGeneration.run(producerStage: producerStage, plan: plan, split: split,
                         control: control, transport: transport, session: owned, selectedTokens: &selectedTokens,
-                        onCommittedToken: onCommittedToken, check: checked)
+                        fault: handoffFault, onCommittedToken: onCommittedToken, check: checked)
                     log(outcome.summary.diagnosticLine(requestID: agreement.request.requestID))
                     finalDecision = outcome.finalDecision; handedOver = outcome
                 }

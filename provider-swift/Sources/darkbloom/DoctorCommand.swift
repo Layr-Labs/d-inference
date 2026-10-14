@@ -343,14 +343,18 @@ func buildCoordinatorDoctorChecks(
         detail: !linked ? "not logged in; run \(BuildEnvironment.current.cliName) login" : "auth token present"
     ))
 
-    switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {
+    let enrollment = checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)
+    switch enrollment {
     case .enrolledDarkbloom:
         checks.append(.init(
             name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
     case .enrolledOtherMDM(let serverURL):
+        let owner = enrollment.otherInstall != nil
+            ? "\(describeOtherMDM(enrollment)), not this install's. "
+            : "managed by another MDM (\(serverURL)); keep that profile installed. "
         checks.append(.init(
             name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
-            detail: "managed by another MDM (\(serverURL)); keep that profile installed. "
+            detail: owner
                 + (appAttestAuthorized ? "App Attest authorizes this connection." : "Awaiting qualified App Attest serving.")))
     case .notEnrolled:
         checks.append(.init(
@@ -459,7 +463,8 @@ private func doctorFetch(urlString: String, timeout: TimeInterval) async throws 
 func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
     switch state {
     case .enrolledDarkbloom: return "yes (darkbloom)"
-    case .enrolledOtherMDM(let serverURL): return "other MDM (\(serverURL))"
+    case .enrolledOtherMDM(let serverURL):
+        return state.otherInstall != nil ? "other install: \(describeOtherMDM(state))" : "other MDM (\(serverURL))"
     case .notEnrolled: return "no"
     case .checkFailed: return "unknown (profiles tool failed)"
     }

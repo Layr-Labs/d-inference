@@ -225,10 +225,10 @@ declaration of these values:
 | `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
 | `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
 | `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
-| `defaultBackendPort` | `8100` | `8101` |
 | `defaultLocalPort` | `8000` | `8001` |
 | `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
 | `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` |
 | `releaseVersionMarker` | versions without it | `-dev.` |
 
 <!-- END provider identity -->
@@ -252,12 +252,42 @@ These values are the same for both builds:
   and the keychain access group `SLDQ2GJ6TL.io.darkbloom.provider`. The
   Developer ID signature, the provisioning profile, notarization and App Attest
   check them. A different dev value does not match the signed bundle.
-- The MDM profile identifiers and the fan helper `io.darkbloom.fan-helper`. The
-  fan helper is one system service for the Mac.
+- The MDM profile identifiers. Each install accepts as its own only the profile
+  from its own coordinator host (or its configured coordinator). It names the
+  other install's profile and does not claim or remove it.
+- The fan helper `io.darkbloom.fan-helper`, one system service for the Mac. It
+  keeps one lease for each provider session and returns the fans to Auto only
+  when no lease is live. `fan disable` and `fan uninstall` affect both installs
+  and say so before they act.
 - The flat verifier copies `bin/darkbloom` and `bin/darkbloom-enclave` and the
   bundle file `darkbloom-bundle-macos-arm64.tar.gz`. The coordinator's release
   registration requires these names. Dev uploads go to the dev bucket under the
   `-dev.N` version.
+
+These surfaces are shared, and an operator must know about them:
+
+- Downloaded model weights (the Hugging Face hub cache) are shared on purpose.
+  Each install selects its active revision with its own ref (`modelRevisionRef`):
+  production uses `refs/main`, and a dev install without its own ref uses
+  production's selection. `models remove` deletes the shared weights, so the
+  other install loses them too. The encrypted KV cache is not shared
+  (`encryptedCacheNamespace`).
+- `DARKBLOOM_*` shell overrides. `start` copies the allowlisted variables
+  (`LaunchAgent.passthroughEnvKeys`) from the shell that runs it into that
+  install's LaunchAgent. Both installs read the same shell exports, so an export
+  that is meant for one install also reaches the other the next time it is
+  started from that shell.
+- APNs (known limitation, pending a test with two installs on one Mac). Both
+  installs have the bundle identifier `io.darkbloom.provider`, so they register
+  the same push topic and receive the same device token
+  (`provider-swift/Sources/darkbloom/ProviderAppKitHost.swift`,
+  `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift`). apsd delivers each push to
+  one process. A production code-identity challenge can therefore reach the dev
+  process on the legacy path without App Attest. A separate dev bundle
+  identifier and provisioning profile are necessary to remove this limitation.
+- Unified memory. `doctor` warns when the other install's provider process is
+  running, from that install's daemon state file. Model-fit estimates do not
+  include the other install's models, so two serving providers can cause jetsam.
 
 An install of an earlier dev build in `~/.darkbloom` does not move to the new
 names. Its updater expects `Darkbloom.app`, so it cannot install a

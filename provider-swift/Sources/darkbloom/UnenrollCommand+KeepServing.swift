@@ -25,12 +25,17 @@ extension Unenroll {
             throw ExitCode.failure
         }
 
-        switch checkMDMEnrollment(coordinatorURL: coordinator) {
+        let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
+        switch enrollment {
         case .notEnrolled:
             print("App Attest authorizes this connection. No Darkbloom MDM enrollment needs removal.")
             return
         case .enrolledOtherMDM:
-            print("App Attest authorizes this connection. Keep your organization's management profile installed.")
+            if enrollment.otherInstall != nil {
+                print("App Attest authorizes this connection. This Mac has \(describeOtherMDM(enrollment)); this install does not remove it.")
+            } else {
+                print("App Attest authorizes this connection. Keep your organization's management profile installed.")
+            }
             return
         case .checkFailed:
             printError("The installed management profile could not be identified. No removal guidance was opened; retry \(BuildEnvironment.current.cliName) doctor.")

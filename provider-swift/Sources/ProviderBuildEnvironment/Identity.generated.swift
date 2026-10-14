@@ -116,14 +116,6 @@ extension BuildEnvironment {
         }
     }
 
-    /// Default port of the local inference backend.
-    public var defaultBackendPort: UInt16 {
-        switch self {
-        case .prod: return 8100
-        case .dev: return 8101
-        }
-    }
-
     /// Default port of the direct-mode local OpenAI endpoint (`start --local`).
     public var defaultLocalPort: UInt16 {
         switch self {
@@ -147,6 +139,16 @@ extension BuildEnvironment {
     public var encryptedCacheNamespace: String {
         switch self {
         case .prod: return "darkbloom"
+        case .dev: return "darkbloom-dev"
+        }
+    }
+
+    /// Name of this install's active-revision ref (`refs/<name>`) in the shared
+    /// model weights cache. Each install selects its own revision of the shared
+    /// weights; a missing ref falls back to production's selection.
+    public var modelRevisionRef: String {
+        switch self {
+        case .prod: return "main"
         case .dev: return "darkbloom-dev"
         }
     }

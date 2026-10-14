@@ -82,7 +82,7 @@ extension Models {
             // scan other caches or initialize serving state.
             let config = try FileManager.default.fileExists(atPath: configPath.path)
                 ? ConfigManager.load(from: configPath)
-                : ProviderConfig(provider: ProviderSettings(name: "darkbloom"))
+                : ProviderConfig(provider: ProviderSettings(name: BuildEnvironment.current.cliName))
             writeLine("Config: \(configPath.path)")
             writeLine("Saved location: \(config.backend.modelCacheDirectory ?? "not set")")
             var current: ModelScanner.ResolvedCache?

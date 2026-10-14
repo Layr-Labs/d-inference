@@ -44,7 +44,9 @@ struct Unenroll: AsyncParsableCommand {
         print()
 
         let service = EnrollmentService()
-        switch checkMDMEnrollment() {
+        let coordinator = (try? loadRuntimeSnapshot(configPath: nil))?.config.coordinator.url
+        let enrollment = checkMDMEnrollment(coordinatorURL: coordinator)
+        switch enrollment {
         case .enrolledDarkbloom:
             print("Darkbloom MDM profile detected. To remove:")
             print("  System Settings → General → Device Management")
@@ -55,7 +57,11 @@ struct Unenroll: AsyncParsableCommand {
                 service.openProfilesPaneForRemoval()
             }
         case .enrolledOtherMDM(let serverURL):
-            print("This Mac is managed by a different MDM (\(serverURL)) — not Darkbloom's.")
+            if enrollment.otherInstall != nil {
+                print("This Mac has \(describeOtherMDM(enrollment)) — not this install's.")
+            } else {
+                print("This Mac is managed by a different MDM (\(serverURL)) — not Darkbloom's.")
+            }
             print("Nothing to remove on the macOS side.")
         case .notEnrolled:
             print("No Darkbloom MDM profile found. Nothing to remove on the macOS side.")

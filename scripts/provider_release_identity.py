@@ -8,7 +8,8 @@ products (swiftProducts) to the selected cliName and enclaveName when it
 packages the app. The flat verifier copies keep the product names because the
 coordinator's release registration requires bin/darkbloom.
 
-Run with a version to print the packaged names as KEY=VALUE lines for $GITHUB_ENV.
+Run with a version to print the packaged names as KEY=VALUE lines for $GITHUB_ENV,
+or with --environment and a version to print the build environment (prod or dev).
 """
 import json
 from pathlib import Path
@@ -44,8 +45,11 @@ def github_env(version):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--environment":
+        print(environment(sys.argv[2]))
+        return
     if len(sys.argv) != 2:
-        raise SystemExit("usage: provider_release_identity.py <version>")
+        raise SystemExit("usage: provider_release_identity.py [--environment] <version>")
     for key, value in github_env(sys.argv[1]).items():
         print(f"{key}={value}")
 

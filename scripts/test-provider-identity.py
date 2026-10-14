@@ -84,6 +84,23 @@ class ProviderIdentityTests(unittest.TestCase):
                     names["appDisplayName"], f'{HOME}/{names["installDirectoryName"]}',
                     f'{HOME}/{names["configDirectoryName"]}/provider.toml'])
 
+    def test_release_scripts_use_the_version_marker(self):
+        resolve = (ROOT / "scripts/resolve-provider-release.sh").read_text()
+        self.assertIn(f'[[ "$GITHUB_REF_NAME" == *{MARKER}* ]]', resolve)
+        self.assertIn(f'release_version="${{release_version}}{MARKER}${{GITHUB_RUN_NUMBER}}"', resolve)
+        check = (ROOT / "scripts/check-release-version.sh").read_text()
+        self.assertIn('"$PROVIDER_VERSION"' + MARKER.replace(".", "\\.") + "[1-9]", check)
+
+    def test_flat_verifier_names_are_the_swift_products(self):
+        # The coordinator's release registration requires these names.
+        cli, enclave = DOCUMENT["swiftProducts"]["cli"], DOCUMENT["swiftProducts"]["enclave"]
+        installer = (ROOT / "scripts/install.sh").read_text()
+        for line in (f'[ -f "$flat_bin/{cli}" ]', f'[ -f "$flat_bin/{enclave}" ]',
+                     f'verify_file_hash "$flat_bin/{cli}" "$binary_hash" "Binary"'):
+            self.assertIn(line, installer)
+        updater = (ROOT / "provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift").read_text()
+        self.assertIn(f'names: ["bin/{cli}"]', updater)
+
     def test_package_declares_the_swift_products(self):
         package = (ROOT / "provider-swift/Package.swift").read_text()
         for product in DOCUMENT["swiftProducts"].values():
@@ -100,8 +117,6 @@ class ProviderIdentityTests(unittest.TestCase):
             self.assertNotEqual(Path(PROD[field]).parts[:len(Path(DEV[field]).parts)], Path(DEV[field]).parts)
         self.assertNotIn(DEV["configDirectoryName"], PROD["legacyConfigDirectoryNames"])
         self.assertEqual(PROD["modelCDNURL"], DEV["modelCDNURL"])
-        ports = [env[field] for env in (PROD, DEV) for field in ("defaultBackendPort", "defaultLocalPort")]
-        self.assertCountEqual(set(ports), ports)
 
     def test_swift_tests_pin_the_json_values(self):
         tests = (ROOT / "provider-swift/Tests/ProviderCoreTests/Config/BuildEnvironmentTests.swift").read_text()

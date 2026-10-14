@@ -25,7 +25,7 @@ struct LaunchAgentPathsAndErrorsTests {
     @Test("the plist lives in the user LaunchAgents folder under the service label")
     func plistPathShape() {
         let path = LaunchAgent.plistPath()
-        #expect(path.lastPathComponent == "io.darkbloom.provider.plist")
+        #expect(path.lastPathComponent == "\(BuildEnvironment.current.launchAgentLabel).plist")
         #expect(path.deletingLastPathComponent().lastPathComponent == "LaunchAgents")
         #expect(path.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Library")
         #expect(path.path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path))

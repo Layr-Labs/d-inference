@@ -7,6 +7,12 @@ import ProviderCore
 
 struct Fan: AsyncParsableCommand {
     static let packagedCapability = "darkbloom-fan-helper-v1"
+    /// The root helper is one system service for the Mac: `disable` and
+    /// `uninstall` also affect the other build environment's provider.
+    static var sharedHelperNotice: String {
+        let providers = BuildEnvironment.allCases.map { "`\($0.cliName)`" }.joined(separator: " and ")
+        return "The fan helper serves every Darkbloom provider on this Mac (\(providers)). This change applies to all of them."
+    }
     private static var commandTypes: [ParsableCommand.Type] {
         var commands: [ParsableCommand.Type] = [
             Status.self, Diagnose.self, Enable.self, Configure.self,
@@ -257,6 +263,7 @@ extension Fan {
         )
 
         mutating func run() async throws {
+            Swift.print(Fan.sharedHelperNotice)
             try runMutation {
                 try FanServiceManager().disable()
                 Swift.print("Fan control disabled; macOS automatic control restored.")
@@ -270,6 +277,7 @@ extension Fan {
         )
 
         mutating func run() async throws {
+            Swift.print(Fan.sharedHelperNotice)
             try runMutation {
                 try FanServiceManager().uninstall()
                 Swift.print("Fan helper uninstalled; macOS automatic control restored.")

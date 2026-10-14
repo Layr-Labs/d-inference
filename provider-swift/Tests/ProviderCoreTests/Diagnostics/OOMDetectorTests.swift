@@ -238,3 +238,20 @@ private final class LockedBox: @unchecked Sendable {
     func set(_ x: MemoryPressureLevel) { lock.lock(); v = x; lock.unlock() }
     var value: MemoryPressureLevel? { lock.lock(); defer { lock.unlock() }; return v }
 }
+
+@Test func crashReportsMatchOnlyThisInstallsProcessName() {
+    let prod = BuildEnvironment.prod.cliName
+    let dev = BuildEnvironment.dev.cliName
+    let jetsam = """
+    {"bug_type":"298"}
+    {"pageSize":16384,"largestProcess":"\(dev)","processes":[{"name":"\(dev)","pid":456,"rpages":1000,"reason":"per-process-limit"}]}
+    """
+    #expect(OOMDetector.parseJetsamReport(contents: jetsam, processName: prod) == nil)
+    #expect(OOMDetector.parseJetsamReport(contents: jetsam, processName: dev)?.source == .jetsamReport)
+    let crash = """
+    {"app_name":"\(dev)","bug_type":"309"}
+    {"exception":{"type":"EXC_RESOURCE","subtype":"MEMORY"}}
+    """
+    #expect(OOMDetector.parseMemoryCrashReport(contents: crash, processName: prod) == nil)
+    #expect(OOMDetector.parseMemoryCrashReport(contents: crash, processName: dev) != nil)
+}

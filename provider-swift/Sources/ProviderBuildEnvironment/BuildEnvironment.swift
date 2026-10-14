@@ -15,7 +15,7 @@ import Foundation
 /// the values. `scripts/generate-provider-identity.py` writes them into
 /// `Identity.generated.swift` (the properties `cliName`, `enclaveName`,
 /// `appBundleName`, `installDirectoryName`, `launchAgentLabel`,
-/// `defaultBackendPort`, `keychainServicePrefix` and the others), and
+/// `defaultLocalPort`, `keychainServicePrefix` and the others), and
 /// `scripts/test-provider-identity.py` fails when the two differ. A dev install
 /// and a production install can run on the same Mac: they do not share a path,
 /// a port, a launchd label or a keychain item.

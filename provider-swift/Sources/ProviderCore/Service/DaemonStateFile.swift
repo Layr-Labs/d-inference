@@ -500,8 +500,13 @@ public enum DaemonStateFile {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return BuildEnvironment.current.installDirectory()
-            .appendingPathComponent("daemon-state.json")
+        return path(for: .current)
+    }
+
+    /// The state file of a build environment's install. `doctor` reads the
+    /// other environment's file to see whether that provider is serving.
+    public static func path(for environment: BuildEnvironment) -> URL {
+        environment.installDirectory().appendingPathComponent("daemon-state.json")
     }
 
     /// Built once. `write` runs on a ~2 s tick for the life of the daemon, and

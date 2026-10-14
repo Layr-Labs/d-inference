@@ -49,6 +49,11 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
         case .profileWriteFailed(let detail):
             return "Failed to write enrollment profile: \(detail)"
         case .managedByOtherMDM(let serverURL):
+            let state = MDMEnrollmentState.enrolledOtherMDM(serverURL: serverURL)
+            if state.otherInstall != nil {
+                return "This Mac already has \(describeOtherMDM(state)). macOS allows only one MDM "
+                    + "enrollment per device, so this install cannot enroll while that profile is installed."
+            }
             return "This Mac is already managed by another MDM (server: \(serverURL)). "
                 + "macOS allows only one MDM enrollment per device, so Darkbloom "
                 + "enrollment is unavailable here. Keep your organization's profile installed. "

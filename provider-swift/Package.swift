@@ -124,6 +124,7 @@ let package = Package(
         .target(
             name: "ProviderCoreFoundation",
             dependencies: [
+                "ProviderBuildEnvironment",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Jinja", package: "swift-jinja"),
@@ -300,7 +301,7 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "ProviderCoreFoundationTests",
-            dependencies: ["ProviderCoreFoundation"],
+            dependencies: ["ProviderBuildEnvironment", "ProviderCoreFoundation"],
             path: "Tests/ProviderCoreFoundationTests"
         ),
 

@@ -41,9 +41,9 @@ struct BuildEnvironmentTests {
         #expect(prod.watchdogAgentLabel == "io.darkbloom.watchdog")
         #expect(prod.logSubsystem == "com.darkbloom.provider")
         #expect(prod.serviceLogSubsystem == "dev.darkbloom.provider")
-        #expect(prod.defaultBackendPort == 8100)
         #expect(prod.defaultLocalPort == 8000)
         #expect(prod.encryptedCacheNamespace == "darkbloom")
+        #expect(prod.modelRevisionRef == "main")
         #expect(prod.keychainServicePrefix == "io.darkbloom")
         #expect(KeychainWrappedKEKStorage.defaultService == "io.darkbloom.kv.kek.v1")
         #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
@@ -69,9 +69,9 @@ struct BuildEnvironmentTests {
         #expect(dev.watchdogAgentLabel == "io.darkbloom.watchdog.dev")
         #expect(dev.logSubsystem == "com.darkbloom.provider.dev")
         #expect(dev.serviceLogSubsystem == "dev.darkbloom.provider.dev")
-        #expect(dev.defaultBackendPort == 8101)
         #expect(dev.defaultLocalPort == 8001)
         #expect(dev.encryptedCacheNamespace == "darkbloom-dev")
+        #expect(dev.modelRevisionRef == "darkbloom-dev")
         #expect(dev.keychainServicePrefix == "io.darkbloom.dev")
         #expect(dev.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom-dev")
     }
@@ -83,7 +83,8 @@ struct BuildEnvironmentTests {
              environment.launchAgentLabel, environment.watchdogAgentLabel,
              environment.logSubsystem, environment.serviceLogSubsystem,
              environment.keychainServicePrefix, environment.encryptedCacheNamespace,
-             String(environment.defaultBackendPort), String(environment.defaultLocalPort)]
+             environment.modelRevisionRef,
+             String(environment.defaultLocalPort)]
         }
         for (prod, dev) in zip(identity(.prod), identity(.dev)) {
             #expect(prod != dev)
@@ -92,8 +93,6 @@ struct BuildEnvironmentTests {
             [$0.installDirectoryName, $0.configDirectoryName] + $0.legacyConfigDirectoryNames
         }
         #expect(Set(paths).count == paths.count)
-        let ports = BuildEnvironment.allCases.flatMap { [$0.defaultBackendPort, $0.defaultLocalPort] }
-        #expect(Set(ports).count == ports.count)
     }
 
     @Test func webSocketAndHTTPFormsAgree() {

@@ -40,13 +40,15 @@ FIELDS = {
     "logSubsystem": "Unified logging subsystem of the engine and the KV cache.",
     "serviceLogSubsystem": "Unified logging subsystem of the provider service. `logs` and `report`\n"
                            "read this subsystem.",
-    "defaultBackendPort": "Default port of the local inference backend.",
     "defaultLocalPort": "Default port of the direct-mode local OpenAI endpoint (`start --local`).",
     "keychainServicePrefix": "Prefix of keychain service names and key labels that this install owns.\n"
                              "The keychain access group does not change.",
     "encryptedCacheNamespace": "Directory of this install's encrypted KV cache, in the user cache\n"
                                "directory or in the configured cache directory. Downloaded model\n"
                                "weights are not in it; both installs share them.",
+    "modelRevisionRef": "Name of this install's active-revision ref (`refs/<name>`) in the shared\n"
+                        "model weights cache. Each install selects its own revision of the shared\n"
+                        "weights; a missing ref falls back to production's selection.",
 }
 
 
@@ -77,9 +79,9 @@ def validate(document):
             missing = sorted(set(FIELDS) - set(environment))
             extra = sorted(set(environment) - set(FIELDS))
             raise ValueError(f"{name}: fields differ from the Swift identity (missing {missing}, extra {extra})")
-        port = environment["defaultBackendPort"]
+        port = environment["defaultLocalPort"]
         if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
-            raise ValueError(f"{name}: defaultBackendPort must be a TCP port")
+            raise ValueError(f"{name}: defaultLocalPort must be a TCP port")
 
 
 def render_swift(document):

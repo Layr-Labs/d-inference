@@ -258,7 +258,7 @@ struct Watchdog: AsyncParsableCommand {
         if let configPath {
             let path = URL(fileURLWithPath: (configPath as NSString).expandingTildeInPath)
             config = (try? ConfigManager.load(from: path))
-                ?? ProviderConfig(provider: ProviderSettings(name: "darkbloom"))
+                ?? ProviderConfig(provider: ProviderSettings(name: BuildEnvironment.current.cliName))
         } else {
             config = ConfigManager.loadDefault()
         }

@@ -27,6 +27,9 @@ public struct ClusterPairServingContext: Sendable {
     public let firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy?
     public let residentPrefixEvidence: ResidentPrefixCacheEvidence?
     public let artifactBytes: Int
+    /// The model's directory on this Mac: the stop set and sampling defaults
+    /// are read from its files as a single-Mac slot reads them.
+    public let modelDirectory: URL?
     /// Builds the pair's execution owner for one committed start from the
     /// session's own endpoint. Blocking: it waits for both ranks' readiness.
     /// Throws when the pair cannot form; the session keeps its endpoint's
@@ -39,11 +42,12 @@ public struct ClusterPairServingContext: Sendable {
     public init(publicModelID: String, modelType: String?, tokenizer: TokenizerHandle, eosTokenIDs: Set<Int>,
                 profile: DistributedResidentExecutionProfile, firstTokenBudgetPolicy: DistributedFirstTokenBudgetPolicy? = nil,
                 residentPrefixEvidence: ResidentPrefixCacheEvidence? = nil, artifactBytes: Int = 0,
-                observabilityFacts: DistributedSessionFacts? = nil,
+                modelDirectory: URL? = nil, observabilityFacts: DistributedSessionFacts? = nil,
                 makeOwner: @escaping @Sendable (NativePairMemberServingStart) throws -> any DistributedResidentExecutionOwner) {
         self.publicModelID = publicModelID; self.modelType = modelType; self.tokenizer = tokenizer
         self.eosTokenIDs = eosTokenIDs; self.profile = profile; self.firstTokenBudgetPolicy = firstTokenBudgetPolicy
         self.residentPrefixEvidence = residentPrefixEvidence; self.artifactBytes = artifactBytes
+        self.modelDirectory = modelDirectory
         self.observabilityFacts = observabilityFacts; self.makeOwner = makeOwner
     }
 
@@ -158,7 +162,7 @@ extension ProviderLoop: NativePairMemberServingHost {
             modelType: context.modelType, tokenizer: context.tokenizer, eosTokenIDs: context.eosTokenIDs,
             expectedIdentity: identity, profile: context.profile, firstTokenBudgetPolicy: context.firstTokenBudgetPolicy,
             residentPrefixEvidence: context.residentPrefixEvidence, artifactBytes: context.artifactBytes,
-            pairTelemetry: telemetry)
+            modelDirectory: context.modelDirectory, pairTelemetry: telemetry)
         do { try await publishClusterPairSlot(specification, owner: owner) }
         catch { await owner.shutdown(); endClusterPairServing(epoch); throw error }
         clusterPairServingForming = false

@@ -32,7 +32,41 @@ enum DistributedHTTPEventStream {
         }
     }
 
-    static func failureFrame(for response: DistributedHTTPResponse, upstreamFailed: Bool) throws -> String? {
+    /// The identity the product's chunks carry (`OpenAIChatCompletionChunk`),
+    /// read from the first frame of this stream, so a failure frame written
+    /// here names the same completion as every frame before it.
+    struct ChunkIdentity: Equatable {
+        let id: String
+        let created: Int
+        let model: String
+
+        init?(frame: String) {
+            guard frame.hasPrefix("data: "), frame.hasSuffix("\n\n"),
+                  let chunk = try? JSONDecoder().decode(OpenAIChatCompletionChunk.self,
+                                                        from: Data(frame.dropFirst(6).dropLast(2).utf8))
+            else { return nil }
+            id = chunk.id; created = chunk.created; model = chunk.model
+        }
+    }
+
+    /// The product's own failure frame (`MLXOpenAIService` with
+    /// `frameGenerationErrors`): a chunk whose finish reason is `error`.
+    static func isProductFailureFrame(_ frame: String) -> Bool {
+        guard frame.hasPrefix("data: "), frame.hasSuffix("\n\n"),
+              let object = try? JSONSerialization.jsonObject(with: Data(frame.dropFirst(6).dropLast(2).utf8)),
+              let row = object as? [String: Any], row["error"] is [String: Any],
+              let choices = row["choices"] as? [[String: Any]] else { return false }
+        return choices.contains { $0["finish_reason"] as? String == "error" }
+    }
+
+    /// A failure the shared pipeline did not frame itself (a deadline, a
+    /// clean stop the owner forced, an upstream that ended without a frame),
+    /// in the product's failure-frame shape: the completion's chunk identity,
+    /// one choice with an empty delta and `finish_reason: "error"`, and the
+    /// error object. The cause and the attempt's usage ride along for the
+    /// cluster's own diagnosis. Like the product's, nothing follows it.
+    static func failureFrame(for response: DistributedHTTPResponse, upstreamFailed: Bool,
+                             identity: ChunkIdentity? = nil) throws -> String? {
         guard let terminal = response.terminal else {
             // No actual native terminal means no reconciled usage or completion
             // can be asserted, even if an HTTP task or owner channel closed.
@@ -48,9 +82,11 @@ enum DistributedHTTPEventStream {
         var error: [String: Any] = ["type": "server_error", "code": reason,
             "message": deadline && !nativeFailure ? "First visible content deadline was not met" : "Distributed generation did not complete"]
         if let cause { error["terminal_cause"] = cause }
-        let bytes = try JSONSerialization.data(withJSONObject: ["error": error,
-            "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]],
-            options: [.sortedKeys, .withoutEscapingSlashes])
+        var object: [String: Any] = ["error": error, "object": "chat.completion.chunk",
+            "choices": [["index": 0, "delta": ["content": ""], "finish_reason": "error"] as [String: Any]],
+            "attempt_usage": ["prompt_tokens": terminal.promptTokens, "completion_tokens": terminal.completionTokens]]
+        if let identity { object["id"] = identity.id; object["created"] = identity.created; object["model"] = identity.model }
+        let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         let frame = "data: \(String(decoding: bytes, as: UTF8.self))\n\n"
         guard frame.utf8.count + ServerSentEventEncoder.done.utf8.count <= maximumTerminalBytes else { throw Failure.outputLimit }
         return frame
@@ -58,7 +94,8 @@ enum DistributedHTTPEventStream {
 
     static func response(_ frames: AsyncThrowingStream<String, Error>, control: DistributedHTTPResponse) -> Response {
         let lifetime = DistributedHTTPBodyLifetime(control)
-        return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-store"],
+        // The product's event-stream headers (`LocalChatUploadResponder.sseResponse`).
+        return Response(status: .ok, headers: [.contentType: "text/event-stream; charset=utf-8", .cacheControl: "no-cache"],
             body: .init { writer in
                 defer { lifetime.completed() }
                 do {
@@ -93,6 +130,7 @@ enum DistributedHTTPEventStream {
         var writerFailed = false
         var upstreamFailed = false
         var trailing: [String] = []
+        var identity: ChunkIdentity?
         do {
             readLoop: while true {
                 try Task.checkCancellation()
@@ -122,6 +160,7 @@ enum DistributedHTTPEventStream {
                 }
                 total += size
                 let visible = try isVisibleContent(frame)
+                if identity == nil { identity = ChunkIdentity(frame: frame) }
                 control.expire(at: ContinuousClock.now)
                 // Defer final usage/finish/DONE until error disposition
                 // is known. At most the existing finish frame + DONE.
@@ -143,9 +182,11 @@ enum DistributedHTTPEventStream {
             upstreamFailed = true
         }
         control.expire(at: ContinuousClock.now)
-        if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed) {
-            try await writer.write(ByteBuffer(string: failure))
-            try await writer.write(ByteBuffer(string: ServerSentEventEncoder.done))
+        if let failure = try failureFrame(for: control, upstreamFailed: upstreamFailed, identity: identity) {
+            // When the shared pipeline framed the failure itself, the client
+            // gets exactly the single-Mac endpoint's frame; either way the
+            // stream ends there, as the product's does (no [DONE] after it).
+            try await writer.write(ByteBuffer(string: trailing.first(where: isProductFailureFrame) ?? failure))
         } else {
             for frame in trailing { try await writer.write(ByteBuffer(string: frame)) }
         }

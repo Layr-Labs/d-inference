@@ -39,8 +39,7 @@ enum ProviderModelContainer: Sendable {
         switch self {
         case .autoregressive(let value):
             return await value.perform { context in
-                TokenizerHandle(context.tokenizer, toolConstraintContractVerified:
-                    Gemma4ToolConstraintContract.isVerified(modelType: modelType, modelDirectory: directory))
+                TokenizerHandle.serving(context.tokenizer, modelType: modelType, modelDirectory: directory)
             }
         case .diffusion(let value):
             return await value.perform { TokenizerHandle($0.tokenizer) }

@@ -46,4 +46,34 @@ struct ClusterAPIParityTests {
             await bridge.shutdown()
         }
     }
+
+    /// The coordinator path (a leader member's pair slot, served by the same
+    /// inference handler as a single-Mac slot) reads the model's directory:
+    /// its stop set and sampling defaults are a single-Mac slot's.
+    @Test func thePairSlotServesWithTheSingleMacSlotsStopSetAndSamplingDefaults() async throws {
+        for family in ParityFamily.all where ["gpt-oss-20b", "nemotron-3.5", "qwen3.5-9b"].contains(family.name) {
+            let directory = try family.makeDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let tokenizer = family.tokenizer
+            let loop = try await clusterPairMemberLoop(models: [family.modelID], modelType: family.modelType)
+            let owner = ScriptedPairOwner()
+            let specification = ClusterPairSlotSpecification(publicModelID: family.modelID, modelType: family.modelType,
+                tokenizer: TokenizerHandle(tokenizer), eosTokenIDs: try family.installedEOS(),
+                expectedIdentity: owner.identity, profile: try distributedTestProfile(), artifactBytes: 1 << 30,
+                modelDirectory: directory)
+            _ = try await loop.publishClusterPairSlot(specification, owner: owner)
+            let bridge = try #require(await loop.modelSlots[family.modelID]?.engineV2)
+            let expected = EngineV2Translation.stopTokenIds(
+                eosTokenIds: ModelEOSPolicy.effectiveEOSTokenIds(
+                    modelId: family.modelID, modelType: family.modelType, base: try family.loaderEOS(directory),
+                    tokenToId: { tokenizer.convertTokenToId($0) }),
+                tokenizerEOSTokenId: tokenizer.eosTokenId, extraEOSTokens: [],
+                convertTokenToId: { tokenizer.convertTokenToId($0) })
+            let stops = await bridge.stopTokenIds, defaults = await bridge.samplingDefaults
+            #expect(stops == expected, "\(family.name): pair slot \(stops.sorted()) single-Mac \(expected.sorted())")
+            #expect(defaults == EngineV2SamplingDefaults.resolve(
+                modelId: family.modelID, modelType: family.modelType, modelDirectory: directory), "\(family.name)")
+            #expect(await loop.retireClusterPairSlot(reason: "test"))
+        }
+    }
 }

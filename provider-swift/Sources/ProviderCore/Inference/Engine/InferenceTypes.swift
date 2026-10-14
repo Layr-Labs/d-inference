@@ -126,6 +126,18 @@ public final class TokenizerHandle: @unchecked Sendable {
         self.toolConstraintContractVerified = toolConstraintContractVerified
     }
 
+    /// The handle a served model's requests use: its tokenizer, and whether
+    /// the artifact's chat template is the pinned Gemma tool-constraint
+    /// contract. Single-Mac slots (`ProviderModelContainer`) and cluster
+    /// pairs (local API and coordinator path) build it the same way, so
+    /// `tool_choice` takes the same path on both.
+    static func serving(
+        _ inner: any MLXLMCommon.Tokenizer, modelType: String?, modelDirectory: URL
+    ) -> TokenizerHandle {
+        TokenizerHandle(inner, toolConstraintContractVerified:
+            Gemma4ToolConstraintContract.isVerified(modelType: modelType, modelDirectory: modelDirectory))
+    }
+
     func gemmaVocabulary(
         stopTokenIDs: Set<Int>
     ) throws -> GemmaTokenVocabulary {

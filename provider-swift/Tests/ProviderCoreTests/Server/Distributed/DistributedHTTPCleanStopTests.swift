@@ -66,9 +66,11 @@ struct DistributedHTTPCleanStopTests {
         session.base.losePeer()
         // No acknowledgement yet: the surviving rank may need its whole
         // progress limit to retire. The client is told now.
-        let tail = try await socket.read(until: "data: [DONE]")
-        #expect(tail.contains("\"error\"") && tail.contains("inference_error"))
-        #expect(tail.contains("attempt_usage"))
+        // The single-Mac endpoint's own failure frame for an engine failure;
+        // nothing follows it, as on a single Mac.
+        let tail = try await socket.read(until: "\"finish_reason\":\"error\"")
+        #expect(tail.contains("\"error\"") && tail.contains("Response generation failed"))
+        #expect(!tail.contains("attempt_usage") && !tail.contains("data: [DONE]"))
         #expect(lease.cancelCount == 1 && lease.releaseCount == 0)
         lease.acknowledge()
         #expect(try await httpDeliveryEventually { lease.releaseCount == 1 })

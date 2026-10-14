@@ -350,10 +350,12 @@ final class WorkerTests: XCTestCase {
             XCTAssertEqual(all.startupDeadlineUptimeNanoseconds, 90_000_000_100)
             XCTAssertEqual(all.evidenceDirectory, "/private/run/evidence"); XCTAssertTrue(all.qualificationSwitchesPermitted)
         }
-        // The catalog the worker checks against is the runtime's own row; the 9B and 27B ship a head.
+        // The catalog the worker checks against is the runtime's own row; the 9B and 27B ship a head and run
+        // tensor parallel (round 6e).
         for model in ["registered_qwen35_9b", "registered_qwen38_27b", "registered_ternary_bonsai_2_27b"] {
             XCTAssertEqual(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model)?.supportedGenerationModes,
-                           [.pipeline, .pipelineCompactDecode, .phaseSplit] + (model.contains("bonsai") ? [] : [.phaseSplitMTP, .pipelineMTP]), model)
+                           [.pipeline, .pipelineCompactDecode, .phaseSplit]
+                               + (model.contains("bonsai") ? [] : [.phaseSplitMTP, .tensorParallel, .pipelineMTP]), model)
         }
     }
 

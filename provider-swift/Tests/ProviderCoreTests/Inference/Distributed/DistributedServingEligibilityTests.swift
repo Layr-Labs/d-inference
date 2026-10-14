@@ -62,10 +62,18 @@ import DarkbloomClusterProtocol
             try ClusterPairServingGrants.requirePlacement([.appleM3Ultra, chipClass], runtimeModelID: q27, publicModelID: q27Public, mode: .phaseSplit)
             try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: "registered_qwen35_9b", publicModelID: "Qwen3.5-9B",
                                                           cuts: [16], mode: .pipeline)
-            // A family no check of the model passed is served for the owner on every chip, and not qualified for public traffic.
+            // Tensor parallel is served for the owner on every chip; the 27B's bundled tensor_parallel_v1 records
+            // (tp-engine, since round 6e) qualify that family for public traffic too.
             try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: q27, publicModelID: q27Public,
                                                           cuts: [], mode: .tensorParallel)
-            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: q27, mode: .tensorParallel) == ClusterPairOwnerServing.notYetQualified)
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: q27, mode: .tensorParallel)
+                .hasPrefix("qualified for public traffic in tensor parallel mode"))
+            // A family no check of the model passed (the 35B A3B has no pipeline_mtp_v1 record) is served for the
+            // owner on every chip, and not qualified for public traffic.
+            try ClusterPairServingGrants.requirePlacement([chipClass, chipClass], runtimeModelID: "registered_qwen35_35b_a3b", publicModelID: "p",
+                                                          cuts: [20], mode: .pipelineMTP)
+            #expect(ClusterPairServingGrants.publicTrafficLine(runtimeModelID: "registered_qwen35_35b_a3b", mode: .pipelineMTP)
+                == ClusterPairOwnerServing.notYetQualified)
         }
         // The rank order is free too: the M5 Ultra leads the 9B and the 27B.
         for model in [("registered_qwen35_9b", "Qwen3.5-9B"), (q27, q27Public)] {
@@ -202,7 +210,8 @@ import DarkbloomClusterProtocol
             .init(chipClasses: [.appleM3Ultra, .appleM5Ultra], cuts: [8], mode: .phaseSplit)] {
             #expect(shapes.contains("\(expected.chipClasses.map(\.rawValue)) \(expected.cuts) \(expected.mode.rawValue)"))
         }
-        #expect(grant.evidence.hasPrefix("17 passing cross-cable qualification records"))
+        // 17 before round 6f, plus the two pipeline_mtp_v1 records (pp-mtp-records: 4K and 1K at cut 47).
+        #expect(grant.evidence.hasPrefix("19 passing cross-cable qualification records"))
         #expect(!ClusterPairServingGrants.records(runtimeModelID: model).restrictsShapes)
         let m4max = cls("Apple M4 Max")
         for order in [[ClusterChipClass.appleM5Ultra, .appleM3Ultra], [.appleM3Ultra, .appleM5Ultra], [.appleM5Ultra, .appleM5Max], [m4max, m4max]] {

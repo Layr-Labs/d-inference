@@ -225,9 +225,12 @@ struct PhaseSplitContractTests {
             let definition = try QwenResidentModelDefinition(model: model)
             // The pipeline first; the row is what load, the worker and the capability consult. The 9B,
             // 27B and both 35B A3B artifacts ship the product's speculative head, so their rows also list it.
+            // The dense 9B and 27B also run tensor parallel (`QwenTensorParallelResidentRuntime`, round 6e).
             let head = [.qwen35NineB, .qwen38TwentySevenB, .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B].contains(model)
+            let tensor = [.qwen35NineB, .qwen38TwentySevenB].contains(model)
             #expect(definition.supportedGenerationModes
-                == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP, .pipelineMTP] : []))
+                == [.pipeline, .pipelineCompactDecode, .phaseSplit] + (head ? [.phaseSplitMTP] : []) + (tensor ? [.tensorParallel] : [])
+                    + (head ? [.pipelineMTP] : []))
             #expect(QwenResidentCapabilityMetadata.registeredModel(runtimeModelID: model.rawValue)?.supportedGenerationModes
                 == definition.supportedGenerationModes)
         }

@@ -172,6 +172,25 @@ import Foundation
         refuses("bench cap: a release build refuses the override", because: "not available in a release build") {
             _ = try ClusterPlannerBenchCap.capBytes(environment: [name: "96"], debugBuild: false)
         }
+        // The developer bench chip (`ClusterBenchChip`, test only): a debug build plans and checks ranks as that chip;
+        // a release build never reads it for a rank's class and refuses to plan while it is set.
+        let chip = ClusterBenchChip.environmentName
+        require("bench chip: a debug build reads it, a release build ignores it for a rank",
+            ClusterBenchChip.chipName(environment: [chip: "Apple M4 Max"], debugBuild: true) == "Apple M4 Max"
+                && ClusterBenchChip.chipName(environment: [chip: "Apple M4 Max"], debugBuild: false) == nil
+                && ClusterChipClass.local(environment: [chip: "Apple M4 Max"], debugBuild: true) == ClusterChipClass(chipName: "Apple M4 Max")
+                && ClusterChipClass.local(environment: [chip: "Apple M4 Max"], debugBuild: false) == ClusterChipClass.local(environment: [:], debugBuild: false))
+        refuses("bench chip: a release build refuses to plan while it is set", because: "not available in a release build") {
+            _ = try ClusterBenchChip.planningChipName(environment: [chip: "Apple M4 Max"], debugBuild: false)
+        }
+        refuses("bench chip: a release build refuses to plan a pair while it is set", because: "not available in a release build") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [chip: "Apple M4 Max"],
+                benchDebugBuild: false)
+        }
+        refuses("bench chip: a name that is no Apple silicon chip is refused", because: "must name an Apple silicon chip") {
+            _ = try ClusterBenchChip.planningChipName(environment: [chip: "Apple M1 (Virtual)"], debugBuild: true)
+        }
         for bad in ["", "abc", "0", "-8", "1e3", "9.5", " 96", "99999999"] {
             refuses("bench cap: \"\(bad)\" is refused", because: "whole number of GiB") {
                 _ = try ClusterPlannerBenchCap.capBytes(environment: [name: bad], debugBuild: true)

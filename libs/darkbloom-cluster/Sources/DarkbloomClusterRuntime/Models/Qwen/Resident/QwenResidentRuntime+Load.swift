@@ -165,6 +165,11 @@ extension QwenResidentRuntime {
                         material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
                         disagreementMessage: "Resident load membership/source/Plan/mode differs", scope: .session(.loadAgreement, "resident-load-intent"), check: checked)
                     let beforeLoad = Memory.snapshot()
+                    // The decoding rank of a phase split loads both stages of one
+                    // artifact: it is verified once for both (finding R1).
+                    let sharesVerification = mode.isPhaseSplit && collective.rank == 1
+                    if sharesVerification { VerifiedCheckpointReuse.begin() }
+                    defer { if sharesVerification { VerifiedCheckpointReuse.end() } }
                     try autoreleasepool {
                         let value = try admission.loadResidentStage(check: checked, constructed: { _ in })
                         retired = value.loaded.model; stage = value

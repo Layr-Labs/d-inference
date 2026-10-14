@@ -263,6 +263,15 @@ final class VerifiedCheckpoint {
         }
     }
 
+    /// Files hashed at once by default, from this Mac: a quarter of its
+    /// active cores, at most 8 (SHA-256 of one file runs on one core at about
+    /// 3 GB/s, below what the SSD reads; finding R1: one file at a time kept
+    /// a 27B rank hashing for about 5 s per pass). The result never depends
+    /// on it (`init`).
+    static func derivedHashingConcurrency(activeProcessors: Int = ProcessInfo.processInfo.activeProcessorCount) -> Int {
+        min(8, max(1, activeProcessors / 4))
+    }
+
     /// Reuse verified descriptors only with the exact configuration already verified.
     func requireConfiguration(_ data: Data) throws {
         guard sha256(data) == configurationSHA256 else {
@@ -280,5 +289,48 @@ final class VerifiedCheckpoint {
         where file.path.hasSuffix(".safetensors") {
             try file.bypassPayloadCache()
         }
+    }
+}
+
+/// One verification of an artifact per load (finding R1). While a scope is
+/// open (the decoding rank of a phase split loads the producer stage of the
+/// same artifact right after its own), a second verification of the same
+/// artifact under the same pins in this process takes the first one's
+/// verified descriptors, after confirming that none of its files changed and
+/// that the configuration bytes are the ones verified, instead of hashing
+/// every file again. Outside a scope every verification hashes, as before.
+enum VerifiedCheckpointReuse {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var depth = 0
+    nonisolated(unsafe) private static var held: [String: VerifiedCheckpoint] = [:]
+    nonisolated(unsafe) private static var hashed = 0
+
+    /// Verifications that hashed (for tests and diagnostics).
+    static var hashedVerifications: Int { lock.withLock { hashed } }
+
+    static func begin() { lock.withLock { depth += 1 } }
+    static func end() { lock.withLock { depth = max(0, depth - 1); if depth == 0 { held.removeAll() } } }
+
+    static func scope<T>(_ body: () throws -> T) rethrows -> T {
+        begin(); defer { end() }
+        return try body()
+    }
+
+    /// The verified artifact at `directory` under exactly these pins.
+    static func checkpoint(directory: URL, configurationData: Data, expectedAggregateSHA256: String?,
+                           maximumPayloadBytes: Int?, expectedManifestSHA256: String?,
+                           hashingConcurrency: Int) throws -> VerifiedCheckpoint {
+        let key = [directory.standardizedFileURL.path, expectedAggregateSHA256 ?? "-", expectedManifestSHA256 ?? "-",
+                   maximumPayloadBytes.map(String.init) ?? "-", sha256(configurationData)].joined(separator: "|")
+        if let existing = lock.withLock({ depth > 0 ? held[key] : nil }) {
+            try existing.requireConfiguration(configurationData)
+            try existing.checkUnchanged()
+            return existing
+        }
+        let made = try VerifiedCheckpoint(directory: directory, configurationData: configurationData,
+            expectedAggregateSHA256: expectedAggregateSHA256, maximumPayloadBytes: maximumPayloadBytes,
+            expectedManifestSHA256: expectedManifestSHA256, hashingConcurrency: hashingConcurrency)
+        lock.withLock { hashed += 1; if depth > 0 { held[key] = made } }
+        return made
     }
 }

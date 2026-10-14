@@ -219,6 +219,26 @@ import Foundation
         let plain = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
             localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [:], benchDebugBuild: true)
         require("forced mode: unset, the plan carries no developer line", !plain.lines.contains { $0.contains("Developer setting") })
+        // Hardware 2026-10-14 (round 6e, first forced run): the planner chose tensor parallel and the setup refused it
+        // ("This build's installed path runs a placement of exactly two ranges"). A tensor-parallel placement cuts no layer
+        // range: both setups carry tensor_parallel_v1, two ranks, and a Plan of the capability record as the load's
+        // identity (the worker loads its share of every layer; the pair checks ran it the same way).
+        guard let piped = plain.result.chosen else { require("tensor parallel setup: a fixture placement", false); return }
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(piped)) as! [String: Any]
+        object["mode"] = ClusterGenerationMode.tensorParallel.rawValue; object["cuts"] = [Int]()
+        let tensor = try JSONDecoder().decode(ClusterPlacementCandidate.self, from: JSONSerialization.data(withJSONObject: object))
+        let setup = try? ClusterPlacementSetup.synthesize(description: description, capability: capability, chosen: tensor)
+        let described = capability.partitions.compactMap { $0.stages.first?.sourceLayerEnd }
+        let layers = capability.partitions.first?.stages.last?.sourceLayerEnd ?? 0
+        let middle = described.min { abs(2 * $0 - layers) < abs(2 * $1 - layers) }
+        require("tensor parallel setup: two setups, tensor_parallel_v1, the middle Plan as the load's identity",
+            setup.map { setup in setup.configurations.count == 2 && setup.cut == middle
+                && setup.configurations.values.allSatisfy { String(decoding: $0, as: UTF8.self).contains("\"generationMode\":\"tensor_parallel_v1\"") } } == true)
+        var three = object; three["cuts"] = [middle ?? 1]
+        let malformed = try JSONDecoder().decode(ClusterPlacementCandidate.self, from: JSONSerialization.data(withJSONObject: three))
+        refuses("tensor parallel setup: a tensor-parallel placement with a cut is refused", because: "exactly two") {
+            _ = try ClusterPlacementSetup.synthesize(description: description, capability: capability, chosen: malformed)
+        }
     }
 
     static func benchCap(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,

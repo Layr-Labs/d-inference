@@ -118,7 +118,10 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
 
     public static func synthesize(description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                                   chosen: ClusterPlacementCandidate) throws -> ClusterPlacementSetup {
-        guard chosen.ranks.count == 2, chosen.cuts.count == 1 else {
+        // A tensor-parallel placement cuts no layer range (every rank holds its share of every layer); any other
+        // placement of a pair cuts once.
+        let tensorParallel = chosen.mode.usesTensorParallelDecode
+        guard chosen.ranks.count == 2, chosen.cuts.count == (tensorParallel ? 0 : 1) else {
             throw ClusterConfigurationError.invalid("This build's installed path runs a placement of exactly two ranges")
         }
         let ranked = try chosen.ranks.map { rank -> ClusterPairDescription.Member in
@@ -132,10 +135,14 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
         }
         // The Plan a worker loads is identified by its hash, which only the
         // worker can compute; the record lists it for each cut it describes.
-        guard let partition = capability.partitions.first(where: { $0.stages.first?.sourceLayerEnd == chosen.cut }) else {
-            let described = capability.partitions.compactMap { $0.stages.first?.sourceLayerEnd }.map(String.init).joined(separator: ", ")
-            throw ClusterConfigurationError.invalid("The placement cuts after \(chosen.cut) layers, and the worker's capability record describes "
-                + "cuts \(described) only. The layout and the record must come from one worker build.")
+        // Tensor parallel: the Plan nearest the middle of the model is the load's identity (the worker loads its share of
+        // every layer whatever the Plan's cut; the pair checks of the mode ran the same way).
+        let described = capability.partitions.compactMap { $0.stages.first?.sourceLayerEnd }
+        let layers = capability.partitions.first?.stages.last?.sourceLayerEnd ?? 0
+        let cut = tensorParallel ? (described.min { abs(2 * $0 - layers) < abs(2 * $1 - layers) } ?? 0) : chosen.cut
+        guard let partition = capability.partitions.first(where: { $0.stages.first?.sourceLayerEnd == cut }) else {
+            throw ClusterConfigurationError.invalid("The placement cuts after \(cut) layers, and the worker's capability record describes "
+                + "cuts \(described.map(String.init).joined(separator: ", ")) only. The layout and the record must come from one worker build.")
         }
         try capability.requireSupport(for: chosen.mode)
         try capability.requireSupport(for: chosen.prefillSchedule)
@@ -175,7 +182,7 @@ public struct ClusterPlacementSetup: Sendable, Equatable {
             configurations[member.id] = try ClusterConfigurationCodec.encode(configuration, capability: capability,
                                                                            capabilitySHA256: description.capabilitySHA256)
         }
-        return .init(leaderID: ranked[0].id, configurations: configurations, cut: chosen.cut, planSHA256: partition.planSHA256)
+        return .init(leaderID: ranked[0].id, configurations: configurations, cut: cut, planSHA256: partition.planSHA256)
     }
 
     /// What the guided flow says once it has chosen, for the member at this

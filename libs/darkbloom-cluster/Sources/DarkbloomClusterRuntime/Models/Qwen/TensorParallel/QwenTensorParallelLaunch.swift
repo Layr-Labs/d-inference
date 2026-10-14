@@ -63,3 +63,17 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
         return hash
     }
 }
+
+extension QwenTensorParallelLaunch {
+    /// The freed-buffer cache a ready tensor-parallel shard keeps. The
+    /// dedicated worker loads with MLX's cache at zero (every freed buffer
+    /// returned at once, so the memory gate's accounting is exact while
+    /// weights load); a decode step then creates its ~1,500 intermediate
+    /// buffers through the driver one by one (measured on the M5 Ultra: most
+    /// of a 79 ms 27B step in buffer creation). Half of the allocator headroom
+    /// the memory gate already demands free beside the reservation, so the
+    /// cache never takes memory the gate did not hold back.
+    public static func freedBufferCacheBytes(allocatorHeadroomBytes: Int) -> Int {
+        max(0, allocatorHeadroomBytes) / 2
+    }
+}

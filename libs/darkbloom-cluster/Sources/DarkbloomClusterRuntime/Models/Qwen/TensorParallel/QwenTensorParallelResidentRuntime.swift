@@ -148,16 +148,24 @@ public final class QwenTensorParallelResidentRuntime {
                     material: { .residentLoaded(agreementFingerprint: loadedIdentity) },
                     disagreementMessage: "Tensor-parallel peers did not load matching verified commitments",
                     scope: .session(.loadedReady, "resident-loaded"), check: checked)
+                let bufferCacheBytes = configuration.allocatorPolicy == .disableFreedBufferCache
+                    ? QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: QwenDenseStageLoadPolicy.allocatorHeadroomBytes)
+                    : Memory.cacheLimit
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(value.receipt.planName)"
                     + " shares=\(shares.map(String.init).joined(separator: "-")) shard_bytes=\(value.receipt.shardBytes)"
                     + " source_bytes=\(value.receipt.sourceBytes) tensors=\(value.receipt.sourceTensors)"
-                    + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1)")
+                    + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1) buffer_cache=\(bufferCacheBytes)")
                 try configuration.allocatorPolicy.prepareReady(
                     synchronize: { Stream.gpu.synchronize(); Stream.cpu.synchronize() },
                     snapshot: {
                         let s = Memory.snapshot()
                         return .init(activeBytes: s.activeMemory, cachedBytes: s.cacheMemory, peakBytes: s.peakMemory)
                     }, clearCache: { Memory.clearCache() }, check: checked)
+                if configuration.allocatorPolicy == .disableFreedBufferCache {
+                    // Ready: a bounded cache inside the gate's allocator headroom (see freedBufferCacheBytes).
+                    Memory.cacheLimit = bufferCacheBytes
+                    try checked()
+                }
                 let maximum = try Self.allowance(profile: source!, admission: admission,
                     maximumTokens: admission.profile.maximumContextTokens, chunkSize: admission.profile.maximumChunkTokens)
                 try maximum.allowance.requireLive(additionalNativeBytes: maximum.extraNativeBytes)

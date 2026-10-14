@@ -461,6 +461,17 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         let c9 = syntheticConfiguration(hidden: 4096, layers: 32, heads: 16, kv: 4, linearK: 16, linearV: 32, intermediate: 12288)
         checkPlan("synthetic 9B", configuration: c9, tensors: syntheticTensors(c9), quantization: quantization)
 
+        // The ready shard keeps a freed-buffer cache (a decode step's ~1,500 intermediate buffers are not
+        // created by the driver one by one), bounded inside the memory gate's allocator headroom.
+        let gib = 1 << 30
+        for headroom in [2 * gib, 4 * gib, 512 << 20] {
+            let bytes = QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: headroom)
+            check(bytes > 0 && bytes <= headroom / 2, "freed-buffer cache \(bytes) for headroom \(headroom) is half of it at most")
+        }
+        check(QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: 2 * gib) >= 256 << 20,
+              "the product's 2 GiB headroom leaves a cache that holds a decode step's buffers")
+        check(QwenTensorParallelLaunch.freedBufferCacheBytes(allocatorHeadroomBytes: 0) == 0, "no headroom, no cache")
+
         // Refusals.
         expectThrows("routed experts on a dense model type") { var c = c27; c["num_experts"] = 256
             _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) }

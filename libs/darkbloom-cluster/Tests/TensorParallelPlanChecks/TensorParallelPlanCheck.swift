@@ -239,10 +239,10 @@ func syntheticMoETensors(_ c: [String: Any]) -> [Tensor] {
 
 func checkRoutedExperts(quantization: [String: Any]) {
     let c = syntheticMoEConfiguration()
-    for shares in [nil, [1, 3], [2, 3]] as [[Int]?] {
-        checkPlan("synthetic A3B-shaped \(shares.map { "shares \($0)" } ?? "equal")", configuration: c,
-                  tensors: syntheticMoETensors(c), quantization: quantization, shares: shares)
-    }
+    checkPlan("synthetic A3B-shaped equal", configuration: c, tensors: syntheticMoETensors(c), quantization: quantization)
+    // A 512-wide expert is one aligned block: unequal shares would leave a rank without one.
+    expectThrows("A3B-shaped 1:3 (one 512-wide aligned expert block)") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2, shares: [1, 3]) }
     guard let plan = try? QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2) else {
         failures += 1; print("FAIL: routed experts: plan refused"); return
     }
@@ -258,7 +258,7 @@ func checkRoutedExperts(quantization: [String: Any]) {
           && s1["num_key_value_heads"] as? Int == 1 && s1["intermediate_size"] == nil, "routed experts: rank 1 configuration")
     expectThrows("routed experts with dense-MLP layers") { var m = c; m["mlp_only_layers"] = [0]
         _ = try QwenTensorParallelPlan(textConfiguration: m, quantization: quantization, size: 2) }
-    print("routed experts: plan covered (equal, 1:3, 2:3), dispositions and refusals checked")
+    print("routed experts: plan covered (equal), dispositions and refusals checked")
 }
 
 /// Weighted shares for unequal Macs: every tensor still covered exactly once
@@ -283,21 +283,36 @@ func checkWeightedShares(c27: [String: Any], c9: [String: Any], quantization: [S
     check(keys.allSatisfy { k in (0..<2).allSatisfy { (try? equal.disposition(key: k, rank: $0)) == (try? twos.disposition(key: k, rank: $0)) } },
           "weighted shares: [2, 2] cuts like [1, 1]")
     check(equal.equalShares && !weighted.equalShares, "weighted shares: equalShares")
-    // 27B: 4 KV heads -> 1 + 3; 16 linear key heads -> 4 + 12; 17408 channels = 272 groups -> 68 + 204 groups.
+    // 27B, kernel-aligned blocks (4-bit: input widths in 512s): 4 KV heads (6 x 256 = 1,536 each) -> 1 + 3;
+    // 16 linear key heads in blocks of 4 (4 x 3 x 128 = 1,536) -> 4 + 12; 17,408 channels = 34 blocks of 512 -> 9 + 25.
     check(weighted.kvHeadsPerRank == [1, 3] && weighted.attentionHeadsPerRank == [6, 18], "27B 1:3 attention heads")
     check(weighted.linearKeyHeadsPerRank == [4, 12] && weighted.linearValueHeadsPerRank == [12, 36], "27B 1:3 linear heads")
-    check(weighted.intermediatePerRank == [4352, 13056], "27B 1:3 MLP channels")
+    check(weighted.intermediatePerRank == [4608, 12800], "27B 1:3 MLP channels (512-aligned) \(weighted.intermediatePerRank)")
     check(weighted.vocabularyRange(rank: 0) == 0..<62_080 && weighted.vocabularyRange(rank: 1) == 62_080..<248_320,
           "27B 1:3 vocabulary rows")
     check(weighted.linearQKVRows(rank: 1) == [512..<2048, 2560..<4096, 5632..<10240], "27B 1:3 rank 1 q/k/v rows")
     let s0 = weighted.shardTextConfiguration(c27, rank: 0)
     check(s0["num_attention_heads"] as? Int == 6 && s0["num_key_value_heads"] as? Int == 1
           && s0["linear_num_key_heads"] as? Int == 4 && s0["linear_num_value_heads"] as? Int == 12
-          && s0["intermediate_size"] as? Int == 4352, "27B 1:3 rank 0 configuration")
-    // Largest remainder, ties to the lower rank: 3:5 of 4 KV heads = 1.5 / 2.5 -> 2 + 2.
+          && s0["intermediate_size"] as? Int == 4608, "27B 1:3 rank 0 configuration")
+    // Largest remainder, ties to the lower rank: 3:5 of 4 KV heads = 1.5 / 2.5 -> 2 + 2; 4 key-head blocks -> 2 + 2;
+    // 34 MLP blocks = 12.75 / 21.25 -> 13 + 21.
     if let p = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [3, 5]) {
-        check(p.kvHeadsPerRank == [2, 2] && p.linearKeyHeadsPerRank == [6, 10] && p.intermediatePerRank == [6528, 10880],
+        check(p.kvHeadsPerRank == [2, 2] && p.linearKeyHeadsPerRank == [8, 8] && p.intermediatePerRank == [6656, 10752],
               "27B 3:5 apportioned \(p.kvHeadsPerRank) \(p.linearKeyHeadsPerRank) \(p.intermediatePerRank)")
+    } else { failures += 1; print("FAIL: 27B 3:5 refused") }
+    // Every weighted plan keeps every row-parallel input width on the fast kernel's alignment.
+    for shares in [[1, 3], [3, 1], [2, 3], [3, 5], [1, 4], [1, 2]] {
+        for (label, c) in [("27B", c27), ("9B", c9)] {
+            guard let p = try? QwenTensorParallelPlan(textConfiguration: c, quantization: quantization, size: 2, shares: shares) else {
+                failures += 1; print("FAIL: \(label) \(shares) refused"); continue
+            }
+            let aligned = (0..<2).allSatisfy { r in
+                [p.attentionHeadsPerRank[r] * p.headDim, p.linearValueHeadsPerRank[r] * p.linearValueHeadDim,
+                 p.intermediatePerRank[r]].allSatisfy { $0 % 512 == 0 } && p.vocabularyRange(rank: r).count % 8 == 0
+            }
+            check(aligned, "\(label) \(shares): every row-parallel input width a multiple of 512 and vocabulary rows of 8")
+        }
     }
     expectThrows("a rank without a KV head (1:9 of 4)") {
         _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 9]) }
@@ -409,8 +424,10 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
             let q = (root["quantization"] ?? root["quantization_config"]) as! [String: Any]
             let tensors = try checkpointTensors(directory)
             checkPlan("checkpoint \(directory.lastPathComponent)", configuration: text, tensors: tensors, quantization: q)
-            checkPlan("checkpoint \(directory.lastPathComponent) shares [1, 3]", configuration: text, tensors: tensors,
-                      quantization: q, shares: [1, 3])
+            if (text["num_experts"] as? Int ?? 0) == 0 {
+                checkPlan("checkpoint \(directory.lastPathComponent) shares [1, 3]", configuration: text, tensors: tensors,
+                          quantization: q, shares: [1, 3])
+            }
         }
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)

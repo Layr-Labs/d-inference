@@ -181,18 +181,42 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             if experts > 0 { try divisible(sharedExpertIntermediateSize, "shared expert size") }
             try divisible(vocabularySize, "vocabulary")
         }
-        // MLP channels move in whole quantization groups (and packed words).
-        let channelUnit = Self.lcm(groupSize, 32 / bits)
-        guard intermediateSize % channelUnit == 0, sharedExpertIntermediateSize % channelUnit == 0 else {
-            throw ProbeError("Tensor parallel plan: the MLP width (\(intermediateSize)) is not whole quantization groups")
+        // Units each part moves in. Every row-parallel input width must stay on
+        // a quantization group and on the quantized matrix-vector kernel's fast
+        // path (MLX qmv_fast: input width a multiple of (32 / bits) x 2 x 32 =
+        // 512 for 4-bit, 256 for 8-bit; output rows a multiple of 8). A width
+        // off that alignment falls back to the slow kernel: measured on the M5
+        // Ultra, a 3/4 shard of the 27B with a 13,056-wide MLP stepped in
+        // 21.8 ms against 18.0 ms for the whole model.
+        let alignment = Self.lcm(Self.fastKernelInputAlignment(bits: bits), groupSize)
+        let qPerKV = attentionHeads / kvHeads, vPerK = linearValueHeads / linearKeyHeads
+        let kvUnit = Self.unit(of: qPerKV * headDim, alignment: alignment, total: kvHeads)
+        let keyUnit = Self.unit(of: vPerK * linearValueHeadDim, alignment: alignment, total: linearKeyHeads)
+        let channelUnit = Self.lcm(alignment, 32 / bits)
+        guard intermediateSize % channelUnit == 0 || equal, sharedExpertIntermediateSize % channelUnit == 0 || equal else {
+            throw ProbeError("Tensor parallel plan: the MLP width (\(intermediateSize)) does not divide into aligned channel blocks")
         }
-        kvHeadsPerRank = try Self.apportion(kvHeads, shares, "KV heads")
-        linearKeyHeadsPerRank = try Self.apportion(linearKeyHeads, shares, "linear key heads")
-        intermediatePerRank = try Self.apportion(intermediateSize / channelUnit, shares, "MLP channel groups").map { $0 * channelUnit }
-        sharedExpertIntermediatePerRank = experts > 0
-            ? try Self.apportion(sharedExpertIntermediateSize / channelUnit, shares, "shared expert channel groups").map { $0 * channelUnit }
-            : Array(repeating: 0, count: size)
-        vocabularyPerRank = try Self.apportion(vocabularySize, shares, "vocabulary rows")
+        if equal {
+            // Equal shards: the original rule (each count divides by the ranks).
+            kvHeadsPerRank = Array(repeating: kvHeads / size, count: size)
+            linearKeyHeadsPerRank = Array(repeating: linearKeyHeads / size, count: size)
+            intermediatePerRank = Array(repeating: intermediateSize / size, count: size)
+            sharedExpertIntermediatePerRank = Array(repeating: sharedExpertIntermediateSize / size, count: size)
+            vocabularyPerRank = Array(repeating: vocabularySize / size, count: size)
+        } else {
+            guard let kvUnit, let keyUnit else {
+                throw ProbeError("Tensor parallel plan: the heads do not divide into kernel-aligned blocks for unequal shares")
+            }
+            kvHeadsPerRank = try Self.apportion(kvHeads / kvUnit, shares, "KV head blocks").map { $0 * kvUnit }
+            linearKeyHeadsPerRank = try Self.apportion(linearKeyHeads / keyUnit, shares, "linear key head blocks").map { $0 * keyUnit }
+            intermediatePerRank = try Self.apportion(intermediateSize / channelUnit, shares, "MLP channel blocks").map { $0 * channelUnit }
+            sharedExpertIntermediatePerRank = experts > 0
+                ? try Self.apportion(sharedExpertIntermediateSize / channelUnit, shares, "shared expert channel blocks").map { $0 * channelUnit }
+                : Array(repeating: 0, count: size)
+            var rows = try Self.apportion(vocabularySize / 8, shares, "vocabulary row blocks").map { $0 * 8 }
+            rows[rows.count - 1] += vocabularySize % 8
+            vocabularyPerRank = rows
+        }
         // Row-parallel input widths must land on quantization groups and packed words.
         for rank in 0..<size {
             for (width, label) in [(kvHeadsPerRank[rank] * (attentionHeads / kvHeads) * headDim, "attention output"),
@@ -221,6 +245,16 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             throw ProbeError("Tensor parallel plan: shares \(weights) leave a rank without \(label) (\(units) in all)")
         }
         return counts
+    }
+
+    /// MLX's quantized matrix-vector fast path steps the input in
+    /// pack_factor x (bits == 2 ? 1 : 2) x 32 values (`qmv_fast_k_alignment`).
+    static func fastKernelInputAlignment(bits: Int) -> Int { (32 / bits) * (bits == 2 ? 1 : 2) * 32 }
+
+    /// The smallest number of heads whose row-parallel width (`width` each) is
+    /// a multiple of `alignment` and that divides `total`; nil if none does.
+    static func unit(of width: Int, alignment: Int, total: Int) -> Int? {
+        (1...total).first { ($0 * width) % alignment == 0 && total % $0 == 0 }
     }
 
     static func lcm(_ a: Int, _ b: Int) -> Int {

@@ -75,6 +75,8 @@ public enum ClusterSetupLinkExchange {
     static let commandTag: UInt16 = 0x5E05
     static let commandReplyTag: UInt16 = 0x5E06
     static let maximumBytes = 1 << 20
+    /// One chunk of a model copy (ClusterModelProvisioningLink): the largest body on the exchange.
+    static let provisionChunkBytes = 4 << 20
 
     /// The one pairing this Mac uses, with its edge secret.
     public struct Pairing: Sendable {
@@ -110,7 +112,8 @@ public enum ClusterSetupLinkExchange {
         let epoch = exchangeEpoch(linkEpoch)
         let key = try ClusterLinkControlKey.qualification(secret: pairing.secret, epoch: epoch, edgeID: edgeID)
         var limits = ClusterLinkControlLimits()
-        limits.maximumBodyBytes = maximumBytes + 4096
+        // A model copy's chunk is the largest body on the exchange.
+        limits.maximumBodyBytes = max(maximumBytes, provisionChunkBytes) + 4096
         return try ClusterLinkControlEdge(edgeID: edgeID, epoch: epoch, key: key, peerAddress: peerAddress, limits: limits)
     }
 
@@ -139,7 +142,8 @@ public enum ClusterSetupLinkExchange {
                     port: UInt16 = ClusterSetupLinkExchange.port, policy: ClusterLinkInterfacePolicy = .thunderboltOnly,
                     answer: @escaping @Sendable () throws -> ClusterSetupLinkAnswer,
                     receive: @escaping @Sendable (Data) throws -> String,
-                    command: (@Sendable (Data) throws -> Data)? = nil) throws {
+                    command: (@Sendable (Data) throws -> Data)? = nil,
+                    provision: (@Sendable (UInt16, Data) -> (UInt16, Data)?)? = nil) throws {
             let edge = try ClusterSetupLinkExchange.edge(pairing, peerAddress: nil)
             edgeID = edge.edgeID
             let work = DispatchQueue(label: "darkbloom.cluster-setup.exchange")
@@ -174,7 +178,10 @@ public enum ClusterSetupLinkExchange {
                         if reply.count > ClusterSetupLinkExchange.maximumBytes { reply = Data("error:the answer is too large".utf8) }
                         _ = try? peer.sendOpaque(tag: ClusterSetupLinkExchange.commandReplyTag, reply, timeout: .seconds(10))
                     default:
-                        break
+                        // A model copy (cluster service only): every frame in order, each answered after it was written.
+                        if let provision, let reply = provision(tag, data) {
+                            _ = try? peer.sendOpaque(tag: reply.0, reply.1, timeout: .seconds(30))
+                        }
                     }
                 }
             }

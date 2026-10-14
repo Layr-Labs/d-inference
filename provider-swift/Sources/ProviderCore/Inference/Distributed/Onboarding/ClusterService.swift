@@ -139,6 +139,17 @@ public final class ClusterService: @unchecked Sendable {
         guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
               let selection = try? context.linkSelection() else { return }
         let context = self.context, store = self.store
+        // A model the leader copies here over the cable lands in this Mac's model store, verified file by file.
+        let provisioner = ClusterModelProvisionResponder(store: {
+            URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
+        }, trust: { ClusterModelCopyTrust.refusal($0) }, worker: {
+            // This Mac's own installed worker (the one its ranks load models with) checks every staged copy.
+            let input = context.pairInput()
+            guard let memberID = input.pair?.memberID, let local = input.description?.members.first(where: { $0.id == memberID }) else {
+                throw ClusterSetupFailure(input.error ?? "this Mac's cluster worker is not set up yet")
+            }
+            return ClusterModelWorkerCheck(executable: URL(fileURLWithPath: local.workerExecutable), runtimeBinarySHA256: local.runtimeBinarySHA256)
+        }, say: say)
         do {
             let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection, answer: {
                 ClusterSetupLinkAnswer(report: context.report(input: context.pairInput(), saved: context.savedConfiguration(),
@@ -149,7 +160,7 @@ public final class ClusterService: @unchecked Sendable {
             }, command: { [weak self] data in
                 guard let self else { throw ClusterSetupFailure("the service is stopping") }
                 return try self.command(data, pairing: pairing, say: say)
-            })
+            }, provision: { tag, data in provisioner.handle(tag: tag, data) })
             try created.start()
             lock.withLock { responder = created }
             say("answering the paired Mac over the cable")
@@ -227,7 +238,7 @@ public final class ClusterService: @unchecked Sendable {
         return digest
     }
 
-    private func command(_ data: Data, pairing: ClusterSetupLinkExchange.Pairing, say: @Sendable (String) -> Void) throws -> Data {
+    private func command(_ data: Data, pairing: ClusterSetupLinkExchange.Pairing, say: @escaping @Sendable (String) -> Void) throws -> Data {
         let command = try JSONDecoder().decode(ClusterServiceCommand.self, from: data)
         let encoder = JSONEncoder()
         switch command.op {
@@ -258,6 +269,37 @@ public final class ClusterService: @unchecked Sendable {
                 say("applied the cache settings the leader synced")
             }
             return reply ?? Data()
+        case .sendModel:
+            // The leader lacks a model this Mac has: this Mac sends it over the cable (the leader's service verifies it).
+            guard let folder = command.model, let digest = command.text, let name = ClusterCatalogArtifact.safeFolder(folder) else {
+                throw ClusterSetupFailure("no model named")
+            }
+            let store = URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
+            guard let data = ClusterModelStore.readSmall(store.appendingPathComponent(name).appendingPathComponent("manifest.json")),
+                  let artifact = try? ClusterCatalogArtifact.parse(manifest: data), artifact.aggregateSHA256 == digest else {
+                throw ClusterSetupFailure("this Mac does not have that model")
+            }
+            let selection = try context.linkSelection()
+            say("sending \(name) to the paired Mac over the cable")
+            // Answer once the leader's service took the copy (or refused it: its reason goes back at once, instead of
+            // the leader waiting for bytes that never come); the bytes then flow in the background.
+            let started = ClusterOnboardingMailbox<String?>()
+            let answered = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                do {
+                    let outcome = try ClusterSetupLinkExchange.copyModel(pairing: pairing, selection: selection, peerAddress: nil, artifact: artifact,
+                        source: store.appendingPathComponent(name), folder: name, begun: { _ in started.post(nil); answered.signal() }) { _, _ in }
+                    say("sent \(name): \(ClusterModelProvisioning.gigabytes(outcome.sentBytes)) in \(String(format: "%.1f", outcome.seconds)) s")
+                } catch {
+                    say("sending \(name) stopped: \(error)")
+                    started.post(ClusterConsoleText.bounded(error)); answered.signal()
+                }
+            }
+            // Within the leader's 30 s command wait; a slow start (a long resume check) still answers "sending".
+            if answered.wait(timeout: .now() + 20) == .success, let refusal = started.take().first ?? nil {
+                throw ClusterSetupFailure("\(name) could not be sent: \(refusal)")
+            }
+            return Data("{\"sending\":true}".utf8)
         }
     }
 

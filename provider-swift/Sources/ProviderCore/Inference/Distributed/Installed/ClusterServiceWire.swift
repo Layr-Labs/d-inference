@@ -47,7 +47,7 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// (`cache`). `unpair`: the leader is leaving the pair named `clusterID`;
     /// the member reclaims that pair's prefix-tier records. A member whose
     /// build predates an operation refuses the command (it cannot decode it).
-    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt, cacheSettings, unpair }
+    public enum Operation: String, Codable, Sendable { case serve, stop, status, prompt, cacheSettings, unpair, sendModel }
     public var op: Operation
     public var model: String?
     public var text: String?

@@ -188,7 +188,9 @@ enum ClusterSetupModelFolders {
               let id = object["model_id"] as? String, let version = object["version"] as? String,
               let digest = object["aggregate_sha256"] as? String, ClusterConfigurationSyntax.hash(digest) else { return nil }
         let total = (object["total_size_bytes"] as? NSNumber)?.int64Value ?? 0
+        // The files digest binds the names (a manifest that does not pass the catalog checks reports none).
+        let files = (try? ClusterCatalogArtifact.parse(manifest: data))?.filesDigest
         return .init(folder: ClusterConsoleText.bounded(folder, maximum: 128), modelID: ClusterConsoleText.bounded(id, maximum: 128),
-            version: ClusterConsoleText.bounded(version, maximum: 64), artifactSHA256: digest, totalBytes: total)
+            version: ClusterConsoleText.bounded(version, maximum: 64), artifactSHA256: digest, totalBytes: total, filesSHA256: files)
     }
 }

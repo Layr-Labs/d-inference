@@ -86,7 +86,9 @@ build_module InstalledContract \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterInstalledMetadataChecks.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/ClusterDeviceRecovery.swift \
   "$task_sources"/Inference/Distributed/Diagnostics/Link/*.swift \
-  "${task_console[@]}"
+  "${task_console[@]}" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioning.swift" \
+  "$task_sources/Inference/Distributed/Onboarding/ClusterModelProvisioningLink.swift"
 
 task_fixture_links=("${task_links[@]}" -lDarkbloomClusterProtocol -lDarkbloomClusterPlacement -lDarkbloomClusterBootstrap \
   -lDarkbloomClusterProcess -lDarkbloomClusterSecurity -lDarkbloomClusterRemote -lMLXLMCommon -lProviderCoreFoundation -lInstalledContract)

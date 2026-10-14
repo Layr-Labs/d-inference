@@ -14,6 +14,8 @@ import MLX
 //       [--reduction native|sealed-bench (sealed: AES-GCM frames through the fork's sealed all-sum, BENCH keys from an
 //        unauthenticated ephemeral exchange; measures the sealed path's cost, never a product trust)]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
+//   darkbloom-cluster-tp-check synthesize --output /DIR   (a tiny random dense qwen3_5 checkpoint + request.json:
+//       tensor parallel against one rank without a registered model; never a model pass)
 //   darkbloom-cluster-tp-check record --rank0 FILE --rank1 FILE --reference FILE [--reference FILE] --model-dir DIR
 //       --output FILE [--partials float32|bfloat16] [--near-tie-ulps U]   (appends one qualification record line)
 //
@@ -142,8 +144,8 @@ struct Options {
     var nearTieULPs: Float = 4
 
     init(_ arguments: [String]) throws {
-        guard let first = arguments.first, ["run", "compare", "record"].contains(first) else {
-            throw Failure("usage: darkbloom-cluster-tp-check run|compare|record ...")
+        guard let first = arguments.first, ["run", "compare", "record", "synthesize"].contains(first) else {
+            throw Failure("usage: darkbloom-cluster-tp-check run|compare|record|synthesize ...")
         }
         command = first
         var index = 1
@@ -497,6 +499,20 @@ enum CompareCommand {
                 try handle.write(contentsOf: Data(line.utf8))
                 print(line, terminator: "")
                 Darwin.exit(record.passed ? 0 : 3)
+            }
+            if options.command == "synthesize" {
+                // A tiny random dense checkpoint and a request for it: tensor
+                // parallel against one rank with no registered model.
+                guard options.output.hasPrefix("/") else { throw Failure("synthesize needs --output /ABSOLUTE/DIR") }
+                let directory = URL(fileURLWithPath: options.output, isDirectory: true)
+                try QwenTensorParallelModel.writeSyntheticCheckpoint(directory: directory)
+                let prompt = (0..<40).map { ($0 * 37 + 11) % 1024 }
+                let request: [String: Any] = ["requestID": "synthetic", "modelID": "synthetic-qwen3_5-tiny",
+                    "promptTokenIDs": prompt, "promptTokenIDsSHA256": tokenDigest(prompt), "outputCount": 24, "chunkSize": 16]
+                try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+                    .write(to: directory.appendingPathComponent("request.json"))
+                note("synthetic checkpoint and request written")
+                Darwin.exit(0)
             }
             if options.command == "compare" {
                 let outcome = try CompareCommand.run(options)

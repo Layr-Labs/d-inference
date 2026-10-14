@@ -91,8 +91,10 @@ struct QwenResidentModelDefinition {
             // (`mtplx_mtp.included`, one dense decoder layer under `mtp.`),
             // which the decoding rank of a phase split runs as the product does,
             // and the last rank of a speculative pipeline beside its stage (with
-            // a copy of the token embedding).
-            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .pipelineMTP]
+            // a copy of the token embedding). Both are dense: the worker runs
+            // tensor parallel on them (`QwenTensorParallelResidentRuntime`).
+            supportedGenerationModes = [.pipeline, .pipelineCompactDecode, .phaseSplit, .phaseSplitMTP, .tensorParallel,
+                                        .pipelineMTP]
         case .qwen35ThirtyFiveBA3B, .qwen36ThirtyFiveBA3B:
             // Both artifacts ship the product's inline head too (one routed-
             // expert decoder layer under `mtp.`, split gate and up as the SDK's

@@ -47,15 +47,52 @@ public final class QwenTensorParallelModel {
     private let model: Qwen35Model
     private let reduction: QwenTensorParallelReduction?
 
-    /// `reduction` is required for `shard` and refused otherwise.
+    /// `reduction` is required for `shard` and refused otherwise. Reads the
+    /// checkpoint's files directly (tools and qualification); the product's
+    /// worker reads them through the verified checkpoint instead
+    /// (`QwenTensorParallelVerifiedLoad`).
     public static func load(modelDirectory: URL, role: Role, reduction: QwenTensorParallelReduction?,
                             timing: QwenTensorParallelReductionTiming = .lazy,
                             partialDType: DType = .float32, shares: [Int]? = nil) throws -> QwenTensorParallelModel {
+        let configurationData = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
+        return try assemble(configurationData: configurationData, role: role, reduction: reduction, timing: timing,
+                            partialDType: partialDType, shares: shares) { _, keep in
+            // Checkpoint tensors named by the index; the multi-token prediction
+            // file and the vision tower are not part of the text model.
+            let indexData = try Data(contentsOf: modelDirectory.appendingPathComponent("model.safetensors.index.json"))
+            guard let index = (try JSONSerialization.jsonObject(with: indexData) as? [String: Any])?["weight_map"] as? [String: String] else {
+                throw ProbeError("Tensor parallel load: the checkpoint index has no weight map")
+            }
+            var byFile: [String: [String]] = [:]
+            for (key, file) in index {
+                guard !file.contains("/"), file.hasSuffix(".safetensors") else {
+                    throw ProbeError("Tensor parallel load: the checkpoint index names an unexpected file")
+                }
+                byFile[file, default: []].append(key)
+            }
+            for file in byFile.keys.sorted() {
+                let arrays = try loadArrays(url: modelDirectory.appendingPathComponent(file))
+                for key in byFile[file]!.sorted() {
+                    guard let value = arrays[key] else { throw ProbeError("Tensor parallel load: \(file) lacks \(key)") }
+                    try keep(key, value)
+                }
+            }
+        }
+    }
+
+    /// The model of `role` from a configuration and its checkpoint tensors:
+    /// `tensors` hands every checkpoint tensor (by checkpoint key) to `keep`,
+    /// which cuts this rank's part and materializes it at once, so the whole
+    /// tensor is released before the next one is read.
+    static func assemble(configurationData: Data, role: Role, reduction: QwenTensorParallelReduction?,
+                         timing: QwenTensorParallelReductionTiming = .lazy, partialDType: DType = .float32,
+                         shares: [Int]? = nil,
+                         tensors: (_ plan: QwenTensorParallelPlan, _ keep: (String, MLXArray) throws -> Void) throws -> Void)
+        throws -> QwenTensorParallelModel {
         guard [.float32, .bfloat16].contains(partialDType) else {
             throw ProbeError("Tensor parallel load: partial sums are float32 or bfloat16")
         }
         let started = DispatchTime.now().uptimeNanoseconds
-        let configurationData = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
         guard let root = try JSONSerialization.jsonObject(with: configurationData) as? [String: Any],
               ["qwen3_5", "qwen3_5_moe"].contains(root["model_type"] as? String ?? ""),
               let text = root["text_config"] as? [String: Any],
@@ -89,42 +126,26 @@ public final class QwenTensorParallelModel {
             from: JSONSerialization.data(withJSONObject: wrapper, options: [.sortedKeys]))
         let model: Qwen35Model = plan.routedExperts ? Qwen35MoEModel(configuration) : Qwen35Model(configuration)
 
-        // Checkpoint tensors named by the index; the multi-token prediction
-        // file and the vision tower are not part of the text model.
-        let indexData = try Data(contentsOf: modelDirectory.appendingPathComponent("model.safetensors.index.json"))
-        guard let index = (try JSONSerialization.jsonObject(with: indexData) as? [String: Any])?["weight_map"] as? [String: String] else {
-            throw ProbeError("Tensor parallel load: the checkpoint index has no weight map")
-        }
-        var byFile: [String: [String]] = [:]
-        for (key, file) in index {
-            guard !file.contains("/"), file.hasSuffix(".safetensors") else {
-                throw ProbeError("Tensor parallel load: the checkpoint index names an unexpected file")
-            }
-            byFile[file, default: []].append(key)
-        }
         var weights: [String: MLXArray] = [:]
-        for file in byFile.keys.sorted() {
-            let arrays = try loadArrays(url: modelDirectory.appendingPathComponent(file))
-            for key in byFile[file]!.sorted() {
-                guard let value = arrays[key] else { throw ProbeError("Tensor parallel load: \(file) lacks \(key)") }
-                let disposition: QwenTensorParallelPlan.Disposition
-                if case .shard = role { disposition = try plan.disposition(key: key, rank: rank) }
-                else { disposition = try plan.disposition(key: key, rank: 0) == .skip ? .skip : .load(.replicate) }
-                guard case .load(let cut) = disposition else { continue }
-                let leaf = String(key.split(separator: ".").last!)
-                var sliced = try QwenTensorParallelSlicer.cut(value, cut, leaf: leaf,
-                    groupSize: plan.groupSize, bits: plan.bits)
-                // Diagnostic only (DARKBLOOM_TP_DIAG_COPY_WEIGHTS=1): a whole tensor is
-                // materialized the way a shard's cut is (a gather into a new buffer),
-                // to tell a share's arithmetic from how its weights were made.
-                if cut == .replicate, Self.diagnosticCopyWeights, value.ndim >= 1 {
-                    sliced = take(value, MLXArray((0 ..< value.dim(0)).map { Int32($0) }), axis: 0)
-                }
-                // Materialize each cut now: the checkpoint tensor it came from is
-                // released before the next one is read.
-                eval(sliced)
-                weights[key] = sliced
+        try tensors(plan) { key, value in
+            let disposition: QwenTensorParallelPlan.Disposition
+            if case .shard = role { disposition = try plan.disposition(key: key, rank: rank) }
+            else { disposition = try plan.disposition(key: key, rank: 0) == .skip ? .skip : .load(.replicate) }
+            guard case .load(let cut) = disposition else { return }
+            guard weights[key] == nil else { throw ProbeError("Tensor parallel load: \(key) was given twice") }
+            let leaf = String(key.split(separator: ".").last!)
+            var sliced = try QwenTensorParallelSlicer.cut(value, cut, leaf: leaf,
+                groupSize: plan.groupSize, bits: plan.bits)
+            // Diagnostic only (DARKBLOOM_TP_DIAG_COPY_WEIGHTS=1): a whole tensor is
+            // materialized the way a shard's cut is (a gather into a new buffer),
+            // to tell a share's arithmetic from how its weights were made.
+            if cut == .replicate, Self.diagnosticCopyWeights, value.ndim >= 1 {
+                sliced = take(value, MLXArray((0 ..< value.dim(0)).map { Int32($0) }), axis: 0)
             }
+            // Materialize each cut now: the checkpoint tensor it came from is
+            // released before the next one is read.
+            eval(sliced)
+            weights[key] = sliced
         }
 
         // Routed experts: the checkpoint's split switch_mlp gate/up become the
@@ -333,6 +354,68 @@ public final class QwenTensorParallelModel {
 
     func newCache() -> [KVCache] { model.newCache(parameters: nil) }
 
+    /// The model over `input` `[1, T]` with `cache`: logits `[1, T, V or V/size]`, not evaluated.
+    func forwardForRuntime(_ input: MLXArray, cache: [KVCache]) -> MLXArray { model(input, cache: cache) }
+
+    /// One decode step's logits `[1, V or V/size]` for `token` (`[1]` int32,
+    /// possibly not evaluated), not evaluated.
+    func step(_ token: MLXArray, cache: [KVCache]) -> MLXArray {
+        model(token.reshaped(1, 1), cache: cache)[0..., -1, 0...]
+    }
+
+    /// The whole vocabulary's logits `[1, V]` in float32 on every rank: a
+    /// shard's rows placed at its vocabulary offset, zeros elsewhere, summed
+    /// across the ranks (x + 0 is exact, so every rank holds the same bits).
+    /// What the product's sampler draws from. Not evaluated.
+    func gatheredLogits(_ logits: MLXArray) -> MLXArray {
+        let values = logits.asType(.float32)
+        guard case .shard = role, let reduction else { return values }
+        let before = vocabularyRange.lowerBound, after = plan.vocabularySize - vocabularyRange.upperBound
+        var parts: [MLXArray] = []
+        if before > 0 { parts.append(MLXArray.zeros([1, before], dtype: .float32)) }
+        parts.append(values)
+        if after > 0 { parts.append(MLXArray.zeros([1, after], dtype: .float32)) }
+        return reduction.allSum(parts.count == 1 ? values : concatenated(parts, axis: -1))
+    }
+
+    /// Rank 0's choice made known to every rank: a `[1]` int32 token that only
+    /// rank 0 supplies (the others add zero) and every rank's stop flag
+    /// (1 to stop after this step), summed in one reduction. Not evaluated:
+    /// returns (token `[1]` int32, flags `[size]` float32).
+    func broadcastChoice(_ token: MLXArray?, stop: Float) -> (MLXArray, MLXArray) {
+        guard case .shard(let rank, let size) = role, let reduction else {
+            return (token ?? MLXArray([Int32(0)]), MLXArray([stop]))
+        }
+        var slots = [MLXArray]()
+        slots.append(rank == 0 ? (token ?? MLXArray([Int32(0)])).asType(.float32).reshaped(1) : MLXArray.zeros([1], dtype: .float32))
+        for r in 0..<size { slots.append(MLXArray([r == rank ? stop : Float(0)])) }
+        let all = reduction.allSum(concatenated(slots, axis: 0))
+        return (all[0 ..< 1].asType(.int32), all[1 ..< (1 + size)])
+    }
+
+    /// The greedy choice with every rank's stop flag in the same reduction:
+    /// (token `[1]` int32, flags `[size]` float32). Not evaluated.
+    func selectWithFlags(_ logits: MLXArray, stop: Float) -> (MLXArray, MLXArray) {
+        let values = logits.asType(.float32)
+        guard case .shard(let rank, let size) = role, let reduction else {
+            return (argMax(values, axis: -1).asType(.int32), MLXArray([stop]))
+        }
+        let localIndex = argMax(values, axis: -1).asType(.float32) + MLXArray(Float(vocabularyRange.lowerBound))
+        let localMax = values.max(axis: -1)
+        let mine = concatenated([localMax, localIndex], axis: 0)
+        let zeros = MLXArray.zeros([2], dtype: .float32)
+        var slots = (0..<size).map { $0 == rank ? mine : zeros }
+        for r in 0..<size { slots.append(MLXArray([r == rank ? stop : Float(0)])) }
+        let all = reduction.allSum(concatenated(slots, axis: 0))
+        var best = all[0], token = all[1]
+        for other in 1..<size {
+            let better = all[2 * other] .> best
+            best = which(better, all[2 * other], best)
+            token = which(better, all[2 * other + 1], token)
+        }
+        return (token.asType(.int32).reshaped(1), all[(2 * size) ..< (3 * size)])
+    }
+
     /// Greedy decode from `first` (an `[1]` int32 token, possibly not evaluated
     /// yet) with `cache` holding the prompt. `firstLogits` are the logits `first`
     /// was chosen from (recorded when `recordTop` > 0).
@@ -376,5 +459,46 @@ public final class QwenTensorParallelModel {
         result.decodeSeconds = last - started - result.firstTokenSeconds
         result.peakActiveBytes = Memory.peakMemory
         return result
+    }
+}
+
+extension QwenTensorParallelModel {
+    /// Writes a tiny random dense qwen3_5 checkpoint (4-bit affine, group 64,
+    /// 4 layers with one full-attention layer every 2, hidden 256, vocabulary
+    /// 1,024) into `directory`: `config.json`, `model.safetensors` and its
+    /// index, in the parameter layout this loader reads, seeded. For
+    /// model-free equality checks of tensor parallel against one rank (no
+    /// registered model, no network): never a model pass.
+    public static func writeSyntheticCheckpoint(directory: URL, seed: UInt64 = 7) throws {
+        let text: [String: Any] = [
+            "model_type": "qwen3_5_text", "hidden_size": 256, "num_hidden_layers": 4, "intermediate_size": 512,
+            "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "linear_num_key_heads": 2,
+            "linear_num_value_heads": 4, "linear_key_head_dim": 64, "linear_value_head_dim": 64, "linear_conv_kernel_dim": 4,
+            "rms_norm_eps": 1e-6, "vocab_size": 1024, "rope_theta": 100000.0, "partial_rotary_factor": 0.25,
+            "max_position_embeddings": 4096, "tie_word_embeddings": false, "attention_bias": false, "attn_output_gate": true,
+            "full_attention_interval": 2, "mtp_num_hidden_layers": 0,
+        ]
+        let quantization: [String: Any] = ["group_size": 64, "bits": 4, "mode": "affine"]
+        let root: [String: Any] = ["model_type": "qwen3_5", "text_config": text, "quantization": quantization]
+        let configurationData = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys, .prettyPrinted])
+        let configuration = try JSONDecoder().decode(Qwen35Configuration.self,
+            from: JSONSerialization.data(withJSONObject: ["model_type": "qwen3_5", "text_config": text], options: [.sortedKeys]))
+        let arrays: [String: MLXArray] = try withRandomState(MLXRandom.RandomState(seed: seed)) {
+            let model = Qwen35Model(configuration)
+            quantize(model: model, groupSize: 64, bits: 4)
+            var flat = Dictionary(uniqueKeysWithValues: model.parameters().flattened())
+            // Recurrent decay terms in a stable range (the random init is not a trained model's).
+            for (key, value) in flat where key.hasSuffix("linear_attn.A_log") { flat[key] = MLXRandom.uniform(low: -1, high: 0, value.shape) }
+            for (key, value) in flat where key.hasSuffix("linear_attn.dt_bias") { flat[key] = MLXRandom.uniform(low: -0.5, high: 0.5, value.shape) }
+            eval(Array(flat.values))
+            return flat
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try configurationData.write(to: directory.appendingPathComponent("config.json"))
+        try save(arrays: arrays, url: directory.appendingPathComponent("model.safetensors"))
+        let index: [String: Any] = ["metadata": [:] as [String: Any],
+                                    "weight_map": Dictionary(uniqueKeysWithValues: arrays.keys.map { ($0, "model.safetensors") })]
+        try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys, .prettyPrinted])
+            .write(to: directory.appendingPathComponent("model.safetensors.index.json"))
     }
 }

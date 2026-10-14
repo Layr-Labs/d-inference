@@ -9,6 +9,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     /// The adapter that executes the registered model, chosen by its family.
     private enum Owner {
         case qwenDense(QwenResidentRuntime)
+        case qwenTensorParallel(QwenTensorParallelResidentRuntime)
         case mimoV26(MiMoResidentRuntime)
     }
     private let owner: Owner
@@ -21,11 +22,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
          attachment: WorkerOwnerAttachment? = nil,
          generationMode: ClusterGenerationMode = .pipeline, speculativeTerms: QwenMTPTerms? = nil,
          qualification: QwenResidentQualificationSwitches = .refused,
-         dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil) throws {
+         dataPlane: ClusterDataPlaneCredential? = nil, prefixSSDKey: Data? = nil, tensorShares: [Int] = [1, 1]) throws {
         // With the owner's attachment, the exchange it installed creates the
         // JACCL group (no coordinator socket); a load that did not use it stops.
         self.attachment = attachment
         switch family {
+        case .qwenDense where generationMode == .tensorParallel:
+            owner = .qwenTensorParallel(try .load(configuration, shares: tensorShares, qualification: qualification,
+                dataPlane: dataPlane, prefixSSDKey: prefixSSDKey))
         case .qwenDense:
             owner = .qwenDense(try .load(configuration, generationMode: generationMode,
                 speculativeTerms: speculativeTerms, qualification: qualification, dataPlane: dataPlane,
@@ -43,12 +47,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     var readiness: ClusterWorkerReady? {
         switch owner {
         case .qwenDense(let runtime): runtime.readiness
+        case .qwenTensorParallel(let runtime): runtime.readiness
         case .mimoV26(let runtime): runtime.readiness
         }
     }
     func reserve(_ id: UUID, _ value: ClusterWorkerReservation) throws -> Int {
         switch owner {
         case .qwenDense(let runtime): try runtime.reserve(requestID: id, request: value)
+        case .qwenTensorParallel(let runtime): try runtime.reserve(requestID: id, request: value)
         case .mimoV26(let runtime): try runtime.reserve(requestID: id, request: value)
         }
     }
@@ -57,6 +63,7 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
         lastPromptCache = (0, []); lastRequestTelemetry = nil
         switch owner {
         case .qwenDense(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
+        case .qwenTensorParallel(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         case .mimoV26(let runtime): result = try runtime.start(requestID: id, onCommittedToken: token)
         }
         guard result.bothRequestStatesRetired else { throw WorkerFailure.invalid("Native generation did not retire both request states") }
@@ -67,13 +74,14 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     func releaseReservation(_ id: UUID) throws {
         switch owner {
         case .qwenDense(let runtime): try runtime.releaseReservation(requestID: id)
+        case .qwenTensorParallel(let runtime): try runtime.releaseReservation(requestID: id)
         case .mimoV26(let runtime): try runtime.releaseReservation(requestID: id)
         }
     }
     func refreshServingContext() -> Int? {
         switch owner {
         case .qwenDense(let runtime): runtime.refreshServingContext()
-        case .mimoV26: nil
+        case .qwenTensorParallel, .mimoV26: nil
         }
     }
     var batchLanes: Int {
@@ -100,24 +108,28 @@ final class NativeWorkerRuntime: WorkerRuntime, @unchecked Sendable {
     func cancel(_ id: UUID) {
         switch owner {
         case .qwenDense(let runtime): runtime.cancel(requestID: id)
+        case .qwenTensorParallel(let runtime): runtime.cancel(requestID: id)
         case .mimoV26(let runtime): runtime.cancel(requestID: id)
         }
     }
     func keepWarmPulse() throws -> UInt64 {
         switch owner {
         case .qwenDense(let runtime): try runtime.keepWarmPulse()
+        case .qwenTensorParallel(let runtime): try runtime.keepWarmPulse()
         case .mimoV26(let runtime): try runtime.keepWarmPulse()
         }
     }
     func dataPlanePing() throws -> UInt64 {
         switch owner {
         case .qwenDense(let runtime): try runtime.dataPlanePing()
+        case .qwenTensorParallel(let runtime): try runtime.dataPlanePing()
         case .mimoV26(let runtime): try runtime.dataPlanePing()
         }
     }
     func shutdown() throws {
         switch owner {
         case .qwenDense(let runtime): try runtime.shutdown()
+        case .qwenTensorParallel(let runtime): try runtime.shutdown()
         case .mimoV26(let runtime): try runtime.shutdown()
         }
     }

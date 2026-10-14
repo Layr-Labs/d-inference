@@ -28,12 +28,33 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
     public let size: Int
     private let handle: mlx_distributed_group?
     private let link: QwenTensorParallelLocalSocket?
+    /// The product's group: the resident load's own collective (its JACCL
+    /// group, created through the owner's bootstrap), borrowed, never freed
+    /// here. Its keyed data plane forbids any plaintext floating reduction.
+    private let collective: Collective?
     public private(set) var floatingReductions = 0
     /// When set, every floating all-sum crosses the link sealed by this codec
     /// (`mlx_distributed_all_sum_sealed`); integer agreements stay plain.
     public var sealed: QwenTensorParallelSealCodec?
 
+    /// The product: the reductions of a resident tensor-parallel load run on
+    /// its collective's group. With a keyed data plane the floating
+    /// reductions must be sealed (`sealed`), and integer agreements cross
+    /// sealed too (as float32, exact below 2^24), so no byte of a keyed
+    /// session crosses the cable in the clear.
+    init(collective: Collective) throws {
+        guard collective.transport == .jaccl, collective.size == 2 else {
+            throw ProbeError("A product tensor-parallel group runs on a two-rank JACCL collective")
+        }
+        self.collective = collective; link = nil; handle = collective.handle
+        backend = .jaccl; rank = collective.rank; size = collective.size
+    }
+
+    /// True when every floating reduction must be sealed (a keyed data plane).
+    var requiresSealing: Bool { collective?.protectionRequired ?? false }
+
     public init(backend: Backend) throws {
+        collective = nil
         if backend.correctnessOnly { try Self.validateLocalRing() }
         if backend == .socket {
             let (rank, port) = try Self.localSocketEndpoint()
@@ -64,14 +85,20 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
         }
     }
 
-    deinit { if let handle { mlx_distributed_group_free(handle) } }
+    deinit { if collective == nil, let handle { mlx_distributed_group_free(handle) } }
 
     /// Unevaluated all-sum on the CPU stream: the graph decides when it runs.
     public func allSum(_ value: MLXArray) -> MLXArray {
         if [.float16, .bfloat16, .float32].contains(value.dtype) { floatingReductions += 1 }
         guard let handle else { return socketAllSum(value) }
-        var result = mlx_array_new()
         let floating = [.float16, .bfloat16, .float32].contains(value.dtype)
+        if requiresSealing {
+            // A keyed session: nothing crosses in the clear. Integers travel as
+            // float32 (exact for |x| < 2^24, which every agreement keeps to).
+            precondition(sealed != nil, "A keyed data plane carries sealed tensor-parallel reductions only")
+            if !floating { return allSum(value.asType(.float32)).asType(value.dtype) }
+        }
+        var result = mlx_array_new()
         let status = sealed != nil && floating
             ? mlx_distributed_all_sum_sealed(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
             : mlx_distributed_all_sum(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)

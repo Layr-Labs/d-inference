@@ -1,3 +1,4 @@
+import CryptoKit
 import Cmlx
 import DarkbloomClusterProtocol
 import DarkbloomClusterSecurity
@@ -30,7 +31,7 @@ public enum ClusterTransport: String {
 }
 
 public final class Collective {
-    private var handle = mlx_distributed_group_new()
+    private(set) var handle = mlx_distributed_group_new()
     public let rank: Int
     public let size: Int
     public let transport: ClusterTransport
@@ -47,6 +48,14 @@ public final class Collective {
     public private(set) var protectionRequired = false
     /// What the exchange established; nil for a plaintext data plane.
     public private(set) var dataPlane: ClusterDataPlaneReceipt?
+    /// Tensor parallel only: the sealed all-sum's direction keys from the
+    /// confirmed exchange, taken once by the codec (`takeTensorParallelSealKeys`).
+    private var tensorParallelSealKeys: (send: SymmetricKey, receive: SymmetricKey)?
+    /// The sealed all-sum's keys, once; nil when the data plane was not keyed for tensor parallel.
+    func takeTensorParallelSealKeys() -> (send: SymmetricKey, receive: SymmetricKey)? {
+        defer { tensorParallelSealKeys = nil }
+        return tensorParallelSealKeys
+    }
 
     public var transportLabel: String { transport.rawValue }
     public var correctnessOnly: Bool { transport != .jaccl }
@@ -187,6 +196,7 @@ public final class Collective {
     public func establishDataPlane(credential: ClusterDataPlaneCredential, scopeSHA256: Data,
                                    tamper: CollectiveRecordTamper? = nil,
                                    rekey: ClusterRecordRekeyPolicy = .dataPlane,
+                                   tensorParallelSeal: Bool = false,
                                    check: () throws -> Void) throws -> ClusterDataPlaneReceipt {
         guard protected == nil, dataPlane == nil, size == 2, credential.rank == rank else {
             throw ProbeError("The data plane is keyed once, by this rank's own credential")
@@ -214,6 +224,9 @@ public final class Collective {
         do {
             let tag = try exchange.accept(peerHello: try swap(exchange.hello))
             try exchange.confirm(peerTag: try swap(tag))
+            // Tensor parallel: the sealed all-sum's direction keys, from this
+            // confirmed session and its scope (before the record master goes).
+            if tensorParallelSeal { tensorParallelSealKeys = try exchange.tensorParallelSealKeys(scope: scopeSHA256) }
             let limits = try ClusterRecordLimits(maximumPlaintextBytes: CollectiveAuthenticatedRecords.chunkBytes)
             let io = try CollectiveRecordByteIO(collective: self,
                 maximumFrameBytes: limits.maximumPlaintextBytes + ClusterRecordTransferAccounting.framingBytes,

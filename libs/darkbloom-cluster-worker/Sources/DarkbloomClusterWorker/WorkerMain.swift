@@ -106,7 +106,8 @@ import Foundation
                         qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
                 } ?? NativeWorkerRuntime(configuration.load, family: configuration.family, attachment: attachment,
                         generationMode: configuration.generationMode, speculativeTerms: configuration.speculativeTerms,
-                        qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey)
+                        qualification: qualification, dataPlane: dataPlane, prefixSSDKey: prefixSSDKey,
+                        tensorShares: configuration.tensorShares)
             }
             // Qualification only: a standing wired limit for the loaded stage.
             // Every exit below resets it to zero.

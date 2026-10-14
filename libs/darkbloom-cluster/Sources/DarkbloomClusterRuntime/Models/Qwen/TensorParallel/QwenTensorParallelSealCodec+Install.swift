@@ -3,6 +3,20 @@ import CryptoKit
 import Foundation
 
 extension QwenTensorParallelSealCodec {
+    /// The product's codec: the direction keys the pinned data-plane exchange
+    /// (S16) derived for this session and load agreement
+    /// (`ClusterDataPlaneKeyExchange.tensorParallelSealKeys`), taken once from
+    /// the collective; `scope` is the load agreement. Refused on a collective
+    /// whose data plane was not keyed for tensor parallel.
+    static func product(collective: Collective, scope: Data,
+                        rekey: (records: Int, bytes: Int) = (262_144, 2 << 30)) throws -> QwenTensorParallelSealCodec {
+        guard let keys = collective.takeTensorParallelSealKeys(), collective.size == 2, !scope.isEmpty else {
+            throw ProbeError("Sealed all-sum: the data plane holds no tensor-parallel keys for this session")
+        }
+        return QwenTensorParallelSealCodec(rank: collective.rank, sendKey: keys.send, receiveKey: keys.receive, scope: scope,
+            rekeyFrames: UInt64(max(1, rekey.records)), rekeyBytes: UInt64(max(1, rekey.bytes)))
+    }
+
     /// Bench keys from an ephemeral P-256 agreement over `group` (public keys
     /// exchanged as integers through the group's plain reduction); HKDF-SHA256
     /// with `scope` as salt gives one key per direction.

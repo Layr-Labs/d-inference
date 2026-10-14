@@ -106,6 +106,13 @@ extension ClusterService {
             return control!.receiveLease(from: pairing.peerMemberID, offered: offered, running: command.running ?? false, facts: facts, now: now)
         }
         guard let result else { throw ClusterSetupFailure("this Mac's control is not ready") }
+        // The leader's serving intent, from an accepted lease only: a start or stop typed on the leader while this Mac
+        // was away is what this Mac leads with if control moves here (e.g. handed back to rank 0).
+        if let intent = ClusterControlIntent.toRecord(answer: result.answer, leaderServing: command.serving,
+                                                      recorded: (try? store.readRecord())?.leadership?.serving) {
+            try? store.updateRecord { $0.leadership?.serving = intent }
+            say(intent ? "the leader serves: recorded" : "the leader stopped serving: recorded")
+        }
         // Recorded only from an accepted lease: a refused (stale) leader never rewrites what this Mac may serve alone.
         if let verdicts = ClusterControlAloneVerdicts.toRecord(answer: result.answer, facts: facts, forPlan: command.alonePlan, savedPlan: savedPlan) {
             try? store.updateRecord {
@@ -222,7 +229,10 @@ extension ClusterService {
             defer { done?() }
             guard let self else { return }
             defer { self.lock.withLock { self.leaseInFlight = false } }
-            let command = ClusterServiceCommand(op: .lease, claim: claim, running: running, facts: facts, alonePlan: alonePlan)
+            // The serving intent is read as the lease leaves (a hand-over holds the command lock, so no start or stop
+            // changes it meanwhile): the Mac that accepts records it, and leads with it if control moves there.
+            let intent = (try? self.store.readRecord())?.leadership?.serving
+            let command = ClusterServiceCommand(op: .lease, claim: claim, running: running, facts: facts, alonePlan: alonePlan, serving: intent)
             guard let body = try? JSONEncoder().encode(command),
                   let reply = try? ClusterSetupLinkExchange.lease(pairing: pairing, selection: selection, peerAddress: nil, body: body,
                       seconds: min(4, Self.leaseRenewSeconds)).reply,
@@ -335,7 +345,13 @@ extension ClusterService {
         let name = ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
         do {
             let report = try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3)
-            var line = "\(name): " + (report.passed ? "teardown verified, nothing left" : "teardown NOT clean: " + report.reasons.joined(separator: "; "))
+            // The part the cluster service started is a cluster process too, also when it is no cluster worker or owner
+            // (the solo server, the rank 0 server process) and when the service that started it is gone.
+            var reasons = report.reasons
+            if let part = recordedPart(published()) {
+                reasons.append("this Mac's \(part.solo ? "solo server" : "part") is still running (pid \(part.pid))")
+            }
+            var line = "\(name): " + (reasons.isEmpty ? "teardown verified, nothing left" : "teardown NOT clean: " + reasons.joined(separator: "; "))
             if let wired = report.wired {
                 line += " (wired \((wired.samples.min() ?? 0) >> 20) MiB, baseline \(wired.baselineBytes >> 20) MiB)"
             }

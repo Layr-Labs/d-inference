@@ -107,10 +107,13 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// `lease`: the plan (selected plan SHA-256) the facts' alone verdicts are for; verdicts for another plan are dropped.
     public var alonePlan: String?
     public var control: ClusterControlRequest?
+    /// `lease`: the leader's serving intent (its record's `leadership.serving`), recorded by a Mac that accepts the lease
+    /// (`ClusterControlIntent`), so a start or stop survives control moving to another Mac. Nil from an older build.
+    public var serving: Bool?
     public init(op: Operation, model: String? = nil, text: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
-                facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil) {
+                facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil, serving: Bool? = nil) {
         self.op = op; self.model = model; self.text = text; self.claim = claim; self.running = running; self.facts = facts
-        self.alonePlan = alonePlan; self.control = control
+        self.alonePlan = alonePlan; self.control = control; self.serving = serving
     }
 }
 
@@ -164,6 +167,8 @@ public final class ClusterService: @unchecked Sendable {
     private var starts = 0
     private var lastEnd: String?
     private var nextStart = Date.distantPast
+    /// The part whose end (or failed start) set `nextStart`: its restart backoff does not hold back another part.
+    private var endedKey: String?
     private var backoff: Double = 3
     private var responder: ClusterSetupLinkExchange.Responder?
     var stopping = false
@@ -254,6 +259,13 @@ public final class ClusterService: @unchecked Sendable {
         try? Data("\(getpid())\n".utf8).write(to: files.pid, options: .atomic)
         defer { unlink(files.pid.path) }
         say("started (pid \(getpid()))")
+        // A part a previous run of this service started and left running (that run ended without stopping it, e.g.
+        // killed): stopped before anything starts, or it would hold the model's memory and the serving port forever.
+        if let previous = Self.published(), previous.servicePID != getpid(), let left = Self.recordedPart(previous) {
+            say("this Mac's \(left.solo ? "solo server" : "part") from the previous service run is still running (pid \(left.pid)): stopping it first")
+            say(Self.stopLeftover(left, seconds: 300) ? "the previous run's \(left.solo ? "solo server" : "part") stopped"
+                : "the previous run's \(left.solo ? "solo server" : "part") is still releasing after 300 s")
+        }
         let ticker = DispatchSemaphore(value: 0)
         var stopped = false
         Thread.detachNewThread { stop.wait(); ticker.signal() }
@@ -421,19 +433,48 @@ public final class ClusterService: @unchecked Sendable {
         guard let child = status?.child, child.running, child.solo == true, let pid = child.pid, let startedAt = child.startedAt,
               let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return .loading }
         let ours = ([pid] + ClusterProcessTable.descendants(of: pid)).contains { ClusterProcessTable.listeningTCPPorts(of: $0).contains(port) }
-        guard soloAnswers(port: port) else { return .loading }
-        return ours ? .ready : .foreign
+        // The local API token goes only to our own solo server: another program on the port is probed without it.
+        guard ours else { return soloAnswers(port: port, authorized: false) ? .foreign : .loading }
+        return soloAnswers(port: port) ? .ready : .loading
     }
 
-    /// Whether a server answers its model list on the solo port (whichever program it is: see `soloReadiness`).
-    static func soloAnswers(port: Int = soloPort) -> Bool {
+    /// The part this Mac's cluster service started (its rank part or its solo server), as its published status names
+    /// it, while that very process still runs (same start time, so a recycled process number never counts). With the
+    /// cluster stopped, or the service gone, it is left over: verify-teardown counts it, a new service run stops it.
+    public struct RecordedPart: Equatable, Sendable { public var pid: Int32; public var startedAt: Double; public var solo: Bool }
+
+    static func recordedPart(_ status: ClusterServiceStatus?) -> RecordedPart? {
+        guard let child = status?.child, child.running, let pid = child.pid, let startedAt = child.startedAt,
+              let now = ClusterProcessTable.startTime(of: pid), abs(now - startedAt) < 0.001 else { return nil }
+        return .init(pid: pid, startedAt: startedAt, solo: child.solo == true)
+    }
+
+    /// SIGTERM, repeated every `stopResendSeconds`, never SIGKILL (a rank releases its model itself), and only while the
+    /// process is still the recorded one.
+    static func stopLeftover(_ part: RecordedPart, seconds: Double) -> Bool {
+        func same() -> Bool { ClusterProcessTable.startTime(of: part.pid).map { abs($0 - part.startedAt) < 0.001 } ?? false }
+        let started = Date()
+        var sent = -1
+        while same() {
+            guard Date().timeIntervalSince(started) < seconds else { return false }
+            let due = Int(Date().timeIntervalSince(started) / stopResendSeconds)
+            if due > sent { sent = due; kill(part.pid, SIGTERM) }
+            usleep(100_000)
+        }
+        return true
+    }
+
+    /// `authorized`: whether a server answers its model list on the solo port with this Mac's local API token (only
+    /// ever sent to this service's own solo server: see `soloReadiness`); otherwise whether anything answers HTTP there,
+    /// asked without the token.
+    static func soloAnswers(port: Int = soloPort, authorized: Bool = true) -> Bool {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
         request.timeoutInterval = 3
-        if let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if authorized, let token = LocalEndpoint.readToken() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let prepared = request
         return blockingWizard {
-            guard let (_, response) = try? await URLSession.shared.data(for: prepared) else { return false }
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            guard let (_, response) = try? await URLSession.shared.data(for: prepared), let http = response as? HTTPURLResponse else { return false }
+            return authorized ? http.statusCode == 200 : true
         }
     }
 
@@ -541,7 +582,7 @@ public final class ClusterService: @unchecked Sendable {
             let ran = Date().timeIntervalSince(lock.withLock { childStarted })
             let end = running.terminationReason == .uncaughtSignal ? "signal \(running.terminationStatus)" : "exit \(running.terminationStatus)"
             lock.withLock {
-                child = nil; childSetup = nil; lastEnd = end
+                child = nil; childSetup = nil; lastEnd = end; endedKey = setup
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
@@ -559,7 +600,10 @@ public final class ClusterService: @unchecked Sendable {
             if key != nil { lock.withLock { nextStart = .distantPast; backoff = 3 } }
             return
         }
-        guard running == nil, let key, lock.withLock({ !stopping && Date() >= nextStart }) else { return }
+        // The restart backoff holds back only the part that ended: serving alone after the grace starts at once.
+        guard running == nil, let key, lock.withLock({ !stopping && ClusterControlPartChoice.mayStart(key: key, endedKey: endedKey,
+                                                                                                  backoffElapsed: Date() >= nextStart) })
+        else { return }
         let arguments: [String]
         let what: String
         if case .solo(let model) = want {
@@ -580,7 +624,7 @@ public final class ClusterService: @unchecked Sendable {
         }
         do { try process.run() } catch {
             say("\(what) could not start: \(error)")
-            lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30) }
+            lock.withLock { nextStart = Date().addingTimeInterval(backoff); backoff = min(backoff * 2, 30); endedKey = key }
             return
         }
         let startedAt = ClusterProcessTable.startTime(of: process.processIdentifier)

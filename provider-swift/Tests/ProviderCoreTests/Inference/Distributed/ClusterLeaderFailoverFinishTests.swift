@@ -42,6 +42,10 @@ import Testing
         let fd: Int32
         let port: Int
         private var running = true
+        private let seen = NSLock()
+        private var authorized = 0
+        /// Requests that carried an Authorization header.
+        var authorizedRequests: Int { seen.withLock { authorized } }
         init() throws {
             let fd = socket(AF_INET, SOCK_STREAM, 0)
             var yes: Int32 = 1
@@ -63,7 +67,10 @@ import Testing
                     let client = accept(listener, nil, nil)
                     guard client >= 0 else { return }
                     var buffer = [UInt8](repeating: 0, count: 4096)
-                    _ = read(client, &buffer, buffer.count)
+                    let count = read(client, &buffer, buffer.count)
+                    if count > 0, String(decoding: buffer.prefix(count), as: UTF8.self).lowercased().contains("\r\nauthorization:") {
+                        self?.seen.withLock { self?.authorized += 1 }
+                    }
                     let body = #"{"object":"list","data":[]}"#
                     let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body
                     _ = reply.withCString { write(client, $0, strlen($0)) }
@@ -115,6 +122,63 @@ import Testing
         #expect(ClusterService.soloReadiness(Self.status(pid: nil, startedAt: nil), port: responder.port) == .loading)
         #expect(ClusterService.soloReadiness(Self.status(pid: me, startedAt: started, solo: false), port: responder.port) == .loading)
         #expect(ClusterService.soloReadiness(nil, port: responder.port) == .loading)
+    }
+
+    /// Review (2026-10-13 night): the local API token is the local server's security boundary; it goes only to THIS
+    /// service's own solo server. Another program answering on the solo port is probed without it (before the review
+    /// the readiness check sent it the token, then called the program foreign).
+    @Test func soloReadinessNeverSendsTheLocalTokenToAnotherProgram() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("solo-token-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("dk-local-test-only-token\n".utf8).write(to: directory.appendingPathComponent("local_token"))
+        let previous = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"]
+        setenv("DARKBLOOM_LOCAL_DIR", directory.path, 1)
+        defer { if let previous { setenv("DARKBLOOM_LOCAL_DIR", previous, 1) } else { unsetenv("DARKBLOOM_LOCAL_DIR") } }
+        let responder = try Responder()
+        defer { responder.stop() }
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer { sleeper.terminate(); sleeper.waitUntilExit() }
+        let sleeperStart = try #require(ClusterProcessTable.startTime(of: sleeper.processIdentifier))
+        #expect(ClusterService.soloReadiness(Self.status(pid: sleeper.processIdentifier, startedAt: sleeperStart), port: responder.port) == .foreign)
+        #expect(responder.authorizedRequests == 0, "another program on the port never receives the local API token")
+        // Our own solo server (this process holds the listener) is asked with the token, as before.
+        let me = getpid()
+        let started = try #require(ClusterProcessTable.startTime(of: me))
+        #expect(ClusterService.soloReadiness(Self.status(pid: me, startedAt: started), port: responder.port) == .ready)
+        #expect(responder.authorizedRequests == 1, "our own solo server is asked with the token")
+    }
+
+    /// Review: the leader's serving intent travels with its lease; a lease from an older build (no intent) still decodes.
+    @Test func leaseCarriesTheLeadersServingIntent() throws {
+        let claim = ClusterControlClaim(term: 2, leaderID: "mac-bbbbbbbbbbbb", members: ["mac-aaaaaaaaaaaa", "mac-bbbbbbbbbbbb"], reason: "failover")
+        let lease = ClusterServiceCommand(op: .lease, claim: claim, running: false, facts: [], alonePlan: nil, serving: false)
+        let decoded = try JSONDecoder().decode(ClusterServiceCommand.self, from: JSONEncoder().encode(lease))
+        #expect(decoded == lease && decoded.serving == false)
+        let older = try JSONDecoder().decode(ClusterServiceCommand.self, from: Data(#"{"op":"lease","running":true}"#.utf8))
+        #expect(older.serving == nil, "an older leader sends no intent: nothing is recorded")
+    }
+
+    /// Review: the part the cluster service started (the solo server is no cluster worker or owner) counts in
+    /// verify-teardown while it runs, also once its service is gone, and a new service run stops it; a recycled
+    /// process number or a part that ended never counts. Before the review an orphaned solo server passed verify-teardown.
+    @Test func recordedPartIsCountedAndStoppedOnlyWhileItIsThatProcess() throws {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        defer { if sleeper.isRunning { sleeper.terminate() }; sleeper.waitUntilExit() }
+        let pid = sleeper.processIdentifier
+        let started = try #require(ClusterProcessTable.startTime(of: pid))
+        let part = try #require(ClusterService.recordedPart(Self.status(pid: pid, startedAt: started)))
+        #expect(part.pid == pid && part.solo, "a running solo server of the service: counted")
+        #expect(ClusterService.recordedPart(Self.status(pid: pid, startedAt: started - 5)) == nil, "a recycled process number: never")
+        #expect(ClusterService.recordedPart(Self.status(pid: nil, startedAt: nil)) == nil && ClusterService.recordedPart(nil) == nil)
+        #expect(ClusterService.stopLeftover(part, seconds: 10), "SIGTERM ends it")
+        #expect(ClusterService.recordedPart(Self.status(pid: pid, startedAt: started)) == nil, "ended: no longer counted")
     }
 
     @Test func publishedStatusDecodesWithoutTheNewFields() throws {

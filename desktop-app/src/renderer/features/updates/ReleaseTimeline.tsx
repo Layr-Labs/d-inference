@@ -3,8 +3,14 @@ import type { ReleaseData, ReleaseHistory } from '../../../shared/contracts';
 import { compareVersions } from './version';
 import styles from './updates.module.css';
 
+// Notes published from a signed git tag carried the tag's signature block; it is not release
+// text, so it is never shown (including an unterminated block running to the end).
+const signature =
+  /-----BEGIN (?:SSH|PGP) SIGNATURE-----[\s\S]*?(?:-----END (?:SSH|PGP) SIGNATURE-----|$)/g;
+
 function lines(notes: string) {
   return notes
+    .replace(signature, '')
     .split('\n')
     .map((line) =>
       line

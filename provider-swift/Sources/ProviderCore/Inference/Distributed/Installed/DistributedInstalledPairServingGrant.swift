@@ -91,7 +91,7 @@ public struct ClusterPairServingQualification: Sendable, Equatable {
     /// The shape the coordinator requires of a parity qualification: two or
     /// more ranks, one cut fewer than the ranks, cuts positive and ascending.
     public var isWellFormed: Bool {
-        chipClasses.count >= 2 && cuts.count == chipClasses.count - 1 && cuts.allSatisfy { $0 > 0 }
+        chipClasses.count >= 2 && cuts.count == mode.layerCutCount(ranks: chipClasses.count) && cuts.allSatisfy { $0 > 0 }
             && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
     }
 }

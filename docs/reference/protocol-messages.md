@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon in
@@ -1082,6 +1082,16 @@ reconnect. It proves protocol support and connection binding only — never
 attestation, runtime approval, native-owner authorization or serving
 readiness. A solo connection ignores it. See
 [cluster-control-protocol.md](cluster-control-protocol.md).
+
+A starting member waits for this frame for a bounded time (30 s for a
+foreground `darkbloom start --local --distributed` or `--cluster-member`). Its
+reconnects stay inside that wait: a retry the backoff would place after the
+wait's end is made at the end and runs to its own terms (one ten-second window
+for the handshake, then its connection's ten-second deadline). A wait in which
+no attempt reached the coordinator fails as "coordinator could not be reached",
+not as a refusal of the member role; a reached coordinator that sent no valid
+acceptance in time still ends the member (it is not reconnected under a new
+nonce).
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|

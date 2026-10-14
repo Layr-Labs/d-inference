@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop manual selection during Autopilot turn-on
+
+- Disable Apply selection, Download and Remove on the Models page while Autopilot is turning on, so a manual selection can no longer be applied on top of the turn-on.
 ## Unreleased — desktop model slot limit
 
 - Say when a model can’t be kept in memory because all model slots (`max_model_slots`) are in use, instead of claiming it needs more memory than the Mac has. Onboarding’s pin summary makes the same distinction.

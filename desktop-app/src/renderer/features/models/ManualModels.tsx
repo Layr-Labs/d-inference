@@ -21,6 +21,7 @@ type Filter = (typeof filters)[number]['id'];
 // Manual selection: the chosen downloaded models serve once applied.
 export function ManualModels({
   backend,
+  busy,
   embedded,
   note,
   ranked,
@@ -28,6 +29,8 @@ export function ManualModels({
   order,
 }: {
   backend: BackendState;
+  // The app or a model action, such as turning Autopilot on, is busy.
+  busy: boolean;
   embedded: boolean;
   note?: ReactNode;
   ranked: NativeModel[];
@@ -65,7 +68,7 @@ export function ManualModels({
         action={
           <Button
             variant="primary"
-            disabled={backend.busy || !chosen.length}
+            disabled={busy || !chosen.length}
             onClick={() =>
               void backend.act({ action: running ? 'switch' : 'start', models: chosen })
             }
@@ -150,7 +153,7 @@ export function ManualModels({
                     <button
                       className="icon-button"
                       aria-label={`Remove ${model.display_name}`}
-                      disabled={model.serving || model.loaded || backend.busy}
+                      disabled={model.serving || model.loaded || busy}
                       onClick={() => setRemove(model)}
                     >
                       <Trash2 size={16} />
@@ -160,7 +163,7 @@ export function ManualModels({
                   <Button
                     // A model this Mac can't run (its reason is shown above) isn't offered for
                     // download; Autopilot's view treats it as not available the same way.
-                    disabled={backend.busy || !model.eligible}
+                    disabled={busy || !model.eligible}
                     title={
                       model.eligible ? undefined : (model.reason ?? 'Not available on this Mac')
                     }

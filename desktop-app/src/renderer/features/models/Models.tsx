@@ -47,6 +47,7 @@ export function Models({
   return (
     <ManualModels
       backend={backend}
+      busy={backend.busy || Object.keys(actions.working).length > 0}
       embedded={embedded}
       ranked={ranked}
       earnings={earnings}

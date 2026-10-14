@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — derived cluster control leader, failover, `darkbloom cluster` on every member
+
+- The cluster's control leader is derived, not the Mac where onboarding started: once a plan is adopted its rank 0 leads (requests enter there and registration v3 treats the plan's first member as the head); otherwise the member present that holds the model alone, then the most memory, the most GPU cores and the lowest member identity (from its Secure Enclave key pin). Leadership is a claim with a term, persisted in each Mac's setup record so a restart re-forms the same way; claims are totally ordered (term, then identity), travel only over the pairing-keyed link control channel, and a member refuses a superseded claim so a stale leader steps down. A leader acts on the cluster only after every plan member confirmed its claim.
+- The leader renews a control lease with each member at the rank lease's cadence (5 s / 30 s) on a listener and edge epoch of its own. When the leader's lease expires the survivor takes over at the next term; a leader left alone serves the model on that Mac alone when the planner said it holds it alone (the ordinary single-Mac local server under the Mac's own identity: "degraded: serving on this Mac alone"), and otherwise says it cannot serve and runs nothing. When the missing Mac answers again the pair re-forms by itself and control returns to rank 0.
+- `darkbloom cluster` works on any member: status, test request, model change, stop and start, and a verify-teardown summary of every Mac are forwarded to the control leader and its answer is shown. A model change while serving drains both Macs' parts before the setup changes.
+
 ## Unreleased — cluster sessions without a fixed lifetime; rank lease and keep-warm
 
 - A two-Mac cluster session has no fixed lifetime and no request count any more. The 300-second session (1,800 for MiMo), the sixteen-request cap, the installed session's teardown at its deadline, the rotation to a new session after sixteen requests and the member session's 900-second cap are removed; a loaded model stays resident and serving until it is stopped (`darkbloom stop`, an operator unload, an autopilot model switch) or a real failure is detected. The capability record drops `maxLifetimeSeconds` and `maxRequests`.

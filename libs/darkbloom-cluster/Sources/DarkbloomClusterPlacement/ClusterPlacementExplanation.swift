@@ -104,7 +104,8 @@ public enum ClusterPlacementExplanation {
     public static func speed(_ label: String, _ speed: ClusterDeviceSpeed) -> String {
         let unit = speed.absolute ? " tok/s" : " (relative)"
         func head(_ rates: ClusterSpeedRates) -> String {
-            rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? ""
+            (rates.speculativeDecodeTokensPerSecond.map { " (\(rate($0)) with the model's speculative head)" } ?? "")
+                + (rates.pipelineSpeculativeFactor.map { String(format: " (pipeline speculative rounds served %.2fx)", $0) } ?? "")
         }
         var text = "\(label): prefill \(rate(speed.rested.prefillTokensPerSecond))\(unit) and decode "
             + "\(rate(speed.rested.decodeTokensPerSecond))\(unit)\(head(speed.rested)) rested"

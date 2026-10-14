@@ -65,15 +65,16 @@ public enum ClusterSpeculativeCredit {
 
     /// The decode speed-up a pipeline's speculative rounds
     /// (`pipeline_mtp_v1`) are credited with when `rates` are the decoding
-    /// rank's: measured only, the served speculative rate over the plain one
-    /// that served calibration recorded for this device
-    /// (`ClusterServedCalibration`). Nil without a measurement: every rank
-    /// verifies the window, so no chip generation or row factor predicts it,
-    /// and the plain pipeline then ranks first.
+    /// rank's: measured only, the served rounds over what the same placement
+    /// served plainly, as served calibration recorded it for this device
+    /// (`ClusterSpeedRates.pipelineSpeculativeFactor`). Never the device's own
+    /// rate with the head (a single-Mac or phase-split figure): every rank
+    /// verifies a pipeline's window, so no such rate, chip generation or row
+    /// factor predicts it. Nil without a measurement, and the plain pipeline
+    /// then ranks first.
     public static func pipelineFactor(_ rates: ClusterSpeedRates) -> Double? {
-        guard let measured = rates.speculativeDecodeTokensPerSecond, measured.isFinite, measured > 0,
-              rates.decodeTokensPerSecond > 0 else { return nil }
-        return measured / rates.decodeTokensPerSecond
+        guard let factor = rates.pipelineSpeculativeFactor, factor.isFinite, factor > 0 else { return nil }
+        return factor
     }
 
     /// True when this device should decode with the head rather than

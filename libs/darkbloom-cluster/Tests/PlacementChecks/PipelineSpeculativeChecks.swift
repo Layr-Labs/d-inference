@@ -79,5 +79,59 @@ func checkPipelineSpeculativeHolding(_ golden: URL, _ checks: PlacementChecks) t
     checks.require("served rounds slower than plain: the planner keeps a plain pipeline mode (chose \(slower.mode))",
         slower.mode == ClusterGenerationMode.pipeline.rawValue || slower.mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
     checks.require("the credited prediction is the plain one scaled by the measured speed-up",
-        abs(faster.decode / max(1e-9, try planned(rounds: 41.7).decode) - 55.7 / 41.7) < 0.05 || faster.decode > 50)
+        abs(faster.decode / max(1e-9, try planned(rounds: 41.7).decode) - 55.7 / 41.7) < 0.05)
+
+    // The served speed-up is recorded as the pipeline's own figure on the decoding rank, never as that
+    // Mac's rate with the head (which a phase split or the Mac alone would then be credited with).
+    do {
+        let profiles = try ["mac-a", "mac-b"].map { label in
+            ClusterPlacementDevice(label: label, profile: try ClusterDeviceProfile.decode(
+                Data(contentsOf: pair.appendingPathComponent("profile-\(label).json"))),
+                speed: ClusterDeviceSpeed(source: .measured, absolute: true,
+                    rested: .init(prefillTokensPerSecond: 1000, decodeTokensPerSecond: 40), sustained: nil, explanation: "constructed"))
+        }
+        let entries = try ClusterServedSpeedRecords.decode(Data(contentsOf: try served(rounds: 55.6))).entries
+        let derived = try ClusterServedCalibration.measurements(entries: entries, devices: profiles, layout: layout,
+            link: .unmeasured, measuredUTC: "2026-10-14T00:00:00Z").measurements
+        let decoder = profiles[0].profile
+        let own = derived.filter { $0.key.chip == decoder.chip && $0.key.osBuild == decoder.osBuild }
+        checks.require("the decoding rank's served record carries the rounds' speed-up as its own figure, no head rate",
+            !own.isEmpty && own.allSatisfy { $0.rested.speculativeDecodeTokensPerSecond == nil }
+                && own.contains { abs(($0.rested.pipelineSpeculativeFactor ?? 0) - 55.7 / 41.7) < 0.01 })
+    }
+
+    // Rounds served without the same placement ever serving plainly: nothing measured says what the
+    // rounds gained, so nothing is credited (the plain prediction is no measurement).
+    do {
+        let file = scratch.appendingPathComponent("served-rounds-only.json")
+        try ClusterServedSpeedRecords(entries: (0..<3).map { index in
+            .init(setup: .init(modelID: layout.runtimeModelID, mode: ClusterGenerationMode.pipelineMTP.rawValue,
+                               cut: "0-47|47-48", ranks: ["mac-b", "mac-a"]),
+                  sample: .init(route: .pair, member: nil, promptTokens: 4096, outputTokens: 64, firstTokenSeconds: 3.7,
+                                decodeTokensPerSecond: 58 + Double(index) * 0.1, finishedAt: 1_760_000_000 + Double(index)))
+        }).encoded().write(to: file)
+        let printed = try ClusterPlacementTool.run(["plan", "--layout", edited.path] + peers + ["--served", file.path, "--json"],
+            sampleDevice: { throw ProbeError("recorded profiles only") })
+        let value = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
+        let mode = ((value?["result"] as? [String: Any])?["chosen"] as? [String: Any])?["mode"] as? String ?? "-"
+        checks.require("rounds served with no plain record of the same placement earn no credit (chose \(mode))",
+            mode == ClusterGenerationMode.pipeline.rawValue || mode == ClusterGenerationMode.pipelineCompactDecode.rawValue)
+    }
+
+    // A rate with the head measured on one Mac alone (a staged reference's MTP run, or a phase split's
+    // decoding rank) says nothing about a pipeline's rounds, where every rank verifies the window.
+    do {
+        let alone = ClusterSpeedRates(prefillTokensPerSecond: 1000, decodeTokensPerSecond: 40, speculativeDecodeTokensPerSecond: 64)
+        checks.require("a head rate measured alone is no pipeline speed-up",
+            ClusterSpeculativeCredit.pipelineFactor(alone) == nil)
+        let three = ClusterDeviceSpeed(source: .measured, absolute: true, rested: alone, sustained: nil,
+            explanation: "constructed: this Mac's head measured alone")
+        let five = ClusterDeviceSpeed(source: .measured, absolute: true,
+            rested: .init(prefillTokensPerSecond: 1250, decodeTokensPerSecond: 57), sustained: nil, explanation: "constructed")
+        let macs = [try SyntheticMac.idle(256).device("mac-a", speed: three, chip: "Apple M3 Ultra"),
+                    try SyntheticMac.idle(256).device("mac-b", speed: five, chip: "Apple M5 Ultra")]
+        let result = try ClusterPlacementPlanner.plan(devices: macs, layout: layout)
+        checks.require("a head rate measured alone never puts a pipeline's rounds first (chose \(result.chosen?.mode.rawValue ?? "-"))",
+            result.chosen.map { !$0.mode.usesSpeculativeHead } ?? false)
+    }
 }

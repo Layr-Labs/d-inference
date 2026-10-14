@@ -9,17 +9,29 @@ public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     /// device (a staged reference's MTP run). Nil when not measured; never
     /// transferred from another device, since the head's gain is the chip's own.
     public let speculativeDecodeTokensPerSecond: Double?
+    /// The decode speed-up a pipeline's speculative rounds (`pipeline_mtp_v1`)
+    /// served with this device as the decoding rank: what one placement served
+    /// with the rounds over what the same placement served plainly
+    /// (`ClusterServedCalibration`). A separate figure from
+    /// `speculativeDecodeTokensPerSecond`: every rank verifies a pipeline's
+    /// window, so neither says anything about the other. Nil when not served;
+    /// never transferred from another device.
+    public let pipelineSpeculativeFactor: Double?
     public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double,
-                speculativeDecodeTokensPerSecond: Double? = nil) {
+                speculativeDecodeTokensPerSecond: Double? = nil, pipelineSpeculativeFactor: Double? = nil) {
         self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
         self.speculativeDecodeTokensPerSecond = speculativeDecodeTokensPerSecond
+        self.pipelineSpeculativeFactor = pipelineSpeculativeFactor
     }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
             && (speculativeDecodeTokensPerSecond.map { $0.isFinite && $0 > 0 } ?? true)
+            && (pipelineSpeculativeFactor.map { $0.isFinite && $0 > 0 } ?? true)
     }
-    /// The same rates without the speculative one: what may be said of
+    /// True when either speculative figure is present (a v2 record).
+    var carriesSpeculative: Bool { speculativeDecodeTokensPerSecond != nil || pipelineSpeculativeFactor != nil }
+    /// The same rates without the speculative ones: what may be said of
     /// another device scaled from these.
     var withoutSpeculative: ClusterSpeedRates {
         .init(prefillTokensPerSecond: prefillTokensPerSecond, decodeTokensPerSecond: decodeTokensPerSecond)
@@ -52,8 +64,9 @@ public struct ClusterSpeedKey: Codable, Hashable, Sendable {
 /// rested one.
 ///
 /// Schema v2 adds one optional rate per regime, decode with the model's
-/// speculative head; a record without one is written as v1, byte for byte as
-/// before, and a v1 record still loads.
+/// speculative head, and one optional served pipeline speed-up
+/// (`pipelineSpeculativeFactor`); a record without either is written as v1,
+/// byte for byte as before, and a v1 record still loads.
 public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public static let schemaName = "darkbloom_cluster_speed_measurement_v1"
     public static let schemaNameV2 = "darkbloom_cluster_speed_measurement_v2"
@@ -80,7 +93,7 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public init(key: ClusterSpeedKey, promptTokens: Int, chunkTokens: Int, probedLayers: Int, layerCount: Int,
                 rested: ClusterSpeedRates, sustained: ClusterSpeedRates?, hashBytesPerSecond: Double? = nil,
                 materializeBytesPerSecond: Double? = nil, measuredUTC: String, provenance: String) throws {
-        let speculative = rested.speculativeDecodeTokensPerSecond != nil || sustained?.speculativeDecodeTokensPerSecond != nil
+        let speculative = rested.carriesSpeculative || sustained?.carriesSpeculative == true
         schema = speculative ? Self.schemaNameV2 : Self.schemaName
         self.key = key; self.promptTokens = promptTokens; self.chunkTokens = chunkTokens
         self.probedLayers = probedLayers; self.layerCount = layerCount; self.rested = rested
@@ -91,7 +104,7 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
 
     public func validate() throws {
         // A v1 record cannot carry a speculative rate; a v2 record may.
-        let speculative = rested.speculativeDecodeTokensPerSecond != nil || sustained?.speculativeDecodeTokensPerSecond != nil
+        let speculative = rested.carriesSpeculative || sustained?.carriesSpeculative == true
         guard schema == Self.schemaNameV2 || (schema == Self.schemaName && !speculative),
               promptTokens > 0, chunkTokens > 0, layerCount > 0,
               (1...layerCount).contains(probedLayers), rested.valid, sustained?.valid ?? true,

@@ -61,6 +61,7 @@ build_module InstalledContract \
   "$task_sources/Inference/Distributed/DistributedResidentExecution.swift" \
   "$task_sources/Inference/Distributed/DistributedPipeExecutionOwner.swift" \
   "$task_sources"/Inference/Distributed/Installed/*.swift \
+  "$task_sources/Protocol/ProviderExecutionRole.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterControlLeadership.swift" \
   "$task_sources/Inference/Distributed/Onboarding/ClusterOnboardingFlow.swift" \
   "$task_sources"/Inference/Distributed/Placement/*.swift \

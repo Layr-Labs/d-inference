@@ -290,9 +290,11 @@ public struct SecurityPosture: Sendable {
 
 }
 
-/// Whether this install's own Darkbloom MDM profile is installed. The
-/// configured coordinator host counts as ours, the same as for enroll, doctor
-/// and unenroll; the other build environment's profile does not.
+/// Whether this install's own Darkbloom MDM profile is installed. The host of
+/// `coordinatorURL` counts as ours, the same as for enroll, doctor and
+/// unenroll; the other build environment's profile does not. The provider loop
+/// passes the URL it connects to (`ProviderLoopConfig.coordinatorURL`), so a
+/// `start --coordinator-url` override counts, not only provider.toml.
 func postureMDMEnrolled(
     coordinatorURL: String?,
     check: (String?) -> MDMEnrollmentState = { checkMDMEnrollment(coordinatorURL: $0) }

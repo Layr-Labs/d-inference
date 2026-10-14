@@ -88,8 +88,19 @@ import Testing
         #expect(!parseMDMEnrollmentStatus(out).isDarkbloom)
     }
 
-    @Test func attestationPostureUsesTheConfiguredCoordinator() {
-        let configured = "wss://coordinator.example/ws/provider"
+    @Test func attestationPostureUsesTheCoordinatorTheLoopConnectsTo() {
+        // `start --coordinator-url` sets ProviderLoopConfig.coordinatorURL, which
+        // may differ from provider.toml; the posture check receives that URL.
+        let loopConfig = ProviderLoopConfig(
+            coordinatorURL: "wss://coordinator.example/ws/provider",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+                memoryGb: 64, memoryAvailableGb: 64,
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546),
+            models: [], config: ConfigManager.parse(""))
+        #expect(loopConfig.coordinatorURL != loopConfig.config.coordinator.url)
+        let configured = loopConfig.coordinatorURL
         var seen: [String?] = []
         let enrolled = postureMDMEnrolled(coordinatorURL: configured) { url in
             seen.append(url)

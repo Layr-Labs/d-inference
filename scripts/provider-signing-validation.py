@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 import unicodedata
 
-from provider_release_identity import PRODUCTS, identity
+from provider_release_identity import DOCUMENT, for_source, identity
 
 TEAM = "SLDQ2GJ6TL"
 APP_ID = "io.darkbloom.provider"
@@ -20,9 +20,37 @@ MAX_TOTAL_BYTES = 2 << 30
 MAX_ARCHIVE_MEMBERS = 16_384
 
 
-def executables(names):
-    """(SwiftPM product, packaged executable) pairs for one identity."""
-    return [(PRODUCTS["cli"], names["cliName"]), (PRODUCTS["enclave"], names["enclaveName"])]
+PACKAGED_KEYS = ["cliName", "enclaveName", "appBundleName", "appDisplayName"]
+
+
+def packaging(document, version):
+    """Names the stage step packages, from the candidate's own identity. The
+    unsigned manifest records them, so unpack and receipt use the same set."""
+    names = identity(version, document)
+    return {**{key: names[key] for key in PACKAGED_KEYS},
+            "products": {"cli": document["swiftProducts"]["cli"],
+                         "enclave": document["swiftProducts"]["enclave"]}}
+
+
+def recorded_packaging(manifest):
+    # An unsigned build staged before the manifest recorded names (a retained
+    # build for recovery) packaged this tooling's names for its version.
+    value = manifest.get("packaging", packaging(DOCUMENT, manifest.get("version", "")))
+    names = [value.get(key) for key in PACKAGED_KEYS] if isinstance(value, dict) else [None]
+    products = value.get("products") if isinstance(value, dict) else None
+    if isinstance(products, dict):
+        names += [products.get("cli"), products.get("enclave")]
+    if not isinstance(products, dict) or not all(
+            isinstance(name, str) and name and "/" not in name and name not in {".", ".."}
+            and not name.startswith(".") for name in names):
+        raise ValueError("Unsigned manifest has no valid packaged names")
+    return value
+
+
+def executables(packaged):
+    """(SwiftPM product, packaged executable) pairs."""
+    return [(packaged["products"]["cli"], packaged["cliName"]),
+            (packaged["products"]["enclave"], packaged["enclaveName"])]
 
 
 def sha256(path):
@@ -54,7 +82,7 @@ def write_json(path, value):
 def stage(arguments):
     root = arguments.output
     root.mkdir(parents=True, exist_ok=False)
-    names = identity(arguments.version)
+    names = packaging(for_source(arguments.source), arguments.version)
     app = root / names["appBundleName"]
     binaries = app / "Contents/MacOS"
     helpers = app / "Contents/Helpers"
@@ -87,7 +115,7 @@ def stage(arguments):
         ["git", "submodule", "status", "--recursive"], cwd=arguments.source, text=True).splitlines()
     write_json(root / "unsigned-files.json", {
         "schema": 1, "source_sha": source_sha, "version": arguments.version,
-        "submodules": submodules, "files": inventory(root),
+        "submodules": submodules, "packaging": names, "files": inventory(root),
     })
 
 
@@ -122,15 +150,14 @@ def unpack(arguments):
     actual.pop("unsigned-files.json")
     if actual != manifest["files"]:
         raise ValueError("Unsigned artifact inventory changed")
-    check_info(arguments.output, arguments.version)
+    check_info(arguments.output, arguments.version, recorded_packaging(manifest))
     tooling = Path(__file__).resolve().parent.parent
     for name in ["entitlements.plist", "entitlements-enclave.plist"]:
         if sha256(arguments.output / "validation-inputs" / name) != sha256(tooling / "provider-swift" / name):
             raise ValueError("Candidate signing entitlements differ from reviewed workflow tooling")
 
 
-def check_info(root, version):
-    names = identity(version)
+def check_info(root, version, names):
     path = root / names["appBundleName"] / "Contents/Info.plist"
     if not path.is_file():
         raise ValueError(f"Artifact has no {names['appBundleName']} for version {version}")
@@ -192,8 +219,8 @@ def receipt(arguments):
     if notarization.get("status") != "Accepted" or not notarization.get("id"):
         raise ValueError("Notarization did not produce an accepted ticket")
     unsigned = json.loads((root / "unsigned-files.json").read_text())
-    check_info(root, unsigned["version"])
-    names = identity(unsigned["version"])
+    names = recorded_packaging(unsigned)
+    check_info(root, unsigned["version"], names)
     app = root / names["appBundleName"]
     (root / "bin").mkdir()
     # The flat verifier copies keep the product names for both identities.

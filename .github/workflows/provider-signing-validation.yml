@@ -21,6 +21,13 @@ jobs:
     name: Build unsigned validation input
     runs-on: blacksmith-12vcpu-macos-27
     timeout-minutes: 60
+    # One set of names for build, stage and sign. The stage step records the
+    # same set in unsigned-files.json, and unpack checks the app against it.
+    outputs:
+      app_name: ${{ steps.identity.outputs.APP_NAME }}
+      cli_name: ${{ steps.identity.outputs.CLI_NAME }}
+      enclave_name: ${{ steps.identity.outputs.ENCLAVE_NAME }}
+      release_environment: ${{ steps.identity.outputs.DARKBLOOM_RELEASE_ENVIRONMENT }}
     steps:
       - name: Verify Xcode 27 toolchain
         run: |
@@ -55,14 +62,18 @@ jobs:
       - name: Validate packaging and workflow isolation guards
         run: python3 tooling/scripts/test-provider-signing-validation.py
       - name: Resolve packaged names and build environment
+        id: identity
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
-        # The candidate's own identity, so the products and the environment
-        # agree with the source that is built.
+        # The candidate's own identity file, so the products and the
+        # environment agree with the source that is built. A candidate from
+        # before that file existed uses this tooling's file.
         run: |
           set -euo pipefail
-          python3 candidate/scripts/provider_release_identity.py "$EXPECTED_VERSION" >> "$GITHUB_ENV"
-          echo "DARKBLOOM_RELEASE_ENVIRONMENT=$(python3 candidate/scripts/provider_release_identity.py --environment "$EXPECTED_VERSION")" >> "$GITHUB_ENV"
+          {
+            python3 tooling/scripts/provider_release_identity.py --source candidate "$EXPECTED_VERSION"
+            echo "DARKBLOOM_RELEASE_ENVIRONMENT=$(python3 tooling/scripts/provider_release_identity.py --environment --source candidate "$EXPECTED_VERSION")"
+          } | tee -a "$GITHUB_ENV" >> "$GITHUB_OUTPUT"
       - name: Install pinned CMake for Metal build
         run: bash tooling/scripts/install-release-cmake.sh
       - name: Build exact source and stage unsigned app
@@ -104,6 +115,10 @@ jobs:
     env:
       DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
       APPLE_TEAM_ID: SLDQ2GJ6TL
+      APP_NAME: ${{ needs.build.outputs.app_name }}
+      CLI_NAME: ${{ needs.build.outputs.cli_name }}
+      ENCLAVE_NAME: ${{ needs.build.outputs.enclave_name }}
+      DARKBLOOM_RELEASE_ENVIRONMENT: ${{ needs.build.outputs.release_environment }}
     steps:
       - name: Verify Xcode 27 signing toolchain
         run: |
@@ -121,10 +136,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12.10'
-      - name: Resolve packaged app names
-        env:
-          EXPECTED_VERSION: ${{ inputs.version }}
-        run: python3 tooling/scripts/provider_release_identity.py "$EXPECTED_VERSION" >> "$GITHUB_ENV"
       - name: Read this run's unsigned artifact
         env:
           GH_TOKEN: ${{ github.token }}

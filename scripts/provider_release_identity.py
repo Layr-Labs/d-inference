@@ -9,13 +9,15 @@ packages the app. The flat verifier copies keep the product names because the
 coordinator's release registration requires bin/darkbloom.
 
 Run with a version to print the packaged names as KEY=VALUE lines for $GITHUB_ENV,
-or with --environment and a version to print the build environment (prod or dev).
+or with --environment to print the build environment (prod or dev). --source
+reads the identity of another checkout.
 """
+import argparse
 import json
 from pathlib import Path
-import sys
 
-IDENTITY_FILE = Path(__file__).resolve().parent.parent / "provider-swift/identity/provider-identity.json"
+RELATIVE_IDENTITY_FILE = "provider-swift/identity/provider-identity.json"
+IDENTITY_FILE = Path(__file__).resolve().parent.parent / RELATIVE_IDENTITY_FILE
 
 
 def load(path=IDENTITY_FILE):
@@ -29,28 +31,43 @@ DOCUMENT = load()
 PRODUCTS = DOCUMENT["swiftProducts"]
 
 
-def environment(version):
-    return "dev" if DOCUMENT["releaseVersionMarker"] in version else "prod"
+def for_source(root):
+    """The identity of a source checkout: its own file, or this tooling's when
+    the checkout predates the identity file (those sources build only the
+    production names, which this tooling's file also gives)."""
+    path = Path(root) / RELATIVE_IDENTITY_FILE
+    return load(path) if path.is_file() else DOCUMENT
 
 
-def identity(version):
-    return DOCUMENT["environments"][environment(version)]
+def environment(version, document=DOCUMENT):
+    return "dev" if document["releaseVersionMarker"] in version else "prod"
 
 
-def github_env(version):
-    names = identity(version)
+def identity(version, document=DOCUMENT):
+    return document["environments"][environment(version, document)]
+
+
+def github_env(version, document=DOCUMENT):
+    names = identity(version, document)
+    products = document["swiftProducts"]
     return {"CLI_NAME": names["cliName"], "ENCLAVE_NAME": names["enclaveName"],
             "APP_NAME": names["appBundleName"], "APP_DISPLAY_NAME": names["appDisplayName"],
-            "PRODUCT_CLI_NAME": PRODUCTS["cli"], "PRODUCT_ENCLAVE_NAME": PRODUCTS["enclave"]}
+            "PRODUCT_CLI_NAME": products["cli"], "PRODUCT_ENCLAVE_NAME": products["enclave"]}
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "--environment":
-        print(environment(sys.argv[2]))
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--environment", action="store_true",
+                        help="print only the build environment (prod or dev)")
+    parser.add_argument("--source", type=Path,
+                        help="read the identity of this source checkout (see for_source)")
+    parser.add_argument("version")
+    arguments = parser.parse_args()
+    document = for_source(arguments.source) if arguments.source else DOCUMENT
+    if arguments.environment:
+        print(environment(arguments.version, document))
         return
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: provider_release_identity.py [--environment] <version>")
-    for key, value in github_env(sys.argv[1]).items():
+    for key, value in github_env(arguments.version, document).items():
         print(f"{key}={value}")
 
 

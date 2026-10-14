@@ -1047,7 +1047,8 @@ final class OnboardingLive: @unchecked Sendable {
         case .success(let value): lines = value
         case .failure(let failure): lines = failure.lines
         }
-        if forwarded, let own = ClusterService.published()?.control { lines.append("This Mac: " + own.line + ".") }
+        // This Mac's own state, when it adds something (a member that just follows already said where commands go).
+        if forwarded, let own = ClusterService.published()?.control, own.mode != "following" { lines.append("This Mac: " + own.line + ".") }
         return lines
     }
 
@@ -1079,8 +1080,9 @@ final class OnboardingLive: @unchecked Sendable {
             lines.append("\(model) is starting (both Macs keep trying by themselves).")
         }
         lines.append(here == "this Mac" ? "Member: \(peerName). This Mac leads." : "Members: \(here) (leads), \(peerName).")
-        if let control = ClusterService.published()?.control, control.leads {
-            lines.append("Commands typed here are handled by \(here).")
+        // On the leader's own screen only: a member that forwarded this already says where its commands go.
+        if let control = ClusterService.published()?.control, control.leads, here == "this Mac" {
+            lines.append("Commands typed here are handled by this Mac.")
         }
         return lines
     }

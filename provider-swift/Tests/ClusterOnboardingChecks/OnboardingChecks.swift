@@ -622,6 +622,7 @@ import Darwin
         let three = pipeline + [D.Share(name: "Apple M4 Pro, 48 GB", layers: 8)]
         expect(D.line(model: "m", mode: "pipeline_v1", shares: three).hasPrefix("Serving m across 3 Macs: pipeline, "), "three Macs")
         expect(D.modeWords("something_new_v2") == "split across the Macs", "an unknown mode is never shown raw")
+        expect(D.modeWords("phase_split_mtp_v1") == "prompt split, then one Mac decodes", "phase split in words, never claimed as an opt-in")
         expect(D.choiceLine(size: "6.1 GB", mode: "pipeline_v1", shares: pipeline, speed: "about 90 tokens/s")
             == "6.1 GB · pipeline · M3 Ultra 40 layers / M5 Ultra 24 layers · about 90 tokens/s", "choice line: one line, no ranks")
     }

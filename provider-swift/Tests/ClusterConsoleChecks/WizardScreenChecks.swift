@@ -234,15 +234,9 @@ extension ClusterConsoleCheck {
         // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
         for reading in F.readings {
             let option = options.first { $0.model.folder == reading.model.folder }
-            // A model whose pair-serving grant lists none of this pair's placements is not offered, and says
-            // why: MiMo's records ran with the M5 Ultra leading and the M3 Ultra decoding, and this pair is an
-            // M3 Ultra leading an M5 Max (its grant, from its records, not a table).
-            if reading.model.modelID == "mimo-v2.6-flash-mopd" {
-                // In plain words, action or fact first, with no command (one-command fix A2/B4).
-                expect(option?.plan == nil && option?.blocker == ClusterSetupPlanning.notQualified,
-                    "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
-                continue
-            }
+            // Chips do not gate the offer (owner, 2026-10-14 08:25): MiMo's records ran with the M5 Ultra leading and
+            // the M3 Ultra decoding, and a passing record on any chips grants its mode family on any detected Apple
+            // silicon, so this M3 Ultra leading an M5 Max is offered MiMo like every other model (checked below).
             // A model its records withhold (GPT-OSS: its pipeline checks diverged at cuts 4, 8 and 10) is planned
             // only at a shape a check passed in, and a start refuses it: the onboarding does not offer it, and says why
             // (the start's refusal at the planned shape, or the grant's plain refusal when no shape is granted at all).

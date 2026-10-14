@@ -52,6 +52,7 @@ describe('stage text', () => {
     expect(text.summary).toBe(
       'Apple M3 Ultra: decode, generating tokens. 5 in progress, 1 waiting, about 410 tokens per second.',
     );
+    expect(text.announcement).toBe('Apple M3 Ultra: decode, generating tokens.');
   });
 
   it('prints live snapshot numbers only while they are current', () => {

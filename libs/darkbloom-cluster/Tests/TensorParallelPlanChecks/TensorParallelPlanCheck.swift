@@ -323,6 +323,42 @@ func checkWeightedShares(c27: [String: Any], c9: [String: Any], quantization: [S
     print("weighted shares: 12 plans covered, apportionment and refusals checked")
 }
 
+/// The sealed all-sum's codec: a frame opens only on the peer, at its own
+/// counter, under its own scope; one flipped byte is refused, and a refused
+/// codec seals and opens nothing more.
+func checkSealCodec() {
+    let scope = Data("scope-a".utf8)
+    let (r0, r1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    var partial = (0..<5120).map { Float($0) * 0.25 - 7 }
+    let bytes = partial.count * 4
+    var frame = [UInt8](repeating: 0, count: bytes + QwenTensorParallelSealCodec.tagBytes)
+    var opened = [Float](repeating: 0, count: partial.count)
+    let sealed = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in r0.seal(p.baseAddress!, bytes, f.baseAddress!, 41) } }
+    check(sealed == 0, "codec: rank 0 seals")
+    check(frame.withUnsafeBytes { f in partial.withUnsafeBytes { p in !f.starts(with: p) } }, "codec: the frame is not the plaintext")
+    func open(_ codec: QwenTensorParallelSealCodec, _ counter: UInt64, _ peer: Int, _ f: [UInt8]) -> Int32 {
+        f.withUnsafeBytes { fb in opened.withUnsafeMutableBytes { o in codec.open(fb.baseAddress!, bytes, o.baseAddress!, counter, peer) } }
+    }
+    check(open(r1, 41, 0, frame) == 0 && opened == partial, "codec: rank 1 opens rank 0's frame at its counter, byte for byte")
+    let (s0, s1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in s0.seal(p.baseAddress!, bytes, f.baseAddress!, 7) } }
+    check(open(s1, 8, 0, frame) != 0, "codec: another counter is refused")
+    check(s1.refused && open(s1, 7, 0, frame) != 0, "codec: a refused codec opens nothing more, even a good frame")
+    let (t0, t1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in t0.seal(p.baseAddress!, bytes, f.baseAddress!, 9) } }
+    var flipped = frame; flipped[bytes / 2] ^= 1
+    check(open(t1, 9, 0, flipped) != 0, "codec: one flipped ciphertext byte is refused")
+    let (u0, u1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in u0.seal(p.baseAddress!, bytes, f.baseAddress!, 3) } }
+    check(open(u1, 3, 1, frame) != 0, "codec: a frame claimed from the wrong peer is refused")
+    let (v0, _) = QwenTensorParallelSealCodec.pair(scope: scope)
+    let (_, w1) = QwenTensorParallelSealCodec.pair(scope: Data("scope-b".utf8))
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in v0.seal(p.baseAddress!, bytes, f.baseAddress!, 5) } }
+    check(open(w1, 5, 0, frame) != 0, "codec: another run's keys and scope are refused")
+    partial[0] = 1
+    print("seal codec: round trip, counter, tamper, direction, scope and refusal checked")
+}
+
 /// Every launch option that changes the collectives must change the first
 /// agreement, or two ranks launched differently meet in mismatched all-sums.
 func checkLaunchAgreement() {
@@ -417,6 +453,7 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
 
         checkWeightedShares(c27: c27, c9: c9, quantization: quantization)
         checkLaunchAgreement()
+        checkSealCodec()
 
         for path in CommandLine.arguments.dropFirst() {
             let directory = URL(fileURLWithPath: path)

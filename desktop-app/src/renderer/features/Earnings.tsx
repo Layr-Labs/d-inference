@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 import type { BackendState } from '../useBackend';
 import { api } from '../useBackend';
@@ -15,6 +15,15 @@ export function Earnings({ backend }: { backend: BackendState }) {
   const [window, setWindow] = useState<'7d' | '30d'>('7d');
   const [metric, setMetric] = useState<InsightMetric>('earnings');
   const [copied, setCopied] = useState(false);
+  const copyTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(copyTimeout.current);
+    };
+  }, []);
   const { data, error, refresh } = useInsights(backend.state!, window);
   const copy = async () => {
     if (!data) return;
@@ -35,8 +44,13 @@ export function Earnings({ backend }: { backend: BackendState }) {
     ];
     try {
       await api?.copy(rows.join('\n'));
+      if (!mounted.current) return;
+      clearTimeout(copyTimeout.current);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      copyTimeout.current = setTimeout(() => {
+        copyTimeout.current = undefined;
+        setCopied(false);
+      }, 1600);
     } catch {
       backend.setError('Could not copy earnings history.');
     }

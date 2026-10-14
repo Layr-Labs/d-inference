@@ -34,7 +34,7 @@ extension QwenTensorParallelSealCodec {
             guard let context, let frame, let plaintext else { return 1 }
             let codec = Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).takeUnretainedValue()
             return codec.open(frame, bytes, plaintext, counter, Int(peer))
-        }, context, Self.tagBytes)
+        }, context, Self.frameOverhead)
         guard status == 0 else {
             Unmanaged<QwenTensorParallelSealCodec>.fromOpaque(context).release()
             throw ProbeError("Sealed all-sum: the codec could not be installed")

@@ -331,7 +331,7 @@ func checkSealCodec() {
     let (r0, r1) = QwenTensorParallelSealCodec.pair(scope: scope)
     var partial = (0..<5120).map { Float($0) * 0.25 - 7 }
     let bytes = partial.count * 4
-    var frame = [UInt8](repeating: 0, count: bytes + QwenTensorParallelSealCodec.tagBytes)
+    var frame = [UInt8](repeating: 0, count: bytes + QwenTensorParallelSealCodec.frameOverhead)
     var opened = [Float](repeating: 0, count: partial.count)
     let sealed = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in r0.seal(p.baseAddress!, bytes, f.baseAddress!, 41) } }
     check(sealed == 0, "codec: rank 0 seals")
@@ -355,8 +355,29 @@ func checkSealCodec() {
     let (_, w1) = QwenTensorParallelSealCodec.pair(scope: Data("scope-b".utf8))
     _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in v0.seal(p.baseAddress!, bytes, f.baseAddress!, 5) } }
     check(open(w1, 5, 0, frame) != 0, "codec: another run's keys and scope are refused")
+    // A prefill-sized partial (512 x 5,120 float32 = 10.5 MB) is sealed in 40 pieces, in parallel.
+    let big = (0..<(512 * 5120)).map { Float($0 % 977) * 0.5 - 100 }
+    let bigBytes = big.count * 4
+    check(QwenTensorParallelSealCodec.chunks(bigBytes) == 40 && QwenTensorParallelSealCodec.chunks(bytes) == 1, "codec: piece counts")
+    var bigFrame = [UInt8](repeating: 0, count: bigBytes + QwenTensorParallelSealCodec.frameOverhead)
+    var bigOpened = [Float](repeating: 0, count: big.count)
+    let (p0, p1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    let bigSealed = big.withUnsafeBytes { p in bigFrame.withUnsafeMutableBytes { f in p0.seal(p.baseAddress!, bigBytes, f.baseAddress!, 11) } }
+    let o1 = bigFrame.withUnsafeBytes { f in bigOpened.withUnsafeMutableBytes { o in p1.open(f.baseAddress!, bigBytes, o.baseAddress!, 11, 0) } }
+    check(bigSealed == 0 && o1 == 0 && bigOpened == big, "codec: a 10.5 MB partial round-trips through 40 parallel pieces")
+    let (q0, q1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = big.withUnsafeBytes { p in bigFrame.withUnsafeMutableBytes { f in q0.seal(p.baseAddress!, bigBytes, f.baseAddress!, 12) } }
+    var swapped = bigFrame
+    let tags = bigBytes
+    for i in 0..<16 { swapped.swapAt(tags + i, tags + 16 + i) }
+    let refusedSwap = swapped.withUnsafeBytes { f in bigOpened.withUnsafeMutableBytes { o in q1.open(f.baseAddress!, bigBytes, o.baseAddress!, 12, 0) } }
+    check(refusedSwap != 0, "codec: two pieces' tags swapped are refused (each piece's nonce and data name its index)")
+    let (z0, z1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in z0.seal(p.baseAddress!, bytes, f.baseAddress!, 13) } }
+    var padded = frame; padded[bytes + QwenTensorParallelSealCodec.frameOverhead - 1] = 1
+    check(open(z1, 13, 0, padded) != 0, "codec: a non-zero padding byte is refused")
     partial[0] = 1
-    print("seal codec: round trip, counter, tamper, direction, scope and refusal checked")
+    print("seal codec: round trip, counter, tamper, direction, scope, pieces, padding and refusal checked")
 }
 
 /// Every launch option that changes the collectives must change the first

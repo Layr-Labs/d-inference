@@ -38,6 +38,8 @@ import Darwin
         wokenMacGivesMembersATimeToLiveBeforeSolo()
         leaderIntentSurvivesTheHandOver()
         soloStartsWithoutTheEndedPartsBackoff()
+        // F14 (round 6b, 2026-10-14): failing first on 33da00709.
+        soloAdmissionChecksTheRuntimeRequirements()
         print("control checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -740,5 +742,55 @@ import Darwin
         expect(P.mayStart(key: "cluster:abc", endedKey: "cluster:abc", backoffElapsed: true), "backoff elapsed")
         expect(!P.mayStart(key: "solo:m", endedKey: "solo:m", backoffElapsed: false), "a crashing solo server backs off too")
         expect(P.mayStart(key: "cluster:abc", endedKey: nil, backoffElapsed: false), "nothing ended: at once")
+    }
+    /// F14 (round 6b): a survivor that single-Mac Darkbloom would refuse for the model (the M3 Ultra for a model that needs
+    /// an Apple M5 chip) never starts a solo server that ends at once and restarts every 30 s while the status says it
+    /// serves alone: it says plainly that it cannot serve the model alone and waits for the other Mac. Synthetic
+    /// capability names and Macs; no chip or model table.
+    static func soloAdmissionChecksTheRuntimeRequirements() {
+        typealias S = ClusterControlSoloAdmission
+        expect(S.missingHardware(required: ["apple_m5", "mlx_nax"], hardwareSettled: ["apple_m5"], hardware: []) == ["apple_m5"],
+               "the hardware settles the chip: refused before any start")
+        expect(S.missingHardware(required: ["apple_m5", "mlx_nax"], hardwareSettled: ["apple_m5"], hardware: ["apple_m5"]).isEmpty,
+               "a capability only the runtime's own probe settles is left to the solo server")
+        expect(S.missingHardware(required: [], hardwareSettled: ["apple_m5"], hardware: []).isEmpty, "no requirement")
+        let refused = S.decide(planned: true, missingHardware: ["apple_m5"], quickEnds: 0)
+        expect(refused.holds == false && refused.refusal?.contains("an Apple M5 chip") == true,
+               "the planner said it fits, single-Mac Darkbloom refuses it here: \(refused)")
+        expect(S.decide(planned: true, missingHardware: [], quickEnds: 0) == .init(holds: true, refusal: nil), "fits and eligible")
+        expect(S.decide(planned: nil, missingHardware: [], quickEnds: 0).holds == nil, "no verdict for the saved plan: unknown, never alone")
+        expect(S.decide(planned: false, missingHardware: [], quickEnds: 0) == .init(holds: false, refusal: nil), "memory: the planner's verdict")
+        let ended = S.decide(planned: true, missingHardware: [], quickEnds: S.maximumQuickEnds)
+        expect(ended.holds == false && ended.refusal?.contains("ended") == true, "a solo server that keeps ending right after its start: \(ended)")
+        expect(S.decide(planned: true, missingHardware: [], quickEnds: S.maximumQuickEnds - 1).holds == true, "below the limit: tried again")
+        expect(S.quickEnds(after: 2, ranSeconds: 1) == 3 && S.quickEnds(after: 2, ranSeconds: S.quickEndSeconds) == 0,
+               "an end soon after the start counts, a solo server that served a while clears the count")
+        // In the node: rank 0 (A) survives, B's service stops; A cannot serve alone by its own check.
+        var bus = pair(aloneA: true, aloneB: true, grace: 60)
+        var own = bus.nodes[A]!.members[A]!
+        own.holdsModelAlone = refused.holds; own.aloneRefusal = refused.refusal
+        bus.nodes[A]!.learn(own)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        bus.up.remove(B)
+        for t in stride(from: 21.0, through: 200, by: 1) { bus.step(t) }
+        let names = [B: "Apple M5 Ultra, 256 GB"]
+        guard case .cannotServe(let missing, let reason) = bus.nodes[A]!.mode(now: 200) else {
+            return expect(false, "after the grace: it cannot serve alone, never alone: \(bus.nodes[A]!.mode(now: 200))")
+        }
+        expect(missing == [B] && reason.contains("an Apple M5 chip"), "the reason is the refusal: \(reason)")
+        let line = ClusterControlWords.line(bus.nodes[A]!.mode(now: 200), names: names, model: "m", aloneRefusal: own.aloneRefusal)
+        expect(line.contains("cannot serve m alone") && line.contains("waits for Apple M5 Ultra, 256 GB") && !line.contains("degraded: serving"),
+               "plain words, no claim of serving: \(line)")
+        expect(ClusterControlPartChoice.want(mode: bus.nodes[A]!.mode(now: 200), serving: true, hasSetup: true, leaderRunsCluster: false,
+                                             runningSolo: false, model: "m") == .none, "no solo server starts")
+        let waiting = ClusterControlWords.line(.waiting(missing: [B], soloInSeconds: 45, canServeAlone: false), names: names, model: "m",
+                                               aloneRefusal: own.aloneRefusal)
+        expect(waiting.contains("cannot serve m alone") && waiting.contains("an Apple M5 chip") && waiting.contains("45 s"), "inside the grace: \(waiting)")
+        // The fact travels in the lease answer, so the other Mac never prefers it as the Mac that holds the model alone.
+        let data = try? JSONEncoder().encode(own)
+        let back = data.flatMap { try? JSONDecoder().decode(ClusterControlMember.self, from: $0) }
+        expect(back == own, "the refusal survives the wire")
+        let older = try? JSONDecoder().decode(ClusterControlMember.self, from: Data(#"{"memberID":"mac-1","name":"x","memoryBytes":1,"gpuCores":1}"#.utf8))
+        expect(older?.aloneRefusal == nil, "a fact from an older build decodes")
     }
 }

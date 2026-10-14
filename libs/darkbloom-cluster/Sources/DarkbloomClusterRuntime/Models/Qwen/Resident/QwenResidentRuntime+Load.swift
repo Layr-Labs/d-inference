@@ -149,15 +149,21 @@ extension QwenResidentRuntime {
             guard !batch.batching || mode == .pipeline else {
                 throw ProbeError("Batch lanes serve the pipeline mode only; \(mode.rawValue) keeps one request at a time")
             }
+            // Every load over the cable measures the link as the sharded modes use it (`QwenTensorParallelLinkProbe`,
+            // the sealed all-sum on a keyed plane), so the planner can choose tensor parallel for this pair next.
+            let probesLink = transport != .localSocketTest
             let agreementFields = mode.loadAgreementFields + speculativeFields + transport.loadAgreementFields
                 + (credential == nil ? [] : ClusterDataPlaneAgreement.loadAgreementFields)
                 + kvKind.loadAgreementFields + batch.loadAgreementFields
+                + (probesLink ? [QwenTensorParallelLinkProbe.loadAgreementField] : [])
             if !agreementFields.isEmpty { common = sha256(try canonicalJSONData([common] + agreementFields)) }
             let loadAgreement = common
             if let credential {
                 try ClusterDataPlaneAgreement.establish(collective: collective, credential: credential,
-                    loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, check: { try control.check() })
+                    loadAgreement: loadAgreement, tamper: tamper, rekey: rekey, tensorParallelSeal: probesLink,
+                    check: { try control.check() })
             }
+            var linkProbe: ClusterWorkerLinkProbe?
             // The context the gate admitted at load and the allocator's active
             // bytes with the model resident: the serving context's first value
             // and its idle baseline (`refreshServingContext`).
@@ -170,6 +176,13 @@ extension QwenResidentRuntime {
                     _ = try requireQwenLongPrefillReadinessDigest(collective: collective,
                         material: { .residentLoadIntent(agreementFingerprint: loadAgreement) },
                         disagreementMessage: "Resident load membership/source/Plan/mode differs", scope: .session(.loadAgreement, "resident-load-intent"), check: checked)
+                    if probesLink {
+                        // The link, before any weight is read: both ranks agreed above that they measure it.
+                        linkProbe = try QwenTensorParallelLinkProbe.measure(onPipeline: collective, keyed: credential != nil,
+                            loadAgreement: loadAgreement, hiddenSize: admission.profile.hiddenSize,
+                            chunkTokens: admission.profile.maximumChunkTokens, check: checked)
+                        if let linkProbe { log(QwenTensorParallelLinkProbe.line(linkProbe, rank: collective.rank)) }
+                    }
                     let beforeLoad = Memory.snapshot()
                     // The decoding rank of a phase split loads both stages of one
                     // artifact: it is verified once for both (finding R1).
@@ -356,7 +369,7 @@ extension QwenResidentRuntime {
                 generationMode: mode, producerStage: producerStage, speculativeHead: speculativeHead,
                 speculativeTerms: speculativeTerms, qualificationFault: fault, prefixCache: prefixCache,
                 servingContextTokens: servingContext, activeLoadedBytes: activeLoaded, prefixBudgetBytes: prefixBudget,
-                batch: batch)
+                batch: batch, linkProbe: linkProbe)
         } catch {
             let primary = error; control.fail(); speculativeHead = nil
             CBv2StageKVHost.uninstall(from: stage?.loaded); CBv2StageKVHost.uninstall(from: producerStage?.loaded)

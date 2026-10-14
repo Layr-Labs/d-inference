@@ -61,6 +61,25 @@ enum QwenTensorParallelLinkProbe {
             allSumLargeBytes: largeElements * 4, allSumLargeMicroseconds: max(1, largeSum))
     }
 
+    /// Bound in a pipeline load's agreement: both ranks measure the link before reading a weight.
+    static let loadAgreementField = "darkbloom-link-probe-v1"
+
+    /// The same probe on a pipeline (or any non-tensor-parallel) load's JACCL
+    /// collective: a reduction group borrowed for the probe only and, on a
+    /// keyed data plane, sealed with the tensor-parallel keys the pinned
+    /// exchange derived for this load (`tensorParallelSeal`), so no byte
+    /// crosses in the clear and the figure is the one tensor parallel would pay.
+    static func measure(onPipeline collective: Collective, keyed: Bool, loadAgreement: String, hiddenSize: Int, chunkTokens: Int,
+                        check: () throws -> Void) throws -> ClusterWorkerLinkProbe {
+        let group = try QwenTensorParallelGroup(collective: collective)
+        if keyed {
+            let codec = try QwenTensorParallelSealCodec.product(collective: collective, scope: Data(loadAgreement.utf8))
+            try codec.install()
+            group.sealed = codec
+        }
+        return try measure(collective: collective, group: group, hiddenSize: hiddenSize, chunkTokens: chunkTokens, check: check)
+    }
+
     static func line(_ p: ClusterWorkerLinkProbe, rank: Int) -> String {
         "darkbloom-link-probe-v1 rank=\(rank) transport=\(p.transport) keyed=\(p.keyed ? 1 : 0)"
             + " p2p_small_bytes=\(p.pointToPointSmallBytes) p2p_small_us=\(p.pointToPointSmallMicroseconds)"

@@ -23,11 +23,18 @@ func checkAutoChoice(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Placem
     try checkRequestMix(layout, checks)
 }
 
-/// The product's sealed all-sum as the link probe measured it on the
-/// Thunderbolt 5 pair (73-101 us at a decode step's 20 KB; about 4 ms at a
-/// 512-token chunk), and its records.
+/// The link as the product's tensor-parallel load measured it on the
+/// Thunderbolt 5 pair (tp-engine q4, rank 0, 2026-10-14): records 171 us at
+/// 64 B and 2,495 us at 4 MiB, the sealed all-sum 73 us at 20 KB and 9,550 us
+/// at 10 MiB (a 512-token chunk of the 27B).
+func measuredProbe() -> ClusterWorkerLinkProbe {
+    ClusterWorkerLinkProbe(transport: "jaccl", keyed: true, pointToPointSmallBytes: 64, pointToPointSmallMicroseconds: 171,
+        pointToPointLargeBytes: 4 << 20, pointToPointLargeMicroseconds: 2_495, allSumSmallBytes: 20_480,
+        allSumSmallMicroseconds: 73, allSumLargeBytes: 10_485_760, allSumLargeMicroseconds: 9_550)
+}
+
 private func productProbe() -> ClusterLinkCosts {
-    ClusterLinkCosts(probe: rdmaProbe(allSumSmallMicroseconds: 85, allSumLargeMicroseconds: 4_000), measuredUTC: "2026-10-14T18:00:00Z")!
+    ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "2026-10-14T18:00:00Z")!
 }
 
 private func indexed(_ mac: SyntheticMac, chip: String, decodeIndex: Double, prefillIndex: Double) throws -> ClusterDeviceProfile {
@@ -109,11 +116,14 @@ private func checkNewPairs(_ layout: ClusterModelLayout, _ checks: PlacementChec
             result.chosen?.mode == .tensorParallel && tp?.verdict == .chosen
                 && tp?.devices.allSatisfy({ $0.split.fromHardware == true }) == true)
         let why = ClusterPlacementExplanation.deploymentReason(result)
+        // Evidence for the status file: the line the setup screen would show (stderr, not a check).
+        FileHandle.standardError.write(Data("auto-choice \(name) 128+128: \(why ?? "-")\n".utf8))
         checks.require("auto choice \(name): the setup screen says why in one line (tensor parallel, against a pipeline, for this request)",
             why.map { $0.hasPrefix("Tensor parallel") && $0.contains("pipeline") && !$0.contains("\n") && $0.count <= 240 } == true)
         // Prompt-heavy: whatever is chosen is the faster prediction of the two modes.
         let heavy = try ClusterPlacementPlanner.plan(devices: devices, layout: layout,
             policy: policy(prompt: layout.maximumPromptTokens, outputs: min(128, layout.maximumOutputTokens)), link: link)
+        FileHandle.standardError.write(Data("auto-choice \(name) \(layout.maximumPromptTokens)+128: \(ClusterPlacementExplanation.deploymentReason(heavy) ?? "-")\n".utf8))
         let other = heavy.tensorParallel?.bestOtherSeconds ?? .infinity
         let tpSeconds = heavy.tensorParallel?.tensorParallel?.prediction(.rested).requestSeconds ?? .infinity
         checks.require("auto choice \(name), prompt-heavy (\(layout.maximumPromptTokens) + 128): the mode predicted faster (by the margin for tensor parallel) is chosen",
@@ -143,12 +153,12 @@ private func checkRecordedPairWithoutProbes(_ layout: ClusterModelLayout, golden
     }
     let devices = [ClusterPlacementDevice(label: "mac-a", profile: a, speed: measured(322, 26.14)),
                    ClusterPlacementDevice(label: "mac-b", profile: b, speed: measured(1_601, 17.99))]
-    let link = ClusterLinkCosts(probe: rdmaProbe(allSumSmallMicroseconds: 85, allSumLargeMicroseconds: 4_000), measuredUTC: "t",
-        servedPipelineStepSeconds: 0.008)!
+    let link = ClusterLinkCosts(probe: measuredProbe(), measuredUTC: "t", servedPipelineStepSeconds: 0.008)!
     let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout,
         policy: policy(prompt: min(1024, layout.maximumPromptTokens), outputs: min(128, layout.maximumOutputTokens)), link: link)
     checks.require("auto choice M3 Ultra + M5 Ultra, measured whole-model rates and indices, no shard probe, 1K + 128: a pipeline (as measured)",
         pipelined(result.chosen) && result.tensorParallel?.devices.allSatisfy({ $0.split.fromHardware == true }) == true)
+    FileHandle.standardError.write(Data("auto-choice M3 Ultra + M5 Ultra 1024+128: \(ClusterPlacementExplanation.deploymentReason(result) ?? "-")\n".utf8))
     checks.require("auto choice M3 Ultra + M5 Ultra: the line says a pipeline and why (tensor parallel predicted slower for this request)",
         ClusterPlacementExplanation.deploymentReason(result).map { $0.hasPrefix("Pipeline") && $0.contains("tensor parallel") } == true)
 }

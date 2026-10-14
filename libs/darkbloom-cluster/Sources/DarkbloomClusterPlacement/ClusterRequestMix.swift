@@ -29,7 +29,7 @@ extension ClusterPlacementExplanation {
     public static func deploymentReason(_ result: ClusterPlacementResult) -> String? {
         guard let chosen = result.chosen else { return nil }
         let regime = result.regime
-        let request = "a \(result.promptTokens)-token prompt and \(result.outputTokens)-token answer"
+        let request = "requests of \(result.promptTokens) prompt and \(result.outputTokens) answer tokens"
         let mine = chosen.prediction(regime)
         func against(_ a: ClusterPlacementPrediction, _ b: ClusterPlacementPrediction) -> String {
             "decode \(rate(a.decodeTokensPerSecond)) vs \(rate(b.decodeTokensPerSecond)) tok/s, first token "
@@ -37,8 +37,11 @@ extension ClusterPlacementExplanation {
         }
         let assessment = result.tensorParallel
         if chosen.mode.usesTensorParallelDecode {
-            if let other = result.alternatives.first(where: { !$0.mode.usesTensorParallelDecode }) {
-                let theirs = other.prediction(regime)
+            // The best placement in another mode: among the alternatives, else the shard table's best pipeline.
+            let pipelines = (result.shards?.options ?? []).filter { $0.kind == .pipeline || $0.kind == .pipelineCompactDecode }
+                .compactMap(\.prediction).filter { $0.regime == regime }
+            if let theirs = result.alternatives.first(where: { !$0.mode.usesTensorParallelDecode })?.prediction(regime)
+                ?? pipelines.min(by: { $0.requestSeconds < $1.requestSeconds }) {
                 let gain = max(0, (theirs.requestSeconds / mine.requestSeconds - 1) * 100)
                 return "Tensor parallel: predicted \(Int(gain.rounded()))% faster than a pipeline for \(request) (\(against(mine, theirs)))."
             }

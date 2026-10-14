@@ -90,7 +90,8 @@
 }
 .field input {
   width: 100%;
-  accent-color: var(--blue);
+  /* The theme-aware accent keeps Chromium's unfilled track dark in dark theme. */
+  accent-color: var(--accent-brand);
   cursor: pointer;
 }
 .field select {

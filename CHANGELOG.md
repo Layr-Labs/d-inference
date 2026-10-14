@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop light and dark theme contrast
+
+- Make light- and dark-theme text and controls readable: selected schedule days and text selection (dark text on blue in light theme), the Home fan status (dark blue on dark in dark theme), the fan heat warning in light theme, progress bars, the fan-speed slider track, and off switches in light theme. Show a focus ring on the Macs search field and complete (unclipped) rings on My Macs tabs and Home's Mac rows, and follow macOS appearance changes on onboarding and the startup screen too.
+- Keep enabled switches blue in both themes and preserve the active appearance choice across macOS changes and screen navigation when preference storage is unavailable.
 ## Unreleased — desktop manual model selection
 
 - In manual model selection, drop a chosen model from the selection when it is removed, instead of leaving it checked, disabled and submitted with Apply selection. Do not draw unreported memory use as an empty bar, and explain an empty Downloaded or Serving filter instead of saying the model catalog failed to load. Don't offer to download a model this Mac can't run.

@@ -7,10 +7,6 @@ export function Appearance() {
     try {
       localStorage.setItem('darkbloom.appearance', theme);
     } catch {}
-    const query = window.matchMedia?.('(prefers-color-scheme: dark)');
-    const change = () => applyTheme(theme);
-    query?.addEventListener('change', change);
-    return () => query?.removeEventListener('change', change);
   }, [theme]);
   return (
     <select

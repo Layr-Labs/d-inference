@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { Fan } from 'lucide-react';
 import type { CoolingData } from '../../../../shared/contracts';
 import styles from './fanStatus.module.css';
@@ -23,7 +24,8 @@ export function FanStatus({ cooling, onOpen }: { cooling?: CoolingData; onOpen: 
     <button
       className={styles.status}
       data-enabled={!!enabled}
-      style={heat > 0 ? { color: `hsl(${45 * (1 - heat)} 80% 58%)` } : undefined}
+      data-heat={heat > 0 || undefined}
+      style={heat > 0 ? ({ '--heat-hue': 45 * (1 - heat) } as CSSProperties) : undefined}
       onClick={onOpen}
       title="Open Cooling"
       aria-label={`${label}${temperature != null ? ` · ${Math.round(temperature)}°C` : ''}. Open Cooling`}

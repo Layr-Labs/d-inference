@@ -162,12 +162,15 @@
   display: flex;
   gap: 24px;
   border-bottom: 1px solid var(--line);
-  margin: 22px 0 26px;
+  margin: 18px 0 26px;
   overflow-x: auto;
 }
+/* The strip scrolls, which clips an outside focus ring, so the ring is drawn inside a padded
+   button; the negative margin keeps the labels where they were. */
 .tabs button {
   font-size: 12px;
-  padding: 0 0 12px;
+  padding: 4px 4px 12px;
+  margin: 0 -4px;
   color: var(--muted);
   border-bottom: 2px solid transparent;
   transition:
@@ -180,6 +183,9 @@
 }
 .tabs button:hover {
   color: var(--text-primary);
+}
+.tabs button:focus-visible {
+  outline-offset: -2px;
 }
 .panel {
   min-width: 0;

@@ -13,11 +13,19 @@
     background var(--hover-duration);
 }
 .status[data-enabled='true'] {
-  color: var(--blue);
+  color: var(--accent-brand);
 }
 .status:hover {
   background: var(--raised-bg);
 }
 .status span {
   font-variant-numeric: tabular-nums;
+}
+
+/* Warms from amber to red above 60 °C; darker in light theme so it stays readable. */
+.status[data-heat] {
+  color: hsl(var(--heat-hue) 80% 58%);
+}
+:global(:root[data-theme='light']) .status[data-heat] {
+  color: hsl(var(--heat-hue) 80% 36%);
 }

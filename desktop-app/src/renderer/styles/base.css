@@ -72,7 +72,7 @@ select:focus-visible {
 
 ::selection {
   background: var(--blue);
-  color: var(--text-primary);
+  color: #fff;
 }
 
 h1,

@@ -302,7 +302,8 @@ label:hover > .switch:not(:disabled) {
 
 .schedule-days input:checked + span {
   background: var(--blue);
-  color: var(--text-primary);
+  /* --blue is the same in both themes, so its text stays white (like .button.primary). */
+  color: #fff;
   border-color: var(--blue);
 }
 

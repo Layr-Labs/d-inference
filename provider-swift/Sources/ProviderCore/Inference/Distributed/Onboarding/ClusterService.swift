@@ -190,17 +190,24 @@ public final class ClusterService: @unchecked Sendable {
         Thread.detachNewThread { [weak self] in
             defer { controlDone.signal() }
             while let self, !self.lock.withLock({ self.stopping }) {
-                self.ensureControlResponder(say: say)
-                self.controlTick(say: say)
+                // Each tick in its own autorelease pool: these loops never return to a run loop, so the Foundation
+                // objects a tick autoreleases (file and URL lookups, status data) were only freed when the service
+                // ended: the service grew about 15 MB a minute (F18).
+                autoreleasepool {
+                    self.ensureControlResponder(say: say)
+                    self.controlTick(say: say)
+                }
                 usleep(500_000)
             }
         }
         while !stopped {
-            ensureResponder(say: say)
-            supervise(say: say)
-            syncMembers(say: say)
-            checkForUpdate(say: say)
-            publish()
+            autoreleasepool {
+                ensureResponder(say: say)
+                supervise(say: say)
+                syncMembers(say: say)
+                checkForUpdate(say: say)
+                publish()
+            }
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
         }
         lock.withLock { stopping = true }

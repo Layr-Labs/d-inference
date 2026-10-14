@@ -13,17 +13,23 @@ export function startingModel(snapshot: Snapshot): NativeModel | undefined {
   );
 }
 
-// Pinned models stay loaded together, so their memory is totalled against the Mac's. Memory is
-// known only for models the runtime has measured; an unmeasured pin can't be counted.
+// Pinned models stay loaded together, so their memory is totalled against the Mac's, and the
+// runtime keeps at most `max_model_slots` models loaded. Memory is known only for models the
+// runtime has measured; an unmeasured pin can't be counted. `limit` says which one is exceeded.
 export function pinnedMemory(snapshot: Snapshot, pinned: string[]) {
   const chosen = snapshot.models.filter((model) => pinned.includes(model.id));
   const needed = chosen.reduce((total, model) => total + (model.memory_gb ?? model.size_gb), 0);
+  const slots = snapshot.memory.max_model_slots;
+  const limit =
+    needed > (snapshot.memory.pin_budget_gb ?? snapshot.memory.total_gb)
+      ? ('memory' as const)
+      : slots !== undefined && chosen.length > slots
+        ? ('slots' as const)
+        : undefined;
   return {
     needed,
     measured: chosen.every((model) => model.memory_gb != null),
-    exceeds:
-      needed > (snapshot.memory.pin_budget_gb ?? snapshot.memory.total_gb) ||
-      (snapshot.memory.max_model_slots !== undefined &&
-        chosen.length > snapshot.memory.max_model_slots),
+    exceeds: !!limit,
+    limit,
   };
 }

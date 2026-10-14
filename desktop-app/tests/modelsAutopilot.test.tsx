@@ -131,8 +131,27 @@ describe('Autopilot on', () => {
     renderModels(poolSnapshot({}, { memory: { total_gb: 32, free_for_load_gb: 4 } }));
     const pin = screen.getByRole('button', { name: 'Keep GPT-OSS 20B in memory' });
     expect(pin).toBeDisabled();
-    expect(pin).toHaveAttribute('title', 'Pinning this needs more memory than this Mac has.');
+    expect(pin).toHaveAttribute(
+      'title',
+      'Keeping this in memory needs more memory than this Mac has.',
+    );
     expect(screen.getByRole('button', { name: 'Keep Qwen 3.5 9B in memory' })).toBeEnabled();
+  });
+
+  it('says when every model slot is in use rather than blaming memory', () => {
+    // 16.4 + 21.4 + 7.2 = 45 of 64 GB fits, but only two models may stay loaded.
+    renderModels(
+      poolSnapshot(
+        { pinned: ['gpt-oss-20b', 'gemma-4-26b'] },
+        { memory: { total_gb: 64, max_model_slots: 2 } },
+      ),
+    );
+    const pin = screen.getByRole('button', { name: 'Keep Qwen 3.5 9B in memory' });
+    expect(pin).toBeDisabled();
+    expect(pin).toHaveAttribute(
+      'title',
+      'All 2 model slots are in use. Stop keeping another model in memory first.',
+    );
   });
 
   it('shows download progress reported by the runtime', () => {

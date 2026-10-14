@@ -146,8 +146,14 @@ public enum ClusterOnboardingDeployment {
     /// A model as the screens name it: its catalog display name ("MiMo V2.6 Flash"), its id only when the catalog gave
     /// no name for it (it did not answer, or the model is not listed).
     public static func title(modelID: String, displayNames: [String: String]) -> String {
-        guard let name = displayNames[modelID]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return modelID }
+        guard let name = displayNames[modelID]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty, name.count <= 120,
+              shownPlainly(name) else { return modelID }
         return name
+    }
+
+    /// Text from another source (the catalog, the other Mac) is shown only without terminal control characters.
+    static func shownPlainly(_ text: String) -> Bool {
+        !text.unicodeScalars.contains { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) }
     }
 
     /// The deployment line a Mac records when the leader starts the cluster: the line the start carries, so whichever
@@ -155,7 +161,9 @@ public enum ClusterOnboardingDeployment {
     /// model but carries no line (an older leader) drops the recorded one, which may be another model's; a start that
     /// names no model changes nothing.
     public static func recorded(afterStartOf model: String?, deployment: String?, recorded: String?) -> String? {
-        model == nil ? recorded : deployment
+        guard model != nil else { return recorded }
+        guard let deployment, deployment.count <= 512, shownPlainly(deployment) else { return nil }
+        return deployment
     }
 
     /// One model choice in one line: "6.1 GB · pipeline · M3 Ultra 16 layers / M5 Ultra 16 layers · about 90 tokens/s".

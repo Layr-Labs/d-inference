@@ -765,6 +765,8 @@ import Darwin
         expect(D.title(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", displayNames: names) == "Qwen3.8 27B", "27B by name")
         expect(D.title(modelID: "Qwen3.5-9B", displayNames: names) == "Qwen3.5-9B", "no catalog name: the id")
         expect(D.title(modelID: "blank", displayNames: names) == "blank", "an empty name is never shown")
+        expect(D.title(modelID: "m", displayNames: ["m": "Model\u{1B}[2J"]) == "m", "a name with terminal control characters is never shown")
+        expect(D.title(modelID: "m", displayNames: ["m": String(repeating: "x", count: 200)]) == "m", "an overlong name is never shown")
     }
 
     /// F16: the deployment line (mode and each Mac's layers) is what any Mac that answers shows, including a member that
@@ -777,5 +779,6 @@ import Darwin
         expect(D.recorded(afterStartOf: "mimo-v2.6-flash-mopd", deployment: nil, recorded: "Serving Qwen3.5-9B across both Macs: pipeline") == nil,
                "a start without a line (an older leader) drops the old model's line")
         expect(D.recorded(afterStartOf: nil, deployment: nil, recorded: line) == line, "a start naming no model changes nothing")
+        expect(D.recorded(afterStartOf: "m", deployment: "Serving m\u{1B}]0;x\u{7}", recorded: line) == nil, "a line with control characters is not recorded")
     }
 }

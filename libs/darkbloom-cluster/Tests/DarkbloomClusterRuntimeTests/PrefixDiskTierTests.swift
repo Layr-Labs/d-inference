@@ -490,4 +490,44 @@ struct PrefixDiskTierTests {
         #expect(resident.bytesInUse == 0 && resident.count == 0)
         tier.close()
     }
+
+    /// Finding S3: the rolling-day write counter is saved as "<start> <bytes>\n"
+    /// and was parsed with the newline still on the bytes, so every reopen
+    /// started the day at zero and the daily cap held per process. It now
+    /// survives a reopen and still refuses a write past the cap. Finding S7:
+    /// the counter and the key check are owner-only, as the records are.
+    @Test func theDailyWriteWindowSurvivesAReopenAndStillRefusesPastTheCap() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try openTier(configuration(root))
+        first.persist(scope: "s", tokens: Array(0..<40), states: states(committed: 39, frontiers: [], seed: 1), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 20) && first.recordCount == 1)
+        let windowURL = first.directory.appendingPathComponent("write-window")
+        let saved = try String(contentsOf: windowURL, encoding: .utf8)
+        let parts = saved.split(whereSeparator: { $0.isWhitespace })
+        let start = try #require(Double(parts[0])), bytes = try #require(Int(parts[1]))
+        #expect(bytes == first.stats.persistedBytes)
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: first.directory.path).first { $0.hasSuffix(".dbpx") })
+        let data = try QwenStagePrefixDiskIO.open(url: first.directory.appendingPathComponent(name),
+            keys: QwenStagePrefixDiskKeys(master: Data(repeating: 7, count: 32))).header.dataBytes
+        for file in ["write-window", "key-check"] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: first.directory.appendingPathComponent(file).path)
+            #expect((attributes[.posixPermissions] as? Int) == 0o600)
+        }
+        first.close()
+        // Reopened the same day with a cap one byte short of a second record of
+        // the same shape: the saved bytes count, so the writer refuses it.
+        let capped = try openTier(configuration(root) { $0.maximumWriteBytesPerDay = data + 64 * 1024 + bytes - 1 })
+        capped.persist(scope: "s", tokens: Array(1000..<1040), states: states(committed: 39, frontiers: [], seed: 2), blockTokens: block)
+        #expect(capped.drain(timeoutSeconds: 20))
+        #expect(capped.recordCount == 1 && capped.stats.droppedPersists == 1 && capped.stats.persisted == 0)
+        capped.close()
+        // With room under the same cap plus one record, the window keeps adding on.
+        let roomy = try openTier(configuration(root) { $0.maximumWriteBytesPerDay = data + 64 * 1024 + bytes })
+        roomy.persist(scope: "s", tokens: Array(2000..<2040), states: states(committed: 39, frontiers: [], seed: 3), blockTokens: block)
+        #expect(roomy.drain(timeoutSeconds: 20) && roomy.stats.persisted == 1)
+        let after = try String(contentsOf: windowURL, encoding: .utf8).split(whereSeparator: { $0.isWhitespace })
+        #expect(Double(after[0]) == start && Int(after[1]) == bytes + roomy.stats.persistedBytes)
+        roomy.close()
+    }
 }

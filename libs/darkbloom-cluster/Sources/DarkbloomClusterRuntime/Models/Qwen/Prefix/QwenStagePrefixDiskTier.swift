@@ -547,7 +547,7 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             for name in names { unlink(directory.appendingPathComponent(name).path); statistics.sweptFiles += 1 }
             let temporary = directory.appendingPathComponent(".key-check.\(getpid()).tmp")
             unlink(temporary.path)
-            if (try? Data((keys.keyCheck + "\n").utf8).write(to: temporary, options: .withoutOverwriting)) != nil {
+            if Self.writePrivateFile(temporary, Data((keys.keyCheck + "\n").utf8)) {
                 rename(temporary.path, checkURL.path)
             }
             return
@@ -585,7 +585,11 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         lock.withLock {
             if writeWindowStart == 0,
                let text = try? String(contentsOf: writeWindowURL, encoding: .utf8) {
-                let parts = text.split(separator: " ")
+                // Saved as "<start> <bytes>\n": split on any whitespace, so the
+                // trailing newline never fails the parse (finding S3: the window
+                // restarted at 0 on every reopen and the daily cap held per
+                // process, not per day).
+                let parts = text.split(whereSeparator: { $0.isWhitespace })
                 if parts.count == 2, let start = Double(parts[0]), let bytes = Int(parts[1]) {
                     writeWindowStart = start; writeWindowBytes = bytes
                 }
@@ -600,9 +604,19 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let text = lock.withLock { "\(writeWindowStart) \(writeWindowBytes)\n" }
         let temporary = directory.appendingPathComponent(".write-window.\(getpid()).tmp")
         unlink(temporary.path)
-        if (try? Data(text.utf8).write(to: temporary, options: .withoutOverwriting)) != nil {
+        if Self.writePrivateFile(temporary, Data(text.utf8)) {
             rename(temporary.path, writeWindowURL.path)
         }
+    }
+
+    /// Creates `url` (never an existing file or a link) owner-only (0600), as
+    /// the records are, and writes `data`; false on any failure (S7: the
+    /// key-check and write-window files were created 0644).
+    static func writePrivateFile(_ url: URL, _ data: Data) -> Bool {
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { return false }
+        let written = (try? QwenStagePrefixDiskIO.writeAll(fd, data, at: 0)) != nil
+        return Darwin.close(fd) == 0 && written
     }
 
     // MARK: files

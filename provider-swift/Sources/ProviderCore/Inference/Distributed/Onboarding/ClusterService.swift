@@ -95,7 +95,9 @@ public final class ClusterService: @unchecked Sendable {
     /// The last lease failure said (leader) and the last setup record read failure said (supervise), each said once.
     var lastLeaseProblem: String?
     var recordProblem: String?
-    var localHardware: (name: String, memoryBytes: UInt64, gpuCores: Int)?
+    var localHardware: (name: String, memoryBytes: UInt64, gpuCores: Int, chipFamily: ChipFamily)?
+    /// F14: solo-server ends in a row soon after their start, for one model of one plan ("<plan>|<model>").
+    var soloQuickEnds: (key: String, count: Int)?
     lazy var controlLive: OnboardingLive = OnboardingLive(context: context, store: store,
         settings: .init(service: settings, serviceArguments: []))
 
@@ -303,7 +305,9 @@ public final class ClusterService: @unchecked Sendable {
                                                 memberServing: member?.serving, memberModel: member?.modelName) {
             case .none: return
             case .serve(let model):
-                if send(.init(op: .serve, model: model), seconds: 10) != nil { say("the member had missed the start: started its part") }
+                if send(.init(op: .serve, model: model, deployment: leadership.deployment), seconds: 10) != nil {
+                    say("the member had missed the start: started its part")
+                }
             case .stop:
                 if send(.init(op: .stop), seconds: 10) != nil { say("the member had missed the stop: stopped its part") }
             }
@@ -343,6 +347,11 @@ public final class ClusterService: @unchecked Sendable {
             try store.updateRecord {
                 $0.leadership?.serving = command.op == .serve
                 if let model = command.model { $0.leadership?.modelName = model }
+                if command.op == .serve {
+                    let recorded = $0.leadership?.deployment
+                    $0.leadership?.deployment = ClusterOnboardingDeployment.recorded(afterStartOf: command.model, deployment: command.deployment,
+                                                                                     recorded: recorded)
+                }
             }
             say(command.op == .serve ? "the leader started the cluster" : "the leader stopped the cluster")
             if command.op == .serve { lock.withLock { nextStart = .distantPast; backoff = 3 } }
@@ -584,8 +593,9 @@ public final class ClusterService: @unchecked Sendable {
             case .success(let value): choices = value
             case .failure(let failure): return failed(failure.lines)
             }
-            guard let index = choices.firstIndex(where: { $0.title == model && $0.blocker == nil && $0.provision == nil }) else {
-                return failed(["\(model) is not offered on these Macs with this release: \(choices.first { $0.title == model }?.blocker ?? "not found")"])
+            // `model` is the model's id (the record keeps ids; the screens show catalog names).
+            guard let index = choices.firstIndex(where: { ($0.modelID ?? $0.title) == model && $0.blocker == nil && $0.provision == nil }) else {
+                return failed(["\(model) is not offered on these Macs with this release: \(choices.first { ($0.modelID ?? $0.title) == model }?.blocker ?? "not found")"])
             }
             if case .failure(let failure) = live.localAdopt(index) { return failed(failure.lines) }
             if case .failure(let failure) = live.localServe() { return failed(failure.lines) }
@@ -682,6 +692,20 @@ public final class ClusterService: @unchecked Sendable {
                 backoff = ran >= 120 ? 3 : min(backoff * 2, 30)
                 nextStart = Date().addingTimeInterval(ran >= 120 ? 3 : backoff)
             }
+            // F14: a solo server that keeps ending right after its start is not started again for this plan and model
+            // (`ClusterControlSoloAdmission`): the status then says this Mac cannot serve it alone.
+            if let setup, setup.hasPrefix("solo:") {
+                let soloKey = Self.soloKey(plan: saved.configuration?.selectedPlanSHA256, model: String(setup.dropFirst("solo:".count)))
+                let count = lock.withLock { () -> Int in
+                    let before = soloQuickEnds?.key == soloKey ? soloQuickEnds!.count : 0
+                    let after = ClusterControlSoloAdmission.quickEnds(after: before, ranSeconds: ran)
+                    soloQuickEnds = (soloKey, after)
+                    return after
+                }
+                if count >= ClusterControlSoloAdmission.maximumQuickEnds {
+                    say("the solo server ended \(count) times right after starting: this Mac does not serve the model alone; it waits for the other Mac")
+                }
+            }
             say("this Mac's \(setup?.hasPrefix("solo:") == true ? "solo server" : "part") ended (\(end)) after \(Int(ran)) s; "
                 + (key != nil ? "starting it again" : "not serving"))
             return
@@ -715,6 +739,8 @@ public final class ClusterService: @unchecked Sendable {
             arguments = configuration.role == .leader ? settings.leaderArguments : settings.followerArguments
             what = "this Mac's part: " + (configuration.role == .leader ? "rank 0 and the serving API" : "rank \(configuration.localRank)")
         }
+        // A cluster part starting again clears the solo record: the next time this Mac is left alone it may try again.
+        if case .cluster = want { lock.withLock { soloQuickEnds = nil } }
         let process = Process()
         process.executableURL = settings.wizard.darkbloomExecutable
         process.arguments = arguments

@@ -50,6 +50,10 @@ import Darwin
         restartLineAtTheEnd()
         restartWords()
         updateNoticed()
+        // F9 + F16 (round 6b, 2026-10-14): failing first on 33da00709.
+        stoppedLeaderOffersTeardown()
+        modelTitlesAreCatalogNames()
+        deploymentTravelsWithTheStart()
         print("onboarding checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -738,5 +742,43 @@ import Darwin
     static func transcript(_ name: String, _ text: String, keys: Int) {
         guard let directory = ProcessInfo.processInfo.environment["ONBOARDING_TRANSCRIPTS"] else { return }
         try? (text + "\n[keys typed: \(keys)]\n").write(toFile: directory + "/" + name + ".txt", atomically: true, encoding: .utf8)
+    }
+    /// F9: a leader whose model was stopped gets the same menu as a member (m or v), not straight to the model chooser,
+    /// so `v` (both Macs released their memory) is reachable on whichever Mac leads after the stop.
+    static func stoppedLeaderOffersTeardown() {
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M5 Ultra, 256 GB", serving: false, modelName: "Qwen3.5-9B"),
+            pairEvents: [], pairResult: .failed([])))
+        expect(run.waitFor("Not serving. Press m to choose a model and serve, v to check both Macs released their memory, enter to leave it as it is."),
+               "stopped leader: the menu with v")
+        run.type("v")
+        expect(run.finish() == 0, "stopped leader: teardown checked")
+        expect(run.text.contains("  Apple M5 Ultra, 256 GB: nothing left running"), "stopped leader: each Mac's summary")
+        expect(recorder.all == ["ensureService", "status", "verifyTeardown"], "stopped leader: status then teardown, no planning: \(recorder.all)")
+    }
+
+    /// F16: a model is shown by its catalog display name; its id only when the catalog has no name for it.
+    static func modelTitlesAreCatalogNames() {
+        typealias D = ClusterOnboardingDeployment
+        let names = ["mimo-v2.6-flash-mopd": "MiMo V2.6 Flash", "EigenLabs/Qwen3.8-27B-4bit-mtp": "Qwen3.8 27B", "blank": "  "]
+        expect(D.title(modelID: "mimo-v2.6-flash-mopd", displayNames: names) == "MiMo V2.6 Flash", "MiMo by name")
+        expect(D.title(modelID: "EigenLabs/Qwen3.8-27B-4bit-mtp", displayNames: names) == "Qwen3.8 27B", "27B by name")
+        expect(D.title(modelID: "Qwen3.5-9B", displayNames: names) == "Qwen3.5-9B", "no catalog name: the id")
+        expect(D.title(modelID: "blank", displayNames: names) == "blank", "an empty name is never shown")
+        expect(D.title(modelID: "m", displayNames: ["m": "Model\u{1B}[2J"]) == "m", "a name with terminal control characters is never shown")
+        expect(D.title(modelID: "m", displayNames: ["m": String(repeating: "x", count: 200)]) == "m", "an overlong name is never shown")
+    }
+
+    /// F16: the deployment line (mode and each Mac's layers) is what any Mac that answers shows, including a member that
+    /// leads later (MiMo's rank 0 was the M5 Ultra): the start carries it, and a start for another model never keeps the
+    /// previous model's line.
+    static func deploymentTravelsWithTheStart() {
+        typealias D = ClusterOnboardingDeployment
+        let line = "Serving MiMo V2.6 Flash across both Macs: pipeline, M5 Ultra 40 layers / M3 Ultra 8 layers"
+        expect(D.recorded(afterStartOf: "mimo-v2.6-flash-mopd", deployment: line, recorded: nil) == line, "the leader's line is recorded")
+        expect(D.recorded(afterStartOf: "mimo-v2.6-flash-mopd", deployment: nil, recorded: "Serving Qwen3.5-9B across both Macs: pipeline") == nil,
+               "a start without a line (an older leader) drops the old model's line")
+        expect(D.recorded(afterStartOf: nil, deployment: nil, recorded: line) == line, "a start naming no model changes nothing")
+        expect(D.recorded(afterStartOf: "m", deployment: "Serving m\u{1B}]0;x\u{7}", recorded: line) == nil, "a line with control characters is not recorded")
     }
 }

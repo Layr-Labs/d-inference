@@ -48,19 +48,43 @@ extension ClusterService {
     // MARK: - This Mac's facts
 
     func localControlMember(pairing: ClusterSetupLinkExchange.Pairing, record: ClusterSetupRecord?) -> ClusterControlMember {
-        let hardware: (name: String, memoryBytes: UInt64, gpuCores: Int) = lock.withLock { localHardware } ?? {
+        let hardware: (name: String, memoryBytes: UInt64, gpuCores: Int, chipFamily: ChipFamily) = lock.withLock { localHardware } ?? {
             let detected = try? HardwareDetector.detect()
             let value = (ClusterPairingProvider.displayName(chipName: detected?.chipName ?? "Mac"), ProcessInfo.processInfo.physicalMemory,
-                         Int(detected?.gpuCores ?? 0))
+                         Int(detected?.gpuCores ?? 0), detected?.chipFamily ?? .unknown)
             lock.withLock { localHardware = value }
             return value
         }()
-        // Only a verdict recorded for the plan saved now counts (unknown: never serve alone).
-        let alone = ClusterControlAloneVerdicts.holds(pairing.localMemberID, holders: record?.aloneHolders,
-                                                      forPlan: record?.aloneHoldersPlan, savedPlan: savedPlanSHA256())
+        // Only a verdict recorded for the plan saved now counts (unknown: never serve alone); this Mac's own check
+        // narrows it (F14): the solo server runs `start --local`, which refuses a model single-Mac Darkbloom does not
+        // serve on this Mac, so a planner verdict on memory alone would restart a solo server every 30 s for ever.
+        let configuration = context.savedConfiguration().configuration
+        let planned = ClusterControlAloneVerdicts.holds(pairing.localMemberID, holders: record?.aloneHolders,
+                                                        forPlan: record?.aloneHoldersPlan, savedPlan: configuration?.selectedPlanSHA256)
+        let model = configuration?.publicModelID
+        let missing = model.map { Self.soloMissingHardware(modelID: $0, chipFamily: hardware.chipFamily) } ?? []
+        let soloKey = Self.soloKey(plan: configuration?.selectedPlanSHA256, model: model ?? "")
+        let quickEnds = lock.withLock { soloQuickEnds?.key == soloKey ? soloQuickEnds!.count : 0 }
+        let verdict = ClusterControlSoloAdmission.decide(planned: planned, missingHardware: missing, quickEnds: quickEnds)
         return .init(memberID: pairing.localMemberID, name: hardware.name, memoryBytes: hardware.memoryBytes, gpuCores: hardware.gpuCores,
-                     holdsModelAlone: alone)
+                     holdsModelAlone: verdict.holds, aloneRefusal: verdict.refusal)
     }
+
+    /// The model's runtime requirements as single-Mac Darkbloom applies them (`ModelRuntimeRequirements`, the same gate
+    /// `start --local` uses) that this Mac's hardware settles and lacks. The capabilities hardware settles are what the
+    /// product's detector grants from the chip family alone, over every family it knows (no chip list here).
+    static func soloMissingHardware(modelID: String, chipFamily: ChipFamily) -> [String] {
+        let required = ModelRuntimeRequirements.requiredCapabilities(for: modelID)
+        guard !required.isEmpty else { return [] }
+        func fromChip(_ family: ChipFamily) -> Set<ProviderRuntimeCapability> {
+            DistributedServingEligibility.memberCapabilities(chipFamily: family)
+        }
+        let settled = ChipFamily.allCases.reduce(into: Set<ProviderRuntimeCapability>()) { $0.formUnion(fromChip($1)) }
+        return ClusterControlSoloAdmission.missingHardware(required: Set(required.map(\.rawValue)), hardwareSettled: Set(settled.map(\.rawValue)),
+                                                           hardware: Set(fromChip(chipFamily).map(\.rawValue)))
+    }
+
+    static func soloKey(plan: String?, model: String) -> String { (plan ?? "") + "|" + model }
 
     /// The saved setup's selected plan (the same signed plan on every member); nil before a plan is adopted.
     func savedPlanSHA256() -> String? { context.savedConfiguration().configuration?.selectedPlanSHA256 }
@@ -174,13 +198,17 @@ extension ClusterService {
             let actions = control!.tick(now: now)
             let node = control!
             let names = node.members.mapValues(\.name)
-            let line = ClusterControlWords.line(node.mode(now: now), names: names, model: record?.leadership?.modelName)
+            let line = ClusterControlWords.line(node.mode(now: now), names: names, model: record?.leadership?.modelName,
+                                                aloneRefusal: node.members[node.localID]?.aloneRefusal)
             let logKey = ClusterControlWords.logKey(node.mode(now: now), line: line)
             // Members run their parts while the cluster runs and while the leader waits for a member inside the grace.
             let running = node.leads && ClusterControlPartChoice.leaseSaysRunning(mode: node.mode(now: now), serving: record?.leadership?.serving ?? false)
-            // Each member's fit for the model alone, as the plan's adopter recorded it, travels with the lease.
+            // Each member's fit for the model alone, as the plan's adopter recorded it, travels with the lease (the
+            // planner's verdicts, which members record; each Mac narrows its own by its own check, F14, and answers
+            // with that, so a Mac's solo-server record never rewrites what the other Mac records).
             let facts = node.members.values.map { fact -> ClusterControlMember in
                 var fact = fact
+                fact.aloneRefusal = nil
                 fact.holdsModelAlone = alonePlan == nil ? nil : record?.aloneHolders.map { $0.contains(fact.memberID) }
                 return fact
             }
@@ -302,7 +330,8 @@ extension ClusterService {
         }
         return .init(leaderID: node.claim.leaderID, leaderName: node.members[node.claim.leaderID]?.name ?? node.claim.leaderID,
                      term: node.claim.term, reason: node.claim.reason, leads: node.leads,
-                     line: ClusterControlWords.line(mode, names: node.members.mapValues(\.name), model: model), mode: word,
+                     line: ClusterControlWords.line(mode, names: node.members.mapValues(\.name), model: model,
+                                                    aloneRefusal: node.members[node.localID]?.aloneRefusal), mode: word,
                      confirmed: node.leadershipConfirmed(now: now), soloInSeconds: soloIn)
     }
 

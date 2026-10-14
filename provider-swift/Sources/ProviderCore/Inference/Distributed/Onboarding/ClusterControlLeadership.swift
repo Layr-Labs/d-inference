@@ -325,6 +325,54 @@ public struct ClusterControlRecord: Codable, Sendable, Equatable {
     public init(claim: ClusterControlClaim, members: [ClusterControlMember], rankOrder: [String]?) {
         self.claim = claim; self.members = members; self.rankOrder = rankOrder
     }
+
+    /// The claim, while it belongs to the current pairing (it names this Mac and its paired Mac); nil for a record of an
+    /// earlier pairing with another Mac.
+    public func claim(localID: String, peerID: String) -> ClusterControlClaim? {
+        claim.members.contains(localID) && claim.members.contains(peerID) ? claim : nil
+    }
+}
+
+/// Where a Mac's control starts when its cluster service starts. A persisted record belongs to ONE pairing: it is used
+/// only while its claim names both this Mac and the Mac it is paired with now. A Mac re-paired with another Mac (a
+/// replaced Mac) starts a new leadership history at term 0, led by the Mac that drove that onboarding, exactly as the
+/// new member does; the old claim would name a member that is gone and not the new one (no lease would reach it).
+public enum ClusterControlRestart {
+    public static func start(persisted: ClusterControlRecord?, localID: String, peerID: String,
+                             onboardingLeaderID: String) -> (claim: ClusterControlClaim, members: [ClusterControlMember]) {
+        if let persisted, let claim = persisted.claim(localID: localID, peerID: peerID) { return (claim, persisted.members) }
+        return (ClusterControlClaim(term: 0, leaderID: onboardingLeaderID, members: [localID, peerID],
+                                    reason: "drove the onboarding (no plan adopted yet)"),
+                (persisted?.members ?? []).filter { $0.memberID == localID || $0.memberID == peerID })
+    }
+}
+
+/// The planner's "holds the model alone" verdicts are for ONE plan (the saved setup's signed plan SHA, the same on every
+/// member). A verdict recorded for another plan never counts: after a model change, a member that has the new setup but
+/// not yet the new verdicts must state that it cannot serve alone rather than load a model the planner never checked
+/// for it. Only an accepted lease (never a refused, stale one) updates what a member records.
+public enum ClusterControlAloneVerdicts {
+    /// This member's verdict, or nil (unknown: never serve alone) unless the recorded verdicts are for the saved plan.
+    public static func holds(_ memberID: String, holders: [String]?, forPlan: String?, savedPlan: String?) -> Bool? {
+        guard let holders, let forPlan, let savedPlan, forPlan == savedPlan else { return nil }
+        return holders.contains(memberID)
+    }
+
+    /// A lease's member facts with every verdict dropped unless they are for the plan saved here.
+    public static func gated(_ facts: [ClusterControlMember], forPlan: String?, savedPlan: String?) -> [ClusterControlMember] {
+        guard let forPlan, let savedPlan, forPlan == savedPlan else {
+            return facts.map { var fact = $0; fact.holdsModelAlone = nil; return fact }
+        }
+        return facts
+    }
+
+    /// What a member records of a lease's verdicts: only from an accepted lease whose verdicts are for the saved plan.
+    public static func toRecord(answer: ClusterControlNode.LeaseAnswer, facts: [ClusterControlMember], forPlan: String?,
+                                savedPlan: String?) -> (holders: [String], plan: String)? {
+        guard case .accepted = answer, let forPlan, let savedPlan, forPlan == savedPlan,
+              facts.contains(where: { $0.holdsModelAlone != nil }) else { return nil }
+        return (facts.filter { $0.holdsModelAlone == true }.map(\.memberID).sorted(), forPlan)
+    }
 }
 
 /// The words for a mode, one line for `darkbloom cluster` and the service log.

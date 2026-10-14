@@ -51,11 +51,15 @@ extension ClusterService {
             lock.withLock { localHardware = value }
             return value
         }()
-        let learned = lock.withLock { control?.members[pairing.localMemberID]?.holdsModelAlone }
-        let alone = record?.aloneHolders.map { $0.contains(pairing.localMemberID) } ?? learned
+        // Only a verdict recorded for the plan saved now counts (unknown: never serve alone).
+        let alone = ClusterControlAloneVerdicts.holds(pairing.localMemberID, holders: record?.aloneHolders,
+                                                      forPlan: record?.aloneHoldersPlan, savedPlan: savedPlanSHA256())
         return .init(memberID: pairing.localMemberID, name: hardware.name, memoryBytes: hardware.memoryBytes, gpuCores: hardware.gpuCores,
                      holdsModelAlone: alone)
     }
+
+    /// The saved setup's selected plan (the same signed plan on every member); nil before a plan is adopted.
+    func savedPlanSHA256() -> String? { context.savedConfiguration().configuration?.selectedPlanSHA256 }
 
     /// The saved setup's members in rank order (rank 0 first); nil before a plan is adopted.
     func rankOrder() -> [String]? {
@@ -89,21 +93,24 @@ extension ClusterService {
         guard command.op == .lease, let offered = command.claim else { throw ClusterSetupFailure("the control listener takes leases only") }
         ensureControl(pairing: pairing)
         let now = Self.monotonicSeconds()
-        let facts = command.facts ?? []
+        // The leader's alone verdicts count only for the plan saved here (a lease that arrives before this Mac applied
+        // a new setup, or one for an older plan, carries none that count).
+        let savedPlan = savedPlanSHA256()
+        let facts = ClusterControlAloneVerdicts.gated(command.facts ?? [], forPlan: command.alonePlan, savedPlan: savedPlan)
         let result: (answer: ClusterControlNode.LeaseAnswer, actions: [ClusterControlNode.Action])? = lock.withLock {
             guard control != nil else { return nil }
-            // What the leader knows of this Mac's fit for the model alone (it adopted the plan) is kept here too.
-            if var own = control!.members[pairing.localMemberID], let mine = facts.first(where: { $0.memberID == own.memberID }),
-               let alone = mine.holdsModelAlone {
-                own.holdsModelAlone = alone
-                control!.learn(own)
-            }
             return control!.receiveLease(from: pairing.peerMemberID, offered: offered, running: command.running ?? false, facts: facts, now: now)
         }
         guard let result else { throw ClusterSetupFailure("this Mac's control is not ready") }
-        if facts.contains(where: { $0.holdsModelAlone != nil }) {
-            let holders = facts.filter { $0.holdsModelAlone == true }.map(\.memberID).sorted()
-            try? store.updateRecord { if $0.aloneHolders != holders { $0.aloneHolders = holders } }
+        // Recorded only from an accepted lease: a refused (stale) leader never rewrites what this Mac may serve alone.
+        if let verdicts = ClusterControlAloneVerdicts.toRecord(answer: result.answer, facts: facts, forPlan: command.alonePlan, savedPlan: savedPlan) {
+            try? store.updateRecord {
+                if $0.aloneHolders != verdicts.holders || $0.aloneHoldersPlan != verdicts.plan {
+                    $0.aloneHolders = verdicts.holders; $0.aloneHoldersPlan = verdicts.plan
+                }
+            }
+            let own = localControlMember(pairing: pairing, record: try? store.readRecord())
+            lock.withLock { _ = control?.learn(own) }
         }
         report(result.actions, say: say)
         persistControl()
@@ -113,19 +120,22 @@ extension ClusterService {
     // MARK: - Each tick
 
     func ensureControl(pairing: ClusterSetupLinkExchange.Pairing) {
+        // A node of an earlier pairing (this Mac was re-paired with another Mac while the service ran) is dropped.
+        lock.withLock { if let node = control, !node.claim.members.contains(pairing.peerMemberID) { control = nil } }
         guard lock.withLock({ control == nil }), let record = try? store.readRecord(), let leadership = record.leadership,
               leadership.peerPin == pairing.peerPin else { return }
         let local = localControlMember(pairing: pairing, record: record)
-        var members = record.control?.members ?? []
+        // Before the service first derived a claim, the Mac that drove the onboarding leads at term 0; a record of an
+        // earlier pairing (another Mac) is not carried into this one.
+        let start = ClusterControlRestart.start(persisted: record.control, localID: local.memberID, peerID: pairing.peerMemberID,
+                                                onboardingLeaderID: ClusterSetupMemberFacts.memberID(pin: leadership.leaderPin))
+        var members = start.members
         if !members.contains(where: { $0.memberID == pairing.peerMemberID }) {
             members.append(.init(memberID: pairing.peerMemberID, name: leadership.peerName, memoryBytes: 0, gpuCores: 0))
         }
         members.removeAll { $0.memberID == local.memberID }
         members.append(local)
-        // Before the service first derived a claim, the Mac that drove the onboarding leads at term 0.
-        let leaderID = ClusterSetupMemberFacts.memberID(pin: leadership.leaderPin)
-        let claim = record.control?.claim ?? ClusterControlClaim(term: 0, leaderID: leaderID, members: [local.memberID, pairing.peerMemberID],
-            reason: "drove the onboarding (no plan adopted yet)")
+        let claim = start.claim
         let node = ClusterControlNode(localID: local.memberID, members: members, claim: claim, rankOrder: rankOrder(),
                                       now: Self.monotonicSeconds(), ttl: Self.leaseTTLSeconds)
         lock.withLock { if control == nil { control = node } }
@@ -137,8 +147,12 @@ extension ClusterService {
         let record = try? store.readRecord()
         let local = localControlMember(pairing: pairing, record: record)
         let order = rankOrder()
+        // The verdicts this Mac sends are those recorded for the plan saved now, named by it; none otherwise.
+        let savedPlan = savedPlanSHA256()
+        let alonePlan = record?.aloneHoldersPlan != nil && record?.aloneHoldersPlan == savedPlan ? savedPlan : nil
         let now = Self.monotonicSeconds()
-        let due: (actions: [ClusterControlNode.Action], claim: ClusterControlClaim, facts: [ClusterControlMember], running: Bool, line: String)? = lock.withLock {
+        let due: (actions: [ClusterControlNode.Action], claim: ClusterControlClaim, facts: [ClusterControlMember], running: Bool, line: String,
+                  alonePlan: String?)? = lock.withLock {
             guard control != nil else { return nil }
             control!.learn(local)
             control!.rankOrder = order
@@ -150,10 +164,10 @@ extension ClusterService {
             // Each member's fit for the model alone, as the plan's adopter recorded it, travels with the lease.
             let facts = node.members.values.map { fact -> ClusterControlMember in
                 var fact = fact
-                if let holders = record?.aloneHolders { fact.holdsModelAlone = holders.contains(fact.memberID) }
+                fact.holdsModelAlone = alonePlan == nil ? nil : record?.aloneHolders.map { $0.contains(fact.memberID) }
                 return fact
             }
-            return (actions, node.claim, facts, running, line)
+            return (actions, node.claim, facts, running, line, alonePlan)
         }
         guard let due else { return }
         if due.line != lock.withLock({ lastModeLine }) {
@@ -167,11 +181,11 @@ extension ClusterService {
                 guard now >= lock.withLock({ nextLease }) else { continue }
                 lock.withLock { nextLease = now + Self.leaseRenewSeconds }
                 for target in targets where target == pairing.peerMemberID {
-                    sendLease(claim, running: due.running, facts: due.facts, to: target, pairing: pairing, say: say)
+                    sendLease(claim, running: due.running, facts: due.facts, alonePlan: due.alonePlan, to: target, pairing: pairing, say: say)
                 }
             case .handOver(let claim, let target):
                 say("control: handing leadership to \(due.facts.first { $0.memberID == target }?.name ?? target) (term \(claim.term): \(claim.reason))")
-                if target == pairing.peerMemberID { sendLease(claim, running: false, facts: due.facts, to: target, pairing: pairing, say: say) }
+                if target == pairing.peerMemberID { sendLease(claim, running: false, facts: due.facts, alonePlan: due.alonePlan, to: target, pairing: pairing, say: say) }
             case .tookOver, .steppedDown:
                 break
             }
@@ -179,7 +193,7 @@ extension ClusterService {
         persistControl()
     }
 
-    private func sendLease(_ claim: ClusterControlClaim, running: Bool, facts: [ClusterControlMember], to target: String,
+    private func sendLease(_ claim: ClusterControlClaim, running: Bool, facts: [ClusterControlMember], alonePlan: String?, to target: String,
                            pairing: ClusterSetupLinkExchange.Pairing, say: @escaping @Sendable (String) -> Void) {
         let begin: Bool = lock.withLock {
             guard !leaseInFlight, !stopping else { return false }
@@ -193,7 +207,7 @@ extension ClusterService {
         Thread.detachNewThread { [weak self] in
             guard let self else { return }
             defer { self.lock.withLock { self.leaseInFlight = false } }
-            let command = ClusterServiceCommand(op: .lease, claim: claim, running: running, facts: facts)
+            let command = ClusterServiceCommand(op: .lease, claim: claim, running: running, facts: facts, alonePlan: alonePlan)
             guard let body = try? JSONEncoder().encode(command),
                   let reply = try? ClusterSetupLinkExchange.lease(pairing: pairing, selection: selection, peerAddress: nil, body: body,
                       seconds: min(4, Self.leaseRenewSeconds)).reply,

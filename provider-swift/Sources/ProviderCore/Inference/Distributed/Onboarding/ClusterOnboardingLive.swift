@@ -73,7 +73,7 @@ final class OnboardingLive: @unchecked Sendable {
               let pairing = try? ClusterSetupLinkExchange.pairing(), pairing.peerPin == leadership.peerPin else { return .init() }
         // After onboarding the role is the derived control leadership, not who drove the screens.
         let record = try? store.readRecord()
-        guard let claim = record?.control?.claim else {
+        guard let claim = record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) else {
             return .init(role: role, peerName: leadership.peerName, serving: leadership.serving, modelName: leadership.modelName)
         }
         let leads = claim.leaderID == pairing.localMemberID
@@ -90,13 +90,19 @@ final class OnboardingLive: @unchecked Sendable {
 
     /// The control leader's name as this Mac knows it.
     var leaderName: String {
-        guard let record = try? store.readRecord(), let claim = record.control?.claim else { return peerName }
+        guard let record = try? store.readRecord(), let claim = currentClaim(record) else { return peerName }
         return record.control?.members.first { $0.memberID == claim.leaderID }?.name ?? peerName
+    }
+
+    /// The recorded claim while it belongs to the current pairing (never one of an earlier pairing with another Mac).
+    func currentClaim(_ record: ClusterSetupRecord?) -> ClusterControlClaim? {
+        guard let pairing = try? ClusterSetupLinkExchange.pairing() else { return nil }
+        return record?.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID)
     }
 
     func route() -> ClusterControlRouting.Route {
         guard let pairing = try? ClusterSetupLinkExchange.pairing() else { return .local }
-        if let claim = (try? store.readRecord())?.control?.claim { return ClusterControlRouting.route(localID: pairing.localMemberID, claim: claim) }
+        if let claim = currentClaim(try? store.readRecord()) { return ClusterControlRouting.route(localID: pairing.localMemberID, claim: claim) }
         return leadership?.role == ClusterOnboardingRole.member.rawValue ? .forward(to: pairing.peerMemberID) : .local
     }
 
@@ -389,8 +395,10 @@ final class OnboardingLive: @unchecked Sendable {
         }
         guard result.succeeded else { return .failure(.init(lines + result.lines)) }
         lock.withLock { chosenTitle = choice.title }
-        // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease).
-        try? store.updateRecord { $0.aloneHolders = choice.alone.sorted() }
+        // Which members the planner said hold this model alone: what failover may serve alone (synced by the lease),
+        // bound to the plan just saved so a verdict never outlives its plan.
+        let plan = context.savedConfiguration().configuration?.selectedPlanSHA256
+        try? store.updateRecord { $0.aloneHolders = choice.alone.sorted(); $0.aloneHoldersPlan = plan }
         return .success(lines + result.lines)
     }
 
@@ -409,7 +417,7 @@ final class OnboardingLive: @unchecked Sendable {
     func command(_ command: ClusterServiceCommand, seconds: Double = 30) throws -> Data {
         guard let pairing = try ClusterSetupLinkExchange.pairing() else { throw ClusterOnboardingFailure("This Mac is not paired.") }
         var command = command
-        if command.claim == nil { command.claim = (try? store.readRecord())?.control?.claim }
+        if command.claim == nil { command.claim = currentClaim(try? store.readRecord()) }
         return try ClusterSetupLinkExchange.command(pairing: pairing, selection: try context.linkSelection(), peerAddress: nil,
             body: try JSONEncoder().encode(command), seconds: seconds).reply
     }

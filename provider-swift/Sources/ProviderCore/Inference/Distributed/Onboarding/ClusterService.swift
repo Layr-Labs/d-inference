@@ -60,11 +60,13 @@ public struct ClusterServiceCommand: Codable, Sendable, Equatable {
     /// `lease`: whether the leader runs the cluster now (members run their parts only then).
     public var running: Bool?
     public var facts: [ClusterControlMember]?
+    /// `lease`: the plan (selected plan SHA-256) the facts' alone verdicts are for; verdicts for another plan are dropped.
+    public var alonePlan: String?
     public var control: ClusterControlRequest?
     public init(op: Operation, model: String? = nil, text: String? = nil, claim: ClusterControlClaim? = nil, running: Bool? = nil,
-                facts: [ClusterControlMember]? = nil, control: ClusterControlRequest? = nil) {
+                facts: [ClusterControlMember]? = nil, alonePlan: String? = nil, control: ClusterControlRequest? = nil) {
         self.op = op; self.model = model; self.text = text; self.claim = claim; self.running = running; self.facts = facts
-        self.control = control
+        self.alonePlan = alonePlan; self.control = control
     }
 }
 
@@ -267,7 +269,7 @@ public final class ClusterService: @unchecked Sendable {
     func followsPeer(_ pairing: ClusterSetupLinkExchange.Pairing) -> Bool {
         if let claim = lock.withLock({ control?.claim }) { return claim.leaderID == pairing.peerMemberID }
         guard let record = try? store.readRecord() else { return false }
-        if let claim = record.control?.claim { return claim.leaderID == pairing.peerMemberID }
+        if let claim = record.control?.claim(localID: pairing.localMemberID, peerID: pairing.peerMemberID) { return claim.leaderID == pairing.peerMemberID }
         guard let leadership = record.leadership else { return false }
         return leadership.role == ClusterOnboardingRole.member.rawValue && leadership.leaderPin == pairing.peerPin
     }

@@ -79,6 +79,8 @@ public struct ClusterSetupRecord: Codable, Sendable, Equatable {
     /// The members the planner said hold the adopted model alone (written where the plan is adopted, learned by
     /// the others from the leader's lease).
     public var aloneHolders: [String]? = nil
+    /// The plan (the saved setup's selected plan SHA-256) `aloneHolders` is for: verdicts for any other plan never count.
+    public var aloneHoldersPlan: String? = nil
 
     public init(pair: Pair? = nil) { self.pair = pair }
 

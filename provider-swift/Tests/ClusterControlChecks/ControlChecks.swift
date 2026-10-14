@@ -25,6 +25,8 @@ import Darwin
         fourMembersOneLost()
         startupGrace()
         onboardingDriverKeepsClaimUntilAPlan()
+        aloneVerdictsBoundToThePlan()
+        rePairedWithAnotherMac()
         print("control checks: \(passed) passed, \(failures.count) failed")
         for failure in failures { print("FAIL " + failure) }
         exit(failures.isEmpty ? 0 : 1)
@@ -319,5 +321,65 @@ import Darwin
         for t in stride(from: 65.0, through: 80, by: 5) { bus.step(t) }
         expect(bus.leaders == [A] && bus.nodes[A]!.claim.term == 1, "plan adopted: rank 0 leads from term 1: \(bus.leaders)")
         expect(bus.nodes[A]!.mode(now: 80) == .cluster && bus.nodes[B]!.mode(now: 80) == .following(leaderID: A), "the pair runs under rank 0")
+    }
+    /// The planner's alone verdicts are for one plan. After a model change (a new plan SHA) a verdict recorded for the old
+    /// plan must not let a survivor serve the new model alone, and a refused (stale) lease never rewrites the verdicts.
+    static func aloneVerdictsBoundToThePlan() {
+        typealias V = ClusterControlAloneVerdicts
+        expect(V.holds(B, holders: [A, B], forPlan: "p1", savedPlan: "p1") == true, "verdict for the saved plan counts")
+        expect(V.holds(B, holders: [A], forPlan: "p1", savedPlan: "p1") == false, "not a holder of the saved plan")
+        expect(V.holds(B, holders: [A, B], forPlan: "p1", savedPlan: "p2") == nil, "verdict for another plan does not count")
+        expect(V.holds(B, holders: [A, B], forPlan: nil, savedPlan: "p1") == nil, "verdict for no named plan does not count")
+        expect(V.holds(B, holders: [A, B], forPlan: "p1", savedPlan: nil) == nil, "no saved plan: no verdict")
+        let facts = [mac(A, "Apple M3 Ultra, 256 GB", 256, 80, alone: true), mac(B, "Apple M5 Ultra, 256 GB", 256, 80, alone: true)]
+        expect(V.gated(facts, forPlan: "p1", savedPlan: "p1") == facts, "a lease's verdicts for the saved plan are kept")
+        expect(V.gated(facts, forPlan: "p1", savedPlan: "p2").allSatisfy { $0.holdsModelAlone == nil }, "verdicts for another plan are dropped")
+        expect(V.gated(facts, forPlan: "p1", savedPlan: "p2").map { $0.memoryBytes } == facts.map { $0.memoryBytes }, "the other facts stay")
+        let accepted = ClusterControlNode.LeaseAnswer.accepted(facts[1])
+        let refused = ClusterControlNode.LeaseAnswer.refused(.init(term: 3, leaderID: B, members: [A, B], reason: ""), facts[1])
+        expect(V.toRecord(answer: accepted, facts: facts, forPlan: "p1", savedPlan: "p1").map { $0.holders == [A, B] && $0.plan == "p1" } == true,
+               "an accepted lease's verdicts for the saved plan are recorded with the plan")
+        expect(V.toRecord(answer: refused, facts: facts, forPlan: "p1", savedPlan: "p1") == nil, "a refused (stale) lease records nothing")
+        expect(V.toRecord(answer: accepted, facts: facts, forPlan: "p0", savedPlan: "p1") == nil, "verdicts for another plan record nothing")
+        // Failover after a model change whose verdicts B has not yet received: B states it cannot serve, runs nothing.
+        let ownB = V.holds(B, holders: [A, B], forPlan: "old-plan", savedPlan: "new-plan")
+        var bus = pair(aloneA: true, aloneB: true)
+        for t in stride(from: 0.0, through: 20, by: 5) { bus.step(t) }
+        var stale = bus.nodes[B]!.members[B]!
+        stale.holdsModelAlone = ownB
+        bus.nodes[B]!.learn(stale)
+        bus.up.remove(A)
+        for t in stride(from: 25.0, through: 60, by: 5) { bus.step(t) }
+        guard case .cannotServe = bus.nodes[B]!.mode(now: 60) else {
+            return expect(false, "a verdict for an older plan never serves the new model alone: \(bus.nodes[B]!.mode(now: 60))")
+        }
+        expect(true, "")
+    }
+    /// A Mac re-paired with ANOTHER Mac (a replaced Mac) still has the old pairing's control record. It must not carry
+    /// that leadership history into the new pair: the old claim names a member that is gone and not the new one, so the
+    /// new member would never get a lease, and spurious take-overs (each a solo load) would follow. A new pairing starts
+    /// at term 0 led by the Mac that drove its onboarding; a record of the same pair is kept.
+    static func rePairedWithAnotherMac() {
+        let C = "mac-cccccccccccc", oldB = "mac-0b0b0b0b0b0b"
+        let old = ClusterControlRecord(claim: .init(term: 5, leaderID: oldB, members: [A, oldB], reason: "rank 0 of the old plan"),
+                                       members: [mac(A, "Apple M3 Ultra, 256 GB", 256, 80), mac(oldB, "Apple M5 Max, 128 GB", 128, 40)],
+                                       rankOrder: [oldB, A])
+        let fresh = ClusterControlRestart.start(persisted: old, localID: A, peerID: C, onboardingLeaderID: C)
+        expect(fresh.claim.term == 0 && fresh.claim.leaderID == C && Set(fresh.claim.members) == [A, C],
+               "another peer: a new history at term 0 led by the onboarding Mac: \(fresh.claim)")
+        expect(!fresh.members.contains { $0.memberID == oldB }, "the gone Mac's facts are not carried over")
+        let same = ClusterControlRestart.start(persisted: old, localID: A, peerID: oldB, onboardingLeaderID: A)
+        expect(same.claim == old.claim, "the same pair re-forms from its record: \(same.claim)")
+        let none = ClusterControlRestart.start(persisted: nil, localID: A, peerID: C, onboardingLeaderID: C)
+        expect(none.claim.term == 0 && none.claim.leaderID == C, "no record: the onboarding Mac leads at term 0")
+        // The new pair (A re-paired, C fresh, C drove the onboarding, plan rank 0 = A) forms with no take-over.
+        let members = [mac(A, "Apple M3 Ultra, 256 GB", 256, 80, alone: true), mac(C, "Apple M5 Ultra, 256 GB", 256, 80, alone: true)]
+        let startC = ClusterControlRestart.start(persisted: nil, localID: C, peerID: A, onboardingLeaderID: C)
+        var bus = Bus(nodes: [A: ClusterControlNode(localID: A, members: members, claim: fresh.claim, rankOrder: [A, C], now: 0, ttl: 30),
+                              C: ClusterControlNode(localID: C, members: members, claim: startC.claim, rankOrder: [A, C], now: 0, ttl: 30)],
+                      up: [A, C])
+        for t in stride(from: 0.0, through: 120, by: 5) { bus.step(t) }
+        expect(!bus.log.contains { $0.contains("took over") }, "no take-over while both answer: \(bus.log)")
+        expect(bus.leaders == [A] && bus.nodes[A]!.mode(now: 120) == .cluster, "rank 0 leads the new pair: \(bus.leaders)")
     }
 }

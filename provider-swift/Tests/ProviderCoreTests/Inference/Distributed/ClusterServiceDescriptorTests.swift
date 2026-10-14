@@ -106,4 +106,22 @@ import Testing
         let read = ClusterService.supervisedRecord({ record })
         #expect((try? read.get())?.aloneHoldersPlan == "p")
     }
+
+    // MARK: - F18: the service's forever loops drain what each tick autoreleases
+
+    /// The service's two loops (control tick, supervise) never return to a run loop, so without a pool per iteration every
+    /// autoreleased Foundation object lives until the service ends. Round 6b's services grew about 15 MB a minute; a heap
+    /// of one showed 1.47 M CFStrings and 5,147 autorelease pool pages after 15 minutes.
+    @Test func serviceLoopsDrainAnAutoreleasePoolEachTick() throws {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/ProviderCore/Inference/Distributed/Onboarding/ClusterService.swift")
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        func loopDrains(_ header: String) -> Bool {
+            guard let start = lines.firstIndex(where: { $0.contains(header) }) else { return false }
+            return lines[(start + 1)..<min(lines.count, start + 8)].contains { $0.contains("autoreleasepool {") }
+        }
+        #expect(loopDrains("while let self, !self.lock.withLock({ self.stopping }) {"), "the control tick loop")
+        #expect(loopDrains("while !stopped {"), "the supervise loop")
+    }
 }

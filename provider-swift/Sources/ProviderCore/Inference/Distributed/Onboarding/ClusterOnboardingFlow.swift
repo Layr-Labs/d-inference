@@ -350,6 +350,9 @@ public struct ClusterOnboardingOperations: Sendable {
     public var afterRestart: @Sendable () -> String?
     /// Saves a redacted diagnostics file; its lines say where.
     public var saveDiagnostics: @Sendable () -> Result<[String], ClusterOnboardingFailure>
+    /// DEVELOPER ONLY: one loud line for the setup screen when a developer setting overrides the planner (a forced
+    /// deployment mode, `ClusterForcedModeSetting`); nil, the default and every user's case, says nothing.
+    public var developerNotice: @Sendable () -> String?
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -370,12 +373,14 @@ public struct ClusterOnboardingOperations: Sendable {
                 useLinkPort: @escaping @Sendable (String) -> Void = { _ in },
                 recheckFit: @escaping @Sendable (Int) -> String? = { _ in nil },
                 afterRestart: @escaping @Sendable () -> String? = { nil },
-                saveDiagnostics: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("No diagnostics file can be saved here.")) }) {
+                saveDiagnostics: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("No diagnostics file can be saved here.")) },
+                developerNotice: @escaping @Sendable () -> String? = { nil }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
         self.status = status; self.stop = stop; self.provision = provision; self.verifyTeardown = verifyTeardown
         self.useLinkPort = useLinkPort; self.recheckFit = recheckFit; self.afterRestart = afterRestart; self.saveDiagnostics = saveDiagnostics
+        self.developerNotice = developerNotice
     }
 }
 
@@ -672,6 +677,7 @@ public enum ClusterOnboardingDriver {
         for machine in machines { console.say(machine.line) }
         console.say("")
         console.say("Working out the fastest way to split each model across both Macs…")
+        if let notice = operations.developerNotice() { console.say(notice) }
         let choices: [ClusterOnboardingModelChoice]
         switch operations.planModels() {
         case .success(let value): choices = value

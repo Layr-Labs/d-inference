@@ -63,6 +63,8 @@ public enum ClusterPlacementFlow {
         let handOff = try ClusterHandOffModes.enabled(environment: environment)
         // Developer bench only (`ClusterBenchChip`): a debug build may be told to plan both Macs as another chip.
         let benchChip = try ClusterBenchChip.planningChipName(environment: environment, debugBuild: benchDebugBuild)
+        // Developer only (`ClusterForcedModeSetting`): a debug build may be told which mode family to place.
+        let forced = try ClusterForcedModeSetting.mode(environment: environment, debugBuild: benchDebugBuild)
         let cappedLocal = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
         let cappedPeer = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
         let localProfile = try benchChip.map { try cappedLocal.renamedForBench(chip: $0) } ?? cappedLocal
@@ -101,6 +103,7 @@ public enum ClusterPlacementFlow {
         }
         policy.modes = capability.supportedGenerationModes
         policy.handOffModes = handOff
+        policy.forcedMode = forced
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]
         let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
@@ -125,7 +128,8 @@ public enum ClusterPlacementFlow {
         // The link as the pair's last load measured it (`ClusterLinkProbeHistory`);
         // unmeasured, no tensor-parallel mode is chosen.
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy, link: link)
-        var lines = (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
+        var lines = (forced.map(ClusterForcedModeSetting.lines) ?? [])
+            + (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + (benchChip.map(ClusterBenchChip.lines(chipName:)) ?? [])
             + servedLines
             + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
         if handOff {

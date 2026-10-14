@@ -45,7 +45,8 @@ extension ClusterOnboardingOperations {
             useLinkPort: { live.useLinkPort($0) },
             recheckFit: { live.recheckFit($0) },
             afterRestart: { live.afterRestart() },
-            saveDiagnostics: { live.saveDiagnostics() })
+            saveDiagnostics: { live.saveDiagnostics() },
+            developerNotice: { ClusterForcedModeSetting.notice(environment: ProcessInfo.processInfo.environment) })
     }
 }
 

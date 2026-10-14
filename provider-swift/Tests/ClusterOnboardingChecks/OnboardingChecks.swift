@@ -18,6 +18,7 @@ import Darwin
         signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(120); defer { alarm(0) }
         pairingStateMachine()
         leaderFromScratch()
+        forcedModeNoticeOnTheSetupScreen()
         memberFromScratch()
         bothWaitingAtOnce()
         cancelWhileWaiting()
@@ -124,6 +125,7 @@ import Darwin
                            approvalGate: DispatchSemaphore? = nil,
                            recheck: String? = nil,
                            afterRestart: String? = nil,
+                           developerNotice: String? = nil,
                            readyResult: Result<ClusterOnboardingReady, ClusterOnboardingFailure> = .success(.init(servedBy: "Apple M3 Ultra, 256 GB", port: 8000,
                                deployment: "Serving Qwen3.5-9B across both Macs: pipeline, M3 Ultra 16 layers / M5 Ultra 16 layers"))) -> ClusterOnboardingOperations {
         let answered = DispatchSemaphore(value: 0)
@@ -197,7 +199,8 @@ import Darwin
             useLinkPort: { port in chosenPort.note(port); recorder.note("useLinkPort \(port)") },
             recheckFit: { index in recorder.note("recheckFit \(index)"); return recheck },
             afterRestart: { afterRestart },
-            saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): darkbloom-cluster-diagnostics.json in your home folder."]) })
+            saveDiagnostics: { recorder.note("saveDiagnostics"); return .success(["Saved a diagnostics file (no keys, addresses or names in it): darkbloom-cluster-diagnostics.json in your home folder."]) },
+            developerNotice: { developerNotice })
     }
 
     /// One driver run on a pseudo-terminal: the keys are typed only once the text before them is on screen.
@@ -294,6 +297,36 @@ import Darwin
             "waitReady", "testRequest"], "leader: operations in order: \(recorder.all)")
         expect(!text.lowercased().contains("ssh") && !text.contains("10.219"), "leader: no SSH and no address on screen")
         transcript("leader-from-scratch", text, keys: run.keys)
+    }
+
+    /// DEVELOPER ONLY (`DARKBLOOM_CLUSTER_FORCE_MODE` in a debug build): a forced mode is said loudly, in one line, on
+    /// the setup screen right under the planning line; without the setting the screen has no such line.
+    static func forcedModeNoticeOnTheSetupScreen() {
+        let notice = "Developer setting: tensor parallel forced (DARKBLOOM_CLUSTER_FORCE_MODE=tensor_parallel_v1; debug build only)."
+        let recorder = Recorder()
+        let run = TerminalRun(operations(recorder, pairEvents: [.searching, .waitingAsLeader, .connected,
+            .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+            pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), developerNotice: notice))
+        expect(run.waitFor("Does the other Mac show 123 456? Press y if it does, n if it does not."), "forced mode: the code question")
+        run.type("y")
+        expect(run.waitFor("Choose a model [1-2, enter = 1]: "), "forced mode: the model choice")
+        let text = run.text
+        expect(text.contains("Working out the fastest way to split each model across both Macs…\n" + notice + "\n"),
+            "forced mode: the notice in one line right under the planning line")
+        expect(text.components(separatedBy: "Developer setting:").count == 2, "forced mode: said once")
+        run.type("\r")
+        _ = run.finish()
+        transcript("leader-forced-mode", run.text, keys: run.keys)
+        let plain = Recorder()
+        let other = TerminalRun(operations(plain, pairEvents: [.searching, .waitingAsLeader, .connected,
+            .code("123456", peer: ["Apple M3 Ultra, 256 GB"]), .peerDecided(true)],
+            pairResult: .paired(role: .leader, peerName: "Apple M3 Ultra, 256 GB")))
+        expect(other.waitFor("Does the other Mac show 123 456? Press y if it does, n if it does not."), "no setting: the code question")
+        other.type("y")
+        expect(other.waitFor("Choose a model [1-2, enter = 1]: "), "no setting: the model choice")
+        expect(!other.text.contains("Developer setting"), "no setting: no developer line on the setup screen")
+        other.type("\r")
+        _ = other.finish()
     }
 
     /// The serving API listens on loopback on the Mac that runs rank 0: the line says which Mac that is.

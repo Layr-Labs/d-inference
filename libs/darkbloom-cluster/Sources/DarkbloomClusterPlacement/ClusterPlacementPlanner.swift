@@ -79,6 +79,13 @@ public struct ClusterPlacementPolicy: Sendable {
     /// does not opt in. Under the opt-in a plan is the earlier planner's,
     /// byte for byte (no `shards` table).
     public var handOffModes = false
+    /// DEVELOPER ONLY, never set on a user's path (`ClusterForcedMode`; the
+    /// provider sets it from `DARKBLOOM_CLUSTER_FORCE_MODE` in a debug build):
+    /// only this mode family is placed and its fastest placement is chosen,
+    /// whatever the other families are predicted to do. Memory, the model's
+    /// mode list and `admitsShape` still apply; a forced family with no
+    /// placement is refused with the reason. Nil, the default: the planner chooses.
+    public var forcedMode: ClusterForcedMode?
     public init() {}
 }
 
@@ -300,7 +307,7 @@ public enum ClusterPlacementPlanner {
             }
         }
         let allowed = layout.generationModes.filter { policy.modes?.contains($0) ?? true }
-        let modes = allowed.filter { policy.handOffModes || !$0.isHandOff }
+        var modes = allowed.filter { policy.handOffModes || !$0.isHandOff }
         let schedules = layout.prefillSchedules.filter { policy.schedules?.contains($0) ?? true }
         if modes.isEmpty, !allowed.isEmpty {
             throw ClusterPlacementError("The policy allows only modes that hand the request state off (phase split or the hybrid), "
@@ -308,6 +315,23 @@ public enum ClusterPlacementPlanner {
         }
         guard !modes.isEmpty, !schedules.isEmpty else {
             throw ClusterPlacementError("The policy allows no generation mode or prefill schedule this model lists")
+        }
+        var link = link
+        if let forced = policy.forcedMode {
+            // A developer setting (`ClusterForcedMode`): only the forced family is placed. Its stage adapter must exist.
+            modes = modes.filter(forced.admits)
+            guard !modes.isEmpty else {
+                throw ClusterPlacementError("Developer setting: \(forced.words) forced, but \(layout.runtimeModelID) has no \(forced.words) mode "
+                    + "in this build (no stage adapter runs it)")
+            }
+            if forced == .tensorParallel {
+                guard let tp = layout.tensorParallel, tp.family.ranks.contains(min(policy.maximumRanges, devices.count)) else {
+                    throw ClusterPlacementError("Developer setting: tensor parallel forced, but \(layout.runtimeModelID) has no tensor parallel mode "
+                        + "for \(min(policy.maximumRanges, devices.count)) Macs (no stage adapter runs it)")
+                }
+                // Nothing measured the link yet: an assumed keyed reduction, labelled as such, so the mode can be placed.
+                link = link.assumingForcedReduction()
+            }
         }
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
@@ -322,6 +346,12 @@ public enum ClusterPlacementPlanner {
         } ?? admitted
         let ranked = context.holdingTensorParallelToItsMargin(context.preferringHeadroom(
             context.ordered(qualified.filter(\.possible), regime: policy.regime), regime: policy.regime), regime: policy.regime)
+        if let forced = policy.forcedMode, ranked.isEmpty {
+            throw ClusterPlacementError("Developer setting: \(forced.words) forced, but no \(forced.words) placement of \(layout.runtimeModelID) "
+                + (admitted.contains(where: \.possible)
+                    ? "passes this model's qualification records on these chips"
+                    : "fits these Macs' memory"))
+        }
         let other: ClusterPlacementPolicy.Regime = policy.regime == .sustained ? .rested : .sustained
         let structural = context.ordered(try context.candidates(.structural).filter(\.possible), regime: policy.regime).first
         let anyBoundary = context.ordered(try context.candidates(.anyBoundary).filter(\.possible), regime: policy.regime).first

@@ -45,6 +45,7 @@ import Foundation
             try checkTensorParallel(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkShardPlanner(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkLinkProbe(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkForcedMode(inputs, checks)
             try checkPipelineSpeculativeHolding(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             try checkQwenPipelineSpeculative(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {

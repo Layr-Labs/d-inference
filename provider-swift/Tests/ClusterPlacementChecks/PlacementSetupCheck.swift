@@ -162,6 +162,65 @@ import Foundation
     /// The developer bench cap (`ClusterPlannerBenchCap`, test only): an explicit environment variable that, in a
     /// debug build, lowers what the planner believes each member can give a model, so a large pair is planned as a
     /// smaller pair would be. A release build refuses it; the load gates never see it.
+    /// DEVELOPER ONLY (`ClusterForcedModeSetting`): `DARKBLOOM_CLUSTER_FORCE_MODE` forces a deployment mode family in a
+    /// debug build, for pilots; a release build refuses to plan while it is set; a value that names no family is
+    /// refused; the plan and the setup screen say it loudly in one line. Memory, the model's mode list and the
+    /// qualification shapes still decide (the planner's own checks, libs PlacementChecks "forced mode").
+    static func forcedMode(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,
+                           slowTwo: [ClusterPlacementDevice]) throws {
+        let name = ClusterForcedModeSetting.environmentName
+        require("forced mode: the setting is named DARKBLOOM_CLUSTER_FORCE_MODE", name == "DARKBLOOM_CLUSTER_FORCE_MODE")
+        require("forced mode: unset (or empty), nothing is forced in either build",
+            try ClusterForcedModeSetting.mode(environment: [:], debugBuild: true) == nil
+                && ClusterForcedModeSetting.mode(environment: [:], debugBuild: false) == nil
+                && ClusterForcedModeSetting.mode(environment: [name: ""], debugBuild: true) == nil)
+        require("forced mode: a debug build reads tensor_parallel_v1 and pipeline_v1 (and the plain family names)",
+            try ClusterForcedModeSetting.mode(environment: [name: "tensor_parallel_v1"], debugBuild: true) == .tensorParallel
+                && ClusterForcedModeSetting.mode(environment: [name: "tensor_parallel"], debugBuild: true) == .tensorParallel
+                && ClusterForcedModeSetting.mode(environment: [name: "pipeline_v1"], debugBuild: true) == .pipeline
+                && ClusterForcedModeSetting.mode(environment: [name: "pipeline"], debugBuild: true) == .pipeline)
+        refuses("forced mode: a release build refuses to plan while it is set", because: "not available in a release build") {
+            _ = try ClusterForcedModeSetting.mode(environment: [name: "tensor_parallel_v1"], debugBuild: false)
+        }
+        for bad in ["tp", "phase_split_v1", "pipeline_prefill_tensor_decode_v1", "TENSOR_PARALLEL_V1", "1"] {
+            refuses("forced mode: \"\(bad)\" is refused", because: "tensor_parallel_v1 or pipeline_v1") {
+                _ = try ClusterForcedModeSetting.mode(environment: [name: bad], debugBuild: true)
+            }
+        }
+        require("forced mode: the setup screen's one loud line, debug build",
+            ClusterForcedModeSetting.notice(environment: [name: "tensor_parallel_v1"], debugBuild: true)
+                == "Developer setting: tensor parallel forced (DARKBLOOM_CLUSTER_FORCE_MODE=tensor_parallel_v1; debug build only)."
+                && ClusterForcedModeSetting.notice(environment: [name: "pipeline_v1"], debugBuild: true)
+                    == "Developer setting: pipeline forced (DARKBLOOM_CLUSTER_FORCE_MODE=pipeline_v1; debug build only).")
+        require("forced mode: unset, the setup screen has no developer line", ClusterForcedModeSetting.notice(environment: [:], debugBuild: true) == nil
+            && ClusterForcedModeSetting.notice(environment: [:], debugBuild: false) == nil)
+        require("forced mode: set in a release build, the screen says it is refused (and nothing is forced)",
+            ClusterForcedModeSetting.notice(environment: [name: "tensor_parallel_v1"], debugBuild: false)?
+                .hasPrefix("Developer setting DARKBLOOM_CLUSTER_FORCE_MODE is set but refused:") == true)
+        refuses("forced mode: a release build refuses to plan a pair while it is set", because: "not available in a release build") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [name: "pipeline_v1"],
+                benchDebugBuild: false)
+        }
+        let piped = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [name: "pipeline_v1"],
+            benchDebugBuild: true)
+        require("forced mode: pipeline forced, the plan is a pipeline and its words open with the developer setting",
+            piped.result.chosen.map { !$0.mode.usesTensorParallelDecode && !$0.mode.isHandOff } == true && piped.setup != nil
+                && piped.lines.first == "Developer setting: pipeline forced (\(name)=pipeline_v1)"
+                && piped.lines.contains { $0.contains("developer only") && $0.contains("never offered") })
+        // This fixture's runtime lists no tensor-parallel mode: forcing it is refused (the adapter rule), not swapped.
+        refuses("forced mode: tensor parallel forced on a model whose runtime has no tensor-parallel mode is refused",
+                because: "tensor parallel forced") {
+            _ = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+                localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [name: "tensor_parallel_v1"],
+                benchDebugBuild: true)
+        }
+        let plain = try ClusterPlacementFlow.decide(description: description, capability: capability, localMemberID: "mac-one",
+            localProfile: slowTwo[0].profile, peerProfile: slowTwo[1].profile, layout: layout, environment: [:], benchDebugBuild: true)
+        require("forced mode: unset, the plan carries no developer line", !plain.lines.contains { $0.contains("Developer setting") })
+    }
+
     static func benchCap(layout: ClusterModelLayout, description: ClusterPairDescription, capability: ClusterRuntimeCapability,
                          slowTwo: [ClusterPlacementDevice]) throws {
         let name = ClusterPlannerBenchCap.environmentName
@@ -485,6 +544,7 @@ import Foundation
             capabilityHash: capabilityHash, slowTwo: slowTwo)
         try qualifiedShapes(description: descriptionObject, slowTwo: slowTwo)
         try benchCap(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
+        try forcedMode(layout: layout, description: description, capability: capability, slowTwo: slowTwo)
 
         // A cut the record does not describe is refused, in words.
         let elsewhere = try ClusterPlacementPlanner.evaluate(devices: slowTwo.reversed(), cuts: [20], mode: .pipeline,

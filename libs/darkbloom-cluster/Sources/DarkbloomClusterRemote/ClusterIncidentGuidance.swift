@@ -230,9 +230,9 @@ extension ClusterGuidance {
                 "If it repeats, run `darkbloom cluster doctor` on both Macs and compare what it reports."],
         command: "darkbloom cluster doctor")
 
-    /// SSH only exists in the developer test harness: the product pairs with `darkbloom cluster setup` and never asks a
+    /// SSH only exists in the developer test harness: the product pairs with `darkbloom cluster` and never asks a
     /// user for SSH, so every SSH guidance leads with the product path.
-    static let devHarness = ["Production pairs need no SSH: run `darkbloom cluster setup` on both Macs and confirm the six-digit code."]
+    static let devHarness = ["Run `darkbloom cluster` on both Macs to pair them again; no SSH is needed."]
     static let ssh: [String: ClusterGuidance] = [
         "host_key_unknown": .init(code: "host_key_unknown", title: "The other Mac isn't trusted yet",
             explanation: "SSH stopped before login because this Mac has not recorded the other Mac's host key.",
@@ -279,7 +279,7 @@ extension ClusterGuidance {
         .addressUnusable: .init(code: "address_unresolved", title: "A cluster address cannot be used",
             explanation: "An address in the setup could not be parsed or is not on the link interface.",
             steps: ["Run `darkbloom cluster link` on both Macs: the cable must be up and the link ready.",
-                    "Run `darkbloom cluster setup` again on both Macs; it uses the addresses macOS gives the cable by itself, so no network settings are needed."],
+                    "Run `darkbloom cluster` on both Macs to pair them again; it uses the addresses macOS gives the cable by itself, so no network settings are needed."],
             command: "darkbloom cluster link"),
         .peerUnreachable: .init(code: "peer_unreachable", title: "Can't reach the other Mac",
             explanation: "The address resolved but nothing answered on the link.",
@@ -307,7 +307,7 @@ extension ClusterGuidance {
             steps: ["Check the leader Mac is running and the link is up.", "The next start forms a fresh session; nothing needs to be cleaned up."]),
         .workerRuntimeMismatch: .init(code: "worker_runtime_unverified", title: "The worker on one Mac is not the one the setup names",
             explanation: "The installed worker's bytes, policy or runtime description differ from the saved setup, so its rank was not started.",
-            steps: ["Install the same Darkbloom build on both Macs.", "Run `darkbloom cluster configure` again with this worker's own description."]),
+            steps: ["Install the same Darkbloom build on both Macs.", "Run `darkbloom cluster` again; it sets the cluster up again by itself."]),
         .versionMismatch: .init(code: "version_mismatch", title: "The two Macs are running different versions",
             explanation: "Ranks must run identical Darkbloom and MLX builds; a mismatch gives wrong results rather than a clean error.",
             steps: ["Update both Macs to the same Darkbloom release.", "Run `darkbloom cluster doctor` on both afterwards."]),
@@ -319,10 +319,10 @@ extension ClusterGuidance {
             steps: ["Download the same model on the Mac named in the incident.", "Then start again; only the missing files are needed."]),
         .planChanged: .init(code: "plan_changed", title: "The cluster plan changed before launch",
             explanation: "The placement about to launch differed from the one that was checked and approved, so nothing was started.",
-            steps: ["Retry: a fresh plan is derived from both Macs' memory now.", "If it repeats, plan again from the console and approve the new plan."]),
+            steps: ["Retry: a fresh plan is derived from both Macs' memory now.", "If it repeats, run `darkbloom cluster` and choose the model again."]),
         .unsupportedMode: .init(code: "unsupported_mode", title: "This model can't run in that mode on the pair",
             explanation: "The worker does not advertise the selected generation mode for this model.",
-            steps: ["Let the planner choose the mode, or pick a mode the worker advertises (`darkbloom cluster status`)."]),
+            steps: ["Run `darkbloom cluster` and choose the model again; the planner picks a mode the worker supports."]),
         .peerLost: .init(code: "peer_lost", title: "The other Mac's rank went away",
             explanation: "The rank on the other Mac ended or its connection closed while the session needed it.",
             steps: ["Check the other Mac is awake and Darkbloom is running there.", "Retry; the session is formed again from scratch."]),
@@ -337,7 +337,7 @@ extension ClusterGuidance {
             steps: ["Start again when ready; nothing is left running."]),
         .configurationInvalid: .init(code: "configuration_invalid", title: "The saved cluster setup could not be used",
             explanation: "The saved setup or one of its pinned files failed verification.",
-            steps: ["Run `darkbloom cluster doctor` and follow what it reports.", "Save the setup again with `darkbloom cluster configure`."],
+            steps: ["Run `darkbloom cluster doctor` and follow what it reports.", "Run `darkbloom cluster` again; it sets the cluster up again by itself."],
             command: "darkbloom cluster doctor"),
         .cleanupUnresolved: .init(code: "cleanup_unresolved", title: "A stop could not prove everything was released",
             explanation: "An owner did not confirm its worker ended and its device was released within the allowance; ownership is kept until it does.",

@@ -212,7 +212,7 @@ func classifierChecks() {
         check(hit.isEmpty, "B-gate \(g.code) asks for no SSH set-up or network setting\(hit.isEmpty ? "" : ": \(hit)")")
     }
     for g in ["host_key_unknown", "host_identity_changed", "no_matching_host_key", "login_rejected"].compactMap({ ClusterGuidance.guidance(code: $0) }) {
-        check(g.steps.first?.contains("darkbloom cluster setup") == true, "B-gate \(g.code) leads with the SSH-free pairing")
+        check(g.steps.first?.contains("darkbloom cluster") == true, "B-gate \(g.code) leads with the SSH-free pairing")
     }
 }
 

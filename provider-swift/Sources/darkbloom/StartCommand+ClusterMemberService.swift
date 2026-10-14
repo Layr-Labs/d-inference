@@ -19,7 +19,7 @@ extension Start {
         // could only fail and exhaust its restart budget.
         _ = try DistributedStartSessionFactory(providerConfiguration: path)
         guard let setup = try ClusterMemberSupervisionSetup.load(providerConfiguration: path) else {
-            throw ValidationError("No saved cluster setup in \(path.path); run `darkbloom cluster setup` first.")
+            throw ValidationError("No saved cluster setup in \(path.path); run `darkbloom cluster` on both Macs to pair them again.")
         }
         let config = try ConfigManager.load(from: path)
         let effectiveCoordinator = coordinatorURL ?? config.coordinator.url

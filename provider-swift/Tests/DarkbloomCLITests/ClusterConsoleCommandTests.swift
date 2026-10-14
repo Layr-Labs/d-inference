@@ -77,29 +77,56 @@ struct ClusterConsoleCommandTests {
         }
     }
 
-    @Test("bare `darkbloom cluster` opens the setup wizard only in a terminal without the unattended or printed flags; `cluster setup` never does")
-    func opensWizard() {
-        func opens(_ arguments: [String], json: Bool = false, yes: Bool = false, temporary: Bool = false, plain: Bool = false,
-                   input: Bool = true, output: Bool = true, type: String? = "xterm-256color") -> Bool {
-            Cluster.Setup.opensWizard(arguments: arguments, json: json, yes: yes, temporary: temporary, plain: plain,
+    @Test("`darkbloom cluster` and `darkbloom cluster setup` run the onboarding on any terminal; the link setup only when asked for")
+    func entry() {
+        func entry(json: Bool = false, yes: Bool = false, temporary: Bool = false, dryRun: Bool = false, linkOnly: Bool = false,
+                   wizard: Bool = false, input: Bool = true, output: Bool = true, type: String? = "xterm-256color") -> Cluster.Setup.Entry {
+            Cluster.Setup.entry(json: json, yes: yes, temporary: temporary, dryRun: dryRun, linkOnly: linkOnly, wizard: wizard,
                 inputIsTerminal: input, outputIsTerminal: output, terminalType: type)
         }
-        #expect(opens(["darkbloom", "cluster"]))
-        #expect(opens(["/usr/local/bin/darkbloom", "cluster"]))
-        // The program's own path is not an argument, whatever it is called.
-        #expect(opens(["setup", "cluster"]))
-        // A dry run opens the wizard with the link fix limited to its preview.
-        #expect(opens(["darkbloom", "cluster", "--dry-run"]))
-        #expect(!opens(["darkbloom", "cluster", "setup"]))
-        #expect(!opens(["darkbloom", "cluster"], json: true))
-        #expect(!opens(["darkbloom", "cluster"], yes: true))
-        #expect(!opens(["darkbloom", "cluster", "--temporary"], temporary: true))
-        #expect(!opens(["darkbloom", "cluster", "--plain"], plain: true))
-        #expect(!opens(["darkbloom", "cluster"], input: false))
-        #expect(!opens(["darkbloom", "cluster"], output: false))
-        // A terminal that only prints lines gets the line-by-line flow.
-        #expect(!opens(["darkbloom", "cluster"], type: "dumb"))
-        #expect(!opens(["darkbloom", "cluster"], type: nil))
+        #expect(entry() == .onboarding)
+        // A terminal that only prints lines still runs the onboarding: it prints plain lines and reads keys through termios.
+        for type in [nil, "", "dumb", "unknown"] as [String?] { #expect(entry(type: type) == .onboarding) }
+        // No terminal: one line that says where to run it, never the link-only flow that ends without pairing.
+        #expect(entry(input: false) == .needsTerminal)
+        #expect(entry(output: false) == .needsTerminal)
+        #expect(entry(input: false, output: false) == .needsTerminal)
+        // The link setup only with the options that ask for it.
+        #expect(entry(json: true) == .linkSetup)
+        #expect(entry(yes: true) == .linkSetup)
+        #expect(entry(temporary: true) == .linkSetup)
+        #expect(entry(dryRun: true) == .linkSetup)
+        #expect(entry(linkOnly: true) == .linkSetup)
+        #expect(entry(json: true, input: false, output: false) == .linkSetup)
+        // The earlier wizard only behind its developer flag, on a terminal that can draw it.
+        #expect(entry(wizard: true) == .wizard)
+        #expect(entry(dryRun: true, wizard: true) == .wizard)
+        #expect(entry(wizard: true, type: "dumb") == .onboarding)
+        #expect(Cluster.Setup.needsTerminalLine == "Run `darkbloom cluster` in a Terminal window on this Mac.")
+    }
+
+    @Test("`cluster setup` parses to the same command as bare `cluster`, and `--member setup` is only a member label")
+    func setupIsTheOnboarding() throws {
+        #expect(try Darkbloom.parseAsRoot(["cluster"]) is Cluster.Setup)
+        #expect(try Darkbloom.parseAsRoot(["cluster", "setup"]) is Cluster.Setup)
+        #expect(try Darkbloom.parseAsRoot(["cluster", "setup", "--link-only"]) is Cluster.Setup)
+    }
+
+    @Test("the cluster help reads as one command: developer subcommands and options are hidden")
+    func helpIsPlain() {
+        func flat(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        #expect(flat(Cluster.helpMessage()).contains("Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen."))
+        let shown = Set(Cluster.configuration.subcommands.filter { $0.configuration.shouldDisplay }.compactMap { $0.configuration.commandName })
+        for hidden in ["plan", "configure", "console", "worker-owner", "link-follower", "recover", "reap", "verify-teardown", "cancel-all",
+                       "pair", "incidents", "report", "inbox", "link-channel", "member-identity", "service"] {
+            #expect(!shown.contains(hidden), "\(hidden) is hidden from `darkbloom cluster --help`")
+        }
+        for visible in ["setup", "link", "status", "doctor", "stop"] { #expect(shown.contains(visible), "\(visible) stays visible") }
+        let setup = flat(Cluster.Setup.helpMessage())
+        for option in ["--pair", "--capability", "--member", "--model-dir", "--worker", "--wizard", "--plain", "--link-only"] {
+            #expect(!setup.contains(option), "\(option) is hidden")
+        }
+        for words in ["rank 0", "bridge", "fixed address", "RDMA GID", "six-step", "plan's"] { #expect(!setup.contains(words), "no \(words) in the help") }
     }
 
     @Test("the wizard takes a pair as all four options or none, absolute, with a lowercase pin and a member label")

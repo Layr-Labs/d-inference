@@ -92,6 +92,11 @@
   width: 180px;
 }
 
+.search input:focus-visible {
+  outline: 2px solid #6487ff;
+  outline-offset: 4px;
+}
+
 .model-row {
   display: flex;
   align-items: center;

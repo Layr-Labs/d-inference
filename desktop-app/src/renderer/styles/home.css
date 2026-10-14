@@ -27,6 +27,6 @@
 .memory-track > span {
   display: block;
   height: 100%;
-  background: var(--blue);
+  background: var(--accent-brand);
   border-radius: 3px;
 }

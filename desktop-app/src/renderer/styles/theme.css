@@ -47,6 +47,11 @@
   --warning: #8a5919;
   --control-hover-filter: brightness(0.9);
 }
+/* An off switch's track needs more weight on white to stay visible. */
+:root[data-theme='light'] .switch {
+  --switch-track: rgba(var(--contrast-rgb), 0.3);
+  --switch-track-hover: rgba(var(--contrast-rgb), 0.38);
+}
 :root {
   color: var(--text-primary);
 }

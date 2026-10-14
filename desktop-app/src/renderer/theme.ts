@@ -8,6 +8,13 @@ export function savedTheme(): ThemePreference {
   }
   return 'system';
 }
+/** Re-apply the saved preference when macOS switches appearance, on every screen. */
+export function followSystemTheme() {
+  const query = window.matchMedia?.('(prefers-color-scheme: dark)');
+  const change = () => applyTheme(savedTheme());
+  query?.addEventListener('change', change);
+  return () => query?.removeEventListener('change', change);
+}
 export function applyTheme(preference: ThemePreference) {
   const dark =
     preference === 'dark' ||

@@ -32,12 +32,16 @@ it('keeps enabled cooling blue at any temperature, including below its trigger',
 it('progressively reddens above 60 when the fan option is off and withholds stale readings', () => {
   const { rerender } = render(<FanStatus cooling={status} onOpen={() => {}} />);
   const button = screen.getByRole('button', { name: /Auto fan off/ });
-  expect(button.style.color).toBe('');
+  // The hue is set inline; each theme chooses a readable lightness in CSS.
+  const hue = () => button.style.getPropertyValue('--heat-hue');
+  expect(hue()).toBe('');
+  expect(button).not.toHaveAttribute('data-heat');
   rerender(<FanStatus cooling={{ ...status, temperature: 70 }} onOpen={() => {}} />);
-  const warm = button.style.color;
+  const warm = hue();
   expect(warm).not.toBe('');
+  expect(button).toHaveAttribute('data-heat', 'true');
   rerender(<FanStatus cooling={{ ...status, temperature: 90 }} onOpen={() => {}} />);
-  expect(button.style.color).not.toBe(warm);
+  expect(Number(hue())).toBeLessThan(Number(warm));
   rerender(<FanStatus cooling={{ ...status, enabled: true, observed_at: 1 }} onOpen={() => {}} />);
   expect(button).toHaveTextContent('Fan status unavailable');
   expect(button).not.toHaveTextContent('°C');

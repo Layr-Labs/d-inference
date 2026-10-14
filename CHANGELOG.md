@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop light and dark theme contrast
+
+- Make light- and dark-theme text and controls readable: selected schedule days and text selection (dark text on blue in light theme), the Home fan status (dark blue on dark in dark theme), the fan heat warning in light theme, progress bars, the fan-speed slider track, and off switches in light theme. Show a focus ring on the Macs search field, and follow macOS appearance changes on onboarding and the startup screen too.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

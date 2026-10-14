@@ -229,9 +229,11 @@ struct PrefixDiskTierTests {
         rekeyed.close()
         let planA = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "plan-a"))
         #expect(FileManager.default.fileExists(atPath: planA.path))
-        // Another plan on this rank: plan-a's directory goes, unrelated files stay.
+        // Another plan on this rank: plan-a's live record is kept (a switch back
+        // restores it, finding F5/S4) inside the budget; unrelated files stay.
         let other = try openTier(configuration(root, key: Data(repeating: 9, count: 32)), plan: "plan-b")
-        #expect(other.stats.sweptPlans == 1 && !FileManager.default.fileExists(atPath: planA.path))
+        #expect(other.stats.sweptPlans == 0 && FileManager.default.fileExists(atPath: planA.path))
+        #expect(other.stats.keptOtherRecords == 1 && other.stats.keptOtherBytes > 0)
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
         other.close()
         // Switched off with a root: every plan directory goes.
@@ -614,5 +616,48 @@ struct PrefixDiskTierTests {
             #expect(sameHistory(restored.speculativeHistory, original.speculativeHistory))
         }
         tier.close()
+    }
+
+    /// Finding F5/S4: opening another plan (a model, mode, cut or build switch)
+    /// deleted every other plan's records on the Mac, so switching back started
+    /// cold. Other plans' live records are now kept inside this rank's one
+    /// budget: a switch back restores them; when all plans together exceed the
+    /// budget the other plans' oldest records go first; expired ones and the
+    /// directories they leave empty go at load.
+    @Test func aPlanSwitchKeepsTheOtherPlansLiveRecordsWithinOneBudget() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokensA = Array(0..<40), tokensB = Array(1000..<1040)
+        let first = try openTier(configuration(root), plan: "model-a")
+        first.persist(scope: "s", tokens: tokensA, states: states(committed: 39, frontiers: [16], seed: 1), blockTokens: block)
+        #expect(first.drain(timeoutSeconds: 20) && first.recordCount == 1)
+        let recordBytes = first.stats.persistedBytes
+        first.close()
+        let planA = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "model-a"))
+        // The other model loads and serves: model-a's record stays on disk.
+        let second = try openTier(configuration(root), plan: "model-b")
+        #expect(FileManager.default.fileExists(atPath: planA.path))
+        second.persist(scope: "s", tokens: tokensB, states: states(committed: 39, frontiers: [16], seed: 2), blockTokens: block)
+        #expect(second.drain(timeoutSeconds: 20) && second.recordCount == 1)
+        second.close()
+        // Switching back restores model-a's prompt from the SSD tier.
+        let back = try openTier(configuration(root), plan: "model-a")
+        #expect(back.frontiers(scope: "s", tokens: tokensA, maximumFrontier: 39) == [39, 16])
+        #expect(try back.restore(scope: "s", tokens: tokensA, frontier: 39, check: {}) != nil)
+        back.close()
+        // One budget for all plans: with room for about one record, model-a's
+        // load drops model-b's (the other plan's) record first and keeps its own.
+        let tight = try openTier(configuration(root) { $0.byteBudget = recordBytes + recordBytes / 2 }, plan: "model-a")
+        #expect(tight.recordCount == 1 && tight.frontiers(scope: "s", tokens: tokensA, maximumFrontier: 39).first == 39)
+        let planB = root.appendingPathComponent(QwenStagePrefixDiskTier.planDirectoryName(scope: "model-b"))
+        let planBRecords = try FileManager.default.contentsOfDirectory(atPath: planB.appendingPathComponent("rank0").path)
+            .filter { $0.hasSuffix(".dbpx") }
+        #expect(planBRecords.isEmpty)
+        tight.close()
+        // Past the TTL another plan's records are deleted at load, and its directory with them.
+        usleep(1_100_000)
+        let later = try openTier(configuration(root) { $0.ttlSeconds = 1 }, plan: "model-c")
+        #expect(!FileManager.default.fileExists(atPath: planA.path) && !FileManager.default.fileExists(atPath: planB.path))
+        later.close()
     }
 }

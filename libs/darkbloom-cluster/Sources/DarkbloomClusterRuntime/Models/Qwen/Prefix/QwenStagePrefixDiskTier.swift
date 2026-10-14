@@ -19,8 +19,14 @@ struct QwenStagePrefixDiskFault: Equatable {
 /// Layout: `<root>/v1-<plan scope digest>/rank<r>/<keyed name>.dbpx`. The plan
 /// scope is the plan fingerprint, the verified artifact, the storage
 /// commitment and both ranks' builds: a re-split, another model or a new build
-/// gets a new directory, and at load every rank deletes the directories of
-/// other plans under its root (deleted deployments never leave orphans).
+/// gets a new directory. Directories of other plans under the root are kept
+/// while their records are live, inside this rank's one byte budget (finding
+/// F5/S4: a model or mode switch deleted the other model's whole cache on
+/// both Macs, so switching back started cold). At load every rank deletes
+/// their expired records and every other plan directory left without a live
+/// record (deleted deployments still leave no orphans past the TTL), and
+/// their oldest records go first whenever all plans together exceed the
+/// budget. Switched off, every plan directory goes.
 ///
 /// A record is one prompt's state on this rank: its attention rows up to the
 /// prompt's deepest kept frontier (N-1) and its recurrent state at each kept
@@ -63,6 +69,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     public struct Statistics: Equatable, Sendable {
         public var loadedRecords = 0
         public var sweptPlans = 0
+        /// Other plans' records kept at load (after the budget), and their bytes.
+        public var keptOtherRecords = 0
+        public var keptOtherBytes = 0
         public var sweptFiles = 0
         public var restores = 0
         public var failedRestores = 0
@@ -103,6 +112,11 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     private var queuedJobs = 0
     private var queuedBytes = 0
     private var cancelled = false
+    /// Other plans' live records under this root (kept at load, oldest
+    /// first) and their bytes: they count in this rank's budget and go
+    /// before any of this plan's records when it needs room.
+    private var otherRecords: [OtherRecord] = []
+    private var otherPlanBytes = 0
     private var writeWindowStart: TimeInterval = 0
     private var writeWindowBytes = 0
     /// When the writer last finished a record (progress, for `close`).
@@ -175,7 +189,9 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         }
         let start = DispatchTime.now().uptimeNanoseconds
         try Self.makePrivateDirectory(root)
-        let sweptPlans = Self.sweepPlans(root: root, keeping: planName)
+        let others = Self.keepLivePlans(root: root, keeping: planName, ttlSeconds: configuration.ttlSeconds,
+                                        now: Date().timeIntervalSince1970)
+        let sweptPlans = others.sweptPlans
         try Self.makePrivateDirectory(planDirectory)
         inUse = Darwin.open(planDirectory.appendingPathComponent("in-use").path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
         if inUse >= 0 { _ = flock(inUse, LOCK_SH) }
@@ -184,10 +200,15 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         loadIndex()
         let loaded = records.count
         statistics.loadedRecords = loaded
+        otherRecords = others.records.sorted(by: { ($0.modified, $0.path) < ($1.modified, $1.path) })
+        otherPlanBytes = otherRecords.reduce(0) { $0 + $1.bytes }
         evictOverLimits(protecting: nil)
+        statistics.keptOtherRecords = otherRecords.count
+        statistics.keptOtherBytes = otherPlanBytes
         let bytes = lock.withLock { records.values.reduce(0) { $0 + $1.bytes } }
         log("darkbloom-prefix-ssd-v1 rank=\(rank) event=open plan=\(planName) records=\(recordCount) bytes=\(bytes)"
             + " swept_plans=\(sweptPlans) swept_files=\(statistics.sweptFiles) expired=\(statistics.expirations)"
+            + " other_plan_records=\(statistics.keptOtherRecords) other_plan_bytes=\(statistics.keptOtherBytes)"
             + " ms=\((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)")
     }
 
@@ -497,6 +518,17 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
     // MARK: eviction
 
     private func evictOverLimits(protecting: String?) {
+        // Over the byte budget with other plans' records kept: theirs go
+        // first, oldest first (this plan is the one serving).
+        while let other: OtherRecord = lock.withLock({
+            let own = records.values.filter { $0.written }.reduce(0) { $0 + $1.bytes }
+            guard !otherRecords.isEmpty, own + otherPlanBytes > configuration.byteBudget else { return nil }
+            let first = otherRecords.removeFirst(); otherPlanBytes -= first.bytes
+            return first
+        }) {
+            unlink(other.path)
+            lock.withLock { statistics.evictions += 1 }
+        }
         while true {
             let victim: String? = lock.withLock {
                 let written = records.values.filter { $0.written }
@@ -635,9 +667,52 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
             attributes: [.posixPermissions: 0o700])
     }
 
+    /// Another plan's record kept at load.
+    struct OtherRecord { let path: String; let modified: TimeInterval; let bytes: Int }
+
+    /// At load: under every other plan directory not in use by a live rank
+    /// (its `in-use` lock), deletes the records past the TTL, then each such
+    /// directory left with no live record; returns the records kept (live,
+    /// usable when that plan loads again) and how many directories went.
+    /// Only names this tier creates are deleted; a directory a live rank uses
+    /// is left whole and not counted.
+    static func keepLivePlans(root: URL, keeping: String, ttlSeconds: Int, now: TimeInterval)
+        -> (sweptPlans: Int, records: [OtherRecord]) {
+        let fileManager = FileManager.default
+        var swept = 0, kept: [OtherRecord] = []
+        for name in (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? [] where isPlanDirectoryName(name) && name != keeping {
+            let plan = root.appendingPathComponent(name, isDirectory: true)
+            let lock = Darwin.open(plan.appendingPathComponent("in-use").path, O_RDONLY | O_NOFOLLOW)
+            if lock >= 0 {
+                defer { Darwin.close(lock) }
+                guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { continue }
+            }
+            var live: [OtherRecord] = []
+            for rank in (try? fileManager.contentsOfDirectory(atPath: plan.path)) ?? [] where rank.hasPrefix("rank") {
+                let directory = plan.appendingPathComponent(rank, isDirectory: true)
+                for file in (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+                where file.hasSuffix(".dbpx") && !file.hasPrefix(".") {
+                    let path = directory.appendingPathComponent(file).path
+                    var info = stat()
+                    guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { continue }
+                    let modified = TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9
+                    if now - modified > Double(ttlSeconds) { unlink(path) } else {
+                        live.append(.init(path: path, modified: modified, bytes: Int(info.st_size)))
+                    }
+                }
+            }
+            if live.isEmpty {
+                if (try? fileManager.removeItem(at: plan)) != nil { swept += 1 }
+            } else {
+                kept += live
+            }
+        }
+        return (swept, kept)
+    }
+
     /// Deletes every plan directory under `root` except `keeping` (all when
     /// nil) and except one a live rank holds (its `in-use` lock). Only names
-    /// this tier creates are touched.
+    /// this tier creates are touched. The switch turned off uses it.
     @discardableResult
     static func sweepPlans(root: URL, keeping: String?) -> Int {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []

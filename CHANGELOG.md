@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop preview with an older installed runtime
+
+- Report the installed Darkbloom runtime's version as the provider version in the signed desktop preview, instead of the bundled desktop API's own build version, so Updates no longer offers an update that is already installed (clicking Update now ran `darkbloom update`, which reported "Already up to date", and the offer stayed). Refuse actions that need desktop commands the installed runtime does not have yet (provider cooling, Studio's local-only serving) with an explanation, and show its cooling controls as unavailable, instead of failing with the runtime's usage text.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

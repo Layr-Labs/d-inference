@@ -41,6 +41,8 @@ actor DesktopBackend {
   /// Shared `fan status` read; `coolingReadAt` is nil while it is in flight.
   var coolingRead: Task<JSONValue, Never>?
   var coolingReadAt: Date?
+  /// Profile of the child-operation runtime, keyed by its executable stamp.
+  var runtimeProfileCache: (stamp: String, profile: DesktopRuntimeProfile)?
 
   init(configPath: String?, executable: URL? = nil) {
     self.configPath = configPath
@@ -139,6 +141,7 @@ actor DesktopBackend {
           try await DesktopLocalLifecycle.stop(configPath: configPath)
         }
         let arguments = try arguments(for: request)
+        try await requireRuntimeSupport(arguments)
         try Task.checkCancellation()
         let worker = DesktopWorker(executable: executable)
         workers[request.id] = worker

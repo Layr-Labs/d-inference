@@ -1,6 +1,6 @@
 # Build and validate the macOS desktop app
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-14
 
 Build the Electron frontend and its Swift CLI/backend API in this repository.
 This guide covers development and review artifacts; production distribution also
@@ -113,6 +113,12 @@ separate bundle ID and application-data directory. Opening it starts the
 bundled API in native attach-only mode; provider operations continue to use the
 verified installed runtime. Quitting stops the API while preserving sign-in and
 dashboard state. It does not install a login item or configure an update feed.
+Because the installed runtime can be older than the bundled API, the API reports
+the installed runtime's `--version` as the provider version (re-read whenever an
+update replaces the executable) and probes its `desktop --help`: actions that need
+a `desktop` subcommand the runtime lacks (provider cooling, Studio's local-only
+serving) are refused with an explanation, and cooling controls are reported as
+unavailable.
 
 Initialize the Swift submodules, install the frontend dependencies, then run:
 

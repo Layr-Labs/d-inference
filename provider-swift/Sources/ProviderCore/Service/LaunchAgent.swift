@@ -13,7 +13,7 @@ import ProviderAppAttest
 
 public enum LaunchAgent: Sendable {
 
-    public static let label = "io.darkbloom.provider"
+    public static let label = BuildEnvironment.current.launchAgentLabel
 
     // MARK: - Paths
 
@@ -26,8 +26,8 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
     public static func logPath() -> URL {
-        LaunchctlControl.homeDirectory()
-            .appendingPathComponent(".darkbloom/provider.log")
+        BuildEnvironment.current.installDirectory(home: LaunchctlControl.homeDirectory())
+            .appendingPathComponent("provider.log")
     }
 
     // MARK: - Queries
@@ -75,7 +75,7 @@ public enum LaunchAgent: Sendable {
         public let port: UInt16
         public let bind: String
         public let noAuth: Bool
-        public init(enabled: Bool = false, port: UInt16 = 8000, bind: String = "127.0.0.1", noAuth: Bool = false) {
+        public init(enabled: Bool = false, port: UInt16 = BuildEnvironment.current.defaultLocalPort, bind: String = "127.0.0.1", noAuth: Bool = false) {
             self.enabled = enabled
             self.port = port
             self.bind = bind
@@ -567,7 +567,7 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
         case .disableFailed(let detail):
             return "launchctl disable failed (the provider may auto-start again at next login): \(detail)"
         case .notInstalled:
-            return "provider service is not installed; run `darkbloom start` first"
+            return "provider service is not installed; run `\(BuildEnvironment.current.cliName) start` first"
         }
     }
 }

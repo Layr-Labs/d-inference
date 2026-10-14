@@ -88,7 +88,11 @@ class ReleasePipelineTests(unittest.TestCase):
         signing = job(RELEASE, 'build-and-release')
         for output in ['PRE_SIGN_SMOKE_OUTPUT', 'FINAL_SMOKE_OUTPUT']:
             self.assertIn(f'printf \'%s\\n\' "${output}" \\\n'
-                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} "', signing)
+                          '            | grep -Eq "^build-environment-runtime-smoke: ${ENV_PREFIX} cli=${CLI_NAME} "', signing)
+        # The packaged names follow the version; the compiled names must agree.
+        resolve = 'python3 scripts/provider_release_identity.py "$VERSION" >> "$GITHUB_ENV"'
+        for name in ['build-and-release', 'validate-older-macos']:
+            self.assertIn(resolve, job(RELEASE, name))
 
     def test_signing_requires_both_sdk_lanes_without_environment_approval(self):
         content = job(RELEASE, 'build-and-release')

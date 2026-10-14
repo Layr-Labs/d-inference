@@ -204,7 +204,7 @@ struct SelfUpdaterTests {
             Issue.record("a flat-only bundle (no Darkbloom.app) must not install")
             return
         }
-        #expect("\(error)".contains("Darkbloom.app"))
+        #expect("\(error)".contains(BuildEnvironment.current.appBundleName))
 
         #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "old darkbloom")
         #expect((try String(contentsOf: oldBin.appendingPathComponent("darkbloom-enclave"), encoding: .utf8)) == "old enclave")

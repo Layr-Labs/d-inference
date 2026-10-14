@@ -22,7 +22,7 @@ import ProviderCore
 @main
 struct DarkbloomEnclave: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "darkbloom-enclave",
+        commandName: BuildEnvironment.current.enclaveName,
         abstract: "Secure Enclave attestation/signing helper.",
         subcommands: [Attest.self, Sign.self, Info.self],
         defaultSubcommand: Info.self

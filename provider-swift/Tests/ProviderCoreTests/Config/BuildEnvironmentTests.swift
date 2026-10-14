@@ -28,6 +28,73 @@ struct BuildEnvironmentTests {
         #expect(BuildEnvironment.dev.modelCDNURL == "https://models.darkbloom.ai")
     }
 
+    @Test func productionIdentityIsUnchanged() {
+        let prod = BuildEnvironment.prod
+        #expect(prod.cliName == "darkbloom")
+        #expect(prod.enclaveName == "darkbloom-enclave")
+        #expect(prod.appBundleName == "Darkbloom.app")
+        #expect(prod.appDisplayName == "Darkbloom")
+        #expect(prod.installDirectoryName == ".darkbloom")
+        #expect(prod.configDirectoryName == ".config/darkbloom")
+        #expect(prod.legacyConfigDirectoryNames == [".config/eigeninference"])
+        #expect(prod.launchAgentLabel == "io.darkbloom.provider")
+        #expect(prod.watchdogAgentLabel == "io.darkbloom.watchdog")
+        #expect(prod.logSubsystem == "com.darkbloom.provider")
+        #expect(prod.serviceLogSubsystem == "dev.darkbloom.provider")
+        #expect(prod.defaultLocalPort == 8000)
+        #expect(prod.encryptedCacheNamespace == "darkbloom")
+        #expect(prod.modelRevisionRef == "main")
+        #expect(prod.keychainServicePrefix == "io.darkbloom")
+        #expect(KeychainWrappedKEKStorage.defaultService == "io.darkbloom.kv.kek.v1")
+        #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
+        #expect(LaunchAgent.label == "io.darkbloom.provider")
+        #expect(WatchdogAgent.label == "io.darkbloom.watchdog")
+        #expect(BackendSettings().port == 8100)
+        #expect(ConfigManager.parse("").backend.port == 8100)
+        let home = URL(fileURLWithPath: "/Users/op")
+        #expect(ConfigManager.defaultConfigPath(home: home).path == "/Users/op/.config/darkbloom/provider.toml")
+        #expect(prod.installDirectory(home: home).path == "/Users/op/.darkbloom")
+    }
+
+    @Test func devIdentityIsSuffixed() {
+        let dev = BuildEnvironment.dev
+        #expect(dev.cliName == "darkbloom-dev")
+        #expect(dev.enclaveName == "darkbloom-enclave-dev")
+        #expect(dev.appBundleName == "Darkbloom Dev.app")
+        #expect(dev.appDisplayName == "Darkbloom Dev")
+        #expect(dev.installDirectoryName == ".darkbloom-dev")
+        #expect(dev.configDirectoryName == ".config/darkbloom-dev")
+        #expect(dev.legacyConfigDirectoryNames == [])
+        #expect(dev.launchAgentLabel == "io.darkbloom.provider.dev")
+        #expect(dev.watchdogAgentLabel == "io.darkbloom.watchdog.dev")
+        #expect(dev.logSubsystem == "com.darkbloom.provider.dev")
+        #expect(dev.serviceLogSubsystem == "dev.darkbloom.provider.dev")
+        #expect(dev.defaultLocalPort == 8001)
+        #expect(dev.encryptedCacheNamespace == "darkbloom-dev")
+        #expect(dev.modelRevisionRef == "darkbloom-dev")
+        #expect(dev.keychainServicePrefix == "io.darkbloom.dev")
+        #expect(dev.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom-dev")
+    }
+
+    @Test func environmentsShareNoPathPortOrLabel() {
+        func identity(_ environment: BuildEnvironment) -> [String] {
+            [environment.cliName, environment.enclaveName, environment.appBundleName,
+             environment.installDirectoryName, environment.configDirectoryName,
+             environment.launchAgentLabel, environment.watchdogAgentLabel,
+             environment.logSubsystem, environment.serviceLogSubsystem,
+             environment.keychainServicePrefix, environment.encryptedCacheNamespace,
+             environment.modelRevisionRef,
+             String(environment.defaultLocalPort)]
+        }
+        for (prod, dev) in zip(identity(.prod), identity(.dev)) {
+            #expect(prod != dev)
+        }
+        let paths = BuildEnvironment.allCases.flatMap {
+            [$0.installDirectoryName, $0.configDirectoryName] + $0.legacyConfigDirectoryNames
+        }
+        #expect(Set(paths).count == paths.count)
+    }
+
     @Test func webSocketAndHTTPFormsAgree() {
         for environment in BuildEnvironment.allCases {
             #expect(coordinatorHTTPBase(environment.coordinatorWebSocketURL) == environment.coordinatorHTTPURL)

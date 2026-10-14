@@ -31,7 +31,11 @@ handles commands afterwards is worked out by the cluster itself (see
 [If a Mac goes away](#if-a-mac-goes-away)).
 
 The planner picks tensor parallel or pipeline for your Macs by itself. Phase
-split is off.
+split is off. A model whose artifact ships a speculative (MTP) head can also
+decode as speculative rounds across the pipeline: the planner picks that only
+after the same placement served measurably faster with it, and a pair serves it
+only where its own cross-cable qualification records passed (this build ships
+none for it, so the plain pipeline serves).
 
 | # | Where | What you do | What it asks |
 |---|---|---|---|
@@ -115,8 +119,10 @@ MiMo V2.6 Flash is granted on an M5 Ultra + M3 Ultra pair by its qualification
 records (pipeline at the planner's cut, in the order its records passed; the
 mirrored order is refused). Each start hashes the 172 GB of weights with the file
 cache off, so the hash does not fill the Mac's memory before the memory gate
-decides; the gate itself is unchanged. MiMo has no MTP, paged KV or prefix cache
-on the pair yet, and the pair decodes slower than the M5 Ultra alone.
+decides; the gate itself is unchanged. Both Macs keep MiMo's prompt prefixes,
+in memory and in the encrypted SSD tier, like the Qwen models. MiMo has no paged
+KV on the pair yet, and the pair decodes slower than the M5 Ultra alone. Its
+phase split (one Mac decodes alone) is kept off like every hand-off mode.
 
 ### After a restart
 

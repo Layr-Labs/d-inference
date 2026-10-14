@@ -114,6 +114,7 @@ public enum ClusterOnboardingDeployment {
         let lower = raw.lowercased()
         if lower.contains("prefill_tensor_decode") { return "pipeline prefill, tensor parallel decode" }
         if lower.contains("tensor") || lower.hasPrefix("tp") { return "tensor parallel" }
+        if lower.hasPrefix("pipeline_mtp") { return "pipeline with speculative decoding" }
         if lower.hasPrefix("pipeline") { return "pipeline" }
         if lower.hasPrefix("phase_split") { return "prompt split, then one Mac decodes" }
         return "split across the Macs"

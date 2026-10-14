@@ -34,24 +34,39 @@ enum ClusterSetupLocalReader {
                        saved: ClusterConsoleSavedSetup, savedConfiguration: ClusterConfiguration?,
                        inbox: (summary: ClusterSetupSetupSummary?, configuration: ClusterConfiguration?, error: String?),
                        description: ClusterPairDescription?, localMemberID: String?, overrides: Installation = .init(),
-                       journal: ClusterDeviceJournalObservation, now: Date = Date()) -> ClusterSetupReport {
+                       journal: ClusterDeviceJournalObservation, now: Date = Date(), fallbackModelStore: URL? = nil) -> ClusterSetupReport {
         let installation = installation(saved: savedConfiguration, inbox: inbox.configuration, description: description,
             localMemberID: localMemberID, overrides: overrides)
         let mac = readMac(installation: installation)
         let thunderbolt = readThunderbolt()
         var models = [ClusterSetupLocalModel](), modelsError: String?
-        if let directory = installation.modelDirectory {
-            do { models = try ClusterSetupModelFolders.list(parent: URL(fileURLWithPath: directory).deletingLastPathComponent()) }
+        // With no setup naming a folder, the cluster's own model store (no `--model-dir` needed).
+        let store = installation.modelDirectory.map { URL(fileURLWithPath: $0).deletingLastPathComponent() } ?? fallbackModelStore
+        if let store, FileManager.default.fileExists(atPath: store.path) || installation.modelDirectory != nil {
+            do { models = try ClusterSetupModelFolders.list(parent: store) }
             catch { modelsError = ClusterConsoleText.bounded(error) }
-        } else {
+        } else if store == nil {
             modelsError = "No setup or pair description names a model directory yet."
         }
-        return ClusterSetupReport(observedAt: ClusterConsoleText.timestamp(now), version: version, mac: mac,
+        var report = ClusterSetupReport(observedAt: ClusterConsoleText.timestamp(now), version: version, mac: mac,
             link: .init(report: link, thunderbolt: thunderbolt), saved: .init(saved, generationMode: savedConfiguration?.selectedGenerationMode.rawValue),
             inbox: inbox.summary, inboxError: inbox.error,
             journal: journal, memoryGuard: .init(ClusterOrphanWiredGuard.evaluate(role: "wizard")), models: models,
             modelsError: modelsError, pairingCode: pairingCode(installation), checks: doctor,
             linkPairings: linkPairings(ClusterPairingStore.default()))
+        report.modelStoreFreeBytes = store.flatMap(freeBytes)
+        return report
+    }
+
+    /// Free bytes on the volume of `url` (or its nearest existing parent).
+    static func freeBytes(_ url: URL) -> Int64? {
+        var probe = url
+        while !FileManager.default.fileExists(atPath: probe.path), probe.path != "/" { probe.deleteLastPathComponent() }
+        if let values = try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let important = values.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        var info = statfs()
+        guard statfs(probe.path, &info) == 0 else { return nil }
+        return Int64(info.f_bavail) * Int64(info.f_bsize)
     }
 
     /// The ceremony's store, as public values; nil when this Mac never paired.

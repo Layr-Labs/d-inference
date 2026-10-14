@@ -190,6 +190,10 @@ public final class ClusterService: @unchecked Sendable {
         guard lock.withLock({ responder == nil }), let pairing = try? ClusterSetupLinkExchange.pairing(),
               let selection = try? context.linkSelection() else { return }
         let context = self.context, store = self.store
+        // A model the leader copies here over the cable lands in this Mac's model store, verified file by file.
+        let provisioner = ClusterModelProvisionResponder(store: {
+            URL(fileURLWithPath: context.modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path)
+        }, trust: { ClusterModelCopyTrust.refusal($0) }, say: say)
         do {
             let created = try ClusterSetupLinkExchange.Responder(pairing: pairing, selection: selection, answer: {
                 ClusterSetupLinkAnswer(report: context.report(input: context.pairInput(), saved: context.savedConfiguration(),
@@ -200,7 +204,7 @@ public final class ClusterService: @unchecked Sendable {
             }, command: { [weak self] data in
                 guard let self else { throw ClusterSetupFailure("the service is stopping") }
                 return try self.command(data, pairing: pairing, say: say)
-            })
+            }, provision: { tag, data in provisioner.handle(tag: tag, data) })
             try created.start()
             lock.withLock { responder = created }
             say("answering the paired Mac over the cable")

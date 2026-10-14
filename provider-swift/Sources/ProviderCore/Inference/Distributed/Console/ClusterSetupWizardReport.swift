@@ -39,6 +39,8 @@ public struct ClusterSetupReport: Codable, Sendable, Equatable {
     public var checks: [ClusterSetupCheck]
     /// What this Mac pinned in the pairing ceremony over the link (S17); nil when it never paired.
     public var linkPairings: ClusterSetupLinkPairings?
+    /// Free bytes on the disk of this Mac's model store (a copy of a model checks it before it starts); nil when unknown.
+    public var modelStoreFreeBytes: Int64?
 
     public init(observedAt: String, version: String, mac: ClusterSetupMac, link: ClusterSetupLink, saved: ClusterSetupSaved,
                 inbox: ClusterSetupSetupSummary?, inboxError: String? = nil, journal: ClusterDeviceJournalObservation, memoryGuard: ClusterSetupMemoryGuard,

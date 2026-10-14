@@ -29,6 +29,9 @@ public struct ModelDownloader: Sendable {
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
+    /// When set, the foreground download reports (bytes so far, total bytes) here about four times a second instead
+    /// of drawing its own progress bars (a caller that owns the screen, like `darkbloom cluster`, shows the progress).
+    public var byteProgress: (@Sendable (Int64, Int64) -> Void)?
 
     public init(
         r2CDNURL: String? = nil,

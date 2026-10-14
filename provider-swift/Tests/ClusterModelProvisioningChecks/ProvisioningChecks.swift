@@ -41,18 +41,18 @@ import CryptoKit
 
     /// A small model: a config, a tokenizer and two weight shards (one larger than a chunk), with its manifest.
     static func fixture(modelID: String = "Example/Tiny-Model", version: String = "2026-10-13-r1")
-        -> (files: [(String, Data)], manifest: Data, artifact: ClusterModelArtifact) {
+        -> (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact) {
         var generator = SystemRandomNumberGenerator()
         func random(_ count: Int) -> Data { Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &generator) }) }
         let files: [(String, Data)] = [("config.json", Data("{\"num_hidden_layers\":2}".utf8)), ("tokenizer.json", random(3000)),
                                        ("model-00001-of-00002.safetensors", random(3 << 20)), ("model-00002-of-00002.safetensors", random(70_000))]
         let entries = files.map { ["path": $0.0, "size_bytes": $0.1.count, "sha256": sha($0.1), "role": "weight"] as [String: Any] }
-        let artifactFiles = files.map { ClusterModelArtifact.File(path: $0.0, sizeBytes: Int64($0.1.count), sha256: sha($0.1)) }
+        let artifactFiles = files.map { ClusterCatalogArtifact.File(path: $0.0, sizeBytes: Int64($0.1.count), sha256: sha($0.1)) }
         let object: [String: Any] = ["schema_version": 1, "model_id": modelID, "version": version, "r2_prefix": "v2/x/\(version)",
-            "aggregate_sha256": ClusterModelArtifact.aggregateDigest(artifactFiles), "total_size_bytes": files.reduce(0) { $0 + $1.1.count },
+            "aggregate_sha256": ClusterCatalogArtifact.aggregateDigest(artifactFiles), "total_size_bytes": files.reduce(0) { $0 + $1.1.count },
             "file_count": files.count, "files": entries, "created_at": "2026-10-13T00:00:00Z"]
         let manifest = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        return (files, manifest, try! ClusterModelArtifact.parse(manifest: manifest))
+        return (files, manifest, try! ClusterCatalogArtifact.parse(manifest: manifest))
     }
 
     static func temporary(_ name: String) -> URL {
@@ -61,7 +61,7 @@ import CryptoKit
         return url
     }
 
-    static func source(_ fixture: (files: [(String, Data)], manifest: Data, artifact: ClusterModelArtifact)) -> URL {
+    static func source(_ fixture: (files: [(String, Data)], manifest: Data, artifact: ClusterCatalogArtifact)) -> URL {
         let directory = temporary("source").appendingPathComponent(fixture.artifact.folderName)
         try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (path, data) in fixture.files { try! data.write(to: directory.appendingPathComponent(path)) }
@@ -99,24 +99,24 @@ import CryptoKit
             change(&object)
             return try! JSONSerialization.data(withJSONObject: object)
         }
-        refuses("aggregate") { _ = try ClusterModelArtifact.parse(manifest: mutated { $0["aggregate_sha256"] = String(repeating: "a", count: 64) }) }
-        refuses("aggregate") { _ = try ClusterModelArtifact.parse(manifest: mutated {
+        refuses("aggregate") { _ = try ClusterCatalogArtifact.parse(manifest: mutated { $0["aggregate_sha256"] = String(repeating: "a", count: 64) }) }
+        refuses("aggregate") { _ = try ClusterCatalogArtifact.parse(manifest: mutated {
             var files = $0["files"] as! [[String: Any]]; files[1]["sha256"] = String(repeating: "b", count: 64); $0["files"] = files }) }
-        refuses("unsafe") { _ = try ClusterModelArtifact.parse(manifest: mutated {
+        refuses("unsafe") { _ = try ClusterCatalogArtifact.parse(manifest: mutated {
             var files = $0["files"] as! [[String: Any]]; files[0]["path"] = "../../etc/passwd"; $0["files"] = files }) }
-        refuses("unsafe") { _ = try ClusterModelArtifact.parse(manifest: mutated {
+        refuses("unsafe") { _ = try ClusterCatalogArtifact.parse(manifest: mutated {
             var files = $0["files"] as! [[String: Any]]; files[0]["path"] = ".darkbloom-manifest.json"; $0["files"] = files }) }
-        refuses("unsafe") { _ = try ClusterModelArtifact.parse(manifest: mutated {
+        refuses("unsafe") { _ = try ClusterCatalogArtifact.parse(manifest: mutated {
             var files = $0["files"] as! [[String: Any]]; files[0]["path"] = "/abs/config.json"; $0["files"] = files }) }
-        refuses("unsafe, duplicate") { _ = try ClusterModelArtifact.parse(manifest: mutated {
+        refuses("unsafe, duplicate") { _ = try ClusterCatalogArtifact.parse(manifest: mutated {
             var files = $0["files"] as! [[String: Any]]; files[1]["path"] = "CONFIG.JSON"; $0["files"] = files }) }
-        refuses("total") { _ = try ClusterModelArtifact.parse(manifest: mutated { $0["total_size_bytes"] = 1 }) }
-        refuses("file count") { _ = try ClusterModelArtifact.parse(manifest: mutated { $0["file_count"] = 9 }) }
-        refuses("identity") { _ = try ClusterModelArtifact.parse(manifest: mutated { $0["model_id"] = nil }) }
-        refuses("cannot be read") { _ = try ClusterModelArtifact.parse(manifest: Data("not json".utf8)) }
-        expect(ClusterModelArtifact.safeFolder("Qwen3.5-9B-2026-09-03-r1") != nil, "a catalog folder name is safe")
-        expect(ClusterModelArtifact.safeFolder("a/b") == nil && ClusterModelArtifact.safeFolder(".hidden") == nil
-            && ClusterModelArtifact.safeFolder("..") == nil, "nested, hidden and parent names are not")
+        refuses("total") { _ = try ClusterCatalogArtifact.parse(manifest: mutated { $0["total_size_bytes"] = 1 }) }
+        refuses("file count") { _ = try ClusterCatalogArtifact.parse(manifest: mutated { $0["file_count"] = 9 }) }
+        refuses("identity") { _ = try ClusterCatalogArtifact.parse(manifest: mutated { $0["model_id"] = nil }) }
+        refuses("cannot be read") { _ = try ClusterCatalogArtifact.parse(manifest: Data("not json".utf8)) }
+        expect(ClusterCatalogArtifact.safeFolder("Qwen3.5-9B-2026-09-03-r1") != nil, "a catalog folder name is safe")
+        expect(ClusterCatalogArtifact.safeFolder("a/b") == nil && ClusterCatalogArtifact.safeFolder(".hidden") == nil
+            && ClusterCatalogArtifact.safeFolder("..") == nil, "nested, hidden and parent names are not")
     }
 
     // MARK: - Copy or download

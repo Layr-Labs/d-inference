@@ -16,7 +16,7 @@ import CryptoKit
 // and the sender's uncached reads, so a check drives all of it with plain swiftc and temporary folders.
 
 /// One model artifact as its catalog manifest describes it: identity, files and their SHA-256 digests.
-public struct ClusterModelArtifact: Sendable, Equatable {
+public struct ClusterCatalogArtifact: Sendable, Equatable {
     public struct File: Sendable, Equatable, Codable {
         public var path: String
         public var sizeBytes: Int64
@@ -39,13 +39,13 @@ public struct ClusterModelArtifact: Sendable, Equatable {
     /// The folder name the cluster's model store uses: the model ID's last part and the catalog version.
     public var folderName: String {
         let base = modelID.split(separator: "/").last.map(String.init) ?? modelID
-        return ClusterModelArtifact.safeFolder(base + "-" + version) ?? "model-" + String(aggregateSHA256.prefix(16))
+        return ClusterCatalogArtifact.safeFolder(base + "-" + version) ?? "model-" + String(aggregateSHA256.prefix(16))
     }
 
     /// Parses and checks a catalog manifest. Refuses unsafe paths, duplicates, bad digests, a total that does not add
     /// up, and an aggregate digest that does not match the files' digests (so every file digest is bound to the
     /// catalog identity a member checks).
-    public static func parse(manifest data: Data) throws -> ClusterModelArtifact {
+    public static func parse(manifest data: Data) throws -> ClusterCatalogArtifact {
         guard data.count <= maximumManifestBytes,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ClusterModelProvisioningError("the model's manifest cannot be read")
@@ -136,11 +136,11 @@ public enum ClusterModelHolding: Sendable, Equatable, Codable {
 
 public enum ClusterModelStore {
     /// Staging folders are hidden from every listing: a folder appears only after its last byte is verified.
-    public static func stagingName(_ artifact: ClusterModelArtifact) -> String { ".darkbloom-incoming-" + String(artifact.aggregateSHA256.prefix(32)) }
+    public static func stagingName(_ artifact: ClusterCatalogArtifact) -> String { ".darkbloom-incoming-" + String(artifact.aggregateSHA256.prefix(32)) }
 
     /// The folders of `store` whose manifest names this artifact's aggregate digest (manifests only; the worker
     /// verifies the weights before anything is served, and a copy verifies every byte as it arrives).
-    public static func holding(store: URL, artifact: ClusterModelArtifact) -> ClusterModelHolding {
+    public static func holding(store: URL, artifact: ClusterCatalogArtifact) -> ClusterModelHolding {
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: store.path)) ?? []).sorted()
         for name in names where !name.hasPrefix(".") {
             guard let data = readSmall(store.appendingPathComponent(name).appendingPathComponent("manifest.json")),
@@ -306,7 +306,7 @@ public struct ClusterModelReceiveState: Codable, Sendable, Equatable {
 /// checked against its manifest digest, single-linked, then the folder renamed into place in one step. An interrupted
 /// copy resumes from the bytes already staged (re-read uncached and hashed once).
 public final class ClusterModelReceiver: @unchecked Sendable {
-    public let artifact: ClusterModelArtifact
+    public let artifact: ClusterCatalogArtifact
     public let store: URL
     public let folder: String
     let staging: URL
@@ -316,10 +316,10 @@ public final class ClusterModelReceiver: @unchecked Sendable {
 
     /// Checks the artifact's identity against what the receiving Mac trusts (`expectedAggregate`: the catalog's
     /// digest for this model), the folder name, and that the destination is not something else.
-    public init(artifact: ClusterModelArtifact, store: URL, folder: String, expectedAggregate: String?,
-                trust: ((ClusterModelArtifact) -> String?)? = nil,
+    public init(artifact: ClusterCatalogArtifact, store: URL, folder: String, expectedAggregate: String?,
+                trust: ((ClusterCatalogArtifact) -> String?)? = nil,
                 freeBytes: @escaping @Sendable (URL) -> Int64? = { ClusterModelStore.freeBytes(at: $0) }) throws {
-        guard let safe = ClusterModelArtifact.safeFolder(folder) else { throw ClusterModelProvisioningError("the model folder name is not safe") }
+        guard let safe = ClusterCatalogArtifact.safeFolder(folder) else { throw ClusterModelProvisioningError("the model folder name is not safe") }
         if let expectedAggregate, expectedAggregate != artifact.aggregateSHA256 {
             throw ClusterModelProvisioningError("the model offered is not the catalog's \(artifact.modelID) \(artifact.version) (its digest differs)")
         }
@@ -453,7 +453,7 @@ public final class ClusterModelReceiver: @unchecked Sendable {
     }
 
     /// A staged file that is complete: single-linked regular file of the right size whose digest matches (read uncached).
-    private func fileVerified(_ url: URL, _ file: ClusterModelArtifact.File) throws -> Bool {
+    private func fileVerified(_ url: URL, _ file: ClusterCatalogArtifact.File) throws -> Bool {
         var info = stat()
         guard lstat(url.path, &info) == 0 else { return false }
         guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1, info.st_uid == geteuid() else {
@@ -509,11 +509,11 @@ public final class ClusterModelReceiver: @unchecked Sendable {
 /// Reads a model's files for a copy with the file cache off, in chunks, and checks each source file is a
 /// single-linked regular file of its manifest size before it is sent (the receiver verifies every digest).
 public final class ClusterModelSender: @unchecked Sendable {
-    public let artifact: ClusterModelArtifact
+    public let artifact: ClusterCatalogArtifact
     public let directory: URL
     private var open: (index: Int, fd: Int32)?
 
-    public init(artifact: ClusterModelArtifact, directory: URL) throws {
+    public init(artifact: ClusterCatalogArtifact, directory: URL) throws {
         self.artifact = artifact; self.directory = directory
         for file in artifact.files {
             var info = stat()

@@ -57,7 +57,7 @@ enum ClusterSetupPlanning {
     /// route only this Mac holds.
     static func decide(readings: [ModelReading], description: ClusterPairDescription, localMemberID: String,
                        localProfile: ClusterDeviceProfile, peerProfile: ClusterDeviceProfile, peerModels: [ClusterSetupLocalModel],
-                       measurements: [ClusterSpeedMeasurement], leader: String?? = .none) -> [Decision] {
+                       measurements: [ClusterSpeedMeasurement], leader: String?? = .none, peerMayReceive: Bool = false) -> [Decision] {
         // The wizard's own steps lead from this Mac; the onboarding (`nil`) leaves which Mac leads the
         // session (rank 0) and which decodes to the planner and the model's pair-serving grant.
         let sessionLeader: String? = leader ?? localMemberID
@@ -67,7 +67,8 @@ enum ClusterSetupPlanning {
             func blocked(_ reason: String) -> Decision {
                 .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: reason, plan: nil), setup: nil, capability: nil)
             }
-            guard onOther else { return blocked("not on \(peerID): copy it there first") }
+            // The onboarding copies a model the other Mac lacks over the cable (or it is downloaded) before the setup is synced.
+            guard onOther || peerMayReceive else { return blocked("not on \(peerID): copy it there first") }
             let layout: ClusterModelLayout
             switch reading.layout {
             case .success(let value): layout = value
@@ -95,7 +96,7 @@ enum ClusterSetupPlanning {
                 }
                 let plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
                     profiles: [localMemberID: localProfile, peerID: peerProfile])
-                return .init(option: .init(model: reading.model, onOtherMac: true, blocker: nil, plan: plan), setup: decided.setup,
+                return .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan), setup: decided.setup,
                     capability: (capability.data, capability.sha256))
             } catch {
                 return blocked("planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 200)))")

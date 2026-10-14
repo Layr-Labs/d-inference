@@ -231,8 +231,13 @@ final class LiveContext: @unchecked Sendable {
     func modelsDirectory() -> String? {
         if let given = settings.modelsDirectory { return given }
         if let remembered = (try? store.readRecord())?.modelsDirectory { return remembered }
-        guard let saved = savedConfiguration().configuration else { return nil }
-        return URL(fileURLWithPath: saved.peers[saved.localRank].modelDirectory).deletingLastPathComponent().path
+        if let saved = savedConfiguration().configuration {
+            return URL(fileURLWithPath: saved.peers[saved.localRank].modelDirectory).deletingLastPathComponent().path
+        }
+        // No folder given, remembered or saved: the cluster's own model store beside the product's models.
+        let store = ClusterModelStoreLocation.defaultDirectory()
+        try? FileManager.default.createDirectory(at: store, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        return store.path
     }
 
     /// Where this Mac's installation is and its address on the cable, for the other Mac's plan.
@@ -397,6 +402,11 @@ final class LiveContext: @unchecked Sendable {
                 inbox: (summary: ClusterSetupSetupSummary?, configuration: ClusterConfiguration?, error: String?),
                 overrides: ClusterSetupLocalReader.Installation = .init()) -> ClusterSetupReport {
         let link = ClusterLinkReadinessProbe.inspectLocalLink()
+        if settings.derivedPlacement, let store = modelsDirectory() {
+            // `darkbloom cluster` needs no model folder: the models single-Mac Darkbloom installed are cloned into the
+            // cluster's store (no new blocks), so both the leader and its members list them by digest.
+            for installed in ClusterProductModelStore.installed() { _ = try? ClusterProductModelStore.cloneIntoClusterStore(installed, store: URL(fileURLWithPath: store)) }
+        }
         let doctor = blockingWizard { await ClusterDiagnostics.doctor(providerConfiguration: self.configuration, localLink: link) }
         let savedSetup: ClusterConsoleSavedSetup
         switch saved.reference {
@@ -407,7 +417,8 @@ final class LiveContext: @unchecked Sendable {
         }
         return ClusterSetupLocalReader.report(link: link, doctor: doctor.checks.map(ClusterSetupCheck.init), version: settings.version,
             saved: savedSetup, savedConfiguration: saved.configuration, inbox: inbox, description: input.description,
-            localMemberID: input.pair?.memberID, overrides: overrides, journal: doctor.deviceJournal).cleaned(clean)
+            localMemberID: input.pair?.memberID, overrides: overrides, journal: doctor.deviceJournal,
+            fallbackModelStore: modelsDirectory().map { URL(fileURLWithPath: $0) }).cleaned(clean)
     }
 
     /// The pinned route to the other Mac and where its installation is.
@@ -522,7 +533,7 @@ final class LiveContext: @unchecked Sendable {
         }
         let decided = ClusterSetupPlanning.decide(readings: readings, description: description, localMemberID: memberID,
             localProfile: localProfile, peerProfile: peerProfile, peerModels: peer.models, measurements: measurements(),
-            leader: settings.derivedPlacement ? .some(nil) : .none)
+            leader: settings.derivedPlacement ? .some(nil) : .none, peerMayReceive: settings.derivedPlacement)
         lock.withLock { decisions = Dictionary(decided.map { ($0.option.model.folder, $0) }, uniquingKeysWith: { a, _ in a }) }
         // Models that can be chosen first, each group by size.
         let options = decided.map(\.option)

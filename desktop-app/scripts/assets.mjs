@@ -36,10 +36,26 @@ const png = await sharp(background)
   .png()
   .toBuffer();
 await writeFile('resources/icon.png', png);
-await sharp(Buffer.from(source.replaceAll('#ffffff', '#000000')))
-  .resize(20, 22, { fit: 'inside' })
-  .png()
-  .toFile('resources/trayTemplate.png');
+// Menu bar template image: a 16 pt mark on a 16 pt square like other menu bar icons (not the full
+// 22 pt bar height), rendered from the vector at 1x and 2x so Retina displays never upscale a
+// bitmap. Electron picks up trayTemplate@2x.png next to trayTemplate.png.
+const trayMark = Buffer.from(source.replaceAll('#ffffff', '#000000'));
+for (const [suffix, scale] of [
+  ['', 1],
+  ['@2x', 2],
+]) {
+  const size = 16 * scale;
+  const glyph = await sharp(trayMark, { density: 72 * 4 * scale })
+    .resize(size, size, { fit: 'inside' })
+    .png()
+    .toBuffer();
+  await sharp({
+    create: { width: size, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite([{ input: glyph, gravity: 'centre' }])
+    .png()
+    .toFile(`resources/trayTemplate${suffix}.png`);
+}
 if (process.platform === 'darwin') {
   await mkdir('resources/icon.iconset', { recursive: true });
   for (const size of [16, 32, 128, 256, 512]) {

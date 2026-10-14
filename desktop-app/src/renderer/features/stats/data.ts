@@ -1,4 +1,5 @@
 import type { ActivitySample, Snapshot, RequestRecord } from '../../../shared/contracts';
+import { requestTime } from './activity/requests';
 export interface TrafficPoint {
   at: number;
   requests: number;
@@ -43,13 +44,15 @@ export function observedTraffic(state: Snapshot): TrafficPoint[] {
     ];
   });
 }
-/** Settlement times are reported by the API; no start time or decode speed is inferred. */
+/**
+ * Buckets by the reported settlement, completion or start time (this session's local history
+ * reports completion only); no start time or decode speed is inferred.
+ */
 export function recordedTraffic(records: RequestRecord[]): TrafficPoint[] {
   const interval = 1800;
   const buckets = new Map<number, TrafficPoint>();
   for (const record of records) {
-    const time = record.settled_at ?? record.started_at!;
-    const at = Math.floor(time / interval) * interval;
+    const at = Math.floor(requestTime(record) / interval) * interval;
     const point = buckets.get(at) ?? { at, requests: 0, tokens: 0, input: 0 };
     point.requests++;
     point.tokens += record.output_tokens;

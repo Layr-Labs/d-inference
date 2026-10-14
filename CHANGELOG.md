@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop Stats completed-request traffic
+
+- Show This Mac's Stats traffic chart while the provider is serving. This session's local request history reports completion times only, which the chart ignored, so it produced no points and disappeared. The chart is now labeled Completed requests for local history and Settled requests for ledger history.
 ## Unreleased — desktop page scroll position
 
 - Open each desktop page, Mac and My Macs tab at the top. Previously the window kept the previous page's scroll offset, so following View earnings or Explore Stats from lower on Home, or switching Macs, landed below the new page's header and tabs.

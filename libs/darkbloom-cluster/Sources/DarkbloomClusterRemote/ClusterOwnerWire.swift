@@ -26,7 +26,19 @@ struct OwnerWire: Sendable {
     /// pipe) and written as the worker's first input line. Never logged.
     var dataPlaneTrust: Data?
 
-    func encoded(commandStream: Bool) throws -> Data {
+    /// Owner records cross the owner route once per token in each direction, from loops that never drain a pool (the
+    /// owner's writer and reader, the worker owner's service and relay): each encode, decode and command builds its JSON
+    /// in a pool of its own (round 6c case 5: rank 0 +20.6 and its worker owner +22.7 MiB a minute without it).
+    func encoded(commandStream: Bool) throws -> Data { try ClusterAutorelease.drained { try encodedRecord(commandStream: commandStream) } }
+    static func decode(_ data: Data, commandStream: Bool) throws -> Self { try ClusterAutorelease.drained { try decodeRecord(data, commandStream: commandStream) } }
+    static func command(_ frame: ClusterWorkerCommandFrame, lease: UUID, incarnation: UUID,
+                        sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
+        try ClusterAutorelease.drained {
+            try commandRecord(frame, lease: lease, incarnation: incarnation, sequence: sequence, now: now, deliveryDeadline: deliveryDeadline)
+        }
+    }
+
+    private func encodedRecord(commandStream: Bool) throws -> Data {
         var object: [String: Any] = ["version": 1, "kind": kind, "epoch": epoch.uuidString.lowercased(),
             "lease": lease.uuidString.lowercased(), "sequence": NSNumber(value: sequence)]
         if let incarnation { object["incarnation"] = incarnation.uuidString.lowercased() }
@@ -55,7 +67,7 @@ struct OwnerWire: Sendable {
         return data
     }
 
-    static func decode(_ data: Data, commandStream: Bool) throws -> Self {
+    private static func decodeRecord(_ data: Data, commandStream: Bool) throws -> Self {
         try validateClusterWorkerEnvelope(data, commandStream: true) // Outer-only512KiB; embedded WorkerCodec retains its own bounds.
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw invalid("Owner object required") }
         func string(_ key: String) throws -> String {
@@ -168,8 +180,8 @@ struct OwnerWire: Sendable {
         return value
     }
 
-    static func command(_ frame: ClusterWorkerCommandFrame, lease: UUID, incarnation: UUID,
-                        sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
+    private static func commandRecord(_ frame: ClusterWorkerCommandFrame, lease: UUID, incarnation: UUID,
+                                      sequence: UInt64, now: UInt64, deliveryDeadline: UInt64) throws -> Self {
         var result = Self(kind: "command", epoch: frame.membershipEpoch, lease: lease, incarnation: incarnation, sequence: sequence)
         guard deliveryDeadline > now else { throw ClusterWorkerOwnerErrorProxy.deadline }
         result.deliveryRemaining = deliveryDeadline - now

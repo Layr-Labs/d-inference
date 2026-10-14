@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop keyboard focus after navigation
 
-- Keep keyboard and screen-reader users in place after navigating: when the control they used disappears (View earnings, Explore Stats, opening a Mac, Manage models, onboarding Start, Skip or Check again), focus moves to the new page's or step's heading instead of falling back to the top of the window. The window title now names the current page.
+- Keep keyboard and screen-reader users in place after changing pages, Macs or onboarding steps: when the control they used disappears, focus moves to the new page's or step's heading instead of falling back to the top of the window. Controls that survive navigation keep focus. The window title follows the rendered page heading, including delayed initial data and account changes, without moving focus on ordinary state refreshes.
 
 ## Unreleased — desktop hardware load
 

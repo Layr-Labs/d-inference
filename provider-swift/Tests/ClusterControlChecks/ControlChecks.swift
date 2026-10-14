@@ -309,7 +309,7 @@ import Darwin
     static func onboardingDriverKeepsClaimUntilAPlan() {
         let members = [mac(A, "Apple M3 Ultra, 256 GB", 256, 80, alone: true), mac(B, "Apple M5 Ultra, 256 GB", 256, 80, alone: true)]
         let start = ClusterControlClaim(term: 0, leaderID: B, members: [A, B], reason: "drove the onboarding")
-        var nodes = [A: ClusterControlNode(localID: A, members: members, claim: start, rankOrder: nil, now: 0, ttl: 30),
+        let nodes = [A: ClusterControlNode(localID: A, members: members, claim: start, rankOrder: nil, now: 0, ttl: 30),
                      B: ClusterControlNode(localID: B, members: members, claim: start, rankOrder: nil, now: 0, ttl: 30)]
         var bus = Bus(nodes: nodes, up: [A, B])
         for t in stride(from: 0.0, through: 60, by: 5) { bus.step(t) }
@@ -319,7 +319,5 @@ import Darwin
         for t in stride(from: 65.0, through: 80, by: 5) { bus.step(t) }
         expect(bus.leaders == [A] && bus.nodes[A]!.claim.term == 1, "plan adopted: rank 0 leads from term 1: \(bus.leaders)")
         expect(bus.nodes[A]!.mode(now: 80) == .cluster && bus.nodes[B]!.mode(now: 80) == .following(leaderID: A), "the pair runs under rank 0")
-        nodes = [:]
-        _ = nodes
     }
 }

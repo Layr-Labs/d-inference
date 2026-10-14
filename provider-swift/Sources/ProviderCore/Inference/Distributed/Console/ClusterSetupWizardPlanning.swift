@@ -105,6 +105,16 @@ enum ClusterSetupPlanning {
                                  peerID: "\(peerProfile.chip), \(peerProfile.physicalMemoryBytes >> 30) GB"]
                     return blocked(refusalWords(decided.result, localMemberID: localMemberID, names: names))
                 }
+                // Offered only when each Mac's start would serve the chosen placement: a model or mode family its
+                // records withhold is planned (the plan still answers whether the pair could hold it) but never offered.
+                let chips = [localMemberID: localProfile.chip, peerID: peerProfile.chip]
+                if let refusal = ClusterPairServingGrants.startRefusal(
+                    chosen.ranks.map { chips[$0.device].flatMap { ClusterChipClass(chipName: $0) } },
+                    cuts: chosen.cuts, mode: chosen.mode, runtimeModelID: capability.record.runtimeModelID,
+                    publicModelID: reading.model.modelID, artifactSHA256: capability.record.artifactSHA256) {
+                    return blocked("not served on this pair by this build: "
+                        + ClusterConsoleText.bounded(refusal.description, maximum: 200))
+                }
                 let plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
                     profiles: [localMemberID: localProfile, peerID: peerProfile])
                 return .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan), setup: decided.setup,

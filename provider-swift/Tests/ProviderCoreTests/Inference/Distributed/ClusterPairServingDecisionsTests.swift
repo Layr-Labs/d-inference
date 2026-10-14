@@ -18,8 +18,9 @@ import DarkbloomClusterProtocol
               producer: "test")
     }
     private func cls(_ name: String) -> ClusterChipClass { ClusterChipClass(chipName: name)! }
-    private func allows(_ classes: [ClusterChipClass?], _ model: String, _ decisions: ClusterPairServingDecisions) -> Bool {
-        (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", decisions: decisions)) != nil
+    private func allows(_ classes: [ClusterChipClass?], _ model: String, _ decisions: ClusterPairServingDecisions,
+                        mode: ClusterGenerationMode = .pipeline) -> Bool {
+        (try? ClusterPairServingGrants.requirePlacement(classes, runtimeModelID: model, publicModelID: "p", mode: mode, decisions: decisions)) != nil
     }
 
     @Test func grantsFollowTheRecordsForAnyChipsAndRankCounts() throws {
@@ -29,8 +30,9 @@ import DarkbloomClusterProtocol
             record("registered_wide", ["Apple M1 Ultra", "Apple M2 Ultra", "Apple M4 Max"], cuts: [10, 20]),
         ])
         #expect(allows([cls("Apple M2 Max"), cls("Apple M2 Max")], "registered_dense", decisions))
-        #expect(allows([cls("Apple M4 Pro"), cls("Apple M3 Ultra")], "registered_dense", decisions))
-        #expect(!allows([cls("Apple M3 Ultra"), cls("Apple M4 Pro")], "registered_dense", decisions))
+        #expect(allows([cls("Apple M4 Pro"), cls("Apple M3 Ultra")], "registered_dense", decisions, mode: .phaseSplit))
+        #expect(!allows([cls("Apple M4 Pro"), cls("Apple M3 Ultra")], "registered_dense", decisions))
+        #expect(!allows([cls("Apple M3 Ultra"), cls("Apple M4 Pro")], "registered_dense", decisions, mode: .phaseSplit))
         #expect(allows([cls("Apple M1 Ultra"), cls("Apple M2 Ultra"), cls("Apple M4 Max")], "registered_wide", decisions))
         #expect(!allows([cls("Apple M4 Max"), cls("Apple M2 Ultra"), cls("Apple M1 Ultra")], "registered_wide", decisions))
         let wide = try ClusterPairServingGrants.grant(runtimeModelID: "registered_wide", publicModelID: "p", decisions: decisions)
@@ -57,14 +59,15 @@ import DarkbloomClusterProtocol
         #expect(why.contains("diverged at cut 8") && why.contains("9.0 ulp") && why.contains("output 7"))
         do {
             try ClusterPairServingGrants.requirePlacement([cls("Apple M2 Max"), cls("Apple M2 Max")], runtimeModelID: "registered_split",
-                                                          publicModelID: "p", decisions: decisions)
+                                                          publicModelID: "p", mode: .pipeline, decisions: decisions)
             Issue.record("a withheld model was allowed")
         } catch let refusal as ClusterPairServingRefusal {
             #expect(refusal.reason == .withheld(why))
         }
         for model in ["registered_unsure", "registered_loopback", "registered_virtual", "registered_disorder"] {
             do {
-                try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: cls("Apple M2 Max"), runtimeModelID: model, publicModelID: "p", decisions: decisions)
+                try ClusterPairServingGrants.requireRank(1, of: 2, chipClass: cls("Apple M2 Max"), runtimeModelID: model, publicModelID: "p",
+                                                         mode: .pipeline, decisions: decisions)
                 Issue.record("\(model) was allowed")
             } catch let refusal as ClusterPairServingRefusal {
                 #expect(refusal.reason == .noGrant, "\(model)")
@@ -96,6 +99,48 @@ import DarkbloomClusterProtocol
         #expect(!decisions.shapes(runtimeModelID: "registered_loopback").restrictsShapes)
         #expect(!decisions.shapes(runtimeModelID: "registered_none").restrictsShapes)
         #expect(ClusterPairServingGrants.records(runtimeModelID: "registered_split", decisions: decisions) == split)
+    }
+
+    /// Mode-bound grants (owner sign-off O9): a record grants only its own mode family and the chip classes in the roles
+    /// it ran; a diverged record withholds its own family; an inconclusive one neither grants nor withholds.
+    @Test func grantsAreBoundToTheModeFamilyTheirRecordsRan() throws {
+        let m3 = cls("Apple M3 Ultra"), m5u = cls("Apple M5 Ultra"), m5 = cls("Apple M5 Max"), m2 = cls("Apple M2 Max"), m4 = cls("Apple M4 Max")
+        let decisions = ClusterPairServingDecisions(records: [
+            record("registered_handoff", ["Apple M3 Ultra", "Apple M5 Ultra"], cuts: [8], mode: "phase_split_mtp_v1", verdicts: ["tokensEqualLogitsDiffer"]),
+            record("registered_retired", ["Apple M3 Ultra", "Apple M5 Max"], cuts: [16]),
+            record("registered_retired", ["Apple M3 Ultra", "Apple M5 Ultra"], cuts: [8], mode: "phase_split_v1"),
+            record("registered_mixed", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "pipeline_compact_decode_v1"),
+            record("registered_mixed", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "phase_split_v1", verdicts: ["diverged"]),
+            record("registered_unsure", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], verdicts: ["incomparable"]),
+            record("registered_unsure", ["Apple M2 Max", "Apple M4 Max"], cuts: [12], mode: "phase_split_v1"),
+        ])
+        #expect(ClusterGenerationMode.pipelineCompactDecode.servingFamily == .pipeline && ClusterGenerationMode.phaseSplitMTP.servingFamily == .handOff)
+        // A phase-split pass opens no pipeline shape.
+        #expect(allows([m3, m5u], "registered_handoff", decisions, mode: .phaseSplitMTP))
+        #expect(!allows([m3, m5u], "registered_handoff", decisions, mode: .pipeline))
+        do {
+            try ClusterPairServingGrants.requirePlacement([m3, m5u], runtimeModelID: "registered_handoff", publicModelID: "p", mode: .pipeline, decisions: decisions)
+            Issue.record("a hand-off record opened a pipeline placement")
+        } catch let refusal as ClusterPairServingRefusal {
+            #expect(refusal.reason == .modeNotQualified(rank: 0, mode: .pipeline, granted: [.handOff]))
+        }
+        // Without the mode a placement is refused, whatever the records.
+        #expect((try? ClusterPairServingGrants.requirePlacement([m3, m5u], runtimeModelID: "registered_handoff", publicModelID: "p", decisions: decisions)) == nil)
+        // A retired chip's record grants that chip only, in its own family.
+        #expect(allows([m3, m5], "registered_retired", decisions) && !allows([m3, m5u], "registered_retired", decisions))
+        #expect(allows([m3, m5u], "registered_retired", decisions, mode: .phaseSplit) && !allows([m3, m5], "registered_retired", decisions, mode: .phaseSplit))
+        let retired = try ClusterPairServingGrants.grant(runtimeModelID: "registered_retired", publicModelID: "p", decisions: decisions)
+        #expect(retired.families == [.pipeline, .handOff])
+        #expect(retired.chipClasses(for: .decodingRank, family: .pipeline) == [m5] && retired.chipClasses(for: .decodingRank, family: .handOff) == [m5u])
+        // A diverged hand-off record withholds the hand-off family only.
+        #expect(allows([m2, m4], "registered_mixed", decisions) && !allows([m2, m4], "registered_mixed", decisions, mode: .phaseSplit))
+        #expect(decisions.withheld["registered_mixed"] == nil)
+        #expect(try ClusterPairServingGrants.grant(runtimeModelID: "registered_mixed", publicModelID: "p", decisions: decisions).withheldFamilies.keys.sorted() == [.handOff])
+        // An inconclusive record neither grants nor withholds.
+        #expect(!allows([m2, m4], "registered_unsure", decisions) && allows([m2, m4], "registered_unsure", decisions, mode: .phaseSplit))
+        // The planner keeps to the same rule.
+        #expect(ClusterPairServingGrants.plannable([m3, m5u], cuts: [8], mode: .phaseSplitMTP, runtimeModelID: "registered_handoff", decisions: decisions))
+        #expect(!ClusterPairServingGrants.plannable([m3, m5u], cuts: [8], mode: .pipeline, runtimeModelID: "registered_handoff", decisions: decisions))
     }
 
     @Test func theShippedRecordsAreAllUsed() {

@@ -81,6 +81,25 @@ to keep waiting (it leads) and the other says so and joins it.
   through the product's downloader (catalog manifest, per-file and aggregate
   SHA-256, written uncached), cloned into the cluster store and then copied.
 
+## Which models a pair serves, and in which mode
+
+A pair serves a model only under the grant this build derives from its
+cross-cable qualification records (each a run of both Macs compared with
+single-Mac references under the near-tie rule). A grant is bound to the mode
+family its records ran: the pipeline (with its compact-decode variant), the
+pipeline with speculative rounds, tensor parallel, and the hand-off modes
+(phase split and the prefill/decode hybrids, kept but off by default) are four
+families, and a passing record of one opens no other. Within a family, a chip
+reaches a role (the decoding rank, or a rank before it) only when a passing run
+of that family ran it in that role; a record from a Mac generation no longer
+on hand still grants that chip, and only it. A record that diverged withholds
+its own family at every cut (that family is then planned only at shapes a
+check passed in, and never started); an inconclusive record neither grants nor
+withholds. The planner and every Mac's start apply the same rule, and the
+onboarding offers a model only when every rank of its chosen placement would
+pass that start check: a model its records withhold (a withheld family still
+has a plan at a passed shape) is listed as not served, with the reason.
+
 ## If a Mac goes away
 
 The cluster keeps itself running. When one Mac goes away (turned off, asleep,

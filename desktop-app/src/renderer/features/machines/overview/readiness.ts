@@ -48,11 +48,13 @@ export function assessReadiness({ status, state, update }: ReadinessFacts): Read
   }
   const operation = state.operations.find((item) => item.state === 'running');
   const transitioning = !!operation && lifecycle.includes(operation.action);
-  const steps: ReadinessStep[] = update.required ? [updateStep(update.available)] : [];
+  // A running update is the remedy for a required one: wait for it instead of offering it again.
+  const required = update.required && operation?.action !== 'update';
+  const steps: ReadinessStep[] = required ? [updateStep(update.available)] : [];
   const provider = transitioning ? undefined : providerStep(state);
   if (provider) steps.push(provider[0]);
   const tone: ReadinessTone =
-    update.required || provider?.[1] === 'block'
+    required || provider?.[1] === 'block'
       ? 'blocked'
       : provider || transitioning
         ? 'pending'
@@ -64,7 +66,7 @@ export function assessReadiness({ status, state, update }: ReadinessFacts): Read
   const statusLabel =
     tone === 'ready'
       ? 'Ready to serve'
-      : !update.required && transitioning && operation
+      : !required && transitioning && operation
         ? operationLabel(operation)
         : primary?.id === 'start'
           ? 'Stopped'

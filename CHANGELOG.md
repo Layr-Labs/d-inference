@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop required update in progress
+
+- While Darkbloom updates on a runtime below the supported version, This Mac's Overview shows a single “Updating Darkbloom” step and headline instead of also offering the required update again.
 ## Unreleased — desktop manual selection during Autopilot turn-on
 
 - Disable Apply selection, Download and Remove on the Models page while Autopilot is turning on, so a manual selection can no longer be applied on top of the turn-on.

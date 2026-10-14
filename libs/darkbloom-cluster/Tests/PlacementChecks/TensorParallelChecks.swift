@@ -22,6 +22,29 @@ func checkTensorParallel(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Pl
     try checkTensorParallelServed(big, checks)
     try checkTensorParallelWeighted(big, checks)
     try checkTensorParallelRecord(configuration: inputs.twentySeven.configuration, checks)
+    checkShareProbes(checks)
+}
+
+/// Share probes measured per share replace the two-point line where present
+/// (M3 Ultra, 27B, 2026-10-14: whole 26.14 ms, half 24.66 ms, quarter 16.34 ms).
+private func checkShareProbes(_ checks: PlacementChecks) {
+    let line = ClusterDecodeSplit(rates: .init(prefillTokensPerSecond: 322, decodeTokensPerSecond: 1 / 0.02614,
+        tensorShardPrefillTokensPerSecond: 598, tensorShardDecodeTokensPerSecond: 1 / 0.02466))
+    let probed = ClusterDecodeSplit(rates: .init(prefillTokensPerSecond: 322, decodeTokensPerSecond: 1 / 0.02614,
+        tensorShardPrefillTokensPerSecond: 598, tensorShardDecodeTokensPerSecond: 1 / 0.02466,
+        tensorShareRates: [.init(sharePerMille: 250, decodeTokensPerSecond: 1 / 0.01634, prefillTokensPerSecond: 1152)]))
+    checks.require("share probes: without them a quarter is extrapolated on the line (floor 23.18 ms + weights x 1/4 = 23.92 ms)",
+        abs(line.shareStepSeconds(fraction: 0.25) - 0.023920) < 2e-5 && line.measuredSteps == nil)
+    checks.require("share probes: with a quarter probe the quarter steps as measured (16.34 ms), the half as its probe, between them on the measured segment",
+        abs(probed.shareStepSeconds(fraction: 0.25) - 0.01634) < 1e-9 && abs(probed.shareStepSeconds(fraction: 0.5) - 0.02466) < 1e-9
+            && abs(probed.shareStepSeconds(fraction: 0.375) - 0.0205) < 1e-9 && abs(probed.shareStepSeconds(fraction: 1) - 0.02614) < 1e-9
+            && probed.measuredSteps?.map(\.fraction) == [0.25, 0.5, 1])
+    checks.require("share probes: below the smallest probe the line is used but never above that probe's own step",
+        probed.shareStepSeconds(fraction: 0.1) <= 0.01634)
+    let rates = ClusterSpeedRates(prefillTokensPerSecond: 1, decodeTokensPerSecond: 1,
+        tensorShareRates: [.init(sharePerMille: 750, decodeTokensPerSecond: 50)])
+    checks.require("share probes: a probe is found within 5 per mille of a share and not further",
+        rates.shareRate(near: 0.75) != nil && rates.shareRate(near: 0.753) != nil && rates.shareRate(near: 0.76) == nil)
 }
 
 // MARK: - The qualification record of a tensor-parallel run

@@ -137,6 +137,12 @@ public struct ClusterReductionCost: Codable, Equatable, Sendable {
     }
 }
 
+/// One measured point of a device's share step.
+public struct ClusterMeasuredStep: Codable, Equatable, Sendable {
+    public let fraction: Double
+    public let seconds: Double
+}
+
 /// One device's decode on a model, split the only way two measurements allow:
 /// a per-token floor that does not shrink with the weights (the GPU's kernel
 /// chain, the host's graph) and a part that does (reading the weights). With
@@ -151,8 +157,22 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
     /// True when a shard probe measured the half.
     public let measured: Bool
 
+    /// Measured share steps (fraction, seconds): the half probe, other
+    /// shares' probes and the whole, ascending; nil without share probes
+    /// (so a split without them encodes as before).
+    public let measuredSteps: [ClusterMeasuredStep]?
+
     public init(rates: ClusterSpeedRates) {
         let whole = 1 / rates.decodeTokensPerSecond
+        var points = (rates.tensorShareRates ?? []).map {
+            ClusterMeasuredStep(fraction: Double($0.sharePerMille) / 1000, seconds: 1 / $0.decodeTokensPerSecond) }
+        if !points.isEmpty {
+            if let shard = rates.tensorShardDecodeTokensPerSecond, !points.contains(where: { abs($0.fraction - 0.5) < 0.005 }) {
+                points.append(.init(fraction: 0.5, seconds: 1 / shard))
+            }
+            points.append(.init(fraction: 1, seconds: whole))
+        }
+        measuredSteps = points.isEmpty ? nil : points.sorted { $0.fraction < $1.fraction }
         wholeStepSeconds = whole
         if let shard = rates.tensorShardDecodeTokensPerSecond {
             // A half cannot be faster than half the whole, nor slower than it.
@@ -165,7 +185,19 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
 
     public func shareStepSeconds(ranks: Int) -> Double { floorSeconds + weightSeconds / Double(max(1, ranks)) }
     /// A rank holding `fraction` of the weights: the floor whole, that part of the weights.
-    public func shareStepSeconds(fraction: Double) -> Double { floorSeconds + weightSeconds * max(0, min(1, fraction)) }
+    /// With share probes: piecewise linear between the measured shares (below
+    /// the smallest, the floor model, never above that share's own step).
+    /// Without: floor + weights x fraction.
+    public func shareStepSeconds(fraction: Double) -> Double {
+        let f = max(0, min(1, fraction))
+        let model = floorSeconds + weightSeconds * f
+        guard let steps = measuredSteps, let lowest = steps.first else { return model }
+        if f <= lowest.fraction { return min(model, lowest.seconds) }
+        for (a, b) in zip(steps, steps.dropFirst()) where f <= b.fraction {
+            return a.seconds + (b.seconds - a.seconds) * (f - a.fraction) / max(1e-9, b.fraction - a.fraction)
+        }
+        return steps.last!.seconds
+    }
 }
 
 /// What the planner predicted for tensor parallel on this model and these

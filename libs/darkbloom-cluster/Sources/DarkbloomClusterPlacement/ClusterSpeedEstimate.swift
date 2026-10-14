@@ -2,6 +2,25 @@ import Foundation
 
 /// Two rates for a whole model on one device alone, and, when measured, the
 /// decode rate of the same device running the model's speculative head.
+/// A tensor-parallel shard probe at one share of the model (a rank holding
+/// `sharePerMille` / 1000 of every divided part, no reduction), measured on
+/// the device itself: a share's step is not a straight line between the
+/// whole and a half on every chip (measured 2026-10-14 on an M3 Ultra, 27B:
+/// whole 26.1 ms, half 24.7 ms, quarter 16.3 ms).
+public struct ClusterShareRate: Codable, Equatable, Sendable {
+    public let sharePerMille: Int
+    public let decodeTokensPerSecond: Double
+    public let prefillTokensPerSecond: Double?
+    public init(sharePerMille: Int, decodeTokensPerSecond: Double, prefillTokensPerSecond: Double? = nil) {
+        self.sharePerMille = sharePerMille; self.decodeTokensPerSecond = decodeTokensPerSecond
+        self.prefillTokensPerSecond = prefillTokensPerSecond
+    }
+    var valid: Bool {
+        (1...999).contains(sharePerMille) && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
+            && (prefillTokensPerSecond.map { $0.isFinite && $0 > 0 } ?? true)
+    }
+}
+
 public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     public let prefillTokensPerSecond: Double
     public let decodeTokensPerSecond: Double
@@ -16,24 +35,36 @@ public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     /// step shrinks with the weights is the chip's own (`ClusterDecodeSplit`).
     public let tensorShardPrefillTokensPerSecond: Double?
     public let tensorShardDecodeTokensPerSecond: Double?
+    /// Shard probes at other shares (unequal tensor-parallel splits), the
+    /// device's own; nil when none was measured.
+    public let tensorShareRates: [ClusterShareRate]?
     public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double,
                 speculativeDecodeTokensPerSecond: Double? = nil,
-                tensorShardPrefillTokensPerSecond: Double? = nil, tensorShardDecodeTokensPerSecond: Double? = nil) {
+                tensorShardPrefillTokensPerSecond: Double? = nil, tensorShardDecodeTokensPerSecond: Double? = nil,
+                tensorShareRates: [ClusterShareRate]? = nil) {
         self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
         self.speculativeDecodeTokensPerSecond = speculativeDecodeTokensPerSecond
         self.tensorShardPrefillTokensPerSecond = tensorShardPrefillTokensPerSecond
         self.tensorShardDecodeTokensPerSecond = tensorShardDecodeTokensPerSecond
+        self.tensorShareRates = tensorShareRates?.isEmpty == true ? nil : tensorShareRates
+    }
+
+    /// A measured shard probe within 5 per mille of `fraction`, if any.
+    public func shareRate(near fraction: Double) -> ClusterShareRate? {
+        (tensorShareRates ?? []).min { abs(Double($0.sharePerMille) / 1000 - fraction) < abs(Double($1.sharePerMille) / 1000 - fraction) }
+            .flatMap { abs(Double($0.sharePerMille) / 1000 - fraction) <= 0.005 ? $0 : nil }
     }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
             && [speculativeDecodeTokensPerSecond, tensorShardPrefillTokensPerSecond, tensorShardDecodeTokensPerSecond]
                 .allSatisfy { $0.map { $0.isFinite && $0 > 0 } ?? true }
+            && (tensorShareRates ?? []).allSatisfy(\.valid) && (tensorShareRates ?? []).count <= 16
     }
     /// True when a rate beyond the plain two is present (schema v2).
     var extended: Bool {
         speculativeDecodeTokensPerSecond != nil || tensorShardPrefillTokensPerSecond != nil
-            || tensorShardDecodeTokensPerSecond != nil
+            || tensorShardDecodeTokensPerSecond != nil || tensorShareRates != nil
     }
     /// The same rates without the speculative and shard ones: what may be
     /// said of another device scaled from these.

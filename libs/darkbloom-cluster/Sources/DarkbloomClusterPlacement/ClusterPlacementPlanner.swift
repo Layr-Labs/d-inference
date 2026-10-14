@@ -697,7 +697,9 @@ public enum ClusterPlacementPlanner {
                 var perToken = 0.0
                 for (index, device) in order.enumerated() {
                     let rate = rates(device, regime).0
-                    perToken = max(perToken, rate.tensorShardPrefillTokensPerSecond.map { share[index] * Double(order.count) / $0 }
+                    // A measured probe at this share wins over scaling the half's.
+                    let probed = rate.shareRate(near: share[index])?.prefillTokensPerSecond.map { 1 / $0 }
+                    perToken = max(perToken, probed ?? rate.tensorShardPrefillTokensPerSecond.map { share[index] * Double(order.count) / $0 }
                         ?? 1 / rate.prefillTokensPerSecond)
                 }
                 first = Double(prompt) * perToken

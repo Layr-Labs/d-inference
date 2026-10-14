@@ -173,6 +173,34 @@ public enum ClusterPlacementExplanation {
         return lines
     }
 
+    /// Every sharded candidate in one line each: verdict and reason, what each
+    /// member holds (its layers, or its share of every layer, and the bytes),
+    /// and the predicted speed; then that the hand-off modes are off.
+    public static func shards(_ s: ClusterShardAssessment, basis: ClusterPlacementBasis) -> [String] {
+        var lines: [String] = []
+        for o in s.options {
+            var text = "\(o.kind.label): \(o.verdict.rawValue) (\(o.reason))."
+            if !o.members.isEmpty {
+                let held = o.members.map { m -> String in
+                    let part = m.share.map { String(format: "%.0f%% of layers %d to %d", $0 * 100, m.firstLayer, m.endLayer - 1) }
+                        ?? "layers \(m.firstLayer) to \(m.endLayer - 1)"
+                    return "\(m.device) \(part), \(gibText(m.weightsBytes))" + (m.tier == 0 ? "" : " (does not fit now)")
+                }
+                let shape = o.stages.map { " Stages " + $0.map { $0.joined(separator: "+") }.joined(separator: " then ") + ";" } ?? ""
+                let cut = o.cuts.isEmpty ? "" : " Cut \(o.cuts.map(String.init).joined(separator: "/")):"
+                text += shape + cut + " " + held.joined(separator: "; ") + "."
+            }
+            if let p = o.prediction {
+                text += basis.absolute
+                    ? " Predicted: first token \(seconds(p.firstTokenSeconds)), decode \(rate(p.decodeTokensPerSecond)) tok/s, request \(seconds(p.requestSeconds))."
+                    : " Predicted relative time \(number(p.requestSeconds, 3))."
+            }
+            lines.append(text)
+        }
+        lines.append(s.note)
+        return lines
+    }
+
     static func fitText(_ fit: ClusterPlacementFit, need: Int, device: String, _ devices: [ClusterPlacementDevice]) -> String {
         guard let memory = devices.first(where: { $0.label == device })?.profile.memory else { return describe(fit) }
         return describe(fit, need: need, memory: memory)
@@ -274,6 +302,10 @@ public enum ClusterPlacementExplanation {
                         : "relative time \(number(p.requestSeconds, 3))")
                     + (a.tier == 0 ? "" : "; does not fit now"))
             }
+        }
+        if let shards = result.shards {
+            lines.append("Sharded deployment candidates")
+            lines += Self.shards(shards, basis: result.basis).map { "  " + $0 }
         }
         if let tp = result.tensorParallel {
             lines.append("Tensor parallel")

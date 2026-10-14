@@ -5,15 +5,19 @@ import Foundation
 /// Per-request routes and speed records from served requests, on constructed
 /// Macs of several generations and sizes. The speeds below are inputs of a
 /// check, not claims about any machine; the code under test names no chip.
+/// The alone route and the phase split it rides on are off by default
+/// (sharded deployments only, 2026-10-13); these checks hold the kept code
+/// to its behaviour under the explicit opt-in (`handOffModes`, `aloneRoute`).
 func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks) throws {
     let nine = try layoutWithHead(inputs.nine, bytes: 136_881_152, count: 31)
     func plan(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelLayout, modes: [ClusterGenerationMode]? = nil) throws
         -> (setup: ClusterRequestRouter.Setup, result: ClusterPlacementResult) {
-        var policy = ClusterPlacementPolicy(); policy.modes = modes
+        var policy = ClusterPlacementPolicy(); policy.modes = modes; policy.handOffModes = true
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
         guard let chosen = result.chosen else { throw ClusterPlacementError("constructed pair has no placement") }
         let ordered = chosen.ranks.map { rank in devices.first { $0.label == rank.device }! }
-        return (.init(devices: ordered, cuts: chosen.cuts, mode: chosen.mode, schedule: chosen.prefillSchedule, layout: layout), result)
+        return (.init(devices: ordered, cuts: chosen.cuts, mode: chosen.mode, schedule: chosen.prefillSchedule, layout: layout,
+                      aloneRoute: true), result)
     }
     let chunk = nine.maximumChunkTokens
 
@@ -98,7 +102,7 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     let probe = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128, served: aloneOnly)
     let pending = try ClusterRequestRouter.decide(pair.setup, promptTokens: 24_576, outputTokens: 128, served: aloneOnly, measuring: [23_000])
     let strict = ClusterRequestRouter.Setup(devices: pair.setup.devices, cuts: pair.setup.cuts, mode: pair.setup.mode,
-        schedule: pair.setup.schedule, layout: nine, measuresPair: false)
+        schedule: pair.setup.schedule, layout: nine, measuresPair: false, aloneRoute: true)
     let strictRoute = try ClusterRequestRouter.decide(strict, promptTokens: 24_576, outputTokens: 128, served: aloneOnly)
     checks.require("the member alone measured near a length where the pair is still predicted faster: the pair is measured there once, then not again until its record arrives",
         probe.path == .pair && probe.measuring && pending.path == .alone && !pending.measuring && strictRoute.path == .alone)
@@ -122,7 +126,7 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
         try ClusterRequestRouter.decide(pair.setup, promptTokens: 4 * chunk, outputTokens: 128, served: measuredLong).path == .alone)
     // Predictions trusted (margin = tolerance), the planner's crossover and corrections as before.
     let trusted = ClusterRequestRouter.Setup(devices: pair.setup.devices, cuts: pair.setup.cuts, mode: pair.setup.mode,
-        schedule: pair.setup.schedule, layout: nine, unmeasuredMargin: 0)
+        schedule: pair.setup.schedule, layout: nine, unmeasuredMargin: 0, aloneRoute: true)
     checks.require("M3 Ultra + M5 Ultra, predictions trusted: a long prompt goes to the pair",
         try ClusterRequestRouter.decide(trusted, promptTokens: 24_576, outputTokens: 128).path == .pair)
     let crossover = try ClusterRequestRouter.crossoverPromptTokens(trusted, outputTokens: 128, maximumPrompt: 32_768)
@@ -216,7 +220,7 @@ func checkRequestRoutes(_ inputs: RetainedQwenInputs, _ checks: PlacementChecks)
     // Index-only speeds are relative units; a served route is in seconds. With only one route served,
     // the other takes its scale, so the decision stays the planner's ratio (units never decide).
     let relativeSetup = ClusterRequestRouter.Setup(devices: [r3, r5], cuts: pair.setup.cuts, mode: pair.setup.mode,
-        schedule: pair.setup.schedule, layout: nine, measuresPair: false)
+        schedule: pair.setup.schedule, layout: nine, measuresPair: false, aloneRoute: true)
     for prompt in [chunk, 16 * chunk] {
         let predictedRoute = try ClusterRequestRouter.decide(relativeSetup, promptTokens: prompt, outputTokens: 128)
         var alonePolicy = ClusterPlacementPolicy(); alonePolicy.promptTokens = prompt; alonePolicy.outputTokens = 128

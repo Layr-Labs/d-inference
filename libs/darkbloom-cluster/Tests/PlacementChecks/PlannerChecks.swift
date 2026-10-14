@@ -165,7 +165,8 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
     var result: [ClusterPlacementCandidate] = []
     for order in [[devices[0], devices[1]], [devices[1], devices[0]]] {
         for cut in cuts {
-            for mode in layout.generationModes {
+            // The hand-off modes are planned only under the opt-in (sharded deployments only by default).
+            for mode in layout.generationModes where policy.handOffModes || !mode.isHandOff {
                 result.append(try ClusterPlacementPlanner.evaluate(devices: order, cuts: [cut], mode: mode,
                     prefillSchedule: .oneChunkLookahead, layout: layout, policy: policy))
             }

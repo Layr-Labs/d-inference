@@ -43,6 +43,15 @@ public enum ClusterGenerationMode: String, Codable, CaseIterable, Sendable {
     public var usesTensorParallelDecode: Bool { self == .tensorParallel || self == .pipelinePrefillTensorDecode }
     /// Prefill runs by tensor parallel too: no layer range is cut.
     public var usesTensorParallelPrefill: Bool { self == .tensorParallel }
+    /// The request state changes owner after the prompt (a phase split, with
+    /// or without the head, or the pipeline-prefill/tensor-decode hybrid).
+    /// Kept, but off by default (owner, 2026-10-13: sharded deployments
+    /// only): a planner considers these only behind an explicit opt-in.
+    public var isHandOff: Bool { isPhaseSplit || self == .pipelinePrefillTensorDecode }
+    /// Every member shards the model for every token and no state changes
+    /// owner: a pipeline (with or without compact decode framing) or tensor
+    /// parallel. What a planner chooses by default.
+    public var isSharded: Bool { !isHandOff }
     /// How many layer cuts a placement of `ranks` ranks in this mode has:
     /// none for tensor parallel, one fewer than the ranks for every other mode.
     public func layerCutCount(ranks: Int) -> Int { usesTensorParallelPrefill ? 0 : max(0, ranks - 1) }

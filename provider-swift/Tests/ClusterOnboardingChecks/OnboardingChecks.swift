@@ -433,7 +433,7 @@ import Darwin
         let run = TerminalRun(operations(recorder, resume: .init(role: .leader, peerName: "Apple M3 Ultra, 256 GB"), pairEvents: [], pairResult: .failed([]),
             choices: before, replanned: after))
         expect(run.waitFor("Choose a model [1-1, enter = 1]: "), "download: a catalog model is offered"); run.type("\r")
-        expect(run.waitFor("Qwen3.8-27B-4bit-mtp is not on these Macs yet. No download by hand is needed:"), "download: said")
+        expect(run.waitFor("Qwen3.8-27B-4bit-mtp is not on this Mac yet. No download by hand is needed:"), "download: said")
         expect(run.waitFor("Press enter to get it, n to stop here."), "download: one key"); run.type("\r")
         expect(run.waitFor("Planning Qwen3.8-27B-4bit-mtp now that it is on this Mac…"), "download: planned after")
         expect(run.waitFor("  rank 1 (decodes): Apple M5 Ultra, 256 GB (this Mac), layers 32-63"), "download: the plan shown")

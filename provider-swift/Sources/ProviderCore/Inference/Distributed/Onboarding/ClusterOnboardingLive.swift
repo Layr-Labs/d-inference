@@ -411,8 +411,11 @@ private final class OnboardingLive: @unchecked Sendable {
             if Date().timeIntervalSince(lastLine) >= 1 {
                 lastLine = Date()
                 let bytes = Self.stagedBytes(staging)
-                progress(Self.copyLine(model: model.modelID, to: "this Mac", sent: bytes, total: model.totalBytes, seconds: Date().timeIntervalSince(started))
-                    .replacingOccurrences(of: "Copying", with: "Receiving"))
+                let seconds = Date().timeIntervalSince(started), rate = seconds > 0 ? Double(bytes) / seconds : 0
+                let left = rate > 0 && model.totalBytes > bytes ? ", " + ClusterModelProvisioning.duration(Double(model.totalBytes - bytes) / rate) + " left" : ""
+                if bytes > 0 {
+                    progress("Receiving \(model.modelID) from \(peerName) over the Thunderbolt cable: \(String(format: "%.1f", Double(bytes) / 1e9)) of \(ClusterModelProvisioning.gigabytes(model.totalBytes)), \(String(format: "%.2f", rate / 1e9)) GB/s\(left)")
+                }
             }
             usleep(250_000)
         }

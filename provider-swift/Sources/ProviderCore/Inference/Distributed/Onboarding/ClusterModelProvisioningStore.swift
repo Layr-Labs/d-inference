@@ -38,9 +38,21 @@ enum ClusterProductModelStore {
     /// The catalog's exact manifest bytes for a model (the cluster worker pins the registered manifest's own bytes; the
     /// product store keeps a re-encoded receipt), checked to name the same artifact; nil when the catalog does not answer.
     static func catalogManifest(providerConfiguration: URL, artifact: ClusterCatalogArtifact, seconds: Double = 5) -> Data? {
-        guard let config = try? ConfigManager.load(from: providerConfiguration),
-              let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
-              let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") else { return nil }
+        // The published manifest.json on the model CDN is the registered file itself (the coordinator's manifest
+        // endpoint serves the same content re-encoded); the coordinator is asked only when the CDN does not answer.
+        var urls = [URL]()
+        if let prefix = artifact.r2Prefix {
+            let cdn = (ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"].flatMap { $0.isEmpty ? nil : $0 } ?? ModelDownloader.defaultR2CDNURL)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if let url = URL(string: "\(cdn)/\(ModelDownloader.escapeR2Path(prefix))/manifest.json") { urls.append(url) }
+        }
+        if let config = try? ConfigManager.load(from: providerConfiguration), let escaped = ModelCatalogClient.escapeModelIDForPath(artifact.modelID),
+           let url = URL(string: "\(coordinatorHTTPBase(config.coordinator.url))/v1/models/catalog/manifest/\(escaped)") { urls.append(url) }
+        for url in urls { if let data = fetchManifest(url, artifact: artifact, seconds: seconds) { return data } }
+        return nil
+    }
+
+    private static func fetchManifest(_ url: URL, artifact: ClusterCatalogArtifact, seconds: Double) -> Data? {
         var request = URLRequest(url: url)
         request.timeoutInterval = seconds
         let box = ClusterOnboardingMailbox<Data>()

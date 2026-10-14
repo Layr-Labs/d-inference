@@ -556,7 +556,7 @@ public enum ClusterOnboardingDriver {
     static func provision(_ offer: ClusterOnboardingProvisionOffer, title: String, index: Int,
                           _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> ProvisionOutcome {
         console.say("")
-        console.say(offer.leaderDownloads ? "\(title) is not on these Macs yet. No download by hand is needed:"
+        console.say(offer.leaderDownloads ? "\(title) is not on this Mac yet. No download by hand is needed:"
                                           : "\(title) is not on every Mac yet. No download by hand is needed:")
         for line in offer.lines { console.say("  " + line) }
         if let blocker = offer.blocker {

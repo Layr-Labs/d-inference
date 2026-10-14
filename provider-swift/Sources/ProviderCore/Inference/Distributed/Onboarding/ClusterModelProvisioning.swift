@@ -35,6 +35,8 @@ public struct ClusterCatalogArtifact: Sendable, Equatable {
     public var files: [File]
     /// The manifest's exact bytes, written beside the files as `manifest.json`.
     public var manifest: Data
+    /// Where the catalog publishes the files (`r2_prefix`), when the manifest names it.
+    public var r2Prefix: String?
 
     /// The folder name the cluster's model store uses: the model ID's last part and the catalog version.
     public var folderName: String {
@@ -77,7 +79,8 @@ public struct ClusterCatalogArtifact: Sendable, Equatable {
         guard aggregateDigest(files) == aggregate else {
             throw ClusterModelProvisioningError("the model's manifest digests do not match its aggregate digest")
         }
-        return .init(modelID: modelID, version: version, aggregateSHA256: aggregate, totalBytes: total, files: files, manifest: data)
+        let prefix = (object["r2_prefix"] as? String).flatMap { safePath($0) ? $0 : nil }
+        return .init(modelID: modelID, version: version, aggregateSHA256: aggregate, totalBytes: total, files: files, manifest: data, r2Prefix: prefix)
     }
 
     /// SHA-256 over the raw per-file digests in path order.

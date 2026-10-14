@@ -16,9 +16,11 @@ public enum MiMoQualificationEvidence {
     public static let referenceSchema = "mimo_staged_reference_v2"
     public static let stepLinePrefix = "darkbloom-mimo-step-v1 "
     /// What a record lists among its allowances when the reference names its
-    /// request by ID only: the request fields the reference file does not
-    /// carry (prompt digest, chunk, outputs, stops, profile, configuration)
-    /// are the pair's, bound by the request ID both runs were given.
+    /// request by ID only (reports written before 2026-10-14): the request
+    /// fields the reference file does not carry (prompt digest, chunk,
+    /// outputs, stops) are the pair's, bound by the request ID both runs were
+    /// given. A reference that names them (`request`) is compared on them
+    /// like every other family's and lists no such allowance.
     public static let requestByIDAllowance = "request-by-id"
 
     struct ReferenceFile: Decodable {
@@ -32,6 +34,13 @@ public enum MiMoQualificationEvidence {
         let verifiedAggregateSHA256: String, planSHA256: String, storageCommitmentSHA256: String
         /// The Mac that ran it; written by builds after 2026-10-13, absent before.
         let host: QualificationHost?
+        /// The request it ran, in the fields a pair's identity compares;
+        /// written by builds after 2026-10-14, absent before.
+        let request: RequestBinding?
+    }
+
+    struct RequestBinding: Decodable {
+        let promptTokenIDsSHA256: String, chunkSize: Int, outputCount: Int, stopTokenIDs: [Int]
     }
 
     public static func isReference(_ data: Data) -> Bool {
@@ -41,13 +50,15 @@ public enum MiMoQualificationEvidence {
 
     /// A MiMo reference as a subject the comparator can hold against `pair`.
     /// Compared from the file itself: model, request ID, prompt length, cut,
-    /// artifact (the verified aggregate digest), plan. The request fields the
-    /// file does not carry are taken from `pair` (`requestByIDAllowance`).
+    /// artifact (the verified aggregate digest), plan, and, when the file
+    /// names its request, the prompt digest, chunk, outputs and stops
+    /// (`requestBound`). Without that block those fields are taken from
+    /// `pair` (`requestByIDAllowance`).
     /// Refused: another model, an evidence row missing or out of order, a row
     /// whose candidates are not two or more in descending order, or a step
     /// whose selected token is not its top candidate (a greedy reference).
     public static func reference(_ data: Data, comparableWith pair: QualificationIdentity) throws
-        -> (subject: QualificationSubject, chip: String?) {
+        -> (subject: QualificationSubject, chip: String?, requestBound: Bool) {
         let file = try JSONDecoder().decode(ReferenceFile.self, from: data)
         guard file.schema == referenceSchema else { throw QualificationError("Not a MiMo staged reference") }
         guard !file.selectedTokenIDs.isEmpty, file.steps.map(\.ordinal) == Array(0..<file.selectedTokenIDs.count) else {
@@ -70,11 +81,20 @@ public enum MiMoQualificationEvidence {
         identity.promptTokenCount = file.promptTokens; identity.stageCut = file.stageCut
         identity.artifactSHA256 = file.verifiedAggregateSHA256; identity.planSHA256 = file.planSHA256
         identity.storageCommitmentSHA256 = file.storageCommitmentSHA256
+        if let request = file.request {
+            guard QualificationHash.isSHA256(request.promptTokenIDsSHA256), request.chunkSize > 0, request.outputCount > 0,
+                  request.stopTokenIDs == Array(Set(request.stopTokenIDs)).sorted() else {
+                throw QualificationError("The MiMo reference names a malformed request")
+            }
+            identity.promptTokenIDsSHA256 = request.promptTokenIDsSHA256; identity.chunkSize = request.chunkSize
+            identity.outputCount = request.outputCount; identity.stopTokenIDs = request.stopTokenIDs
+        }
         identity.stageSHA256 = nil; identity.requestFingerprint = nil; identity.profileFingerprint = nil
         identity.arithmeticSHA256 = nil; identity.generationMode = nil
         let chip = file.host?.chip
         return (.init(label: "MiMo single-host reference (\(chip ?? "chip not recorded"))", identity: identity,
-                      evidence: .init(selectedTokenIDs: file.selectedTokenIDs, finishReason: file.finishReason, steps: steps)), chip)
+                      evidence: .init(selectedTokenIDs: file.selectedTokenIDs, finishReason: file.finishReason, steps: steps)), chip,
+                file.request != nil)
     }
 
     /// The decoding rank's step lines of a MiMo pair report as steps, one per

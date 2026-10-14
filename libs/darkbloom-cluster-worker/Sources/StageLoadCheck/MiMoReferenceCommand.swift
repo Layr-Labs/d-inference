@@ -1,3 +1,4 @@
+import CryptoKit
 import DarkbloomClusterRuntime
 import Darwin
 import Foundation
@@ -23,6 +24,21 @@ enum MiMoReferenceCommand {
             }
             let version = ProcessInfo.processInfo.operatingSystemVersion
             return .init(chip: chip, operatingSystem: "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)")
+        }
+    }
+
+    /// The request fields a pair's qualification identity compares, so a
+    /// record binds this reference to the request the pair ran
+    /// (`MiMoQualificationEvidence.RequestBinding`): the prompt's digest in
+    /// the runtime's token-history convention (decimal IDs joined by commas,
+    /// `QualificationHash.tokenIDs`), the chunk, the outputs and the stops.
+    struct RequestBinding: Encodable {
+        let promptTokenIDsSHA256: String
+        let chunkSize: Int, outputCount: Int, stopTokenIDs: [Int]
+        init(promptTokenIDs: [Int], chunkSize: Int, outputCount: Int, stopTokenIDs: [Int]) {
+            promptTokenIDsSHA256 = SHA256.hash(data: Data(promptTokenIDs.map(String.init).joined(separator: ",").utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            self.chunkSize = chunkSize; self.outputCount = outputCount; self.stopTokenIDs = stopTokenIDs
         }
     }
 
@@ -73,7 +89,12 @@ enum MiMoReferenceCommand {
         // The report names the kind of Mac that ran it (its chip and system
         // version, never a host name), as every single-Mac reference does:
         // a qualification record lists each reference's chip.
-        var encoded = Data("{\"host\":".utf8) + (try encoder.encode(Host.local())) + Data(",".utf8)
+        // It also names the request it ran, so a record compares the prompt,
+        // chunk, outputs and stops with the pair's instead of trusting the ID.
+        let binding = RequestBinding(promptTokenIDs: file.promptTokenIDs, chunkSize: file.chunkSize,
+                                     outputCount: file.outputCount, stopTokenIDs: file.stopTokenIDs)
+        var encoded = Data("{\"host\":".utf8) + (try encoder.encode(Host.local()))
+            + Data(",\"request\":".utf8) + (try encoder.encode(binding)) + Data(",".utf8)
             + (try encoder.encode(result)).dropFirst()
         encoded.append(10)
         try encoded.write(to: URL(fileURLWithPath: reportPath), options: [.withoutOverwriting])

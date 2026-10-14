@@ -68,7 +68,7 @@ public enum PairQualificationRecords {
         if comparator.allowProfileDifference { allowed.append("profile") }
         let comparisons = try references.map { referenceData -> ClusterPairQualificationRecord.Comparison in
             if MiMoQualificationEvidence.isReference(referenceData) {
-                let (subject, chip) = try MiMoQualificationEvidence.reference(referenceData, comparableWith: identity)
+                let (subject, chip, requestBound) = try MiMoQualificationEvidence.reference(referenceData, comparableWith: identity)
                 let compared = try comparator.compare(reference: subject, candidate: candidate)
                 guard compared.identityMatches else {
                     throw QualificationError("A reference is not the same request as the pair (differs in "
@@ -76,7 +76,8 @@ public enum PairQualificationRecords {
                 }
                 return .init(referenceChip: chip, verdict: compared.verdict.rawValue,
                     firstDivergenceIndex: compared.tokens.firstDivergenceIndex, gapInULPs: compared.divergence?.gapInULPs,
-                    nearTieThresholdULPs: comparator.nearTieULPs, allowed: allowed + [MiMoQualificationEvidence.requestByIDAllowance])
+                    nearTieThresholdULPs: comparator.nearTieULPs,
+                    allowed: allowed + (requestBound ? [] : [MiMoQualificationEvidence.requestByIDAllowance]))
             }
             guard (try? decoder.decode(Header.self, from: referenceData))?.schema == ReferenceReport.currentSchema else {
                 throw QualificationError("A reference is not a single-Mac reference report")

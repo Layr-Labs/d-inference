@@ -32,7 +32,7 @@ final class MiMoQualificationRecordTests: XCTestCase {
 
     private func referenceData(tokens: [Int] = tokens, margin: Float = 1.5, cut: Int = 31, requestID: String = requestID,
                                artifact: String = artifact, chip: String? = "Apple M5 Ultra", dropRow: Int? = nil,
-                               rowSalt: String = "") throws -> Data {
+                               rowSalt: String = "", request: [String: Any]? = nil) throws -> Data {
         var steps: [[String: Any]] = []
         for (ordinal, token) in tokens.enumerated() where ordinal != dropRow {
             steps.append(["ordinal": ordinal, "boundarySHA256": String(repeating: "c", count: 64), "rowSHA256": row(ordinal, salt: rowSalt),
@@ -44,6 +44,7 @@ final class MiMoQualificationRecordTests: XCTestCase {
             "boundaryChainSHA256": String(repeating: "d", count: 64), "steps": steps, "verifiedAggregateSHA256": artifact,
             "planSHA256": "plan-\(cut)", "storageCommitmentSHA256": String(repeating: "e", count: 64), "modelsReleased": [true, true]]
         if let chip { object["host"] = ["role": "single host", "chip": chip, "operatingSystem": "27.0.1"] }
+        if let request { object["request"] = request }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
@@ -122,6 +123,42 @@ final class MiMoQualificationRecordTests: XCTestCase {
         let cut = try PairQualificationRecords.make(pairReport: try pairData(), references: [try referenceData(cut: 34)],
                                                     comparator: .init(allowCutDifference: true))
         XCTAssertEqual(cut.comparisons.first?.allowed, ["cut", "request-by-id"]); XCTAssertTrue(cut.passed)
+    }
+
+    /// The request fields a reference names, as `mimo-reference` writes them since 2026-10-14.
+    private func requestBlock(prompt: [Int] = Array(1...27), chunk: Int = 512, outputs: Int = 64,
+                              stops: [Int] = [151643]) -> [String: Any] {
+        ["promptTokenIDsSHA256": QualificationHash.tokenIDs(prompt), "chunkSize": chunk, "outputCount": outputs, "stopTokenIDs": stops]
+    }
+
+    /// A reference that names its request is bound to it: the prompt, chunk,
+    /// outputs and stops are compared with the pair's, as for every other
+    /// family, and no request-by-ID allowance is listed. One that differs in
+    /// any of them is another request, whatever its request ID.
+    func testAReferenceThatNamesItsRequestIsComparedOnIt() throws {
+        let bound = try PairQualificationRecords.make(pairReport: try pairData(),
+            references: [try referenceData(request: requestBlock())], comparator: .init())
+        XCTAssertEqual(bound.comparisons.map(\.verdict), ["exact"]); XCTAssertTrue(bound.passed)
+        XCTAssertEqual(bound.comparisons.first?.allowed, [])
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mimo-bound-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("pair.json")
+        try QualificationFiles.writeNew(try pairData(), to: file)
+        let pair = try QualificationReportFiles.subject(file)
+        for (label, block) in [("another prompt of the same length", requestBlock(prompt: Array(2...28))),
+                               ("another chunk", requestBlock(chunk: 256)),
+                               ("another output count", requestBlock(outputs: 32)),
+                               ("other stops", requestBlock(stops: [2]))] {
+            XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: try pairData(),
+                references: [try referenceData(request: block)], comparator: .init()), label)
+            let subject = try MiMoQualificationEvidence.reference(try referenceData(request: block), comparableWith: pair.identity).subject
+            XCTAssertFalse(try QualificationComparator().compare(reference: subject, candidate: pair).identityMatches, label)
+        }
+        // A malformed request block is refused, not ignored.
+        var malformed = requestBlock(); malformed["promptTokenIDsSHA256"] = "not-a-digest"
+        XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: try pairData(),
+            references: [try referenceData(request: malformed)], comparator: .init()))
     }
 
     func testTheComparatorReadsMiMoPairReportsFromTheirFiles() throws {

@@ -117,6 +117,9 @@ public actor CoordinatorClient {
     /// The reconnect the wait's deadline placed, and the end of its own
     /// terms (handshake, then the connection's negotiation window).
     internal var memberFinalAttemptUntil: ContinuousClock.Instant?
+    /// The end of the current attempt's own terms (its handshake's window,
+    /// then its connection's negotiation window); nil between attempts.
+    internal var memberAttemptUntil: ContinuousClock.Instant?
 
     /// The member control installed before the first connection, and its
     /// attachment to the current accepted connection. The attachment is nil

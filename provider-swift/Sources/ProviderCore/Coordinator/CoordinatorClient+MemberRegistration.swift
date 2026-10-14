@@ -7,8 +7,9 @@ import Foundation
 /// How a starting member's registration stands when its wait reaches its
 /// deadline. Read by `ProviderLoop.waitForClusterMemberRegistration`.
 enum ClusterMemberRegistrationProgress: Sendable, Equatable {
-    /// The reconnect the wait placed at its deadline is still within its own
-    /// terms (handshake, then this connection's negotiation window).
+    /// An attempt is still within its own terms: the reconnect the wait
+    /// placed at its deadline, or any attempt under way at the deadline (its
+    /// handshake, then this connection's negotiation window). Never later.
     case finalAttempt(until: ContinuousClock.Instant)
     /// The latest attempt could not reach the coordinator: nothing answered,
     /// so nothing accepted or refused the member role.
@@ -45,7 +46,8 @@ extension CoordinatorClient {
     }
 
     func memberRegistrationProgress(now: ContinuousClock.Instant = .now) -> ClusterMemberRegistrationProgress {
-        if let until = memberFinalAttemptUntil, now < until { return .finalAttempt(until: until) }
+        let open = [memberFinalAttemptUntil, memberAttemptUntil].compactMap { $0 }.filter { now < $0 }
+        if let until = open.max() { return .finalAttempt(until: until) }
         if let reason = memberUnreachableReason { return .unreachable(reason: reason) }
         return .notAccepted
     }
@@ -66,16 +68,39 @@ extension CoordinatorClient {
         return planned.seconds
     }
 
+    /// An attempt's handshake begins: it gets one negotiation window to
+    /// reach the coordinator, so a wait whose deadline falls inside it does
+    /// not give up on it (nor call it a refusal). Only an attempt begun
+    /// before the deadline, or the final one placed at it, counts: later
+    /// reconnects never extend a wait (it ends within two windows of its
+    /// deadline whatever the coordinator does).
+    func noteMemberAttemptStarted(now: ContinuousClock.Instant = .now) {
+        guard config.executionRole == .clusterMember else { return }
+        if let deadline = memberRegistrationDeadline, now >= deadline, memberFinalAttemptUntil == nil {
+            memberAttemptUntil = nil
+            return
+        }
+        memberAttemptUntil = now.advanced(by: ClusterMemberNegotiation.window)
+    }
+
     /// The handshake of this attempt failed: the coordinator was not reached.
     func noteMemberAttemptUnreachable(_ error: Error) {
         guard config.executionRole == .clusterMember else { return }
+        memberAttemptUntil = nil
         memberUnreachableReason = String(describing: error)
     }
 
     /// This attempt's transport is ready and its registration is about to be
-    /// sent under `negotiation`; a final attempt now runs to its window's end.
+    /// sent under `negotiation`: the attempt (final or not) now runs to its
+    /// connection's window, where an unacknowledged member is refused anyway.
     func noteMemberTransportReady(_ negotiation: ClusterMemberNegotiation?) {
         memberUnreachableReason = nil
+        if memberAttemptUntil != nil { memberAttemptUntil = negotiation?.deadline }
         if memberFinalAttemptUntil != nil, let negotiation { memberFinalAttemptUntil = negotiation.deadline }
+    }
+
+    /// The attempt's connection is gone (any exit): nothing of it is open.
+    func noteMemberAttemptEnded() {
+        memberAttemptUntil = nil
     }
 }

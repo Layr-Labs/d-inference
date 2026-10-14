@@ -110,8 +110,9 @@ extension ProviderLoop {
     ///
     /// The coordinator client keeps its reconnects inside the wait: a retry
     /// its backoff would place after `deadline` is made at the deadline, and
-    /// that final attempt runs to the end of its own terms (its handshake,
-    /// then its connection's negotiation window) before the wait gives up.
+    /// that final attempt, like any attempt under way at the deadline, runs
+    /// to the end of its own terms (its handshake, then its connection's
+    /// negotiation window) before the wait gives up.
     /// A wait that ends without any attempt reaching the coordinator throws
     /// `coordinatorUnreachable`, not a role refusal (F11). The role check is
     /// unchanged: only this connection's nonce-bound acceptance connects.

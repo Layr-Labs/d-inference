@@ -115,6 +115,9 @@ extension CoordinatorClient {
         defer {
             memberTimeout?.cancel()
             failureCont.finish()
+            // Before the reconnect loop announces the end: a waiting member
+            // past its deadline must not wait on a connection that is gone.
+            self.noteMemberAttemptEnded()
             // Tear down this connection on every exit (error OR clean reconnect),
             // so a stale NWConnection (and its internal retry) never lingers.
             // Nil the stored reference so sendOnCurrentConnection fast-returns
@@ -154,6 +157,7 @@ extension CoordinatorClient {
         // is replaced (a connection that goes `.waiting`, `.preparing`, then
         // `.waiting` again): only the first terminal state resumes the wait.
         let handshake = HandshakeResumption()
+        noteMemberAttemptStarted()
         do { try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connection.stateUpdateHandler = { state in
                 switch state {

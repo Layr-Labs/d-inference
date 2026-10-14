@@ -1087,7 +1087,10 @@ A starting member waits for this frame for a bounded time (30 s for a
 foreground `darkbloom start --local --distributed` or `--cluster-member`). Its
 reconnects stay inside that wait: a retry the backoff would place after the
 wait's end is made at the end and runs to its own terms (one ten-second window
-for the handshake, then its connection's ten-second deadline). A wait in which
+for the handshake, then its connection's ten-second deadline); an attempt
+already under way at the wait's end gets the same terms, so an acceptance
+arriving inside its connection's deadline still connects. A reconnect begun
+after the wait's end never extends it. A wait in which
 no attempt reached the coordinator fails as "coordinator could not be reached",
 not as a refusal of the member role; a reached coordinator that sent no valid
 acceptance in time still ends the member (it is not reconnected under a new

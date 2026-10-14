@@ -224,7 +224,7 @@ enum ClusterConsoleContent {
                 } else if interactive {
                     lines.append(.init("Not saved and not trusted. Press a, then y, to approve it; any other key leaves it unapproved.", .warning, indent: 4, from: source))
                 } else {
-                    lines.append(.init("Not saved and not trusted. `darkbloom cluster configure`, or `a` in the console, approves it.", .warning, indent: 4, from: source))
+                    lines.append(.init("Not saved and not trusted. Press a in the console to approve it.", .warning, indent: 4, from: source))
                 }
             }
         }
@@ -320,7 +320,7 @@ enum ClusterConsoleContent {
         let process = ClusterConsoleLine.Source.wired("session.process")
         switch state.session {
         case .none: lines.insert(.init("No session was started from this screen.", from: process), at: 1)
-        case .launching: lines.insert(.init("Starting `darkbloom start --local --distributed`.", .warning, from: process), at: 1)
+        case .launching: lines.insert(.init("Starting the cluster session.", .warning, from: process), at: 1)
         case .running(let identifier):
             lines.insert(.init("Process \(identifier), started from this screen, is running.", .good, from: process), at: 1)
         case .stopping(let identifier):

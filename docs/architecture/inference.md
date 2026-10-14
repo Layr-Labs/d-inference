@@ -983,7 +983,16 @@ model only on the chip and numerics classes its qualification records granted
 (`libs/darkbloom-cluster-worker/`). Provider-side membership, onboarding,
 pairing, model provisioning, control leadership and the installed session live
 in `provider-swift/Sources/ProviderCore/Inference/Distributed/`. The user
-procedure is [two Macs as one provider](../provider/two-mac-cluster.md).
+procedure is [two Macs as one provider](../provider/two-mac-cluster.md):
+`darkbloom cluster` on each Mac, pick a model, done. The onboarding
+(`Onboarding/ClusterOnboardingFlow.swift`, pure; `ClusterOnboardingLive.swift`)
+shows the adopted plan as one deployment line (`ClusterOnboardingDeployment`:
+the plan's mode in words, each Mac's layers or tensor-parallel share), lists
+the choices that fit in free memory first and measures the fit again before
+the start, and never offers a model whose pair-serving grant refuses the pair.
+After a Darkbloom update changes a Mac's worker digest, the control leader's
+cluster service re-plans and re-adopts the same model by itself
+(`ClusterService.checkForUpdate`, `ClusterOnboardingUpdate`).
 
 ## Invariants
 

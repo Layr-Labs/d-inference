@@ -128,6 +128,8 @@ public struct ClusterOnboardingLeadership: Codable, Sendable, Equatable {
     public var serving: Bool = false
     /// The model the leader chose, for the screen.
     public var modelName: String?
+    /// How the chosen model is served, in one line from the adopted plan ("Serving … across both Macs: pipeline, …").
+    public var deployment: String?
 
     public init(role: String, leaderPin: String, peerPin: String, peerName: String, since: String) {
         self.role = role; self.leaderPin = leaderPin; self.peerPin = peerPin; self.peerName = peerName; self.since = since

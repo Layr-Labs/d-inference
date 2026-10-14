@@ -49,6 +49,7 @@ import Darwin
             ("watch reducer", watchReducer),
             ("setup flow", setupFlow),
             ("setup flow modes", setupFlowModes),
+            ("setup flow, onboarding wording", setupFlowPlain),
             ("assigned address", assignedAddressReport),
             ("isolation tool text", isolationToolText),
             ("isolation address", isolationAddress),

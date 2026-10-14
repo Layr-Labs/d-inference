@@ -13,10 +13,9 @@ enum ClusterCapabilityRecord {
     static func decode(_ data: Data, writtenBy origin: String) throws -> ClusterRuntimeCapability {
         do { return try ClusterRuntimeCapabilityCodec.decode(data) }
         catch {
-            throw ClusterConfigurationError.invalid("This darkbloom cannot read the capability record written by \(origin) (\(reason(error))). "
-                + "A record is written by the worker it describes. One this darkbloom cannot read usually means the two were not built from the same tree, "
-                + "for example a record with a field or a mode this darkbloom does not know. "
-                + "Install the darkbloom and the worker of one release on both Macs, then run `darkbloom cluster configure` again.")
+            throw ClusterConfigurationError.invalid("Install the same Darkbloom release on both Macs, then run `darkbloom cluster` again; it re-plans by itself. "
+                + "(This darkbloom cannot read the capability record written by \(origin): \(reason(error)). A record this darkbloom cannot read "
+                + "usually means the darkbloom and the worker were not built from the same tree.)")
         }
     }
 

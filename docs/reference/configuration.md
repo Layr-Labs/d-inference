@@ -579,11 +579,14 @@ namespace per user (`~/.config/darkbloom/clusters`,
 configuration validation. They carry saved expectations only — never a
 grant, runtime approval or serving capacity. `darkbloom cluster configure`
 (`provider-swift/Sources/darkbloom/ClusterCommand.swift`, `Cluster.Configure`)
-validates and saves one without enabling or starting it. Only
+validates and saves one without enabling or starting it. `darkbloom cluster`
+saves this setup when you pick a model. The other Mac applies it, and the
+service starts the processes. `cluster configure` and `start --cluster-member`
+are developer tools. The processes that use the saved setup are
 `darkbloom start --local --distributed` and `darkbloom start --cluster-member`
 (`provider-swift/Sources/darkbloom/Start/StartCommand.swift`, `distributed`
-and `clusterMember`) use the saved setup; both are control-only and refuse solo
-serving options when parsed. No environment variable selects one, so ordinary
+and `clusterMember`); both are control-only and refuse solo serving options
+when parsed. No environment variable selects one, so ordinary
 solo serving is unchanged and the whole surface stays default-off.
 
 ### Experimental cluster pairs
@@ -689,10 +692,15 @@ and for what the member answers.
 
 ### Guided link setup
 
-`darkbloom cluster`, the same as
-`darkbloom cluster setup [--json] [--yes] [--temporary] [--dry-run]`
-(`provider-swift/Sources/darkbloom/ClusterSetupCommand.swift`, `Cluster.Setup`),
-gets this Mac's link ready in one command and keeps it ready. It prints one
+`darkbloom cluster` (and `darkbloom cluster setup`) on a terminal runs the
+onboarding: it pairs the Macs and offers a model. Run `darkbloom cluster` on
+both Macs to pair them again. The line-by-line link setup described here runs
+only with `--json`, `--yes`, `--temporary`, `--dry-run` or the hidden
+`--link-only`
+(`provider-swift/Sources/darkbloom/ClusterSetupCommand.swift`, `Cluster.Setup`);
+with no terminal and none of those, `darkbloom cluster` prints one line: "Run
+`darkbloom cluster` in a Terminal window on this Mac." The link setup
+gets this Mac's link ready and keeps it ready. It prints one
 line per step as each is observed, and the only thing it asks of the person is
 approval in the macOS prompt. It runs the inspection, the change watch and the approval-gated fix
 described in the next sections; its decisions and wording are one state machine
@@ -926,16 +934,13 @@ line, schema `darkbloom_cluster_link_watch_v1`
 `darkbloom cluster console [--json | --plain] [--dry-run] [--temporary] [--config <path>]`
 (`provider-swift/Sources/darkbloom/ClusterConsoleCommand.swift`, `Cluster.Console`)
 shows this Mac's link, saved setup, model and session on one screen and runs
-the cluster commands from it. Bare `darkbloom cluster` opens the same screen
-when standard input and output are both terminals, `TERM` names one that can
-draw a screen (set, and not `dumb`), and none of `--json`, `--yes`,
-`--temporary` and `--dry-run` is given
-(`Cluster.Console.replacesGuidedSetup`); in every other case, and always as
-`darkbloom cluster setup`, it is the line-by-line
-[guided link setup](#guided-link-setup) with its output unchanged. Opened this
-way the command ends as the guided setup does: with status 1 unless the link
-is `ready` when the screen closes, read once more at that moment
-(`Cluster.Console.runAsGuidedSetup`).
+the cluster commands from it (a hidden developer screen). Bare
+`darkbloom cluster` and `darkbloom cluster setup` run the onboarding on any
+terminal (it prints plain lines and reads keys through termios, so `TERM` does
+not matter); `--wizard` opens the earlier six-step wizard on a terminal that
+can draw it; `--json`, `--yes`, `--temporary`, `--dry-run` and `--link-only`
+run the line-by-line [guided link setup](#guided-link-setup)
+(`Cluster.Setup.entry`).
 
 Everything shown is read when the screen opens, when `r` is pressed and after
 each action. Between those, a probe is run again only where something is
@@ -993,7 +998,7 @@ not arrive within `pasteMilliseconds = 1000` is given up on
 (`provider-swift/Sources/ProviderCore/Inference/Distributed/Console/ClusterConsoleKey.swift`, `ClusterConsoleKeyDecoder`).
 
 The one thing the screen starts by itself is the guided setup's address step,
-as `darkbloom cluster setup` takes it in a terminal: when a reading finds a
+as the link setup takes it in a terminal: when a reading finds a
 port that only lacks an address, or whose address nothing keeps, the fix is
 started once and macOS shows its approval prompt. Where the system job is
 loaded and about to put a lost address back, the link is first read

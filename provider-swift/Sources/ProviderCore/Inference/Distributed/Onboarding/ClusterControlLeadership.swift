@@ -378,7 +378,7 @@ public struct ClusterControlNode: Sendable, Equatable {
         if plan.contains(localID), plan.filter({ present.contains($0) }) == [localID] {
             return .cannotServe(missing: missing, reason: "this Mac cannot hold the model alone")
         }
-        return .cannotServe(missing: missing, reason: "a plan for the members still present is not built (re-plan with fewer members)")
+        return .cannotServe(missing: missing, reason: "it re-forms when the other Mac is back")
     }
 
     /// The persisted part: restarts start from it.
@@ -538,7 +538,7 @@ public enum ClusterControlWords {
         func name(_ id: String) -> String { names[id] ?? id }
         let what = model ?? "the model"
         switch mode {
-        case .following(let leader): return "following the control leader \(name(leader))"
+        case .following(let leader): return "commands typed here are handled by \(name(leader))"
         case .confirming: return "leading; waiting for every member to confirm"
         case .cluster: return "leading the cluster"
         case .idle: return "leading; no model chosen yet"
@@ -604,7 +604,7 @@ public enum ClusterControlRouting {
     /// Nil when this Mac leads and runs a forwarded command; otherwise the words of its refusal.
     public static func refusal(localID: String, claim: ClusterControlClaim, names: [String: String]) -> String? {
         guard claim.leaderID != localID else { return nil }
-        return "this Mac does not lead the cluster; it follows \(names[claim.leaderID] ?? claim.leaderID) (term \(claim.term))"
+        return "commands are handled by \(names[claim.leaderID] ?? claim.leaderID) now; it re-forms by itself if that changes"
     }
 }
 

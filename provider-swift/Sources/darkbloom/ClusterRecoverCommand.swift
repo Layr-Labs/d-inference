@@ -6,7 +6,7 @@ extension Cluster {
     /// Registered by adding `Recover.self` to `Cluster.configuration.subcommands`.
     struct Recover: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "recover",
-            abstract: "Clear this Mac's cluster device journal after proving that nothing it names is still running.")
+            abstract: "Clear this Mac's cluster device journal after proving that nothing it names is still running.", shouldDisplay: false)
         @Flag(help: "Print the outcome and what was inspected as JSON.") var json = false
 
         mutating func run() throws {

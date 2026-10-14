@@ -40,7 +40,7 @@ public enum DistributedInstalledDeveloperSSH {
     static func requireFollowerRoute(_ configuration: ClusterConfiguration,
                                      environment: [String: String] = ProcessInfo.processInfo.environment) throws {
         guard configuration.linkControl == nil, !enabled(environment) else { return }
-        throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Pair the two Macs again with `darkbloom cluster setup`, so the follower is served over the cable's link control channel")
+        throw ClusterConfigurationError.invalid("This setup reaches the other Mac over SSH, which Darkbloom no longer uses for serving. Run `darkbloom cluster` on both Macs to pair them again")
     }
 }
 

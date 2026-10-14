@@ -37,7 +37,7 @@ extension ClusterConsoleCheck {
         expectEqual(none.symmetricDifference(Set(unavailable.filter { !$0.exists }.map(\.id)).subtracting(wizardWired)).sorted(), [],
             "rows with no operation differ from the code")
         for item in ClusterConsoleWiring.unavailable where wizardWired.contains(item.id) {
-            expect(item.exists && item.reason.contains("setup wizard"), "the console names the wizard for \(item.id), which it does")
+            expect(item.exists && item.reason.contains("`darkbloom cluster`") && !item.reason.contains("wizard"), "the console names `darkbloom cluster` (the onboarding) for \(item.id), which does it")
         }
         expectEqual(Set(ClusterConsoleWiring.wired).count, ClusterConsoleWiring.wired.count, "a wired element is listed twice")
         expect(ClusterConsoleWiring.unavailable.allSatisfy { !$0.reason.isEmpty && !$0.title.isEmpty }, "an unavailable element has no reason")

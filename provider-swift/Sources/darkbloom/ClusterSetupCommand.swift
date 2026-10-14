@@ -3,64 +3,61 @@ import ArgumentParser
 import ProviderCore
 
 extension Cluster {
-    /// `darkbloom cluster` with no subcommand: the guided setup wizard on a
-    /// terminal, the guided link setup line by line everywhere else.
+    /// `darkbloom cluster` (and `darkbloom cluster setup`): the onboarding on a terminal; the line-by-line link
+    /// setup only with the options that ask for it.
     struct Setup: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "setup",
-            abstract: "Set up a cluster: start on any Mac, run it on the other Mac too and confirm the code; afterwards it works on every member.",
+            abstract: "Set up two or more Macs to serve one model together. Run it on each Mac and follow the screen.",
             discussion: """
-                On a terminal, bare `darkbloom cluster` is the onboarding. It checks RDMA, the cable and the \
-                cable port's isolation (one macOS approval when needed) and the RDMA GID. When no other Mac waits \
-                on the cable, this Mac becomes the leader and says "On your other Mac, run `darkbloom cluster`"; \
-                the other Mac then finds it by itself, both show the same code, y on each pairs them, and the \
-                other Mac is told where to continue. The leader shows both Macs' hardware, the models both hold \
-                with the planner's placement, and on y saves the plan, syncs the member's setup over the cable, \
-                starts both Macs' parts and serves. Afterwards the cluster's control leader is derived (the \
-                plan's rank 0, where requests enter) and fails over when it disappears; `darkbloom cluster` on any \
-                member shows the status and changes the model, stops or starts it, forwarding to the leader. \
-                Run again, it shows where this Mac stands and the next step. \
-                --wizard opens the earlier six-step wizard instead; --plain prints its six steps.
+                Run `darkbloom cluster` in Terminal on each Mac (`darkbloom cluster setup` is the same). The first Mac \
+                checks its Thunderbolt cable and asks macOS for one approval, then says "On your other Mac, run \
+                `darkbloom cluster`". The other Mac finds it by itself; both show the same code; press y on each. \
+                Then choose a model on the first Mac: Darkbloom works out how to split it across both Macs, copies \
+                it to a Mac that lacks it, starts both Macs and shows one line saying how the model is served. \
+                Nothing else is needed: no SSH, no address and no network setting is typed.
 
-                As `darkbloom cluster setup`, with --json, --yes or --temporary, or when not run in a terminal, \
-                it is the guided link setup: it checks that RDMA is enabled, waits for a Thunderbolt 5 connection \
-                to another Mac, and sets the connected port up for the cluster alone (out of every bridge, with \
-                its own network service, a fixed address, no router and no DNS, which macOS keeps also after a \
-                restart), behind macOS's own approval prompt. Darkbloom never uses sudo and never changes \
-                Internet Sharing. When not run in a terminal, or with --json, nothing is waited for or asked \
-                unless --yes is given. `darkbloom cluster link --remove` restores the network settings this changes.
+                Run it again on any Mac to see the cluster, change the model or stop it.
                 """)
         @OptionGroup var configOptions: ConfigOptions
-        @Flag(help: "Print one JSON object at the end instead of a line per step.") var json = false
-        @Flag(help: "Allow the wait for a connection and the macOS approval prompt when not run in a terminal or with --json.")
+        @Flag(help: ArgumentHelp("Link setup only: print one JSON object at the end instead of a line per step.", visibility: .hidden))
+        var json = false
+        @Flag(help: ArgumentHelp("Link setup only: allow the wait for a connection and the macOS approval prompt when not run in a terminal.", visibility: .hidden))
         var yes = false
-        @Flag(help: "Add a link-local address alone, without changing the network settings; it lasts until macOS next reconfigures the port.")
+        @Flag(help: ArgumentHelp("Link setup only: add a link-local address alone, without changing the network settings.", visibility: .hidden))
         var temporary = false
-        @Flag(name: .customLong("dry-run"), help: "Print the commands a link approval would run, and change no network setting; in the wizard, the link fix only shows its commands.")
+        @Flag(name: .customLong("dry-run"), help: ArgumentHelp("Link setup only: print the commands a link approval would run, and change no network setting.", visibility: .hidden))
         var dryRun = false
-        @Flag(help: "Print the setup wizard's six steps as text and exit.") var plain = false
-        @Option(help: "Absolute path to the pair description: the two Macs and their installations (the leader, once).")
+        @Flag(name: .customLong("link-only"), help: ArgumentHelp("Run only the line-by-line link setup (developer).", visibility: .hidden))
+        var linkOnly = false
+        @Flag(help: ArgumentHelp("Developer: print the earlier setup wizard's six steps as text and exit.", visibility: .hidden)) var plain = false
+        @Option(help: ArgumentHelp("Developer: absolute path to a pair description.", visibility: .hidden))
         var pair: String?
-        @Option(help: "Absolute path to the worker's capability record for the pair description's model.")
+        @Option(help: ArgumentHelp("Developer: absolute path to the worker's capability record for the pair description's model.", visibility: .hidden))
         var capability: String?
-        @Option(name: .customLong("capability-sha256"), help: "Expected SHA-256 of that capability record.")
+        @Option(name: .customLong("capability-sha256"), help: ArgumentHelp("Developer: expected SHA-256 of that capability record.", visibility: .hidden))
         var capabilitySHA256: String?
-        @Option(help: "This Mac's member ID in the pair description.")
+        @Option(help: ArgumentHelp("Developer: this Mac's member ID in the pair description.", visibility: .hidden))
         var member: String?
-        @Option(name: .customLong("model-dir"), help: "Absolute path of the folder holding this Mac's model folders (once; the wizard remembers it).")
+        @Option(name: .customLong("model-dir"), help: ArgumentHelp("Developer: absolute path of the folder holding this Mac's model folders.", visibility: .hidden))
         var modelDir: String?
-        @Option(help: "Absolute path of this Mac's cluster worker, when it is not the installed one (Darkbloom.app/Contents/Helpers).")
+        @Option(help: ArgumentHelp("Developer: absolute path of this Mac's cluster worker, when it is not the installed one.", visibility: .hidden))
         var worker: String?
-        @Flag(help: "Open the six-step setup wizard instead of the leader-first onboarding.")
+        @Flag(help: ArgumentHelp("Developer: open the earlier six-step setup wizard instead of the onboarding.", visibility: .hidden))
         var wizard = false
 
         func validate() throws { try validateWizardOptions() }
 
         mutating func run() async throws {
             if plain { return try await printWizardPlain() }
-            if Self.opensWizard(arguments: CommandLine.arguments, json: json, yes: yes, temporary: temporary, plain: plain,
+            switch Self.entry(json: json, yes: yes, temporary: temporary, dryRun: dryRun, linkOnly: linkOnly, wizard: wizard,
                 inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1,
                 terminalType: ProcessInfo.processInfo.environment["TERM"]) {
-                return try await (wizard ? runWizard() : runOnboarding())
+            case .onboarding: return try await runOnboarding()
+            case .wizard: return try await runWizard()
+            case .needsTerminal:
+                print(Self.needsTerminalLine)
+                throw ExitCode.failure
+            case .linkSetup: break
             }
             Darkbloom.ensureLogging()
             let mode = temporary ? ClusterLinkRepair.Mode.temporary : .durable, dryRun = dryRun

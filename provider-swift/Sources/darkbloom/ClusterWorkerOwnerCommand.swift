@@ -5,7 +5,7 @@ import ProviderCore
 extension Cluster {
     struct WorkerOwner: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "worker-owner",
-            abstract: "Serve one configured authenticated worker-owner connection.")
+            abstract: "Serve one configured authenticated worker-owner connection.", shouldDisplay: false)
         @Flag(help: "Use the authenticated supervisor's standard input and output.")
         var stdio = false
 

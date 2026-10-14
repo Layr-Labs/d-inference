@@ -237,11 +237,14 @@ extension ClusterConsoleCheck {
             // why: MiMo's records ran with the M5 Ultra leading and the M3 Ultra decoding, and this pair is an
             // M3 Ultra leading an M5 Max (its grant, from its records, not a table).
             if reading.model.modelID == "mimo-v2.6-flash-mopd" {
-                expect(option?.plan == nil && option?.blocker?.contains("granted pair serving") == true
-                    && option?.blocker?.contains("apple_m5_ultra") == true,
+                // In plain words, action or fact first, with no command (one-command fix A2/B4).
+                expect(option?.plan == nil && option?.blocker == ClusterSetupPlanning.notQualified,
                     "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
                 continue
             }
+            // A model the pair may not serve with this build is not offered at all (checked below).
+            if let described = try? reading.capability.get(),
+               ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: reading.model.modelID) { continue }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",
@@ -284,6 +287,19 @@ extension ClusterConsoleCheck {
         let alone = ClusterSetupPlanning.decide(readings: F.readings, description: F.pairDescription, localMemberID: "mac-a",
             localProfile: F.profileA, peerProfile: F.profileB, peerModels: [], measurements: [])
         expect(alone.allSatisfy { $0.option.blocker?.contains("copy it there first") == true }, "models only here say to copy them")
+        // A model the pair may not serve with this build is never offered (a start would refuse it on both Macs after
+        // a long wait): its grant refusal is the blocker, in plain words with no command.
+        for withheld in F.readings {
+            guard let described = try? withheld.capability.get(),
+                  ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: withheld.model.modelID) else { continue }
+            let option = F.decisions.first { $0.option.model.folder == withheld.model.folder }?.option
+            expect(option?.blocker == ClusterSetupPlanning.notQualified, "\(withheld.model.modelID): not offered, plainly: \(option?.blocker ?? "offered")")
+        }
+        for option in F.decisions.map(\.option) {
+            let words = option.blocker ?? ""
+            expect(!words.contains("`darkbloom") && !words.contains("this Mac leads") && !words.contains("mac-a") && !words.contains("mac-b"),
+                "\(option.model.modelID): the reason names no command, no member ID and no leader: \(words)")
+        }
         // The decision also writes both setups, rank 0 this Mac's.
         let setup = F.decisions.first { $0.option.model.modelID == "Qwen3.5-9B" }?.setup
         expect(setup?.leaderID == "mac-a" && setup?.configurations.count == 2, "adopting writes both setups, this Mac leading")

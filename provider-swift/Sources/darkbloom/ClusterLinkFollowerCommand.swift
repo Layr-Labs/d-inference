@@ -10,7 +10,7 @@ extension Cluster {
     /// then fences what runs and waits (bounded) for its owner's release.
     struct LinkFollower: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "link-follower",
-            abstract: "Serve this Mac's rank to the leader over the link control channel (follower setups only).")
+            abstract: "Serve this Mac's rank to the leader over the link control channel (follower setups only).", shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
 
         func validate() throws {

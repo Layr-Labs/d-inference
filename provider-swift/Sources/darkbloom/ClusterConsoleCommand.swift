@@ -4,7 +4,7 @@ import ProviderCore
 
 extension Cluster {
     /// Registered by adding `Console.self` to `Cluster.configuration.subcommands`.
-    /// Bare `darkbloom cluster` in a terminal opens the setup wizard instead.
+    /// Developer screen (hidden); `darkbloom cluster` runs the onboarding.
     struct Console: AsyncParsableCommand {
         static let configuration = CommandConfiguration(commandName: "console",
             abstract: "Show this Mac's cluster readiness, pairing, model and session on one screen, and run the cluster commands from it.",
@@ -14,10 +14,10 @@ extension Cluster {
                 address and installs the system job that keeps it, a is `cluster configure` on the \
                 setup passed with --input, s is `start --local --distributed`, x interrupts the session this screen \
                 started, c is `cluster recover`, and e writes a redacted diagnostics file into the current \
-                directory. Nothing is trusted, started, cleared or changed without a key, the link included. Bare \
-                `darkbloom cluster` opens the step-by-step setup wizard instead. With --json or --plain, or when \
+                directory. Nothing is trusted, started, cleared or changed without a key, the link included. This is a \
+                developer screen: `darkbloom cluster` is the user's one command. With --json or --plain, or when \
                 not run in a terminal, the same state is printed and the command exits.
-                """)
+                """, shouldDisplay: false)
         @OptionGroup var configOptions: ConfigOptions
         @Flag(help: "Print the state as one JSON object and exit.") var json = false
         @Flag(help: "Print the state as text and exit.") var plain = false

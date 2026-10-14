@@ -165,9 +165,9 @@ extension ClusterConsoleCheck {
             ClusterSetupChild.sshFailure(.init(status: status, output: Data(), error: Data(text.utf8)))
         }
         expect(ssh("Host key verification failed.").contains("host key is not the one the setup pins"), "host key")
-        expect(ssh("user@192.0.2.2: Permission denied (publickey).").contains("did not accept this Mac's key") && ssh("Permission denied").contains("login keychain"), "key refused, or the keychain locked")
+        expect(ssh("user@192.0.2.2: Permission denied (publickey).").contains("refused this Mac (developer route)"), "key refused (the developer route's words)")
         expect(ssh("ssh: connect to host 192.0.2.2 port 22: Operation timed out").contains("did not answer"), "timeout")
-        expect(ssh("ssh: connect to host 192.0.2.2 port 22: Connection refused").contains("Remote Login"), "refused")
+        expect(ssh("ssh: connect to host 192.0.2.2 port 22: Connection refused").contains("refused the connection") && !ssh("Connection refused").contains("Remote Login"), "refused")
         expect(ssh("zsh: no such file or directory: /x/darkbloom", 127).contains("not installed"), "missing darkbloom")
         expect(!ssh("ssh: connect to host 192.0.2.2 port 22: weird").contains("192.0.2.2"), "the address never shows")
 

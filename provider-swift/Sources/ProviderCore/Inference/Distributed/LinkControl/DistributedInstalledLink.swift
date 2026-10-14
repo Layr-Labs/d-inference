@@ -127,7 +127,7 @@ final class DistributedInstalledLinkLeader: @unchecked Sendable {
         case .ready: return
         case .cancelled: throw DistributedEngineError.shuttingDown
         case .timedOut:
-            throw ClusterConfigurationError.invalid("The follower member did not connect over the link control channel (is `darkbloom cluster link-follower` running on the other Mac?)")
+            throw ClusterConfigurationError.invalid("The other Mac did not answer over the cable. Make sure it is on; it rejoins by itself. (The follower member did not connect over the link control channel.)")
         }
     }
 

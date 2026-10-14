@@ -1,5 +1,10 @@
 # Runbook: two Macs
 
+> Last updated: 2026-10-14
+
+> **Bench/developer only. Product path: `darkbloom cluster`** on each Mac, pick a
+> model, done ([two-mac-cluster.md](../docs/provider/two-mac-cluster.md)).
+
 Commands in "Verified" were run here and behaved as described. Commands in
 "Not yet verified" come from reading the source and have not completed on two
 Macs. Replace placeholders in capitals; never commit real addresses.
@@ -29,10 +34,10 @@ ibv_devinfo -v -d rdma_enN | grep -c "::ffff:"   # must be 1 or more
 ```
 
 If the port is only a member of the Thunderbolt Bridge, the last command prints
-0 and JACCL refuses the device with "No IPv4-mapped GID for this device". Give
-that Thunderbolt port its own IPv4 address in System Settings → Network (or
-take it out of the bridge). This is a network setting; an administrator makes
-it, not this tooling.
+0 and JACCL refuses the device with "No IPv4-mapped GID for this device". The
+product sets the port's address itself: `darkbloom cluster` gives the port
+Darkbloom's own link service after one macOS approval. Nothing is typed in
+System Settings → Network.
 
 ## 2. Build the native products — verified on Mac A
 
@@ -115,7 +120,11 @@ same ceremony (`l` listens, `c` connects). A debug build without the signed
 build's keychain entitlement needs `DARKBLOOM_DEBUG_SE_KEY_FILE` so its key
 (and so the pin) survives a restart.
 
-## 5. Saved setup and serving — not yet verified end to end
+## 5. Saved setup and serving (developer-only) — not yet verified end to end
+
+Developer-only: `darkbloom cluster` saves and syncs the setup and starts both
+Macs itself. `cluster configure` and `start --local --distributed` below are
+the manual developer route.
 
 ```sh
 # On each Mac: capability metadata from the installed worker.

@@ -75,6 +75,12 @@ public enum ClusterDiagnosticExport {
         let document = Document(createdAt: createdAt, darkbloomVersion: input.darkbloomVersion, snapshot: input.snapshot,
             sessionState: input.sessionState, sessionOutput: Array(input.sessionOutput.suffix(sessionOutputLines)),
             activity: input.activity)
+        return try redactedDocument(try JSONSerialization.jsonObject(with: JSONEncoder().encode(document)), redaction: redaction, marking: marking)
+    }
+
+    /// A JSON document with every string in it redacted as the text it is; throws when the second look still
+    /// recognizes something. Field names are the schema's own and stay as they are, and so does a schema's name.
+    static func redactedDocument(_ document: Any, redaction: ClusterDiagnosticRedaction, marking: (String) -> String) throws -> Data {
         var residue = Set<String>()
         func redacted(_ value: Any) -> Any {
             switch value {
@@ -90,7 +96,7 @@ public enum ClusterDiagnosticExport {
             default: return value
             }
         }
-        let tree = redacted(try JSONSerialization.jsonObject(with: JSONEncoder().encode(document)))
+        let tree = redacted(document)
         guard residue.isEmpty else { throw Failure.redactionIncomplete(residue.sorted()) }
         var bytes = try JSONSerialization.data(withJSONObject: tree, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         bytes.append(10)
@@ -103,12 +109,18 @@ public enum ClusterDiagnosticExport {
                              now: Date = Date()) throws -> URL {
         let created = ClusterConsoleText.timestamp(now)
         let bytes = try render(input, redaction: redaction, createdAt: created)
+        return try writeFile(bytes, directory: directory, created: created, place: "the current directory")
+    }
+
+    /// `darkbloom-cluster-diagnostics-<UTC stamp>.json`, owner-only, created in `directory` and never replacing a file
+    /// (nor following a link) that is already there.
+    static func writeFile(_ bytes: Data, directory: URL, created: String, place: String) throws -> URL {
         let stamp = created.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: ":", with: "")
         let destination = directory.appendingPathComponent("darkbloom-cluster-diagnostics-\(stamp).json")
         let descriptor = Darwin.open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else {
             throw Failure.notWritten(errno == EEXIST ? "a file with this second's name already exists; try again"
-                : "the file could not be created in the current directory (errno \(errno))")
+                : "the file could not be created in \(place) (errno \(errno))")
         }
         defer { Darwin.close(descriptor) }
         var offset = 0
@@ -122,5 +134,39 @@ public enum ClusterDiagnosticExport {
             offset += written
         }
         return destination
+    }
+}
+
+// MARK: - The onboarding's diagnostics file
+
+extension ClusterDiagnosticExport {
+    public static let onboardingSchemaName = "darkbloom_cluster_onboarding_diagnostics_v1"
+
+    /// What `d` saves after a start that did not finish: each Mac's last error and this Mac's own reports (the JSON of
+    /// `cluster status` and `doctor`, by section name), redacted exactly as the console's export is: every string on
+    /// its own, and refused when the second look still recognizes something. A section that is not JSON is left out.
+    public static func renderOnboarding(lastErrors: [String], sections: [String: Data], redaction: ClusterDiagnosticRedaction,
+                                        createdAt: String) throws -> Data {
+        try renderOnboarding(lastErrors: lastErrors, sections: sections, redaction: redaction, createdAt: createdAt, marking: redaction.marked)
+    }
+
+    static func renderOnboarding(lastErrors: [String], sections: [String: Data], redaction: ClusterDiagnosticRedaction,
+                                 createdAt: String, marking: (String) -> String) throws -> Data {
+        var document: [String: Any] = ["schema": onboardingSchemaName, "createdAt": createdAt, "lastErrors": lastErrors,
+            "redaction": "Network addresses, host names, user names, serial numbers, keys, fingerprints, credentials and home-directory paths were removed or replaced with a placeholder in angle brackets."]
+        for (name, data) in sections where !["schema", "createdAt", "lastErrors", "redaction"].contains(name) {
+            if let value = try? JSONSerialization.jsonObject(with: data) { document[name] = value }
+        }
+        return try redactedDocument(document, redaction: redaction, marking: marking)
+    }
+
+    /// Writes the onboarding's diagnostics file into the home folder itself, owner-only, never replacing a file. Not
+    /// into Desktop, Documents or Downloads: macOS guards those with a prompt to the terminal app the first time, a
+    /// permission the person never agreed to give for this.
+    public static func writeOnboarding(lastErrors: [String], sections: [String: Data], redaction: ClusterDiagnosticRedaction,
+                                       home: URL, now: Date = Date()) throws -> URL {
+        let created = ClusterConsoleText.timestamp(now)
+        let bytes = try renderOnboarding(lastErrors: lastErrors, sections: sections, redaction: redaction, createdAt: created)
+        return try writeFile(bytes, directory: home, created: created, place: "the home folder")
     }
 }

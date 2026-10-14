@@ -197,6 +197,9 @@ final class LiveContext: @unchecked Sendable {
 
     deinit { responder?.stop() }
 
+    /// The other Mac's facts as it last answered over the paired link (its worker digest among them).
+    var peerFacts: ClusterSetupMemberFacts? { lock.withLock { linkPeer?.answer.facts } }
+
     // MARK: - The paired link (no SSH, no typed address)
 
     /// The cable's interface and this Mac's address on it, as pairing picks them
@@ -207,7 +210,7 @@ final class LiveContext: @unchecked Sendable {
     static func defaultLinkSelection() throws -> ClusterLinkInterfaceSelection {
         let interface: String
         do { interface = try ClusterPairCommandLine.resolveInterface(ClusterPairCommandRequest(), peer: nil) } catch {
-            throw ClusterSetupFailure("the cable carries no IPv4 address on this Mac: \(error). Run the link step (f) first.")
+            throw ClusterSetupFailure("The cable is not ready yet. Run `darkbloom cluster` again. (\(error))")
         }
         do {
             return try ClusterLinkInterfaceAdmission.select(interface: interface, localAddress: nil, peerAddress: nil,
@@ -252,15 +255,14 @@ final class LiveContext: @unchecked Sendable {
         guard FileManager.default.isExecutableFile(atPath: worker) else {
             throw ClusterSetupFailure(ClusterBundledHelpers.missingWorkerReason(darkbloomExecutable: settings.darkbloomExecutable))
         }
-        guard let models = modelsDirectory() else {
-            throw ClusterSetupFailure("this Mac does not know where its models are: open `darkbloom cluster --model-dir <folder>` once")
-        }
+        // Always a folder: given, remembered, saved, or the cluster's own model store.
+        let models = modelsDirectory() ?? ClusterModelStoreLocation.defaultDirectory().path
         let folders = (try? ClusterSetupModelFolders.list(parent: URL(fileURLWithPath: models))) ?? []
         let modelDirectory = URL(fileURLWithPath: models).appendingPathComponent(folders.first?.folder ?? "models").path
         let link = ClusterLinkReadinessProbe.inspectLocalLink(isolation: false)
         let active = link.devices.filter(\.portActive)
         guard let device = (active.first { $0.verdict == .ready } ?? active.first)?.device else {
-            throw ClusterSetupFailure("no RDMA port is active on this Mac: check the cable (step 2)")
+            throw ClusterSetupFailure("No cable port is active on this Mac: check the Thunderbolt cable, then run `darkbloom cluster` again.")
         }
         return ClusterSetupMemberFacts(memberID: pairing.localMemberID, linkAddress: selection.local.address.dottedDecimal,
             user: NSUserName(), ownerExecutable: Self.ownerExecutable(settings.darkbloomExecutable), workerExecutable: worker,
@@ -494,7 +496,7 @@ final class LiveContext: @unchecked Sendable {
             return .failed(input.error ?? "this Mac has no pair description to plan from")
         }
         if linkPairing() != nil, lock.withLock({ linkPeer }) == nil {
-            return .failed("reach the other Mac over the paired link first (p)")
+            return .failed("The other Mac is not answering. Make sure it is on, then run `darkbloom cluster` again.")
         }
         guard let peerProfile = peer.mac.profile else {
             return .failed("the other Mac's plan tool did not answer (\(peer.mac.profileError ?? "not installed")), so its memory is not known")
@@ -581,7 +583,7 @@ final class LiveContext: @unchecked Sendable {
         guard let decision = lock.withLock({ decisions[folder] }), let plan = decision.option.plan,
               ClusterSetupState.planKey(decision.option.model, plan) == planKey,
               let setup = decision.setup, let capability = decision.capability else {
-            return .init(succeeded: false, lines: ["The plan changed since it was shown, so nothing was saved. Look at it again and press enter."])
+            return .init(succeeded: false, lines: ["The plan changed. Choose the model again; nothing was saved."])
         }
         let input = pairInput()
         guard let memberID = input.pair?.memberID, let localData = setup.configurations[memberID],
@@ -602,25 +604,33 @@ final class LiveContext: @unchecked Sendable {
                 providerConfiguration: configuration)
             let localRank = plan.ranks.first { $0.local }?.rank ?? 0
             let part = localRank == 0 ? "this Mac runs rank 0 and the serving API" : "this Mac runs rank \(localRank)"
-            var lines = ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
+            // The onboarding shows the deployment in one plain line once it serves; the six-step wizard keeps its detail.
+            var lines = settings.derivedPlacement ? ["Saved this Mac's setup for \(decision.option.model.modelID)."]
+                : ["Saved this Mac's setup \(saved.configurationSHA256.prefix(12)): \(decision.option.model.modelID), cut after \(plan.cut) layers, \(plan.mode); \(part)."]
             if let pairing = linkPairing() {
                 // Over the paired link: the other Mac's open wizard puts it in its inbox.
                 let delivery = try JSONEncoder().encode(ClusterSetupStore.Delivery(configuration: peerData, capability: capability.data,
                     capabilitySHA256: capability.sha256))
-                let digest: String
-                do {
-                    digest = try ClusterSetupLinkExchange.deliver(pairing: pairing, selection: try linkSelection(),
-                        peerAddress: lock.withLock { linkPeer?.address }, delivery: delivery, seconds: ClusterSetupOperations.peerSeconds)
-                } catch let failure as ClusterSetupFailure {
-                    lines.append("Could not send \(peerID) its setup: \(failure.text). Press enter on step 4 again to resend it.")
+                // Sent again by itself (3 tries, a few seconds apart) before anything is asked of the person.
+                var digest: String?
+                var lastFailure: ClusterSetupFailure?
+                for attempt in 0..<3 where digest == nil {
+                    if attempt > 0 { lines.append("Could not send the setup to the other Mac. Retrying."); sleep(3) }
+                    do {
+                        digest = try ClusterSetupLinkExchange.deliver(pairing: pairing, selection: try linkSelection(),
+                            peerAddress: lock.withLock { linkPeer?.address }, delivery: delivery, seconds: ClusterSetupOperations.peerSeconds)
+                    } catch let failure as ClusterSetupFailure { lastFailure = failure }
+                }
+                guard let delivered = digest else {
+                    lines.append("Could not send the setup to the other Mac (\(lastFailure?.text ?? "no answer")). Make sure it is on, then run `darkbloom cluster` again.")
                     return .init(succeeded: false, lines: lines)
                 }
                 try store.updateRecord {
                     $0.add(.init(clusterID: setupClusterID(peerData) ?? "", memberID: peerID,
-                        configurationSHA256: ClusterConfigurationSyntax.hash(digest) ? digest : "", at: ClusterConsoleText.timestamp()))
+                        configurationSHA256: ClusterConfigurationSyntax.hash(delivered) ? delivered : "", at: ClusterConsoleText.timestamp()))
                 }
                 lines.append(settings.derivedPlacement
-                    ? "Synced the other Mac's setup over the cable; its cluster service applied it."
+                    ? "Sent the setup to the other Mac over the cable; its cluster service applied it."
                     : "Sent the other Mac its setup over the paired link: on that Mac, press a, then y, in `darkbloom cluster`.")
                 return .init(succeeded: true, lines: lines)
             }
@@ -632,7 +642,7 @@ final class LiveContext: @unchecked Sendable {
             let outcome = try ClusterSetupChild.run(executable: command.executable, arguments: command.arguments, environment: command.environment,
                 input: delivery, seconds: ClusterSetupOperations.peerSeconds, maximumOutputBytes: 4096)
             guard outcome.status == 0 else {
-                lines.append("Could not send \(peerID) its setup: \(ClusterSetupChild.sshFailure(outcome)). Press enter on step 4 again to resend it.")
+                lines.append("Could not send the setup to \(peerID) (\(ClusterSetupChild.sshFailure(outcome))). Run `darkbloom cluster` again to resend it.")
                 return .init(succeeded: false, lines: lines)
             }
             let digest = String(decoding: outcome.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)

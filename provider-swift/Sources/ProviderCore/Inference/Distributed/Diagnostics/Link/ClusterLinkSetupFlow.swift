@@ -44,6 +44,21 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
     private var keeperAwaited = false
     /// The active ports last named, so a second look at the same ones is not narrated twice.
     private var portsReported = [String]()
+    /// The RDMA device to set up when more than one port is active (the person chose it); nil lets the plan choose.
+    public let device: String?
+    /// The onboarding's wording: plain lines ("Cable found.", "Cable ready."), never a developer command. The
+    /// detailed lines stay for `darkbloom cluster link` and the link-only setup.
+    public let plain: Bool
+    /// More than one active port could be set up and none was chosen: their interfaces ("en5", "en6"), for the
+    /// onboarding to ask which one (the link-only setup names `--device` instead).
+    public private(set) var choices = [(device: String, interface: String)]()
+
+    public static func == (lhs: ClusterLinkSetupFlow, rhs: ClusterLinkSetupFlow) -> Bool {
+        lhs.mayPrompt == rhs.mayPrompt && lhs.temporary == rhs.temporary && lhs.dryRun == rhs.dryRun && lhs.linkState == rhs.linkState
+            && lhs.device == rhs.device && lhs.plain == rhs.plain && lhs.choices.map { $0.device } == rhs.choices.map { $0.device }
+            && lhs.rdmaReported == rhs.rdmaReported && lhs.waitReported == rhs.waitReported && lhs.keepingOnly == rhs.keepingOnly
+            && lhs.isolating == rhs.isolating && lhs.keeperAwaited == rhs.keeperAwaited && lhs.portsReported == rhs.portsReported
+    }
 
     /// One run of the keeper and a little more.
     public static let keeperWaitSeconds = ClusterLinkAddressKeeper.intervalSeconds + 4
@@ -54,10 +69,12 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
         yes || (standardOutputIsTerminal && !json)
     }
 
-    public init(mayPrompt: Bool, temporary: Bool = false, dryRun: Bool = false) {
+    public init(mayPrompt: Bool, temporary: Bool = false, dryRun: Bool = false, device: String? = nil, plain: Bool = false) {
         self.mayPrompt = mayPrompt
         self.temporary = temporary
         self.dryRun = dryRun
+        self.device = device
+        self.plain = plain
     }
 
     public func begin() -> Step {
@@ -71,7 +88,7 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
         var lines = [String]()
         if !rdmaReported {
             rdmaReported = true
-            lines.append("RDMA setup detected: RDMA over Thunderbolt is enabled on this Mac.")
+            if !plain { lines.append("RDMA setup detected: RDMA over Thunderbolt is enabled on this Mac.") }
         }
 
         // Connection.
@@ -84,18 +101,31 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
             }
             if !waitReported {
                 waitReported = true
-                lines.append("Waiting for a Thunderbolt 5 connection to another Mac…")
+                lines.append(plain ? "Waiting for a Thunderbolt 5 cable to the other Mac…" : "Waiting for a Thunderbolt 5 connection to another Mac…")
             }
             return Step(lines: lines, action: .awaitConnection)
         }
         let ports = active.map { ClusterLinkName.label(device: $0.device, interface: $0.interface) }
         if ports != portsReported {
             portsReported = ports
-            lines.append("Connection detected: \(ports.joined(separator: ", ")) \(ports.count == 1 ? "is" : "are") active.")
+            lines.append(plain ? "Cable found." : "Connection detected: \(ports.joined(separator: ", ")) \(ports.count == 1 ? "is" : "are") active.")
         }
 
         // Address: the same decision `cluster link --fix` makes.
-        switch ClusterLinkFixPlan.make(for: report, device: nil, keeping: !temporary) {
+        switch ClusterLinkFixPlan.make(for: report, device: device, keeping: !temporary) {
+        case .stop(.alreadyReady) where plain:
+            return finished(lines)
+        case .act(let device, _) where plain && mayPrompt && !dryRun:
+            // The onboarding says the one approval line itself, right before the macOS prompt.
+            let port = report.devices.first { $0.device == device }
+            keepingOnly = port?.verdict == .ready
+            isolating = !temporary && port?.isolationApplies == true
+            return Step(lines: lines, action: .fix(device: device))
+        case .choose(let candidates) where plain:
+            choices = candidates.map { candidate in
+                (candidate, report.devices.first { $0.device == candidate }?.interface ?? candidate)
+            }
+            return stopped(lines + ["The cable is connected on \(candidates.count) ports."])
         case .stop(.alreadyReady):
             let ready = active.first { $0.verdict == .ready }
             let port = ready.map { ClusterLinkName.label(device: $0.device, interface: $0.interface) } ?? "The active port"
@@ -171,6 +201,22 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
 
     public mutating func repaired(_ result: ClusterLinkRepairResult) -> Step {
         let port = result.device.map { ClusterLinkName.label(device: $0, interface: result.interface) } ?? "The port"
+        if plain {
+            switch result.outcome {
+            case .fixed, .alreadyReady:
+                linkState = .ready
+                return finished([])
+            case .approvalDeclined where keepingOnly, .approvalUnavailable where keepingOnly, .isolationRefused where keepingOnly:
+                // The cable works as it is; it is set up for good the next time the prompt is approved.
+                return finished([])
+            case .approvalDeclined:
+                return stopped(["The macOS prompt was cancelled, so the cable cannot be used yet. Run `darkbloom cluster` again and approve the prompt."],
+                    exitCode: result.outcome.exitCode)
+            default:
+                if case .appliedButNotReady(let unmet) = result.outcome, unmet.contains(.deviceNotReady) { linkState = nil }
+                return stopped([result.message], exitCode: result.outcome.exitCode)
+            }
+        }
         switch result.outcome {
         case .fixed:
             linkState = .ready
@@ -226,7 +272,8 @@ public struct ClusterLinkSetupFlow: Sendable, Equatable {
 
     private func finished(_ lines: [String]) -> Step {
         // Pairing and model steps are not part of this flow; only what is true is said.
-        Step(lines: lines + ["This Mac's link is ready.", "Run `darkbloom cluster` on the other Mac too."],
+        if plain { return Step(lines: lines + ["Cable ready."], action: .finish(exitCode: 0)) }
+        return Step(lines: lines + ["This Mac's link is ready.", "Run `darkbloom cluster` on the other Mac too."],
             action: .finish(exitCode: 0))
     }
 

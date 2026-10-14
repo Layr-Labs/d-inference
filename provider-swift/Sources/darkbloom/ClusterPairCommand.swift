@@ -14,7 +14,7 @@ extension Cluster {
     /// control channel, in owner-only files under ~/.darkbloom/cluster-pairing.
     struct Pair: ParsableCommand {
         static let configuration = CommandConfiguration(commandName: "pair",
-            abstract: "Pair with the other Mac over the Thunderbolt link (Secure Enclave keys, a code on both screens, no SSH).")
+            abstract: "Pair with the other Mac over the Thunderbolt link (Secure Enclave keys, a code on both screens, no SSH).", shouldDisplay: false)
 
         @Option(name: .customLong("connect"), help: "The other Mac's link address, as it printed it. Without it this Mac finds the other Mac on the cable, or waits for it.")
         var connect: String?

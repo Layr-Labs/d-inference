@@ -25,34 +25,12 @@ import Testing
 
 @testable import ProviderCore
 
-private enum LFM25Live {
-    static let snapshotKey = "DARKBLOOM_LIVE_LFM25_SNAPSHOT"
-    static var snapshot: URL? {
-        guard LiveInferenceFixtures.liveTestsEnabled,
-              let raw = ProcessInfo.processInfo.environment[snapshotKey], !raw.isEmpty
-        else { return nil }
-        return URL(fileURLWithPath: raw, isDirectory: true)
-    }
-
-    static func chatML(_ user: String) -> String {
-        "<|startoftext|><|im_start|>user\n\(user)<|im_end|>\n<|im_start|>assistant\n<think>"
-    }
-
-    static func request(maxTokens: Int) throws -> ChatCompletionRequest {
-        try JSONDecoder().decode(ChatCompletionRequest.self, from: Data("""
-            {"model":"\(EngineV2SupportedModels.lfm25_24bA2BModelID)",
-             "messages":[{"role":"user","content":"smoke"}],
-             "max_tokens":\(maxTokens),"temperature":0}
-            """.utf8))
-    }
-}
-
 @Suite("LFM2.5-24B-A2B provider path (live)", .serialized,
-       .enabled(if: LFM25Live.snapshot != nil))
+       .enabled(if: LFM25Qual.snapshot != nil))
 struct LFM25ProviderPathLiveTests {
     @Test("scan, load, paged + SSD checkpoint defaults, generate, warm prefix reuse")
     func providerPathSmoke() async throws {
-        let snapshot = try #require(LFM25Live.snapshot)
+        let snapshot = try #require(LFM25Qual.snapshot)
         let hub = snapshot.deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent()
         let modelID = EngineV2SupportedModels.lfm25_24bA2BModelID
@@ -148,9 +126,11 @@ struct LFM25ProviderPathLiveTests {
 
         // 4. Warmup + one short generation.
         let short = tokenizer.inner.encode(
-            text: LFM25Live.chatML("What is 17 + 25? Answer with the number."), addSpecialTokens: false)
+            text: LFM25Qual.chatML("What is 17 + 25? Answer with the number."), addSpecialTokens: false)
         let shortStart = Date()
-        let first = await collect(from: bridge, promptTokens: short, request: try LFM25Live.request(maxTokens: 96))
+        let first = await collect(
+            from: bridge, promptTokens: short,
+            request: try LFM25Qual.request(maxTokens: 96, userContent: "smoke"))
         #expect(!first.didError, "\(first.error ?? "")")
         #expect((first.info?.completionTokens ?? 0) > 0)
         print("\(tag) short promptTokens=\(short.count) completion=\(first.info?.completionTokens ?? -1) "
@@ -159,15 +139,15 @@ struct LFM25ProviderPathLiveTests {
 
         // 5. Cold then warm long prompt: the recurrent complete checkpoint
         // must be written and then consumed.
-        let filler = (0 ..< 120).map { index in
-            "Record \(index): warehouse \(index % 13) logged \(index * 7 % 97) crates of part \(index % 29)."
-        }.joined(separator: " ")
+        let filler = LFM25Qual.records(0 ..< 120)
         let long = tokenizer.inner.encode(
-            text: LFM25Live.chatML(filler + " Which warehouse logged record 42? Answer briefly."),
+            text: LFM25Qual.chatML(filler + " Which warehouse logged record 42? Answer briefly."),
             addSpecialTokens: false)
         #expect(long.count > store.config.minEffectiveTokens)
         let coldStart = Date()
-        let cold = await collect(from: bridge, promptTokens: long, request: try LFM25Live.request(maxTokens: 24))
+        let cold = await collect(
+            from: bridge, promptTokens: long,
+            request: try LFM25Qual.request(maxTokens: 24, userContent: "smoke"))
         let coldSeconds = Date().timeIntervalSince(coldStart)
         #expect(!cold.didError, "\(cold.error ?? "")")
         var written = store.stats().filesWritten
@@ -177,7 +157,9 @@ struct LFM25ProviderPathLiveTests {
         }
         #expect(written > 0)
         let warmStart = Date()
-        let warm = await collect(from: bridge, promptTokens: long, request: try LFM25Live.request(maxTokens: 24))
+        let warm = await collect(
+            from: bridge, promptTokens: long,
+            request: try LFM25Qual.request(maxTokens: 24, userContent: "smoke"))
         let warmSeconds = Date().timeIntervalSince(warmStart)
         #expect(!warm.didError, "\(warm.error ?? "")")
         let stats = store.stats()

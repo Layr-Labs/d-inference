@@ -1,7 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Shared fixture for the gated LFM2.5-24B-A2B real-weights engine
-// qualification suites (batching, prefix reuse, SSD restart, memory envelope).
+// qualification suites (batching, prefix reuse, SSD restart, memory envelope,
+// prefix latency); the provider-path smoke shares its gates and prompt helpers.
 // Every suite builds the PRODUCTION bundle the provider uses for one resident
 // model: the provider's own single-slot KV grant (UnifiedMemoryCap with the
 // default 4 GiB memory_reserve_gb and the resolved activation reserve), a
@@ -48,14 +49,17 @@ enum LFM25Qual {
 
     /// `repetitionPenalty` nil keeps the artifact's generation_config default
     /// (1.05); logprobs are reported from the RAW logits, so a test that
-    /// reasons about decision margins pins it to 1.0 (pure argmax).
+    /// reasons about decision margins pins it to 1.0 (pure argmax). The
+    /// prompt itself is passed as tokens; `userContent` only fills the
+    /// request's required message.
     static func request(
-        maxTokens: Int, topLogprobs: Int = 0, repetitionPenalty: Float? = nil
+        maxTokens: Int, topLogprobs: Int = 0, repetitionPenalty: Float? = nil,
+        userContent: String = "qualification"
     ) throws -> ChatCompletionRequest {
         var logprobs = topLogprobs > 0 ? ",\"logprobs\":true,\"top_logprobs\":\(topLogprobs)" : ""
         if let repetitionPenalty { logprobs += ",\"repetition_penalty\":\(repetitionPenalty)" }
         return try JSONDecoder().decode(ChatCompletionRequest.self, from: Data("""
-            {"model":"\(modelID)","messages":[{"role":"user","content":"qualification"}],
+            {"model":"\(modelID)","messages":[{"role":"user","content":"\(userContent)"}],
              "max_tokens":\(maxTokens),"temperature":0\(logprobs)}
             """.utf8))
     }

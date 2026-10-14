@@ -3,6 +3,8 @@ import type { Snapshot } from '../../../shared/contracts';
 import { api } from '../../useBackend';
 import { parseInsights, type ProviderInsights } from './types';
 
+// Earnings are read with the account session (or legacy provider data). A linked Mac can be
+// signed out, so callers use `available` rather than `linked` to tell sign-in from loading.
 export function useInsights(state: Snapshot, window: '7d' | '30d' = '7d') {
   const key = (state.account ? state.account.signed_in || state.account.legacy_data : state.linked)
     ? `${state.installation_id}:${state.account_revision || 'legacy'}:${window}`
@@ -49,5 +51,8 @@ export function useInsights(state: Snapshot, window: '7d' | '30d' = '7d') {
       if (session.current === current) session.current = null;
     };
   }, [key, refresh, state.resource_revision]);
-  return snapshot.key === key ? { ...snapshot, refresh } : { data: null, error: null, refresh };
+  const available = key !== '';
+  return snapshot.key === key
+    ? { ...snapshot, available, refresh }
+    : { data: null, error: null, available, refresh };
 }

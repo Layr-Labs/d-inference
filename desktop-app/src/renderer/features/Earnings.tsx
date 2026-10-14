@@ -15,7 +15,7 @@ export function Earnings({ backend }: { backend: BackendState }) {
   const [window, setWindow] = useState<'7d' | '30d'>('7d');
   const [metric, setMetric] = useState<InsightMetric>('earnings');
   const [copied, setCopied] = useState(false);
-  const { data, error, refresh } = useInsights(backend.state!, window);
+  const { data, error, available, refresh } = useInsights(backend.state!, window);
   const copy = async () => {
     if (!data) return;
     const rows = [
@@ -64,11 +64,19 @@ export function Earnings({ backend }: { backend: BackendState }) {
       />
       {!data ? (
         <div className="empty-state">
-          <h2>{backend.state?.linked ? 'Earnings insights' : 'Link your account'}</h2>
+          <h2>
+            {!backend.state?.linked
+              ? 'Link your account'
+              : available
+                ? 'Earnings insights'
+                : 'Sign in to see earnings'}
+          </h2>
           <p>
             {!backend.state?.linked
               ? 'Link this Mac to see earnings and lifetime milestones.'
-              : error || 'Loading settled earnings…'}
+              : !available
+                ? 'Sign in to your Darkbloom account from the sidebar to load settled earnings.'
+                : error || 'Loading settled earnings…'}
           </p>
           {error && <Button onClick={() => void refresh()}>Try again</Button>}
         </div>

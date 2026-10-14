@@ -24,7 +24,12 @@ export function Models({
   const earnings = useMemo(() => modelEarnings(insights.data), [insights.data]);
   const ranked = useMemo(() => rankModels(state.models, earnings), [state.models, earnings]);
   const order = (
-    <ModelEarningsOrder earnings={earnings} error={insights.error} linked={state.linked} />
+    <ModelEarningsOrder
+      earnings={earnings}
+      error={insights.error}
+      linked={state.linked}
+      available={insights.available}
+    />
   );
   const actions = useModelActions(backend);
   const mode = modelsMode(state);

@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop earnings while signed out
+
+- Ask a linked Mac to sign in when its Darkbloom account session is signed out or expired, instead of showing "Loading settled earnings…" indefinitely on Earnings, Home's daily earnings chart and the Models earnings order.
 ## Unreleased — desktop runtime protocol check
 
 - Keep the desktop app disconnected from a runtime that speaks an incompatible protocol. Previously the app reported the error and then, within a quarter second, connected to the runtime's event stream anyway, showed it as ready and forwarded its unchecked snapshots. Streamed snapshots are now checked too.

@@ -7,7 +7,7 @@ import { Button, External, Header, Notice, Status } from '../components/UI';
 import { AutoUpdateSwitch } from './updates/AutoUpdateSwitch';
 import { IdleMemory } from './settings/IdleMemory';
 import { idleDraft, idleMinutes } from './settings/idleDuration';
-import { ScheduleEditor } from '../components/ScheduleEditor';
+import { ScheduleEditor, scheduleProblem } from '../components/ScheduleEditor';
 
 export function Settings({
   backend,
@@ -24,6 +24,14 @@ export function Settings({
   const [auto, setAuto] = useState(original.auto_update);
   const [schedule, setSchedule] = useState(original.schedule || { enabled: false, windows: [] });
   const idleValue = idleMinutes(idle);
+  // Save only real edits the runtime will accept; an unchanged form has nothing to save.
+  const saved = base.schedule || { enabled: false, windows: [] };
+  const changed =
+    name !== base.name ||
+    idleValue !== base.idle_minutes ||
+    auto !== base.auto_update ||
+    JSON.stringify(schedule) !== JSON.stringify(saved);
+  const invalid = !!scheduleProblem(schedule);
   return (
     <>
       <Header
@@ -33,7 +41,14 @@ export function Settings({
         action={
           <Button
             variant="primary"
-            disabled={backend.busy || !name.trim() || changedElsewhere || idleValue === undefined}
+            disabled={
+              backend.busy ||
+              !changed ||
+              invalid ||
+              !name.trim() ||
+              changedElsewhere ||
+              idleValue === undefined
+            }
             onClick={async () => {
               if (idleValue === undefined) return;
               if (

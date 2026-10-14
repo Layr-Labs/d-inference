@@ -205,12 +205,16 @@ it('saves settings without exposing or overwriting the native preload preference
   settings.startup_preload = true;
   render(<Machines backend={backend} navigate={vi.fn()} onSelect={vi.fn()} route="settings" />);
   expect(screen.queryByLabelText(/Preload/i)).not.toBeInTheDocument();
+  // Save is offered only once something changed.
+  fireEvent.change(screen.getByRole('textbox', { name: 'Mac name' }), {
+    target: { value: `${settings.name} 2` },
+  });
   fireEvent.click(screen.getByRole('button', { name: /Save changes/ }));
   const [payload] = vi.mocked(backend.act).mock.calls[0];
   expect(payload).toMatchObject({
     action: 'settings',
     revision: settings.revision,
-    name: settings.name,
+    name: `${settings.name} 2`,
   });
   expect(payload).not.toHaveProperty('startup_preload');
 });

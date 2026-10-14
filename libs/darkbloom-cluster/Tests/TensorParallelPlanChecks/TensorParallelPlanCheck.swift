@@ -376,8 +376,26 @@ func checkSealCodec() {
     _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in z0.seal(p.baseAddress!, bytes, f.baseAddress!, 13) } }
     var padded = frame; padded[bytes + QwenTensorParallelSealCodec.frameOverhead - 1] = 1
     check(open(z1, 13, 0, padded) != 0, "codec: a non-zero padding byte is refused")
+    // Rekey: a new key generation every 3 frames per direction; both ranks
+    // cross it at the same counter, and a frame sealed in one generation
+    // does not open in another.
+    let (g0, g1) = QwenTensorParallelSealCodec.pair(scope: scope, rekeyFrames: 3)
+    var crossed = true
+    for counter in UInt64(20)..<UInt64(30) {
+        let s = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in g0.seal(p.baseAddress!, bytes, f.baseAddress!, counter) } }
+        crossed = crossed && s == 0 && open(g1, counter, 0, frame) == 0 && opened == partial
+    }
+    check(crossed && g0.keyGeneration == 3 && g1.keyGeneration == 3, "codec: rekey every 3 frames, both ranks at generation 3 after 10 frames")
+    let (h0, h1) = QwenTensorParallelSealCodec.pair(scope: scope, rekeyFrames: 1)
+    let (_, k1) = QwenTensorParallelSealCodec.pair(scope: scope)
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in h0.seal(p.baseAddress!, bytes, f.baseAddress!, 1) } }
+    check(open(h1, 1, 0, frame) == 0, "codec: generation 0 opens")
+    _ = partial.withUnsafeBytes { p in frame.withUnsafeMutableBytes { f in h0.seal(p.baseAddress!, bytes, f.baseAddress!, 2) } }
+    check(h0.keyGeneration == 1 && open(k1, 2, 0, frame) != 0, "codec: a generation-1 frame does not open under the base keys")
+    check(open(h1, 2, 0, frame) == 0 && h1.keyGeneration == 1, "codec: the peer opens it in generation 1")
+    check(open(h1, 1, 0, frame) != 0, "codec: counters only grow (an older counter is refused)")
     partial[0] = 1
-    print("seal codec: round trip, counter, tamper, direction, scope, pieces, padding and refusal checked")
+    print("seal codec: round trip, counter, tamper, direction, scope, pieces, padding, rekey and refusal checked")
 }
 
 /// Every launch option that changes the collectives must change the first

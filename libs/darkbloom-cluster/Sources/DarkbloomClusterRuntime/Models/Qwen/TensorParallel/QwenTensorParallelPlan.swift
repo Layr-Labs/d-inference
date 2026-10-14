@@ -66,6 +66,8 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public let vocabularyPerRank: [Int]
     /// True when every rank holds the same share.
     public var equalShares: Bool { Set(shares).count == 1 }
+    /// The plan's name as records and the placement family state it.
+    public var name: String { routedExperts ? "qwen_moe_heads_and_expert_channels_v1" : "qwen_dense_heads_and_channels_v1" }
 
     /// A tensor's cut for one rank.
     public enum Cut: Equatable, Sendable {

@@ -10,17 +10,27 @@ import Foundation
 /// A peer frame that does not open is refused: the evaluation fails, and the
 /// codec stays refused (`refused`), so nothing after a tamper is summed.
 ///
-/// Keys: `bench(group:scope:)` derives the two direction keys from an
-/// ephemeral, UNAUTHENTICATED P-256 exchange over the rank group: a bench
-/// measurement of the sealed path's cost only. The product derives them
-/// from the pinned data-plane exchange (S16, `ClusterDataPlaneKeyExchange`)
-/// instead; nothing here replaces that trust.
+/// Keys: the product's (`product(collective:scope:)`) come from the pinned
+/// data-plane exchange (S16, `ClusterDataPlaneKeyExchange`) of this session,
+/// rekeyed by frame count and bytes. `bench(group:scope:)` derives them from
+/// an ephemeral, UNAUTHENTICATED P-256 exchange over the rank group: a bench
+/// measurement of the sealed path's cost only, never the product's trust.
 public final class QwenTensorParallelSealCodec: @unchecked Sendable {
     public static let tagBytes = 16
     public let rank: Int
-    private let sendKey: SymmetricKey
-    private let receiveKey: SymmetricKey
+    private let baseSendKey: SymmetricKey
+    private let baseReceiveKey: SymmetricKey
     private let scope: Data
+    /// Rekey: a new key generation (HKDF of the base keys) after this many
+    /// frames or bytes per direction (`ClusterRecordRekeyPolicy`'s count and
+    /// byte limits). Both ranks seal and open frames of the same sizes in the
+    /// same order, so both cross a generation at the same counter. Age is not
+    /// a trigger here: two clocks would not agree on the frame.
+    public let rekeyFrames: UInt64
+    public let rekeyBytes: UInt64
+    private var lastCounter = UInt64.max, generation: UInt64 = 0, framesInGeneration: UInt64 = 0, bytesInGeneration: UInt64 = 0
+    private var generationKeys: (generation: UInt64, send: SymmetricKey, receive: SymmetricKey)?
+    public var keyGeneration: UInt64 { lock.lock(); defer { lock.unlock() }; return generation }
     private let lock = NSLock()
     private var refusedFlag = false
     public private(set) var sealedFrames: UInt64 = 0
@@ -30,15 +40,41 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
     /// seals at this counter, to prove the peer refuses it.
     public var tamperAtCounter: UInt64?
 
-    init(rank: Int, sendKey: SymmetricKey, receiveKey: SymmetricKey, scope: Data) {
-        self.rank = rank; self.sendKey = sendKey; self.receiveKey = receiveKey; self.scope = scope
+    init(rank: Int, sendKey: SymmetricKey, receiveKey: SymmetricKey, scope: Data,
+         rekeyFrames: UInt64 = 262_144, rekeyBytes: UInt64 = 2 << 30) {
+        self.rank = rank; baseSendKey = sendKey; baseReceiveKey = receiveKey; self.scope = scope
+        self.rekeyFrames = max(1, rekeyFrames); self.rekeyBytes = max(1, rekeyBytes)
+    }
+
+    /// The keys of `counter`'s generation. A new counter (a frame not seen
+    /// before) counts toward the generation's limits first; counters only grow.
+    private func keys(counter: UInt64, bytes: Int) -> (send: SymmetricKey, receive: SymmetricKey)? {
+        lock.lock(); defer { lock.unlock() }
+        if counter != lastCounter {
+            guard lastCounter == .max || counter > lastCounter else { return nil }
+            if lastCounter != .max, framesInGeneration >= rekeyFrames || bytesInGeneration + UInt64(bytes) > rekeyBytes {
+                generation += 1; framesInGeneration = 0; bytesInGeneration = 0
+            }
+            lastCounter = counter; framesInGeneration += 1; bytesInGeneration += UInt64(bytes)
+        }
+        if let cached = generationKeys, cached.generation == generation { return (cached.send, cached.receive) }
+        func derive(_ base: SymmetricKey) -> SymmetricKey {
+            guard generation > 0 else { return base }
+            var info = Data("darkbloom/tensor-parallel-seal/generation/v1\0".utf8)
+            info.append(contentsOf: withUnsafeBytes(of: generation.bigEndian) { Array($0) })
+            return HKDF<SHA256>.deriveKey(inputKeyMaterial: base, salt: scope, info: info, outputByteCount: 32)
+        }
+        let value = (generation, derive(baseSendKey), derive(baseReceiveKey))
+        generationKeys = value
+        return (value.1, value.2)
     }
 
     /// Two codecs with the same keys seen from each side (tests).
-    public static func pair(scope: Data) -> (QwenTensorParallelSealCodec, QwenTensorParallelSealCodec) {
+    public static func pair(scope: Data, rekeyFrames: UInt64 = 262_144,
+                            rekeyBytes: UInt64 = 2 << 30) -> (QwenTensorParallelSealCodec, QwenTensorParallelSealCodec) {
         let a = SymmetricKey(size: .bits256), b = SymmetricKey(size: .bits256)
-        return (QwenTensorParallelSealCodec(rank: 0, sendKey: a, receiveKey: b, scope: scope),
-                QwenTensorParallelSealCodec(rank: 1, sendKey: b, receiveKey: a, scope: scope))
+        return (QwenTensorParallelSealCodec(rank: 0, sendKey: a, receiveKey: b, scope: scope, rekeyFrames: rekeyFrames, rekeyBytes: rekeyBytes),
+                QwenTensorParallelSealCodec(rank: 1, sendKey: b, receiveKey: a, scope: scope, rekeyFrames: rekeyFrames, rekeyBytes: rekeyBytes))
     }
 
     /// A frame is the partial cut into `chunks(bytes)` pieces sealed in
@@ -86,7 +122,7 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
     }
 
     func seal(_ plaintext: UnsafeRawPointer, _ bytes: Int, _ frame: UnsafeMutableRawPointer, _ counter: UInt64) -> Int32 {
-        guard !refused else { return 1 }
+        guard !refused, let sendKey = keys(counter: counter, bytes: bytes)?.send else { return 1 }
         let count = Self.chunks(bytes)
         let out = frame.assumingMemoryBound(to: UInt8.self)
         let ok = eachPiece(count) { index in
@@ -112,7 +148,7 @@ public final class QwenTensorParallelSealCodec: @unchecked Sendable {
     }
 
     func open(_ frame: UnsafeRawPointer, _ bytes: Int, _ plaintext: UnsafeMutableRawPointer, _ counter: UInt64, _ peer: Int) -> Int32 {
-        guard !refused, peer == 1 - rank else { return 1 }
+        guard !refused, peer == 1 - rank, let receiveKey = keys(counter: counter, bytes: bytes)?.receive else { return 1 }
         let count = Self.chunks(bytes)
         let source = frame.assumingMemoryBound(to: UInt8.self)
         let target = plaintext.assumingMemoryBound(to: UInt8.self)

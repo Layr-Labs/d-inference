@@ -70,6 +70,19 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
             return ranges.dropLast().map { $0[1] }
         }
 
+        /// The cuts of a setup's cut string in `mode` over `ranks` ranks: a
+        /// tensor-parallel setup names every rank `0-<layers>` and has none.
+        public static func cuts(_ cut: String, layerCount: Int, mode: ClusterGenerationMode, ranks: Int) -> [Int]? {
+            guard mode.usesTensorParallelPrefill else { return cuts(cut, layerCount: layerCount) }
+            return cut == Self.cut([], layerCount: layerCount, mode: mode, ranks: ranks) ? [] : nil
+        }
+
+        /// `cut(_:layerCount:)`, or `0-64|0-64` for tensor parallel over two ranks.
+        public static func cut(_ cuts: [Int], layerCount: Int, mode: ClusterGenerationMode, ranks: Int) -> String {
+            guard mode.usesTensorParallelPrefill else { return cut(cuts, layerCount: layerCount) }
+            return Array(repeating: "0-\(layerCount)", count: max(1, ranks)).joined(separator: "|")
+        }
+
         /// `0-4|4-32` for a placement's cuts over `layerCount` layers, rank 0 first.
         public static func cut(_ cuts: [Int], layerCount: Int) -> String {
             let bounds = [0] + cuts + [layerCount]
@@ -174,7 +187,11 @@ public enum ClusterServedCalibration {
                                     runtimeBinarySHA256: String, measuredUTC: String) throws -> [ClusterSpeedMeasurement] {
         let layout = placement.layout, devices = placement.devices
         let usable = samples.filter(\.valid)
-        guard !usable.isEmpty, devices.count == placement.cuts.count + 1 else { return [] }
+        guard !usable.isEmpty, placement.cuts.count == placement.mode.layerCutCount(ranks: devices.count) else { return [] }
+        if placement.mode.usesTensorParallelDecode {
+            return try tensorParallelMeasurements(usable, placement: placement, runtimeBinarySHA256: runtimeBinarySHA256,
+                measuredUTC: measuredUTC)
+        }
         var policy = ClusterPlacementPolicy()
         func pairPrediction(_ s: ClusterServedSample) throws -> ClusterPlacementPrediction {
             policy.promptTokens = s.promptTokens; policy.outputTokens = max(1, s.outputTokens)
@@ -241,6 +258,59 @@ public enum ClusterServedCalibration {
         return result
     }
 
+    /// A tensor-parallel setup's served requests correct each rank's shard
+    /// rates, never its whole-model ones: the reductions are a measured cost
+    /// of the link, so what the observed step differs from the predicted one
+    /// by is the ranks' shares. Each device's predicted share step is scaled
+    /// by (observed step - reductions) / (predicted step - reductions); the
+    /// same for the shard prefill of `tensor_parallel_v1` by the first token
+    /// (the hybrid's prefill is a pipeline's and corrects nothing here). A
+    /// pair that served slower than predicted lowers the shard rates, and the
+    /// next plan stops choosing tensor parallel where it no longer wins.
+    static func tensorParallelMeasurements(_ usable: [ClusterServedSample], placement: Placement,
+                                           runtimeBinarySHA256: String, measuredUTC: String) throws -> [ClusterSpeedMeasurement] {
+        let layout = placement.layout, devices = placement.devices
+        guard let tp = layout.tensorParallel, let reduction = placement.link.reduction else { return [] }
+        let pair = usable.filter { $0.route == .pair }
+        guard !pair.isEmpty else { return [] }
+        var policy = ClusterPlacementPolicy()
+        let reductionStep = Double(tp.reductionsPerStep(layerCount: layout.layerCount)) * reduction.seconds(bytes: tp.family.partialBytesPerToken)
+        var decodeFactors: [Double] = [], prefillFactors: [Double] = []
+        for s in pair {
+            policy.promptTokens = s.promptTokens; policy.outputTokens = max(1, s.outputTokens)
+            let predicted = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: placement.cuts, mode: placement.mode,
+                prefillSchedule: placement.schedule, layout: layout, policy: policy, link: placement.link).rested
+            if let observed = s.decodeTokensPerSecond {
+                let compute = 1 / predicted.decodeTokensPerSecond - reductionStep
+                if compute > 0 { decodeFactors.append(max(1e-6, 1 / observed - reductionStep) / compute) }
+            }
+            if placement.mode.usesTensorParallelPrefill {
+                prefillFactors.append(s.firstTokenSeconds / predicted.firstTokenSeconds)
+            }
+        }
+        let decodeFactor = median(decodeFactors), prefillFactor = median(prefillFactors)
+        guard decodeFactor != nil || prefillFactor != nil else { return [] }
+        return try devices.compactMap { device -> ClusterSpeedMeasurement? in
+            guard device.speed.absolute else { return nil }
+            let base = device.speed.rested
+            let shardDecode = decodeFactor.map { 1 / (ClusterDecodeSplit(rates: base).shareStepSeconds(ranks: devices.count) * $0) }
+                ?? base.tensorShardDecodeTokensPerSecond
+            let shardPrefill = prefillFactor.map { (base.tensorShardPrefillTokensPerSecond ?? base.prefillTokensPerSecond) / $0 }
+                ?? base.tensorShardPrefillTokensPerSecond
+            let prompt = Int(median(pair.map { Double($0.promptTokens) }) ?? Double(layout.maximumChunkTokens))
+            return try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: device.profile.chip,
+                    osBuild: device.profile.osBuild, runtimeBinarySHA256: runtimeBinarySHA256,
+                    probe: "served_\(placement.mode.rawValue)_v1"),
+                promptTokens: max(1, prompt), chunkTokens: layout.maximumChunkTokens, probedLayers: layout.layerCount,
+                layerCount: layout.layerCount,
+                rested: .init(prefillTokensPerSecond: base.prefillTokensPerSecond, decodeTokensPerSecond: base.decodeTokensPerSecond,
+                    speculativeDecodeTokensPerSecond: base.speculativeDecodeTokensPerSecond,
+                    tensorShardPrefillTokensPerSecond: shardPrefill, tensorShardDecodeTokensPerSecond: shardDecode),
+                sustained: nil, measuredUTC: measuredUTC,
+                provenance: "shard rates derived from \(pair.count) request(s) the pair served (\(placement.mode.rawValue)); whole-model rates kept")
+        }
+    }
+
     /// Measurements from every setup `entries` name whose ranks are all among
     /// `devices` (labels) and whose cut fits `layout`, with one plain line per
     /// setup. The plan tool (`plan --served`) and the provider's planning use
@@ -254,7 +324,8 @@ public enum ClusterServedCalibration {
         for entry in entries where !setups.contains(entry.setup) { setups.append(entry.setup) }
         for setup in setups {
             guard let ranks = setup.ranks, let mode = ClusterGenerationMode(rawValue: setup.mode),
-                  let cuts = ClusterServedSpeedRecords.Setup.cuts(setup.cut, layerCount: layout.layerCount), ranks.count == cuts.count + 1 else {
+                  let cuts = ClusterServedSpeedRecords.Setup.cuts(setup.cut, layerCount: layout.layerCount, mode: mode, ranks: ranks.count),
+                  cuts.count == mode.layerCutCount(ranks: ranks.count) else {
                 lines.append("  \(setup.mode) cut \(setup.cut): skipped (no rank order, or not this model's layers)")
                 continue
             }

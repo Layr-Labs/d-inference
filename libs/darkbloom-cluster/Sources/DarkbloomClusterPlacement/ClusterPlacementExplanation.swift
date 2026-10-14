@@ -141,8 +141,35 @@ public enum ClusterPlacementExplanation {
         case .pipelineCompactDecode: modeText = "pipeline with compact decode framing"
         case .phaseSplit: modeText = "phase split (the ranks prefill together, then the last rank, which holds every layer, decodes alone)"
         case .phaseSplitMTP: modeText = "phase split with speculative decoding (the last rank, which holds every layer and the model's MTP head, drafts and verifies alone)"
+        case .tensorParallel: modeText = "tensor parallel (each rank holds an equal share of every layer; both run every token and sum their partials over the keyed data plane)"
+        case .pipelinePrefillTensorDecode: modeText = "pipeline prefill, then tensor-parallel decode (after the first token each rank hands the other the state of the heads it does not keep)"
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
+        return lines
+    }
+
+    /// The planner's tensor-parallel prediction in words: the verdict, each
+    /// Mac's decode split into the floor that does not shrink with the weights
+    /// and the part that does, and the reductions' share of a step.
+    public static func tensorParallel(_ tp: ClusterTensorParallelAssessment, basis: ClusterPlacementBasis,
+                                      regime: ClusterPlacementPolicy.Regime) -> [String] {
+        var lines = ["\(tp.verdict.rawValue): \(tp.reason)."]
+        for d in tp.devices {
+            lines.append(d.split.measured
+                ? "\(d.device): decode step \(seconds(d.split.wholeStepSeconds)) whole = floor \(seconds(d.split.floorSeconds)) + weights \(seconds(d.split.weightSeconds)); a half steps in \(seconds(d.split.shareStepSeconds(ranks: 2)))."
+                : "\(d.device): decode step \(seconds(d.split.wholeStepSeconds)) whole; no shard probe, so a half is assumed to step as slowly.")
+        }
+        if let perStep = tp.reductionSecondsPerStep {
+            let path = (tp.reductionKeyed ?? false) ? "keyed data plane" : "native all-sum, not the product's path"
+            lines.append("\(tp.reductionsPerStep) reductions per decode step cost \(seconds(perStep)) over the link (\(path)).")
+        }
+        for (label, candidate) in [("Tensor parallel", tp.tensorParallel), ("Pipeline prefill, tensor decode", tp.hybrid)] {
+            guard let candidate, basis.absolute else { continue }
+            let p = candidate.prediction(regime)
+            lines.append("\(label) (\(candidate.ranks.map(\.device).joined(separator: " then "))\(candidate.cuts.isEmpty ? "" : ", prefill cut \(candidate.cut)")): "
+                + "first token \(seconds(p.firstTokenSeconds)), decode \(rate(p.decodeTokensPerSecond)) tok/s, request \(seconds(p.requestSeconds))"
+                + (candidate.tier == 0 ? "." : "; does not fit now."))
+        }
         return lines
     }
 
@@ -247,6 +274,10 @@ public enum ClusterPlacementExplanation {
                         : "relative time \(number(p.requestSeconds, 3))")
                     + (a.tier == 0 ? "" : "; does not fit now"))
             }
+        }
+        if let tp = result.tensorParallel {
+            lines.append("Tensor parallel")
+            lines += tensorParallel(tp, basis: result.basis, regime: result.regime).map { "  " + $0 }
         }
         lines.append("Each Mac alone, for comparison")
         for a in result.alone {

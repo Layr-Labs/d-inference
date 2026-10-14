@@ -125,7 +125,10 @@ private func checkRetainedDenseLayouts(_ directory: URL, dense: (nine: ClusterMo
         let excludedRead = (b["excluded"] as? [String: Any])?["tensorCount"] as? Int ?? 0
         // The speculative head is a view inside the excluded group, so it goes with it.
         a["excluded"] = nil; b["excluded"] = nil; b["speculativeHead"] = nil
-        checks.require("golden \(name): the layout from retained header metadata equals the one read from the real headers in every field but the \(excludedRead) excluded tensors",
-            NSDictionary(dictionary: a).isEqual(to: b) && a.count == 18)
+        // The tensor-parallel facts were derived after the golden layouts were
+        // recorded on both Macs: present in the built layout, absent there.
+        let tensorParallel = a.removeValue(forKey: "tensorParallel") != nil && b["tensorParallel"] == nil
+        checks.require("golden \(name): the layout from retained header metadata equals the one read from the real headers in every field but the \(excludedRead) excluded tensors (and the tensor-parallel facts the golden predates)",
+            NSDictionary(dictionary: a).isEqual(to: b) && a.count == 18 && tensorParallel)
     }
 }

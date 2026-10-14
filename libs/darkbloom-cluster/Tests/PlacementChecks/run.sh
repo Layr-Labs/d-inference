@@ -74,6 +74,7 @@ xcrun swiftc -j 4 "${task_flags[@]}" -parse-as-library "${task_links[@]}" -lDark
   "$R/Models/Gemma4/Resources/Gemma4StateBudget.swift" \
   "$R/Models/Gemma4/Metadata/Gemma4PlacementFamily.swift" \
   "$R/Models/Placement/ClusterDeviceMemoryGate.swift" \
+  "$R/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
   "$R/Models/Placement/QwenDensePlacementFamily.swift" \
   "$R/Models/Placement/ClusterPlacementArtifact.swift" \
   "$R/Models/Placement/ClusterPlacementTool.swift" \

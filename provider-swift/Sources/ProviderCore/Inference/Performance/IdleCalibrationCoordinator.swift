@@ -17,10 +17,17 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
             let task = Task(priority: .background) {
                 await operation()
                 self.finish(id)
-                // Successor scheduling must see the global owner released.
-                await onRetired?()
             }
             session = (id, task)
+            // Foreground admission awaits only the session's retirement. Successor
+            // scheduling crosses actors, so it runs after the global owner is
+            // released without extending a customer request's deadline wait.
+            if let onRetired {
+                Task(priority: .background) {
+                    await task.value
+                    await onRetired()
+                }
+            }
             return task
         }
     }

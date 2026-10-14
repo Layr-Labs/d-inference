@@ -132,7 +132,8 @@ it after construction releases its device-work receipt. Capacity ticks retry
 when loading, foreground work or device posture initially prevents calibration.
 An uncancelled calibration retirement schedules the next eligible resident
 slot immediately; the process-wide owner still permits only one session at a
-time. Ordinary and native MiMo load completion share a handoff that releases
+time. That successor scheduling runs after the session's retirement, outside
+the task a preempting customer request waits for. Ordinary and native MiMo load completion share a handoff that releases
 the finished construction activity and offers the newly loaded slot first,
 while keeping the load-transition gate closed. It rechecks cancellation and
 native ownership before releasing the gate and waking parked requests. Existing
@@ -154,7 +155,9 @@ maintenance in `ModelCalibrationPolicy`: short and up-to-4,096-token text cells,
 affordable concurrency sweeps and solo refresh after 90 seconds. The existing
 15-second group deadline, context/KV limits and affordability checks bound work.
 All calibration requires an idle Mac in nominal thermal state outside Low Power
-Mode; reviewed deadline profiles keep their own applicability and posture checks.
+Mode. Slots with a reviewed deadline profile never calibrate: bounded probes must
+not enter deadline-qualified rates, so those profiles keep their own
+applicability and posture checks.
 
 `IdleCalibrationCoordinator.beginForeground` cancels the probe when a customer
 request on any model arrives. Ordinary engines use `EngineV2.submitWithRetirement`

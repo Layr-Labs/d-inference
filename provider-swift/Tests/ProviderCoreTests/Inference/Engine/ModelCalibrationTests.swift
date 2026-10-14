@@ -6,7 +6,8 @@ import Testing
 @Suite("Automatic model calibration", .serialized)
 struct ModelCalibrationTests {
     private func fixture(budget: GlobalKVCacheBudget? = nil, gate: RecoveryStepGate? = nil,
-        gateOnRequest: Int? = nil, posturePermitsWork: @escaping @Sendable () -> Bool = { true })
+        gateOnRequest: Int? = nil, deadlineProfile: DeadlinePerformanceProfile? = nil,
+        posturePermitsWork: @escaping @Sendable () -> Bool = { true })
         throws -> (EngineV2Bridge, CBv2NativeBlockEngine, GlobalKVCacheBudget) {
         let tokenizer = ModelCalibrationTokenizer()
         let budget = budget ?? GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0) {
@@ -20,7 +21,8 @@ struct ModelCalibrationTests {
             })
         let bridge = EngineV2Bridge(engine: engine, modelId: "mimo-calibration-fixture",
             tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [], maxConcurrentRequests: 4,
-            kvBytesPerToken: 1, kvBudget: budget, calibrationPosturePermitsWork: posturePermitsWork)
+            deadlineProfile: deadlineProfile, kvBytesPerToken: 1, kvBudget: budget,
+            calibrationPosturePermitsWork: posturePermitsWork)
         return (bridge, engine, budget)
     }
 
@@ -169,6 +171,14 @@ struct ModelCalibrationTests {
             tokenizer: TokenizerHandle(PrefillStubTokenizer()), eosTokenIds: [])
         #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
         #expect(engine.ordinarySubmissionCount == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("deadline-profiled slots never let bounded probes qualify their reviewed timing envelope")
+    func deadlineProfiledSlotIsExcluded() async throws {
+        let (bridge, engine, budget) = try fixture(deadlineProfile: deadlineCalibrationProfileFixture())
+        #expect(!(await bridge.startModelCalibrationIfNeeded(requireNominalPosture: false)))
+        #expect(engine.capacity().activeRequests == 0 && budget.serviceBudget.count == 0)
         await bridge.shutdown()
     }
 

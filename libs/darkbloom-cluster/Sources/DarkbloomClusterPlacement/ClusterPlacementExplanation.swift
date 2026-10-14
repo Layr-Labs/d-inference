@@ -141,6 +141,7 @@ public enum ClusterPlacementExplanation {
         case .pipelineCompactDecode: modeText = "pipeline with compact decode framing"
         case .phaseSplit: modeText = "phase split (the ranks prefill together, then the last rank, which holds every layer, decodes alone)"
         case .phaseSplitMTP: modeText = "phase split with speculative decoding (the last rank, which holds every layer and the model's MTP head, drafts and verifies alone)"
+        case .pipelineMTP: modeText = "pipeline with speculative decoding (the last rank holds the model's MTP head and drafts; every rank verifies the drafts in one window)"
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines

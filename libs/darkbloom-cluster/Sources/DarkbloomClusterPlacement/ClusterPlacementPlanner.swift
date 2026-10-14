@@ -423,11 +423,13 @@ public enum ClusterPlacementPlanner {
                 loadNeed = max(loadNeed, held + ask)
                 held += rounded; largest = max(largest, part.largestTensorBytes)
             }
-            // The decoding rank of a speculative phase split also holds the
-            // model's head, loaded after its stages (each tensor in whole pages).
-            if mode.usesSpeculativeHead, last, let head = layout.speculativeHead {
-                held += head.loadedBytes + head.tensorCount * memory.pageSizeBytes
-                largest = max(largest, head.largestTensorBytes)
+            // The decoding rank of a speculative mode also holds the model's
+            // head (and under a pipeline the embedding copy it drafts with),
+            // loaded after its stages (each tensor in whole pages).
+            if last {
+                let holding = layout.speculativeHolding(mode: mode, pageSizeBytes: memory.pageSizeBytes)
+                held += holding.bytes
+                largest = max(largest, holding.largestTensorBytes)
             }
             let context = prompt + outputs
             let ownState = loads.reduce(0) { $0 + $1.stateBytes(tokens: context) }

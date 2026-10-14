@@ -153,7 +153,7 @@ public struct ClusterRuntimeCapability: Equatable, Sendable {
         self.arithmeticPolicyID = arithmeticPolicyID; self.arithmeticPolicySHA256 = arithmeticPolicySHA256
         self.supportedPrefillSchedules = supportedPrefillSchedules
         self.supportedGenerationModes = supportedGenerationModes
-        self.speculation = supportedGenerationModes.contains(.phaseSplitMTP) ? Self.decodingRankSpeculation : "off"
+        self.speculation = supportedGenerationModes.contains(where: \.usesSpeculativeHead) ? Self.decodingRankSpeculation : "off"
         try ClusterRuntimeCapabilityValidation.check(self)
     }
 

@@ -16,7 +16,8 @@ struct WorkerConfiguration {
     /// mode, and it must be one the registered model's resident row lists.
     let generationMode: ClusterGenerationMode
     /// `--mtp-depth N` (1...4): the speculative head's fixed draft depth under
-    /// `phase_split_mtp_v1`; nil means the product drafter's maximum. Both ranks
+    /// `phase_split_mtp_v1` or `pipeline_mtp_v1` (MiMo: 1...3); nil means the
+    /// product drafter's maximum. Both ranks
     /// bind it into their load agreement, so they must be given the same value.
     let speculativeTerms: QwenMTPTerms?
     /// `--qualification-switches yes`: the explicit test flag without which a
@@ -125,7 +126,8 @@ struct WorkerConfiguration {
         if let text = fields["--mtp-depth"] {
             guard generationMode.usesSpeculativeHead, let depth = Int(text), String(depth) == text,
                   let terms = try? QwenMTPTerms(depth: depth) else {
-                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with --generation-mode \(ClusterGenerationMode.phaseSplitMTP.rawValue)")
+                throw WorkerFailure.invalid("--mtp-depth takes 1...\(QwenMTPTerms.maximumDepth) and only with a speculative generation mode ("
+                    + ClusterGenerationMode.allCases.filter(\.usesSpeculativeHead).map(\.rawValue).joined(separator: ", ") + ")")
             }
             speculativeTerms = terms
         } else { speculativeTerms = nil }

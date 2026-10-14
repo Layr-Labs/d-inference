@@ -412,7 +412,7 @@ public final class QwenTensorParallelResidentRuntime {
         // slot of every step built from now on.
         var stopKeep: Float = 0
         var pending: (MLXArray, MLXArray)?
-        for step in 0 ..< request.outputCount {
+        steps: for step in 0 ..< request.outputCount {
             pending = nil
             if pipelined, step + 1 < request.outputCount {
                 let next = choose(model.step(current, cache: cache), stop: stopKeep)
@@ -430,10 +430,18 @@ public final class QwenTensorParallelResidentRuntime {
             if stopKeep == 0 {
                 sampler?.commit(token)
                 tokens.append(token)
-                if rank == 0, try !onCommittedToken(tokens.count - 1, token, prompt.count + tokens.count - 1) {
-                    clientStopped = true
+                let wanted = rank == 0 ? try onCommittedToken(tokens.count - 1, token, prompt.count + tokens.count - 1) : true
+                // A stop token, then the output limit, end the request at this
+                // token whatever the answer (the engine answers "not wanted"
+                // for the token that ends it); only an earlier "not wanted" is
+                // a client stop (`QwenTensorParallelStopRule`).
+                switch QwenTensorParallelStopRule.outcome(isStopToken: request.stopTokenIDs.contains(token),
+                                                          committed: tokens.count, outputCount: request.outputCount, wanted: wanted) {
+                case .eos: finish = .eos; break steps
+                case .length: finish = .length; break steps   // the last step: nothing further was built
+                case .clientStop: clientStopped = true
+                case .proceed: break
                 }
-                if request.stopTokenIDs.contains(token) { finish = .eos; break }
                 if clientStopped || localStop() { stopKeep = Float(tokens.count) }
             }
             if !pipelined, step + 1 < request.outputCount {
@@ -449,6 +457,22 @@ public final class QwenTensorParallelResidentRuntime {
         // reductions meet; nothing of it is emitted.
         if let pending { eval(pending.0, pending.1) }
         if stopKeep > 0 || clientStopped { finish = .clientStop }
+        // Both ranks end on rank 0's outcome (one small sealed agreement, made
+        // by both before either may throw below): a client stop rank 0 made
+        // when no later step could carry its flag leaves rank 1 at the limit.
+        let localFinish: QwenTensorParallelStopRule.Finish = finish == .eos ? .eos : finish == .length ? .length : .clientStop
+        let agreed = try group.exchangeIntegers(rank == 0 ? [Int32(tokens.count), localFinish.code] : [0, 0])
+        guard agreed.count == 2, let rank0Finish = QwenTensorParallelStopRule.Finish(code: agreed[1]) else {
+            throw ProbeError("Tensor-parallel ranks did not agree how the request ended")
+        }
+        let ended = QwenTensorParallelStopRule.reconcile(rank: rank, localFinish: localFinish, localCount: tokens.count,
+            localStopped: stopKeep > 0 && !clientStopped, rank0Finish: rank0Finish, rank0Count: Int(agreed[0]))
+        tokens = Array(tokens.prefix(ended.count))
+        switch ended.finish {
+        case .eos: finish = .eos
+        case .length: finish = .length
+        case .clientStop: finish = .clientStop
+        }
         try control.check(deadline: reserved.deadline)
         if finish == .clientStop && !clientStopped && rank == 0 {
             // The other rank asked to stop (cancelled or out of memory there).

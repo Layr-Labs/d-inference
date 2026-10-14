@@ -517,7 +517,49 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
                           quantization: q, shares: [1, 3])
             }
         }
+        checkStopRule()
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)
     }
+}
+
+// A committed token's outcome on a tensor-parallel rank. The product's engine
+// answers "not wanted" for the token that ends the request (a stop token, or
+// the output limit): that answer must not turn an EOS or length finish into a
+// client stop (the owner and rank 0's session expect EOS/length there, as the
+// pipeline's decision packet decides), and both ranks must report one finish.
+func checkStopRule() {
+    typealias R = QwenTensorParallelStopRule
+    // EOS wins over "not wanted" at the same token (the onboarding's first request).
+    check(R.outcome(isStopToken: true, committed: 6, outputCount: 16, wanted: false) == .eos, "EOS answered not-wanted stays EOS")
+    check(R.outcome(isStopToken: true, committed: 6, outputCount: 16, wanted: true) == .eos, "EOS")
+    // The output limit wins over "not wanted" at the last token.
+    check(R.outcome(isStopToken: false, committed: 16, outputCount: 16, wanted: false) == .length, "last token answered not-wanted stays length")
+    check(R.outcome(isStopToken: false, committed: 16, outputCount: 16, wanted: true) == .length, "length")
+    // A stop token that is also the last token is EOS (the owner checks EOS first).
+    check(R.outcome(isStopToken: true, committed: 16, outputCount: 16, wanted: false) == .eos, "EOS at the limit")
+    // Mid-stream: the answer decides.
+    check(R.outcome(isStopToken: false, committed: 5, outputCount: 16, wanted: false) == .clientStop, "mid-stream not-wanted is a client stop")
+    check(R.outcome(isStopToken: false, committed: 5, outputCount: 16, wanted: true) == .proceed, "mid-stream wanted proceeds")
+
+    // Both ranks end on rank 0's outcome. A client stop rank 0 made when no
+    // later step could carry its flag (the step after it was the last one
+    // already built) leaves rank 1 at length with one token more: rank 1
+    // adopts rank 0's count and finish.
+    let adopted = R.reconcile(rank: 1, localFinish: .length, localCount: 16, localStopped: false,
+                              rank0Finish: .clientStop, rank0Count: 15)
+    check(adopted.finish == .clientStop && adopted.count == 15, "rank 1 adopts rank 0's client stop: \(adopted)")
+    let same = R.reconcile(rank: 1, localFinish: .eos, localCount: 6, localStopped: false, rank0Finish: .eos, rank0Count: 6)
+    check(same.finish == .eos && same.count == 6, "agreeing ranks keep their finish")
+    // A rank that stopped on its own (cancel, deadline, memory) keeps its stop: the request fails on both.
+    let own = R.reconcile(rank: 1, localFinish: .clientStop, localCount: 9, localStopped: true, rank0Finish: .length, rank0Count: 16)
+    check(own.finish == .clientStop && own.count == 9, "a rank's own stop is kept")
+    // Rank 0 never changes its outcome.
+    let zero = R.reconcile(rank: 0, localFinish: .clientStop, localCount: 15, localStopped: false, rank0Finish: .clientStop, rank0Count: 15)
+    check(zero.finish == .clientStop && zero.count == 15, "rank 0 keeps its outcome")
+    // The agreement crosses as two integers and decodes back exactly.
+    for finish in [R.Finish.eos, .length, .clientStop] {
+        check(R.Finish(code: finish.code) == finish, "finish code round trip \(finish)")
+    }
+    check(R.Finish(code: 0) == nil && R.Finish(code: 9) == nil, "unknown finish codes are refused")
 }

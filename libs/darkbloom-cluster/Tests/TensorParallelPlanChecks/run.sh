@@ -14,6 +14,7 @@ xcrun swiftc -swift-version 6 -warnings-as-errors -target "$(uname -m)-apple-mac
   "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelPlan.swift" \
   "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelLaunch.swift" \
   "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelSealCodec.swift" \
+  "$package/Sources/DarkbloomClusterRuntime/Models/Qwen/TensorParallel/QwenTensorParallelStopRule.swift" \
   "$package/Sources/DarkbloomClusterRuntime/Support/ClusterRuntimeError.swift" \
   "$package/Tests/TensorParallelPlanChecks/TensorParallelPlanCheck.swift" -o "$build/tp-plan-check"
 "$build/tp-plan-check" "$@"

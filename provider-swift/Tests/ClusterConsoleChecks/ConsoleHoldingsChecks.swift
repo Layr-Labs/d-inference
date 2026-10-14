@@ -91,7 +91,7 @@ extension ClusterConsoleCheck {
         expect(fixtureScreen.contains { $0.text.contains("peer-0 (this Mac) holds layers 0 to 3: 1.50 GiB of weights of its 256.00 GiB; peer-1 holds layers 4 to 31: 4.19 GiB of weights.") },
             "a small share is shown beside the size of the Mac that holds it")
         expect(ClusterConsoleWiring.wired.contains("model.holdings")
-            && ClusterConsoleWiring.unavailable.contains { $0.id == "model.plan" && $0.exists && $0.reason.contains("darkbloom cluster plan") },
+            && ClusterConsoleWiring.unavailable.contains { $0.id == "model.plan" && $0.exists && $0.reason.contains("`darkbloom cluster`") && !$0.reason.contains("cluster plan") },
             "the holdings row is wired and the planning step is listed as a command the screen has no key for")
     }
 }

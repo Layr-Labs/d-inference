@@ -163,7 +163,7 @@ final class EndpointBox: @unchecked Sendable {
         try require(f.configuration.trust != nil && f.configuration.linkControl == nil,"fixture is not an SSH setup")
         var message=""
         do { try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[:]) } catch { message=String(describing:error) }
-        try require(message.contains("over SSH") && message.contains("darkbloom cluster setup") && !message.contains(DistributedInstalledDeveloperSSH.environmentKey),
+        try require(message.contains("over SSH") && message.contains("Run `darkbloom cluster` on both Macs") && !message.contains("cluster setup") && !message.contains(DistributedInstalledDeveloperSSH.environmentKey),
             "an SSH setup was not refused without the developer flag (or the refusal offers the flag): \(message)")
         try rejected{ try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"yes"]) }
         try DistributedInstalledDeveloperSSH.requireFollowerRoute(f.configuration,environment:[DistributedInstalledDeveloperSSH.environmentKey:"1"])
@@ -685,7 +685,8 @@ final class EndpointBox: @unchecked Sendable {
         try bytes.write(to:described)
         let message=try refusal{_ = try mixed.prepare()}
         try require(message.contains("cannot read the capability record written by the installed worker") && message.contains(f.probe.path)
-            && message.contains("Unknown generation mode") && message.contains("not built from the same tree") && message.contains("cluster configure"),
+            && message.contains("Unknown generation mode") && message.contains("not built from the same tree")
+            && message.hasPrefix("Install the same Darkbloom release on both Macs") && !message.contains("cluster configure"),
             "mixed install was not explained: \(message)")
         record.removeValue(forKey:"supportedGenerationModes");record["aFieldFromANewerWorker"]=1
         bytes=try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys,.withoutEscapingSlashes]);bytes.append(10)

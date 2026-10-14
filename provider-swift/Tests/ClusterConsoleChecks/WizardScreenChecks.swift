@@ -242,6 +242,9 @@ extension ClusterConsoleCheck {
                     "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
                 continue
             }
+            // A model the pair may not serve with this build is not offered at all (checked below).
+            if let described = try? reading.capability.get(),
+               ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: reading.model.modelID) { continue }
             let layout = try? reading.layout.get()
             let described = (try? reading.capability.get())?.record.supportedGenerationModes.map(\.rawValue) ?? []
             expect(option?.blocker == nil && option?.plan?.leaderID == "mac-a",

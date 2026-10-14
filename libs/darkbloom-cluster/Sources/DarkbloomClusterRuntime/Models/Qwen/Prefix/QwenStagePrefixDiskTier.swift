@@ -330,10 +330,12 @@ public final class QwenStagePrefixDiskTier: @unchecked Sendable {
         let frontierKeys = QwenStagePrefixKeys.keys(scope: scope, tokens: tokens, frontiers: Set(chosen.map(\.committedTokens)))
         guard let recordKey = frontierKeys[committed] else { return }
         let name = keys.fileName(recordKey: recordKey)
+        // The speculative history is one copy viewed by every frontier: the
+        // deepest frontier's counts it (finding S2; a record stores it once).
         let estimate = chosen.reduce(0) { total, state in
             total + state.recurrent.values.reduce(0) { $0 + $1.conv.nbytes + $1.ssm.nbytes }
-                + (state.speculativeHistory.map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes } ?? 0)
         } + deepest.attention.values.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+            + (chosen.compactMap(\.speculativeHistory).map { $0.hidden.nbytes + $0.tokens.nbytes + $0.last.nbytes }.max() ?? 0)
         enum Decision { case touch, drop(String), write }
         let decision: Decision = lock.withLock {
             if records[name] != nil { return .touch }

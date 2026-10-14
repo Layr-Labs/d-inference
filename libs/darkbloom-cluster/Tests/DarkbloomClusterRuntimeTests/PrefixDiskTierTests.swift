@@ -572,4 +572,47 @@ struct PrefixDiskTierTests {
         #expect(QwenStagePrefixDiskIO.alignedExtent(start: 30_000, length: 9_000, fileSize: 39_000) == (16_384, 22_616))
         tier.close()
     }
+
+    /// Finding storage:S2 / reads:R6: the decoding rank's speculative history
+    /// at each kept frontier is a view of one kept copy (the decoder's
+    /// `prefixHistory(at:)`), and version 1 wrote a whole copy per frontier.
+    /// A record now stores it once (rows of the deepest history in block
+    /// units, and its tokens) and every frontier restores exactly the view it
+    /// had; histories that are not views of one copy keep version 1.
+    @Test func theSpeculativeHistoryIsStoredOncePerRecordAndRestoresExactly() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tokens = Array(500..<540), scope = "scope|chunk=8", prompt = 40, width = 4
+        // One kept copy as the decoder holds it: hidden [1, prompt-1, 4], tokens [1, prompt-1], last [1, 1, 4].
+        let keptHidden = (MLXArray(0..<((prompt - 1) * width)).asType(.float32) * 0.5 + 3).reshaped([1, prompt - 1, width]).asType(.bfloat16)
+        let keptTokens = MLXArray((1..<prompt).map { Int32($0 * 3) }).reshaped([1, prompt - 1])
+        let keptLast = (MLXArray(0..<width).asType(.float32) - 9).reshaped([1, 1, width]).asType(.bfloat16)
+        eval(keptHidden, keptTokens, keptLast)
+        var captured = states(committed: 39, frontiers: [16, 32], seed: 11)
+        for index in captured.indices {
+            captured[index].speculativeHistory = QwenMTPPrefixHistory.view(hidden: keptHidden, tokens: keptTokens, last: keptLast,
+                prompt: prompt, frontier: captured[index].committedTokens)
+        }
+        let tier = try openTier(configuration(root))
+        tier.persist(scope: scope, tokens: tokens, states: captured, blockTokens: block)
+        #expect(tier.drain(timeoutSeconds: 20) && tier.recordCount == 1)
+        let name = try #require(try FileManager.default.contentsOfDirectory(atPath: tier.directory.path).first { $0.hasSuffix(".dbpx") })
+        let opened = try QwenStagePrefixDiskIO.open(url: tier.directory.appendingPathComponent(name),
+            keys: QwenStagePrefixDiskKeys(master: Data(repeating: 7, count: 32)))
+        #expect(opened.header.version == 2)
+        // Attention (2 x heads x 39 rows) and recurrent units as before; the history once:
+        // 39 hidden rows plus the last row, and 38 tokens, instead of three copies.
+        let tag = QwenStagePrefixDiskFormat.tagBytes, row = width * 2
+        let attention = 2 * ((39 + block - 1) / block) * tag + 2 * heads * 39 * headDim * 2
+        let recurrent = 3 * (2 * tag + 12 * 4 + 16 * 4)
+        let once = ((39 + block - 1) / block) * tag + 39 * row + (38 * 4 + tag)
+        #expect(opened.header.dataBytes == attention + recurrent + once)
+        for frontier in [39, 32, 16] {
+            let restored = try #require(try tier.restore(scope: scope, tokens: tokens, frontier: frontier, check: {}))
+            let original = captured.first { $0.committedTokens == frontier }!
+            #expect(same(restored, original))
+            #expect(sameHistory(restored.speculativeHistory, original.speculativeHistory))
+        }
+        tier.close()
+    }
 }

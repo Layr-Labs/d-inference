@@ -108,3 +108,46 @@ it('flags a silent or offline Mac and a provider below the minimum version', asy
   expect(screen.getByRole('status').querySelector('i')).toHaveAttribute('data-presence', 'offline');
   expect(screen.queryByText('Update required')).not.toBeInTheDocument();
 });
+
+it('names a not-online remote Mac’s actual status instead of calling it offline', async () => {
+  const { backend, machine } = await studio();
+  for (const [status, label] of [
+    ['untrusted', 'Verification needed'],
+    ['starting', 'Starting'],
+    ['draining', 'Finishing requests'],
+    ['offline', 'Offline'],
+  ] as const) {
+    render(<RemoteOverview machine={{ ...machine, status }} backend={backend} />);
+    expect(screen.getByRole('status')).toHaveTextContent(new RegExp(`^${label}$`));
+    cleanup();
+  }
+});
+
+it('does not total 24-hour tokens when part of the breakdown is missing', async () => {
+  const { backend, machine } = await studio();
+  const partial: Machine = { ...machine, tokens_24h: { output: 1000 } };
+  render(<RemoteOverview machine={partial} backend={backend} />);
+  const day = screen.getByRole('region', { name: 'Past 24 hours' });
+  expect(within(day).getByText('Tokens served').nextElementSibling).toHaveTextContent('—');
+  expect(within(day).getByText('Output tokens').nextElementSibling).toHaveTextContent('1K');
+});
+
+it('neither invents an observation time nor anchors the chart without one', async () => {
+  const { backend, machine } = await studio();
+  render(<RemoteOverview machine={{ ...machine, observed_at: undefined }} backend={backend} />);
+  expect(screen.getByRole('status').parentElement).toHaveTextContent('Not observed yet');
+  expect(screen.getByRole('status').parentElement).not.toHaveTextContent(/not observed$/);
+  expect(screen.queryByRole('group', { name: 'Tokens shared per hour' })).not.toBeInTheDocument();
+});
+
+it('keeps an older observation’s date readable in the open hour’s range', async () => {
+  const { backend, machine } = await studio();
+  const observed = backend.state!.observed_at - 3 * 86400 + 1800;
+  render(<RemoteOverview machine={{ ...machine, observed_at: observed }} backend={backend} />);
+  const bars = within(screen.getByRole('group', { name: 'Tokens shared per hour' })).getAllByRole(
+    'button',
+  );
+  const name = bars[23].getAttribute('aria-label') ?? '';
+  expect(name).not.toMatch(/ – [a-z]{3} \d/);
+  expect(name).toMatch(/ – [A-Z][a-z]{2} \d/);
+});

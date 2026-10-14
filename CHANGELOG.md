@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop view-only Mac status and totals
+
+- Show a view-only Mac's reported status (Starting, Finishing requests, Verification needed, Ready) instead of Offline whenever it is not online. Show its 24-hour Tokens served as unavailable when the input or cached-input breakdown is missing instead of undercounting, say "Not observed yet" rather than "Last observed not observed", hide the hourly chart when there is no observation to anchor it, and keep the month's capitalization in older observations' chart ranges.
 ## Unreleased — desktop Studio endpoint model and key
 
 - Default Studio's model to the one the local endpoint serves, so the copied example request targets a served model and Apply serving mode does not switch models unless you choose another. Clear revealed API keys and ignore stale key-read results when the endpoint stops, changes or disconnects, requiring a fresh Reveal after it returns. Report clipboard or key-read failures instead of showing "Copied". Copying the base URL now confirms on its own button instead of on Copy example.

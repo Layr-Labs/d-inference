@@ -138,6 +138,9 @@ public struct ClusterSetupPlanSummary: Codable, Sendable, Equatable {
     public var needsBytes: Int?
     /// The planner's own explanation, line by line.
     public var explanation: [String]
+    /// Public traffic in one line ("not yet qualified for public traffic" when no passing record covers the chosen
+    /// mode); the owner's serving never waits for it. Nil in a summary written before it existed.
+    public var publicTraffic: String? = nil
 }
 
 /// What reaching the other Mac gave.

@@ -222,23 +222,28 @@ private func reject(_ body: () throws -> Void) throws {
         try require(validation(speculative).first?.outcome == .passed, "the speculative phase split failed the doctor")
         let big = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-27b"), probe: f.probe, owner: f.owner, worker: f.worker,
             advertisedModes: all, registered: ("registered_qwen38_27b", "registered_qwen38_27b_greedy_generation_v1", "EigenLabs/Qwen3.8-27B-4bit-mtp"))
-        // The 27B is granted on the M3 Ultra and the M5 Max for either role (owner decision D4): the doctor passes it on both.
-        for chip in ["Apple M3 Ultra", "Apple M5 Max"] {
+        // The owner's serving (2026-10-14 08:45): any Apple silicon runs any rank of the 27B, and the doctor passes it.
+        for chip in ["Apple M3 Ultra", "Apple M5 Max", "Apple M4 Max"] {
             let granted = validation(big, chip: chip)
             try require(granted.map(\.name) == ["localInstalledMetadata"] && granted[0].outcome == .passed,
-                "the granted 27B failed the doctor on \(chip): \(granted.map { "\($0.name) \($0.outcome) \($0.detail)" })")
+                "the 27B failed the doctor on \(chip): \(granted.map { "\($0.name) \($0.outcome) \($0.detail)" })")
         }
-        // A chip class the grant does not list, or a chip with none, is a policy refusal; the metadata still passed.
-        for chip in ["Apple M4 Max", "Apple M1 (Virtual)"] {
-            let refused = validation(big, chip: chip)
-            try require(refused.map(\.name) == ["pairServingPolicy", "localInstalledMetadata"] && refused[0].outcome == .failed
-                && refused[1].outcome == .passed, "an ungranted chip was not reported as policy on \(chip): \(refused.map(\.name))")
-            try require(refused[0].detail.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused[0].detail.contains("policy decision"),
-                "policy refusal text: \(refused[0].detail)")
-        }
-        // The 9B's grant lists the M5 Max for the decoding rank only: it cannot lead.
-        let nine = validation(f, chip: "Apple M5 Max")
-        try require(nine.first?.name == "pairServingPolicy" && nine[0].detail.contains("pipeline-only rank on apple_m3_ultra"), "9B led by the M5 Max: \(nine.map(\.detail))")
+        // A chip with no class is a policy refusal; the metadata still passed.
+        let refused = validation(big, chip: "Apple M1 (Virtual)")
+        try require(refused.map(\.name) == ["pairServingPolicy", "localInstalledMetadata"] && refused[0].outcome == .failed
+            && refused[1].outcome == .passed, "a classless chip was not reported as policy: \(refused.map(\.name))")
+        try require(refused[0].detail.contains("EigenLabs/Qwen3.8-27B-4bit-mtp") && refused[0].detail.contains("policy decision"),
+            "policy refusal text: \(refused[0].detail)")
+        // The 9B led by the M5 Max: no role is tied to a chip.
+        try require(validation(f, chip: "Apple M5 Max").map(\.name) == ["localInstalledMetadata"], "9B led by the M5 Max was refused")
+        // GPT-OSS at cut 4 (the fixture's): the M3 Ultra ran rank 0 at cut 4 in a check that diverged, so its rank is a
+        // policy refusal there and nowhere else.
+        let gpt = try InstalledFixture.make(root: f.root.appendingPathComponent("doctor-gptoss"), probe: f.probe, owner: f.owner, worker: f.worker,
+            registered: ("registered_gpt_oss_20b", "registered_gpt_oss_20b_greedy_generation_v1", "fixture/gpt-oss"), adapter: .gptossLayerStage)
+        let steered = validation(gpt, chip: "Apple M3 Ultra")
+        try require(steered.first?.name == "pairServingPolicy" && steered[0].detail.contains("diverged from its single-Mac reference"),
+            "GPT-OSS's diverged rank-shape on the M3 Ultra: \(steered.map(\.detail))")
+        try require(validation(gpt, chip: "Apple M4 Max").map(\.name) == ["localInstalledMetadata"], "GPT-OSS on an M4 Max was refused")
     }
 
     static func journal(_ f: InstalledFixture) throws {

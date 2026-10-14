@@ -82,15 +82,15 @@ public enum ClusterPlacementFlow {
         }
         var policy = ClusterPlacementPolicy()
         policy.promptTokens = promptTokens; policy.outputTokens = outputTokens; policy.regime = regime
-        // A model whose grant is refused is still planned, with the refusal in the plan's words; a grant never
-        // rules a chip or an order out (owner, 2026-10-14).
+        // A model no stage adapter runs is still planned, with the refusal in the plan's words; records never rule a
+        // chip, an order or a mode out (owner, 2026-10-14 08:45).
         let granted = try leaderUnderGrant(requested: leader, members: [(local.id, localProfile.chip), (peer.id, peerProfile.chip)],
             runtimeModelID: capability.runtimeModelID, publicModelID: description.publicModelID,
             artifactSHA256: capability.artifactSHA256)
         policy.leader = granted.leader
-        // The planner keeps to what a start accepts: a model's granted mode families (on any chips) and, for a
-        // family with a diverged cross-cable check, not the chip combination and shapes that diverged
-        // (`ClusterPairQualificationRecords`, chip-agnostic; owner 2026-10-14).
+        // The planner keeps to what a start accepts: any sharded mode the worker lists, with or without a record,
+        // except the exact shapes a cross-cable check diverged at on these chips (`ClusterPairQualificationRecords`;
+        // owner 2026-10-14 08:45).
         let records = ClusterPairServingGrants.records(runtimeModelID: capability.runtimeModelID,
             artifactSHA256: capability.artifactSHA256)
         let runtimeModelID = capability.runtimeModelID, artifactSHA256 = capability.artifactSHA256
@@ -130,13 +130,18 @@ public enum ClusterPlacementFlow {
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
             lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
         }
-        if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
+        if let note = granted.note { lines.append("Pair serving"); lines.append("  " + note) }
         if records.restrictsShapes {
-            lines.append("Qualified placements")
-            lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placement "
+            lines.append("Diverged placements")
+            lines.append("  This model diverged from its single-Mac reference in a cross-cable check at some placements "
                 + "(\(records.restrictedFamilies.sorted().map(\.description).joined(separator: ", ")) modes): \(records.failedShapesText). "
-                + "On those chips only placements a check passed in are planned (\(records.passedShapesText)); other Macs are not restricted.")
+                + "Those exact shapes are not planned; every other placement is, on any Macs.")
         }
+        // Public traffic in one line (owner serving never waits for it): the coordinator's parity qualification decides.
+        let publicLine = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.runtimeModelID,
+            artifactSHA256: capability.artifactSHA256, mode: result.chosen?.mode)
+        lines.append("Public traffic")
+        lines.append("  " + publicLine.prefix(1).uppercased() + publicLine.dropFirst() + ".")
         var setup: ClusterPlacementSetup?
         if let chosen = result.chosen {
             var described = description
@@ -158,20 +163,20 @@ public enum ClusterPlacementFlow {
         return (lines, result, setup)
     }
 
-    /// Which Mac leads, and a note when the model's pair-serving grant refuses
-    /// it outright. A grant lists no chip class (owner, 2026-10-14), so it
-    /// never rules a leader or an order out: the planner keeps to what a start
-    /// accepts through `ClusterPairServingGrants.plannable` (the mode family,
-    /// and the shapes of a chip combination that diverged). A model whose
-    /// grant is refused is still planned, with the refusal in `note`, since a
+    /// Which Mac leads, and a note when no cluster stage adapter runs the
+    /// model (the owner's only refusal besides memory, owner 2026-10-14
+    /// 08:45). Records never rule a leader, an order or a mode out: the
+    /// planner keeps to what a start accepts through
+    /// `ClusterPairServingGrants.plannable` (the shapes that diverged). A
+    /// refused model is still planned, with the refusal in `note`, since a
     /// plan also answers whether the pair could hold it.
     static func leaderUnderGrant(requested: String?, members: [(id: String, chip: String)],
                                  runtimeModelID: String, publicModelID: String,
                                  artifactSHA256: String? = nil) throws -> (leader: String?, note: String?) {
         guard members.count == 2 else { return (requested, nil) }
         do {
-            _ = try ClusterPairServingGrants.grant(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
-                                                   artifactSHA256: artifactSHA256)
+            _ = try ClusterPairServingGrants.ownerServing(runtimeModelID: runtimeModelID, publicModelID: publicModelID,
+                                                          artifactSHA256: artifactSHA256)
         } catch let refusal as ClusterPairServingRefusal {
             return (requested, refusal.description + " A setup made from this plan is refused when it is started.")
         }

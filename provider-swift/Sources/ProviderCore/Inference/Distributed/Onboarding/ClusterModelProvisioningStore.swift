@@ -88,14 +88,11 @@ extension ClusterModelCopyTrust {
     /// Every artifact digest this build's bundled qualification records name.
     static let pinnedArtifacts: Set<String> = Set(ClusterPairServingGrants.records.map(\.artifactSHA256))
 
-    /// The artifacts a pair may serve with this build (a granted model's records, for a model the installed path has
-    /// time budgets for): what the onboarding offers to copy from another Mac or to download, so nobody waits for bytes
-    /// these Macs could not serve together.
-    static let servableArtifacts: Set<String> = {
-        let rows = Set(DistributedInstalledPairServingTable.rows.map(\.runtimeModelID))
-        let granted = Set(ClusterPairServingGrants.granted.map(\.runtimeModelID)).intersection(rows)
-        return Set(ClusterPairServingGrants.records.filter { granted.contains($0.runtimeModelID) }.map(\.artifactSHA256))
-    }()
+    /// The artifacts a pair may serve with this build: every artifact this build's records pin (the copy trust above)
+    /// whose model a cluster stage adapter runs. Records never refuse the owner's serving (2026-10-14 08:45), so a model
+    /// with no public grant (Gemma 4 8-bit) is offered too; whether the Macs can hold it is the planner's.
+    static let servableArtifacts: Set<String> = Set(ClusterPairServingGrants.records
+        .filter { ClusterPairServingGrants.hasStageAdapter(runtimeModelID: $0.runtimeModelID) }.map(\.artifactSHA256))
 
     static func refusal(_ artifact: ClusterCatalogArtifact) -> String? {
         refusal(artifact, pinnedArtifacts: pinnedArtifacts,

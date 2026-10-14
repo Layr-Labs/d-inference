@@ -15,7 +15,7 @@ struct DistributedInstalledValidation: Sendable {
     static func validate(reference: ClusterConfigurationReference, paths: ClusterUserPaths,
                          deadline: UInt64) throws -> Self {
         let saved = try ClusterConfigurationStore(paths: paths).load(reference: reference)
-        let plan = try DistributedInstalledPlan(saved: saved, paths: paths)
+        var plan = try DistributedInstalledPlan(saved: saved, paths: paths)
         let local = plan.localPeer
         var inputs = [DistributedInstalledFiles.Identity]()
         let executable = try DistributedInstalledFiles.verify(URL(fileURLWithPath: local.workerExecutable),
@@ -33,6 +33,8 @@ struct DistributedInstalledValidation: Sendable {
         let manifest = try DistributedInstalledManifest.validate(
             ClusterConfigurationFiles.read(plan.manifestURL, maximum: 65_536),
             configuration: plan.configuration, capability: plan.capability)
+        // The time budgets follow the verified artifact's size.
+        plan = plan.withArtifactBytes(manifest.totalSizeBytes)
         let model = try DistributedInstalledModel.make(
             configurationData: ClusterConfigurationFiles.read(plan.configurationURL, maximum: 1_048_576),
             manifest: manifest, plan: plan)

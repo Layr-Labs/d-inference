@@ -243,7 +243,7 @@ public enum ClusterPlacementExplanation {
             lines += reasons(result, chosen: chosen, devices: devices, layout: layout).map { "  " + $0 }
             if let excluded = result.unqualifiedPossible, excluded > 0 {
                 lines.append("  \(excluded) other placement\(excluded == 1 ? "" : "s") that fit\(excluded == 1 ? "s" : "") were left out: "
-                    + "no passed cross-cable check covers \(excluded == 1 ? "its" : "their") shape (each rank's chip, the cut, the mode).")
+                    + "a cross-cable check diverged at \(excluded == 1 ? "its" : "their") shape on these chips (each rank's chip, the cut, the mode).")
             }
             lines.append("What this rests on")
             if result.basis.source.isEstimate {
@@ -258,10 +258,10 @@ public enum ClusterPlacementExplanation {
             lines.append("  This is a plan, not an admission. The load gate on each Mac decides when it loads, on what that Mac has then; "
                 + "the plan and the gate use one rule, so a rank that fits here is refused there only if its memory has changed.")
         } else if let excluded = result.unqualifiedPossible, excluded > 0 {
-            lines.append("Refused: no placement these Macs can hold is qualified for this model")
-            lines.append("  \(excluded) placement\(excluded == 1 ? "" : "s") would fit, but no passed cross-cable check covers \(excluded == 1 ? "its" : "their") shape "
-                + "(each rank's chip, the cut, the mode). This model's checks diverged at some shape, so a pair serves it only at shapes "
-                + "that passed; a qualification run on these chips at a shape that fits adds one.")
+            lines.append("Refused: every placement these Macs can hold diverged in a cross-cable check on these chips")
+            lines.append("  \(excluded) placement\(excluded == 1 ? "" : "s") would fit, but a cross-cable check diverged from the single-Mac reference at "
+                + "\(excluded == 1 ? "its" : "each one's") shape (each rank's chip, the cut, the mode) on these chips, and a shape that diverged is never served. "
+                + "Other Macs, or a cut no check diverged at, are planned.")
             for a in result.alone where a.fit.possible {
                 lines.append("  \(a.device) alone needs \(gibText(a.needBytes, roundUp: true)): \(fitText(a.fit, need: a.needBytes, device: a.device, devices)). That is the ordinary single-Mac path, not a cluster session.")
             }

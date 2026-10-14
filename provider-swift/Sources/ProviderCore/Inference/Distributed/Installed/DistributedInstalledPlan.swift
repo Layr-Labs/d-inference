@@ -10,11 +10,18 @@ struct DistributedInstalledPlan: Sendable {
     let capability: ClusterRuntimeCapability
     let partition: ClusterRuntimePartition
     let paths: ClusterUserPaths
-    /// The selected registered model's owner-side time budgets.
-    let budgets: DistributedInstalledTimeBudgets
-    /// The selected registered model's pair-serving grant: the mode families
-    /// a pair may serve it in, on any Apple silicon.
-    let grant: ClusterPairServingGrant
+    /// The owner-side time budgets, derived from this setup (its request
+    /// deadline, which the planner derived from the chosen placement's
+    /// predicted speed, and its stage shares) and, once the manifest is
+    /// verified, the artifact's size (`withArtifactBytes`); see
+    /// `DistributedInstalledTimeBudgets.derived`.
+    private(set) var budgets: DistributedInstalledTimeBudgets
+    /// How each budget was derived, in plain words.
+    private(set) var budgetBasis: [String]
+    /// The owner's serving of the selected model (owner, 2026-10-14 08:45):
+    /// refused only when no cluster stage adapter runs it. Its public grant,
+    /// if any, is what the records qualify for public traffic.
+    let serving: ClusterPairOwnerServing
     /// What the selected model's adapter adds to a rank's environment; see
     /// `adapterArithmeticEnvironment`.
     let adapterEnvironment: [String: String]
@@ -34,19 +41,23 @@ struct DistributedInstalledPlan: Sendable {
         // MiMo's contract is the product's defaults with no `DARKBLOOM_MIMO_*`
         // switch (`MiMoArithmeticEnvironment`): nothing beyond the three values.
         .mimoV26LayerStage: [:],
+        // GPT-OSS and Gemma 4: the pair driver's own values for the same
+        // adapters (`QualificationRequest.registeredModels`), which their
+        // cross-cable checks ran under.
+        .gptossLayerStage: [:],
+        .gemma4LayerStage: ["MLX_GATHER_QMM_EXPERT_SLICES": "trust", "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"],
     ]
 
     init(saved: ClusterConfigurationStore.Saved, paths: ClusterUserPaths) throws {
         configuration = saved.configuration; capability = saved.capability; self.paths = paths
-        // No plan exists for a model a pair may not serve, so nothing below
-        // this point (owner, session, member registration) can start one.
-        // Both are keyed by the runtime's model, whatever the public name.
-        // The grant rests only on records of the installed artifact.
-        grant = try ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID,
+        // No plan exists for a model no cluster stage adapter runs, so nothing
+        // below this point (owner, session, member registration) can start
+        // one. Records never refuse the owner's serving; the public grant
+        // rests only on records of the installed artifact.
+        serving = try ClusterPairServingGrants.ownerServing(runtimeModelID: capability.runtimeModelID,
             publicModelID: configuration.publicModelID, artifactSHA256: capability.artifactSHA256)
-        budgets = try DistributedInstalledPairServingTable.servingBudgets(runtimeModelID: capability.runtimeModelID,
-            publicModelID: configuration.publicModelID)
         partition = try capability.selection(planSHA256: configuration.selectedPlanSHA256)
+        (budgets, budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition, artifactBytes: nil)
         try capability.requireSupport(for: configuration.selectedPrefillSchedule)
         try ClusterGenerationSelection.requireSupport(for: configuration.selectedGenerationMode, peers: configuration.peers, capability: capability)
         // The record's adapter must register this model, name its one
@@ -64,12 +75,33 @@ struct DistributedInstalledPlan: Sendable {
         adapterEnvironment = environment
     }
 
-    /// This Mac's rank under the grant, with this Mac's own chip class
+    /// The budgets of a setup: see `DistributedInstalledTimeBudgets.derived`.
+    static func budgets(configuration: ClusterConfiguration, capability: ClusterRuntimeCapability, partition: ClusterRuntimePartition,
+                        artifactBytes: Int64?) -> (DistributedInstalledTimeBudgets, [String]) {
+        let layers = max(1, partition.stages.map(\.sourceLayerEnd).max() ?? 1)
+        let largest = partition.stages.map { $0.sourceLayerEnd - $0.sourceLayerStart }.max() ?? layers
+        let derived = DistributedInstalledTimeBudgets.derived(requestTimeoutSeconds: configuration.requestTimeoutSeconds,
+            maximumPromptTokens: capability.profile.maximumPromptTokens, artifactBytes: artifactBytes,
+            largestStageShare: Double(largest) / Double(layers), lastRankLoadsEverything: configuration.selectedGenerationMode.isPhaseSplit)
+        return (derived.budgets, derived.basis)
+    }
+
+    /// The same plan with its budgets derived from the verified manifest's
+    /// artifact size.
+    func withArtifactBytes(_ bytes: Int64) -> Self {
+        var value = self
+        (value.budgets, value.budgetBasis) = Self.budgets(configuration: configuration, capability: capability, partition: partition,
+                                                          artifactBytes: bytes)
+        return value
+    }
+
+    /// This Mac's rank, with this Mac's own chip class
     /// (`ClusterChipClass.local()` on a real Mac). Each Mac checks the rank
-    /// it runs, right before it serves or launches it: the model's mode family
-    /// must be granted (on any Apple silicon), and when the family has a
-    /// diverged record this rank must not be a rank-shape that diverged
-    /// (its class at its rank, the placement's cuts from the selected Plan).
+    /// it runs, right before it serves or launches it: any Apple silicon runs
+    /// any rank of any mode the model's stage adapter has (records never
+    /// refuse the owner's serving), and when the mode family has a diverged
+    /// record this rank must not be a rank-shape that diverged (its class at
+    /// its rank, the placement's cuts from the selected Plan).
     /// A capability record, a saved setup or a peer never supplies the class.
     func requireLocalRankGranted(chipClass: ClusterChipClass?) throws {
         try ClusterPairServingGrants.requireRank(configuration.localRank, of: configuration.peers.count,

@@ -59,11 +59,12 @@ public struct ClusterPlacementPolicy: Sendable {
     /// that keeps less on the Mac with less room, at no material cost in time.
     public var preferHeadroomWithinTies = false
     /// The placement shapes the model's qualification records allow, when
-    /// they restrict shapes: called with a candidate's chip names in rank
-    /// order (`ClusterDeviceProfile.chip`), its cuts and its mode. A
-    /// candidate it refuses is never chosen, ranked or offered as an
-    /// alternative; the structural and any-boundary bests still say what
-    /// memory alone would allow. Nil, the default, admits every shape.
+    /// they restrict shapes (the shapes a cross-cable check diverged at on
+    /// those chips): called with a candidate's chip names in rank order
+    /// (`ClusterDeviceProfile.chip`), its cuts and its mode. A candidate it
+    /// refuses is never chosen, ranked or offered as an alternative; the
+    /// structural and any-boundary bests still say what memory alone would
+    /// allow. Nil, the default, admits every shape.
     public var admitsShape: (@Sendable (_ chips: [String], _ cuts: [Int], _ mode: ClusterGenerationMode) -> Bool)?
     /// A tensor-parallel placement is chosen only when it is predicted at
     /// least this share faster than the best placement in any other mode of
@@ -252,7 +253,7 @@ public struct ClusterPlacementResult: Codable, Equatable, Sendable {
     public var routedAlone: String? = nil
     public let candidatesConsidered: Int
     /// Placements that would be possible but whose shape the policy's
-    /// `admitsShape` refused: no passed qualification covers them. Nil when
+    /// `admitsShape` refused (a shape that diverged on these chips). Nil when
     /// the policy restricts no shape.
     public let unqualifiedPossible: Int?
     /// What tensor parallel was predicted to do here, chosen or not, and why.
@@ -309,7 +310,7 @@ public enum ClusterPlacementPlanner {
         let context = Context(devices: devices, layout: layout, prompt: prompt, outputs: outputs,
             modes: modes, schedules: schedules, link: link, policy: policy)
         let admitted = try context.candidates(.admitted)
-        // Shapes no passed qualification covers are left out here, before any
+        // Shapes that diverged on these chips are left out here, before any
         // ranking: they are never chosen, ranked or offered as alternatives.
         let qualified = policy.admitsShape.map { admits in
             admitted.filter { candidate in
@@ -435,7 +436,7 @@ public enum ClusterPlacementPlanner {
             return make(.notExecutedByRuntime, String(format: "predicted %.2f s, faster than the chosen placement, "
                 + "but this runtime does not execute %@ yet", time, fastest.mode.rawValue) + note)
         }
-        return make(.notQualified, String(format: "predicted %.2f s, but no passed qualification (or the policy) admits %@ on these Macs",
+        return make(.notQualified, String(format: "predicted %.2f s, but the policy admits no %@ shape on these Macs (a cross-cable check diverged at each)",
             time, fastest.mode.rawValue) + note)
     }
 

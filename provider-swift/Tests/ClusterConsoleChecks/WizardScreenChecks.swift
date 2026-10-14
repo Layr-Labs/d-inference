@@ -234,22 +234,23 @@ extension ClusterConsoleCheck {
         // fits now on the captured memory, at a cut its own layout admits, in a mode its worker described.
         for reading in F.readings {
             let option = options.first { $0.model.folder == reading.model.folder }
-            // A model whose pair-serving grant lists none of this pair's placements is not offered, and says
-            // why: MiMo's records ran with the M5 Ultra leading and the M3 Ultra decoding, and this pair is an
-            // M3 Ultra leading an M5 Max (its grant, from its records, not a table).
-            if reading.model.modelID == "mimo-v2.6-flash-mopd" {
-                // In plain words, action or fact first, with no command (one-command fix A2/B4).
-                expect(option?.plan == nil && option?.blocker == ClusterSetupPlanning.notQualified,
-                    "MiMo is not offered on a pair its grant does not list: \(option?.blocker ?? "offered")")
-                continue
-            }
-            // A model its records withhold (GPT-OSS: its pipeline checks diverged at cuts 4, 8 and 10) is planned
-            // only at a shape a check passed in, and a start refuses it: the onboarding does not offer it, and says why
-            // (the start's refusal at the planned shape, or the grant's plain refusal when no shape is granted at all).
-            if reading.model.modelID == "gpt-oss-20b" {
-                expect(option?.plan == nil && (option?.blocker?.contains("not granted pair serving") == true
-                        || option?.blocker == ClusterSetupPlanning.notQualified),
-                    "GPT-OSS is not offered while its records withhold it: \(option?.blocker ?? "offered")")
+            // Records never refuse the owner (2026-10-14 08:45): MiMo (whose records ran with the M5 Ultra leading and
+            // the M3 Ultra decoding, while this pair is an M3 Ultra leading an M5 Max) and GPT-OSS (whose pipeline
+            // checks diverged at cuts 4, 8 and 10 on the bench pair) are offered whenever the Macs can hold them, at a
+            // shape that did not diverge, with one line on public traffic; only memory could still block them.
+            if ["mimo-v2.6-flash-mopd", "gpt-oss-20b"].contains(reading.model.modelID) {
+                let words = option?.blocker ?? ""
+                expect(words != ClusterSetupPlanning.noStageAdapter && words != ClusterSetupPlanning.everyShapeDiverged
+                        && !words.contains("qualif") && !words.contains("not served on this pair"),
+                    "\(reading.model.modelID): no qualification blocker: \(words)")
+                if reading.model.modelID == "gpt-oss-20b" {
+                    expect(option?.plan != nil, "GPT-OSS (13 GB) is offered on this pair: \(words)")
+                }
+                if let plan = option?.plan {
+                    expect(option?.blocker == nil && plan.publicTraffic != nil
+                            && ClusterGenerationMode(rawValue: plan.mode)?.isSharded == true,
+                        "\(reading.model.modelID) is offered sharded with its public-traffic line: \(plan.mode) \(plan.publicTraffic ?? "-")")
+                }
                 continue
             }
             // A model the pair may not serve with this build is not offered at all (checked below).
@@ -296,13 +297,13 @@ extension ClusterConsoleCheck {
         let alone = ClusterSetupPlanning.decide(readings: F.readings, description: F.pairDescription, localMemberID: "mac-a",
             localProfile: F.profileA, peerProfile: F.profileB, peerModels: [], measurements: [])
         expect(alone.allSatisfy { $0.option.blocker?.contains("copy it there first") == true }, "models only here say to copy them")
-        // A model the pair may not serve with this build is never offered (a start would refuse it on both Macs after
-        // a long wait): its grant refusal is the blocker, in plain words with no command.
+        // A model no cluster stage adapter of this build runs is never offered (a start would refuse it on both Macs
+        // after a long wait): that is the blocker, in plain words with no command.
         for withheld in F.readings {
             guard let described = try? withheld.capability.get(),
                   ClusterSetupPlanning.pairServingRefused(described.record, publicModelID: withheld.model.modelID) else { continue }
             let option = F.decisions.first { $0.option.model.folder == withheld.model.folder }?.option
-            expect(option?.blocker == ClusterSetupPlanning.notQualified, "\(withheld.model.modelID): not offered, plainly: \(option?.blocker ?? "offered")")
+            expect(option?.blocker == ClusterSetupPlanning.noStageAdapter, "\(withheld.model.modelID): not offered, plainly: \(option?.blocker ?? "offered")")
         }
         for option in F.decisions.map(\.option) {
             let words = option.blocker ?? ""

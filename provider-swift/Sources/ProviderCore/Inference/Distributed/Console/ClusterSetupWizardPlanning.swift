@@ -86,11 +86,11 @@ enum ClusterSetupPlanning {
             guard !reading.tokenizerFiles.isEmpty else { return blocked("its manifest names no tokenizer file") }
             let pair = pairDescription(description, folder: reading.model.folder, publicModelID: reading.model.modelID,
                 capabilitySHA256: capability.sha256, tokenizerFiles: reading.tokenizerFiles)
-            // A model this pair may not serve (no grant, withheld, or another artifact than the qualified one) is not
-            // offered: a start would be refused on both Macs. Planning still runs for the wizard's own detail, but the
-            // choice carries the refusal as its blocker.
+            // The owner's flow (2026-10-14 08:45): a model is refused only when no cluster stage adapter runs it, or
+            // (below) when no sharded layout fits both Macs' memory. Records never refuse it; they steer the planner
+            // away from the shapes that diverged and decide public traffic, which the plan states in one line.
             if pairServingRefused(capability.record, publicModelID: reading.model.modelID) {
-                return blocked(notQualified)
+                return blocked(noStageAdapter)
             }
             do {
                 var decided = try ClusterPlacementFlow.decide(description: pair, capability: capability.record, localMemberID: localMemberID,
@@ -108,8 +108,8 @@ enum ClusterSetupPlanning {
                                  peerID: "\(peerProfile.chip), \(peerProfile.physicalMemoryBytes >> 30) GB"]
                     return blocked(refusalWords(decided.result, localMemberID: localMemberID, names: names))
                 }
-                // Offered only when each Mac's start would serve the chosen placement: a model or mode family its
-                // records withhold is planned (the plan still answers whether the pair could hold it) but never offered.
+                // Offered only when each Mac's start would serve the chosen placement (the planner already keeps away
+                // from the shapes that diverged on these chips, so this holds unless the two disagree).
                 let chips = [localMemberID: benchChip ?? localProfile.chip, peerID: benchChip ?? peerProfile.chip]
                 if let refusal = ClusterPairServingGrants.startRefusal(
                     chosen.ranks.map { chips[$0.device].flatMap { ClusterChipClass(chipName: $0) } },
@@ -118,34 +118,31 @@ enum ClusterSetupPlanning {
                     return blocked("not served on this pair by this build: "
                         + ClusterConsoleText.bounded(refusal.description, maximum: 200))
                 }
-                let plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
+                var plan = summary(decided.result, chosen: chosen, lines: decided.lines, localMemberID: localMemberID,
                     profiles: [localMemberID: localProfile, peerID: peerProfile])
+                plan.publicTraffic = ClusterPairServingGrants.publicTrafficLine(runtimeModelID: capability.record.runtimeModelID,
+                    artifactSHA256: capability.record.artifactSHA256, mode: chosen.mode)
                 return .init(option: .init(model: reading.model, onOtherMac: onOther, blocker: nil, plan: plan), setup: decided.setup,
                     capability: (capability.data, capability.sha256))
             } catch is ClusterPairServingRefusal {
-                // The model has no grant this build can serve it under.
-                return blocked(notQualified)
+                // No stage adapter of this build runs the model.
+                return blocked(noStageAdapter)
             } catch {
                 return blocked("Planning failed (\(ClusterConsoleText.bounded(String(describing: error), maximum: 160))).")
             }
         }
     }
 
-    /// The plain blocker for a model the pair may not serve with this build.
-    static let notQualified = "Not yet qualified on this pair of Macs."
+    /// The plain blocker for a model no cluster stage adapter of this build runs.
+    static let noStageAdapter = "This build has no cluster stage adapter for this model."
+    /// The plain blocker when every placement these Macs can hold is a shape that diverged on these chips.
+    static let everyShapeDiverged = "Every way these Macs can hold it diverged from its single-Mac reference on these chips."
 
-    /// The model's pair-serving grant refuses it outright for this build (independent of the Macs' chips), or the
-    /// installed path has no time budgets for it (`DistributedInstalledPairServingTable`), so a start would be refused.
+    /// The owner's serving of the model is refused for this build: no cluster stage adapter runs it (independent of
+    /// the Macs' chips and of its records). Time budgets are derived from the setup, never a per-model row.
     static func pairServingRefused(_ capability: ClusterRuntimeCapability, publicModelID: String) -> Bool {
-        do {
-            _ = try ClusterPairServingGrants.grant(runtimeModelID: capability.runtimeModelID, publicModelID: publicModelID,
-                                                   artifactSHA256: capability.artifactSHA256)
-            _ = try DistributedInstalledPairServingTable.servingBudgets(runtimeModelID: capability.runtimeModelID,
-                                                                        publicModelID: publicModelID)
-            return false
-        } catch {
-            return true
-        }
+        (try? ClusterPairServingGrants.ownerServing(runtimeModelID: capability.runtimeModelID, publicModelID: publicModelID,
+                                                    artifactSHA256: capability.artifactSHA256)) == nil
     }
 
     /// Why a model is not offered, plain action or fact first (the screen cuts long reasons).
@@ -154,7 +151,7 @@ enum ClusterSetupPlanning {
         if let excluded = result.unqualifiedPossible, excluded > 0 {
             let alone = result.alone.first(where: { $0.fit.possible })
                 .map { " \(name($0.device)) can serve it alone in single-Mac Darkbloom." } ?? ""
-            return notQualified + alone
+            return everyShapeDiverged + alone
         }
         if let alone = result.alone.first(where: { $0.fit.possible }) {
             return "\(name(alone.device)) can serve it alone in single-Mac Darkbloom."

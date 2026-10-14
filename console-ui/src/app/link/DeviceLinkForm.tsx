@@ -6,8 +6,9 @@ import { trackEvent } from "@/lib/google-analytics";
 
 type LinkStatus = "idle" | "submitting" | "success" | "error";
 
-export function DeviceLinkForm() {
+export function DeviceLinkForm({ purpose = "provider" }: { purpose?: "provider" | "desktop_account" }) {
   const { ready, authenticated, login, getAccessToken, user } = useAuthContext();
+  const desktopAccount = purpose === "desktop_account";
   const [code, setCode] = useState("");
   const [status, setStatus] = useState<LinkStatus>("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -41,7 +42,7 @@ export function DeviceLinkForm() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ user_code: code.trim().toUpperCase() }),
+          body: JSON.stringify({ user_code: code.trim().toUpperCase(), purpose }),
         });
 
         const data = await res.json();
@@ -54,6 +55,12 @@ export function DeviceLinkForm() {
           setErrorMsg(
             data?.error?.message || data?.message || "Failed to link device"
           );
+          setStatus("error");
+          return;
+        }
+
+        if (desktopAccount && data.purpose !== "desktop_account") {
+          setErrorMsg("The coordinator did not confirm read-only desktop access. Please try again after it is updated.");
           setStatus("error");
           return;
         }
@@ -71,7 +78,7 @@ export function DeviceLinkForm() {
         setStatus("error");
       }
     },
-    [code, getAccessToken]
+    [code, desktopAccount, getAccessToken, purpose]
   );
 
   // Format input as XXXX-XXXX
@@ -112,14 +119,17 @@ export function DeviceLinkForm() {
           </svg>
         </div>
         <h2 className="text-2xl font-semibold text-ink mb-2">
-          Device Linked!
+          {desktopAccount ? "Desktop Access Approved" : "Device Linked!"}
         </h2>
         <p className="text-text-secondary">
-          Your provider is now connected to your account. Earnings will be
-          credited automatically.
+          {desktopAccount
+            ? "Return to the app to view your Macs and earnings. Your provider configuration has not changed."
+            : "Your provider is now connected to your account. Earnings will be credited automatically."}
         </p>
-        <p className="text-text-tertiary text-sm mt-4">Return to your terminal to finish starting the provider.</p>
-        <a href="/providers" className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-accent-brand px-5 text-sm font-medium text-white dark:text-bg-primary">Open your provider workspace</a>
+        {!desktopAccount && <>
+          <p className="text-text-tertiary text-sm mt-4">Return to your terminal to finish starting the provider.</p>
+          <a href="/providers" className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-accent-brand px-5 text-sm font-medium text-white dark:text-bg-primary">Open your provider workspace</a>
+        </>}
       </div>
     );
   }
@@ -129,7 +139,9 @@ export function DeviceLinkForm() {
     return (
       <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8 text-center">
         <p className="text-text-secondary mb-6">
-          Sign in to your Darkbloom account to link your device.
+          {desktopAccount
+            ? "Sign in to your Darkbloom account to authorize read-only desktop access."
+            : "Sign in to your Darkbloom account to link your device."}
         </p>
         <button
           onClick={() => {
@@ -147,6 +159,9 @@ export function DeviceLinkForm() {
     );
   }
 
+  const submitLabel = desktopAccount ? "Authorize Desktop" : "Link Device";
+  const submittingLabel = desktopAccount ? "Authorizing..." : "Linking...";
+
   // Authenticated — show code entry form
   return (
     <div className="bg-bg-white rounded-2xl border border-border-dim shadow-md p-8">
@@ -163,7 +178,7 @@ export function DeviceLinkForm() {
             htmlFor="device-code"
             className="block text-sm font-semibold text-ink mb-2"
           >
-            Enter the code shown in your terminal
+            {desktopAccount ? "Enter the code shown in the app" : "Enter the code shown in your terminal"}
           </label>
           <input
             id="device-code"
@@ -194,16 +209,18 @@ export function DeviceLinkForm() {
                      hover:opacity-90
                      transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {status === "submitting" ? "Linking..." : "Link Device"}
+          {status === "submitting" ? submittingLabel : submitLabel}
         </button>
       </form>
 
       <div className="mt-6 text-xs text-text-tertiary text-center">
-        Run{" "}
-        <code className="bg-bg-tertiary px-1.5 py-0.5 rounded font-mono text-coral border border-border-dim">
-          darkbloom login
-        </code>{" "}
-        on your Mac to get a code.
+        {desktopAccount ? "This grants 30-day access to view your Macs and earnings. It cannot start providers, manage API keys, or withdraw funds." : <>
+          Run{" "}
+          <code className="bg-bg-tertiary px-1.5 py-0.5 rounded font-mono text-coral border border-border-dim">
+            darkbloom login
+          </code>{" "}
+          on your Mac to get a code.
+        </>}
       </div>
     </div>
   );

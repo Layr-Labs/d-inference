@@ -14,6 +14,7 @@ import { Earnings } from './features/Earnings';
 import { Appearance } from './components/Appearance';
 import { AccountControl } from './components/AccountControl';
 import { SocialLinks } from './components/SocialLinks';
+import { useFocusRecovery } from './useFocusRecovery';
 const navigation = [
   { id: 'home', label: 'Home', icon: HomeIcon },
   { id: 'machines', label: 'My Macs', icon: Monitor },
@@ -41,6 +42,14 @@ export default function App() {
     setOnboarding(false);
   };
   useEffect(() => api?.onNavigate(navigate), [navigate]);
+  useFocusRecovery(
+    `${route}:${machine ?? ''}`,
+    () => document.querySelector<HTMLElement>('main h1'),
+    () => {
+      const heading = document.querySelector('main h1')?.textContent?.trim();
+      return heading ? `${heading} · Darkbloom` : 'Darkbloom';
+    },
+  );
   if (!backend.state || onboarding)
     return (
       <>

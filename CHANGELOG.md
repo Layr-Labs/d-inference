@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop keyboard focus after navigation
+
+- Keep keyboard and screen-reader users in place after navigating: when the control they used disappears (View earnings, Explore Stats, opening a Mac, Manage models, onboarding Start, Skip or Check again), focus moves to the new page's or step's heading instead of falling back to the top of the window. The window title now names the current page.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

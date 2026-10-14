@@ -1,6 +1,7 @@
 import { ArrowUpRight, Monitor, X } from 'lucide-react';
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { api } from '../useBackend';
+import { useModalFocus } from './useModalFocus';
 export { OperationFeed } from './operations/OperationFeed';
 export function Button({
   children,
@@ -99,37 +100,7 @@ export function Modal({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const element = ref.current!;
-    element.querySelector<HTMLButtonElement>('button')?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-      if (event.key !== 'Tab') return;
-      const controls = [
-        ...element.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex="0"]',
-        ),
-      ];
-      const first = controls[0],
-        last = controls.at(-1);
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    element.addEventListener('keydown', keydown);
-    return () => {
-      element.removeEventListener('keydown', keydown);
-      previous?.focus();
-    };
-  }, [onClose]);
+  useModalFocus(ref, onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section
@@ -137,6 +108,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
         className="modal"
         onClick={(event) => event.stopPropagation()}
       >

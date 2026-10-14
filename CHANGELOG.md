@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop dialog keyboard focus
+
+- Keep keyboard focus inside desktop dialogs when their content changes, such as sign-in moving from "Continue in browser" to approval or cancellation. Only the topmost dialog handles Escape, Tab and focus recovery when dialogs overlap; closing it restores focus without disturbing a dialog still open beneath it. Expandable details are reachable with Tab, and dialogs no longer pull focus back to their first button every few seconds while the app refreshes.
 ## Unreleased — desktop milestone, empty chart and unknown memory display
 
 - Keep Home's network strip from showing a total just short of a milestone as reaching it (for example "1B" with "Next milestone 1B", every cell lit and 100%). Leave an all-zero earnings chart's scale unlabeled instead of "$0.000001", and show undetected memory as unknown instead of 0 GB on This Mac's Overview and Home's memory legend.

@@ -266,6 +266,10 @@
   box-shadow: 0 20px 100px #000a;
 }
 
+/* The dialog takes focus only to keep it inside while its content changes. */
+.modal:focus {
+  outline: none;
+}
 .modal header {
   display: flex;
   justify-content: space-between;

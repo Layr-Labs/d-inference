@@ -99,6 +99,11 @@ export function Modal({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
+  // Callers often pass a new onClose every render, and pages re-render on every state push. The
+  // setup below must run once per open dialog, or each re-run would move focus back to the first
+  // button (about every two seconds), so the latest onClose is read through a ref.
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const element = ref.current!;
@@ -109,7 +114,7 @@ export function Modal({
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        close.current();
       }
       if (event.key !== 'Tab') return;
       const controls = [
@@ -140,7 +145,7 @@ export function Modal({
       document.removeEventListener('keydown', keydown);
       previous?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section

@@ -43,3 +43,24 @@ it('keeps focus, Escape and the Tab trap in a dialog whose focused control is re
   fireEvent.keyDown(document.body, { key: 'Escape' });
   expect(onClose).toHaveBeenCalled();
 });
+
+it('keeps focus where the user put it when the dialog re-renders with a new onClose', async () => {
+  const view = render(
+    <Modal title="Turn off automatic updates?" onClose={() => {}}>
+      <button>Keep enabled</button>
+      <button>Turn off</button>
+    </Modal>,
+  );
+  screen.getByRole('button', { name: 'Turn off' }).focus();
+  // A state push re-renders the page, and the caller passes a fresh handler.
+  for (let i = 0; i < 3; i++)
+    await act(async () =>
+      view.rerender(
+        <Modal title="Turn off automatic updates?" onClose={() => {}}>
+          <button>Keep enabled</button>
+          <button>Turn off</button>
+        </Modal>,
+      ),
+    );
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Turn off' }));
+});

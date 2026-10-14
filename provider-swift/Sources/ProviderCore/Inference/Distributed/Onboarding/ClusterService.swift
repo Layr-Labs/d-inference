@@ -211,16 +211,25 @@ public final class ClusterService: @unchecked Sendable {
         let ticker = DispatchSemaphore(value: 0)
         var stopped = false
         Thread.detachNewThread { stop.wait(); ticker.signal() }
+        // The control lease runs on a thread of its own: a part that takes long to release (supervise waits for it)
+        // never delays a renewal past the lease's time-to-live.
+        let controlDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { [weak self] in
+            defer { controlDone.signal() }
+            while let self, !self.lock.withLock({ self.stopping }) {
+                self.ensureControlResponder(say: say)
+                self.controlTick(say: say)
+                usleep(500_000)
+            }
+        }
         while !stopped {
             ensureResponder(say: say)
-            ensureControlResponder(say: say)
-            controlTick(say: say)
-            supervise(say: say)
             syncMembers(say: say)
             publish()
             if ticker.wait(timeout: .now() + 1) == .success { stopped = true }
         }
         lock.withLock { stopping = true }
+        _ = controlDone.wait(timeout: .now() + 5)
         say("stopping")
         lock.withLock { responder }?.stop()
         lock.withLock { controlResponder }?.stop()

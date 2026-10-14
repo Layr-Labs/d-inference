@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -53,6 +53,18 @@ a new CLI alone does not update an old test binary or qualify a checkpoint forma
 `landing/` has its own npm lockfile, configuration and API routes. It needs a
 Next.js server runtime, not static file hosting. Follow its [README](../../landing/README.md)
 for local development; keep production credentials out of builds and tests.
+
+### Cluster Packages
+
+`provider-swift/Package.swift` depends on the local package `libs/darkbloom-cluster`
+(protocol, process, security, remote and placement products linked into
+`ProviderCore`) and declares the test-only `cluster-member-fixture-child`
+executable target. The cluster worker is its own package,
+`libs/darkbloom-cluster-worker`, built natively for macOS 26.2 with the real
+JACCL backend by `libs/darkbloom-cluster-worker/build-native-worker.sh`, or for
+a release by `scripts/build-cluster-helpers.sh`
+([cluster helpers](../operations/provider-release.md#cluster-helpers)). Build
+the worker with the same source-matched metallib as the provider.
 
 ## SDK 27 Release Builds And Caches
 

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -964,6 +964,27 @@ serializes SSE frames; the provider encrypts and sends them back over the
 coordinator connection. This integration does not start a local HTTP endpoint
 or change consumer/OpenRouter routing.
 
+### Two-Mac cluster stages (experimental)
+
+A paired cluster splits one model across Macs joined by Thunderbolt 5. Each Mac
+runs a rank: a `darkbloom-cluster-worker` process started by that Mac's own
+installed owner, driven over the owner-authenticated link control channel, with
+activations and KV hand-offs crossing the cable only on the encrypted,
+authenticated data plane (JACCL over RDMA). The stage runtimes reuse the CBv2
+engine: `libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/` hosts each
+stage's KV pool (`CBv2StageKVHost`, native precision; the prefill mirror is on
+only for one-request hosts) on the paged chain of
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift`
+(pinned to the paged-engine branch; the mirror refuses quantized KV layers).
+Placement is derived at run time from both Macs' device profiles, measured
+speed records and the model's own configuration
+(`libs/darkbloom-cluster/Sources/DarkbloomClusterPlacement/`); a pair serves a
+model only on the chip and numerics classes its qualification records granted
+(`libs/darkbloom-cluster-worker/`). Provider-side membership, onboarding,
+pairing, model provisioning, control leadership and the installed session live
+in `provider-swift/Sources/ProviderCore/Inference/Distributed/`. The user
+procedure is [two Macs as one provider](../provider/two-mac-cluster.md).
+
 ## Invariants
 
 1. Only `model_type`s accepted by `EngineV2SupportedModels.isSupported` are
@@ -1017,6 +1038,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | `Tools` | Schema normalization and constrained generation (`ToolSchemaNormalization`, `ToolConstraintFactory`). |
 | `Streaming` | Reasoning/tool output routing, logprobs and usage (`NativeToolStreamRouter`, `StreamedGenerationUsage` in `Streaming/UsageAccounting.swift`). |
 | `Vision` | Media decoding, feature preparation and memory gates (`MediaIngest`, `VisionMemoryGate`). |
+| `Distributed` | Two-Mac cluster (experimental): onboarding, pairing, link control, model provisioning, derived control leadership and failover, installed sessions and diagnostics (`ClusterService`, `ClusterControlNode`, `ClusterModelProvisionResponder`). |
 
 | Concern | File / symbol |
 |---|---|

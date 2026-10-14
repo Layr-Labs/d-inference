@@ -1,6 +1,6 @@
 # Test Provider And Native Contracts
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-14
 
 Run isolated Swift, native-resource, public-fixture, retained-console and landing tests here.
 Backend integration and cross-implementation qualification are platform-owned.
@@ -284,6 +284,32 @@ not a retained coordinator implementation/test suite. Preserve agreement with th
 provider resource copies and run each implementation's checks in its owner repo.
 The [immutable platform test guide](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/developer/test.md)
 is historical context, not the current backend source authority.
+
+### Two-Mac Cluster Checks
+
+The coordinator-wire vectors
+`provider-swift/Tests/ProviderCoreTests/Fixtures/coordinator-wire/cluster_registration_vector.json`
+and `native_pair_lease_vector.json` pin a cluster member's registration
+(signed roster with Secure Enclave pins, device profile with numerics class,
+measured edges, inventory and plan digests) and the coordinator's pair lease
+frame (member nonce, epoch, generation, renewal payloads and a refused payload).
+`CoordinatorWireVectorTests` and `provider-swift/Tests/ClusterPairingChecks/run.sh`
+check the provider against them; the platform's own tests must agree. Refresh them only together with the
+coordinator change, after review.
+
+The `cluster-member-fixture-child` executable target (`provider-swift/Tests/ClusterMemberFixtureChild/`)
+is a CPU-only stand-in for an installed owner and its native child, run by the
+native-pair member control tests over the real owner pipe and key prelude. It is
+not a product and no release ships it.
+
+Cluster logic that needs no model or GPU is covered by check runners compiled
+with plain `swiftc`: each `provider-swift/Tests/Cluster*Checks/run.sh`,
+`libs/darkbloom-cluster/Tests/*Checks/run.sh` and
+`libs/darkbloom-cluster-worker/Tests/*Checks/run.sh` prints its pass count and
+exits non-zero on a failure. The library's XCTest targets
+(`swift test --package-path libs/darkbloom-cluster`) and the worker package's
+tests (built for macOS 26.2) need the GPU and exclusive device access. A
+loopback or fixture pass never counts as a two-Mac hardware pass.
 
 ## Focused Tooling Checks
 

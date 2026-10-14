@@ -2,7 +2,7 @@
 
 ## Unreleased — desktop singular counts
 
-- Use singular nouns for counts of one: “1 Mac” on Home, “Show 1 more model” on Models, “1 download” in model recommendations, and the Stats chart and token-bar descriptions.
+- Use singular nouns for counts of one: “1 Mac” on Home, “Show 1 more model” on Models, “1 download” in model recommendations, the Stats chart and token-bar descriptions, and “1 request processing” in live activity.
 
 ## Unreleased — desktop hardware load
 

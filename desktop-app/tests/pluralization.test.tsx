@@ -4,9 +4,10 @@ import { cleanup, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { compact, plural } from '../src/renderer/format';
 import { FleetMacs } from '../src/renderer/features/home/FleetMacs';
+import { LiveModels } from '../src/renderer/features/insights/LiveModels';
 import { ExpandableModelList } from '../src/renderer/features/models/ExpandableModelList';
 import { describeTokenBar, tokenBars } from '../src/renderer/features/stats/tokenSeries';
-import type { Machine } from '../src/shared/contracts';
+import type { Machine, Snapshot } from '../src/shared/contracts';
 
 afterEach(cleanup);
 
@@ -43,4 +44,20 @@ it('describes a single-token bar in the singular', () => {
   const [bar] = tokenBars([{ at: 0, requests: 1, tokens: 1, input: 0, cached: 0 }]);
   expect(describeTokenBar(bar)).toContain('Total 1 token');
   expect(describeTokenBar(bar)).not.toContain('1 tokens');
+});
+
+it('says “1 request processing” for a single live request', () => {
+  const now = Date.now() / 1000;
+  const state = {
+    state: 'running',
+    observed_at: now,
+    models: [],
+    activity: {
+      sampled_at: now,
+      models: [{ model: 'test', state: 'running', running: 1, waiting: 0 }],
+    },
+  } as unknown as Snapshot;
+  const { container } = render(<LiveModels state={state} />);
+  expect(container).toHaveTextContent('1request processing');
+  expect(container).not.toHaveTextContent('requests processing');
 });

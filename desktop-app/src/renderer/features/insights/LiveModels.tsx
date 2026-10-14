@@ -52,7 +52,7 @@ export function LiveModels({ state }: { state: Snapshot }) {
       <div className={styles.liveSummary}>
         <strong>{stale ? '—' : running}</strong>
         <span>
-          requests processing
+          {!stale && running === 1 ? 'request' : 'requests'} processing
           <br />
           <span className="muted">Live activity</span>
         </span>

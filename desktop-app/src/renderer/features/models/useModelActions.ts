@@ -82,12 +82,12 @@ export function useModelActions(backend: BackendState) {
           return;
         }
         await intoPool(model);
-        label(model.id, 'Pinning…');
+        label(model.id, 'Keeping in memory…');
         await run({ action: 'autopilot_pin', models: [model.id] });
       }),
     unpin: (model: NativeModel) =>
       task(model.id, async () => {
-        label(model.id, 'Unpinning…');
+        label(model.id, 'Updating…');
         await run({ action: 'autopilot_unpin', models: [model.id] });
       }),
     remove: (model: NativeModel) =>

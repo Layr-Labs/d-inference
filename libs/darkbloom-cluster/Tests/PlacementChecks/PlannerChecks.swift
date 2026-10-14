@@ -125,8 +125,10 @@ func checkRegisteredLayouts(_ inputs: RetainedQwenInputs, _ checks: PlacementChe
     checks.require("27B layout: 64 layers, its registered bytes, fifteen cuts",
         big.layerCount == 64 && big.wholeModelLoadedBytes == 15_132_802_048 && big.admittedCuts == Array(stride(from: 4, through: 60, by: 4))
             && big.structuralCuts == big.admittedCuts && big.runtimeModelID == "registered_qwen38_27b")
-    checks.require("both list every generation mode and both prefill schedules",
-        nine.generationModes == ClusterGenerationMode.allCases && big.generationModes == ClusterGenerationMode.allCases
+    // The runtime executes no tensor-parallel mode yet, so neither row lists one.
+    let executed = ClusterGenerationMode.allCases.filter { !$0.usesTensorParallelDecode }
+    checks.require("both list every generation mode the runtime executes (no tensor-parallel one yet) and both prefill schedules",
+        nine.generationModes == executed && big.generationModes == executed
             && nine.prefillSchedules == [.serial, .oneChunkLookahead])
     // Stage sizes recorded by verified loads of the 27B (active bytes loaded).
     func loadedGiB(_ layout: ClusterModelLayout, _ range: Range<Int>) -> Double { Double(layout.range(range).loadedBytes) / Double(gib) }
@@ -163,7 +165,8 @@ func everyPlacement(_ devices: [ClusterPlacementDevice], _ layout: ClusterModelL
     var result: [ClusterPlacementCandidate] = []
     for order in [[devices[0], devices[1]], [devices[1], devices[0]]] {
         for cut in cuts {
-            for mode in layout.generationModes {
+            // The hand-off modes are planned only under the opt-in (sharded deployments only by default).
+            for mode in layout.generationModes where policy.handOffModes || !mode.isHandOff {
                 result.append(try ClusterPlacementPlanner.evaluate(devices: order, cuts: [cut], mode: mode,
                     prefillSchedule: .oneChunkLookahead, layout: layout, policy: policy))
             }

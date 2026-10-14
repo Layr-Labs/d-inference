@@ -9,8 +9,10 @@ import Foundation
 public typealias QwenResidentGenerationMode = ClusterGenerationMode
 
 extension ClusterGenerationMode {
-    /// Extra load-agreement fields. The pipeline's agreement bytes are unchanged.
+    /// Extra load-agreement fields. The pipeline's agreement bytes are unchanged;
+    /// a tensor-parallel mode binds its terms too (partials dtype, shard rule,
+    /// reduction, ranks), so ranks started with different terms never agree.
     var loadAgreementFields: [String] {
-        self == .pipeline ? [] : ["qwen-resident-generation-mode-v1", rawValue]
+        self == .pipeline ? [] : ["qwen-resident-generation-mode-v1", rawValue] + (tensorParallelTerms?.loadAgreementFields ?? [])
     }
 }

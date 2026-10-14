@@ -40,7 +40,10 @@ import Foundation
             try checkRequestRoutes(inputs, checks)
             try checkBudgets(layouts.twentySeven, checks)
             try checkProfiles(checks)
+            try checkBenchCap(checks)
             try checkGoldenPlans(URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), dense: layouts, checks)
+            try checkTensorParallel(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
+            try checkShardPlanner(inputs, golden: URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true), checks)
             guard checks.failures.isEmpty else {
                 for failure in checks.failures { fputs("FAIL: \(failure)\n", stderr) }
                 fputs("\(checks.failures.count) failed, \(checks.passed.count) passed\n", stderr)

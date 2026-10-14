@@ -9,18 +9,34 @@ public struct ClusterSpeedRates: Codable, Equatable, Sendable {
     /// device (a staged reference's MTP run). Nil when not measured; never
     /// transferred from another device, since the head's gain is the chip's own.
     public let speculativeDecodeTokensPerSecond: Double?
+    /// Prefill and decode of an equal half of every layer on this device
+    /// alone, with no reduction (the tensor-parallel shard probe): what a rank
+    /// of `tensor_parallel_v1` computes between reductions. Nil when not
+    /// measured; never transferred from another device, since how much of a
+    /// step shrinks with the weights is the chip's own (`ClusterDecodeSplit`).
+    public let tensorShardPrefillTokensPerSecond: Double?
+    public let tensorShardDecodeTokensPerSecond: Double?
     public init(prefillTokensPerSecond: Double, decodeTokensPerSecond: Double,
-                speculativeDecodeTokensPerSecond: Double? = nil) {
+                speculativeDecodeTokensPerSecond: Double? = nil,
+                tensorShardPrefillTokensPerSecond: Double? = nil, tensorShardDecodeTokensPerSecond: Double? = nil) {
         self.prefillTokensPerSecond = prefillTokensPerSecond; self.decodeTokensPerSecond = decodeTokensPerSecond
         self.speculativeDecodeTokensPerSecond = speculativeDecodeTokensPerSecond
+        self.tensorShardPrefillTokensPerSecond = tensorShardPrefillTokensPerSecond
+        self.tensorShardDecodeTokensPerSecond = tensorShardDecodeTokensPerSecond
     }
     var valid: Bool {
         prefillTokensPerSecond.isFinite && prefillTokensPerSecond > 0
             && decodeTokensPerSecond.isFinite && decodeTokensPerSecond > 0
-            && (speculativeDecodeTokensPerSecond.map { $0.isFinite && $0 > 0 } ?? true)
+            && [speculativeDecodeTokensPerSecond, tensorShardPrefillTokensPerSecond, tensorShardDecodeTokensPerSecond]
+                .allSatisfy { $0.map { $0.isFinite && $0 > 0 } ?? true }
     }
-    /// The same rates without the speculative one: what may be said of
-    /// another device scaled from these.
+    /// True when a rate beyond the plain two is present (schema v2).
+    var extended: Bool {
+        speculativeDecodeTokensPerSecond != nil || tensorShardPrefillTokensPerSecond != nil
+            || tensorShardDecodeTokensPerSecond != nil
+    }
+    /// The same rates without the speculative and shard ones: what may be
+    /// said of another device scaled from these.
     var withoutSpeculative: ClusterSpeedRates {
         .init(prefillTokensPerSecond: prefillTokensPerSecond, decodeTokensPerSecond: decodeTokensPerSecond)
     }
@@ -51,9 +67,10 @@ public struct ClusterSpeedKey: Codable, Hashable, Sendable {
 /// ran once reports no sustained figure, and the planner says it used a
 /// rested one.
 ///
-/// Schema v2 adds one optional rate per regime, decode with the model's
-/// speculative head; a record without one is written as v1, byte for byte as
-/// before, and a v1 record still loads.
+/// Schema v2 adds optional rates per regime: decode with the model's
+/// speculative head, and prefill and decode of a tensor-parallel shard; a
+/// record without any is written as v1, byte for byte as before, and a v1
+/// record still loads.
 public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public static let schemaName = "darkbloom_cluster_speed_measurement_v1"
     public static let schemaNameV2 = "darkbloom_cluster_speed_measurement_v2"
@@ -80,7 +97,7 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     public init(key: ClusterSpeedKey, promptTokens: Int, chunkTokens: Int, probedLayers: Int, layerCount: Int,
                 rested: ClusterSpeedRates, sustained: ClusterSpeedRates?, hashBytesPerSecond: Double? = nil,
                 materializeBytesPerSecond: Double? = nil, measuredUTC: String, provenance: String) throws {
-        let speculative = rested.speculativeDecodeTokensPerSecond != nil || sustained?.speculativeDecodeTokensPerSecond != nil
+        let speculative = rested.extended || (sustained?.extended ?? false)
         schema = speculative ? Self.schemaNameV2 : Self.schemaName
         self.key = key; self.promptTokens = promptTokens; self.chunkTokens = chunkTokens
         self.probedLayers = probedLayers; self.layerCount = layerCount; self.rested = rested
@@ -90,8 +107,8 @@ public struct ClusterSpeedMeasurement: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        // A v1 record cannot carry a speculative rate; a v2 record may.
-        let speculative = rested.speculativeDecodeTokensPerSecond != nil || sustained?.speculativeDecodeTokensPerSecond != nil
+        // A v1 record cannot carry a speculative or shard rate; a v2 record may.
+        let speculative = rested.extended || (sustained?.extended ?? false)
         guard schema == Self.schemaNameV2 || (schema == Self.schemaName && !speculative),
               promptTokens > 0, chunkTokens > 0, layerCount > 0,
               (1...layerCount).contains(probedLayers), rested.valid, sustained?.valid ?? true,
@@ -191,12 +208,15 @@ public struct ClusterLinkCosts: Codable, Equatable, Sendable {
     /// Hand-off after the first token under a phase split: seconds per byte of state.
     public let handoffSecondsPerByte: Double
     public let provenance: String
+    /// One reduction of two ranks' tensor-parallel partials, when measured
+    /// (`ClusterReductionCost`). Nil: no tensor-parallel mode is predicted.
+    public let reduction: ClusterReductionCost?
 
     public init(measured: Bool, perChunkSeconds: Double, perDecodeStepSeconds: [String: Double],
-                handoffSecondsPerByte: Double, provenance: String) {
+                handoffSecondsPerByte: Double, provenance: String, reduction: ClusterReductionCost? = nil) {
         self.measured = measured; self.perChunkSeconds = perChunkSeconds
         self.perDecodeStepSeconds = perDecodeStepSeconds; self.handoffSecondsPerByte = handoffSecondsPerByte
-        self.provenance = provenance
+        self.provenance = provenance; self.reduction = reduction
     }
 
     public static let unmeasured = ClusterLinkCosts(measured: false, perChunkSeconds: 0, perDecodeStepSeconds: [:],

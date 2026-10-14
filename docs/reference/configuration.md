@@ -633,6 +633,27 @@ policy, and their SHA-256 is the `policy_sha256` it registers
 different policy: members that installed the old one are no longer offered a
 pair.
 
+### Sharded placement and the hand-off opt-in
+
+A cluster deployment shards the model across its members: tensor parallel
+(every member holds a share of every layer) or pipeline (layers split at a
+cut, with compact decode framing as a variant), chosen by the planner from
+each Mac's detected profile, the measured link and the model's own
+configuration (`ClusterPlacementPlanner`, `ClusterShardAssessment`). The guided
+setup (`darkbloom cluster`) shows the chosen deployment in one line; the optional
+diagnostic `darkbloom cluster plan` prints every sharded candidate with its
+predicted speed and the reason it was or was not chosen. Tensor parallel is
+chosen only where the runtime executes it for the model, a reduction over the
+keyed data plane has been measured, no failed qualification covers the shape,
+and it is predicted at least 5 % faster than every pipeline.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DARKBLOOM_CLUSTER_HANDOFF_MODES` | unset (off) | `1` (or `on`) is the one explicit opt-in for the hand-off modes kept in the code: phase split, phase split + MTP, the pipeline-prefill/tensor-decode hybrid, and the per-request "alone" route. Read by the process that plans (`darkbloom cluster`, `darkbloom cluster plan`) and by each Mac's serving owner: a setup saved with a hand-off mode (for example by an earlier release, whose default was phase split + MTP) is refused at start without it, with the way back (`darkbloom cluster`, select the model again), and the alone route is taken only by a leader that has it. `0`, `off` or unset plan sharded deployments only; any other value is refused. Never offered in the onboarding. (`provider-swift/Sources/ProviderCore/Inference/Distributed/Placement/ClusterHandOffModes.swift`) |
+| `DARKBLOOM_DEV_BENCH_PLANNER_CAP_GIB` | unset | Developer bench only, debug builds only (a release build refuses to plan while it is set): caps what the planner believes each Mac can give a model, in whole GiB, so a pair of large bench Macs is planned as smaller Macs would be. The load gates never see it. (`ClusterPlannerBenchCap.swift`) |
+
+The developer plan tool takes `--hand-off-modes` for the same opt-in.
+
 ### Coordinator-paired member
 
 To be offered a pair by the coordinator, each of the two Macs saves a setup

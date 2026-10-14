@@ -60,7 +60,7 @@ public enum PairQualificationRecords {
         }
         // Reports written before modes existed ran the pipeline.
         let mode = pair.generationMode ?? identity.generationMode ?? ClusterGenerationMode.pipeline.rawValue
-        guard ClusterGenerationMode(rawValue: mode) != nil else { throw QualificationError("Unknown generation mode \(mode)") }
+        guard let declared = ClusterGenerationMode(rawValue: mode) else { throw QualificationError("Unknown generation mode \(mode)") }
         let candidate = QualificationSubject(label: "two-rank pair", identity: identity, evidence: candidateEvidence)
         var allowed: [String] = []
         if comparator.allowCutDifference { allowed.append("cut") }
@@ -97,7 +97,8 @@ public enum PairQualificationRecords {
                 nearTieThresholdULPs: comparator.nearTieULPs, allowed: allowed)
         }
         return .init(runtimeModelID: identity.modelID, artifactSHA256: identity.artifactSHA256, ranks: recorded,
-            cuts: [identity.stageCut], generationMode: mode, prefillSchedule: identity.prefillSchedule, chunkTokens: identity.chunkSize,
+            // Tensor parallel cuts no layer range; every other mode names its cut.
+            cuts: declared.layerCutCount(ranks: recorded.count) == 0 ? [] : [identity.stageCut], generationMode: mode, prefillSchedule: identity.prefillSchedule, chunkTokens: identity.chunkSize,
             promptTokens: identity.promptTokenCount, outputTokens: identity.outputCount, transport: transport,
             pairReportSHA256: QualificationHash.sha256(data), pairReportCreatedUTC: pair.createdUTC,
             comparisons: comparisons, producer: producer)

@@ -51,8 +51,17 @@ public enum ClusterPlacementFlow {
                               layout: ClusterModelLayout, measurements: [ClusterSpeedMeasurement] = [],
                               promptTokens: Int? = nil, outputTokens: Int? = nil,
                               regime: ClusterPlacementPolicy.Regime = .rested, leader: String? = nil,
-                              served: [ClusterServedSpeedRecords.Entry] = []) throws
+                              served: [ClusterServedSpeedRecords.Entry] = [],
+                              environment: [String: String] = ProcessInfo.processInfo.environment,
+                              benchDebugBuild: Bool = ClusterPlannerBenchCap.isDebugBuild) throws
         -> (lines: [String], result: ClusterPlacementResult, setup: ClusterPlacementSetup?) {
+        // Developer bench only (`ClusterPlannerBenchCap`): a debug build may be told to plan as if each Mac could
+        // give less memory than it detected; a release build refuses. The load gates never see this.
+        let benchCap = try ClusterPlannerBenchCap.capBytes(environment: environment, debugBuild: benchDebugBuild)
+        // Sharded deployments only unless the one explicit opt-in is set (`ClusterHandOffModes`, off by default).
+        let handOff = try ClusterHandOffModes.enabled(environment: environment)
+        let localProfile = try benchCap.map { try localProfile.cappedForBench(admissibleBytes: $0) } ?? localProfile
+        let peerProfile = try benchCap.map { try peerProfile.cappedForBench(admissibleBytes: $0) } ?? peerProfile
         guard let local = description.members.first(where: { $0.id == localMemberID }),
               let peer = description.members.first(where: { $0.id != localMemberID }) else {
             throw ClusterConfigurationError.invalid("This Mac's member ID, \(localMemberID), is not in the pair description")
@@ -89,6 +98,7 @@ public enum ClusterPlacementFlow {
                 runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256)
         }
         policy.modes = capability.supportedGenerationModes
+        policy.handOffModes = handOff
         policy.schedules = capability.supportedPrefillSchedules
         let profiles = [(local.id, localProfile), (peer.id, peerProfile)]
         let speeds = ClusterSpeedEstimator.estimate(devices: profiles.map { .init(chip: $0.1.chip, osBuild: $0.1.osBuild) },
@@ -111,7 +121,13 @@ public enum ClusterPlacementFlow {
             }
         }
         let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: policy)
-        var lines = servedLines + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        var lines = (benchCap.map(ClusterPlannerBenchCap.lines(capBytes:)) ?? []) + servedLines
+            + ClusterPlacementExplanation.describe(result, devices: devices, layout: layout)
+        if handOff {
+            lines += ClusterHandOffModes.lines(enabled: true)
+        } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
+            lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
+        }
         if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
         if records.restrictsShapes {
             lines.append("Qualified placements")

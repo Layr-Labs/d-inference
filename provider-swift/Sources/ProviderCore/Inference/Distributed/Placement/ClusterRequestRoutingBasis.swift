@@ -96,11 +96,18 @@ public enum ClusterRequestRoutingBasis {
 
     /// The routing for a validated plan. Never throws: any missing input
     /// leaves every request on the pair as placed, which is always qualified.
-    static func make(plan: DistributedInstalledPlan, homeDirectory: URL, deadline: UInt64) -> Outcome {
+    static func make(plan: DistributedInstalledPlan, homeDirectory: URL, deadline: UInt64,
+                     environment: [String: String] = ProcessInfo.processInfo.environment) -> Outcome {
         let configuration = plan.configuration
         let mode = configuration.selectedGenerationMode
         guard mode.isPhaseSplit else {
             return .init(routing: nil, note: "every request uses the pair: under \(mode.rawValue) no member holds the whole model")
+        }
+        // The alone route is kept but off by default (sharded deployments only, owner 2026-10-13): a saved phase split
+        // setup still serves every request as placed unless the leader runs with the explicit opt-in.
+        guard (try? ClusterHandOffModes.enabled(environment: environment)) == true else {
+            return .init(routing: nil, note: "every request uses the cluster as placed: the per-request alone route is off by default "
+                + "(sharded deployments only; \(ClusterHandOffModes.environmentName)=1 opts in). Plan again with `darkbloom cluster` for a sharded setup")
         }
         let stages = plan.partition.stages.sorted { $0.rank < $1.rank }
         let ranks = configuration.peers.sorted { $0.rank < $1.rank }.map(\.id)
@@ -140,7 +147,7 @@ public enum ClusterRequestRoutingBasis {
             placed = devices(derived.measurements)
         }
         let setup = ClusterRequestRouter.Setup(devices: placed, cuts: cuts, mode: mode,
-            schedule: configuration.selectedPrefillSchedule, layout: layout)
+            schedule: configuration.selectedPrefillSchedule, layout: layout, aloneRoute: true)
         let routing = ClusterRequestRouting(setup: setup) {
             ClusterServedSpeedHistory.entries(homeDirectory: homeDirectory).filter { $0.setup == setupKey }.map(\.sample)
         }

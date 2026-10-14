@@ -67,7 +67,7 @@ private func checkIndexedPlans(_ directory: URL, _ checks: PlacementChecks) thro
     let peers = ["mac-a", "mac-b"].flatMap { ["--peer", "\($0)=" + files[$0]!.path] }
     for (name, memoryCut) in [("qwen3.5-35b-a3b-2026-08-25-r1", 20), ("Qwen3.5-9B-2026-09-03-r1", 16), ("Qwen3.8-27B-4bit-mtp-2026-09-03-r1", 32)] {
         let printed = try ClusterPlacementTool.run(["plan", "--layout", directory.appendingPathComponent("layouts/\(name).json").path]
-            + peers + ["--leader", "mac-a", "--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
+            + peers + ["--leader", "mac-a", "--hand-off-modes", "--json"], sampleDevice: { throw ProbeError("recorded profiles only") })
         let object = try JSONSerialization.jsonObject(with: Data(printed.utf8)) as? [String: Any]
         let chosen = (object?["result"] as? [String: Any])?["chosen"] as? [String: Any]
         let cut = (chosen?["cuts"] as? [Int])?.first ?? -1
@@ -93,10 +93,22 @@ private func checkGoldenPlanSet(profiles directory: URL, layouts: URL, label: St
         checks.require("\(label) \(name): the layout is canonical and names its row",
             try layout.encoded() + Data([10]) == Data(contentsOf: layoutFile) && layout.runtimeModelID == want.runtimeModelID)
         checks.require("\(label) \(name): every admitted cut is one of the stage plan's cuts", Set(layout.admittedCuts).isSubset(of: layout.structuralCuts))
-        let printed = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--json"],
+        // The golden plans were printed before the sharded-only default (2026-10-13): under the hand-off
+        // opt-in the plan tool prints them byte for byte, so the phase split code is held to them.
+        let printed = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--hand-off-modes", "--json"],
             sampleDevice: { throw ProbeError("The golden plans take every device from a recorded profile") })
         let bytes = Data((printed + "\n").utf8)
-        checks.require("\(label) \(name): the plan is byte-for-byte the one both Macs' plan tools printed", sha256(bytes) == want.planSHA256)
+        checks.require("\(label) \(name): under the hand-off opt-in the plan is byte-for-byte the one both Macs' plan tools printed", sha256(bytes) == want.planSHA256)
+        // The default shards: the same Macs and layout plan a pipeline or tensor parallel, every member holding layers.
+        let sharded = try ClusterPlacementTool.run(["plan", "--layout", layoutFile.path] + peers + ["--leader", "mac-a", "--json"],
+            sampleDevice: { throw ProbeError("The golden plans take every device from a recorded profile") })
+        let shardedResult = (try JSONSerialization.jsonObject(with: Data(sharded.utf8)) as? [String: Any])?["result"] as? [String: Any]
+        let shardedChosen = shardedResult?["chosen"] as? [String: Any]
+        let shardedMode = (shardedChosen?["mode"] as? String).flatMap(ClusterGenerationMode.init(rawValue:))
+        let shardedRanks = (shardedChosen?["ranks"] as? [[String: Any]]) ?? []
+        checks.require("\(label) \(name): by default a sharded mode (\(shardedMode?.rawValue ?? "none")) with layers on both Macs and a shard table",
+            shardedMode?.isSharded == true && shardedRanks.count == 2
+                && shardedRanks.allSatisfy { ($0["endLayer"] as? Int ?? 0) > ($0["firstLayer"] as? Int ?? 0) } && shardedResult?["shards"] != nil)
         guard let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               let result = object["result"] as? [String: Any], let chosen = result["chosen"] as? [String: Any],
               let cuts = chosen["cuts"] as? [Int], let mode = chosen["mode"] as? String,
@@ -125,7 +137,10 @@ private func checkRetainedDenseLayouts(_ directory: URL, dense: (nine: ClusterMo
         let excludedRead = (b["excluded"] as? [String: Any])?["tensorCount"] as? Int ?? 0
         // The speculative head is a view inside the excluded group, so it goes with it.
         a["excluded"] = nil; b["excluded"] = nil; b["speculativeHead"] = nil
-        checks.require("golden \(name): the layout from retained header metadata equals the one read from the real headers in every field but the \(excludedRead) excluded tensors",
-            NSDictionary(dictionary: a).isEqual(to: b) && a.count == 18)
+        // The tensor-parallel facts were derived after the golden layouts were
+        // recorded on both Macs: present in the built layout, absent there.
+        let tensorParallel = a.removeValue(forKey: "tensorParallel") != nil && b["tensorParallel"] == nil
+        checks.require("golden \(name): the layout from retained header metadata equals the one read from the real headers in every field but the \(excludedRead) excluded tensors (and the tensor-parallel facts the golden predates)",
+            NSDictionary(dictionary: a).isEqual(to: b) && a.count == 18 && tensorParallel)
     }
 }

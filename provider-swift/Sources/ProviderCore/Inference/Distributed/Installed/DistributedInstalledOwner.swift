@@ -62,6 +62,9 @@ public enum DistributedInstalledOwner {
         // in a session the leader launches: its rank is checked here, on the
         // Mac that runs it, with that Mac's class.
         try prepared.plan.requireLocalRankGranted(chipClass: localChipClass)
+        // Sharded deployments only by default: a setup saved with a hand-off mode is served only under the opt-in.
+        try ClusterHandOffModes.requireServable(prepared.plan.configuration.selectedGenerationMode,
+            environment: ProcessInfo.processInfo.environment)
         let device = prepared.plan.localPeer.jacclDevice
         try serve(prepared: prepared, input: STDIN_FILENO, output: STDOUT_FILENO,
             beforeNativeLaunch: {

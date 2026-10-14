@@ -1,5 +1,6 @@
 import Foundation
 import DarkbloomClusterPlacement
+import DarkbloomClusterProtocol
 @testable import InstalledContract
 
 extension ClusterConsoleCheck {
@@ -262,12 +263,11 @@ extension ClusterConsoleCheck {
             expect(layout?.admittedCuts.contains(option?.plan?.cut ?? -1) == true,
                 "\(reading.model.modelID)'s cut \(option?.plan?.cut ?? -1) is one its layout admits")
             expect(described.contains(option?.plan?.mode ?? "-"), "\(reading.model.modelID)'s mode is one its worker described")
-            // MTP on by default: a family whose worker runs the speculative head is planned with it, the
-            // M5 (the Mac that prefers the head) decoding.
-            if described.contains("phase_split_mtp_v1") {
-                expect(option?.plan?.mode == "phase_split_mtp_v1" && option?.plan?.ranks.last?.memberID == "mac-b",
-                    "\(reading.model.modelID) is planned with the speculative head on the decoding M5: \(option?.plan?.mode ?? "-")")
-            }
+            // Sharded deployments only (owner, 2026-10-13): the onboarding never offers a hand-off mode (phase split,
+            // phase split + MTP, the hybrid), even for a family whose worker runs one; every member holds layers.
+            let mode = (option?.plan?.mode).flatMap(ClusterGenerationMode.init(rawValue:))
+            expect(mode?.isSharded == true && (option?.plan?.ranks.allSatisfy { $0.endLayer > $0.firstLayer } ?? false),
+                "\(reading.model.modelID) is offered sharded with layers on both Macs, never a hand-off mode: \(option?.plan?.mode ?? "-")")
         }
         expect(options.last?.model.folder == F.unreadModel.folder && options.last?.blocker?.contains("planner cannot read") == true,
             "a folder no family reads is blocked with the planner's reason")

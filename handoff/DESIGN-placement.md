@@ -328,6 +328,22 @@ zero and the output says the decode figure is an upper bound.
 
 ### Decision rule
 
+Sharded deployments only, by default (owner, 2026-10-13). The automatic
+candidates are tensor parallel (shares by heads and channels; unequal shares
+in whole groups where the family's plan states `shareUnits`), pipeline (and
+its compact decode variant), and, for three or more members, tensor-parallel
+stages in a pipeline (predicted only: no runtime executes it yet, so it is
+reported and never chosen). Phase split, phase split + MTP, the
+pipeline-prefill/tensor-decode hybrid and the router's per-request alone
+route stay in the code, tests and records, and are considered only under
+`ClusterPlacementPolicy.handOffModes` (provider: `DARKBLOOM_CLUSTER_HANDOFF_MODES=1`;
+plan tool: `--hand-off-modes`); a plan under that opt-in is the earlier
+planner's byte for byte. Every default plan carries `shards`: each sharded
+candidate's verdict (chosen, slower, notExecutedByRuntime,
+adapterHasNoTensorParallel, failedQualification, doesNotFit,
+needsMoreMembers, reductionNotMeasured), its cut or shares, every member's
+bytes and its predicted speed.
+
 1. Enumerate every candidate over the admitted cuts (two devices: both
    orders, every cut, every allowed mode; a few hundred evaluations).
 2. Give each device in each candidate its answer from section 1. A candidate's

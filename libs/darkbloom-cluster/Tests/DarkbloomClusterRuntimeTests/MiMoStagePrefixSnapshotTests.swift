@@ -152,6 +152,32 @@ struct MiMoStagePrefixSnapshotTests {
         tiers.forEach { $0.close() }
     }
 
+    // Found on the pair (hold1, 03:41Z): a ring restored at the split frontier
+    // takes the next token in place (`updateInPlace` assigns into its keys), and
+    // MLXArray is a reference type, so a ring that adopted the kept arrays
+    // themselves changed the kept entry (and the bytes its SSD record was being
+    // written from): the second hit of the same prompt produced other tokens.
+    @Test func aKeptStateIsNeverChangedByTheRequestsThatRestoreIt() throws {
+        let (plan, models) = try Self.stages(cut: 2)
+        let frontiers = Self.capturePlan(promptCount: Self.prompt.count)
+        let captures = [MiMoStagePrefixCapture(frontiers: frontiers), MiMoStagePrefixCapture(frontiers: frontiers)]
+        let cold = try Self.run(models, plan: plan, caches: models.map { $0.newCache() }, prompt: Self.prompt, start: 0,
+                                captures: captures)
+        let kept = [captures[0].states()[2], captures[1].states()[2]]
+        func bytes(_ state: QwenStagePrefixState) -> [Data] {
+            (state.attention.keys.sorted().flatMap { [state.attention[$0]!.keys, state.attention[$0]!.values] }
+                + state.recurrent.keys.sorted().flatMap { [state.recurrent[$0]!.conv, state.recurrent[$0]!.ssm] })
+                .map { $0.asData(access: .copy).data }
+        }
+        let before = kept.map(bytes)
+        for hit in 1...3 {
+            let rows = try Self.run(models, plan: plan, caches: try Self.restored(models, plan: plan, states: kept),
+                                    prompt: Self.prompt, start: kept[0].committedTokens)
+            #expect(Self.bits(rows) == Self.bits(cold), "hit \(hit) of the same kept state")
+            #expect(kept.map(bytes) == before, "hit \(hit) changed the kept state")
+        }
+    }
+
     @Test func aRingWrittenOneTokenAtATimeIsNotCapturedAndNothingIsKeptWithoutTheSplitFrontier() throws {
         let (plan, models) = try Self.stages(cut: 2)
         // Twenty-two tokens: the split frontier 21 follows the one-token frame [20, 21).

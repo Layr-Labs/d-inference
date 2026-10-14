@@ -33,9 +33,9 @@ enum MiMoStagePrefixSnapshot {
 
     /// The state of every local cache at `frontier`, or nil when a sliding
     /// ring is not in temporal order (see the type). Arrays are this
-    /// session's own copies (`contiguous` + an exact multiply for the full
-    /// rows): no later write to the request's caches can reach them, and a
-    /// tail does not keep the whole ring buffer alive.
+    /// session's own copies (an exact multiply, `owned`): no later write to
+    /// the request's caches can reach them, and a tail does not keep the
+    /// whole ring buffer alive.
     static func capture(caches: [KVCache], globalLayers: [Int], frontier: Int)
         throws -> (full: [Int: (keys: MLXArray, values: MLXArray)], sliding: [Int: (keys: MLXArray, values: MLXArray)])? {
         guard caches.count == globalLayers.count, frontier > 0 else {
@@ -51,8 +51,7 @@ enum MiMoStagePrefixSnapshot {
                 guard state.count == 2, state[0].ndim == 4, state[0].dim(2) == frontier, state[1].dim(2) == frontier else {
                     throw ProbeError("MiMo prefix capture lacks a full-attention row")
                 }
-                let one = MLXArray(1).asType(state[0].dtype)
-                full[layer] = (keys: state[0] * one, values: state[1] * one)
+                full[layer] = (keys: owned(state[0]), values: owned(state[1]))
             case .sliding(let window):
                 let raw = cache.innerState()
                 guard raw.count == 2, raw[0].ndim == 4, raw[0].dim(2) == raw[1].dim(2),
@@ -63,8 +62,8 @@ enum MiMoStagePrefixSnapshot {
                 // Rotated by one-token writes: not in temporal order, not kept.
                 guard idx == count, count >= min(frontier, window) else { return nil }
                 let kept = min(frontier, window)
-                sliding[layer] = (keys: contiguous(raw[0][0..., 0..., (count - kept)..<count, 0...]),
-                                  values: contiguous(raw[1][0..., 0..., (count - kept)..<count, 0...]))
+                sliding[layer] = (keys: owned(raw[0][0..., 0..., (count - kept)..<count, 0...]),
+                                  values: owned(raw[1][0..., 0..., (count - kept)..<count, 0...]))
             }
         }
         eval(full.values.flatMap { [$0.keys, $0.values] } + sliding.values.flatMap { [$0.keys, $0.values] })
@@ -75,6 +74,12 @@ enum MiMoStagePrefixSnapshot {
     /// fresh caches. Every local layer must be present exactly once, in its
     /// own kind, with the frontier's row counts; anything else is refused and
     /// the request prefills from zero on both ranks.
+    ///
+    /// The caches get copies, never the kept arrays: a ring takes its next
+    /// token in place (`updateInPlace` assigns into its keys) and an MLXArray
+    /// is a reference, so a ring holding the kept arrays would change the
+    /// kept entry for every later hit and the bytes its SSD record is written
+    /// from. A copy is exact (`x * 1`) and costs one stage state's bytes.
     static func restore(_ state: QwenStagePrefixState, into caches: [KVCache], globalLayers: [Int]) throws {
         let frontier = state.committedTokens
         guard frontier > 0, caches.count == globalLayers.count,
@@ -92,7 +97,7 @@ enum MiMoStagePrefixSnapshot {
                       pair.keys.dim(0) == 1, pair.values.dim(0) == 1, pair.keys.dim(1) == pair.values.dim(1) else {
                     throw ProbeError("MiMo prefix restore lacks full-attention layer \(layer)")
                 }
-                cache.state = [pair.keys, pair.values]
+                cache.state = [owned(pair.keys), owned(pair.values)]
                 fullLayers.insert(layer)
             case .sliding(let window):
                 let kept = min(frontier, window)
@@ -103,7 +108,7 @@ enum MiMoStagePrefixSnapshot {
                 }
                 let meta = cache.metaState
                 guard meta.count == 5 else { throw ProbeError("MiMo prefix restore found an unknown ring") }
-                cache.state = [pair.conv, pair.ssm]
+                cache.state = [owned(pair.conv), owned(pair.ssm)]
                 // keep, window, step as the fresh ring has them; offset and the
                 // write position as the original ring had them after its frame.
                 cache.metaState = [meta[0], meta[1], meta[2], String(frontier), String(kept)]
@@ -114,7 +119,11 @@ enum MiMoStagePrefixSnapshot {
         guard Set(state.attention.keys) == fullLayers, Set(state.recurrent.keys) == slidingLayers else {
             throw ProbeError("MiMo prefix state names a layer outside this stage")
         }
+        eval(caches.flatMap { $0.innerState() })
     }
+
+    /// A new array with its own storage and the same bits.
+    private static func owned(_ array: MLXArray) -> MLXArray { array * MLXArray(1).asType(array.dtype) }
 
     static func kind(_ cache: KVCache) throws -> Kind {
         if let ring = cache as? RotatingKVCache {

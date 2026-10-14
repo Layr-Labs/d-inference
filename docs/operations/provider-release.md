@@ -226,7 +226,9 @@ declaration of these values:
 | `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
 | `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
 | `defaultBackendPort` | `8100` | `8101` |
+| `defaultLocalPort` | `8000` | `8001` |
 | `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
 | `releaseVersionMarker` | versions without it | `-dev.` |
 
 <!-- END provider identity -->

@@ -35,7 +35,9 @@ Requests never leave the machine and are never billed.
    darkbloom start --local --port 8080 --bind 0.0.0.0  # other port / all interfaces
    ```
 
-   `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
+   `--port` defaults to `8000` (`defaultLocalPort`; a dev build uses its own
+   port, see [Dev build identity](../operations/provider-release.md#dev-build-identity)),
+   `--bind` to `127.0.0.1`. Before serving,
    `Start.runLocalStandalone` (`provider-swift/Sources/darkbloom/Start/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to

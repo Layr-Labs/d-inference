@@ -42,6 +42,8 @@ struct BuildEnvironmentTests {
         #expect(prod.logSubsystem == "com.darkbloom.provider")
         #expect(prod.serviceLogSubsystem == "dev.darkbloom.provider")
         #expect(prod.defaultBackendPort == 8100)
+        #expect(prod.defaultLocalPort == 8000)
+        #expect(prod.encryptedCacheNamespace == "darkbloom")
         #expect(prod.keychainServicePrefix == "io.darkbloom")
         #expect(KeychainWrappedKEKStorage.defaultService == "io.darkbloom.kv.kek.v1")
         #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
@@ -68,22 +70,29 @@ struct BuildEnvironmentTests {
         #expect(dev.logSubsystem == "com.darkbloom.provider.dev")
         #expect(dev.serviceLogSubsystem == "dev.darkbloom.provider.dev")
         #expect(dev.defaultBackendPort == 8101)
+        #expect(dev.defaultLocalPort == 8001)
+        #expect(dev.encryptedCacheNamespace == "darkbloom-dev")
         #expect(dev.keychainServicePrefix == "io.darkbloom.dev")
         #expect(dev.installDirectory(home: URL(fileURLWithPath: "/Users/op")).path == "/Users/op/.darkbloom-dev")
     }
 
     @Test func environmentsShareNoPathPortOrLabel() {
-        let identities = BuildEnvironment.allCases.map { environment in
+        func identity(_ environment: BuildEnvironment) -> [String] {
             [environment.cliName, environment.enclaveName, environment.appBundleName,
              environment.installDirectoryName, environment.configDirectoryName,
              environment.launchAgentLabel, environment.watchdogAgentLabel,
              environment.logSubsystem, environment.serviceLogSubsystem,
-             environment.keychainServicePrefix]
-                + environment.legacyConfigDirectoryNames
+             environment.keychainServicePrefix, environment.encryptedCacheNamespace,
+             String(environment.defaultBackendPort), String(environment.defaultLocalPort)]
         }
-        let all = identities.flatMap { $0 }
-        #expect(Set(all).count == all.count)
-        let ports = BuildEnvironment.allCases.map(\.defaultBackendPort)
+        for (prod, dev) in zip(identity(.prod), identity(.dev)) {
+            #expect(prod != dev)
+        }
+        let paths = BuildEnvironment.allCases.flatMap {
+            [$0.installDirectoryName, $0.configDirectoryName] + $0.legacyConfigDirectoryNames
+        }
+        #expect(Set(paths).count == paths.count)
+        let ports = BuildEnvironment.allCases.flatMap { [$0.defaultBackendPort, $0.defaultLocalPort] }
         #expect(Set(ports).count == ports.count)
     }
 

@@ -19,7 +19,9 @@
       "logSubsystem": "com.darkbloom.provider",
       "serviceLogSubsystem": "dev.darkbloom.provider",
       "defaultBackendPort": 8100,
+      "defaultLocalPort": 8000,
       "keychainServicePrefix": "io.darkbloom",
+      "encryptedCacheNamespace": "darkbloom",
       "coordinatorHTTPURL": "https://api.darkbloom.dev",
       "coordinatorWebSocketURL": "wss://api.darkbloom.dev/ws/provider",
       "modelCDNURL": "https://models.darkbloom.ai"
@@ -37,7 +39,9 @@
       "logSubsystem": "com.darkbloom.provider.dev",
       "serviceLogSubsystem": "dev.darkbloom.provider.dev",
       "defaultBackendPort": 8101,
+      "defaultLocalPort": 8001,
       "keychainServicePrefix": "io.darkbloom.dev",
+      "encryptedCacheNamespace": "darkbloom-dev",
       "coordinatorHTTPURL": "https://api.dev.darkbloom.dev",
       "coordinatorWebSocketURL": "wss://api.dev.darkbloom.dev/ws/provider",
       "modelCDNURL": "https://models.darkbloom.ai"

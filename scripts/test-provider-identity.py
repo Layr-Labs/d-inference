@@ -96,17 +96,19 @@ class ProviderIdentityTests(unittest.TestCase):
                 with self.subTest(field=field):
                     self.assertNotEqual(PROD[field], DEV[field])
         for field in ("installDirectoryName", "configDirectoryName"):
-            self.assertFalse(DEV[field].startswith(PROD[field] + "/"))
-            self.assertFalse(PROD[field].startswith(DEV[field] + "/"))
-        self.assertFalse(set(PROD["legacyConfigDirectoryNames"]) & {DEV["configDirectoryName"]})
+            self.assertNotEqual(Path(DEV[field]).parts[:len(Path(PROD[field]).parts)], Path(PROD[field]).parts)
+            self.assertNotEqual(Path(PROD[field]).parts[:len(Path(DEV[field]).parts)], Path(DEV[field]).parts)
+        self.assertNotIn(DEV["configDirectoryName"], PROD["legacyConfigDirectoryNames"])
         self.assertEqual(PROD["modelCDNURL"], DEV["modelCDNURL"])
+        ports = [env[field] for env in (PROD, DEV) for field in ("defaultBackendPort", "defaultLocalPort")]
+        self.assertCountEqual(set(ports), ports)
 
     def test_swift_tests_pin_the_json_values(self):
         tests = (ROOT / "provider-swift/Tests/ProviderCoreTests/Config/BuildEnvironmentTests.swift").read_text()
         environments = {"prod": PROD, "dev": DEV}
         pinned = re.findall(r"#expect\((?:BuildEnvironment\.)?(prod|dev)\.(\w+) == (.+)\)\n", tests)
         urls = {"coordinatorHTTPURL", "coordinatorWebSocketURL", "modelCDNURL"}
-        self.assertTrue(set(GENERATOR.FIELDS) - urls <= {field for name, field, _ in pinned if name == "prod"})
+        self.assertLessEqual(set(GENERATOR.FIELDS) - urls, {field for name, field, _ in pinned if name == "prod"})
         self.assertEqual({field for name, field, _ in pinned if name == "dev"}, set(GENERATOR.FIELDS))
         for name, field, literal in pinned:
             with self.subTest(name=name, field=field):

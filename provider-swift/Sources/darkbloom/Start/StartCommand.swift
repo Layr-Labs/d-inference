@@ -45,7 +45,7 @@ struct Start: AsyncParsableCommand {
     var localEndpoint = false
 
     @Option(help: "Local server port (used with --local / --local-endpoint).")
-    var port: UInt16 = 8000
+    var port: UInt16 = BuildEnvironment.current.defaultLocalPort
 
     @Option(help: "Bind address for --local / --local-endpoint (default 127.0.0.1; a tailnet IP exposes it to same-account devices, still API-key gated).")
     var bind: String = "127.0.0.1"

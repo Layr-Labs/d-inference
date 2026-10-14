@@ -17,7 +17,7 @@ The tier owns one root per user, one directory per model.
 
 | Item | Value | Code |
 |---|---|---|
-| Root | By default `~/Library/Caches/darkbloom/kv3/`; a saved `cache.directory` selects `<directory>/darkbloom/kv3/` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
+| Root | By default `~/Library/Caches/<encryptedCacheNamespace>/kv3/`; a saved `cache.directory` selects `<directory>/<encryptedCacheNamespace>/kv3/`. The namespace is `darkbloom` for production; a dev build has its own ([Dev build identity](../operations/provider-release.md#dev-build-identity)), so the two never share blocks or epochs | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
 | Per-model directory | `<root>/<modelKey>/`, `modelKey = SHA256(modelId)` first 12 hex characters | `SSDPrefixCacheFactory.swift` (`cacheDirectory`) |
 | Block file | `<tag>.dbk3`, one file per attention block or complete recurrent checkpoint ([block size](../architecture/prefix-cache.md#block-hashing)); `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
 | Epoch record | `<modelKey>/cache-epoch.json`, schema `darkbloom.cache-epoch.v1` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift` |

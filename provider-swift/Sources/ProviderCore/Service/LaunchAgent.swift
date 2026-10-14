@@ -75,7 +75,7 @@ public enum LaunchAgent: Sendable {
         public let port: UInt16
         public let bind: String
         public let noAuth: Bool
-        public init(enabled: Bool = false, port: UInt16 = 8000, bind: String = "127.0.0.1", noAuth: Bool = false) {
+        public init(enabled: Bool = false, port: UInt16 = BuildEnvironment.current.defaultLocalPort, bind: String = "127.0.0.1", noAuth: Bool = false) {
             self.enabled = enabled
             self.port = port
             self.bind = bind

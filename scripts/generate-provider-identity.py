@@ -41,8 +41,12 @@ FIELDS = {
     "serviceLogSubsystem": "Unified logging subsystem of the provider service. `logs` and `report`\n"
                            "read this subsystem.",
     "defaultBackendPort": "Default port of the local inference backend.",
+    "defaultLocalPort": "Default port of the direct-mode local OpenAI endpoint (`start --local`).",
     "keychainServicePrefix": "Prefix of keychain service names and key labels that this install owns.\n"
                              "The keychain access group does not change.",
+    "encryptedCacheNamespace": "Directory of this install's encrypted KV cache, in the user cache\n"
+                               "directory or in the configured cache directory. Downloaded model\n"
+                               "weights are not in it; both installs share them.",
 }
 
 

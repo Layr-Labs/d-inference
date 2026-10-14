@@ -124,12 +124,30 @@ extension BuildEnvironment {
         }
     }
 
+    /// Default port of the direct-mode local OpenAI endpoint (`start --local`).
+    public var defaultLocalPort: UInt16 {
+        switch self {
+        case .prod: return 8000
+        case .dev: return 8001
+        }
+    }
+
     /// Prefix of keychain service names and key labels that this install owns.
     /// The keychain access group does not change.
     public var keychainServicePrefix: String {
         switch self {
         case .prod: return "io.darkbloom"
         case .dev: return "io.darkbloom.dev"
+        }
+    }
+
+    /// Directory of this install's encrypted KV cache, in the user cache
+    /// directory or in the configured cache directory. Downloaded model
+    /// weights are not in it; both installs share them.
+    public var encryptedCacheNamespace: String {
+        switch self {
+        case .prod: return "darkbloom"
+        case .dev: return "darkbloom-dev"
         }
     }
 }

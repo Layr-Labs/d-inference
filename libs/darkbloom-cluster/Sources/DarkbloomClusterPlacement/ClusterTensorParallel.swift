@@ -28,12 +28,28 @@ public struct ClusterTensorParallelFamilyPlan: Codable, Equatable, Sendable {
     public let partialBytesPerToken: Int
     /// True when each rank keeps the request state of its own heads only.
     public let stateDividesByHeads: Bool
+    /// Unequal share weights the family's plan accepts for two ranks (each
+    /// rank's weight, rank order), besides the equal split every plan has;
+    /// nil or empty: equal shards only. The family derives them from its own
+    /// plan (each part divides in whole units with at least one per rank).
+    public let shareOptions: [[Int]]?
 
     public init(plan: String, ranks: [Int], reductionsPerLayer: Int, reductionsPerStep: Int,
-                partialBytesPerToken: Int, stateDividesByHeads: Bool) {
+                partialBytesPerToken: Int, stateDividesByHeads: Bool, shareOptions: [[Int]]? = nil) {
         self.plan = plan; self.ranks = ranks; self.reductionsPerLayer = reductionsPerLayer
         self.reductionsPerStep = reductionsPerStep; self.partialBytesPerToken = partialBytesPerToken
         self.stateDividesByHeads = stateDividesByHeads
+        self.shareOptions = shareOptions?.isEmpty == true ? nil : shareOptions
+    }
+
+    /// Each share option as fractions of the model (equal first).
+    func shareFractions(ranks count: Int) -> [[Double]] {
+        let equal = Array(repeating: 1.0 / Double(max(1, count)), count: count)
+        let weighted = (shareOptions ?? []).filter { $0.count == count && Set($0).count > 1 }.map { weights -> [Double] in
+            let total = Double(weights.reduce(0, +))
+            return weights.map { Double($0) / total }
+        }
+        return [equal] + weighted
     }
 }
 
@@ -69,6 +85,12 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
     /// Bytes one rank of `ranks` holds of these parts: the replicated bytes
     /// whole and the divided bytes' equal share, rounded up.
     func shareBytes(divided: Int, replicated: Int, ranks: Int) -> Int { replicated + (divided + ranks - 1) / ranks }
+    /// The same for a rank holding `fraction` of every divided part (a
+    /// weighted split; whole units make the real share differ by at most one
+    /// unit of a part, so it is rounded up by 1 %).
+    func shareBytes(divided: Int, replicated: Int, fraction: Double) -> Int {
+        replicated + Int((Double(divided) * min(1, fraction * 1.01)).rounded(.up))
+    }
 
     func validate(layout: ClusterModelLayout) throws {
         let f = family
@@ -76,6 +98,8 @@ public struct ClusterTensorParallelLayout: Codable, Equatable, Sendable {
               !f.ranks.isEmpty, f.ranks.allSatisfy({ (2...8).contains($0) }), f.ranks == Array(Set(f.ranks)).sorted(),
               f.reductionsPerLayer >= 1, f.reductionsPerLayer <= 16, (0...16).contains(f.reductionsPerStep),
               f.partialBytesPerToken > 0, f.partialBytesPerToken <= 1 << 24,
+              (f.shareOptions ?? []).count <= 32,
+              (f.shareOptions ?? []).allSatisfy({ $0.count == 2 && $0.allSatisfy({ (1...64).contains($0) }) }),
               layerDividedBytes.count == layout.layerCount, layerReplicatedBytes.count == layout.layerCount,
               zip(zip(layerDividedBytes, layerReplicatedBytes), layout.layers).allSatisfy({ pair, layer in
                   pair.0 >= 0 && pair.1 >= 0 && pair.0 + pair.1 == layer.weights.loadedBytes }),
@@ -140,6 +164,8 @@ public struct ClusterDecodeSplit: Codable, Equatable, Sendable {
     }
 
     public func shareStepSeconds(ranks: Int) -> Double { floorSeconds + weightSeconds / Double(max(1, ranks)) }
+    /// A rank holding `fraction` of the weights: the floor whole, that part of the weights.
+    public func shareStepSeconds(fraction: Double) -> Double { floorSeconds + weightSeconds * max(0, min(1, fraction)) }
 }
 
 /// What the planner predicted for tensor parallel on this model and these

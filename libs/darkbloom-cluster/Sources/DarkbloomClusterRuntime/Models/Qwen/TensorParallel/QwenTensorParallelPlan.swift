@@ -81,6 +81,11 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
 
     public static let modelTypes: Set<String> = ["qwen3_5_text"]
 
+    /// Unequal two-rank share weights a planner may try (rank order), from a
+    /// quarter to three quarters; a model whose parts cannot divide so is
+    /// refused per option by the plan itself.
+    public static let candidateShares: [[Int]] = [[1, 3], [1, 2], [2, 3], [3, 2], [2, 1], [3, 1]]
+
     /// `text` is the checkpoint's `text_config` object; `quantization` the
     /// checkpoint's top-level `quantization` object; `shares` each rank's
     /// positive weight (nil: equal shards).

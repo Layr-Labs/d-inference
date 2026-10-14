@@ -141,11 +141,19 @@ public enum ClusterPlacementExplanation {
         case .pipelineCompactDecode: modeText = "pipeline with compact decode framing"
         case .phaseSplit: modeText = "phase split (the ranks prefill together, then the last rank, which holds every layer, decodes alone)"
         case .phaseSplitMTP: modeText = "phase split with speculative decoding (the last rank, which holds every layer and the model's MTP head, drafts and verifies alone)"
-        case .tensorParallel: modeText = "tensor parallel (each rank holds an equal share of every layer; both run every token and sum their partials over the keyed data plane)"
+        case .tensorParallel:
+            modeText = c.tensorShares.map { "tensor parallel, \(shareText($0)) (each rank holds that share of every layer's heads and channels; both run every token and sum their partials over the keyed data plane)" }
+                ?? "tensor parallel (each rank holds an equal share of every layer; both run every token and sum their partials over the keyed data plane)"
         case .pipelinePrefillTensorDecode: modeText = "pipeline prefill, then tensor-parallel decode (after the first token each rank hands the other the state of the heads it does not keep)"
         }
         lines.append("Mode: \(modeText); prefill schedule \(c.prefillSchedule == .oneChunkLookahead ? "one chunk of lookahead" : "serial").")
         return lines
+    }
+
+    /// Shares as whole percentages in rank order, e.g. "25/75".
+    public static func shareText(_ shares: [Int]) -> String {
+        let total = Double(max(1, shares.reduce(0, +)))
+        return shares.map { String(Int((Double($0) * 100 / total).rounded())) }.joined(separator: "/")
     }
 
     /// The planner's tensor-parallel prediction in words: the verdict, each
@@ -166,7 +174,7 @@ public enum ClusterPlacementExplanation {
         for (label, candidate) in [("Tensor parallel", tp.tensorParallel), ("Pipeline prefill, tensor decode", tp.hybrid)] {
             guard let candidate, basis.absolute else { continue }
             let p = candidate.prediction(regime)
-            lines.append("\(label) (\(candidate.ranks.map(\.device).joined(separator: " then "))\(candidate.cuts.isEmpty ? "" : ", prefill cut \(candidate.cut)")): "
+            lines.append("\(label) (\(candidate.ranks.map(\.device).joined(separator: " then "))\(candidate.cuts.isEmpty ? "" : ", prefill cut \(candidate.cut)")\(candidate.tensorShares.map { ", shares " + shareText($0) } ?? "")): "
                 + "first token \(seconds(p.firstTokenSeconds)), decode \(rate(p.decodeTokensPerSecond)) tok/s, request \(seconds(p.requestSeconds))"
                 + (candidate.tier == 0 ? "." : "; does not fit now."))
         }

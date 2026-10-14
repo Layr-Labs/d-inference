@@ -18,6 +18,90 @@ func checkTensorParallel(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Pl
     try checkTensorParallelPair(big, golden: golden, checks)
     try checkTensorParallelOlderMacs(big, checks)
     try checkTensorParallelServed(big, checks)
+    try checkTensorParallelWeighted(big, checks)
+}
+
+// MARK: - Unequal Macs: weighted shares
+
+/// The family states which unequal shares its plan accepts; the planner
+/// tries each and keeps the fastest. On unequal Macs the faster Mac takes the
+/// larger share; equal Macs keep equal shards; a family without options is
+/// planned with equal shards only. Constructed Macs (floor-plus-bandwidth
+/// test inputs), not a hardware pass.
+private func checkTensorParallelWeighted(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    let weights = big.wholeModelLoadedBytes
+    let options = big.tensorParallel?.family.shareOptions ?? []
+    checks.require("tensor parallel weighted: the 27B layout offers every candidate share its plan accepts (1:3, 1:2, 2:3, 3:2, 2:1, 3:1)",
+        options == [[1, 3], [1, 2], [2, 3], [3, 2], [2, 1], [3, 1]])
+    let layout = try executing(big)
+    // The owner's rule (2026-10-13): sharded deployments only; keep the phase split out of the comparison.
+    var sharded = ClusterPlacementPolicy()
+    sharded.promptTokens = 1024; sharded.outputTokens = 128
+    sharded.admitsShape = { _, _, mode in !mode.isPhaseSplit }
+    let slow = modelled(floorMs: 12, bandwidthGBs: 200, weightBytes: weights, prefill: 60)
+    let fast = modelled(floorMs: 10, bandwidthGBs: 400, weightBytes: weights, prefill: 150)
+    let devices = [try SyntheticMac.idle(32).device("small", speed: slow, chip: "Apple M1 Max"),
+                   try SyntheticMac.idle(64).device("large", speed: fast, chip: "Apple M2 Max")]
+    let link = linkCosts(reductionMicroseconds: 45)
+    let result = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: sharded, link: link)
+    guard let chosen = result.chosen, chosen.mode == .tensorParallel, let shares = chosen.tensorShares else {
+        let seen = ([result.chosen].compactMap { $0 } + result.alternatives).map {
+            "\($0.mode.rawValue) \($0.cuts) \($0.tensorShares ?? []) \(String(format: "%.4f", $0.rested.requestSeconds)) tier \($0.tier)" }
+        checks.require("tensor parallel weighted: M1 Max 32 GB + M2 Max 64 GB choose tensor parallel with unequal shares (got \(seen.joined(separator: "; ")); assessment \(result.tensorParallel?.reason ?? "-"))", false)
+        return
+    }
+    let largeRank = chosen.ranks.firstIndex { $0.device == "large" } ?? -1
+    checks.require("tensor parallel weighted: the faster Mac takes the larger share (\(ClusterPlacementExplanation.shareText(shares)) with the M2 Max as rank \(largeRank))",
+        largeRank >= 0 && shares[largeRank] > shares[1 - largeRank])
+    // The predicted step is the slower weighted share plus every reduction.
+    let fractions = shares.map { Double($0) / Double(shares.reduce(0, +)) }
+    let speeds = chosen.ranks.map { rank in rank.device == "large" ? fast : slow }
+    let expected = zip(speeds, fractions).map { ClusterDecodeSplit(rates: $0.rested).shareStepSeconds(fraction: $1) }.max()!
+        + 129 * (45e-6 + 20_480 / 5e9)
+    checks.require("tensor parallel weighted: the predicted step is max over ranks of (floor + weights x share) plus 129 reductions",
+        abs(1 / chosen.rested.decodeTokensPerSecond - expected) < 1e-9)
+    // Each rank holds about its share of the divided weights plus the replicated embedding.
+    let embedding = big.ingress.loadedBytes
+    checks.require("tensor parallel weighted: each rank holds about its share of the weights",
+        zip(chosen.ranks, fractions).allSatisfy { rank, f in
+            let want = Double(weights - embedding) * f + Double(embedding)
+            return abs(Double(rank.weightsBytes) - want) / want < 0.03
+        })
+    // The equal split alone (a family that offers no options) is beaten by the pipeline here.
+    let equalOnly = try withoutShareOptions(layout)
+    let plain = try ClusterPlacementPlanner.plan(devices: devices, layout: equalOnly, policy: sharded, link: link)
+    checks.require("tensor parallel weighted: with equal shards only the same Macs do not choose tensor parallel (the slower Mac's half sets the pace)",
+        plain.chosen?.mode.usesTensorParallelDecode == false)
+    checks.require("tensor parallel weighted: the weighted choice is faster than the equal-only plan's choice",
+        chosen.rested.requestSeconds < (plain.chosen?.rested.requestSeconds ?? 0))
+    // Equal Macs keep equal shards.
+    let twin = try ClusterPlacementPlanner.plan(devices: [try SyntheticMac.idle(192).device("a", speed: fast, chip: "Apple M2 Ultra"),
+                                                          try SyntheticMac.idle(192).device("b", speed: fast, chip: "Apple M2 Ultra")],
+                                                layout: layout, policy: sharded, link: link)
+    checks.require("tensor parallel weighted: equal Macs that choose tensor parallel keep equal shards (no tensorShares)",
+        twin.chosen?.mode == .tensorParallel && twin.chosen?.tensorShares == nil)
+    // An explicit evaluation accepts an offered share and refuses another.
+    _ = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+        layout: layout, policy: sharded, link: link, tensorShares: [1, 3])
+    checks.refuses("tensor parallel weighted: an explicit evaluation refuses shares the family does not offer",
+        because: "Tensor-parallel shares must be one the family's plan accepts") {
+        _ = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: [], mode: .tensorParallel, prefillSchedule: .serial,
+            layout: layout, policy: sharded, link: link, tensorShares: [1, 7])
+    }
+    // The plan's words name the split.
+    let lines = ClusterPlacementExplanation.candidate(chosen, basis: result.basis, prompt: 1024, outputs: 128)
+    checks.require("tensor parallel weighted: the plan says \"tensor parallel, \(ClusterPlacementExplanation.shareText(shares))\"",
+        lines.contains { $0.contains("tensor parallel, \(ClusterPlacementExplanation.shareText(shares))") }
+            && ClusterPlacementExplanation.shareText([2, 3]) == "40/60" && ClusterPlacementExplanation.shareText([1, 3]) == "25/75")
+}
+
+/// The same layout whose family offers no unequal shares.
+func withoutShareOptions(_ layout: ClusterModelLayout) throws -> ClusterModelLayout {
+    var object = try JSONSerialization.jsonObject(with: layout.encoded()) as? [String: Any] ?? [:]
+    if var tp = object["tensorParallel"] as? [String: Any], var family = tp["family"] as? [String: Any] {
+        family.removeValue(forKey: "shareOptions"); tp["family"] = family; object["tensorParallel"] = tp
+    }
+    return try ClusterModelLayout.decode(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
 }
 
 // MARK: - Layout facts
@@ -148,16 +232,23 @@ private func checkTensorParallelPair(_ big: ClusterModelLayout, golden: URL, _ c
     checks.require("tensor parallel M3 Ultra + M5 Ultra with an M5-Max-like shard probe: still not chosen; the slower Mac's share sets the pace",
         withShard.tensorParallel?.verdict == .predictedSlower && withShard.chosen?.mode.usesTensorParallelDecode == false)
     if let tp = withShard.tensorParallel?.tensorParallel {
+        // The best tensor-parallel candidate may be weighted (the M5 Ultra taking more).
         let step = 1 / tp.rested.decodeTokensPerSecond
-        let expected = 1 / (35.7 / 0.845) + 129 * (45e-6 + 20_480 / 5e9)
+        let weightsOf = tp.tensorShares ?? [1, 1]
+        let fractions = weightsOf.map { Double($0) / Double(weightsOf.reduce(0, +)) }
+        let expected = zip(tp.ranks, fractions).map { rank, f in
+            ClusterDecodeSplit(rates: (rank.device == "mac-a" ? probed(300, 35.7) : probed(1530, 58)).rested).shareStepSeconds(fraction: f)
+        }.max()! + 129 * (45e-6 + 20_480 / 5e9)
         checks.require("tensor parallel M3 Ultra + M5 Ultra: the predicted step is the slower share plus 129 reductions",
             abs(step - expected) < 1e-9)
+        checks.require("tensor parallel M3 Ultra + M5 Ultra: the best tensor-parallel candidate gives the M5 Ultra the larger share",
+            tp.tensorShares.map { s in s[tp.ranks.firstIndex { $0.device == "mac-b" }!] > s[tp.ranks.firstIndex { $0.device == "mac-a" }!] } == true)
         // Each rank holds its share of every layer and the replicated embedding.
         let whole = big.wholeModelLoadedBytes, embedding = big.ingress.loadedBytes
-        checks.require("tensor parallel M3 Ultra + M5 Ultra: each rank holds about half the weights plus the replicated embedding",
-            tp.ranks.allSatisfy { rank in
-                let expected = Double(whole - embedding) / 2 + Double(embedding)
-                return abs(Double(rank.weightsBytes) - expected) / expected < 0.02 && rank.firstLayer == 0 && rank.endLayer == 64
+        checks.require("tensor parallel M3 Ultra + M5 Ultra: each rank holds about its share of the weights plus the replicated embedding",
+            zip(tp.ranks, fractions).allSatisfy { rank, f in
+                let expected = Double(whole - embedding) * f + Double(embedding)
+                return abs(Double(rank.weightsBytes) - expected) / expected < 0.03 && rank.firstLayer == 0 && rank.endLayer == 64
             } && tp.cuts.isEmpty)
     } else {
         checks.require("tensor parallel M3 Ultra + M5 Ultra: a tensor-parallel candidate was evaluated", false)

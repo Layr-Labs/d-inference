@@ -24,6 +24,9 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
     /// in `tensorParallelRefusal` (routed experts, a Prism pack, ...).
     let tensorParallel: QwenTensorParallelPlan?
     let tensorParallelRefusal: String?
+    /// Unequal share weights the plan accepts for this artifact (tried from
+    /// `QwenTensorParallelPlan.candidateShares`; each part in whole units).
+    let tensorParallelShareOptions: [[Int]]
 
     init(configuration: Data) throws {
         definition = try QwenResidentModelDefinition(configuration: configuration)
@@ -55,12 +58,15 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
             plans[cut] = try QwenLayerStagePlan(configuration: configuration, ranges: [0..<cut, cut..<geometry.layers])
         }
         self.plans = plans; structuralCuts = cuts
+        let quantization = root["quantization"] as? [String: Any] ?? [:]
         do {
-            tensorParallel = try QwenTensorParallelPlan(textConfiguration: text,
-                quantization: root["quantization"] as? [String: Any] ?? [:], size: 2)
+            tensorParallel = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2)
             tensorParallelRefusal = nil
         } catch {
             tensorParallel = nil; tensorParallelRefusal = "\(error)"
+        }
+        tensorParallelShareOptions = tensorParallel == nil ? [] : QwenTensorParallelPlan.candidateShares.filter { shares in
+            (try? QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: 2, shares: shares)) != nil
         }
     }
 
@@ -71,7 +77,8 @@ struct QwenDensePlacementFamily: ClusterPlacementFamily {
             // residual width, and the head's distributed selection per step.
             ClusterTensorParallelFamilyPlan(plan: "qwen_dense_heads_and_channels_v1", ranks: [plan.size],
                 reductionsPerLayer: plan.reductionsPerForward / plan.layerCount, reductionsPerStep: 1,
-                partialBytesPerToken: plan.hiddenSize * 4, stateDividesByHeads: true)
+                partialBytesPerToken: plan.hiddenSize * 4, stateDividesByHeads: true,
+                shareOptions: tensorParallelShareOptions)
         }
     }
 

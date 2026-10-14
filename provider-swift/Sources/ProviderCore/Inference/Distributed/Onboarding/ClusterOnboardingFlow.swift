@@ -440,7 +440,7 @@ public enum ClusterOnboardingDriver {
         console.say("The cluster:")
         for machine in machines { console.say(machine.line) }
         console.say("")
-        console.say("Planning every model both Macs have (the planner decides which Mac holds which layers and which one decodes)…")
+        console.say("Planning the models this Mac has (the planner decides which Mac holds which layers and which one decodes; a Mac that lacks the model gets it over the cable, no download by hand)…")
         let choices: [ClusterOnboardingModelChoice]
         switch operations.planModels() {
         case .success(let value): choices = value

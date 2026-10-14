@@ -32,7 +32,7 @@ struct Switch: AsyncParsableCommand {
             throw ValidationError("The running provider lacks live-switch metadata. Upgrade it before switching.")
         }
         let capabilities = Set(reportedCapabilities.map { ProviderRuntimeCapability(rawValue: $0) })
-        let snapshot = try loadRuntimeSnapshot(configPath: configPath)
+        let snapshot = try Self.loadSnapshot(configPath: configPath)
         guard let hardware = snapshot.hardware else {
             throw ValidationError("Cannot scan local models: hardware detection failed.")
         }
@@ -65,6 +65,16 @@ struct Switch: AsyncParsableCommand {
         let status = try await Self.wait(request: request, mailbox: mailbox)
         print("Hosted models switched (provider process and coordinator session unchanged):")
         for id in status.models { print("  \(id)") }
+    }
+
+    /// Reads the running provider's config and installs its
+    /// `[backend] model_cache_directory` for this invocation, as `start`/`serve`
+    /// do, so local-model discovery and the picker see the provider's cache
+    /// instead of the default Hugging Face hub.
+    static func loadSnapshot(configPath: String) throws -> RuntimeSnapshot {
+        let snapshot = try loadRuntimeSnapshot(configPath: configPath)
+        ModelScanner.configureCacheDirectory(snapshot.configuredModelCacheDirectory)
+        return snapshot
     }
 
     static func requireLiveState(

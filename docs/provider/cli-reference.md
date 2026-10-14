@@ -237,6 +237,9 @@ downloader. It checks fresh daemon identity and switch capability before opening
 the picker, and uses the running daemon's runtime capabilities rather than
 initializing a second inference runtime. There is no `--force` or `--config`:
 the daemon's own resolved config path, including a custom path, is authoritative.
+Local models are discovered through that config's `[backend] model_cache_directory`,
+the same cache `start` and `serve` use (`Switch.loadSnapshot` in
+`provider-swift/Sources/darkbloom/SwitchCommand.swift`).
 
 The provider validates local artifacts before fencing new coordinator and
 unified-local admissions, finishes accepted requests and terminal usage, and

@@ -234,15 +234,19 @@ public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     public var port: Int
     /// The plan's deployment in one line (`ClusterOnboardingDeployment.line`); nil when it is not known here.
     public var deployment: String?
-    public init(servedBy: String, port: Int, deployment: String? = nil) { self.servedBy = servedBy; self.port = port; self.deployment = deployment }
+    /// `ClusterLocalServing.notice` when rank 0 serves on its local API only (no coordinator with cluster support).
+    public var notice: String? = nil
+    public init(servedBy: String, port: Int, deployment: String? = nil, notice: String? = nil) {
+        self.servedBy = servedBy; self.port = port; self.deployment = deployment; self.notice = notice
+    }
 
     /// "API at http://localhost:8000 on this Mac": the serving API listens on loopback on the Mac that runs rank 0, so
     /// when that is the other Mac the line names it (this Mac's own loopback serves nothing).
     public var apiLine: String { "API at http://localhost:\(port) on \(servedBy)" }
 
-    /// The deployment line, then where the API is.
+    /// The deployment line, then where the API is, then (serving locally only) the plain local-serving line.
     public func lines(model: String) -> [String] {
-        [deployment ?? "Serving \(model) across both Macs", apiLine]
+        [deployment ?? "Serving \(model) across both Macs", apiLine] + (notice.map { [$0] } ?? [])
     }
 }
 

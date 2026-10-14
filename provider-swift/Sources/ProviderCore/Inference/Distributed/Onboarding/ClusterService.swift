@@ -520,7 +520,8 @@ public final class ClusterService: @unchecked Sendable {
                     lastError: child?.isRunning == true ? nil : Self.lastError(),
                     pid: child?.isRunning == true ? child?.processIdentifier : nil,
                     startedAt: child?.isRunning == true ? childStartedAt : nil,
-                    solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : nil),
+                    solo: child?.isRunning == true ? childSetup?.hasPrefix("solo:") == true : nil,
+                    notice: child?.isRunning == true && childSetup?.hasPrefix("solo:") != true ? Self.servingNotice() : nil),
                 session: session,
                 cacheSync: record?.leadership.flatMap { $0.role == ClusterOnboardingRole.member.rawValue
                     ? cacheStore.digest(leaderPin: $0.leaderPin) : nil },
@@ -591,6 +592,15 @@ public final class ClusterService: @unchecked Sendable {
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         guard let line = tail.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("Error:") }) else { return nil }
         return ClusterConsoleText.bounded(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces), maximum: 240)
+    }
+
+    /// `ClusterLocalServing.notice` when this Mac's running part (rank 0) said it serves on its local API only.
+    public static func servingNotice() -> String? {
+        guard let log = try? paths().rankLog, let handle = FileHandle(forReadingAtPath: log.path) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
+        return ClusterLocalServing.notice(inLog: String(decoding: handle.readDataToEndOfFile(), as: UTF8.self))
     }
 
     /// Kept beside the lock each tick, so `darkbloom cluster` on this Mac reads it without the link.

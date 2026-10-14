@@ -209,6 +209,7 @@ extension CoordinatorClient {
         // A member registration carries this connection's fresh negotiation
         // nonce; the coordinator's acceptance must echo it within ten seconds.
         memberNegotiation = config.executionRole == .clusterMember ? .init() : nil
+        memberOrdinaryAnswer = false
         noteMemberTransportReady(memberNegotiation)
         if let negotiation = memberNegotiation {
             memberTimeout = Task { [weak self] in

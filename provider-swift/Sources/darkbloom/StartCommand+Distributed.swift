@@ -43,8 +43,14 @@ extension Start {
         // this point runs as soon as it is attached below.)
 
         let memberTask = Task { try await member.run() }
+        // Public (registered with the coordinator) or local only: decided once,
+        // by the registration wait, before the API opens.
+        let scope = DistributedServingScope()
         let memberExit = Task {
             let result = await memberTask.result
+            // Serving locally only: the control loop was ended on purpose (or ended
+            // by the coordinator's answer); it never advertised this leader.
+            if await scope.decided() == .localOnly { return result }
             // A control loop that ended on its own says why before the stop
             // fails a request in flight (otherwise it looks like a pair failure).
             if let reason = await member.memberStopReason { printError("Distributed serving stops: \(reason).") }
@@ -53,13 +59,29 @@ extension Start {
             return result
         }
         let task = Task {
-            try await member.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
+            do {
+                try await member.waitForClusterMemberRegistration(until: .now.advanced(by: .seconds(30)))
+                await scope.decide(.publicServing)
+            } catch where ClusterLocalServing.servesLocally(after: error) && !Task.isCancelled {
+                // The coordinator cannot take the member role (unreachable, or
+                // without the role): serve on the local API only. The member
+                // connection closes, so nothing is advertised; the device lock
+                // and native lease stay held. A refusal of this member is not
+                // caught here and fails the start as before.
+                await scope.decide(.localOnly)
+                memberTask.cancel()
+                printError(error.localizedDescription)
+            } catch {
+                await scope.decide(.failed)
+                throw error
+            }
             try Task.checkCancellation()
             try await server.start()
             guard let boundPort = await server.status.boundPort else {
                 throw DistributedStartRuntimeError.listenerStopped
             }
             print("darkbloom \(ProviderCore.version) (local / distributed)")
+            printError(await scope.decided() == .localOnly ? ClusterLocalServing.logLine : ClusterLocalServing.registeredLogLine)
             print("Model: \(session.model.publicModelID)")
             print("Listening on \(bind):\(boundPort); connection details: darkbloom local")
             return await withFanActivityLease(providerVersion: ProviderCore.version) {
@@ -67,6 +89,7 @@ extension Start {
             }
         }
         let stop: @Sendable () -> Void = {
+            Task { await scope.decide(.failed) }
             task.cancel()
             memberTask.cancel()
             Task { _ = await server.stop(until: DispatchTime.now().uptimeNanoseconds + stopAllowance) }
@@ -100,8 +123,33 @@ extension Start {
             throw DistributedStartRuntimeError.cleanupUnresolved
         }
         if status.failed { throw DistributedStartRuntimeError.sessionFailed }
+        // Serving locally only, the control loop's end was the plan, not a failure.
+        if await scope.decided() == .localOnly { return }
         if case .failure(let error) = memberResult, !(error is CancellationError) { throw error }
         // A stop nobody asked for is never a clean exit: a supervisor restarts it.
         if await member.memberStopReason != nil { throw DistributedStartRuntimeError.memberControlEnded }
+    }
+}
+
+/// How a distributed leader serves this run, decided once by its registration wait: publicly (registered with the
+/// coordinator), on its local API only (`ClusterLocalServing`), or not at all (the start failed or was stopped first).
+/// The control loop's watcher waits for the decision, so a loop the coordinator's answer ended at the same moment is
+/// never mistaken for a lost public registration (which stops the server).
+actor DistributedServingScope {
+    enum Mode: Equatable { case publicServing, localOnly, failed }
+    private var mode: Mode?
+    private var waiters: [CheckedContinuation<Mode, Never>] = []
+
+    /// The first decision wins.
+    func decide(_ value: Mode) {
+        guard mode == nil else { return }
+        mode = value
+        let resumed = waiters; waiters = []
+        for waiter in resumed { waiter.resume(returning: value) }
+    }
+
+    func decided() async -> Mode {
+        if let mode { return mode }
+        return await withCheckedContinuation { waiters.append($0) }
     }
 }

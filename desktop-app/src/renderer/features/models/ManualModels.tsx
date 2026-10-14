@@ -39,8 +39,12 @@ export function ManualModels({
   const [filter, setFilter] = useState<Filter>('all');
   const [selection, setSelection] = useState<string[] | null>(null);
   const [remove, setRemove] = useState<NativeModel>();
-  const chosen =
-    selection || state.models.filter((model) => model.serving).map((model) => model.id);
+  // A chosen model that is removed (or never finished downloading) can no longer serve, so it
+  // leaves the selection rather than staying checked, disabled and submitted.
+  const onDisk = new Set(state.models.filter((model) => model.downloaded).map((model) => model.id));
+  const chosen = (
+    selection || state.models.filter((model) => model.serving).map((model) => model.id)
+  ).filter((id) => onDisk.has(id));
   const models = useMemo(
     () =>
       ranked.filter(
@@ -77,14 +81,21 @@ export function ManualModels({
           <span className="muted">Native load allowance</span>
           <strong>{gb(state.memory.free_for_load_gb)}</strong>
         </div>
-        <div className="memory-track">
-          <span
-            style={{
-              width: `${Math.min(100, ((state.memory.active_gb || 0) / (state.memory.total_gb || 1)) * 100)}%`,
-            }}
-          />
-        </div>
-        <p>{gb(state.memory.total_gb)} unified memory</p>
+        {/* Unreported usage is not drawn as an empty (0%) bar. */}
+        {state.memory.active_gb != null && state.memory.total_gb > 0 && (
+          <div className="memory-track">
+            <span
+              style={{
+                width: `${Math.min(100, (state.memory.active_gb / state.memory.total_gb) * 100)}%`,
+              }}
+            />
+          </div>
+        )}
+        <p>
+          {state.memory.total_gb > 0
+            ? `${gb(state.memory.total_gb)} unified memory`
+            : 'Unified memory unknown'}
+        </p>
       </div>
       <ModelToolbar
         filters={filters}
@@ -147,7 +158,12 @@ export function ManualModels({
                   </>
                 ) : (
                   <Button
-                    disabled={backend.busy}
+                    // A model this Mac can't run (its reason is shown above) isn't offered for
+                    // download; Autopilot's view treats it as not available the same way.
+                    disabled={backend.busy || !model.eligible}
+                    title={
+                      model.eligible ? undefined : (model.reason ?? 'Not available on this Mac')
+                    }
                     onClick={() => void backend.act({ action: 'download', model: model.id })}
                   >
                     <Download size={15} /> Download
@@ -158,10 +174,24 @@ export function ManualModels({
           )}
         </ExpandableModelList>
       ) : (
-        <Empty title={query ? 'No matching models' : 'No models available'}>
+        <Empty
+          title={
+            query
+              ? 'No matching models'
+              : !ranked.length
+                ? 'No models available'
+                : filter === 'downloaded'
+                  ? 'No downloaded models'
+                  : 'No models serving'
+          }
+        >
           {query
             ? 'Try another name or change the filter.'
-            : 'Connect to the network to load the model catalog.'}
+            : !ranked.length
+              ? 'Connect to the network to load the model catalog.'
+              : filter === 'downloaded'
+                ? 'Download a model to choose it for serving.'
+                : 'Choose downloaded models and apply the selection.'}
         </Empty>
       )}
       <footer className="list-footer">

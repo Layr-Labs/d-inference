@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop manual model selection
+
+- In manual model selection, drop a chosen model from the selection when it is removed, instead of leaving it checked, disabled and submitted with Apply selection. Do not draw unreported memory use as an empty bar, and explain an empty Downloaded or Serving filter instead of saying the model catalog failed to load. Don't offer to download a model this Mac can't run.
 ## Unreleased — desktop Leaderboard loading and network totals
 
 - Refresh the Leaderboard's network map totals while the page is open, as its "Refreshes every 30 seconds" caption says; they previously stayed at the last Home visit. Show "Loading rankings…" until rankings first load and "No rankings yet" for an empty result, instead of "Leaderboard unavailable", and do not call failed first network statistics "last known totals". Providers that share a pseudonym no longer collide in the rankings list.

@@ -10,6 +10,7 @@ import MLX
 //       [--backend jaccl|ring] [--timing lazy|explicit] [--prefill-rank R] [--record-top K] [--repeats N] [--warmup yes|no]
 //       [--wired-residency yes|no] [--deadline-seconds S] [--output-count N] [--partials float32|bfloat16]
 //       [--shard-rank R (shard-local)] [--census yes|no (no peer: one decode step's primitives by name)]
+//       [--shares A:B (each rank's share weight; default 1:1 = equal shards)]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
 //
 // `full` is the unsharded model on one Mac (this code path's single-Mac
@@ -93,6 +94,8 @@ struct Report: Codable {
     var wiredResidencyBytes: Int?
     var reductionsPerForward: Int?
     var floatingReductions: Int?
+    /// Each rank's share weight (tp and shard-local; nil when equal).
+    var shares: [Int]?
     /// Diagnostic (--census yes): primitives of one decode step's graph by name, and their total.
     var census: [String: Int]?
     var censusTotal: Int?
@@ -115,6 +118,7 @@ struct Options {
     var prefillRank = 1
     var shardRank = 0
     var partials = "float32"
+    var shares = [1, 1]
     var recordTop = 0
     var repeats = 1
     var warmup = true
@@ -156,6 +160,10 @@ struct Options {
             case "--prefill-rank": prefillRank = Int(try value()) ?? -1
             case "--shard-rank": shardRank = Int(try value()) ?? -1
             case "--partials": partials = try value()
+            case "--shares":
+                let parts = try value().split(separator: ":").map { Int($0) ?? 0 }
+                guard parts.count == 2, parts.allSatisfy({ (1...1_000).contains($0) }) else { throw Failure("--shares needs A:B") }
+                shares = parts
             case "--record-top": recordTop = Int(try value()) ?? -1
             case "--repeats": repeats = Int(try value()) ?? 0
             case "--warmup": warmup = try yesNo(try value())
@@ -179,6 +187,9 @@ struct Options {
             guard !FileManager.default.fileExists(atPath: report) else { throw Failure("the report file already exists") }
             if ["tp", "hybrid", "shard-local"].contains(mode) && recordTop > 0 { throw Failure("a tp rank does not record logits") }
             if census && ["tp", "hybrid"].contains(mode) { throw Failure("the census runs only without a peer") }
+            if Set(shares).count > 1 && ["full", "simulated", "hybrid"].contains(mode) {
+                throw Failure("unequal --shares apply to tp and shard-local only")
+            }
         } else {
             guard !reference.isEmpty, !candidate.isEmpty, nearTieULPs >= 0 else {
                 throw Failure("compare needs --reference and --candidate")
@@ -238,7 +249,7 @@ enum RunCommand {
             let launch = QwenTensorParallelLaunch(outputCount: outputCount, chunkSize: request.chunkSize,
                 promptTokens: request.promptTokenIDs.count, repeats: options.repeats, warmup: options.warmup,
                 explicitTiming: options.timing == .explicit, bfloat16Partials: options.partials == "bfloat16",
-                hybridPrefillRank: options.mode == "hybrid" ? options.prefillRank : nil)
+                hybridPrefillRank: options.mode == "hybrid" ? options.prefillRank : nil, shares: options.shares)
             // First exchange: fixed width in every build (4 int32 per rank), so a rank of another build is refused.
             guard try g.digestsEqual(launch.digest),
                   try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";"))) else {
@@ -250,7 +261,8 @@ enum RunCommand {
         let reduction: QwenTensorParallelReduction? = options.mode == "shard-local"
             ? QwenTensorParallelLocalReduction(rank: options.shardRank, size: 2) : group
         let model = try QwenTensorParallelModel.load(modelDirectory: directory, role: role, reduction: reduction,
-            timing: options.timing, partialDType: options.partials == "bfloat16" ? .bfloat16 : .float32)
+            timing: options.timing, partialDType: options.partials == "bfloat16" ? .bfloat16 : .float32,
+            shares: ["tp", "shard-local"].contains(options.mode) ? options.shares : nil)
         note("loaded in \(String(format: "%.1f", model.loadSeconds)) s, active \(model.loadedActiveBytes) bytes")
         var unsharded: QwenTensorParallelModel?
         if options.mode == "hybrid", let group, group.rank == options.prefillRank {
@@ -278,7 +290,8 @@ enum RunCommand {
             outputCount: outputCount, chunkSize: request.chunkSize, environment: snapshot,
             loadSeconds: model.loadSeconds, loadedActiveBytes: model.loadedActiveBytes,
             loadedParameterBytes: model.loadedParameterBytes, wiredResidencyBytes: residency?.receipt.appliedBytes,
-            reductionsPerForward: group == nil ? nil : model.plan.reductionsPerForward)
+            reductionsPerForward: group == nil ? nil : model.plan.reductionsPerForward,
+            shares: model.plan.equalShares ? nil : model.plan.shares)
 
         if options.census {
             let counts = try model.decodeStepCensus(prompt: Array(request.promptTokenIDs.prefix(min(64, request.promptTokenIDs.count))))

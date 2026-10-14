@@ -104,11 +104,12 @@ func coverage(_ tensor: Tensor, _ cuts: [QwenTensorParallelPlan.Cut], _ plan: Qw
 }
 
 /// The shape the rank's divided configuration constructs for a tensor.
-func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], _ plan: QwenTensorParallelPlan) -> [Int]? {
+func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], _ plan: QwenTensorParallelPlan,
+                      rank: Int) -> [Int]? {
     let h = shard["hidden_size"] as! Int, hq = shard["num_attention_heads"] as! Int, hkv = shard["num_key_value_heads"] as! Int
     let lk = (shard["linear_num_key_heads"] as! Int) * 128, lv = (shard["linear_num_value_heads"] as! Int) * 128
     let nv = shard["linear_num_value_heads"] as! Int, inter = shard["intermediate_size"] as! Int
-    let vocab = plan.vocabularySize / plan.size
+    let vocab = plan.vocabularyRange(rank: rank).count
     let leaf = String(name.split(separator: ".").last!)
     func q(_ out: Int, _ input: Int) -> [Int]? {
         switch leaf {
@@ -131,11 +132,15 @@ func constructedShape(_ name: String, _ tensor: Tensor, _ shard: [String: Any], 
     return tensor.shape // replicated tensors keep the checkpoint shape
 }
 
-func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor], quantization: [String: Any]) {
-    guard let plan = try? QwenTensorParallelPlan(textConfiguration: configuration, quantization: quantization, size: 2) else {
-        failures += 1; print("FAIL: \(label): plan refused"); return
+func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor], quantization: [String: Any],
+               shares: [Int]? = nil) {
+    let plan: QwenTensorParallelPlan
+    do {
+        plan = try QwenTensorParallelPlan(textConfiguration: configuration, quantization: quantization, size: 2, shares: shares)
+    } catch {
+        failures += 1; print("FAIL: \(label): plan refused: \(error)"); return
     }
-    let shard = plan.shardTextConfiguration(configuration)
+    let shards = (0..<2).map { plan.shardTextConfiguration(configuration, rank: $0) }
     var loaded = 0, skipped = 0, rowParallel = Set<String>()
     for tensor in tensors {
         let dispositions = (0..<2).compactMap { try? plan.disposition(key: tensor.name, rank: $0) }
@@ -149,7 +154,7 @@ func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor],
         check(coverage(tensor, cuts, plan), "\(label): \(tensor.name) not covered exactly once")
         for (rank, cut) in cuts.enumerated() {
             let got = cutShape(tensor, cut, plan)
-            let want = constructedShape(tensor.name, tensor, shard, plan)
+            let want = constructedShape(tensor.name, tensor, shards[rank], plan, rank: rank)
             check(got != nil && got == want, "\(label): \(tensor.name) rank \(rank) cut \(String(describing: got)) != constructed \(String(describing: want))")
             if case .inputColumns = cut { rowParallel.insert(tensor.name.split(separator: ".").dropLast().joined(separator: ".")) }
         }
@@ -158,6 +163,53 @@ func checkPlan(_ label: String, configuration: [String: Any], tensors: [Tensor],
     check(rowParallel == Set(plan.rowParallelModulePaths()), "\(label): row-parallel modules differ from the plan's list")
     check(plan.reductionsPerForward == 2 * plan.layerCount, "\(label): reductions per forward")
     print("\(label): \(loaded) tensors cut or replicated, \(skipped) skipped, \(rowParallel.count) row-parallel projections")
+}
+
+/// Weighted shares for unequal Macs: every tensor still covered exactly once
+/// with the shapes each rank's own configuration constructs; parts move in
+/// whole units (KV heads with their query heads, linear key heads with their
+/// value heads, quantization groups of MLP channels); equal weights give the
+/// equal plan; refusals when a rank would get no unit of a part.
+func checkWeightedShares(c27: [String: Any], c9: [String: Any], quantization: [String: Any]) {
+    for shares in [[1, 3], [3, 1], [2, 3], [3, 5], [1, 4], [1, 2]] {
+        checkPlan("synthetic 27B shares \(shares)", configuration: c27, tensors: syntheticTensors(c27),
+                  quantization: quantization, shares: shares)
+        checkPlan("synthetic 9B shares \(shares)", configuration: c9, tensors: syntheticTensors(c9),
+                  quantization: quantization, shares: shares)
+    }
+    guard let equal = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2),
+          let ones = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 1]),
+          let twos = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [2, 2]),
+          let weighted = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 3])
+    else { failures += 1; print("FAIL: weighted shares: a plan was refused"); return }
+    check(equal == ones, "weighted shares: [1, 1] is the equal plan")
+    let keys = syntheticTensors(c27).map(\.name)
+    check(keys.allSatisfy { k in (0..<2).allSatisfy { (try? equal.disposition(key: k, rank: $0)) == (try? twos.disposition(key: k, rank: $0)) } },
+          "weighted shares: [2, 2] cuts like [1, 1]")
+    check(equal.equalShares && !weighted.equalShares, "weighted shares: equalShares")
+    // 27B: 4 KV heads -> 1 + 3; 16 linear key heads -> 4 + 12; 17408 channels = 272 groups -> 68 + 204 groups.
+    check(weighted.kvHeadsPerRank == [1, 3] && weighted.attentionHeadsPerRank == [6, 18], "27B 1:3 attention heads")
+    check(weighted.linearKeyHeadsPerRank == [4, 12] && weighted.linearValueHeadsPerRank == [12, 36], "27B 1:3 linear heads")
+    check(weighted.intermediatePerRank == [4352, 13056], "27B 1:3 MLP channels")
+    check(weighted.vocabularyRange(rank: 0) == 0..<62_080 && weighted.vocabularyRange(rank: 1) == 62_080..<248_320,
+          "27B 1:3 vocabulary rows")
+    check(weighted.linearQKVRows(rank: 1) == [512..<2048, 2560..<4096, 5632..<10240], "27B 1:3 rank 1 q/k/v rows")
+    let s0 = weighted.shardTextConfiguration(c27, rank: 0)
+    check(s0["num_attention_heads"] as? Int == 6 && s0["num_key_value_heads"] as? Int == 1
+          && s0["linear_num_key_heads"] as? Int == 4 && s0["linear_num_value_heads"] as? Int == 12
+          && s0["intermediate_size"] as? Int == 4352, "27B 1:3 rank 0 configuration")
+    // Largest remainder, ties to the lower rank: 3:5 of 4 KV heads = 1.5 / 2.5 -> 2 + 2.
+    if let p = try? QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [3, 5]) {
+        check(p.kvHeadsPerRank == [2, 2] && p.linearKeyHeadsPerRank == [6, 10] && p.intermediatePerRank == [6528, 10880],
+              "27B 3:5 apportioned \(p.kvHeadsPerRank) \(p.linearKeyHeadsPerRank) \(p.intermediatePerRank)")
+    }
+    expectThrows("a rank without a KV head (1:9 of 4)") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 9]) }
+    expectThrows("a zero share") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [0, 1]) }
+    expectThrows("shares for the wrong rank count") {
+        _ = try QwenTensorParallelPlan(textConfiguration: c27, quantization: quantization, size: 2, shares: [1, 1, 1]) }
+    print("weighted shares: 12 plans covered, apportionment and refusals checked")
 }
 
 /// Every launch option that changes the collectives must change the first
@@ -182,6 +234,8 @@ func checkLaunchAgreement() {
     variant("bfloat16 partials") { $0.bfloat16Partials = true }
     variant("hybrid, prefill rank 0") { $0.hybridPrefillRank = 0 }
     variant("hybrid, prefill rank 1") { $0.hybridPrefillRank = 1 }
+    variant("shares 1:3") { $0.shares = [1, 3] }
+    variant("shares 3:1") { $0.shares = [3, 1] }
     for (label, launch) in variants {
         check(launch != base, "launch: \(label) variant equals the base")
         check(launch.agreement != base.agreement, "launch: a rank launched with a different \(label) still agrees")
@@ -241,11 +295,12 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
         // The linear attention's packed projection keeps each head block of q, k and v.
         check(plan.linearQKVRows(rank: 1) == [1024..<2048, 3072..<4096, 7168..<10240], "27B rank 1 q/k/v rows")
         check(plan.vocabularyRange(rank: 1) == 124_160..<248_320, "27B rank 1 vocabulary rows")
-        let shard = plan.shardTextConfiguration(c27)
+        let shard = plan.shardTextConfiguration(c27, rank: 1)
         check(shard["num_attention_heads"] as? Int == 12 && shard["num_key_value_heads"] as? Int == 2
               && shard["linear_num_key_heads"] as? Int == 8 && shard["linear_num_value_heads"] as? Int == 24
               && shard["intermediate_size"] as? Int == 8704 && shard["mtp_num_hidden_layers"] as? Int == 0, "27B shard configuration")
 
+        checkWeightedShares(c27: c27, c9: c9, quantization: quantization)
         checkLaunchAgreement()
 
         for path in CommandLine.arguments.dropFirst() {
@@ -253,7 +308,10 @@ func checkpointTensors(_ directory: URL) throws -> [Tensor] {
             let root = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as! [String: Any]
             let text = root["text_config"] as! [String: Any]
             let q = (root["quantization"] ?? root["quantization_config"]) as! [String: Any]
-            checkPlan("checkpoint \(directory.lastPathComponent)", configuration: text, tensors: try checkpointTensors(directory), quantization: q)
+            let tensors = try checkpointTensors(directory)
+            checkPlan("checkpoint \(directory.lastPathComponent)", configuration: text, tensors: tensors, quantization: q)
+            checkPlan("checkpoint \(directory.lastPathComponent) shares [1, 3]", configuration: text, tensors: tensors,
+                      quantization: q, shares: [1, 3])
         }
         print(failures == 0 ? "PASS" : "FAILED: \(failures)")
         exit(failures == 0 ? 0 : 1)

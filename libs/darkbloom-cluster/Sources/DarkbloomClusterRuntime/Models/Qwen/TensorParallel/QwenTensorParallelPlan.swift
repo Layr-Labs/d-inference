@@ -2,7 +2,8 @@ import Foundation
 
 /// How a dense Qwen 3.5-family text model (full-attention layers with an
 /// output gate, Gated DeltaNet linear-attention layers, a SwiGLU MLP) is split
-/// across `size` ranks by heads and channels, with equal shards.
+/// across `size` ranks by heads and channels: equal shards, or shares weighted
+/// by `shares` for unequal Macs (`QwenTensorParallelShares`).
 ///
 /// The recipe is the owner's oMLX `tensor_strategies.py` (Qwen3-Next adapter)
 /// applied to Qwen 3.5's separate input projections:
@@ -24,6 +25,15 @@ import Foundation
 /// contiguous head blocks keep every head with the key and value heads it
 /// reads. Quantization groups run along the input axis: a row cut never splits
 /// a group, and a column cut must land on a group boundary (checked).
+///
+/// Weighted shares divide each part in its own whole units, in rank order and
+/// contiguously: the full attention by KV heads (each with the query heads
+/// that read it), the linear attention by key heads (each with its value
+/// heads), the MLP by quantization groups of channels and the LM head by
+/// vocabulary rows; every rank gets at least one unit of every part. The
+/// arithmetic of a row-parallel sum is unchanged (each rank's float32 partial
+/// over its own input columns, one float32 add, one rounding), so a weighted
+/// split is held to the same near-tie rule as an equal one.
 public struct QwenTensorParallelPlan: Sendable, Equatable {
     public let size: Int
     public let hiddenSize: Int
@@ -40,6 +50,16 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public let vocabularySize: Int
     public let groupSize: Int
     public let bits: Int
+    /// Each rank's weight (all ones: equal shards).
+    public let shares: [Int]
+    /// Per rank: KV heads of the full attention, key heads of the linear
+    /// attention, MLP channels and vocabulary rows (rank order, contiguous).
+    public let kvHeadsPerRank: [Int]
+    public let linearKeyHeadsPerRank: [Int]
+    public let intermediatePerRank: [Int]
+    public let vocabularyPerRank: [Int]
+    /// True when every rank holds the same share.
+    public var equalShares: Bool { Set(shares).count == 1 }
 
     /// A tensor's cut for one rank.
     public enum Cut: Equatable, Sendable {
@@ -62,8 +82,10 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public static let modelTypes: Set<String> = ["qwen3_5_text"]
 
     /// `text` is the checkpoint's `text_config` object; `quantization` the
-    /// checkpoint's top-level `quantization` object.
-    public init(textConfiguration text: [String: Any], quantization: [String: Any], size: Int) throws {
+    /// checkpoint's top-level `quantization` object; `shares` each rank's
+    /// positive weight (nil: equal shards).
+    public init(textConfiguration text: [String: Any], quantization: [String: Any], size: Int,
+                shares: [Int]? = nil) throws {
         func integer(_ key: String) throws -> Int {
             guard let value = text[key] as? Int, value > 0 else {
                 throw ProbeError("Tensor parallel plan: text configuration lacks a positive \(key)")
@@ -94,7 +116,12 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             throw ProbeError("Tensor parallel plan: per-module quantization overrides are not covered")
         }
         guard size >= 2 else { throw ProbeError("Tensor parallel plan: needs at least two ranks") }
+        let shares = shares ?? Array(repeating: 1, count: size)
+        guard shares.count == size, shares.allSatisfy({ (1...1_000).contains($0) }) else {
+            throw ProbeError("Tensor parallel plan: one positive share (at most 1000) per rank")
+        }
         self.size = size
+        self.shares = shares
         self.groupSize = groupSize
         self.bits = bits
         hiddenSize = try integer("hidden_size")
@@ -110,39 +137,76 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         intermediateSize = try integer("intermediate_size")
         vocabularySize = try integer("vocab_size")
 
-        func divisible(_ value: Int, _ label: String) throws {
-            guard value % size == 0 else {
-                throw ProbeError("Tensor parallel plan: \(label) (\(value)) is not divisible by \(size) ranks")
-            }
-        }
-        try divisible(attentionHeads, "attention heads")
-        try divisible(kvHeads, "KV heads")
-        try divisible(linearKeyHeads, "linear key heads")
-        try divisible(linearValueHeads, "linear value heads")
-        try divisible(intermediateSize, "intermediate size")
-        try divisible(vocabularySize, "vocabulary")
         guard attentionHeads % kvHeads == 0, linearValueHeads % linearKeyHeads == 0 else {
             throw ProbeError("Tensor parallel plan: head groups are uneven")
         }
+        // Equal shares keep the original rule: every count divides by the ranks.
+        let equal = Set(shares).count == 1
+        if equal {
+            func divisible(_ value: Int, _ label: String) throws {
+                guard value % size == 0 else {
+                    throw ProbeError("Tensor parallel plan: \(label) (\(value)) is not divisible by \(size) ranks")
+                }
+            }
+            try divisible(attentionHeads, "attention heads")
+            try divisible(kvHeads, "KV heads")
+            try divisible(linearKeyHeads, "linear key heads")
+            try divisible(linearValueHeads, "linear value heads")
+            try divisible(intermediateSize, "intermediate size")
+            try divisible(vocabularySize, "vocabulary")
+        }
+        // MLP channels move in whole quantization groups (and packed words).
+        let channelUnit = Self.lcm(groupSize, 32 / bits)
+        guard intermediateSize % channelUnit == 0 else {
+            throw ProbeError("Tensor parallel plan: the MLP width (\(intermediateSize)) is not whole quantization groups")
+        }
+        kvHeadsPerRank = try Self.apportion(kvHeads, shares, "KV heads")
+        linearKeyHeadsPerRank = try Self.apportion(linearKeyHeads, shares, "linear key heads")
+        intermediatePerRank = try Self.apportion(intermediateSize / channelUnit, shares, "MLP channel groups").map { $0 * channelUnit }
+        vocabularyPerRank = try Self.apportion(vocabularySize, shares, "vocabulary rows")
         // Row-parallel input widths must land on quantization groups and packed words.
-        for (width, label) in [(attentionHeads / size * headDim, "attention output"),
-                               (linearValueHeads / size * linearValueHeadDim, "linear attention output"),
-                               (intermediateSize / size, "MLP down projection")] {
-            guard width % groupSize == 0, (width * bits) % 32 == 0 else {
-                throw ProbeError("Tensor parallel plan: the \(label) shard (\(width)) does not land on a quantization group")
+        for rank in 0..<size {
+            for (width, label) in [(kvHeadsPerRank[rank] * (attentionHeads / kvHeads) * headDim, "attention output"),
+                                   (linearKeyHeadsPerRank[rank] * (linearValueHeads / linearKeyHeads) * linearValueHeadDim,
+                                    "linear attention output"),
+                                   (intermediatePerRank[rank], "MLP down projection")] {
+                guard width % groupSize == 0, (width * bits) % 32 == 0 else {
+                    throw ProbeError("Tensor parallel plan: the \(label) shard (\(width)) does not land on a quantization group")
+                }
             }
         }
     }
 
-    /// The text configuration a rank constructs: heads and channels divided,
-    /// no multi-token prediction head (the plan covers the target model only).
-    public func shardTextConfiguration(_ text: [String: Any]) -> [String: Any] {
+    /// Whole units of a part divided by weight: largest remainder, ties to the
+    /// lower rank, deterministic. Every rank must get at least one unit.
+    static func apportion(_ units: Int, _ weights: [Int], _ label: String) throws -> [Int] {
+        let total = weights.reduce(0, +)
+        var counts = weights.map { units * $0 / total }
+        let remainders = weights.enumerated().map { (rank: $0.offset, rest: units * $0.element % total) }
+        var left = units - counts.reduce(0, +)
+        for entry in remainders.sorted(by: { $0.rest != $1.rest ? $0.rest > $1.rest : $0.rank < $1.rank }) where left > 0 {
+            counts[entry.rank] += 1; left -= 1
+        }
+        guard counts.allSatisfy({ $0 >= 1 }) else {
+            throw ProbeError("Tensor parallel plan: shares \(weights) leave a rank without \(label) (\(units) in all)")
+        }
+        return counts
+    }
+
+    static func lcm(_ a: Int, _ b: Int) -> Int {
+        func gcd(_ x: Int, _ y: Int) -> Int { y == 0 ? x : gcd(y, x % y) }
+        return a / gcd(a, b) * b
+    }
+
+    /// The text configuration `rank` constructs: its heads and channels, no
+    /// multi-token prediction head (the plan covers the target model only).
+    public func shardTextConfiguration(_ text: [String: Any], rank: Int) -> [String: Any] {
         var shard = text
-        shard["num_attention_heads"] = attentionHeads / size
-        shard["num_key_value_heads"] = kvHeads / size
-        shard["linear_num_key_heads"] = linearKeyHeads / size
-        shard["linear_num_value_heads"] = linearValueHeads / size
-        shard["intermediate_size"] = intermediateSize / size
+        shard["num_attention_heads"] = kvHeadsPerRank[rank] * (attentionHeads / kvHeads)
+        shard["num_key_value_heads"] = kvHeadsPerRank[rank]
+        shard["linear_num_key_heads"] = linearKeyHeadsPerRank[rank]
+        shard["linear_num_value_heads"] = linearKeyHeadsPerRank[rank] * (linearValueHeads / linearKeyHeads)
+        shard["intermediate_size"] = intermediatePerRank[rank]
         shard["mtp_num_hidden_layers"] = 0
         return shard
     }
@@ -154,18 +218,24 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         return full
     }
 
-    private func block(_ total: Int, rank: Int, offset: Int = 0) -> Range<Int> {
-        let width = total / size
-        return (offset + rank * width) ..< (offset + (rank + 1) * width)
+    /// `rank`'s contiguous range of a part whose per-rank counts are `counts`
+    /// (in units of `unit` elements), shifted by `offset`.
+    private func block(_ counts: [Int], unit: Int = 1, rank: Int, offset: Int = 0) -> Range<Int> {
+        let start = counts[..<rank].reduce(0, +) * unit
+        return (offset + start) ..< (offset + start + counts[rank] * unit)
     }
+
+    /// Per rank: query heads, value heads of the linear attention.
+    public var attentionHeadsPerRank: [Int] { kvHeadsPerRank.map { $0 * (attentionHeads / kvHeads) } }
+    public var linearValueHeadsPerRank: [Int] { linearKeyHeadsPerRank.map { $0 * (linearValueHeads / linearKeyHeads) } }
 
     /// The rows of the linear attention's packed query/key/value projection and
     /// its depthwise convolution channels that this rank keeps.
     func linearQKVRows(rank: Int) -> [Range<Int>] {
         let keyDim = linearKeyHeads * linearKeyHeadDim
-        let valueDim = linearValueHeads * linearValueHeadDim
-        return [block(keyDim, rank: rank), block(keyDim, rank: rank, offset: keyDim),
-                block(valueDim, rank: rank, offset: 2 * keyDim)]
+        let k = block(linearKeyHeadsPerRank, unit: linearKeyHeadDim, rank: rank)
+        return [k, block(linearKeyHeadsPerRank, unit: linearKeyHeadDim, rank: rank, offset: keyDim),
+                block(linearValueHeadsPerRank, unit: linearValueHeadDim, rank: rank, offset: 2 * keyDim)]
     }
 
     /// The cut of one checkpoint key (`language_model.` prefixed, as the
@@ -180,7 +250,7 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
             return .load(.replicate)
         }
         if key.hasPrefix("language_model.lm_head.") {
-            return .load(.rows([block(vocabularySize, rank: rank)]))
+            return .load(.rows([block(vocabularyPerRank, rank: rank)]))
         }
         let prefix = "language_model.model.layers."
         guard key.hasPrefix(prefix) else { throw ProbeError("Tensor parallel plan: unknown checkpoint key \(key)") }
@@ -195,33 +265,32 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
         let leaf = parts[parts.count - 1]
         let quantizedLeaf = ["weight", "scales", "biases"].contains(leaf)
         let isLinear = (layer + 1) % fullAttentionInterval != 0
-        let qkvWidth = 2 * headDim * attentionHeads
         switch module {
         case "input_layernorm", "post_attention_layernorm", "self_attn.q_norm", "self_attn.k_norm", "linear_attn.norm":
             guard leaf == "weight" else { break }
             return .load(.replicate)
         case "self_attn.q_proj" where !isLinear && quantizedLeaf:
-            return .load(.rows([block(qkvWidth, rank: rank)]))
+            return .load(.rows([block(attentionHeadsPerRank, unit: 2 * headDim, rank: rank)]))
         case "self_attn.k_proj" where !isLinear && quantizedLeaf, "self_attn.v_proj" where !isLinear && quantizedLeaf:
-            return .load(.rows([block(kvHeads * headDim, rank: rank)]))
+            return .load(.rows([block(kvHeadsPerRank, unit: headDim, rank: rank)]))
         case "self_attn.o_proj" where !isLinear && quantizedLeaf:
-            return .load(.inputColumns(block(attentionHeads * headDim, rank: rank)))
+            return .load(.inputColumns(block(attentionHeadsPerRank, unit: headDim, rank: rank)))
         case "linear_attn.in_proj_qkv" where isLinear && quantizedLeaf:
             return .load(.rows(linearQKVRows(rank: rank)))
         case "linear_attn.conv1d" where isLinear && leaf == "weight":
             return .load(.rows(linearQKVRows(rank: rank)))
         case "linear_attn.in_proj_z" where isLinear && quantizedLeaf:
-            return .load(.rows([block(linearValueHeads * linearValueHeadDim, rank: rank)]))
+            return .load(.rows([block(linearValueHeadsPerRank, unit: linearValueHeadDim, rank: rank)]))
         case "linear_attn.in_proj_b" where isLinear && quantizedLeaf, "linear_attn.in_proj_a" where isLinear && quantizedLeaf:
-            return .load(.rows([block(linearValueHeads, rank: rank)]))
+            return .load(.rows([block(linearValueHeadsPerRank, rank: rank)]))
         case "linear_attn.out_proj" where isLinear && quantizedLeaf:
-            return .load(.inputColumns(block(linearValueHeads * linearValueHeadDim, rank: rank)))
+            return .load(.inputColumns(block(linearValueHeadsPerRank, unit: linearValueHeadDim, rank: rank)))
         case "mlp.gate_proj" where quantizedLeaf, "mlp.up_proj" where quantizedLeaf:
-            return .load(.rows([block(intermediateSize, rank: rank)]))
+            return .load(.rows([block(intermediatePerRank, rank: rank)]))
         case "mlp.down_proj" where quantizedLeaf:
-            return .load(.inputColumns(block(intermediateSize, rank: rank)))
+            return .load(.inputColumns(block(intermediatePerRank, rank: rank)))
         case "linear_attn" where isLinear && (name == "linear_attn.A_log" || name == "linear_attn.dt_bias"):
-            return .load(.rows([block(linearValueHeads, rank: rank)]))
+            return .load(.rows([block(linearValueHeadsPerRank, rank: rank)]))
         default:
             break
         }
@@ -243,5 +312,5 @@ public struct QwenTensorParallelPlan: Sendable, Equatable {
     public var reductionsPerForward: Int { 2 * layerCount }
 
     /// Vocabulary rows this rank's LM head holds.
-    public func vocabularyRange(rank: Int) -> Range<Int> { block(vocabularySize, rank: rank) }
+    public func vocabularyRange(rank: Int) -> Range<Int> { block(vocabularyPerRank, rank: rank) }
 }

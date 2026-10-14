@@ -50,7 +50,7 @@ public final class QwenTensorParallelModel {
     /// `reduction` is required for `shard` and refused otherwise.
     public static func load(modelDirectory: URL, role: Role, reduction: QwenTensorParallelReduction?,
                             timing: QwenTensorParallelReductionTiming = .lazy,
-                            partialDType: DType = .float32) throws -> QwenTensorParallelModel {
+                            partialDType: DType = .float32, shares: [Int]? = nil) throws -> QwenTensorParallelModel {
         guard [.float32, .bfloat16].contains(partialDType) else {
             throw ProbeError("Tensor parallel load: partial sums are float32 or bfloat16")
         }
@@ -68,7 +68,11 @@ public final class QwenTensorParallelModel {
         case .simulated(let s): size = s; rank = 0
         case .shard(let r, let s): size = s; rank = r
         }
-        let plan = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: size)
+        let plan = try QwenTensorParallelPlan(textConfiguration: text, quantization: quantization, size: size,
+                                              shares: shares)
+        if case .simulated = role, !plan.equalShares {
+            throw ProbeError("Tensor parallel load: the split-sum oracle covers equal shards only")
+        }
         if case .shard = role {
             guard let reduction, reduction.size == size, reduction.rank == rank else {
                 throw ProbeError("Tensor parallel load: a shard needs the reduction of its own rank and group size")
@@ -78,7 +82,7 @@ public final class QwenTensorParallelModel {
         }
 
         let constructed: [String: Any]
-        if case .shard = role { constructed = plan.shardTextConfiguration(text) } else { constructed = plan.unshardedTextConfiguration(text) }
+        if case .shard = role { constructed = plan.shardTextConfiguration(text, rank: rank) } else { constructed = plan.unshardedTextConfiguration(text) }
         let wrapper: [String: Any] = ["model_type": "qwen3_5", "text_config": constructed]
         let configuration = try JSONDecoder().decode(Qwen35Configuration.self,
             from: JSONSerialization.data(withJSONObject: wrapper, options: [.sortedKeys]))

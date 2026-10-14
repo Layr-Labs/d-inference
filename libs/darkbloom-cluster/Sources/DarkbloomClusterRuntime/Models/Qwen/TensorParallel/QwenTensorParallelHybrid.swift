@@ -59,6 +59,7 @@ public enum QwenTensorParallelHybrid {
                                 outputCount: Int, chunk: Int, convolutionKernel: Int = 4,
                                 activationDType: DType = .bfloat16) throws -> QwenTensorParallelModel.Generation {
         let plan = shard.plan
+        guard plan.equalShares else { throw ProbeError("Hybrid: the state cut by heads covers equal shards only") }
         guard case .shard(let rank, let size) = shard.role, rank == group.rank, size == group.size, size == 2,
               (0..<size).contains(prefillRank), (rank == prefillRank) == (full != nil),
               full.map({ $0.role == .full }) ?? true, !prompt.isEmpty, outputCount >= 1 else {

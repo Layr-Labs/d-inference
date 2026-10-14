@@ -15,8 +15,8 @@ import Foundation
 public enum PairQualificationRecords {
     public static let producer = "darkbloom-cluster-pair-check record"
 
-    public static func make(pairReport data: Data, references: [Data], comparator: QualificationComparator) throws
-        -> ClusterPairQualificationRecord {
+    public static func make(pairReport data: Data, references: [Data], comparator: QualificationComparator,
+                            timing: (mode: Data, plain: Data)? = nil) throws -> ClusterPairQualificationRecord {
         guard !references.isEmpty else { throw QualificationError("A qualification record needs at least one single-Mac reference") }
         let decoder = JSONDecoder()
         struct Header: Decodable { let schema: String }
@@ -96,11 +96,60 @@ public enum PairQualificationRecords {
                 firstDivergenceIndex: compared.tokens.firstDivergenceIndex, gapInULPs: compared.divergence?.gapInULPs,
                 nearTieThresholdULPs: comparator.nearTieULPs, allowed: allowed)
         }
+        let measured = try timing.map { try measuredDecode(mode: $0.mode, plain: $0.plain, recorded: pair, identity: identity,
+            declared: declared) }
         return .init(runtimeModelID: identity.modelID, artifactSHA256: identity.artifactSHA256, ranks: recorded,
             // Tensor parallel cuts no layer range; every other mode names its cut.
             cuts: declared.layerCutCount(ranks: recorded.count) == 0 ? [] : [identity.stageCut], generationMode: mode, prefillSchedule: identity.prefillSchedule, chunkTokens: identity.chunkSize,
             promptTokens: identity.promptTokenCount, outputTokens: identity.outputCount, transport: transport,
             pairReportSHA256: QualificationHash.sha256(data), pairReportCreatedUTC: pair.createdUTC,
-            comparisons: comparisons, producer: producer)
+            comparisons: comparisons, producer: producer, measuredDecode: measured)
+    }
+
+    /// Decode speeds of two timed runs (`--evidence none`) of the recorded
+    /// pair's placement and request: one in its mode, one as the plain
+    /// pipeline. Each must have completed across two Macs with its ranks
+    /// agreeing, on the same chips in the same order, the same model, artifact,
+    /// cut, request (prompt digest, chunk, outputs, stops) and prefill schedule
+    /// as the recorded run; the mode run in the record's mode and the plain run
+    /// in `pipeline_v1`. A run's figure is the median decode rate of its
+    /// requests (a repeated run measures each).
+    static func measuredDecode(mode modeData: Data, plain plainData: Data, recorded: PairReport,
+                               identity: QualificationIdentity, declared: ClusterGenerationMode) throws
+        -> ClusterPairQualificationRecord.MeasuredDecode {
+        let decoder = JSONDecoder()
+        func timed(_ data: Data, as expected: ClusterGenerationMode, role: String) throws -> Double {
+            let report = try decoder.decode(PairReport.self, from: data)
+            guard report.schema == PairReport.currentSchema, report.outcome == "completed", !report.recording,
+                  report.ranksAgreeOnTokens != false,
+                  (report.workerTransport ?? ClusterPairQualificationRecord.crossCableTransport)
+                      == ClusterPairQualificationRecord.crossCableTransport else {
+                throw QualificationError("The \(role) timing report is not a completed timed run across two Macs")
+            }
+            guard let other = report.identity, (report.generationMode ?? other.generationMode) == expected.rawValue else {
+                throw QualificationError("The \(role) timing report did not run \(expected.rawValue)")
+            }
+            guard other.modelID == identity.modelID, other.artifactSHA256 == identity.artifactSHA256,
+                  other.stageCut == identity.stageCut, other.promptTokenIDsSHA256 == identity.promptTokenIDsSHA256,
+                  other.chunkSize == identity.chunkSize, other.outputCount == identity.outputCount,
+                  other.stopTokenIDs == identity.stopTokenIDs, other.prefillSchedule == identity.prefillSchedule,
+                  report.ranks.sorted(by: { $0.rank < $1.rank }).map(\.chip)
+                      == recorded.ranks.sorted(by: { $0.rank < $1.rank }).map(\.chip) else {
+                throw QualificationError("The \(role) timing report is not the recorded run's placement and request")
+            }
+            let rates = (report.timing.repetitions?.compactMap(\.decodeTokensPerSecond)).flatMap { $0.isEmpty ? nil : $0 }
+                ?? report.timing.decodeTokensPerSecond.map { [$0] } ?? []
+            let sorted = rates.filter { $0.isFinite && $0 > 0 }.sorted()
+            guard !sorted.isEmpty, sorted.count == rates.count else {
+                throw QualificationError("The \(role) timing report has no decode rate")
+            }
+            return sorted.count % 2 == 1 ? sorted[sorted.count / 2] : (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+        }
+        let value = ClusterPairQualificationRecord.MeasuredDecode(
+            modeTokensPerSecond: try timed(modeData, as: declared, role: "mode"),
+            plainPipelineTokensPerSecond: try timed(plainData, as: .pipeline, role: "plain pipeline"),
+            modeReportSHA256: QualificationHash.sha256(modeData), plainReportSHA256: QualificationHash.sha256(plainData))
+        guard value.isWellFormed else { throw QualificationError("The timing reports' decode rates are not positive") }
+        return value
     }
 }

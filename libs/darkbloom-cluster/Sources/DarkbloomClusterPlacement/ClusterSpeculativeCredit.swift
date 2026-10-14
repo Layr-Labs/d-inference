@@ -72,9 +72,17 @@ public enum ClusterSpeculativeCredit {
     /// verifies a pipeline's window, so no such rate, chip generation or row
     /// factor predicts it. Nil without a measurement, and the plain pipeline
     /// then ranks first.
-    public static func pipelineFactor(_ rates: ClusterSpeedRates) -> Double? {
-        guard let factor = rates.pipelineSpeculativeFactor, factor.isFinite, factor > 0 else { return nil }
-        return factor
+    ///
+    /// `recorded`: the speed-up the model's passing qualification records of
+    /// the rounds measured on the pair that qualified them
+    /// (`ClusterPlacementPolicy.recordedPipelineSpeculativeFactor`), used only
+    /// while this device has no served measurement: a lossless mode measured
+    /// faster is on by default (owner rule), and the user's own served
+    /// records replace the bench's figure as soon as they exist.
+    public static func pipelineFactor(_ rates: ClusterSpeedRates, recorded: Double? = nil) -> Double? {
+        if let factor = rates.pipelineSpeculativeFactor, factor.isFinite, factor > 0 { return factor }
+        guard let recorded, recorded.isFinite, recorded > 0 else { return nil }
+        return recorded
     }
 
     /// True when this device should decode with the head rather than

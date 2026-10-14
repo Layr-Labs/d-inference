@@ -97,6 +97,12 @@ public enum ClusterPlacementFlow {
             ClusterPairServingGrants.plannable(chips.map { ClusterChipClass(chipName: $0) }, cuts: cuts, mode: mode,
                 runtimeModelID: runtimeModelID, artifactSHA256: artifactSHA256)
         }
+        // A pipeline's speculative rounds, lossless by their passing records,
+        // are credited the speed-up those records measured until this pair has
+        // served them (owner rule: on by default where lossless and faster).
+        let recordedRounds = ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: runtimeModelID,
+            artifactSHA256: artifactSHA256)
+        policy.recordedPipelineSpeculativeFactor = recordedRounds
         policy.modes = capability.supportedGenerationModes
         policy.handOffModes = handOff
         policy.schedules = capability.supportedPrefillSchedules
@@ -127,6 +133,12 @@ public enum ClusterPlacementFlow {
             lines += ClusterHandOffModes.lines(enabled: true)
         } else if let note = lines.firstIndex(where: { $0.hasPrefix("  Phase split, phase split + MTP") }) {
             lines.insert(contentsOf: ClusterHandOffModes.lines(enabled: false), at: note + 1)
+        }
+        if let recordedRounds, capability.supportedGenerationModes.contains(.pipelineMTP) {
+            lines.append("Speculative rounds")
+            lines.append("  " + String(format: "Pipeline speculative rounds are credited %.2fx", recordedRounds)
+                + " over the plain pipeline: the decode speed-up this model's passing qualification records measured. "
+                + "Requests this pair serves replace that figure with its own.")
         }
         if let note = granted.note { lines.append("Pair-serving grant"); lines.append("  " + note) }
         if records.restrictsShapes {

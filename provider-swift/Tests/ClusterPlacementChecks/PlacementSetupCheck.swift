@@ -582,6 +582,7 @@ import Foundation
         require("a chip name with no class decides nothing at plan time", unknown.leader == "b" && unknown.note == nil)
         syntheticQualificationRecords()
         modeBoundGrants()
+        recordedSpeculativeCredit()
         // Leader-first onboarding: the Mac where `darkbloom cluster` started leads the cluster (model, sync, start),
         // but which Mac runs rank 0 and which decodes is the planner's, from detected hardware and the model's grant.
         // Synthetic hardware, each pair planned from both Macs: the placement must not follow who asks.
@@ -611,6 +612,47 @@ import Foundation
             exit(1)
         }
         print("placement setup checks passed: \(passed)")
+    }
+
+    /// A pipeline's speculative rounds are credited the speed-up their passing
+    /// records measured (owner rule: on by default where lossless and measured
+    /// faster): the smallest of the installed artifact's passing
+    /// `pipeline_mtp_v1` records that carry one; nothing when the family is
+    /// withheld, when no record measured it, or for a record of another family.
+    static func recordedSpeculativeCredit() {
+        func record(_ model: String, mode: String = "pipeline_mtp_v1", verdict: String = "tokensEqualLogitsDiffer",
+                    artifact: Character = "a", measured: (Double, Double)? = (66.3, 36.1)) -> ClusterPairQualificationRecord {
+            .init(runtimeModelID: model, artifactSHA256: hash(artifact),
+                ranks: [.init(rank: 0, chip: "Apple M3 Ultra", operatingSystem: "27.0"), .init(rank: 1, chip: "Apple M5 Ultra", operatingSystem: "27.0")],
+                cuts: [8], generationMode: mode, prefillSchedule: "one_chunk_lookahead_v1", chunkTokens: 512, promptTokens: 3952,
+                outputTokens: 64, transport: "jaccl", pairReportSHA256: hash("b"), pairReportCreatedUTC: "2026-10-14T00:00:00Z",
+                comparisons: [.init(referenceChip: "Apple M3 Ultra", verdict: verdict, firstDivergenceIndex: nil, gapInULPs: nil,
+                                    nearTieThresholdULPs: 4, allowed: ["schedule"])], producer: "check",
+                measuredDecode: measured.map { .init(modeTokensPerSecond: $0.0, plainPipelineTokensPerSecond: $0.1,
+                    modeReportSHA256: hash("c"), plainReportSHA256: hash("d")) })
+        }
+        let decisions = ClusterPairServingDecisions(records: [
+            record("registered_rounds", mode: "pipeline_v1", measured: nil),
+            record("registered_rounds"), record("registered_rounds", measured: (59.0, 36.1)),
+            record("registered_untimed", mode: "pipeline_v1", measured: nil), record("registered_untimed", measured: nil),
+            record("registered_divergedrounds", mode: "pipeline_v1", measured: nil),
+            record("registered_divergedrounds"), record("registered_divergedrounds", verdict: "diverged"),
+            record("registered_plainonly", mode: "pipeline_v1", measured: (70, 35)),
+        ])
+        func factor(_ model: String, artifact: String? = nil) -> Double? {
+            ClusterPairServingGrants.recordedPipelineSpeculativeFactor(runtimeModelID: model, artifactSHA256: artifact, decisions: decisions)
+        }
+        require("passing records of the rounds credit the smallest speed-up they measured",
+            abs((factor("registered_rounds") ?? 0) - 59.0 / 36.1) < 1e-9)
+        require("the record's figure survives its JSON line", (try? ClusterPairQualificationRecord.decodeLines(record("registered_rounds").encodedLine()))?
+            .first?.measuredPipelineSpeculativeSpeedup.map { abs($0 - 66.3 / 36.1) < 1e-9 } == true)
+        require("passing rounds that measured nothing credit nothing", factor("registered_untimed") == nil)
+        require("a diverged record of the rounds withholds the family and credits nothing", factor("registered_divergedrounds") == nil)
+        require("a pipeline record's figure is no speculative credit", factor("registered_plainonly") == nil)
+        require("records of another artifact credit nothing", factor("registered_rounds", artifact: hash("z")) == nil)
+        require("the rounds are plannable where their family is granted",
+            ClusterPairServingGrants.plannable([ClusterChipClass(chipName: "Apple M3 Ultra"), ClusterChipClass(chipName: "Apple M5 Ultra")],
+                cuts: [8], mode: .pipelineMTP, runtimeModelID: "registered_rounds", decisions: decisions))
     }
 
     /// Mode-bound grants (owner sign-off O9): a record grants only its own mode

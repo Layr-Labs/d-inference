@@ -79,6 +79,16 @@ public struct ClusterPlacementPolicy: Sendable {
     /// does not opt in. Under the opt-in a plan is the earlier planner's,
     /// byte for byte (no `shards` table).
     public var handOffModes = false
+    /// The decode speed-up the model's passing qualification records of a
+    /// pipeline's speculative rounds (`pipeline_mtp_v1`) measured over the
+    /// plain pipeline of their placement
+    /// (`ClusterPairQualificationRecord.measuredPipelineSpeculativeSpeedup`;
+    /// the smallest when several do). It credits the rounds wherever the
+    /// decoding rank has no served measurement of its own
+    /// (`ClusterSpeedRates.pipelineSpeculativeFactor`, which always wins):
+    /// owner rule, on by default where lossless and measured faster. Nil, the
+    /// default, credits nothing, and the plain pipeline ranks first.
+    public var recordedPipelineSpeculativeFactor: Double?
     public init() {}
 }
 
@@ -810,7 +820,8 @@ public enum ClusterPlacementPlanner {
             // A pipeline's speculative rounds: the measured speed-up on the
             // decoding rank, nothing without one (`ClusterSpeculativeCredit.pipelineFactor`).
             if mode.usesSpeculativeHead, !mode.isPhaseSplit, let lastDevice = order.last,
-               let factor = ClusterSpeculativeCredit.pipelineFactor(rates(lastDevice, regime).0) {
+               let factor = ClusterSpeculativeCredit.pipelineFactor(rates(lastDevice, regime).0,
+                   recorded: policy.recordedPipelineSpeculativeFactor) {
                 step /= factor
             }
             return .init(regime: regime, regimeMeasuredOnEveryDevice: measured, firstTokenSeconds: first,
@@ -836,7 +847,8 @@ public enum ClusterPlacementPlanner {
             guard c.mode.usesSpeculativeHead else { return 1 }
             guard let decoder = devices.first(where: { $0.label == c.ranks.last?.device }) else { return 2 }
             if !c.mode.isPhaseSplit {
-                return (ClusterSpeculativeCredit.pipelineFactor(rates(decoder, regime).0) ?? 0) > 1 ? 0 : 2
+                return (ClusterSpeculativeCredit.pipelineFactor(rates(decoder, regime).0,
+                    recorded: policy.recordedPipelineSpeculativeFactor) ?? 0) > 1 ? 0 : 2
             }
             return ClusterSpeculativeCredit.prefersHead(rates(decoder, regime).0, device: decoder, layout: layout) ? 0 : 2
         }

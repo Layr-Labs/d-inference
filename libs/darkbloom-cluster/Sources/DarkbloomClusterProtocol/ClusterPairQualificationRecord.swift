@@ -58,6 +58,36 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
         public var passes: Bool { ClusterPairQualificationRecord.acceptedVerdicts.contains(verdict) }
     }
 
+    /// What timed pair runs of the record's placement and request measured:
+    /// decode in the record's mode, and as the plain pipeline of the same
+    /// placement (`pipeline_v1`). A speculative mode's record carries it so
+    /// the planner may credit the mode where it was measured faster
+    /// (`speedup`) before the user's own pair has served it; served records
+    /// of the user's pair replace it. Absent in records that measured nothing.
+    public struct MeasuredDecode: Codable, Equatable, Sendable {
+        /// Median decode tokens per second of the timed runs in the record's mode.
+        public let modeTokensPerSecond: Double
+        /// The same, as the plain pipeline of the same placement and request.
+        public let plainPipelineTokensPerSecond: Double
+        /// Digests of the two timed pair reports.
+        public let modeReportSHA256: String
+        public let plainReportSHA256: String
+
+        public init(modeTokensPerSecond: Double, plainPipelineTokensPerSecond: Double,
+                    modeReportSHA256: String, plainReportSHA256: String) {
+            self.modeTokensPerSecond = modeTokensPerSecond; self.plainPipelineTokensPerSecond = plainPipelineTokensPerSecond
+            self.modeReportSHA256 = modeReportSHA256; self.plainReportSHA256 = plainReportSHA256
+        }
+
+        /// The mode's decode over the plain pipeline's: above 1 is faster.
+        public var speedup: Double { modeTokensPerSecond / plainPipelineTokensPerSecond }
+
+        public var isWellFormed: Bool {
+            modeTokensPerSecond.isFinite && modeTokensPerSecond > 0
+                && plainPipelineTokensPerSecond.isFinite && plainPipelineTokensPerSecond > 0
+        }
+    }
+
     public let schema: String
     /// The runtime's own model identity (the worker's registered model), which
     /// a setup cannot rename.
@@ -84,10 +114,13 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
     public let passed: Bool
     /// Which tool wrote it.
     public let producer: String
+    /// Timed runs of the same placement and request, when the runner was given them.
+    public let measuredDecode: MeasuredDecode?
 
     public init(runtimeModelID: String, artifactSHA256: String, ranks: [Rank], cuts: [Int], generationMode: String,
                 prefillSchedule: String, chunkTokens: Int, promptTokens: Int, outputTokens: Int, transport: String,
-                pairReportSHA256: String, pairReportCreatedUTC: String, comparisons: [Comparison], producer: String) {
+                pairReportSHA256: String, pairReportCreatedUTC: String, comparisons: [Comparison], producer: String,
+                measuredDecode: MeasuredDecode? = nil) {
         schema = Self.schemaName
         self.runtimeModelID = runtimeModelID; self.artifactSHA256 = artifactSHA256; self.ranks = ranks; self.cuts = cuts
         self.generationMode = generationMode; self.prefillSchedule = prefillSchedule; self.chunkTokens = chunkTokens
@@ -96,6 +129,7 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
         self.comparisons = comparisons
         passed = !comparisons.isEmpty && comparisons.allSatisfy(\.passes)
         self.producer = producer
+        self.measuredDecode = measuredDecode
     }
 
     /// The near-tie rule applied to the comparisons, whatever `passed` says.
@@ -127,6 +161,16 @@ public struct ClusterPairQualificationRecord: Codable, Equatable, Sendable {
             && cuts.allSatisfy { $0 > 0 } && zip(cuts, cuts.dropFirst()).allSatisfy { $0 < $1 }
             && transport == Self.crossCableTransport && passed == passesNearTieRule
             && comparisons.allSatisfy { $0.nearTieThresholdULPs >= 0 && $0.nearTieThresholdULPs.isFinite }
+            && (measuredDecode?.isWellFormed ?? true)
+    }
+
+    /// The decode speed-up a passing record of a speculative pipeline
+    /// (`pipeline_mtp_v1`) measured over the plain pipeline of its placement;
+    /// nil for any other record, a record that measured nothing, or one that
+    /// does not pass (a mode is credited only where it is lossless).
+    public var measuredPipelineSpeculativeSpeedup: Double? {
+        guard mode == .pipelineMTP, isConsistent, passed, let measuredDecode, measuredDecode.isWellFormed else { return nil }
+        return measuredDecode.speedup
     }
 
     /// The first comparison that fails the rule, for a refusal's words.

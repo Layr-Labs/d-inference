@@ -305,14 +305,24 @@ final class PairQualificationRecordTests: XCTestCase {
     }
     private func pairData(chips: [String?] = ["Apple M3 Ultra", "Apple M5 Max"], tokens: [Int] = Constructed.tokens,
                           outcome: String = "completed", agree: Bool = true, transport: String? = "jaccl",
-                          mode: String? = "phase_split_v1", finalRow: Bool = true) throws -> Data {
+                          mode: String? = "phase_split_v1", finalRow: Bool = true, recording: Bool = true,
+                          cut: Int = 12, decode: [Double]? = nil) throws -> Data {
         var ranks = (0..<chips.count).map { PairRankReport(role: "rank \($0)", rank: $0) }
         for (index, chip) in chips.enumerated() { ranks[index].chip = chip; ranks[index].operatingSystem = "27.\(index)" }
         let request = try Constructed.request()
-        return try QualificationReportFiles.encode(PairReport(outcome: outcome, failure: nil, identity: try Constructed.identity(cut: 12),
+        var timing = PairTiming(note: "constructed")
+        if let decode {
+            timing.decodeTokensPerSecond = decode.first
+            timing.repetitions = decode.enumerated().map { index, rate in
+                PairRepetitionTiming(requestID: "r\(index)", admissionSeconds: 0.1, firstTokenSeconds: 0.5, prefillTokensPerSecond: 80,
+                    decodeSeconds: 1, decodeTokensPerSecond: rate, totalSeconds: 1.5, secondTokenGapSeconds: nil, tokens: 6,
+                    selectedTokenIDsSHA256: String(repeating: "9", count: 64), finishReason: "length")
+            }
+        }
+        return try QualificationReportFiles.encode(PairReport(outcome: outcome, failure: nil, identity: try Constructed.identity(cut: cut),
             evidence: Constructed.pair(tokens: tokens, row: finalRow ? Constructed.row : nil), ranks: ranks.reversed(), workerHashesIdentical: true, metallibHashesIdentical: true,
-            recording: true, ranksAgreeOnTokens: agree, bothExitsObserved: true, noWorkerProcessLeft: true,
-            progressTimeoutMilliseconds: nil, timing: .init(note: "constructed"), promptSource: request.promptSource,
+            recording: recording, ranksAgreeOnTokens: agree, bothExitsObserved: true, noWorkerProcessLeft: true,
+            progressTimeoutMilliseconds: nil, timing: timing, promptSource: request.promptSource,
             decodedOutput: nil, generationMode: mode, workerTransport: transport))
     }
     private let allowCut = QualificationComparator(allowCutDifference: true)
@@ -369,6 +379,47 @@ final class PairQualificationRecordTests: XCTestCase {
         // Reports from before the transport and mode fields existed ran over JACCL as a pipeline.
         let old = try PairQualificationRecords.make(pairReport: try pairData(transport: nil, mode: nil), references: [reference], comparator: allowCut)
         XCTAssertEqual(old.transport, "jaccl"); XCTAssertEqual(old.generationMode, "pipeline_v1")
+    }
+
+    /// A speculative pipeline's record may carry what timed runs of its own
+    /// placement and request measured: its mode's decode against the plain
+    /// pipeline's, the speed-up the planner credits it with.
+    func testASpeculativePipelineRecordCarriesItsMeasuredSpeedUp() throws {
+        let reference = try referenceData()
+        let pair = try pairData(mode: "pipeline_mtp_v1")
+        let modeTimed = try pairData(mode: "pipeline_mtp_v1", finalRow: false, recording: false, decode: [66.5, 59.1, 66.3])
+        let plainTimed = try pairData(mode: "pipeline_v1", finalRow: false, recording: false, decode: [34.5, 36.1, 36.1])
+        let record = try PairQualificationRecords.make(pairReport: pair, references: [reference], comparator: allowCut,
+            timing: (mode: modeTimed, plain: plainTimed))
+        XCTAssertTrue(record.passed); XCTAssertTrue(record.isConsistent)
+        XCTAssertEqual(record.measuredDecode?.modeTokensPerSecond, 66.3)
+        XCTAssertEqual(record.measuredDecode?.plainPipelineTokensPerSecond, 36.1)
+        XCTAssertEqual(record.measuredDecode?.modeReportSHA256, QualificationHash.sha256(modeTimed))
+        XCTAssertEqual(record.measuredPipelineSpeculativeSpeedup ?? 0, 66.3 / 36.1, accuracy: 1e-9)
+        // It survives the record's one JSON line; a record without timing writes no such field.
+        let line = try record.encodedLine()
+        XCTAssertEqual(try ClusterPairQualificationRecordShim.decode(line), [record])
+        let untimed = try PairQualificationRecords.make(pairReport: pair, references: [reference], comparator: allowCut)
+        XCTAssertNil(untimed.measuredDecode); XCTAssertNil(untimed.measuredPipelineSpeculativeSpeedup)
+        XCTAssertFalse(try untimed.encodedLine().contains("measuredDecode"))
+        // Another family's record is never credited a speculative speed-up.
+        let plainRecord = try PairQualificationRecords.make(pairReport: try pairData(mode: "pipeline_v1"), references: [reference],
+            comparator: allowCut, timing: (mode: plainTimed, plain: plainTimed))
+        XCTAssertNil(plainRecord.measuredPipelineSpeculativeSpeedup)
+        // Timing runs of another placement, mode or kind are refused, not recorded.
+        for (label, mode, plain) in [
+            ("a recording as timing", try pairData(mode: "pipeline_mtp_v1", recording: true, decode: [60]), plainTimed),
+            ("another cut", try pairData(mode: "pipeline_mtp_v1", finalRow: false, recording: false, cut: 16, decode: [60]), plainTimed),
+            ("another order", try pairData(chips: ["Apple M5 Max", "Apple M3 Ultra"], mode: "pipeline_mtp_v1", finalRow: false,
+                                           recording: false, decode: [60]), plainTimed),
+            ("the mode run in another mode", plainTimed, plainTimed),
+            ("the plain run in the mode", modeTimed, modeTimed),
+            ("no decode rate", try pairData(mode: "pipeline_mtp_v1", finalRow: false, recording: false), plainTimed),
+            ("over a loopback socket", try pairData(transport: "local-socket-test", mode: "pipeline_mtp_v1", finalRow: false,
+                                                    recording: false, decode: [60]), plainTimed)] {
+            XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: pair, references: [reference], comparator: allowCut,
+                timing: (mode: mode, plain: plain)), label)
+        }
     }
 
     func testARecordWhoseStoredVerdictDisagreesWithItsComparisonsIsInconsistent() throws {
@@ -569,6 +620,44 @@ final class QualificationRequestTests: XCTestCase {
         XCTAssertThrowsError(try PairEvidence.decode(Data("{}".utf8), rank: 0))
         XCTAssertThrowsError(try PairEvidence.join([try .decode(record(rank: 0, tokens: [5, 7]), rank: 0), try .decode(record(rank: 1), rank: 1)]))
         XCTAssertThrowsError(try PairEvidence.join([try .decode(record(rank: 0, plan: "q"), rank: 0), try .decode(record(rank: 1), rank: 1)]))
+    }
+
+    /// Rank 1 of a recorded speculative pipeline records one step per selected
+    /// token (the accepted timeline); the joined evidence carries them.
+    func testRankOneStepsOfASpeculativePipelineJoinTheEvidence() throws {
+        func step(_ ordinal: Int, _ token: Int) -> [String: Any] {
+            ["ordinal": ordinal, "frameSequence": 2 + ordinal, "committedTokens": 8 + ordinal, "tokenID": token,
+             "topTokenIDs": [token, 1, 2, 3], "topLogits": [9.5, 9.0, 4.0, 1.0], "maximumTieCount": 1,
+             "rowSHA256": String(repeating: "\(ordinal)", count: 64), "rowDType": "bfloat16"]
+        }
+        func record(rank: Int, steps: [[String: Any]]?) -> Data {
+            var value: [String: Any] = ["schema": PairEvidence.schema, "rank": rank,
+                "requestFingerprint": String(repeating: "a", count: 64), "profileFingerprint": String(repeating: "b", count: 64),
+                "execution": ["selectedTokenIDs": [5, 6], "completedFrames": 3, "committedTokens": 9, "finishReason": "length",
+                              "tokenChainSHA256": String(repeating: "c", count: 64)],
+                "agreement": ["requestID": "r", "sourceConfigurationSHA256": "s", "artifactAggregateSHA256": "t",
+                              "storageCommitmentSHA256": "u", "planFingerprint": "p", "stageFingerprints": ["v", "w"],
+                              "numericalPolicySHA256": "x"],
+                "stateEntries": [["globalLayerIndex": rank * 4, "component": "ssm", "shape": [1, 2], "dtype": "float32",
+                                  "byteCount": 8, "sha256": String(repeating: "d", count: 64)]],
+                "stageStateSHA256": String(repeating: "e", count: 64)]
+            if rank == 1 {
+                value["finalLogits"] = ["shape": [1, 3], "dtype": "bfloat16", "byteCount": 6,
+                    "logicalBytesSHA256": String(repeating: "f", count: 64), "values": [1.5, -0.25, 7.0]]
+            }
+            if let steps { value["steps"] = steps }
+            return try! JSONSerialization.data(withJSONObject: value)
+        }
+        let rank0 = try PairEvidence.decode(record(rank: 0, steps: nil), rank: 0)
+        let joined = try PairEvidence.join([rank0, try .decode(record(rank: 1, steps: [step(0, 5), step(1, 6)]), rank: 1)])
+        XCTAssertEqual(joined.evidence.steps?.map(\.tokenID), [5, 6])
+        XCTAssertEqual(joined.evidence.steps?.map(\.rowDType), ["bfloat16", "bfloat16"])
+        XCTAssertEqual(joined.evidence.steps?.last?.topLogits, [9.5, 9.0, 4.0, 1.0])
+        // A plain record has none; steps on rank 0, a missing step or another token are refused.
+        XCTAssertNil(try PairEvidence.join([rank0, try .decode(record(rank: 1, steps: nil), rank: 1)]).evidence.steps)
+        XCTAssertThrowsError(try PairEvidence.decode(record(rank: 0, steps: [step(0, 5), step(1, 6)]), rank: 0))
+        XCTAssertThrowsError(try PairEvidence.join([rank0, try .decode(record(rank: 1, steps: [step(0, 5)]), rank: 1)]))
+        XCTAssertThrowsError(try PairEvidence.join([rank0, try .decode(record(rank: 1, steps: [step(0, 5), step(1, 7)]), rank: 1)]))
     }
 }
 

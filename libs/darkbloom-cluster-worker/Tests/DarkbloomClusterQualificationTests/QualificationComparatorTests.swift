@@ -305,9 +305,10 @@ final class PairQualificationRecordTests: XCTestCase {
     }
     private func pairData(chips: [String?] = ["Apple M3 Ultra", "Apple M5 Max"], tokens: [Int] = Constructed.tokens,
                           outcome: String = "completed", agree: Bool = true, transport: String? = "jaccl",
-                          mode: String? = "phase_split_v1", finalRow: Bool = true) throws -> Data {
+                          mode: String? = "phase_split_v1", finalRow: Bool = true, runtimeLines: [[String]?] = []) throws -> Data {
         var ranks = (0..<chips.count).map { PairRankReport(role: "rank \($0)", rank: $0) }
         for (index, chip) in chips.enumerated() { ranks[index].chip = chip; ranks[index].operatingSystem = "27.\(index)" }
+        for (index, lines) in runtimeLines.enumerated() where index < ranks.count { ranks[index].runtimeLines = lines }
         let request = try Constructed.request()
         return try QualificationReportFiles.encode(PairReport(outcome: outcome, failure: nil, identity: try Constructed.identity(cut: 12),
             evidence: Constructed.pair(tokens: tokens, row: finalRow ? Constructed.row : nil), ranks: ranks.reversed(), workerHashesIdentical: true, metallibHashesIdentical: true,
@@ -369,6 +370,61 @@ final class PairQualificationRecordTests: XCTestCase {
         // Reports from before the transport and mode fields existed ran over JACCL as a pipeline.
         let old = try PairQualificationRecords.make(pairReport: try pairData(transport: nil, mode: nil), references: [reference], comparator: allowCut)
         XCTAssertEqual(old.transport, "jaccl"); XCTAssertEqual(old.generationMode, "pipeline_v1")
+    }
+
+    /// The product's tensor-parallel worker records no final row (no recording
+    /// worker), so its served run is the record: tokens against each reference
+    /// by the near-tie rule, and the layout each rank's load line names.
+    private func tensorParallelLoad(rank: Int, shares: String = "1-3", sealed: Int = 1,
+                                    plan: String = "qwen_dense_heads_and_channels_v1") -> [String] {
+        ["darkbloom-link-probe-v1 rank=\(rank) transport=jaccl keyed=1",
+         "darkbloom-tensor-parallel-load-v1 rank=\(rank) plan=\(plan) shares=\(shares) shard_bytes=10 source_bytes=20 tensors=3 load_ns=4 sealed=\(sealed)"]
+    }
+
+    func testAServedTensorParallelRunIsARecordOfItsLayout() throws {
+        // The driver keeps each rank's tensor-parallel lines (and the worker's collective wait) as runtime lines.
+        let sync = "darkbloom-collective-sync-v1 fast_synch=1 source=worker"
+        XCTAssertEqual(PairDriver.runtimeLines(([sync] + tensorParallelLoad(rank: 0)).joined(separator: "\n") + "\nother output"),
+                       [sync] + tensorParallelLoad(rank: 0))
+        let loads = [tensorParallelLoad(rank: 0), tensorParallelLoad(rank: 1)]
+        let pair = try pairData(mode: "tensor_parallel_v1", finalRow: false, runtimeLines: loads)
+        let record = try PairQualificationRecords.make(pairReport: pair,
+            references: [try referenceData(), try referenceData(chip: "Apple M5 Max")], comparator: allowCut)
+        XCTAssertTrue(record.passed); XCTAssertTrue(record.isConsistent)
+        XCTAssertEqual(record.generationMode, "tensor_parallel_v1"); XCTAssertEqual(record.cuts, [])
+        // Equal tokens without a final row: all a tensor-parallel run can show (as the tp-check record says).
+        XCTAssertEqual(record.comparisons.map(\.verdict), ["tokensEqualLogitsDiffer", "tokensEqualLogitsDiffer"])
+        XCTAssertEqual(record.tensorParallelLayout,
+            "plan=qwen_dense_heads_and_channels_v1;partials=float32;shares=1:3;reduction=sealed_all_gather_sum_v1")
+        // A near tie passes, a clear winner taken differently fails: a record either way.
+        let tie = try PairQualificationRecords.make(pairReport: try pairData(tokens: [3, 4, 7, 1, 6, 3], mode: "tensor_parallel_v1",
+            finalRow: false, runtimeLines: loads), references: [try referenceData(margin: 0.125)], comparator: allowCut)
+        XCTAssertEqual(tie.comparisons.map(\.verdict), ["divergedAtNearTie"]); XCTAssertTrue(tie.passed)
+        let clear = try PairQualificationRecords.make(pairReport: try pairData(tokens: [3, 4, 7, 1, 6, 3], mode: "tensor_parallel_v1",
+            finalRow: false, runtimeLines: loads), references: [try referenceData()], comparator: allowCut)
+        XCTAssertEqual(clear.comparisons.map(\.verdict), ["diverged"]); XCTAssertFalse(clear.passed)
+        // Equal shares are named as such.
+        let equal = try PairQualificationRecords.make(pairReport: try pairData(mode: "tensor_parallel_v1", finalRow: false,
+            runtimeLines: [tensorParallelLoad(rank: 0, shares: "1-1"), tensorParallelLoad(rank: 1, shares: "1-1")]),
+            references: [try referenceData()], comparator: allowCut)
+        XCTAssertEqual(equal.tensorParallelLayout,
+            "plan=qwen_dense_heads_and_channels_v1;partials=float32;shares=equal;reduction=sealed_all_gather_sum_v1")
+    }
+
+    func testWhatCannotQualifyAServedTensorParallelRunIsRefused() throws {
+        let reference = try referenceData()
+        for (label, lines) in [("no load line", [nil, nil] as [[String]?]),
+                               ("one rank's load line", [tensorParallelLoad(rank: 0), nil]),
+                               ("ranks loaded other shares", [tensorParallelLoad(rank: 0), tensorParallelLoad(rank: 1, shares: "1-1")]),
+                               ("ranks loaded other plans", [tensorParallelLoad(rank: 0), tensorParallelLoad(rank: 1, plan: "other_v1")]),
+                               ("an unsealed all-sum", [tensorParallelLoad(rank: 0, sealed: 0), tensorParallelLoad(rank: 1, sealed: 0)]),
+                               ("rank lines swapped", [tensorParallelLoad(rank: 1), tensorParallelLoad(rank: 0)])] {
+            let pair = try pairData(mode: "tensor_parallel_v1", finalRow: false, runtimeLines: lines)
+            XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: pair, references: [reference], comparator: allowCut), label)
+        }
+        // Without a final row only tensor parallel is a record; any other mode's timing run still is not.
+        XCTAssertThrowsError(try PairQualificationRecords.make(pairReport: try pairData(mode: "pipeline_v1", finalRow: false,
+            runtimeLines: [tensorParallelLoad(rank: 0), tensorParallelLoad(rank: 1)]), references: [reference], comparator: allowCut))
     }
 
     func testARecordWhoseStoredVerdictDisagreesWithItsComparisonsIsInconsistent() throws {

@@ -36,8 +36,14 @@ public enum PairQualificationRecords {
         // MiMo has no final row: its pair runs qualify by the decoding rank's
         // step lines instead, one digest and candidate set per selected row
         // (`MiMoQualificationEvidence`). A run with neither is a timing run.
+        // Tensor parallel has no recording worker (both ranks compute every
+        // token together): its served run is the record, tokens only, with the
+        // layout each rank's load line names (`tensorParallelLayout`).
+        let declaredMode = pair.generationMode ?? identity.generationMode
+        let tensorParallel = declaredMode == ClusterGenerationMode.tensorParallel.rawValue
         var candidateEvidence = evidence
-        if evidence.finalLogits == nil {
+        let layout = tensorParallel ? try tensorParallelLayout(pair) : nil
+        if evidence.finalLogits == nil, !tensorParallel {
             guard let steps = try MiMoQualificationEvidence.pairSteps(pair) else {
                 throw QualificationError("The pair report has no final row (a timing run, not a qualification run)")
             }
@@ -83,9 +89,15 @@ public enum PairQualificationRecords {
                 throw QualificationError("A reference is not a single-Mac reference report")
             }
             let reference = try decoder.decode(ReferenceReport.self, from: referenceData)
-            let compared = try comparator.compare(
+            var compared = try comparator.compare(
                 reference: .init(label: "single-host reference", identity: reference.identity, evidence: reference.evidence),
                 candidate: candidate)
+            // Equal tokens with no final row on the tensor-parallel side: all such a run can show.
+            if tensorParallel, compared.verdict == .incomparable, compared.identityMatches, compared.tokens.equal,
+               compared.logits == nil, compared.completedFramesEqual != false, compared.committedTokensEqual != false,
+               !candidateEvidence.selectedTokenIDs.isEmpty {
+                compared.verdict = .tokensEqualLogitsDiffer
+            }
             // A reference of another request, artifact or numerical policy says
             // nothing about this run: it is the operator's mistake, not a verdict.
             guard compared.identityMatches else {
@@ -101,6 +113,42 @@ public enum PairQualificationRecords {
             cuts: declared.layerCutCount(ranks: recorded.count) == 0 ? [] : [identity.stageCut], generationMode: mode, prefillSchedule: identity.prefillSchedule, chunkTokens: identity.chunkSize,
             promptTokens: identity.promptTokenCount, outputTokens: identity.outputCount, transport: transport,
             pairReportSHA256: QualificationHash.sha256(data), pairReportCreatedUTC: pair.createdUTC,
-            comparisons: comparisons, producer: producer)
+            comparisons: comparisons, producer: producer, tensorParallelLayout: layout)
+    }
+
+    /// The layout both ranks loaded, from their load lines: the same plan and
+    /// shares on each, and the sealed all-sum (the only reduction the product
+    /// runs). "equal" names equal shares, as the tp-check record does.
+    static func tensorParallelLayout(_ pair: PairReport) throws -> String {
+        let ranks = pair.ranks.sorted { $0.rank < $1.rank }
+        let loads = try ranks.map { rank -> [String: String] in
+            guard let line = rank.runtimeLines?.last(where: { $0.hasPrefix("darkbloom-tensor-parallel-load-v1 ") }) else {
+                throw QualificationError("Rank \(rank.rank) of the tensor-parallel pair report has no load line")
+            }
+            var fields: [String: String] = [:]
+            for pair in line.split(separator: " ").dropFirst() {
+                let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+                if parts.count == 2 { fields[parts[0]] = parts[1] }
+            }
+            guard fields["rank"] == String(rank.rank) else {
+                throw QualificationError("Rank \(rank.rank)'s load line names another rank")
+            }
+            return fields
+        }
+        guard ranks.count == ClusterTensorParallelTerms.current.ranks, let first = loads.first,
+              let plan = first["plan"], !plan.isEmpty, let shares = first["shares"],
+              loads.allSatisfy({ $0["plan"] == plan && $0["shares"] == shares }) else {
+            throw QualificationError("The ranks of the tensor-parallel pair report did not load one plan and one set of shares")
+        }
+        guard loads.allSatisfy({ $0["sealed"] == "1" }) else {
+            throw QualificationError("A rank's all-sum was not sealed: the product's tensor parallel always seals it")
+        }
+        let weights = shares.split(separator: "-").compactMap { Int($0) }
+        guard weights.count == ranks.count, weights.allSatisfy({ $0 > 0 }) else {
+            throw QualificationError("The load line's shares \(shares) are not one weight per rank")
+        }
+        let terms = ClusterTensorParallelTerms.current
+        let named = Set(weights).count == 1 ? "equal" : weights.map(String.init).joined(separator: ":")
+        return "plan=\(plan);partials=\(terms.partialsDType);shares=\(named);reduction=\(terms.reduction)"
     }
 }

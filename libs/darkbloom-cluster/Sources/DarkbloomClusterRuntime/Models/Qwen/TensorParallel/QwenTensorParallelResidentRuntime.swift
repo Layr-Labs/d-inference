@@ -149,7 +149,7 @@ public final class QwenTensorParallelResidentRuntime {
                     disagreementMessage: "Tensor-parallel peers did not load matching verified commitments",
                     scope: .session(.loadedReady, "resident-loaded"), check: checked)
                 log("darkbloom-tensor-parallel-load-v1 rank=\(collective.rank) plan=\(value.receipt.planName)"
-                    + " shares=\(shares.map(String.init).joined(separator: ":")) shard_bytes=\(value.receipt.shardBytes)"
+                    + " shares=\(shares.map(String.init).joined(separator: "-")) shard_bytes=\(value.receipt.shardBytes)"
                     + " source_bytes=\(value.receipt.sourceBytes) tensors=\(value.receipt.sourceTensors)"
                     + " load_ns=\(value.receipt.loadNanoseconds) sealed=\(codec == nil ? 0 : 1)")
                 try configuration.allocatorPolicy.prepareReady(

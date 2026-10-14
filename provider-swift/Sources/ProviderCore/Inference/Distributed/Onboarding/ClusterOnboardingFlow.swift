@@ -89,7 +89,7 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
 /// A chosen model some Mac lacks (compared by the catalog manifest's digests): how it gets there. No model is ever
 /// downloaded by hand for clustering: a Mac that has it copies it over the Thunderbolt cable (the default), and when
 /// no Mac has it the leader downloads it from Darkbloom's catalog as single-Mac Darkbloom does, then copies it.
-public struct ClusterOnboardingProvisionOffer: Sendable, Equatable {
+public struct ClusterOnboardingProvisionOffer: Codable, Sendable, Equatable {
     /// One line per Mac that needs it, with size and time ("Apple M5 Ultra: copy from … over the Thunderbolt cable (6.1 GB, about 3 s)").
     public var lines: [String]
     /// The members may take it from the catalog instead of the cable.

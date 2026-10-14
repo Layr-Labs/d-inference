@@ -67,7 +67,7 @@ public enum ClusterOrphanSweep {
 
     /// This cluster on this Mac: the paired member identity its workers carry, and this install's owner executable.
     public static func scope(memberID: String? = (try? ClusterSetupLinkExchange.pairing())?.localMemberID,
-                             executablePath: String = currentExecutablePath()) -> ClusterTeardownVerification.Scope {
+                             executablePath: String = ClusterProcessTable.executablePath(of: getpid()) ?? "") -> ClusterTeardownVerification.Scope {
         var executables: Set<String> = []
         for path in [executablePath, ClusterProcessTable.executablePath(of: getpid())].compactMap({ $0 }) where !path.isEmpty {
             executables.insert(path)

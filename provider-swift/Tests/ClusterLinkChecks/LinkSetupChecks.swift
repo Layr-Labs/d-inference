@@ -10,14 +10,15 @@ extension ClusterLinkCheck {
         var actions = [Flow.Action]()
         var exitCode: Int32?
         var state: ClusterLinkReadinessState?
+        var choices = [String]()
     }
 
     /// Drives the flow the way the command does. Each inspection or wait takes
     /// the next report; a wait with no report left is an interrupt.
     private static func run(mayPrompt: Bool, _ reports: [FakeLinkTools], fix: ClusterLinkRepairOutcome? = nil,
                             temporary: Bool = false, dryRun: Bool = false,
-                            recorded: ClusterLinkAliasRecord = ClusterLinkAliasRecord()) -> Transcript {
-        var flow = Flow(mayPrompt: mayPrompt, temporary: temporary, dryRun: dryRun), pending = reports[...], transcript = Transcript()
+                            recorded: ClusterLinkAliasRecord = ClusterLinkAliasRecord(), device: String? = nil, plain: Bool = false) -> Transcript {
+        var flow = Flow(mayPrompt: mayPrompt, temporary: temporary, dryRun: dryRun, device: device, plain: plain), pending = reports[...], transcript = Transcript()
         func report(_ tools: FakeLinkTools) -> ClusterLinkReadinessReport {
             ClusterLinkReadinessProbe.inspect(run: tools.outcome(of:), recorded: recorded)
         }
@@ -37,6 +38,7 @@ extension ClusterLinkCheck {
             case .finish(let exitCode):
                 transcript.exitCode = exitCode
                 transcript.state = flow.linkState
+                transcript.choices = flow.choices.map(\.interface)
                 return transcript
             }
         }
@@ -220,6 +222,34 @@ extension ClusterLinkCheck {
             expectNoAddress(transcript.lines.joined(separator: "\n"), "setup transcript")
         }
         expectNoAddress(encoded, "setup JSON")
+    }
+
+    /// The onboarding's cable step: plain lines, never a developer command; two active ports are returned as a choice
+    /// for the onboarding to ask on screen, and the chosen port is then set up with the one approval.
+    static func setupFlowPlain() {
+        let two = FakeLinkTools(
+            deviceList: .output(LinkFixtures.deviceBlock("rdma_en5", active: true) + LinkFixtures.deviceBlock("rdma_en6", active: true)),
+            interfaces: .output(LinkFixtures.port("en5", active: true, ipv4: nil) + LinkFixtures.port("en6", active: true, ipv4: nil)),
+            details: ["rdma_en5": .output(LinkFixtures.detailWithoutMappedGID("rdma_en5")),
+                      "rdma_en6": .output(LinkFixtures.detailWithoutMappedGID("rdma_en6"))])
+        let asked = run(mayPrompt: true, [two], fix: .fixed, plain: true)
+        expectEqual(asked.lines, ["Cable found.", "The cable is connected on 2 ports."], "plain: two ports, no command named")
+        expectEqual(asked.choices, ["en5", "en6"], "plain: the two ports offered by interface")
+        expectEqual(asked.actions, [.inspect, .finish(exitCode: 1)], "plain: nothing fixed before the choice")
+        let chosen = run(mayPrompt: true, [two], fix: .fixed, device: "rdma_en6", plain: true)
+        expectEqual(chosen.actions, [.inspect, .fix(device: "rdma_en6"), .finish(exitCode: 0)], "plain: the chosen port gets the one approval")
+        expectEqual(chosen.lines, ["Cable found.", "Cable ready."], "plain: chosen port ready")
+        let fixed = run(mayPrompt: true, [.macB], fix: .fixed, plain: true)
+        expectEqual(fixed.lines, ["Cable found.", "Cable ready."], "plain: one port fixed")
+        expectEqual(fixed.state, .ready, "plain: ready state")
+        let declined = run(mayPrompt: true, [.macB], fix: .approvalDeclined, plain: true)
+        expectEqual(Array(declined.lines.suffix(1)), ["The macOS prompt was cancelled, so the cable cannot be used yet. Run `darkbloom cluster` again and approve the prompt."],
+            "plain: declined in plain words")
+        for transcript in [asked, chosen, fixed, declined] {
+            let text = transcript.lines.joined(separator: "\n")
+            expect(!text.contains("cluster link") && !text.contains("--device") && !text.contains("GID") && !text.contains("bridge")
+                && !text.contains("--temporary"), "plain: no developer words: \(text)")
+        }
     }
 
     /// The durable install is the default; these are the other ways through

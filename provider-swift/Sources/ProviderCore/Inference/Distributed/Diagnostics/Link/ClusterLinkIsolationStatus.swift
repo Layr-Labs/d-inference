@@ -98,7 +98,7 @@ public enum ClusterLinkIsolationFinding: String, Encodable, Sendable, CaseIterab
         case .hardwarePortUnknown:
             return "reconnect the cable so macOS lists the port, then run `darkbloom cluster` again"
         case .stateUnreadable:
-            return "run `networksetup -listnetworkserviceorder` and `netstat -rn` in Terminal to see what they report, then run `darkbloom cluster` again"
+            return "Could not read this Mac's network settings. Restart it and run `darkbloom cluster` again"
         }
     }
 }

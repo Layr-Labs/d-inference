@@ -117,6 +117,7 @@ import Darwin
         // A Mac that does not lead refuses a forwarded command and names the leader it follows.
         let refusal = ClusterControlRouting.refusal(localID: "mac-aaaaaaaaaaaa", claim: claim, names: ["mac-bbbbbbbbbbbb": "Apple M5 Ultra, 256 GB"])
         expect(refusal?.contains("Apple M5 Ultra, 256 GB") == true, "refusal names the leader: \(String(describing: refusal))")
+        expect(refusal?.contains("term") == false && refusal?.contains("control leader") == false, "refusal in plain words: \(String(describing: refusal))")
         expect(ClusterControlRouting.refusal(localID: "mac-bbbbbbbbbbbb", claim: claim, names: [:]) == nil, "the leader accepts")
     }
 
@@ -313,7 +314,7 @@ import Darwin
         guard case .cannotServe(let missing, let reason) = bus.nodes["mac-000000000001"]!.mode(now: 60) else {
             return expect(false, "three of four: stated, not served")
         }
-        expect(missing == ["mac-000000000004"] && reason.contains("re-plan"), "\(missing) \(reason)")
+        expect(missing == ["mac-000000000004"] && reason.contains("re-forms when the other Mac is back") && !reason.contains("re-plan"), "\(missing) \(reason)")
         expect(bus.leaders == ["mac-000000000001"], "rank 0 keeps leading (it is present)")
     }
 

@@ -340,6 +340,16 @@ extension ClusterService {
         }
     }
 
+    /// A sweep reason in plain words: what it is, without process IDs, byte counts or paths.
+    static func plainTeardownReason(_ reason: String) -> String {
+        let lower = reason.lowercased()
+        if lower.contains("wired") { return "memory a model held is not released yet" }
+        if lower.contains("journal") { return "a device record from a run is still open" }
+        if lower.contains("bootstrap") { return "files from a run's start are still there" }
+        if lower.contains("worker") || lower.contains("owner") || lower.contains("process") { return "a cluster process" }
+        return reason.replacingOccurrences(of: #"\s*\(?pid \d+\)?"#, with: "", options: .regularExpression)
+    }
+
     /// This Mac's verify-teardown summary (no cluster process, wired memory at its idle baseline, no journal or bootstrap left).
     static func teardownLines() -> [String] {
         let name = ClusterPairingProvider.displayName(chipName: (try? HardwareDetector.detect().chipName) ?? "Mac")
@@ -347,20 +357,14 @@ extension ClusterService {
             let report = try ClusterOrphanSweep.verify(baselineWiredBytes: nil, samples: 3)
             // The part the cluster service started is a cluster process too, also when it is no cluster worker or owner
             // (the solo server, the rank 0 server process) and when the service that started it is gone.
-            var reasons = report.reasons
+            var reasons = report.reasons.map(Self.plainTeardownReason)
             if let part = recordedPart(published()) {
-                reasons.append("this Mac's \(part.solo ? "solo server" : "part") is still running (pid \(part.pid))")
+                reasons.append("this Mac's \(part.solo ? "single-Mac server" : "part of the model") is still running")
             }
-            var line = "\(name): " + (reasons.isEmpty ? "teardown verified, nothing left" : "teardown NOT clean: " + reasons.joined(separator: "; "))
-            if let wired = report.wired {
-                line += " (wired \((wired.samples.min() ?? 0) >> 20) MiB, baseline \(wired.baselineBytes >> 20) MiB)"
-            }
-            if !report.otherClusters.isEmpty {
-                line += "; \(report.otherClusters.count) cluster process(es) of another cluster home not counted"
-            }
-            return [line]
+            // Plain words: what is left, never wired/baseline MiB, cluster homes or process IDs.
+            return ["\(name): " + (reasons.isEmpty ? "nothing left running" : "still running: " + reasons.joined(separator: "; "))]
         } catch {
-            return ["\(name): teardown check failed: \(ClusterConsoleText.bounded(String(describing: error), maximum: 160))"]
+            return ["\(name): could not check what is left running (\(ClusterConsoleText.bounded(String(describing: error), maximum: 120)))"]
         }
     }
 }

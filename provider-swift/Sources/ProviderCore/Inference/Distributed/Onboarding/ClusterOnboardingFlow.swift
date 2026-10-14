@@ -80,9 +80,66 @@ public struct ClusterOnboardingModelChoice: Codable, Sendable, Equatable {
     public var blocker: String?
     /// What has to move before it can be served (a Mac lacks it); nil when every Mac has it.
     public var provision: ClusterOnboardingProvisionOffer?
+    /// It does not fit in the Macs' free memory now: what frees it, in plain words ("Quit apps on <Mac> first").
+    /// Nil when it fits now. Choices that fit are listed first, so enter picks one that fits.
+    public var fitRemedy: String?
 
-    public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil) {
-        self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision
+    public init(title: String, lines: [String], blocker: String?, provision: ClusterOnboardingProvisionOffer? = nil, fitRemedy: String? = nil) {
+        self.title = title; self.lines = lines; self.blocker = blocker; self.provision = provision; self.fitRemedy = fitRemedy
+    }
+}
+
+/// How a chosen model is spread over the Macs, in one plain line, from what the planner chose (the mode and each
+/// Mac's share). Universal: the words come from the plan's mode and shares, never from a model or chip table.
+public enum ClusterOnboardingDeployment {
+    public struct Share: Sendable, Equatable {
+        /// The Mac's name as pairing showed it ("Apple M5 Ultra, 256 GB").
+        public var name: String
+        /// Layers this Mac holds (pipeline), or nil.
+        public var layers: Int?
+        /// Weight bytes this Mac holds (tensor parallel shares are given as a percentage of these).
+        public var weightsBytes: Int?
+        public init(name: String, layers: Int?, weightsBytes: Int? = nil) { self.name = name; self.layers = layers; self.weightsBytes = weightsBytes }
+    }
+
+    /// "Apple M5 Ultra, 256 GB" -> "M5 Ultra".
+    public static func shortName(_ name: String) -> String {
+        var short = name.split(separator: ",").first.map(String.init) ?? name
+        if short.hasPrefix("Apple ") { short.removeFirst("Apple ".count) }
+        return short.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The plan's mode in words: tensor parallel or pipeline (the sharded modes), anything else plainly.
+    public static func modeWords(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower.contains("tensor") || lower.hasPrefix("tp") { return "tensor parallel" }
+        if lower.hasPrefix("pipeline") { return "pipeline" }
+        if lower.hasPrefix("phase_split") { return "prompt split, then one Mac decodes (opt-in)" }
+        return "split across the Macs"
+    }
+
+    /// "M3 Ultra 40 layers / M5 Ultra 24 layers" (pipeline) or "M3 Ultra 60% / M5 Ultra 40%" (tensor parallel).
+    public static func sharesWords(mode: String, shares: [Share]) -> String {
+        let names = shares.map { shortName($0.name) }
+        // Two Macs of one kind: say which is which by the full name.
+        let labels = Set(names).count == names.count ? names : shares.map(\.name)
+        if modeWords(mode) == "tensor parallel" {
+            let total = shares.compactMap(\.weightsBytes).reduce(0, +)
+            guard total > 0, shares.allSatisfy({ $0.weightsBytes != nil }) else { return labels.joined(separator: " / ") }
+            return zip(labels, shares).map { "\($0) \(Int((Double($1.weightsBytes!) * 100 / Double(total)).rounded()))%" }.joined(separator: " / ")
+        }
+        return zip(labels, shares).map { label, share in share.layers.map { "\(label) \($0) layers" } ?? label }.joined(separator: " / ")
+    }
+
+    /// "Serving Qwen3.8-27B across both Macs: pipeline, M3 Ultra 40 layers / M5 Ultra 24 layers".
+    public static func line(model: String, mode: String, shares: [Share]) -> String {
+        let macs = shares.count == 2 ? "both Macs" : "\(shares.count) Macs"
+        return "Serving \(model) across \(macs): \(modeWords(mode)), \(sharesWords(mode: mode, shares: shares))"
+    }
+
+    /// One model choice in one line: "6.1 GB · pipeline · M3 Ultra 16 layers / M5 Ultra 16 layers · about 90 tokens/s".
+    public static func choiceLine(size: String, mode: String, shares: [Share], speed: String?) -> String {
+        ([size, modeWords(mode), sharesWords(mode: mode, shares: shares)] + (speed.map { [$0] } ?? [])).joined(separator: " · ")
     }
 }
 
@@ -109,6 +166,40 @@ public struct ClusterOnboardingProvisionOffer: Codable, Sendable, Equatable {
     }
 }
 
+/// What happens to this Mac's part after a restart or a power cut, said plainly from what macOS is set to do. The
+/// cluster service is a login agent (it needs the logged-in session for its keys and attestation), so it comes back by
+/// itself only when the Mac logs in by itself; FileVault keeps the disk locked until someone logs in.
+public enum ClusterOnboardingRestart {
+    public static func line(mac: String, autoLogin: Bool, fileVault: Bool?) -> String {
+        if autoLogin { return "After a restart or power cut, \(mac) comes back by itself and serves again (automatic login is on)." }
+        if fileVault == true {
+            return "After a restart or power cut, \(mac) serves again once someone logs in (FileVault keeps the disk locked until then)."
+        }
+        return "After a restart or power cut, \(mac) serves again once someone logs in. To make it automatic, turn on automatic login "
+            + "(System Settings → Users & Groups; needs FileVault off)."
+    }
+}
+
+/// After a Darkbloom update the worker's bytes change at the same path, so the saved setup's pinned digests no
+/// longer match and both Macs would refuse their parts forever. The control leader's service notices it and sets
+/// the cluster up again by itself (the same model re-planned, re-adopted and synced): no command for the person.
+public enum ClusterOnboardingUpdate {
+    public static let statusLine = "Updating the cluster setup after a Darkbloom update."
+    /// How often the control leader compares the pinned worker digests with what each Mac runs.
+    public static let checkEverySeconds: Double = 60
+    /// After a failed attempt, the next one waits this long (the screen and log say why).
+    public static let retryAfterFailureSeconds: Double = 600
+
+    /// The members whose running worker differs from the digest the saved setup pins. A member whose current digest
+    /// is not known now (it did not answer) is not counted: nothing is re-planned on a guess.
+    public static func changed(pinned: [String: String], current: [String: String?]) -> [String] {
+        pinned.keys.sorted().filter { member in
+            guard let now = current[member] ?? nil else { return false }
+            return now != pinned[member]
+        }
+    }
+}
+
 /// What the pairing reports while it runs.
 public enum ClusterOnboardingPairEvent: Sendable, Equatable {
     case searching
@@ -130,20 +221,26 @@ public enum ClusterOnboardingPairResult: Sendable, Equatable {
 public struct ClusterOnboardingLinkResult: Sendable, Equatable {
     public var ready: Bool
     public var exitCode: Int32
-    public init(ready: Bool, exitCode: Int32) { self.ready = ready; self.exitCode = exitCode }
+    /// More than one cable port is active and none is set up yet: the ports to choose from ("en5", "en6").
+    public var ports: [String]
+    public init(ready: Bool, exitCode: Int32, ports: [String] = []) { self.ready = ready; self.exitCode = exitCode; self.ports = ports }
 }
 
 public struct ClusterOnboardingReady: Codable, Sendable, Equatable {
     /// "this Mac" or the other Mac's name: where the serving API listens.
     public var servedBy: String
     public var port: Int
-    public init(servedBy: String, port: Int) { self.servedBy = servedBy; self.port = port }
+    /// The plan's deployment in one line (`ClusterOnboardingDeployment.line`); nil when it is not known here.
+    public var deployment: String?
+    public init(servedBy: String, port: Int, deployment: String? = nil) { self.servedBy = servedBy; self.port = port; self.deployment = deployment }
 
-    /// "Serving <model> from …": the serving API listens on loopback on the Mac that runs rank 0, so when that is
-    /// the other Mac the line says the address is on that Mac (this Mac's own loopback serves nothing).
-    public func servingLine(model: String) -> String {
-        servedBy == "this Mac" ? "Serving \(model) from this Mac at 127.0.0.1:\(port)"
-            : "Serving \(model) from \(servedBy), at 127.0.0.1:\(port) on that Mac"
+    /// "API at http://localhost:8000 on this Mac": the serving API listens on loopback on the Mac that runs rank 0, so
+    /// when that is the other Mac the line names it (this Mac's own loopback serves nothing).
+    public var apiLine: String { "API at http://localhost:\(port) on \(servedBy)" }
+
+    /// The deployment line, then where the API is.
+    public func lines(model: String) -> [String] {
+        [deployment ?? "Serving \(model) across both Macs", apiLine]
     }
 }
 
@@ -203,6 +300,15 @@ public struct ClusterOnboardingOperations: Sendable {
     public var provision: @Sendable (_ index: Int, _ download: Bool, _ progress: @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
     /// Each Mac's verify-teardown summary (after a stop: no cluster process, wired memory at baseline).
     public var verifyTeardown: @Sendable () -> Result<[String], ClusterOnboardingFailure>
+    /// The cable port the person chose when more than one is active; the next `checkLink` sets that one up.
+    public var useLinkPort: @Sendable (String) -> Void
+    /// Right before the start: nil when choice `index` fits in the Macs' free memory now, else what frees it.
+    public var recheckFit: @Sendable (_ index: Int) -> String?
+    /// What happens after a restart of this Mac, in one line for the end of the onboarding (nil: nothing to add,
+    /// because the service already said it will not start at login).
+    public var afterRestart: @Sendable () -> String?
+    /// Saves a redacted diagnostics file; its lines say where.
+    public var saveDiagnostics: @Sendable () -> Result<[String], ClusterOnboardingFailure>
 
     public init(resume: @escaping @Sendable () -> ClusterOnboardingResume,
                 checkLink: @escaping @Sendable (@escaping @Sendable (String) -> Void) -> ClusterOnboardingLinkResult,
@@ -219,11 +325,16 @@ public struct ClusterOnboardingOperations: Sendable {
                 stop: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure>,
                 provision: @escaping @Sendable (Int, Bool, @escaping @Sendable (String) -> Void) -> Result<[String], ClusterOnboardingFailure>
                     = { _, _, _ in .success([]) },
-                verifyTeardown: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .success([]) }) {
+                verifyTeardown: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .success([]) },
+                useLinkPort: @escaping @Sendable (String) -> Void = { _ in },
+                recheckFit: @escaping @Sendable (Int) -> String? = { _ in nil },
+                afterRestart: @escaping @Sendable () -> String? = { nil },
+                saveDiagnostics: @escaping @Sendable () -> Result<[String], ClusterOnboardingFailure> = { .failure(.init("No diagnostics file can be saved here.")) }) {
         self.resume = resume; self.checkLink = checkLink; self.pair = pair; self.answerCode = answerCode
         self.ensureService = ensureService; self.reachMembers = reachMembers; self.planModels = planModels
         self.adopt = adopt; self.serve = serve; self.waitReady = waitReady; self.testRequest = testRequest
         self.status = status; self.stop = stop; self.provision = provision; self.verifyTeardown = verifyTeardown
+        self.useLinkPort = useLinkPort; self.recheckFit = recheckFit; self.afterRestart = afterRestart; self.saveDiagnostics = saveDiagnostics
     }
 }
 
@@ -333,16 +444,49 @@ public enum ClusterOnboardingDriver {
         }
     }
 
+    /// macOS asks once, the first time Darkbloom's service talks over the cable. Said before it can appear.
+    public static let localNetworkLine = "macOS may ask once to allow Darkbloom on the local network. Allow it."
+
+    /// Runs the cable checks with each line shown as it is made (the approval line comes before the macOS prompt).
+    static func checkLink(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> ClusterOnboardingLinkResult {
+        let lines = ClusterOnboardingMailbox<String>()
+        let finished = ClusterOnboardingMailbox<ClusterOnboardingLinkResult>()
+        Thread.detachNewThread { finished.post(operations.checkLink { lines.post($0) }) }
+        func show() { for line in lines.take() where line != "Run `darkbloom cluster` on the other Mac too." { console.say("  " + line) } }
+        while true {
+            show()
+            if let result = finished.take().first { show(); return result }
+            usleep(50_000)
+        }
+    }
+
     /// No pairing yet: checks, then find a waiting leader or become one.
     static func onboard(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         console.say("Darkbloom cluster setup")
         console.say("")
-        console.say("Checking this Mac's cluster link…")
-        let lines = ClusterOnboardingMailbox<String>()
-        let link = operations.checkLink { lines.post($0) }
-        for line in lines.take() where line != "Run `darkbloom cluster` on the other Mac too." { console.say("  " + line) }
+        console.say("Checking this Mac's Thunderbolt cable…")
+        var link = checkLink(operations, console)
+        if !link.ready, link.ports.count > 1 {
+            // Two cables (two links to the other Mac, or one to a third Mac): the person says which one to use here.
+            let listed = link.ports.enumerated().map { "\($0.offset + 1)) \($0.element)" }.joined(separator: " ")
+            var chosen: String?
+            while chosen == nil {
+                guard let typed = console.line(prompt: "\(link.ports.count == 2 ? "Two" : "\(link.ports.count)") cables found: \(listed) [enter = 1]: ") else {
+                    console.say("The input closed: nothing was changed.")
+                    return 1
+                }
+                let text = typed.trimmingCharacters(in: .whitespaces)
+                if text.isEmpty { chosen = link.ports[0] }
+                else if let number = Int(text), link.ports.indices.contains(number - 1) { chosen = link.ports[number - 1] }
+                else if link.ports.contains(text) { chosen = text }
+                else { console.say("Type a number from 1 to \(link.ports.count), or press enter for 1.") }
+            }
+            operations.useLinkPort(chosen!)
+            console.say("Using \(chosen!) for the cluster.")
+            link = checkLink(operations, console)
+        }
         guard link.ready else {
-            console.say("The cluster link is not ready, so pairing waits. Run `darkbloom cluster` again when the step above is done.")
+            console.say("The cable is not ready yet, so pairing waits. Run `darkbloom cluster` again when the step above is done.")
             return max(link.exitCode, 1)
         }
         console.say("")
@@ -383,6 +527,7 @@ public enum ClusterOnboardingDriver {
                 console.say("Run `darkbloom cluster` here again to start it; the pairing is kept.")
                 return 1
             }
+            console.say(localNetworkLine)
             console.say("Nothing else to do on this Mac: \(peerName) chooses the model and starts this Mac's part.")
             return 0
         case .leader:
@@ -401,7 +546,6 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say(line) }
             return 1
         }
-        if let reason = resume.leaderReason { console.say("The control leader is derived, not chosen: \(reason)\(resume.term.map { " (term \($0))" } ?? "").") }
         console.say("Commands typed here run on \(leader) over the cable.")
         return menu(resume, operations, console)
     }
@@ -415,6 +559,7 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say(line) }
             return 1
         }
+        if justPaired { console.say(localNetworkLine) }
         if resume.serving, !justPaired {
             console.say("This Mac leads the cluster.")
             return menu(resume, operations, console)
@@ -426,9 +571,9 @@ public enum ClusterOnboardingDriver {
     static func menu(_ resume: ClusterOnboardingResume, _ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         for line in operations.status() { console.say("  " + line) }
         if resume.serving {
-            console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to verify teardown.")
+            console.say("Press enter to leave it as it is, t to send a test request, m to choose another model, s to stop serving, v to check both Macs released their memory.")
         } else {
-            console.say("Not serving. Press m to choose a model and serve, v to verify teardown, enter to leave it as it is.")
+            console.say("Not serving. Press m to choose a model and serve, v to check both Macs released their memory, enter to leave it as it is.")
         }
         while true {
             guard let key = console.key(milliseconds: 60_000) else {
@@ -462,6 +607,9 @@ public enum ClusterOnboardingDriver {
         }
     }
 
+    /// How long the start waits for n after the model is chosen (the choice is the start).
+    static let startSeconds = 3
+
     static func chooseAndServe(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) -> Int32 {
         console.say("")
         console.say("Reading both Macs over the cable…")
@@ -479,7 +627,7 @@ public enum ClusterOnboardingDriver {
         console.say("The cluster:")
         for machine in machines { console.say(machine.line) }
         console.say("")
-        console.say("Planning the models this Mac has (the planner decides which Mac holds which layers and which one decodes; a Mac that lacks the model gets it over the cable, no download by hand)…")
+        console.say("Working out the fastest way to split each model across both Macs…")
         let choices: [ClusterOnboardingModelChoice]
         switch operations.planModels() {
         case .success(let value): choices = value
@@ -487,10 +635,13 @@ public enum ClusterOnboardingDriver {
             for line in failure.lines { console.say(line) }
             return 1
         }
-        let open = choices.indices.filter { choices[$0].blocker == nil }
+        // The choices that fit now come first, so enter (= 1) is one that fits.
+        let offered = choices.indices.filter { choices[$0].blocker == nil }
+        let open = offered.filter { choices[$0].fitRemedy == nil } + offered.filter { choices[$0].fitRemedy != nil }
         for (number, index) in open.enumerated() {
             console.say("  \(number + 1). \(choices[index].title)")
             for line in choices[index].lines { console.say("       " + line) }
+            if let remedy = choices[index].fitRemedy { console.say("       does not fit now: " + remedy) }
             if let offer = choices[index].provision {
                 for line in offer.lines { console.say("       needs: " + line) }
             }
@@ -543,14 +694,30 @@ public enum ClusterOnboardingDriver {
                 }
             }
         }
-        console.say("Options: always on — each Mac's cluster service starts its part again when it ends, and the cluster re-forms by itself (on).")
-        console.say("         Public serving through Darkbloom — off (not offered by this build).")
-        console.say("Serve \(choice.title) on both Macs? Press y to start, n to stop here.")
-        guard ask(console) else {
-            console.say("Nothing was changed. Run `darkbloom cluster` here again to choose.")
-            return 0
+        console.say("Options: always on (each Mac starts its part again by itself); public serving through Darkbloom is off in this build.")
+        // The choice is the start: a moment to stop it, no second question.
+        console.say("Starting \(choice.title) on both Macs in \(startSeconds) s; press n to stop here.")
+        let deadline = Date().addingTimeInterval(Double(startSeconds))
+        wait: while Date() < deadline {
+            guard let key = console.key(milliseconds: max(1, Int(deadline.timeIntervalSinceNow * 1000))) else {
+                if console.closed { break wait }
+                continue
+            }
+            switch key {
+            case "\r", "\n", "y", "Y": break wait
+            case "n", "N", "q", "Q":
+                console.say("Nothing was changed. Run `darkbloom cluster` here again to choose.")
+                return 0
+            default: continue
+            }
         }
-        console.say("Saving the plan and syncing it to the member over the cable…")
+        // Memory moves while the person reads: the fit is checked again right before anything starts.
+        if let remedy = operations.recheckFit(chosen!) {
+            console.say("\(choice.title) does not fit in the Macs' free memory now: \(remedy)")
+            console.say("Nothing was changed. Run `darkbloom cluster` here again after that.")
+            return 1
+        }
+        console.say("Saving the setup and sending it to the other Mac over the cable…")
         switch operations.adopt(chosen!) {
         case .success(let lines): for line in lines { console.say("  " + line) }
         case .failure(let failure):
@@ -576,17 +743,39 @@ public enum ClusterOnboardingDriver {
         for line in progress.take() { console.say("  " + line) }
         switch ready! {
         case .success(let where_):
-            console.say(where_.servingLine(model: choice.title) + ".")
+            for line in where_.lines(model: choice.title) { console.say(line + ".") }
         case .failure(let failure):
             for line in failure.lines { console.say(line) }
+            offerDiagnostics(operations, console)
             console.say("Both Macs keep trying by themselves; run `darkbloom cluster` here to see how it is going.")
             return 1
         }
         let tested = test(operations, console)
         console.say("")
-        console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it (commands go to the control leader).")
-        console.say("Nothing else is needed on the other Mac. After a Mac restarts, run `darkbloom cluster` on it once (it asks nothing).")
+        console.say("Done. Run `darkbloom cluster` on any of these Macs to see it, change the model or stop it.")
+        console.say("Nothing else is needed on the other Mac." + (operations.afterRestart().map { " " + $0 } ?? ""))
         return tested ? 0 : 1
+    }
+
+    /// One key to save a diagnostics file (redacted) after a start that did not finish.
+    static func offerDiagnostics(_ operations: ClusterOnboardingOperations, _ console: ClusterOnboardingConsole) {
+        console.say("Press d to save a diagnostics file to send to Darkbloom, enter to leave.")
+        while true {
+            guard let key = console.key(milliseconds: 60_000) else {
+                if console.closed { return }
+                continue
+            }
+            switch key {
+            case "d", "D":
+                switch operations.saveDiagnostics() {
+                case .success(let lines): for line in lines { console.say("  " + line) }
+                case .failure(let failure): for line in failure.lines { console.say("  " + line) }
+                }
+                return
+            case "\r", "\n", "q", "Q", "n", "N": return
+            default: continue
+            }
+        }
     }
 
     enum ProvisionOutcome { case done, stopped, failed }
@@ -689,20 +878,6 @@ public enum ClusterOnboardingDriver {
         }
     }
 
-    /// y or n (enter is no answer); false when the input closed.
-    static func ask(_ console: ClusterOnboardingConsole) -> Bool {
-        while true {
-            guard let key = console.key(milliseconds: 60_000) else {
-                if console.closed { return false }
-                continue
-            }
-            switch key {
-            case "y", "Y": return true
-            case "n", "N", "q", "Q": return false
-            default: continue
-            }
-        }
-    }
 }
 
 /// A small thread-safe queue between a worker thread and the console's thread.

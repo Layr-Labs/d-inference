@@ -2,7 +2,7 @@
  "Qwen3.5-9B-2026-09-03-r1": {
   "cut": 16,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "6d1016ee0e6323ad63ad2cd8b5b0fd7d8f2764b344f4ee5d5b84157a6d9c6c8c",
+  "planSHA256": "e19a1379041241c9ddfd6b2ebc8ad46216ee1f9939d71b799192165aad0c7d4a",
   "ranks": [
    {
     "device": "mac-a",
@@ -22,7 +22,7 @@
  "Qwen3.8-27B-4bit-mtp-2026-09-03-r1": {
   "cut": 32,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "5619259566c22074772b80bc8326e7d640d720cbbb18061e165b6ad72973531d",
+  "planSHA256": "6db7da0cec12899a054e38701d6a4f1c049fa94e6130304872e2c476f5c5fd46",
   "ranks": [
    {
     "device": "mac-a",
@@ -142,7 +142,7 @@
  "nvidia-nemotron-3.5-lightning-2026-09-30-r1": {
   "cut": 27,
   "mode": "pipeline_v1",
-  "planSHA256": "837082bccc53b6f0f960353cd0e6f8f6cf2c6a80b042c2ec03de20e5dff6ac28",
+  "planSHA256": "e4447729f3a01159277c9b4e98dd6497c0188244d503b244d821386eec79df5b",
   "ranks": [
    {
     "device": "mac-a",
@@ -162,7 +162,7 @@
  "qwen3.5-35b-a3b-2026-08-25-r1": {
   "cut": 20,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "6c7fb5dea75577cbd7743086debf9c25e16a67aed83c010a4aa719af69a89330",
+  "planSHA256": "926259a48655e72e5c6013a9a15c4a7582832dc2a8c8e2707607912132a14795",
   "ranks": [
    {
     "device": "mac-a",
@@ -182,7 +182,7 @@
  "qwen3.6-35b-a3b-vl-mtp-mxfp8-2026-08-11-r1": {
   "cut": 20,
   "mode": "phase_split_mtp_v1",
-  "planSHA256": "4ab42ec1132c8c9eba9105fce13855ca81e3f464363cb9f0ad710389f2b447b2",
+  "planSHA256": "b539ce4557779c9004c16434b4d3e5e3bd729607d8d440a33b62e865f142c5d6",
   "ranks": [
    {
     "device": "mac-a",
@@ -202,7 +202,7 @@
  "ternary-bonsai-2-27b-2026-09-17-r1": {
   "cut": 32,
   "mode": "pipeline_v1",
-  "planSHA256": "0a0ffaaf65ae6d53b6308e65a1e6a31a6563f3f768047d4656d398a935fae45b",
+  "planSHA256": "a4533e745f05f987dbcd37a68e8ed4d805ade96d445d94f556eba904940fa554",
   "ranks": [
    {
     "device": "mac-a",

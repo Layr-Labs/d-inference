@@ -327,6 +327,18 @@ public enum ClusterPlacementExplanation {
         if chosen.mode.isPhaseSplit {
             lines.append("The last rank holds every layer and decodes alone after the first token, because that is faster than passing each token through both.")
             if let line = speculation(chosen, devices: devices, layout: layout, regime: regime) { lines.append(line) }
+            if let route = chosen.aloneRoute {
+                let q = route.prediction(regime)
+                if chosen.routesAlone(regime) {
+                    lines.append("For this request \(route.device) alone is predicted faster than the pair"
+                        + (result.basis.absolute ? " (\(seconds(q.requestSeconds)) against \(seconds(p.requestSeconds)))" : "")
+                        + ", so the router sends it there; the other Mac takes a prefill share only for the prompts the pair is predicted faster for. "
+                        + "A Mac that can hold the whole model is never made slower by its pair.")
+                } else {
+                    lines.append("\(route.device) holds every layer, so the router sends each request the pair is not predicted faster for to \(route.device) alone"
+                        + (result.basis.absolute ? " (for this request alone: \(seconds(q.requestSeconds)))" : "") + ".")
+                }
+            }
         }
         if let other = result.chosenForOtherRegime, other.cuts != chosen.cuts || other.ranks.map(\.device) != chosen.ranks.map(\.device) || other.mode != chosen.mode {
             let name = regime == .sustained ? "rested" : "sustained"

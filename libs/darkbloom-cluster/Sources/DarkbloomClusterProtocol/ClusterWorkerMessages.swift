@@ -172,6 +172,43 @@ public struct ClusterWorkerDataPlane: Equatable, Sendable {
     public var encryptedAndVerified: Bool { protection == Self.encrypted && peerVerified }
 }
 
+/// What a tensor-parallel worker measured of its link to the peer at load,
+/// the way the sharded modes use it (`keyed`: over the keyed data plane, the
+/// all-sums sealed): one-way point-to-point records, small and large, and the
+/// all-sum at a decode step's width and at a prefill chunk's. Medians, in
+/// microseconds. The pair's owner keeps the latest per pair; a placement
+/// planner derives the link's costs from it.
+public struct ClusterWorkerLinkProbe: Equatable, Sendable {
+    public static let transports: Set<String> = ["jaccl"]
+    public let transport: String
+    public let keyed: Bool
+    public let pointToPointSmallBytes: Int
+    public let pointToPointSmallMicroseconds: Int
+    public let pointToPointLargeBytes: Int
+    public let pointToPointLargeMicroseconds: Int
+    public let allSumSmallBytes: Int
+    public let allSumSmallMicroseconds: Int
+    public let allSumLargeBytes: Int
+    public let allSumLargeMicroseconds: Int
+    public init(transport: String, keyed: Bool, pointToPointSmallBytes: Int, pointToPointSmallMicroseconds: Int,
+                pointToPointLargeBytes: Int, pointToPointLargeMicroseconds: Int, allSumSmallBytes: Int,
+                allSumSmallMicroseconds: Int, allSumLargeBytes: Int, allSumLargeMicroseconds: Int) {
+        self.transport = transport; self.keyed = keyed
+        self.pointToPointSmallBytes = pointToPointSmallBytes; self.pointToPointSmallMicroseconds = pointToPointSmallMicroseconds
+        self.pointToPointLargeBytes = pointToPointLargeBytes; self.pointToPointLargeMicroseconds = pointToPointLargeMicroseconds
+        self.allSumSmallBytes = allSumSmallBytes; self.allSumSmallMicroseconds = allSumSmallMicroseconds
+        self.allSumLargeBytes = allSumLargeBytes; self.allSumLargeMicroseconds = allSumLargeMicroseconds
+    }
+    /// Known transport, positive figures within bounds, each large size above its small one.
+    public var valid: Bool {
+        let sizes = [pointToPointSmallBytes, pointToPointLargeBytes, allSumSmallBytes, allSumLargeBytes]
+        let times = [pointToPointSmallMicroseconds, pointToPointLargeMicroseconds, allSumSmallMicroseconds, allSumLargeMicroseconds]
+        return Self.transports.contains(transport) && sizes.allSatisfy({ (1...(1 << 30)).contains($0) })
+            && times.allSatisfy({ (1...60_000_000).contains($0) })
+            && pointToPointLargeBytes > pointToPointSmallBytes && allSumLargeBytes > allSumSmallBytes
+    }
+}
+
 /// This worker's local readiness. The owner must aggregate both workers.
 public struct ClusterWorkerReady: Equatable, Sendable {
     public let identity: ClusterWorkerIdentity
@@ -190,13 +227,16 @@ public struct ClusterWorkerReady: Equatable, Sendable {
     /// A rank re-derives it while idle and reports it on every keep-warm
     /// answer (`ClusterWorkerEvent.keptWarm`).
     public let servingContextTokens: Int?
+    /// The link as a tensor-parallel load measured it; nil from other modes.
+    public let linkProbe: ClusterWorkerLinkProbe?
     public init(identity: ClusterWorkerIdentity, rank: Int, profile: ClusterWorkerProfile,
                 executionPlanSHA256: String, requestCapacityBytes: Int, dataPlane: ClusterWorkerDataPlane? = nil,
-                servingContextTokens: Int? = nil) {
+                servingContextTokens: Int? = nil, linkProbe: ClusterWorkerLinkProbe? = nil) {
         self.identity = identity; self.rank = rank; self.profile = profile
         self.executionPlanSHA256 = executionPlanSHA256; self.requestCapacityBytes = requestCapacityBytes
         self.dataPlane = dataPlane
         self.servingContextTokens = servingContextTokens
+        self.linkProbe = linkProbe
     }
 }
 

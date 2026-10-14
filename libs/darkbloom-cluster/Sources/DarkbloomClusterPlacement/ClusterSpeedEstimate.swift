@@ -1,3 +1,4 @@
+import DarkbloomClusterProtocol
 import Foundation
 
 /// Two rates for a whole model on one device alone, and, when measured, the
@@ -354,5 +355,37 @@ public enum ClusterSpeedEstimator {
             }
             return .assumedEqual
         }
+    }
+}
+
+extension ClusterLinkCosts {
+    /// The link costs a pair's latest link probe gives (`ClusterWorkerLinkProbe`,
+    /// measured at load as the sharded modes use the link): the reduction is
+    /// the all-sum's fixed part and per-byte slope between its small and large
+    /// measurements (keyed when the probe's all-sums were sealed); a pipeline
+    /// decode step pays two one-way small records (the step's hand-off and the
+    /// token back), or `servedPipelineStepSeconds` when the pair served the
+    /// pipeline and its owner derived the step's link share from that; a
+    /// prefill chunk's hop one large record; a hand-off the records' per-byte
+    /// slope. Nil for a malformed probe. Nothing here is per chip or per model.
+    public init?(probe: ClusterWorkerLinkProbe, measuredUTC: String, servedPipelineStepSeconds: Double? = nil) {
+        guard probe.valid, servedPipelineStepSeconds.map({ $0.isFinite && $0 >= 0 && $0 < 10 }) ?? true else { return nil }
+        let us = 1e-6
+        let slope = max(0, Double(probe.allSumLargeMicroseconds - probe.allSumSmallMicroseconds) * us
+            / Double(probe.allSumLargeBytes - probe.allSumSmallBytes))
+        let fixed = max(0, Double(probe.allSumSmallMicroseconds) * us - Double(probe.allSumSmallBytes) * slope)
+        let recordSlope = max(0, Double(probe.pointToPointLargeMicroseconds - probe.pointToPointSmallMicroseconds) * us
+            / Double(probe.pointToPointLargeBytes - probe.pointToPointSmallBytes))
+        let step = servedPipelineStepSeconds ?? 2 * Double(probe.pointToPointSmallMicroseconds) * us
+        let provenance = "measured at load over \(probe.transport) (\(probe.keyed ? "keyed, sealed all-sums" : "plaintext"))"
+            + " at \(measuredUTC): all-sum \(probe.allSumSmallMicroseconds) us at \(probe.allSumSmallBytes) B and"
+            + " \(probe.allSumLargeMicroseconds) us at \(probe.allSumLargeBytes) B; records \(probe.pointToPointSmallMicroseconds) us"
+            + " at \(probe.pointToPointSmallBytes) B and \(probe.pointToPointLargeMicroseconds) us at \(probe.pointToPointLargeBytes) B"
+            + (servedPipelineStepSeconds == nil ? "" : "; pipeline step from served requests")
+        self.init(measured: true, perChunkSeconds: Double(probe.pointToPointLargeMicroseconds) * us,
+            perDecodeStepSeconds: Dictionary(uniqueKeysWithValues: ClusterGenerationMode.allCases
+                .filter { !$0.usesTensorParallelPrefill }.map { ($0.rawValue, step) }),
+            handoffSecondsPerByte: recordSlope, provenance: String(provenance.prefix(1024)),
+            reduction: .init(fixedSeconds: fixed, secondsPerByte: slope, keyed: probe.keyed, provenance: String(provenance.prefix(1024))))
     }
 }

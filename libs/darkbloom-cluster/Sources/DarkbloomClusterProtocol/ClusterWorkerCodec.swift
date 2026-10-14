@@ -246,6 +246,14 @@ public enum ClusterWorkerCodec {
             "maximumChunkTokens": r.profile.maximumChunkTokens, "maximumContextTokens": r.profile.maximumContextTokens],
          "executionPlanSHA256": r.executionPlanSHA256, "requestCapacityBytes": r.requestCapacityBytes]
             .merging(r.servingContextTokens.map { ["servingContextTokens": $0] } ?? [:]) { first, _ in first }
+            .merging(r.linkProbe.map { ["linkProbe": linkProbe($0)] } ?? [:]) { first, _ in first }
+    }
+    private static func linkProbe(_ p: ClusterWorkerLinkProbe) -> [String: Any] {
+        ["transport": p.transport, "keyed": p.keyed,
+         "pointToPointSmallBytes": p.pointToPointSmallBytes, "pointToPointSmallMicroseconds": p.pointToPointSmallMicroseconds,
+         "pointToPointLargeBytes": p.pointToPointLargeBytes, "pointToPointLargeMicroseconds": p.pointToPointLargeMicroseconds,
+         "allSumSmallBytes": p.allSumSmallBytes, "allSumSmallMicroseconds": p.allSumSmallMicroseconds,
+         "allSumLargeBytes": p.allSumLargeBytes, "allSumLargeMicroseconds": p.allSumLargeMicroseconds]
     }
     private static func ready(_ object: [String: Any]) throws -> ClusterWorkerReady {
         var r = WorkerObject(object), id = WorkerObject(try r.object("identity")), p = WorkerObject(try r.object("profile"))
@@ -266,9 +274,19 @@ public enum ClusterWorkerCodec {
                 transcriptSHA256: d.string("transcriptSHA256"), edgeID: d.string("edgeID"))
             try d.finish()
         }
+        var probe: ClusterWorkerLinkProbe?
+        if r.values["linkProbe"] != nil {
+            var l = WorkerObject(try r.object("linkProbe"))
+            probe = try ClusterWorkerLinkProbe(transport: l.string("transport"), keyed: l.bool("keyed"),
+                pointToPointSmallBytes: l.int("pointToPointSmallBytes"), pointToPointSmallMicroseconds: l.int("pointToPointSmallMicroseconds"),
+                pointToPointLargeBytes: l.int("pointToPointLargeBytes"), pointToPointLargeMicroseconds: l.int("pointToPointLargeMicroseconds"),
+                allSumSmallBytes: l.int("allSumSmallBytes"), allSumSmallMicroseconds: l.int("allSumSmallMicroseconds"),
+                allSumLargeBytes: l.int("allSumLargeBytes"), allSumLargeMicroseconds: l.int("allSumLargeMicroseconds"))
+            try l.finish()
+        }
         let value = try ClusterWorkerReady(identity: identity, rank: r.int("rank"), profile: profile,
             executionPlanSHA256: r.string("executionPlanSHA256"), requestCapacityBytes: r.int("requestCapacityBytes"),
-            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"))
+            dataPlane: dataPlane, servingContextTokens: r.optionalInt("servingContextTokens"), linkProbe: probe)
         try id.finish(); try p.finish(); try r.finish(); return value
     }
 }

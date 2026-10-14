@@ -74,13 +74,18 @@ public enum ClusterGenerationMode: String, Codable, CaseIterable, Sendable {
 ///   in float32 and rounded once, after the sum (decided on hardware
 ///   2026-10-10: exact against the CPU float32 sum on both chips, about one
 ///   rounding closer to one Mac than bfloat16 partials).
-/// - `shardRule`: equal contiguous blocks of heads and channels; every head
-///   stays with the key and value heads it reads.
-/// - `reduction`: the sum of two partials is an exchange of authenticated,
-///   encrypted records over the keyed data plane (S16) and one local float32
-///   add on each rank (two-value IEEE addition is commutative, so both ranks
-///   hold the same bits). A native all-sum cannot be an authenticated record,
-///   and a keyed data plane refuses it.
+/// - `shardRule`: contiguous blocks of heads and channels, equal or weighted
+///   by the launch's shares in blocks that keep every row-parallel input width
+///   on the fast kernel's alignment; every head stays with the key and value
+///   heads it reads. The shares themselves are bound beside these terms.
+/// - `reduction`: the sealed all-sum inside the lazy graph: each rank's
+///   partial leaves as an AES-256-GCM frame under direction keys derived from
+///   the session's pinned data-plane exchange (S16) and the load agreement,
+///   the frames are all-gathered over RDMA, the peer's is opened (a frame
+///   that does not authenticate fails both ranks' evaluation) and the two are
+///   added in rank order (two-value IEEE addition is commutative, so both
+///   ranks hold the same bits). A native, plaintext all-sum is refused on a
+///   keyed data plane.
 public struct ClusterTensorParallelTerms: Codable, Equatable, Sendable {
     public var partialsDType: String
     public var shardRule: String
@@ -88,7 +93,7 @@ public struct ClusterTensorParallelTerms: Codable, Equatable, Sendable {
     public var ranks: Int
 
     public static let current = ClusterTensorParallelTerms(partialsDType: "float32",
-        shardRule: "equal_heads_and_channels_v1", reduction: "keyed_exchange_sum_v1", ranks: 2)
+        shardRule: "kernel_aligned_heads_and_channels_v1", reduction: "sealed_all_gather_sum_v1", ranks: 2)
 
     public init(partialsDType: String, shardRule: String, reduction: String, ranks: Int) {
         self.partialsDType = partialsDType; self.shardRule = shardRule; self.reduction = reduction; self.ranks = ranks

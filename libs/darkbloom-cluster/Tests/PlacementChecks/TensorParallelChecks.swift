@@ -21,6 +21,7 @@ func checkTensorParallel(_ inputs: RetainedQwenInputs, golden: URL, _ checks: Pl
     try checkTensorParallelOlderMacs(big, checks)
     try checkTensorParallelServed(big, checks)
     try checkTensorParallelWeighted(big, checks)
+    try checkTensorParallelServedWeighted(big, checks)
     try checkTensorParallelRecord(configuration: inputs.twentySeven.configuration, checks)
     checkShareProbes(checks)
 }
@@ -212,6 +213,69 @@ private func checkTensorParallelWeighted(_ big: ClusterModelLayout, _ checks: Pl
     checks.require("tensor parallel weighted: the plan says \"tensor parallel, \(ClusterPlacementExplanation.shareText(shares))\"",
         lines.contains { $0.contains("tensor parallel, \(ClusterPlacementExplanation.shareText(shares))") }
             && ClusterPlacementExplanation.shareText([2, 3]) == "40/60" && ClusterPlacementExplanation.shareText([1, 3]) == "25/75")
+}
+
+/// Served requests of an unequal split correct the shares they ran at: the
+/// setup's cut string names each rank's weight (`0-64@1|0-64@3`), the
+/// calibration predicts at those shares (not the equal split's) and records
+/// each Mac's step at its own share, so a 1:3 pair served at its prediction
+/// re-plans the same and one served slower lowers that split's prediction by
+/// what was observed. Constructed Macs (the weighted check's), not hardware.
+private func checkTensorParallelServedWeighted(_ big: ClusterModelLayout, _ checks: PlacementChecks) throws {
+    let weights = big.wholeModelLoadedBytes
+    let layout = try executing(big)
+    var sharded = ClusterPlacementPolicy()
+    sharded.promptTokens = 1024; sharded.outputTokens = 128
+    sharded.admitsShape = { _, _, mode in !mode.isPhaseSplit }
+    sharded.alternatives = 400
+    let slow = modelled(floorMs: 12, bandwidthGBs: 200, weightBytes: weights, prefill: 60)
+    let fast = modelled(floorMs: 10, bandwidthGBs: 400, weightBytes: weights, prefill: 150)
+    let devices = [try SyntheticMac.idle(32).device("small", speed: slow, chip: "Apple M1 Max"),
+                   try SyntheticMac.idle(64).device("large", speed: fast, chip: "Apple M2 Max")]
+    let link = linkCosts(reductionMicroseconds: 45)
+    let first = try ClusterPlacementPlanner.plan(devices: devices, layout: layout, policy: sharded, link: link)
+    guard let chosen = first.chosen, chosen.mode == .tensorParallel, let shares = chosen.tensorShares else {
+        checks.require("tensor parallel served weighted: the first plan chooses an unequal tensor-parallel split", false)
+        return
+    }
+    let order = chosen.ranks.map(\.device)
+    let n = layout.layerCount
+    let cut = ClusterServedSpeedRecords.Setup.cut([], layerCount: n, mode: .tensorParallel, ranks: 2, tensorShares: shares)
+    checks.require("tensor parallel served weighted: the setup names each rank's weight (\(cut)) and reads back as no cut with those shares; equal shares name none",
+        cut == "0-\(n)@\(shares[0])|0-\(n)@\(shares[1])"
+            && ClusterServedSpeedRecords.Setup.cuts(cut, layerCount: n, mode: .tensorParallel, ranks: 2) == []
+            && ClusterServedSpeedRecords.Setup.tensorShares(cut) == shares
+            && ClusterServedSpeedRecords.Setup.cut([], layerCount: n, mode: .tensorParallel, ranks: 2, tensorShares: [2, 2]) == "0-\(n)|0-\(n)"
+            && ClusterServedSpeedRecords.Setup.tensorShares("0-\(n)|0-\(n)") == nil
+            && ClusterServedSpeedRecords.Setup.cuts("0-16@1|16-\(n)@3", layerCount: n, mode: .pipeline, ranks: 2) == nil
+            && ClusterServedSpeedRecords.Setup.cuts("0-\(n)@1|0-\(n)", layerCount: n, mode: .tensorParallel, ranks: 2) == nil)
+    func weighted(_ result: ClusterPlacementResult) -> ClusterPlacementCandidate? {
+        ([result.chosen].compactMap { $0 } + result.alternatives).first { $0.mode == .tensorParallel && $0.tensorShares == shares
+            && $0.ranks.map(\.device) == order }
+    }
+    let predicted = chosen.rested.decodeTokensPerSecond
+    func replan(observedDecode: Double, cut: String) throws -> ClusterPlacementResult {
+        let entries = (0..<4).map { index in
+            ClusterServedSpeedRecords.Entry(setup: .init(modelID: "m", mode: ClusterGenerationMode.tensorParallel.rawValue, cut: cut, ranks: order),
+                sample: ClusterServedSample(route: .pair, member: nil, promptTokens: 1024, outputTokens: 128,
+                    firstTokenSeconds: chosen.rested.firstTokenSeconds, decodeTokensPerSecond: observedDecode, finishedAt: Double(1_000 + index)))
+        }
+        let derived = try ClusterServedCalibration.measurements(entries: entries, devices: devices, layout: layout, link: link,
+            measuredUTC: "2026-10-14T06:00:00Z")
+        let speeds = ClusterSpeedEstimator.estimate(devices: devices.map { .init(chip: $0.profile.chip, osBuild: $0.profile.osBuild) },
+            artifactSHA256: layout.artifactSHA256, promptTokens: 1024, measurements: derived.measurements)
+        let corrected = zip(devices, speeds).map { ClusterPlacementDevice(label: $0.label, profile: $0.profile, speed: $1) }
+        return try ClusterPlacementPlanner.plan(devices: corrected, layout: layout, policy: sharded, link: link)
+    }
+    let confirmed = try replan(observedDecode: predicted, cut: cut)
+    checks.require("tensor parallel served weighted: a \(ClusterPlacementExplanation.shareText(shares)) pair served at its predicted decode re-plans the same split at the same decode (got \(confirmed.chosen.map { "\($0.mode.rawValue) \($0.tensorShares ?? []) \($0.rested.decodeTokensPerSecond)" } ?? "-") against \(predicted))",
+        confirmed.chosen?.mode == .tensorParallel && confirmed.chosen?.tensorShares == shares
+            && abs((confirmed.chosen?.rested.decodeTokensPerSecond ?? 0) - predicted) / predicted < 0.01)
+    let slower = try replan(observedDecode: predicted * 0.8, cut: cut)
+    let lowered = weighted(slower)?.rested.decodeTokensPerSecond ?? 0
+    let seen = ([slower.chosen].compactMap { $0 } + slower.alternatives).map { "\($0.mode.rawValue) \($0.ranks.map(\.device)) \($0.tensorShares ?? []) \(String(format: "%.2f", $0.rested.decodeTokensPerSecond))" }
+    checks.require("tensor parallel served weighted: served 20 % slower, that split's next prediction is what was served (\(lowered) against \(predicted * 0.8); candidates \(seen.joined(separator: "; ")))",
+        abs(lowered - predicted * 0.8) / (predicted * 0.8) < 0.01)
 }
 
 /// The same layout whose family offers no unequal shares.

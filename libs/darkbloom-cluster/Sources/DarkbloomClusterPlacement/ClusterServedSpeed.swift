@@ -74,7 +74,44 @@ public struct ClusterServedSpeedRecords: Codable, Equatable, Sendable {
         /// tensor-parallel setup names every rank `0-<layers>` and has none.
         public static func cuts(_ cut: String, layerCount: Int, mode: ClusterGenerationMode, ranks: Int) -> [Int]? {
             guard mode.usesTensorParallelPrefill else { return cuts(cut, layerCount: layerCount) }
-            return cut == Self.cut([], layerCount: layerCount, mode: mode, ranks: ranks) ? [] : nil
+            let ranges: String
+            if cut.contains("@") {
+                // Weighted: every rank names a weight, or the string is not one.
+                guard tensorShares(cut) != nil else { return nil }
+                ranges = cut.split(separator: "|").map { String($0.split(separator: "@")[0]) }.joined(separator: "|")
+            } else {
+                ranges = cut
+            }
+            return ranges == Self.cut([], layerCount: layerCount, mode: mode, ranks: ranks) ? [] : nil
+        }
+
+        /// A tensor-parallel setup with unequal shares names each rank's
+        /// weight after its range (`0-64@1|0-64@3`), so that what it served
+        /// is credited to the shares it ran at; equal shares name none.
+        public static func cut(_ cuts: [Int], layerCount: Int, mode: ClusterGenerationMode, ranks: Int,
+                               tensorShares: [Int]?) -> String {
+            weighted(cut(cuts, layerCount: layerCount, mode: mode, ranks: ranks), mode: mode, tensorShares: tensorShares)
+        }
+
+        /// `cut` with each rank's weight appended when `mode` is tensor
+        /// parallel and the weights are unequal (one per rank); `cut` otherwise.
+        public static func weighted(_ cut: String, mode: ClusterGenerationMode, tensorShares: [Int]?) -> String {
+            let ranges = cut.split(separator: "|")
+            guard mode.usesTensorParallelPrefill, let tensorShares, Set(tensorShares).count > 1,
+                  tensorShares.count == ranges.count, tensorShares.allSatisfy({ (1...64).contains($0) }),
+                  !cut.contains("@") else { return cut }
+            return zip(ranges, tensorShares).map { "\($0)@\($1)" }.joined(separator: "|")
+        }
+
+        /// The unequal share weights a tensor-parallel setup's cut names, rank
+        /// order; nil for equal shares or a string that is not one.
+        public static func tensorShares(_ cut: String) -> [Int]? {
+            let parts = cut.split(separator: "|", omittingEmptySubsequences: false)
+                .map { $0.split(separator: "@", omittingEmptySubsequences: false) }
+            guard parts.count >= 2, parts.allSatisfy({ $0.count == 2 }) else { return nil }
+            let weights = parts.compactMap { Int($0[1]) }
+            guard weights.count == parts.count, weights.allSatisfy({ (1...64).contains($0) }), Set(weights).count > 1 else { return nil }
+            return weights
         }
 
         /// `cut(_:layerCount:)`, or `0-64|0-64` for tensor parallel over two ranks.
@@ -166,10 +203,15 @@ public enum ClusterServedCalibration {
         public let schedule: ClusterPrefillSchedule
         public let layout: ClusterModelLayout
         public let link: ClusterLinkCosts
+        /// Tensor parallel with unequal shares: each rank's weight (rank
+        /// order); nil for equal shares and every other mode.
+        public let tensorShares: [Int]?
         public init(devices: [ClusterPlacementDevice], cuts: [Int], mode: ClusterGenerationMode,
-                    schedule: ClusterPrefillSchedule, layout: ClusterModelLayout, link: ClusterLinkCosts = .unmeasured) {
+                    schedule: ClusterPrefillSchedule, layout: ClusterModelLayout, link: ClusterLinkCosts = .unmeasured,
+                    tensorShares: [Int]? = nil) {
             self.devices = devices; self.cuts = cuts; self.mode = mode; self.schedule = schedule
             self.layout = layout; self.link = link
+            self.tensorShares = mode == .tensorParallel && (tensorShares.map { Set($0).count > 1 } ?? false) ? tensorShares : nil
         }
     }
 
@@ -298,7 +340,8 @@ public enum ClusterServedCalibration {
         for s in pair {
             policy.promptTokens = s.promptTokens; policy.outputTokens = max(1, s.outputTokens)
             let predicted = try ClusterPlacementPlanner.evaluate(devices: devices, cuts: placement.cuts, mode: placement.mode,
-                prefillSchedule: placement.schedule, layout: layout, policy: policy, link: placement.link).rested
+                prefillSchedule: placement.schedule, layout: layout, policy: policy, link: placement.link,
+                tensorShares: placement.tensorShares).rested
             if let observed = s.decodeTokensPerSecond {
                 let compute = 1 / predicted.decodeTokensPerSecond - reductionStep
                 if compute > 0 { decodeFactors.append(max(1e-6, 1 / observed - reductionStep) / compute) }
@@ -309,13 +352,30 @@ public enum ClusterServedCalibration {
         }
         let decodeFactor = median(decodeFactors), prefillFactor = median(prefillFactors)
         guard decodeFactor != nil || prefillFactor != nil else { return [] }
-        return try devices.compactMap { device -> ClusterSpeedMeasurement? in
+        let total = Double((placement.tensorShares ?? []).reduce(0, +))
+        return try devices.enumerated().compactMap { index, device -> ClusterSpeedMeasurement? in
             guard device.speed.absolute else { return nil }
             let base = device.speed.rested
-            let shardDecode = decodeFactor.map { 1 / (ClusterDecodeSplit(rates: base).shareStepSeconds(ranks: devices.count) * $0) }
-                ?? base.tensorShardDecodeTokensPerSecond
-            let shardPrefill = prefillFactor.map { (base.tensorShardPrefillTokensPerSecond ?? base.prefillTokensPerSecond) / $0 }
-                ?? base.tensorShardPrefillTokensPerSecond
+            var shardDecode = base.tensorShardDecodeTokensPerSecond, shardPrefill = base.tensorShardPrefillTokensPerSecond
+            var shareRates = base.tensorShareRates
+            if let weights = placement.tensorShares {
+                // Unequal shares: what was served corrects this Mac's step at
+                // its own share (a share rate), never the equal half's.
+                let fraction = Double(weights[index]) / total
+                let perMille = Int((fraction * 1000).rounded())
+                let step = ClusterDecodeSplit(rates: base).shareStepSeconds(fraction: fraction) * (decodeFactor ?? 1)
+                let prefillPerToken = (base.shareRate(near: fraction)?.prefillTokensPerSecond.map { 1 / $0 }
+                    ?? base.tensorShardPrefillTokensPerSecond.map { fraction * Double(devices.count) / $0 }
+                    ?? 1 / base.prefillTokensPerSecond) * (prefillFactor ?? 1)
+                let kept = (shareRates ?? []).filter { abs($0.sharePerMille - perMille) > 5 }.suffix(15)
+                shareRates = Array(kept) + [ClusterShareRate(sharePerMille: perMille, decodeTokensPerSecond: 1 / step,
+                    prefillTokensPerSecond: 1 / prefillPerToken)]
+            } else {
+                shardDecode = decodeFactor.map { 1 / (ClusterDecodeSplit(rates: base).shareStepSeconds(ranks: devices.count) * $0) }
+                    ?? base.tensorShardDecodeTokensPerSecond
+                shardPrefill = prefillFactor.map { (base.tensorShardPrefillTokensPerSecond ?? base.prefillTokensPerSecond) / $0 }
+                    ?? base.tensorShardPrefillTokensPerSecond
+            }
             let prompt = Int(median(pair.map { Double($0.promptTokens) }) ?? Double(layout.maximumChunkTokens))
             return try .init(key: .init(artifactSHA256: layout.artifactSHA256, chip: device.profile.chip,
                     osBuild: device.profile.osBuild, runtimeBinarySHA256: runtimeBinarySHA256,
@@ -324,9 +384,12 @@ public enum ClusterServedCalibration {
                 layerCount: layout.layerCount,
                 rested: .init(prefillTokensPerSecond: base.prefillTokensPerSecond, decodeTokensPerSecond: base.decodeTokensPerSecond,
                     speculativeDecodeTokensPerSecond: base.speculativeDecodeTokensPerSecond,
-                    tensorShardPrefillTokensPerSecond: shardPrefill, tensorShardDecodeTokensPerSecond: shardDecode),
+                    tensorShardPrefillTokensPerSecond: shardPrefill, tensorShardDecodeTokensPerSecond: shardDecode,
+                    tensorShareRates: shareRates),
                 sustained: nil, measuredUTC: measuredUTC,
-                provenance: "shard rates derived from \(pair.count) request(s) the pair served (\(placement.mode.rawValue)); whole-model rates kept")
+                provenance: "shard rates derived from \(pair.count) request(s) the pair served (\(placement.mode.rawValue)"
+                    + (placement.tensorShares.map { ", shares " + $0.map(String.init).joined(separator: ":") } ?? "")
+                    + "); whole-model rates kept")
         }
     }
 
@@ -367,8 +430,15 @@ public enum ClusterServedCalibration {
                     continue
                 }
             }
+            // A weighted tensor-parallel setup is credited at its shares, when this model's plan offers them.
+            let shares = mode == .tensorParallel ? ClusterServedSpeedRecords.Setup.tensorShares(setup.cut) : nil
+            if let shares, !(layout.tensorParallel?.family.shareOptions ?? []).contains(shares) {
+                lines.append("  \(setup.mode) cut \(setup.cut): skipped (shares this model's plan does not offer)")
+                continue
+            }
             let derived = try Self.measurements(samples,
-                placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link),
+                placement: .init(devices: ordered, cuts: cuts, mode: mode, schedule: schedule, layout: layout, link: link,
+                    tensorShares: shares),
                 runtimeBinarySHA256: "served", measuredUTC: measuredUTC)
             measurements += derived
             let pair = samples.filter { $0.route == .pair }.count

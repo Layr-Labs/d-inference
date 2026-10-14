@@ -7,7 +7,9 @@ export function pageResources(route: Route): Resource[] {
       return ['cloud', 'network'];
     case 'models':
       return ['network'];
+    // This Mac's Overview readiness offers an update when the runtime is below the floor.
     case 'machines':
+      return ['cloud', 'release', 'release-history'];
     case 'earnings':
       return ['cloud'];
     case 'leaderboard':

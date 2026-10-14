@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop release data for update status
+
+- Show provider release history on Updates when the coordinator publishes it without a support policy, which is what the native desktop API returns until the desktop release feed is deployed. The history no longer always reads "History unavailable"; the version floor stays unknown unless account data supplies it.
+- Load release data for This Mac's Overview, so a runtime below the supported floor offers Update now without first visiting Updates.
 ## Unreleased — desktop Stats completed-request traffic
 
 - Show This Mac's Stats traffic chart while the provider is serving. This session's local request history reports completion times only, which the chart ignored, so it produced no points and disappeared. The chart is now labeled Completed requests for local history and Settled requests for ledger history.

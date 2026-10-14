@@ -716,7 +716,7 @@ public enum ConfigManager: Sendable {
     /// ``parseValidating(_:)`` (via ``load(from:)``) on that path.
     public static func parse(_ content: String) -> ProviderConfig {
         do {
-            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+            return try decodeRemembered(content)
         } catch {
             // Fall back to defaults on malformed TOML (matches previous behavior)
             return ProviderConfig(
@@ -737,10 +737,22 @@ public enum ConfigManager: Sendable {
     /// undecodable FILE is rejected.
     public static func parseValidating(_ content: String) throws -> ProviderConfig {
         do {
-            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+            return try decodeRemembered(content)
         } catch {
             throw ConfigError.parseFailed(detail: "\(error)")
         }
+    }
+
+    /// TOMLKit never frees the C++ table a parse builds (its `TOMLTable` has no deinit), so every parse stayed in memory
+    /// for the life of the process. The cluster service parses `provider.toml` every tick (the member sync reads the
+    /// saved cache settings): both services grew about 1 MiB a minute. The same text decodes to the same value, so the
+    /// last few decoded texts are remembered and only a text not seen recently is parsed. Failures are not remembered.
+    private static let decodedTexts = RememberedProviderConfigurations(capacity: 8)
+    private static func decodeRemembered(_ content: String) throws -> ProviderConfig {
+        if let known = decodedTexts.value(for: content) { return known }
+        let value = try TOMLDecoder().decode(ProviderConfig.self, from: content)
+        decodedTexts.remember(value, for: content)
+        return value
     }
 
     /// Serialize a ProviderConfig to the provider's TOML config format.
@@ -751,6 +763,28 @@ public enum ConfigManager: Sendable {
             // Should never happen with our well-defined types, but return empty
             // string rather than crashing (matches previous graceful behavior).
             return ""
+        }
+    }
+}
+
+/// The last `capacity` provider configuration texts and what they decoded to, most recent first.
+final class RememberedProviderConfigurations: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity: Int
+    private var entries: [(text: String, value: ProviderConfig)] = []
+    init(capacity: Int) { self.capacity = max(1, capacity) }
+    func value(for text: String) -> ProviderConfig? {
+        lock.withLock {
+            guard let index = entries.firstIndex(where: { $0.text == text }) else { return nil }
+            let entry = entries.remove(at: index); entries.insert(entry, at: 0)
+            return entry.value
+        }
+    }
+    func remember(_ value: ProviderConfig, for text: String) {
+        lock.withLock {
+            entries.removeAll { $0.text == text }
+            entries.insert((text, value), at: 0)
+            if entries.count > capacity { entries.removeLast(entries.count - capacity) }
         }
     }
 }

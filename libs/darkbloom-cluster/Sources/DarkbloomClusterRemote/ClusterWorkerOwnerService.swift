@@ -186,8 +186,12 @@ public enum ClusterWorkerOwnerService {
                 try context.observeTime()
                 if now >= context.supervisionDeadline { throw ClusterWorkerOwnerErrorProxy.deadline }
                 guard let line = try pipe.read(until: min(context.supervisionDeadline, now + 100_000_000)) else { continue }
-                let frame = try OwnerWire.decode(line, commandStream: true)
-                try context.accept(frame)
+                // One pool per frame: this loop never returns to a run loop (see ClusterAutorelease).
+                let frame = try ClusterAutorelease.drained { () throws -> OwnerWire in
+                    let frame = try OwnerWire.decode(line, commandStream: true)
+                    try context.accept(frame)
+                    return frame
+                }
                 if frame.kind == "release" {
                     // Terminal was emitted only after actual native cleanup. The
                     // ACK proves this connection received it, not future recovery.
@@ -354,32 +358,35 @@ private final class ServiceContext: @unchecked Sendable {
                     if DispatchTime.now().uptimeNanoseconds < deadline { continue }; throw ClusterWorkerOwnerError.deadline
                 }
                 catch ClusterWorkerOwnerError.closed { break }
-                if case .ready = frame.event {
-                    guard attachment?.profile.publishesReadiness != false else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
-                    try attachment?.requireCompleted()
-                }
-                try lock.withLock {
-                    let now = DispatchTime.now().uptimeNanoseconds
-                    try session.accept(frame, now: now)
-                    switch frame.event {
-                    case .ready(let ready): try state.observeReady(ready, launchID: launchID, now: now)
-                    case .admitted(let bytes):
-                        try state.observeAdmitted(requestID: frame.requestID!, reservedBytes: bytes)
-                        if let admissionDeadline, now >= admissionDeadline { state.disconnect() }
-                        admissionDeadline = nil
-                    case .refused(let reason):
-                        try state.observeRefused(requestID: frame.requestID!, reason: reason); admissionDeadline = nil
-                    case .retired(let outcome):
-                        try state.observeRetired(requestID: frame.requestID!, retirement: outcome)
-                        try releaseRequest(frame.requestID!)
-                    case .failed(let reason): Self.echoWorkerTail(child, label: "event=failed:\(reason.rawValue)"); state.disconnect()
-                    case .unavailable(let reason): Self.echoWorkerTail(child, label: "event=unavailable:\(reason.rawValue)"); state.disconnect()
-                    default: break
+                // One pool per event: this relay never returns to a run loop (see ClusterAutorelease).
+                try ClusterAutorelease.drained {
+                    if case .ready = frame.event {
+                        guard attachment?.profile.publishesReadiness != false else { throw OwnerWire.invalid("Key-only authorization cannot publish native model readiness") }
+                        try attachment?.requireCompleted()
                     }
+                    try lock.withLock {
+                        let now = DispatchTime.now().uptimeNanoseconds
+                        try session.accept(frame, now: now)
+                        switch frame.event {
+                        case .ready(let ready): try state.observeReady(ready, launchID: launchID, now: now)
+                        case .admitted(let bytes):
+                            try state.observeAdmitted(requestID: frame.requestID!, reservedBytes: bytes)
+                            if let admissionDeadline, now >= admissionDeadline { state.disconnect() }
+                            admissionDeadline = nil
+                        case .refused(let reason):
+                            try state.observeRefused(requestID: frame.requestID!, reason: reason); admissionDeadline = nil
+                        case .retired(let outcome):
+                            try state.observeRetired(requestID: frame.requestID!, retirement: outcome)
+                            try releaseRequest(frame.requestID!)
+                        case .failed(let reason): Self.echoWorkerTail(child, label: "event=failed:\(reason.rawValue)"); state.disconnect()
+                        case .unavailable(let reason): Self.echoWorkerTail(child, label: "event=unavailable:\(reason.rawValue)"); state.disconnect()
+                        default: break
+                        }
+                    }
+                    if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup(); throw ClusterWorkerOwnerError.deadline }
+                    try publish(kind: "event", payload: ClusterWorkerCodec.encode(frame))
+                    if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup() }
                 }
-                if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup(); throw ClusterWorkerOwnerError.deadline }
-                try publish(kind: "event", payload: ClusterWorkerCodec.encode(frame))
-                if lock.withLock({ state.requiresNativeFence }) { child.requestNativeCleanup() }
             }
         } catch { lock.withLock { state.disconnect() }; child.requestNativeCleanup() }
         // Bounded by the child's retirement ceiling. Without an observed exit

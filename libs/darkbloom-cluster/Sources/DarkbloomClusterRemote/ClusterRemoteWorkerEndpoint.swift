@@ -433,7 +433,10 @@ public final class ClusterRemoteWorkerEndpoint: ClusterOwnedWorkerEndpoint, @unc
                 // lifetime is reported after it, not before.
                 if now >= ownerRetirementDeadlineUptimeNanoseconds { throw ClusterWorkerOwnerError.deadline }
                 try diagnosticCapture.readAvailable(from: diagnostics.fileHandleForReading.fileDescriptor)
-                if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                // One pool per pass: this loop never returns to a run loop (see ClusterAutorelease).
+                try ClusterAutorelease.drained {
+                    if let bytes = try pipe.read(until: now + 50_000_000) { try accept(OwnerWire.decode(bytes, commandStream: false)) }
+                }
                 if lock.withLock({ ownerReleased }) { return }
                 if !process.isRunning { throw ClusterWorkerOwnerError.closed }
             }

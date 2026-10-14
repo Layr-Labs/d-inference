@@ -161,13 +161,7 @@ public enum ClusterWorkerCodec {
     /// JSONSerialization autoreleases its writer, buffers and parsed objects. Frames are encoded and decoded per token on
     /// threads and dispatch queues that never drain a pool (rank 0 grew about 40 MB a minute under load, F18): each call
     /// drains its own. The result is retained by the Swift value it is bridged to.
-    private static func drained<T>(_ body: () throws -> T) rethrows -> T {
-        #if canImport(ObjectiveC)
-        return try autoreleasepool(invoking: body)
-        #else
-        return try body()
-        #endif
-    }
+    private static func drained<T>(_ body: () throws -> T) rethrows -> T { try ClusterAutorelease.drained(body) }
     private static func envelope(_ epoch: UUID, _ sequence: UInt64, _ request: UUID?) -> [String: Any] {
         var result: [String: Any] = ["version": ClusterWorkerLimits.version,
             "membershipEpoch": epoch.uuidString.lowercased(), "sequence": NSNumber(value: sequence)]

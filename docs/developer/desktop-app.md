@@ -115,7 +115,10 @@ verified installed runtime. Quitting stops the API while preserving sign-in and
 dashboard state. It does not install a login item or configure an update feed.
 Because the installed runtime can be older than the bundled API, the API reports
 the installed runtime's `--version` as the provider version (re-read whenever an
-update replaces the executable) and probes its `desktop --help`: actions that need
+update replaces the executable). `DesktopRuntimeProfile` validates stdout alone
+for this probe, ignoring stderr notices such as the macOS upgrade warning; failed,
+invalid, or oversized output is not a version. Ordinary `DesktopWorker` commands
+still capture stderr diagnostics. The API also probes `desktop --help`: actions that need
 a `desktop` subcommand the runtime lacks (provider cooling, Studio's local-only
 serving) are refused with an explanation, and cooling controls are reported as
 unavailable.

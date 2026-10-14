@@ -40,6 +40,8 @@ struct DesktopRuntimeProfileTests {
     #expect(DesktopRuntimeProfile.parseVersion("0.9.20\n") == "0.9.20")
     #expect(DesktopRuntimeProfile.parseVersion("1.2.3-beta.1") == "1.2.3-beta.1")
     #expect(DesktopRuntimeProfile.parseVersion("Error: Unknown option '--version'") == nil)
+    #expect(DesktopRuntimeProfile.parseVersion("Warning: diagnostic\n0.9.20\n") == nil)
+    #expect(DesktopRuntimeProfile.parseVersion("0.9.20\nAnother log line\n") == nil)
     #expect(DesktopRuntimeProfile.parseVersion("") == nil)
   }
 
@@ -57,29 +59,50 @@ struct DesktopRuntimeProfileTests {
     }
   }
 
-  /// A stand-in for an older installed runtime: version 0.9.20, no `desktop` group.
-  static func olderRuntime() throws -> (directory: URL, script: URL) {
+  /// A stand-in runtime, including the notice main.swift emits before parsing --version.
+  static func runtime(
+    versionOutput: String = "0.9.20", versionExitCode: Int = 0,
+    help: String = releasedTopLevelHelp, emitUpgradeNotice: Bool = true
+  ) throws -> (directory: URL, script: URL) {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("desktop-runtime-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let script = directory.appendingPathComponent("darkbloom")
+    try writeRuntime(at: script, versionOutput: versionOutput, versionExitCode: versionExitCode,
+      help: help, emitUpgradeNotice: emitUpgradeNotice)
+    return (directory, script)
+  }
+
+  static func writeRuntime(
+    at script: URL, versionOutput: String, versionExitCode: Int = 0,
+    help: String = releasedTopLevelHelp, emitUpgradeNotice: Bool = true
+  ) throws {
+    let notice = try #require(MacOSUpgradeNotice.message(
+      for: OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)))
     try """
     #!/bin/sh
+    cat >&2 <<'NOTICE'
+    \(emitUpgradeNotice ? notice : "")
+    NOTICE
     case "$1" in
-      --version) echo 0.9.20 ;;
+      --version)
+        cat <<'VERSION'
+    \(versionOutput)
+    VERSION
+        exit \(versionExitCode)
+        ;;
       fan) printf '%s' '{"loaded":true,"helper":{"mode":"automatic"},"diagnostic":{"supported":true,"fans":[],"gpuTemperatures":[]}}' ;;
       *) cat <<'HELP'
-    \(Self.releasedTopLevelHelp)
+    \(help)
     HELP
       ;;
     esac
     """.write(to: script, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-    return (directory, script)
   }
 
-  @Test func reportsAnOlderInstalledRuntimeAndRejectsItsMissingCommands() async throws {
-    let (directory, script) = try Self.olderRuntime()
+  @Test func reportsTheRuntimeDespiteStderrUpgradeNoticeAndRejectsMissingCommands() async throws {
+    let (directory, script) = try Self.runtime()
     defer { try? FileManager.default.removeItem(at: directory) }
     let backend = DesktopBackend(
       configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
@@ -87,6 +110,7 @@ struct DesktopRuntimeProfileTests {
     let profile = await backend.runtimeProfile()
     #expect(profile.version == "0.9.20")
     #expect(profile.desktopCommands.isEmpty)
+    #expect(await backend.runtimeProfile() == profile)
 
     await #expect(throws: (any Error).self) {
       try await backend.requireRuntimeSupport(["desktop", "configure-cooling", "--enabled", "true"])
@@ -103,7 +127,8 @@ struct DesktopRuntimeProfileTests {
   }
 
   @Test func coolingControlIsUnavailableWithoutTheRuntimeCommand() async throws {
-    let (directory, script) = try Self.olderRuntime()
+    // Keep the existing fan JSON fixture clean; its stderr handling is a separate path.
+    let (directory, script) = try Self.runtime(emitUpgradeNotice: false)
     defer { try? FileManager.default.removeItem(at: directory) }
     let backend = DesktopBackend(
       configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
@@ -113,17 +138,78 @@ struct DesktopRuntimeProfileTests {
   }
 
   @Test func aReplacedRuntimeIsReadAgain() async throws {
-    let (directory, script) = try Self.olderRuntime()
+    let (directory, script) = try Self.runtime()
     defer { try? FileManager.default.removeItem(at: directory) }
     let backend = DesktopBackend(
       configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
     #expect(await backend.runtimeProfile().version == "0.9.20")
     // An update replaces the executable (new inode), so the next read sees the new version.
     let updated = directory.appendingPathComponent("darkbloom.new")
-    try "#!/bin/sh\n[ \"$1\" = --version ] && echo 0.9.21\n"
-      .write(to: updated, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: updated.path)
+    try Self.writeRuntime(at: updated, versionOutput: "0.9.21", help: Self.desktopHelp)
     _ = try FileManager.default.replaceItemAt(script, withItemAt: updated)
-    #expect(await backend.runtimeProfile().version == "0.9.21")
+    let profile = await backend.runtimeProfile()
+    #expect(profile.version == "0.9.21")
+    #expect(profile.desktopCommands == ["serve", "configure-cooling", "start-local"])
+    try await backend.requireRuntimeSupport(["desktop", "configure-cooling"])
+  }
+
+  @Test(arguments: [
+    ("", 0),
+    ("not a version", 0),
+    ("Warning: stdout diagnostic\n0.9.20", 0),
+    ("0.9.20\nAnother stdout log line", 0),
+    ("0.9.20", 1),
+  ])
+  func invalidOrFailedVersionProbesStillDiscoverCapabilities(output: String, exitCode: Int) async throws {
+    try await assertUnavailableVersion(output: output, exitCode: exitCode)
+  }
+
+  @Test func truncatedVersionOutputIsNotAccepted() async throws {
+    // Truncating this prefix would leave an apparently valid version. Fail closed instead.
+    try await assertUnavailableVersion(output: String(repeating: " ", count: 65_536) + "0.9.20", exitCode: 0)
+  }
+
+  private func assertUnavailableVersion(output: String, exitCode: Int) async throws {
+    let (directory, script) = try Self.runtime(
+      versionOutput: output, versionExitCode: exitCode, help: Self.desktopHelp)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let backend = DesktopBackend(
+      configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
+
+    let profile = await backend.runtimeProfile()
+    #expect(profile.version == nil)
+    #expect(profile.desktopCommands == ["serve", "configure-cooling", "start-local"])
+    try await backend.requireRuntimeSupport(["desktop", "start-local"])
+  }
+
+  @Test func aCancelledProbeDoesNotCacheAnUnavailableProfile() async throws {
+    let (directory, script) = try Self.runtime(help: Self.desktopHelp)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let started = directory.appendingPathComponent("started")
+    let original = try String(contentsOf: script, encoding: .utf8)
+    try """
+      #!/bin/sh
+      if [ "$1" = --version ] && [ ! -e '\(started.path)' ]; then
+        trap '' TERM
+        echo started > '\(started.path)'
+        exec /bin/sleep 30
+      fi
+      \(original)
+      """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    let backend = DesktopBackend(
+      configPath: directory.appendingPathComponent("provider.toml").path, executable: script)
+    let task = Task { await backend.runtimeProfile() }
+    defer { task.cancel() }
+    for _ in 0..<200 {
+      if FileManager.default.fileExists(atPath: started.path) { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    try #require(FileManager.default.fileExists(atPath: started.path))
+    task.cancel()
+    _ = await task.value
+    let profile = await backend.runtimeProfile()
+    #expect(profile.version == "0.9.20")
+    #expect(profile.desktopCommands == ["serve", "configure-cooling", "start-local"])
   }
 }

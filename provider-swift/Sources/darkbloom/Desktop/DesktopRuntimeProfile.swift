@@ -18,13 +18,12 @@ struct DesktopRuntimeProfile: Equatable, Sendable {
     // configure-cooling) when the configuration doesn't set one.
     desktopCommands: Set(Desktop.configuration.subcommands.map { $0._commandName }))
 
-  /// The first line of `--version`, when it looks like a version.
+  /// Accept only a version, not a version-looking line embedded in stdout diagnostics.
   static func parseVersion(_ output: String) -> String? {
-    let line = output.split(whereSeparator: \.isNewline).first.map(String.init)?
-      .trimmingCharacters(in: .whitespaces)
-    guard let line, line.range(of: #"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$"#, options: .regularExpression) != nil
+    let version = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard version.range(of: #"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$"#, options: .regularExpression) != nil
     else { return nil }
-    return line
+    return version
   }
 
   /// Subcommands listed by `desktop --help`. A runtime without the group prints its top-level
@@ -50,12 +49,13 @@ extension DesktopBackend {
       return cached.profile
     }
     let worker = DesktopWorker(executable: executable)
-    let version = (try? await worker.run(["--version"], timeout: 15))
+    let version = (try? await worker.run(["--version"], timeout: 15, capture: .standardOutput))
       .flatMap { $0.0 == 0 ? DesktopRuntimeProfile.parseVersion($0.1) : nil }
     let help = (try? await worker.run(["desktop", "--help"], timeout: 15))?.1 ?? ""
     let profile = DesktopRuntimeProfile(
       version: version, desktopCommands: DesktopRuntimeProfile.parseDesktopCommands(help))
-    runtimeProfileCache = (stamp, profile)
+    // Cancellation is not a property of the executable; let the next caller probe it again.
+    if !Task.isCancelled { runtimeProfileCache = (stamp, profile) }
     return profile
   }
 

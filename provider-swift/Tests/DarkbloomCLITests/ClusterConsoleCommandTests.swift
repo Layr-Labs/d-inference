@@ -105,7 +105,7 @@ struct ClusterConsoleCommandTests {
         #expect(Cluster.Setup.needsTerminalLine == "Run `darkbloom cluster` in a Terminal window on this Mac.")
     }
 
-    @Test("`cluster setup` parses to the same command as bare `cluster`, and `--member setup` is only a member label")
+    @Test("`cluster setup` parses to the same command as bare `cluster`")
     func setupIsTheOnboarding() throws {
         #expect(try Darkbloom.parseAsRoot(["cluster"]) is Cluster.Setup)
         #expect(try Darkbloom.parseAsRoot(["cluster", "setup"]) is Cluster.Setup)

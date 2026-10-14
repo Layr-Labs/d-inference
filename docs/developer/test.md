@@ -66,7 +66,9 @@ self-test, before the first capacity tick, while retaining a blocked-posture
 case. `firstBootstrapRunsWithFreshServingRates` verifies that an early request
 cannot suppress the unfinished bootstrap.
 The loop suite also checks serial calibration across three resident engines
-without another capacity tick, stops that chain for foreground work or draining,
+without another capacity tick, stops that chain for foreground work or draining
+(`IdleCalibrationCoordinatorTests` checks that a preempting request waits only
+for the session's retirement, never for cross-actor successor scheduling),
 and runs the production load-completion epilogue
 with a real activity receipt and parked inference waiter to verify scheduling
 prioritizes the newly loaded slot before waiter resumption even when another

@@ -33,7 +33,7 @@ private final class SuccessorSchedulingGate: @unchecked Sendable {
     }
 }
 
-private final class AdmissionFlag: @unchecked Sendable {
+private final class ObservedFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
     var isSet: Bool { lock.withLock { value } }
@@ -53,23 +53,42 @@ struct IdleCalibrationCoordinatorTests {
         }
         #expect(session != nil)
 
-        let admitted = AdmissionFlag()
+        let admitted = ObservedFlag()
         let foreground = Task {
             let lease = await coordinator.beginForeground()
             admitted.set()
             return lease
         }
         let until = ContinuousClock.now + .seconds(5)
-        while !(admitted.isSet && successor.hasEntered) && ContinuousClock.now < until {
+        while !admitted.isSet && ContinuousClock.now < until {
             try await Task.sleep(for: .milliseconds(1))
         }
         let admittedWhileSuccessorBlocked = admitted.isSet
-        let successorRan = successor.hasEntered
         successor.release()
         let lease = await foreground.value
         #expect(admittedWhileSuccessorBlocked,
             "a customer's deadline must not wait on cross-actor successor scheduling")
-        #expect(successorRan, "retirement still offers the next resident engine")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!successor.hasEntered, "a preempted session leaves successors to the next idle opportunity")
         lease.finish()
+    }
+
+    @Test("an uncancelled retirement schedules its successor after releasing the global owner")
+    func retirementSchedulesSuccessorAfterRelease() async throws {
+        let coordinator = IdleCalibrationCoordinator()
+        let successorStarted = ObservedFlag()
+        let successor = SuccessorSchedulingGate()
+        defer { successor.release() }
+        let session = coordinator.startIfIdle(isIdle: { true }, onRetired: {
+            if coordinator.startIfIdle(isIdle: { true }, operation: {}) != nil { successorStarted.set() }
+            await successor.enterAndWait()
+        }) {}
+        #expect(session != nil)
+        let until = ContinuousClock.now + .seconds(5)
+        while !successor.hasEntered && ContinuousClock.now < until {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(successor.hasEntered, "retirement still offers the next resident engine")
+        #expect(successorStarted.isSet, "the successor sees the finished session's ownership released")
     }
 }

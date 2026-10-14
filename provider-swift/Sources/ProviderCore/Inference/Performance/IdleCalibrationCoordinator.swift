@@ -21,10 +21,12 @@ final class IdleCalibrationCoordinator: @unchecked Sendable {
             session = (id, task)
             // Foreground admission awaits only the session's retirement. Successor
             // scheduling crosses actors, so it runs after the global owner is
-            // released without extending a customer request's deadline wait.
+            // released without extending a customer request's deadline wait. A
+            // preempted session leaves successors to the next idle opportunity.
             if let onRetired {
                 Task(priority: .background) {
                     await task.value
+                    guard !task.isCancelled else { return }
                     await onRetired()
                 }
             }

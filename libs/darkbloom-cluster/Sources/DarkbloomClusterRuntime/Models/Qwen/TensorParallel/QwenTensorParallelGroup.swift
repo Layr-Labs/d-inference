@@ -29,6 +29,9 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
     private let handle: mlx_distributed_group?
     private let link: QwenTensorParallelLocalSocket?
     public private(set) var floatingReductions = 0
+    /// When set, every floating all-sum crosses the link sealed by this codec
+    /// (`mlx_distributed_all_sum_sealed`); integer agreements stay plain.
+    public var sealed: QwenTensorParallelSealCodec?
 
     public init(backend: Backend) throws {
         if backend.correctnessOnly { try Self.validateLocalRing() }
@@ -68,9 +71,23 @@ public final class QwenTensorParallelGroup: QwenTensorParallelReduction {
         if [.float16, .bfloat16, .float32].contains(value.dtype) { floatingReductions += 1 }
         guard let handle else { return socketAllSum(value) }
         var result = mlx_array_new()
-        let status = mlx_distributed_all_sum(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
+        let floating = [.float16, .bfloat16, .float32].contains(value.dtype)
+        let status = sealed != nil && floating
+            ? mlx_distributed_all_sum_sealed(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
+            : mlx_distributed_all_sum(&result, value.ctx, handle, StreamOrDevice.cpu.ctx)
         precondition(status == 0, "\(backend.rawValue) all-sum graph construction failed")
         return MLXArray(result)
+    }
+
+    /// Evaluated now: the elementwise sum of every rank's integers (each rank
+    /// fills its own slots, the others zero).
+    public func exchangeIntegers(_ values: [Int32]) throws -> [Int32] {
+        let combined = allSum(MLXArray(values))
+        try MLX.withError { error in
+            eval(combined)
+            try error.check()
+        }
+        return combined.asArray(Int32.self)
     }
 
     /// Evaluated now; the caller learns whether every rank passed the same values.

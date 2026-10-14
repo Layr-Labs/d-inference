@@ -11,6 +11,8 @@ import MLX
 //       [--wired-residency yes|no] [--deadline-seconds S] [--output-count N] [--partials float32|bfloat16]
 //       [--shard-rank R (shard-local)] [--census yes|no (no peer: one decode step's primitives by name)]
 //       [--shares A:B (each rank's share weight; default 1:1 = equal shards)]
+//       [--reduction native|sealed-bench (sealed: AES-GCM frames through the fork's sealed all-sum, BENCH keys from an
+//        unauthenticated ephemeral exchange; measures the sealed path's cost, never a product trust)]
 //   darkbloom-cluster-tp-check compare --reference FILE --candidate FILE [--near-tie-ulps U]
 //   darkbloom-cluster-tp-check record --rank0 FILE --rank1 FILE --reference FILE [--reference FILE] --model-dir DIR
 //       --output FILE [--partials float32|bfloat16] [--near-tie-ulps U]   (appends one qualification record line)
@@ -98,6 +100,8 @@ struct Report: Codable {
     var floatingReductions: Int?
     /// Each rank's share weight (tp and shard-local; nil when equal).
     var shares: [Int]?
+    /// "sealed-bench" when floating all-sums crossed sealed (nil: native).
+    var reduction: String?
     /// Diagnostic (--census yes): primitives of one decode step's graph by name, and their total.
     var census: [String: Int]?
     var censusTotal: Int?
@@ -121,6 +125,7 @@ struct Options {
     var shardRank = 0
     var partials = "float32"
     var shares = [1, 1]
+    var reductionPath = "native"
     var recordTop = 0
     var repeats = 1
     var warmup = true
@@ -166,6 +171,7 @@ struct Options {
             case "--prefill-rank": prefillRank = Int(try value()) ?? -1
             case "--shard-rank": shardRank = Int(try value()) ?? -1
             case "--partials": partials = try value()
+            case "--reduction": reductionPath = try value()
             case "--shares":
                 let parts = try value().split(separator: ":").map { Int($0) ?? 0 }
                 guard parts.count == 2, parts.allSatisfy({ (1...1_000).contains($0) }) else { throw Failure("--shares needs A:B") }
@@ -196,6 +202,9 @@ struct Options {
             guard !FileManager.default.fileExists(atPath: report) else { throw Failure("the report file already exists") }
             if ["tp", "hybrid", "shard-local"].contains(mode) && recordTop > 0 { throw Failure("a tp rank does not record logits") }
             if census && ["tp", "hybrid"].contains(mode) { throw Failure("the census runs only without a peer") }
+            guard ["native", "sealed-bench"].contains(reductionPath), reductionPath == "native" || mode == "tp" else {
+                throw Failure("--reduction sealed-bench applies to a tp rank only")
+            }
             if Set(shares).count > 1 && ["full", "simulated", "hybrid"].contains(mode) {
                 throw Failure("unequal --shares apply to tp and shard-local only")
             }
@@ -264,11 +273,23 @@ enum RunCommand {
             let launch = QwenTensorParallelLaunch(outputCount: outputCount, chunkSize: request.chunkSize,
                 promptTokens: request.promptTokenIDs.count, repeats: options.repeats, warmup: options.warmup,
                 explicitTiming: options.timing == .explicit, bfloat16Partials: options.partials == "bfloat16",
-                hybridPrefillRank: options.mode == "hybrid" ? options.prefillRank : nil, shares: options.shares)
+                hybridPrefillRank: options.mode == "hybrid" ? options.prefillRank : nil, shares: options.shares,
+                sealedReduction: options.reductionPath == "sealed-bench")
             // First exchange: fixed width in every build (4 int32 per rank), so a rank of another build is refused.
             guard try g.digestsEqual(launch.digest),
                   try g.digestsEqual(fnv(configurationSHA + request.promptTokenIDsSHA256 + snapshot.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";"))) else {
                 throw Failure("the ranks disagree on the workload, the model configuration, the prompt or the arithmetic environment")
+            }
+            if options.reductionPath == "sealed-bench" {
+                var scope = Data("darkbloom-tp-sealed-scope-v1|".utf8)
+                scope.append(contentsOf: withUnsafeBytes(of: launch.digest.bigEndian) { Array($0) })
+                scope.append(Data(configurationSHA.utf8))
+                let codec = try QwenTensorParallelSealCodec.bench(group: g, scope: scope)
+                // Test only: DARKBLOOM_TP_SEALED_TAMPER_AT=N makes this rank corrupt its Nth sealed frame.
+                codec.tamperAtCounter = ProcessInfo.processInfo.environment["DARKBLOOM_TP_SEALED_TAMPER_AT"].flatMap { UInt64($0) }
+                try codec.install()
+                g.sealed = codec
+                note("sealed all-sum installed (BENCH keys: unauthenticated ephemeral exchange; cost measurement only)")
             }
         }
 
@@ -306,7 +327,8 @@ enum RunCommand {
             loadSeconds: model.loadSeconds, loadedActiveBytes: model.loadedActiveBytes,
             loadedParameterBytes: model.loadedParameterBytes, wiredResidencyBytes: residency?.receipt.appliedBytes,
             reductionsPerForward: group == nil ? nil : model.plan.reductionsPerForward,
-            shares: model.plan.equalShares ? nil : model.plan.shares)
+            shares: model.plan.equalShares ? nil : model.plan.shares,
+            reduction: group?.sealed == nil ? nil : "sealed-bench")
 
         if options.census {
             let counts = try model.decodeStepCensus(prompt: Array(request.promptTokenIDs.prefix(min(64, request.promptTokenIDs.count))))

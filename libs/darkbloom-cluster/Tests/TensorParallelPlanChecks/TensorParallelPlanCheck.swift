@@ -347,6 +347,7 @@ func checkLaunchAgreement() {
     variant("hybrid, prefill rank 1") { $0.hybridPrefillRank = 1 }
     variant("shares 1:3") { $0.shares = [1, 3] }
     variant("shares 3:1") { $0.shares = [3, 1] }
+    variant("sealed reduction") { $0.sealedReduction = true }
     for (label, launch) in variants {
         check(launch != base, "launch: \(label) variant equals the base")
         check(launch.agreement != base.agreement, "launch: a rank launched with a different \(label) still agrees")

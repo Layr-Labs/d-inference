@@ -24,9 +24,13 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
     /// overlapping or missing heads and sum wrong partials without any
     /// mismatched shape, so the shares are agreed first.
     public var shares: [Int]
+    /// Floating all-sums cross the link sealed (`QwenTensorParallelSealCodec`)
+    /// instead of the native all-sum: another collective per reduction.
+    public var sealedReduction: Bool
 
     public init(outputCount: Int, chunkSize: Int, promptTokens: Int, repeats: Int, warmup: Bool,
-                explicitTiming: Bool, bfloat16Partials: Bool, hybridPrefillRank: Int?, shares: [Int] = [1, 1]) {
+                explicitTiming: Bool, bfloat16Partials: Bool, hybridPrefillRank: Int?, shares: [Int] = [1, 1],
+                sealedReduction: Bool = false) {
         self.outputCount = outputCount
         self.chunkSize = chunkSize
         self.promptTokens = promptTokens
@@ -36,6 +40,7 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
         self.bfloat16Partials = bfloat16Partials
         self.hybridPrefillRank = hybridPrefillRank
         self.shares = shares
+        self.sealedReduction = sealedReduction
     }
 
     /// The values the first agreement compares across ranks.
@@ -43,11 +48,11 @@ public struct QwenTensorParallelLaunch: Equatable, Sendable {
         [Int32(clamping: outputCount), Int32(clamping: chunkSize), Int32(clamping: promptTokens),
          Int32(clamping: repeats), warmup ? 1 : 0, explicitTiming ? 2 : 1,
          hybridPrefillRank.map { Int32(clamping: 10 + $0) } ?? 0, bfloat16Partials ? 2 : 1,
-         Int32(clamping: shares.count)] + shares.map { Int32(clamping: $0) }
+         Int32(clamping: shares.count)] + shares.map { Int32(clamping: $0) } + [sealedReduction ? 2 : 1]
     }
 
     /// Version of the first exchange; change it whenever `agreement` changes meaning.
-    public static let agreementVersion = "darkbloom-tp-launch-v3"
+    public static let agreementVersion = "darkbloom-tp-launch-v4"
 
     /// 64-bit FNV-1a of the version and `agreement`: what the ranks compare first.
     public var digest: UInt64 {

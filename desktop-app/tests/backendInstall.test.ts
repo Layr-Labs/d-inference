@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -143,23 +143,32 @@ describe('install on click', () => {
     await watching;
   });
 
-  it('refuses installs in the signed preview', async () => {
+  it('installs a missing CLI in the signed preview, but never updates one', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const script = await installer(steps);
+    // The preview's bundled API exists; the installed CLI it attaches to does not.
+    const bundled = path.join(home, 'preview-runtime');
+    await writeFile(bundled, '');
     const preview = {
-      binary: path.join(home, 'missing-preview-runtime'),
+      binary: bundled,
+      directory: path.join(home, 'preview-api'),
+      ensure: async () => {},
     } as unknown as PreviewRuntime;
     const backend = new Backend(true, preview);
-    const watching = backend.watch();
-    await until(backend, (status) => status.state === 'missing');
-    await vi.advanceTimersByTimeAsync(5_000);
+    // The app is unsigned in tests; the signature check is not what this covers.
+    vi.spyOn(
+      backend as unknown as { verifyRuntime: () => Promise<void> },
+      'verifyRuntime',
+    ).mockResolvedValue();
+    await backend.connect();
     expect(backend.current.state).toBe('missing');
+    await backend.install(script).catch(() => {});
+    expect(await runs()).toBe(1);
+    // With the CLI installed, a preview still refuses to update or repair it.
+    await mkdir(path.join(home, '.darkbloom/bin'), { recursive: true });
+    await writeFile(path.join(home, '.darkbloom/bin/darkbloom'), '');
     await expect(backend.install(script)).rejects.toThrow('Rebuild the local preview');
-    expect(await runs()).toBe(0);
-    expect(spawned.calls).toBe(0);
-    backend.stop();
-    await vi.advanceTimersByTimeAsync(5_000);
-    await watching;
+    expect(await runs()).toBe(1);
   });
 });
 

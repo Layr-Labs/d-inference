@@ -439,3 +439,15 @@ unavailable hardware honestly. Local validation does not authorize deployment.
 - [Serving-performance qualification](serving-performance-qualification.md)
 - [Historical references](historical-references.md)
 - [Provider release](../operations/provider-release.md)
+
+
+## Bonsai 9B artifact publication checks
+
+`python3 scripts/test_publish_model_revision.py` covers the shared immutable
+publication reservation. The opt-in Register Model preparation uses
+`fixtures/model-publication/bonsai9b-base-2026-10-15.json`: nine base files with
+full source SHA-256/size/ETag receipts, excluding the separate `mtp/` files.
+`actionlint .github/workflows/register-model.yml` checks the workflow wiring.
+The publisher verifies the stored source manifest and binds each copy to its
+verified source ETag before publishing the destination manifest last. These
+checks verify artifact identity; native serving qualification remains separate.

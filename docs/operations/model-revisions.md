@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-10-09
+> Last updated: 2026-10-15
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -113,6 +113,22 @@ Overwriting an already published R2 revision is rejected.
    model has no cache routing: `artifact_allowlist.stale_models` in
    `GET /v1/cache/status` counts it and the coordinator log names the exact
    tuple ([stale entries](https://github.com/Layr-Labs/darkbloom-platform/blob/48a198c71a2d30feec5597bacf1101120f7f955d/docs/operations/cache-routing-rollout.md#stale-entries-after-a-model-revision)).
+
+## Bonsai 9B base publication
+
+For the approved first Bonsai 9B registration, the Register Model workflow's
+`prepare_bonsai_base` input runs `scripts/publish-bonsai9b-base.py` before the
+normal registration step. It is disabled by default and accepts only
+`EigenLabs/Ternary-Bonsai-2-9B-MLX-2bit` version `2026-10-15-base-r1`.
+
+The pinned inventory in `fixtures/model-publication/bonsai9b-base-2026-10-15.json`
+contains the nine base files, their full-readback SHA-256/size/ETag receipts and
+the source backup manifest. The publisher uses the existing R2 credentials,
+reserves the new prefix with the normal immutable-publication helper, and copies
+only source objects whose ETags still match the verified reads. It publishes
+the manifest last. The original backup and its separate `mtp/` assistant remain
+unchanged; the assistant is not part of the serving base revision. Registration
+and its `promote` input retain their existing behavior and authorization.
 
 ## Verification
 

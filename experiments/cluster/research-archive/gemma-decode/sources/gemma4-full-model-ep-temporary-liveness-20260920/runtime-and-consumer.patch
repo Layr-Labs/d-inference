@@ -1,0 +1,404 @@
+--- a/Gemma4ExpertCollectiveOperation.swift
++++ b/Gemma4ExpertCollectiveOperation.swift
+@@ -10,16 +10,45 @@
+     let partition: Gemma4ExpertPartition
+     let binding: Gemma4ExpertInvocationBinding
+     private let exchange: any Gemma4ExpertUnweightedExchange
++    private let temporaryPolicy: Gemma4ExpertTemporaryPolicy?
++    private var temporaryWindow: Gemma4ExpertTemporaryWindow?
+ 
+     init(partition: Gemma4ExpertPartition, binding: Gemma4ExpertInvocationBinding,
+-         exchange: any Gemma4ExpertUnweightedExchange) throws {
++         exchange: any Gemma4ExpertUnweightedExchange,
++         temporaryPolicy: Gemma4ExpertTemporaryPolicy? = nil) throws {
+         try binding.validate(partition: partition)
++        if temporaryPolicy != nil, !(exchange is Gemma4ExpertWire) {
++            throw ProbeError("Gemma adjacent temporary policy requires the original completed Collective wire")
++        }
+         self.partition = partition; self.binding = binding; self.exchange = exchange
++        self.temporaryPolicy = temporaryPolicy
++        temporaryWindow = try temporaryPolicy.map { _ in
++            try Gemma4ExpertTemporaryWindow(frames: binding.purpose == .probe ? 2 : 3)
++        }
+     }
+ 
+     func unweighted(frame: QwenLayerStageFrame, layer: Int, input: MLXArray,
+                     globalIDs: MLXArray, weights: MLXArray, bank: SwitchGLU,
+                     check: () throws -> Void) throws -> MLXArray {
++        do {
++            if temporaryPolicy == nil {
++                return try unweightedScoped(frame: frame, layer: layer, input: input,
++                    globalIDs: globalIDs, weights: weights, bank: bank, check: check)
++            }
++            // Drain completed backend/Objective-C temporaries at the existing
++            // borrowed hook boundary. Returned graph ownership escapes normally.
++            return try autoreleasepool {
++                try unweightedScoped(frame: frame, layer: layer, input: input,
++                    globalIDs: globalIDs, weights: weights, bank: bank, check: check)
++            }
++        } catch { temporaryWindow?.poison(); throw error }
++    }
++
++    func requireTemporaryWindowComplete() throws { try temporaryWindow?.requireComplete() }
++
++    private func unweightedScoped(frame: QwenLayerStageFrame, layer: Int, input: MLXArray,
++                                  globalIDs: MLXArray, weights: MLXArray, bank: SwitchGLU,
++                                  check: () throws -> Void) throws -> MLXArray {
+         try check()
+         guard (0..<30).contains(layer), input.ndim == 2,
+               (1...128).contains(input.dim(0)), input.dim(1) == 2816,
+@@ -31,9 +60,17 @@
+                 && input.dim(0) < frame.tokenCount)) else {
+             throw ProbeError("Gemma EP actual decoder/router geometry exceeds its explicit envelope")
+         }
++        if let temporaryPolicy {
++            guard input.dim(0) <= temporaryPolicy.maximumFrameTokens,
++                  frame.tokenCount <= temporaryPolicy.maximumFrameTokens else {
++                throw ProbeError("Gemma adjacent temporary path exceeded its closed frame bound")
++            }
++            try temporaryWindow?.begin(frame: frame.sequence, layer: layer)
++        }
+         // The existing owner's MLX fault/deadline check is passed through every
+         // eval/read/transport boundary. Native errors retain outer precedence.
+         eval(input, globalIDs, weights); try check()
++        try temporaryWindow?.inputEvaluated()
+         let flat = globalIDs.asArray(UInt32.self); try check()
+         let selected = (0..<input.dim(0)).map { row in
+             (0..<8).map { Int(flat[row * 8 + $0]) }
+@@ -92,12 +129,17 @@
+                 }
+             }
+         }
++        // The concrete Wire returned only after existing CPU/GPU completion
++        // fences and consumed ACKs. No extra synchronization is introduced.
++        try temporaryWindow?.exchangeCompleted()
+         let order = MLXArray(try plan.reassemblyIndices(
+             returnedByRank: plan.assignmentsByRank).map(UInt32.init))
+         eval(order); try check()
+         let outputs = byRank.compactMap { $0 }
+         guard !outputs.isEmpty else { throw ProbeError("Gemma EP has no assignment outputs") }
+         let joined = outputs.count == 1 ? outputs[0] : concatenated(outputs, axis: 0)
+-        return joined.take(order, axis: 0).reshaped(input.dim(0), 8, 2816)
++        let result = joined.take(order, axis: 0).reshaped(input.dim(0), 8, 2816)
++        try temporaryWindow?.returned()
++        return result
+     }
+ }
+--- a/Gemma4ExpertCorrectnessEntry.swift
++++ b/Gemma4ExpertCorrectnessEntry.swift
+@@ -44,8 +44,10 @@
+                 Memory.clearCache(); try outerCheck()
+                 // The same existing operational owner admits the complete
+                 // model/state/transport ledger BEFORE any Collective is made.
++                let temporaryPolicy: Gemma4ExpertTemporaryPolicy? = input.partition == nil ? nil : .adjacentSynchronousV1
+                 let owner = try Gemma4ShortResourceOwner(plan: input.plan, target: input.target,
+-                    request: input.request, residualDType: .bfloat16, deadline: deadline)
++                    request: input.request, residualDType: .bfloat16, deadline: deadline,
++                    expertTemporaryPolicy: temporaryPolicy)
+                 func checked() throws { try outerCheck(); try owner.check(); try outerCheck() }
+                 try checked()
+                 let result: Data = try autoreleasepool {
+@@ -56,8 +58,8 @@
+                     let probeOperation: Gemma4ExpertCollectiveOperation?
+                     let requestOperation: Gemma4ExpertCollectiveOperation?
+                     if let partition = input.partition, let wire {
+-                        probeOperation = try .init(partition: partition, binding: input.binding(purpose: .probe), exchange: wire)
+-                        requestOperation = try .init(partition: partition, binding: input.binding(purpose: .request), exchange: wire)
++                        probeOperation = try .init(partition: partition, binding: input.binding(purpose: .probe), exchange: wire, temporaryPolicy: temporaryPolicy)
++                        requestOperation = try .init(partition: partition, binding: input.binding(purpose: .request), exchange: wire, temporaryPolicy: temporaryPolicy)
+                     } else { probeOperation = nil; requestOperation = nil }
+                     do {
+                         try wire?.checkpoint("begin", check: checked)
+@@ -81,6 +83,8 @@
+                         // model weak release and cache clearing before this ACK.
+                         try checked(); try wire?.checkpoint("model-released", selected: selected, check: checked)
+                         guard wire?.complete ?? true else { throw ProbeError("Gemma EP exchange lifecycle incomplete") }
++                        try probeOperation?.requireTemporaryWindowComplete()
++                        try requestOperation?.requireTemporaryWindowComplete()
+                         let encoded = try Gemma4ExpertCorrectnessReport.intermediate(input: input,
+                             expected: expected, execution: execution, observations: wire?.observations ?? [],
+                             sentTensorBytes: wire?.sentTensorBytes ?? 0, receivedTensorBytes: wire?.receivedTensorBytes ?? 0,
+--- a/Gemma4ExpertCorrectnessInput.swift
++++ b/Gemma4ExpertCorrectnessInput.swift
+@@ -90,6 +90,7 @@
+ 
+ struct Gemma4ExpertCorrectnessDescription: Encodable {
+     let schema = "gemma4_full_expert_expected_v1"
++    let expertTemporaryPolicy = Gemma4ExpertTemporaryPolicy.adjacentSynchronousV1
+     let scopeSHA256: String
+     let original: Gemma4ShortDescription
+     let globalExpertIDsByRank: [[Int]]
+--- a/Gemma4ExpertExecutionChecks.swift
++++ b/Gemma4ExpertExecutionChecks.swift
+@@ -80,6 +80,46 @@
+                     && terms.collectiveHostAllowanceBytes == 32*1_048_576
+                     && terms.hostBytes >= terms.collectiveHostAllowanceBytes + 1_048_576)
+                 try require(budget.namedNativeBytes == budget.namedAllocationBounds.reduce(0,+))
++                let adjacent = try Gemma4ShortResourceBudget.derive(plan:input.plan,target:.expertParallel(partition),
++                    request:input.request,expertTemporaryPolicy:.adjacentSynchronousV1,bound:{$0})
++                guard let adjacentTerms = adjacent.expertResources else { throw ProbeError("Adjacent EP ledger absent") }
++                let legacyObject = try JSONSerialization.jsonObject(with: canonicalJSONData(terms)) as? [String:Any]
++                let adjacentObject = try JSONSerialization.jsonObject(with: canonicalJSONData(adjacentTerms)) as? [String:Any]
++                try require(legacyObject?["temporaryLivenessPolicy"] == nil
++                    && (adjacentObject?["temporaryLivenessPolicy"] as? String)
++                        == Gemma4ExpertTemporaryPolicy.adjacentSynchronousV1.rawValue)
++                try require(adjacentTerms.arrayTerms.count == 43
++                    && Set(adjacentTerms.arrayTerms.map(\.name)).count == 43)
++                let originalTrunk = budget.namedArrays.filter { !$0.name.contains(":ep:") && !$0.name.hasPrefix("ep:") }
++                let adjacentTrunk = adjacent.namedArrays.filter { !$0.name.contains(":ep:") && !$0.name.hasPrefix("ep:") }
++                try require(zip(originalTrunk,adjacentTrunk).allSatisfy { $0.0.name == $0.1.name && $0.0.bytes == $0.1.bytes }
++                    && originalTrunk.count == adjacentTrunk.count)
++                try require(adjacent.stateLayers == budget.stateLayers && adjacent.stateLogicalBytes == budget.stateLogicalBytes
++                    && adjacent.persistentCastLogicalBytes == budget.persistentCastLogicalBytes
++                    && adjacent.selectedBounds == budget.selectedBounds
++                    && adjacent.largestHostTensorBytes == budget.largestHostTensorBytes
++                    && adjacent.largestNativeCopyBytes == budget.largestNativeCopyBytes)
++                // Independent exact shape arithmetic: nine hidden arrays, three
++                // intermediate arrays and seven U32 index arrays per EP layer.
++                let perLayer = 128 * (9 * 2816 * 4 + 3 * 704 * 4 + 7 * 4)
++                try require(perLayer == 14_061_056
++                    && budget.namedNativeBytes - adjacent.namedNativeBytes == 28 * perLayer
++                    && adjacent.hostEvidenceBytes - budget.hostEvidenceBytes == 4_096)
++                try require(adjacentTerms.policy == "gemma4_full_expert_correctness_resources_v2"
++                    && adjacentTerms.temporaryLivenessPolicy == .adjacentSynchronousV1
++                    && adjacentTerms.collectiveNativeAllowanceBytes == terms.collectiveNativeAllowanceBytes
++                    && adjacentTerms.collectiveHostAllowanceBytes == terms.collectiveHostAllowanceBytes)
++                for count in [17,64,128] {
++                    try refuses { _ = try Gemma4ExpertResourceTerms.derive(partition:partition,
++                        frameTokens:count,temporaryPolicy:.adjacentSynchronousV1) }
++                }
++                try refuses { _ = try Gemma4ShortResourceBudget.derive(plan:input.plan,target:.fullReference,
++                    request:input.request,expertTemporaryPolicy:.adjacentSynchronousV1,bound:{$0}) }
++                let roundedAdjacent = try Gemma4ShortResourceBudget.derive(plan:input.plan,target:.expertParallel(partition),
++                    request:input.request,expertTemporaryPolicy:.adjacentSynchronousV1,
++                    bound:{ (($0+16_383)/16_384)*16_384 })
++                try require(roundedAdjacent.namedNativeBytes == roundedAdjacent.namedAllocationBounds.reduce(0,+)
++                    && roundedAdjacent.namedNativeBytes >= adjacent.namedNativeBytes)
+                 let rounded = try Gemma4ShortResourceBudget.derive(plan:input.plan,target:.expertParallel(partition),
+                     request:input.request,bound:{ (($0+16_383)/16_384)*16_384 })
+                 try require(rounded.namedNativeBytes >= budget.namedNativeBytes
+--- a/Gemma4ExpertResourceTerms.swift
++++ b/Gemma4ExpertResourceTerms.swift
+@@ -1,14 +1,15 @@
+ import Foundation
+ 
+ /// Additions to the existing full-decoder ledger, not a new memory owner.
+-/// Every layer is charged concurrently even though the first path is serialized.
++/// The default retains all30 layers; the explicit checked path uses two slots.
+ struct Gemma4ExpertResourceTerms: Encodable {
+     static let controlBytes = 4_096
+     static let maximumLayerExchanges = (2 + 3) * 30 // native probe2 + request3
+     static let controlRecordLimit = 1_024
+     static let expectedControlRecords = maximumLayerExchanges * 4 + 7
+     static let reportEncodingHostBytes = 8 * 1_048_576
+-    let policy = "gemma4_full_expert_correctness_resources_v1"
++    let policy: String
++    let temporaryLivenessPolicy: Gemma4ExpertTemporaryPolicy?
+     let ownershipSHA256: String
+     let rank: Int
+     let ownedExpertCount: Int
+@@ -21,7 +22,11 @@
+     let collectiveHostAllowanceBytes: Int
+     let measuredPeakBoundEstablished = false
+ 
+-    static func derive(partition: Gemma4ExpertPartition, frameTokens: Int) throws -> Self {
++    static func derive(partition: Gemma4ExpertPartition, frameTokens: Int,
++                       temporaryPolicy: Gemma4ExpertTemporaryPolicy? = nil) throws -> Self {
++        if let temporaryPolicy, frameTokens > temporaryPolicy.maximumFrameTokens {
++            throw ProbeError("Gemma adjacent temporary proof is limited to the short frame envelope")
++        }
+         guard (2...ExpertAxisQualificationLimits.maximumTokens).contains(frameTokens) else {
+             throw ProbeError("Gemma expert resource frame exceeds shared qualified envelope")
+         }
+@@ -34,8 +39,8 @@
+         func add(_ name: String, _ shape: [Int], bytes: Int = 4) throws {
+             terms.append(.init(name: name, bytes: try product(shape + [bytes])))
+         }
+-        for layer in 0..<30 {
+-            let prefix = "layer\(layer):ep:"
++        for layer in 0..<(temporaryPolicy?.layerSlots ?? 30) {
++            let prefix = temporaryPolicy == nil ? "layer\(layer):ep:" : "window\(layer):ep:"
+             // Keep every original full-bank activation term. Add the complete
+             // local padded graph, even if this frame needs no padding.
+             for name in ["paddedInput", "sortedInput", "paddedDown", "paddedUnsort"] {
+@@ -71,8 +76,11 @@
+         let host = try sum([collectiveHost, assignmentHost,
+             product([frameTokens, 2816, 2]), product([frameTokens, 8, 2]),
+             product([3, payload]), product([8, controlBytes]),
+-            product([maximumLayerExchanges, controlBytes]), reportEncodingHostBytes])
+-        return .init(ownershipSHA256: sha256(try canonicalJSONData(partition.globalIDsByRank)),
++            product([maximumLayerExchanges, controlBytes]), reportEncodingHostBytes,
++            temporaryPolicy?.scalarHostBytes ?? 0])
++        return .init(policy: temporaryPolicy == nil ? "gemma4_full_expert_correctness_resources_v1"
++                : "gemma4_full_expert_correctness_resources_v2", temporaryLivenessPolicy: temporaryPolicy,
++            ownershipSHA256: sha256(try canonicalJSONData(partition.globalIDsByRank)),
+             rank: partition.rank, ownedExpertCount: partition.ownedIDs.count,
+             frameTokenLimit: frameTokens, assignmentLimit: assignments, payloadByteLimit: payload,
+             hostBytes: host, arrayTerms: terms,
+--- a/Gemma4ExpertTemporaryWindow.swift
++++ b/Gemma4ExpertTemporaryWindow.swift
+@@ -0,0 +1,69 @@
++import Foundation
++
++/// This policy is usable only by the pinned, synchronous P32/C16/O2 entry.
++/// It changes the added EP temporaries; full trunk/state terms stay unchanged.
++enum Gemma4ExpertTemporaryPolicy: String, Encodable {
++    case adjacentSynchronousV1 = "gemma4_ep_adjacent_synchronous_temporaries_v1"
++
++    var layerSlots: Int { 2 }
++    var maximumFrameTokens: Int { 16 }
++    var scalarHostBytes: Int { 4_096 }
++}
++
++enum Gemma4ExpertTemporaryWindowError: Error {
++    case invalidFrameCount, failedOrOutOfOrder, missingEvaluationOrCompletion, incomplete
++}
++
++/// Scalar guard, not an array owner or a replacement request/transport state.
++/// `inputEvaluated` must follow the existing eval(input, ids, weights) + check.
++struct Gemma4ExpertTemporaryWindow {
++    private let frames: Int
++    private var nextFrame = 0, nextLayer = 0
++    private var entered = false, evaluated = false, exchanged = false, failed = false
++
++    init(frames: Int) throws {
++        guard frames == 2 || frames == 3 else {
++            throw Gemma4ExpertTemporaryWindowError.invalidFrameCount
++        }
++        self.frames = frames
++    }
++
++    mutating func begin(frame: Int, layer: Int) throws {
++        guard !failed, !entered, nextFrame < frames,
++              frame == nextFrame, layer == nextLayer else {
++            failed = true; throw Gemma4ExpertTemporaryWindowError.failedOrOutOfOrder
++        }
++        entered = true; evaluated = false; exchanged = false
++    }
++
++    mutating func inputEvaluated() throws {
++        guard !failed, entered, !evaluated else {
++            failed = true; throw Gemma4ExpertTemporaryWindowError.failedOrOutOfOrder
++        }
++        evaluated = true
++    }
++
++    mutating func exchangeCompleted() throws {
++        guard !failed, entered, evaluated, !exchanged else {
++            failed = true; throw Gemma4ExpertTemporaryWindowError.failedOrOutOfOrder
++        }
++        exchanged = true
++    }
++
++    mutating func returned() throws {
++        guard !failed, entered, evaluated, exchanged else {
++            failed = true; throw Gemma4ExpertTemporaryWindowError.missingEvaluationOrCompletion
++        }
++        entered = false; evaluated = false; exchanged = false
++        nextLayer += 1
++        if nextLayer == 30 { nextLayer = 0; nextFrame += 1 }
++    }
++
++    mutating func poison() { failed = true }
++
++    func requireComplete() throws {
++        guard !failed, !entered, !evaluated, !exchanged, nextFrame == frames, nextLayer == 0 else {
++            throw Gemma4ExpertTemporaryWindowError.incomplete
++        }
++    }
++}
+--- a/Gemma4ShortResourceBudget.swift
++++ b/Gemma4ShortResourceBudget.swift
+@@ -28,7 +28,8 @@
+     let requestSHA256: String
+ 
+     static func derive(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+-        request: QwenLayerStageGenerationRequest, bound: (Int) throws -> Int
++        request: QwenLayerStageGenerationRequest,
++        expertTemporaryPolicy: Gemma4ExpertTemporaryPolicy? = nil, bound: (Int) throws -> Int
+     ) throws -> Self {
+         guard request.promptCount == 32, request.chunkSize == 16, request.outputCount == 2,
+               request.stopTokenIDs.isEmpty, request.maximumTokens == 34,
+@@ -38,6 +39,11 @@
+               request.profile.maximumOutputTokens == 128, request.profile.maximumContextTokens == 8320,
+               ["float16", "bfloat16", "float32"].contains(request.profile.activationDType) else {
+             throw ProbeError("Gemma short resource budget requires exact P32/C16/O2/no-stop geometry")
++        }
++        if expertTemporaryPolicy != nil {
++            guard case .expertParallel = target else {
++                throw ProbeError("Gemma adjacent temporary policy requires the explicit EP target")
++            }
+         }
+         let selected = try Gemma4ForwardSelection.make(plan: plan, target: target)
+         let globals: [Int]
+@@ -134,7 +140,8 @@
+         }
+         let expertResources: Gemma4ExpertResourceTerms?
+         if case .expertParallel(let partition) = target {
+-            expertResources = try .derive(partition: partition, frameTokens: max(2, m))
++            expertResources = try .derive(partition: partition, frameTokens: max(2, m),
++                temporaryPolicy: expertTemporaryPolicy)
+             arrays += expertResources!.arrayTerms
+         } else { expertResources = nil }
+         let allocations = try selected.map { try rounded($0.selectedByteCount) }
+--- a/Gemma4ShortResourceOwner.swift
++++ b/Gemma4ShortResourceOwner.swift
+@@ -39,7 +39,8 @@
+     private var constructorActive = 0, constructorPeak = 0
+ 
+     init(plan: Gemma4LayerStagePlan, target: Gemma4ForwardTarget,
+-         request: QwenLayerStageGenerationRequest, residualDType: DType, deadline: UInt64) throws {
++         request: QwenLayerStageGenerationRequest, residualDType: DType, deadline: UInt64,
++         expertTemporaryPolicy: Gemma4ExpertTemporaryPolicy? = nil) throws {
+         let now = DispatchTime.now().uptimeNanoseconds
+         guard deadline > now, deadline - now <= 300_000_000_000 else {
+             throw ProbeError("Gemma correctness needs a fresh existing 300-second-or-shorter native lifetime")
+@@ -48,7 +49,7 @@
+         try Gemma4ForwardRequest.validate(request, dtype: residualDType)
+         try QwenResidentResourceEnvironment.require()
+         let budget = try Gemma4ShortResourceBudget.derive(plan: plan, target: target, request: request,
+-            bound: QwenResidentResourceEnvironment.allocationBound)
++            expertTemporaryPolicy: expertTemporaryPolicy, bound: QwenResidentResourceEnvironment.allocationBound)
+         self.budget = budget; self.deadline = deadline
+         progress = .init(expected: budget.selected)
+         try check()
+--- a/Comparison/expert_report.py
++++ b/Comparison/expert_report.py
+@@ -9,8 +9,9 @@
+ MODES=('full','expert0','expert1')
+ 
+ def expected(value,prompt_raw):
+-    fields(value,'schema scopeSHA256 original globalExpertIDsByRank ownershipSHA256 rankBuildSHA256 targets assignmentLimit payloadByteLimit sharedQualificationMaximumAssignments replicatedFullStatePerRank metadataOnly runtimeExecutionAuthorized expertNumericalQualificationEstablished')
++    fields(value,'schema expertTemporaryPolicy scopeSHA256 original globalExpertIDsByRank ownershipSHA256 rankBuildSHA256 targets assignmentLimit payloadByteLimit sharedQualificationMaximumAssignments replicatedFullStatePerRank metadataOnly runtimeExecutionAuthorized expertNumericalQualificationEstablished')
+     equal(value['schema'],'gemma4_full_expert_expected_v1','EP expected schema')
++    equal(value['expertTemporaryPolicy'],'gemma4_ep_adjacent_synchronous_temporaries_v1','Exact prospective temporary policy')
+     prompt=expected_description(value['original'],prompt_raw)
+     ids=value['globalExpertIDsByRank']
+     require(type(ids) is list and len(ids)==2 and all(type(row) is list and 0<len(row)<128 for row in ids),'Two expert banks')
+@@ -41,11 +42,11 @@
+     ordinary=dict(receipt)
+     if index:
+         extra=ordinary.pop('expertResources');rank=index-1
+-        fields(extra,'policy ownershipSHA256 rank ownedExpertCount frameTokenLimit assignmentLimit payloadByteLimit hostBytes arrayTerms collectiveNativeAllowanceBytes collectiveHostAllowanceBytes measuredPeakBoundEstablished')
++        fields(extra,'policy temporaryLivenessPolicy ownershipSHA256 rank ownedExpertCount frameTokenLimit assignmentLimit payloadByteLimit hostBytes arrayTerms collectiveNativeAllowanceBytes collectiveHostAllowanceBytes measuredPeakBoundEstablished')
+         arrays=[];a=128
+         def add(name,size):arrays.append(dict(name=name,bytes=size))
+-        for layer in range(30):
+-            prefix=f'layer{layer}:ep:'
++        for layer in range(2):
++            prefix=f'window{layer}:ep:'
+             for name in ('paddedInput','sortedInput','paddedDown','paddedUnsort'):add(prefix+name,a*2816*4)
+             for name in ('paddedGate','paddedUp','paddedActivation'):add(prefix+name,a*704*4)
+             for name in ('tokenRows','localIDs','order','inverseOrder','sortedIDs','reassemblyOrder'):add(prefix+name,a*4)
+@@ -54,8 +55,9 @@
+         for name in ('controlSend','controlReceive','controlSendPrefix','controlReceivePrefix'):
+             add('ep:'+name,4 if name.endswith('Prefix') else 4096)
+         add('ep:collectiveNativeAllowance',32*1024**2)
+-        host=32*1024**2+a*(5*48+6*8+3*4)+16*2816*2+16*8*2+3*a*2816*2+8*4096+150*4096+8*1024**2
+-        equal(extra,dict(policy='gemma4_full_expert_correctness_resources_v1',ownershipSHA256=description['ownershipSHA256'],
++        host=32*1024**2+a*(5*48+6*8+3*4)+16*2816*2+16*8*2+3*a*2816*2+8*4096+150*4096+8*1024**2+4096
++        equal(extra,dict(policy='gemma4_full_expert_correctness_resources_v2',
++            temporaryLivenessPolicy='gemma4_ep_adjacent_synchronous_temporaries_v1',ownershipSHA256=description['ownershipSHA256'],
+             rank=rank,ownedExpertCount=len(description['globalExpertIDsByRank'][rank]),frameTokenLimit=16,
+             assignmentLimit=a,payloadByteLimit=a*2816*2,hostBytes=host,arrayTerms=arrays,
+             collectiveNativeAllowanceBytes=32*1024**2,collectiveHostAllowanceBytes=32*1024**2,

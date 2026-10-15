@@ -1,0 +1,17 @@
+# Private Gemma short operational resource owner
+
+This adds a concrete closed resource owner around the frozen registered Gemma forward entry. It admits only cut10, P32/C16/O2, batch one, empty stops, MTP off. The full reference selects all 1,339 text tensors; stages select 450/892 whole tensors with the existing tied embedding replica. No expert parallelism, product capability, CLI, provider/coordinator admission or MAIN change is included.
+
+Six proposed files compose over `gemma4-registered-forward-draft-20260916` (92a73443...). Four are new; the two loader/entry replacements add constructor observation and ordered read completion. All eight original forward files and the native/window prerequisites remain pinned in `integration.json`. `runtime.patch` is the exact successor delta.
+
+`withRegisteredGemma4ShortCorrectness` binds actual process environment, real native allocator/OS observations, the exact source Plan/request, measured allocation-size bounds, and real forward/probe callbacks. It configures the existing zero freed-buffer-cache policy before construction, leaves the native allocator limit unchanged, and requires the existing 6 GiB actual-free floor, 4 GiB OS load headroom and 2 GiB allocator headroom. AC, low-power, thermal, pressure, zero-swap and freshness checks remain the existing readers. The enclosing root-run native process must still own the canonical device lease, resource watcher and bounded parent lifetime.
+
+This is operational qualification admission. It is **not** a proven bound on internal native scratch or whole-process peak, a measured serving activation floor, or production eligibility. Those limits are explicit in `Gemma4ShortResourceReceipt`, including `wholeProcessPeakBoundEstablished=false`. The owner reports observed allocator peaks separately from logical/rounded reserves. Process/journal retirement remains separate parent evidence.
+
+The placeholder constructor graphs are lazy. Their logical original F32 size is not charged as resident. The existing native error handler and allocator limit cover construction; after synchronization of already scheduled work, every quantized placeholder is required to have no evaluated buffer before payload replacement. Small constructor work and retained graph metadata remain covered by observed active bytes plus the unchanged operational headroom, which is retained through loading. No whole parameter tree is evaluated.
+
+The cut10 candidate leaves more logical headroom on the current24GB ingress than cut12/15; cut8/10/12/15 prospective requirements are retained, and actual rounded live admission remains authoritative. Full reference stays on48GB.
+
+The exact descriptor-only ledger is `ledger.json`, reproducible by `python3 derive_ledger.py --verify ledger.json`. This checks small retained headers/projections only. It has no allocator, MLX, payload or hardware access. Source verification is `python3 verify_sources.py`. Both can run without a compiler. `Tests/run.py --output <fresh-existing-parent>/checks` is the scheduled Foundation compile/run (34 real source files, jobs2, 60/10 seconds, exact existing unreaped-only process helper); it has **not run**. The native owner and forward source remain uncompiled in this package.
+
+The next native build composes the already qualified window workspace, five frozen native Gemma stage files, eight frozen forward Runtime files, and this six-file overlay. No alternate mock forward is needed. Native validation and the remaining driver work are in `VALIDATION.md`.

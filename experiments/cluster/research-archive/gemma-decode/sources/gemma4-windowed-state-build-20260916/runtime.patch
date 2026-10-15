@@ -1,0 +1,1840 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionStateSnapshot.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionStateSnapshot.swift
+@@ -0,0 +1,54 @@
++import Foundation
++import MLX
++import MLXLMCommon
++
++extension CBv2OwnedStateSnapshot {
++    static func captureAttention(geometry: CBv2RequestGeometry, layout: LayerAttentionStateLayout,
++        rows: [CBv2SequenceKV?], recurrent: CBv2RecurrentRequestState, committedTokens: Int,
++        globalLayerIndices: [Int], includeBytes: Bool, check: () throws -> Void) throws -> Self {
++        guard committedTokens > 0, rows.count == layout.layers.count,
++              globalLayerIndices == layout.layers.map(\.globalIndex),
++              recurrent.spec.layers.isEmpty, geometry.recurrent.layers.isEmpty, !recurrent.isReleased,
++              recurrent.materializedByteCount == 0, recurrent.confirmedStateSnapshot() == nil else {
++            throw ProbeError("Attention snapshot lacks exact mapping/frontier or empty recurrent ownership")
++        }
++        var entries: [Entry] = []
++        func append(_ array: MLXArray, local: Int, component: String, range: Range<Int>?) throws {
++            try check()
++            let bytes = array.asData().data
++            try check()
++            guard bytes.count == array.nbytes else { throw ProbeError("Attention snapshot logical bytes differ") }
++            entries.append(.init(localLayerIndex: local, globalLayerIndex: globalLayerIndices[local],
++                component: component, shape: array.shape, dtype: String(describing: array.dtype),
++                byteCount: bytes.count, sha256: sha256(bytes), bytes: includeBytes ? bytes : nil,
++                logicalRange: range))
++        }
++        for index in rows.indices {
++            guard let row = rows[index], let source = row as? any CBv2ContiguousKVMetadataProviding,
++                  geometry.caches[index].rows.count == 1, geometry.caches[index].rows[0] === row else {
++                throw ProbeError("Attention snapshot does not own its exact row")
++            }
++            try layout.validate(source.cbv2ContiguousMetadata, layer: index, frontier: committedTokens)
++            let range = try layout.range(layer: index, frontier: committedTokens), layer = layout.layers[index]
++            // Explicit diagnostic boundary: snapshot is chronological, including
++            // wrapped rings. No borrowed view survives the synchronous CPU copy.
++            try check()
++            let snapshot = row.snapshot()
++            guard snapshot.offset == committedTokens,
++                  snapshot.keys.shape == [1, layer.kvHeads, range.count, layer.headDimension],
++                  snapshot.values.shape == snapshot.keys.shape,
++                  String(describing: snapshot.keys.dtype) == layer.element.rawValue,
++                  snapshot.values.dtype == snapshot.keys.dtype else { throw ProbeError("Attention temporal snapshot geometry differs") }
++            try append(snapshot.keys, local: index, component: "kv.keys", range: range)
++            try append(snapshot.values, local: index, component: "kv.values", range: range)
++            let position = geometry.caches[index].positionOffsets
++            guard position.shape == [1], position.dtype == .int32,
++                  position.asArray(Int32.self) == [Int32(committedTokens)] else { throw ProbeError("Attention snapshot position differs") }
++            try append(position, local: index, component: "kv.position_offsets", range: nil)
++        }
++        entries.sort { ($0.globalLayerIndex, $0.component) < ($1.globalLayerIndex, $1.component) }
++        let fingerprint = sha256(Data((["cbv2-owned-attention-state-v2", layout.fingerprint,
++            "tokens=\(committedTokens)"] + entries.map(\.identity)).joined(separator: "\n").utf8))
++        return .init(committedTokens: committedTokens, entries: entries, fingerprint: fingerprint)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionStateValidation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionStateValidation.swift
+@@ -0,0 +1,59 @@
++import MLX
++import MLXLMCommon
++
++extension CBv2OwnedRequestState {
++    /// Healthy validation reads only small scalar/shape/type metadata and the
++    /// one-element device position. Never call row.snapshot() in this path.
++    func validateAttentionState(_ layout: LayerAttentionStateLayout, after count: Int) throws {
++        guard geometry.recurrent.layers.isEmpty, recurrent.spec.layers.isEmpty,
++              recurrent.materializedByteCount == 0, recurrent.confirmedStateSnapshot() == nil,
++              rows.count == layout.layers.count, geometry.caches.count == rows.count,
++              count > 0 else { throw ProbeError("Attention-only state has unexpected recurrent or row ownership") }
++        for index in rows.indices {
++            guard let row = rows[index], let source = row as? any CBv2ContiguousKVMetadataProviding,
++                  geometry.caches[index].rows.count == 1, geometry.caches[index].rows[0] === row,
++                  geometry.caches[index].positionOffsets.shape == [1],
++                  geometry.caches[index].positionOffsets.dtype == .int32,
++                  geometry.caches[index].positionOffsets.asArray(Int32.self) == [Int32(count)] else {
++                throw ProbeError("Attention cache lost its owned row or absolute device position")
++            }
++            try layout.validate(source.cbv2ContiguousMetadata, layer: index, frontier: count)
++        }
++        guard backend.bytesInUse <= layout.conservativeKVCapacityBytes,
++              backend.bytesReserved <= layout.conservativeKVCapacityBytes else {
++            throw ProbeError("Attention KV exceeds its conservative admitted capacity")
++        }
++    }
++}
++
++extension LayerAttentionStateLayout {
++    func validate(_ value: CBv2ContiguousKVMetadata, layer index: Int, frontier: Int) throws {
++        let expected = try range(layer: index, frontier: frontier), layer = layers[index]
++        guard !value.speculativeWritePending, value.absoluteOffset == frontier,
++              value.retainedStart == expected.lowerBound, value.retainedCount == expected.count,
++              value.window == layer.window, let keys = value.keys, let values = value.values else {
++            throw ProbeError("Attention logical chronology/window differs from committed frontier")
++        }
++        let slots = keys.shape.count == 4 ? keys.shape[2] : -1
++        guard (layer.window.map { slots == $0 } ?? ((frontier...maximumTokens).contains(slots))),
++              keys.shape == [1, layer.kvHeads, slots, layer.headDimension], values.shape == keys.shape,
++              String(describing: keys.dtype) == layer.element.rawValue, values.dtype == keys.dtype,
++              keys.bytes == (try Self.bytes(layer, tokens: slots, elementBytes: layer.element.bytes) / 2),
++              values.bytes == keys.bytes else { throw ProbeError("Attention physical geometry/type differs from observation") }
++        if let window = layer.window {
++            guard (value.retainedChunkKeys == nil) == (value.retainedChunkValues == nil) else {
++                throw ProbeError("Attention retained chunk views are asymmetric")
++            }
++            if let k = value.retainedChunkKeys, let v = value.retainedChunkValues {
++                let tokens = k.shape.count == 4 ? k.shape[2] : -1
++                guard (1...(window - 1 + maximumChunkTokens)).contains(tokens),
++                      k.shape == [1, layer.kvHeads, tokens, layer.headDimension], v.shape == k.shape,
++                      k.dtype == keys.dtype, v.dtype == values.dtype,
++                      k.bytes == (try Self.bytes(layer, tokens: tokens, elementBytes: layer.element.bytes) / 2),
++                      v.bytes == k.bytes else { throw ProbeError("Attention retained chunk exceeds bounded window geometry") }
++            }
++        } else if value.retainedChunkKeys != nil || value.retainedChunkValues != nil {
++            throw ProbeError("Full attention unexpectedly retains window chunk views")
++        }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift
+@@ -20,7 +20,8 @@
+ 
+     init(geometry: CBv2RequestGeometry, promptCount: Int, outputCount: Int) throws {
+         guard (1...32_768).contains(promptCount), (1...4096).contains(outputCount),
+-            promptCount <= 32_768 - outputCount else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
++            promptCount <= 32_768 - outputCount,
++            geometry.attentionLayout.map({ $0.maximumTokens == promptCount + outputCount }) ?? true else { throw ProbeError("CBv2 owned state exceeds the bounded request context") }
+         let backend = CBv2ContiguousKVBackend(config: .init(
+             bytesCapacity: geometry.kvCapacityBytes, kvDType: geometry.kvDType))
+         let rows = try backend.makeSequenceState(layerKinds: geometry.kinds,
+@@ -54,7 +55,8 @@
+              validateOutput: (MLXArray) throws -> Void) throws -> MLXArray {
+         do {
+             try requireOpen()
+-            guard tokenCount > 0, tokenCount <= maximumTokens - committedTokens else {
++            guard tokenCount > 0, tokenCount <= maximumTokens - committedTokens,
++                geometry.attentionLayout.map({ tokenCount <= $0.maximumChunkTokens }) ?? true else {
+                 throw ProbeError("CBv2 state advance exceeds the admitted capacity")
+             }
+             let caches = bank.layerCaches(rowStates: [rows])
+@@ -185,6 +187,10 @@
+     }
+ 
+     func validateState(after count: Int) throws {
++        if let layout = geometry.attentionLayout {
++            try validateAttentionState(layout, after: count)
++            return
++        }
+         for (index, optionalRow) in rows.enumerated() {
+             guard let row = optionalRow, row.absoluteOffset == count, row.retainedCount == count,
+                 geometry.caches[index].rows.count == 1, geometry.caches[index].rows[0] === row,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedStateSnapshot.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedStateSnapshot.swift
+@@ -14,9 +14,19 @@
+         let byteCount: Int
+         let sha256: String
+         let bytes: Data?
++        let logicalRange: Range<Int>?
++
++        init(localLayerIndex: Int, globalLayerIndex: Int, component: String, shape: [Int],
++             dtype: String, byteCount: Int, sha256: String, bytes: Data?, logicalRange: Range<Int>? = nil) {
++            self.localLayerIndex = localLayerIndex; self.globalLayerIndex = globalLayerIndex
++            self.component = component; self.shape = shape; self.dtype = dtype
++            self.byteCount = byteCount; self.sha256 = sha256; self.bytes = bytes; self.logicalRange = logicalRange
++        }
+ 
+         var identity: String {
+-            "\(globalLayerIndex)|\(component)|\(shape)|\(dtype)|\(byteCount)|\(sha256)"
++            let legacy = "\(globalLayerIndex)|\(component)|\(shape)|\(dtype)|\(byteCount)|\(sha256)"
++            guard let logicalRange else { return legacy }
++            return legacy + "|range=\(logicalRange.lowerBound):\(logicalRange.upperBound)"
+         }
+     }
+     let committedTokens: Int
+@@ -33,6 +43,11 @@
+                         recurrent: CBv2RecurrentRequestState, committedTokens: Int,
+                         globalLayerIndices: [Int], includeBytes: Bool,
+                         check: () throws -> Void) throws -> CBv2OwnedStateSnapshot {
++        if let layout = geometry.attentionLayout {
++            return try captureAttention(geometry: geometry, layout: layout, rows: rows, recurrent: recurrent,
++                committedTokens: committedTokens, globalLayerIndices: globalLayerIndices,
++                includeBytes: includeBytes, check: check)
++        }
+         guard committedTokens > 0,
+             rows.count == geometry.kinds.count, recurrent.spec == geometry.recurrent,
+             !recurrent.isReleased,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry+Attention.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry+Attention.swift
+@@ -0,0 +1,68 @@
++import Foundation
++import MLX
++import MLXLMCommon
++
++extension CBv2RequestGeometry {
++    /// Shared non-recurrent construction from actual two-phase native probe
++    /// observations. This validates state geometry, not model eligibility.
++    init(attentionKinds kinds: [CBv2LayerKind], caches: [any CBv2AttendingLayerCache],
++         observed: CBv2NativeKVTypeProbe.Result, globalLayerIndices: [Int],
++         maximumTokens: Int, maximumChunkTokens: Int) throws {
++        guard (1...128).contains(kinds.count), kinds.count == caches.count, kinds.count == globalLayerIndices.count,
++              observed.layerDTypes.count == kinds.count, observed.observations.count == kinds.count * 2,
++              Set(caches.map { ObjectIdentifier($0) }).count == caches.count else {
++            throw ProbeError("Attention geometry requires complete distinct caches and native observations")
++        }
++        var layers: [LayerAttentionStateLayout.Layer] = []
++        for (index, kind) in kinds.enumerated() {
++            guard kind.modelLayerIndex == index, kind.sharesKVWithLayer == nil,
++                  !kind.hasSinks, !kind.isBidirectional, kind.queryHeads > 0, kind.kvHeads > 0,
++                  kind.queryHeads % kind.kvHeads == 0, kind.headDim > 0,
++                  caches[index].kind == kind, caches[index].layerIndex == index,
++                  caches[index].rows.isEmpty, caches[index] is any KVCache,
++                  let element = LayerAttentionStateLayout.Element(rawValue: String(describing: observed.layerDTypes[index])) else {
++                throw ProbeError("Attention geometry needs ordinary independent observed storage owners")
++            }
++            for (phase, count) in [(CBv2NativeKVTypeProbe.Phase.prefill, 2), (.decode, 1)] {
++                let values = observed.observations.filter { $0.storageIndex == index && $0.phase == phase }
++                guard values.count == 1, let value = values.first, value.modelLayerIndex == index,
++                      value.keysDType == observed.layerDTypes[index], value.valuesDType == value.keysDType,
++                      value.keysShape == [1, kind.kvHeads, count, kind.headDim], value.valuesShape == value.keysShape else {
++                    throw ProbeError("Attention native probe shape/type/phase coverage differs")
++                }
++            }
++            let window: Int?
++            switch kind.attention { case .full: window = nil; case .slidingWindow(let value): window = value }
++            layers.append(.init(globalIndex: globalLayerIndices[index], kvHeads: kind.kvHeads,
++                headDimension: kind.headDim, window: window, element: element))
++        }
++        let layout = try LayerAttentionStateLayout(layers: layers, maximumTokens: maximumTokens,
++            maximumChunkTokens: maximumChunkTokens)
++        self.kinds = kinds; self.caches = caches; recurrent = .init(layers: [])
++        kvDType = observed.layerDTypes.max(by: { $0.size < $1.size })!
++        kvCapacityBytes = layout.conservativeKVCapacityBytes; attentionLayout = layout
++    }
++
++    /// Exact Gemma descriptor join. No compact decoder rewrite, shared KV,
++    /// payload admission, model construction or execution authorization here.
++    init(gemmaStage descriptor: Gemma4StageConstructionDescriptor,
++         caches: [any CBv2AttendingLayerCache], observed: CBv2NativeKVTypeProbe.Result,
++         maximumTokens: Int, maximumChunkTokens: Int) throws {
++        let text = try Gemma4TextMetadata.decode(descriptor.originalConfiguration)
++        guard sha256(descriptor.originalConfiguration) == descriptor.sourceConfigurationSHA256,
++              caches.count == descriptor.layers.count else { throw ProbeError("Gemma state descriptor/configuration differs") }
++        for (index, layer) in descriptor.layers.enumerated() {
++            let kind = caches[index].kind, full = layer.kind == .full
++            guard layer.localIndex == index, layer.globalIndex == descriptor.sourceLayerStart + index,
++                  text.layerKinds.indices.contains(layer.globalIndex),
++                  text.layerKinds[layer.globalIndex] == layer.kind,
++                  kind.attention == (full ? .full : .slidingWindow(text.slidingWindow)),
++                  kind.kvHeads == (full ? text.fullKVHeads : text.slidingKVHeads),
++                  kind.headDim == (full ? text.fullHeadDimension : text.slidingHeadDimension),
++                  kind.queryHeads == text.queryHeads else { throw ProbeError("Gemma native local/global KV geometry differs") }
++        }
++        try self.init(attentionKinds: caches.map(\.kind), caches: caches, observed: observed,
++            globalLayerIndices: descriptor.layers.map(\.globalIndex),
++            maximumTokens: maximumTokens, maximumChunkTokens: maximumChunkTokens)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2RequestGeometry.swift
+@@ -12,6 +12,8 @@
+     let recurrent: CBv2RecurrentStateSpec
+     let kvDType: DType
+     let kvCapacityBytes: Int
++    // Construction-only optional path; legacy Qwen initializers retain nil.
++    var attentionLayout: LayerAttentionStateLayout? = nil
+ 
+ 
+     init(model: any LanguageModel, family: InferenceModelFamily, feedForwardKind: String,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4ArtifactMetadata.swift
+@@ -0,0 +1,72 @@
++import Foundation
++
++/// An exact retained-header profile. It is never a payload or native execution permit.
++struct Gemma4ArtifactMetadata {
++    static let configurationSHA256 = "29910322dd085f45c8f95c6c0f1611b20f722d6f6c8394321b34817e98a972fa"
++    static let manifestSHA256 = "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
++    static let indexSHA256 = "5455e83705bbdd4e3702c7d4f9d49d4900e84533036628f74500538075dd5c80"
++    static let artifactAggregateSHA256 = "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
++    static let headerSHA256 = [
++        "model-00001-of-00003.safetensors": "5b3e8f2c593f5b291ffa3322540141bf909f454c917888957816273c53c9c735",
++        "model-00002-of-00003.safetensors": "f1624d695581287157a8472d87224197d0a67d50ce5fd439af3ff45444ddd6dc",
++        "model-00003-of-00003.safetensors": "52b3a65b791a2f0a1dd345291979ed5429388992ad12d824032b923bf9300a7a",
++    ]
++    let originalConfiguration: Data
++    let text: Gemma4TextMetadata
++    let sources: [LayerStageSourceTensor]
++    let excludedSourceNames: [String]
++    let sourceInventorySHA256: String
++    let fingerprint: String
++    let actualPayloadVerificationEstablished = false
++    let runtimeExecutionAuthorized = false
++
++    private init(configuration: Data, text: Gemma4TextMetadata, sources: [LayerStageSourceTensor], excluded: [String]) throws {
++        originalConfiguration = configuration; self.text = text
++        self.sources = sources; excludedSourceNames = excluded
++        sourceInventorySHA256 = sha256(try canonicalJSONData(sources))
++        fingerprint = sha256(Data(["gemma4-26b-retained-header-profile-v1", Self.configurationSHA256,
++            Self.manifestSHA256, Self.indexSHA256, Self.artifactAggregateSHA256, sourceInventorySHA256,
++            "payloadVerified=false", "executionAuthorized=false"].joined(separator: "\n").utf8))
++    }
++
++    static func admit(configuration: Data, manifest: Data, index: Data,
++                      headers: [LayerStageCapturedTensorHeader]) throws -> Self {
++        guard (1...1_048_576).contains(configuration.count), (1...1_048_576).contains(manifest.count),
++              (1...2_097_152).contains(index.count), sha256(configuration) == configurationSHA256,
++              sha256(manifest) == manifestSHA256, sha256(index) == indexSHA256,
++              headers.count == 3, Set(headers.map(\.sourceFile)) == Set(headerSHA256.keys),
++              headers.allSatisfy({ (1...2_097_152).contains($0.data.count) && sha256($0.data) == headerSHA256[$0.sourceFile] }) else {
++            throw ProbeError("Gemma retained config/manifest/index/header identity differs")
++        }
++        try validateWorkerJSON(manifest)
++        let declared = try JSONDecoder().decode(CheckpointManifest.self, from: manifest)
++        guard declared.aggregate_sha256 == artifactAggregateSHA256, declared.file_count == 10,
++              declared.total_size_bytes == 15_641_239_295,
++              declared.files.count == 10,
++              try QwenLongPrefillCheckedBytes.sum(declared.files.map(\.size_bytes)) == declared.total_size_bytes,
++              declared.files.first(where: { $0.path == "config.json" })?.sha256 == configurationSHA256 else {
++            throw ProbeError("Gemma declared manifest semantics differ")
++        }
++        let text = try Gemma4TextMetadata.decode(configuration)
++        let sources = try LayerStageCapturedTensorHeaders.parse(manifest: declared, index: index, headers: headers)
++        let excluded = try validateSourceInventory(sources, text: text)
++        return try .init(configuration: configuration, text: text, sources: sources, excluded: excluded)
++    }
++
++    static func validateSourceInventory(_ sources: [LayerStageSourceTensor], text: Gemma4TextMetadata) throws -> [String] {
++        let expected = try Gemma4TensorInventory.expectedText(text)
++        let actual = sources.filter { $0.layout.canonicalName.hasPrefix("language_model.") }
++        let excluded = sources.filter { !$0.layout.canonicalName.hasPrefix("language_model.") }
++        guard sources.count == 1697, Set(sources.map { $0.layout.canonicalName }).count == sources.count,
++              actual.count == 1339, expected.count == actual.count,
++              Set(actual.map { $0.layout.canonicalName }) == Set(expected.keys),
++              actual.allSatisfy({ expected[$0.layout.canonicalName] == $0.layout }),
++              excluded.count == 358,
++              excluded.filter({ $0.layout.canonicalName.hasPrefix("vision_tower.") }).count == 355,
++              excluded.filter({ $0.layout.canonicalName.hasPrefix("embed_vision.") }).count == 3,
++              try QwenLongPrefillCheckedBytes.sum(actual.map { $0.layout.byteCount }) == 14_467_688_508 else {
++            throw ProbeError("Gemma source tensor ownership, packed geometry or exclusions differ")
++        }
++        return excluded.map { $0.layout.canonicalName }.sorted()
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4LayerStagePlan.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++/// Two-rank text partition over an exact header profile, with no native capability.
++struct Gemma4LayerStagePlan {
++    let artifact: Gemma4ArtifactMetadata
++    let stages: [Gemma4StageConstructionDescriptor]
++    let mappings: [LayerStageTensorMapping]
++    let replication: [LayerStageTiedEmbeddingReplication]
++    let conservation: LayerStageStorageConservation
++    let fingerprint: String
++
++    init(artifact: Gemma4ArtifactMetadata, cut: Int) throws {
++        guard (1..<artifact.text.globalLayerCount).contains(cut) else { throw ProbeError("Gemma cut must be in 1..<30") }
++        let stages = try [
++            Gemma4StageConstructionDescriptor(artifact: artifact, rank: 0, sourceLayerRange: 0..<cut),
++            Gemma4StageConstructionDescriptor(artifact: artifact, rank: 1, sourceLayerRange: cut..<30),
++        ]
++        let embedding = Gemma4TensorInventory.prefix + "embed_tokens"
++        let group = LayerStageTiedEmbeddingReplication(id: "gemma4-source-tied-embedding-v1",
++            canonicalModule: embedding, sourceNames: ["biases", "scales", "weight"].map { embedding + "." + $0 },
++            ingressRank: 0, outputRank: 1)
++        let excluded = Set(artifact.excludedSourceNames)
++        let mappings = try artifact.sources.filter { !excluded.contains($0.layout.canonicalName) }.map { source in
++            let name = source.layout.canonicalName
++            if group.sourceNames.contains(name) {
++                return LayerStageTensorMapping(source: source, destinations: [
++                    .init(rank: 0, localName: name, role: .ingressEmbedding, globalLayerIndex: nil),
++                    .init(rank: 1, localName: name, role: .tiedOutputEmbedding, globalLayerIndex: nil),
++                ], replicationGroupID: group.id)
++            }
++            if name == Gemma4TensorInventory.prefix + "norm.weight" {
++                return LayerStageTensorMapping(source: source,
++                    destinations: [.init(rank: 1, localName: name, role: .finalNorm, globalLayerIndex: nil)], replicationGroupID: nil)
++            }
++            guard let location = Gemma4StageConstructionDescriptor.layerPath(name) else {
++                throw ProbeError("Unowned Gemma canonical tensor")
++            }
++            let rank = location.index < cut ? 0 : 1
++            let stage = stages[rank]
++            let local = Gemma4TensorInventory.prefix + "layers.\(location.index - stage.sourceLayerStart)." + location.suffix
++            return LayerStageTensorMapping(source: source,
++                destinations: [.init(rank: rank, localName: local, role: .layer, globalLayerIndex: location.index)], replicationGroupID: nil)
++        }
++        let conservation = try LayerStageStorageConservation.validate(sources: artifact.sources,
++            mappings: mappings, excludedSourceNames: artifact.excludedSourceNames, allowedReplication: [group])
++        guard conservation.selectedSourceTensorCount == 1339, conservation.destinationTensorCount == 1342,
++              conservation.additionalReplicaBytes == 415_236_096,
++              conservation.selectedSourcePayloadBytes == 14_467_688_508,
++              conservation.excludedPayloadBytes == 1_140_925_536 else { throw ProbeError("Gemma partition accounting differs") }
++        self.artifact = artifact; self.stages = stages; self.mappings = mappings; replication = [group]
++        self.conservation = conservation
++        fingerprint = sha256(Data(["gemma4-text-two-stage-plan-v1", artifact.fingerprint,
++            stages[0].fingerprint, stages[1].fingerprint, conservation.fingerprint,
++            "payloadVerified=false", "executionAuthorized=false"].joined(separator: "\n").utf8))
++    }
++
++    /// Actual later inventories must match the admitted model mapping, not just totals.
++    func validateStorage(mappings candidate: [LayerStageTensorMapping], excludedSourceNames: [String]) throws -> LayerStageStorageConservation {
++        let sorted = candidate.sorted { $0.source.layout.canonicalName < $1.source.layout.canonicalName }
++        guard sorted == mappings, excludedSourceNames.sorted() == artifact.excludedSourceNames else {
++            throw ProbeError("Gemma actual mapping/global indices/exclusions differ from admitted Plan")
++        }
++        let result = try LayerStageStorageConservation.validate(sources: artifact.sources,
++            mappings: sorted, excludedSourceNames: excludedSourceNames, allowedReplication: replication)
++        guard result == conservation else { throw ProbeError("Gemma storage accounting is not repeatable") }
++        return result
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4StageConstructionDescriptor.swift
+@@ -0,0 +1,83 @@
++import Foundation
++
++enum LayerStageResponsibility: String, Codable {
++    case ingressResidual, finalLogits
++}
++
++struct Gemma4StageConstructionDescriptor: Encodable, Equatable {
++    struct Layer: Encodable, Equatable {
++        let globalIndex: Int
++        let localIndex: Int
++        let kind: Gemma4StageAttentionKind
++    }
++    struct QuantizationMapping: Encodable, Equatable {
++        let sourcePath: String
++        let localPath: String
++        let policy: Gemma4AffineQuantization
++    }
++    let originalConfiguration: Data
++    let sourceConfigurationSHA256: String
++    let rank: Int
++    let sourceLayerStart: Int
++    let sourceLayerEnd: Int
++    let globalLayerCount: Int
++    let layers: [Layer]
++    let responsibility: LayerStageResponsibility
++    /// Quantizer-only table. Never use it to rewrite the full decoder's geometry.
++    let localQuantization: Data
++    let quantizationMappings: [QuantizationMapping]
++    let fingerprint: String
++    let nativeExecutionAuthorized = false
++
++    var sourceLayerRange: Range<Int> { sourceLayerStart..<sourceLayerEnd }
++    var finalPromptLayerGlobalIndex: Int? { responsibility == .finalLogits ? globalLayerCount - 1 : nil }
++
++    init(artifact: Gemma4ArtifactMetadata, rank: Int, sourceLayerRange: Range<Int>) throws {
++        let count = artifact.text.globalLayerCount
++        guard (0...1).contains(rank), !sourceLayerRange.isEmpty,
++              sourceLayerRange.lowerBound >= 0, sourceLayerRange.upperBound <= count,
++              (rank == 0 ? sourceLayerRange.lowerBound == 0 && sourceLayerRange.upperBound < count
++                         : sourceLayerRange.lowerBound > 0 && sourceLayerRange.upperBound == count) else {
++            throw ProbeError("Gemma stage role/range is invalid")
++        }
++        let layers = sourceLayerRange.map {
++            Layer(globalIndex: $0, localIndex: $0 - sourceLayerRange.lowerBound, kind: artifact.text.layerKinds[$0])
++        }
++        var table = artifact.text.quantizationDefaults.jsonObject
++        var mappings: [QuantizationMapping] = []
++        for path in artifact.text.quantizationOverrides.keys.sorted() {
++            guard let location = Self.layerPath(path) else { throw ProbeError("Gemma quantization path is not canonical") }
++            if sourceLayerRange.contains(location.index) {
++                let local = Gemma4TensorInventory.prefix + "layers.\(location.index - sourceLayerRange.lowerBound)." + location.suffix
++                guard table[local] == nil, let policy = artifact.text.quantizationOverrides[path] else {
++                    throw ProbeError("Gemma local quantization path collides")
++                }
++                // Preserve the source spelling: mode inherits affine from the default.
++                table[local] = ["bits": policy.bits, "group_size": policy.groupSize]
++                mappings.append(.init(sourcePath: path, localPath: local, policy: policy))
++            }
++        }
++        let local = try JSONSerialization.data(withJSONObject: table, options: [.sortedKeys])
++        let responsibility: LayerStageResponsibility = rank == 0 ? .ingressResidual : .finalLogits
++        let identity = ["gemma4-stage-construction-descriptor-v1", artifact.fingerprint,
++            Gemma4ArtifactMetadata.configurationSHA256, "rank=\(rank)",
++            "globalLayers=\(count)", "range=\(sourceLayerRange.lowerBound):\(sourceLayerRange.upperBound)",
++            responsibility.rawValue, sha256(try canonicalJSONData(layers)), sha256(local),
++            sha256(try canonicalJSONData(mappings)), "executionAuthorized=false"]
++        originalConfiguration = artifact.originalConfiguration
++        sourceConfigurationSHA256 = Gemma4ArtifactMetadata.configurationSHA256
++        self.rank = rank; sourceLayerStart = sourceLayerRange.lowerBound; sourceLayerEnd = sourceLayerRange.upperBound
++        globalLayerCount = count; self.layers = layers; self.responsibility = responsibility
++        localQuantization = local; quantizationMappings = mappings
++        fingerprint = sha256(Data(identity.joined(separator: "\n").utf8))
++    }
++
++    static func layerPath(_ name: String) -> (index: Int, suffix: String)? {
++        let prefix = Gemma4TensorInventory.prefix + "layers."
++        guard name.hasPrefix(prefix) else { return nil }
++        let fields = name.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
++        guard fields.count > 1, let first = fields.first, let index = Int(first),
++              String(index) == String(first), (0..<30).contains(index), fields.allSatisfy({ !$0.isEmpty }) else { return nil }
++        return (index, fields.dropFirst().joined(separator: "."))
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TensorInventory.swift
+@@ -0,0 +1,55 @@
++import Foundation
++
++enum Gemma4TensorInventory {
++    static let prefix = "language_model.model."
++
++    static func expectedText(_ metadata: Gemma4TextMetadata) throws -> [String: LayerStageTensorLayout] {
++        var result: [String: LayerStageTensorLayout] = [:]
++        func tensor(_ name: String, _ dtype: String, _ shape: [Int]) throws {
++            let width = dtype == "U32" ? 4 : 2
++            guard result[name] == nil else { throw ProbeError("Duplicate expected Gemma tensor") }
++            result[name] = try LayerStageTensorLayout(canonicalName: name, shape: shape,
++                sourceDType: dtype, byteCount: QwenLongPrefillCheckedBytes.product(shape + [width]))
++        }
++        func quantized(_ module: String, _ shape: [Int], bits: Int = 4) throws {
++            guard let width = shape.last, width % 64 == 0, [4, 8].contains(bits) else {
++                throw ProbeError("Gemma packed projection width/policy differs")
++            }
++            try tensor(module + ".weight", "U32", Array(shape.dropLast()) + [width / (32 / bits)])
++            for suffix in ["scales", "biases"] {
++                try tensor(module + "." + suffix, "BF16", Array(shape.dropLast()) + [width / 64])
++            }
++        }
++        let h = metadata.hiddenSize, experts = metadata.expertCount
++        let shared = metadata.sharedIntermediateSize, expertWidth = metadata.expertIntermediateSize
++        try quantized(prefix + "embed_tokens", [metadata.vocabularySize, h])
++        try tensor(prefix + "norm.weight", "BF16", [h])
++        for (index, kind) in metadata.layerKinds.enumerated() {
++            let base = prefix + "layers.\(index)."
++            for name in ["input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm",
++                "post_feedforward_layernorm", "post_feedforward_layernorm_1",
++                "pre_feedforward_layernorm_2", "post_feedforward_layernorm_2"] {
++                try tensor(base + name + ".weight", "BF16", [h])
++            }
++            try tensor(base + "layer_scalar", "BF16", [1])
++            try tensor(base + "router.scale", "BF16", [h])
++            try tensor(base + "router.per_expert_scale", "BF16", [experts])
++            try quantized(base + "router.proj", [experts, h], bits: 8)
++            for (name, output, input) in [("gate_proj", shared, h), ("up_proj", shared, h), ("down_proj", h, shared)] {
++                try quantized(base + "mlp." + name, [output, input], bits: 8)
++            }
++            for (name, output, input) in [("gate_proj", expertWidth, h), ("up_proj", expertWidth, h), ("down_proj", h, expertWidth)] {
++                try quantized(base + "experts.switch_glu." + name, [experts, output, input])
++            }
++            let head = kind == .sliding ? metadata.slidingHeadDimension : metadata.fullHeadDimension
++            let kv = kind == .sliding ? metadata.slidingKVHeads : metadata.fullKVHeads
++            for (name, output, input) in [("q_proj", metadata.queryHeads * head, h),
++                ("k_proj", kv * head, h), ("o_proj", h, metadata.queryHeads * head)] {
++                try quantized(base + "self_attn." + name, [output, input])
++            }
++            if kind == .sliding { try quantized(base + "self_attn.v_proj", [kv * head, h]) }
++            for name in ["q_norm", "k_norm"] { try tensor(base + "self_attn." + name + ".weight", "BF16", [head]) }
++        }
++        return result
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4TextMetadata.swift
+@@ -0,0 +1,102 @@
++import Foundation
++
++enum Gemma4StageAttentionKind: String, Codable {
++    case sliding = "sliding_attention"
++    case full = "full_attention"
++}
++
++struct Gemma4AffineQuantization: Encodable, Equatable {
++    let bits: Int
++    let groupSize: Int
++    let mode: String
++    var jsonObject: [String: Any] { ["bits": bits, "group_size": groupSize, "mode": mode] }
++}
++
++/// Closed metadata for this artifact. It selects no native kernel or execution profile.
++struct Gemma4TextMetadata: Encodable, Equatable {
++    let layerKinds: [Gemma4StageAttentionKind]
++    let hiddenSize = 2816
++    let vocabularySize = 262144
++    let sharedIntermediateSize = 2112
++    let expertIntermediateSize = 704
++    let expertCount = 128
++    let expertsPerToken = 8
++    let slidingWindow = 1024
++    let queryHeads = 16
++    let slidingKVHeads = 8
++    let fullKVHeads = 2
++    let slidingHeadDimension = 256
++    let fullHeadDimension = 512
++    let quantizationDefaults = Gemma4AffineQuantization(bits: 4, groupSize: 64, mode: "affine")
++    let quantizationOverrides: [String: Gemma4AffineQuantization]
++    var globalLayerCount: Int { layerKinds.count }
++
++    private init(kinds: [Gemma4StageAttentionKind], overrides: [String: Gemma4AffineQuantization]) {
++        layerKinds = kinds; quantizationOverrides = overrides
++    }
++
++    static func decode(_ configuration: Data) throws -> Self {
++        guard (1...1_048_576).contains(configuration.count),
++              let root = try JSONSerialization.jsonObject(with: configuration) as? [String: Any],
++              root["model_type"] as? String == "gemma4",
++              let text = root["text_config"] as? [String: Any],
++              text["model_type"] as? String == "gemma4_text" else { throw ProbeError("Gemma stage metadata requires the original text wrapper") }
++        let integers = ["num_hidden_layers": 30, "hidden_size": 2816, "vocab_size": 262144,
++            "intermediate_size": 2112, "moe_intermediate_size": 704, "num_experts": 128,
++            "top_k_experts": 8, "sliding_window": 1024, "num_attention_heads": 16,
++            "num_key_value_heads": 8, "num_global_key_value_heads": 2, "head_dim": 256,
++            "global_head_dim": 512, "num_kv_shared_layers": 0, "hidden_size_per_layer_input": 0,
++            "max_position_embeddings": 262144]
++        for (key, expected) in integers {
++            guard BoundedProbeInput.integer(text[key]) == expected else {
++                throw ProbeError("Unsupported Gemma stage geometry: \(key)")
++            }
++        }
++        func boolean(_ value: Any?, _ expected: Bool) -> Bool {
++            guard let number = value as? NSNumber, String(cString: number.objCType) == "c" else { return false }
++            return number.boolValue == expected
++        }
++        guard boolean(root["tie_word_embeddings"], true), boolean(text["tie_word_embeddings"], true),
++              boolean(text["attention_k_eq_v"], true), boolean(text["enable_moe_block"], true),
++              boolean(text["use_double_wide_mlp"], false), boolean(text["attention_bias"], false),
++              text["use_bidirectional_attention"] as? String == "vision",
++              text["dtype"] as? String == "bfloat16",
++              text["hidden_activation"] as? String == "gelu_pytorch_tanh",
++              (text["final_logit_softcapping"] as? NSNumber)?.doubleValue == 30 else {
++            throw ProbeError("Unsupported Gemma embedding, attention, dtype or activation policy")
++        }
++        let kinds = (0..<30).map { ($0 + 1) % 6 == 0 ? Gemma4StageAttentionKind.full : .sliding }
++        guard text["layer_types"] as? [String] == kinds.map(\.rawValue),
++              let rope = text["rope_parameters"] as? [String: Any],
++              let sliding = rope["sliding_attention"] as? [String: Any],
++              let full = rope["full_attention"] as? [String: Any],
++              sliding["rope_type"] as? String == "default", (sliding["rope_theta"] as? NSNumber)?.doubleValue == 10000,
++              full["rope_type"] as? String == "proportional", (full["rope_theta"] as? NSNumber)?.doubleValue == 1000000,
++              (full["partial_rotary_factor"] as? NSNumber)?.doubleValue == 0.25 else {
++            throw ProbeError("Gemma global layer or rotary policy differs")
++        }
++        var overrides: [String: Gemma4AffineQuantization] = [:]
++        for index in 0..<30 {
++            for module in ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"] {
++                overrides["language_model.model.layers.\(index).\(module)"] = .init(bits: 8, groupSize: 64, mode: "affine")
++            }
++        }
++        for key in ["quantization", "quantization_config"] {
++            guard let table = root[key] as? [String: Any], table.count == 123,
++                  BoundedProbeInput.integer(table["bits"]) == 4,
++                  BoundedProbeInput.integer(table["group_size"]) == 64,
++                  table["mode"] as? String == "affine",
++                  Set(table.keys) == Set(overrides.keys).union(["bits", "group_size", "mode"]) else {
++                throw ProbeError("Gemma quantization defaults/override paths differ")
++            }
++            for path in overrides.keys {
++                guard let entry = table[path] as? [String: Any], Set(entry.keys) == ["bits", "group_size"],
++                      BoundedProbeInput.integer(entry["bits"]) == 8,
++                      BoundedProbeInput.integer(entry["group_size"]) == 64 else {
++                    throw ProbeError("Gemma explicit shared/router quantization differs")
++                }
++            }
++        }
++        return .init(kinds: kinds, overrides: overrides)
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerAttentionStateLayout.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerAttentionStateLayout.swift
+@@ -0,0 +1,82 @@
++import Foundation
++
++/// Attention-only, prefix-off, ordinary request geometry. No model selection or
++/// resource admission is granted by this value; the caller owns those gates.
++struct LayerAttentionStateLayout: Sendable, Equatable {
++    enum Element: String, Sendable, Equatable {
++        case float16, bfloat16, float32
++        var bytes: Int { self == .float32 ? 4 : 2 }
++    }
++    struct Layer: Sendable, Equatable {
++        let globalIndex: Int
++        let kvHeads: Int
++        let headDimension: Int
++        /// nil is full attention. A window is physical ring capacity too.
++        let window: Int?
++        let element: Element
++    }
++    let layers: [Layer]
++    let maximumTokens: Int
++    let maximumChunkTokens: Int
++    /// Existing contiguous backend estimates with one dtype. Explicitly charge
++    /// the widest observed dtype for EVERY row, including full window rings.
++    let conservativeKVCapacityBytes: Int
++    let exactKVCapacityBytes: Int
++    /// Conservative activation-ledger term: retained chunk views plus an old
++    /// ring backing. This is additional to the backend's KV capacity.
++    let windowTemporaryBytes: Int
++    let fingerprint: String
++
++    init(layers: [Layer], maximumTokens: Int, maximumChunkTokens: Int) throws {
++        guard (1...128).contains(layers.count), (1...32_768).contains(maximumTokens),
++              (1...min(maximumTokens, 8192)).contains(maximumChunkTokens),
++              Set(layers.map(\.globalIndex)).count == layers.count,
++              layers.map(\.globalIndex) == layers.map(\.globalIndex).sorted() else {
++            throw ProbeError("Attention state needs bounded ordered unique layer coverage")
++        }
++        let widest = layers.map { $0.element.bytes }.max()!
++        var exact = 0, conservative = 0, temporary = 0
++        for layer in layers {
++            guard (0..<4096).contains(layer.globalIndex), (1...1024).contains(layer.kvHeads),
++                  (1...1024).contains(layer.headDimension),
++                  layer.window.map({ (1...32_768).contains($0) }) ?? true else {
++                throw ProbeError("Attention layer geometry exceeds bounded metadata")
++            }
++            let slots = layer.window ?? maximumTokens
++            exact = try Self.sum(exact, Self.bytes(layer, tokens: slots, elementBytes: layer.element.bytes))
++            conservative = try Self.sum(conservative, Self.bytes(layer, tokens: slots, elementBytes: widest))
++            if let window = layer.window {
++                let temporarySlots = try Self.sum(window, Self.sum(window - 1, maximumChunkTokens))
++                temporary = try Self.sum(temporary, Self.bytes(layer, tokens: temporarySlots, elementBytes: layer.element.bytes))
++            }
++        }
++        self.layers = layers; self.maximumTokens = maximumTokens; self.maximumChunkTokens = maximumChunkTokens
++        exactKVCapacityBytes = exact; conservativeKVCapacityBytes = conservative; windowTemporaryBytes = temporary
++        let rows = layers.enumerated().map { index, layer in
++            "\(index)|\(layer.globalIndex)|\(layer.kvHeads)|\(layer.headDimension)|\(layer.window.map { String($0) } ?? "full")|\(layer.element.rawValue)"
++        }
++        fingerprint = sha256(Data((["attention-state-layout-v1", "maximumTokens=\(maximumTokens)",
++            "maximumChunkTokens=\(maximumChunkTokens)", "prefix=false", "speculation=false"] + rows).joined(separator: "\n").utf8))
++    }
++
++    func range(layer index: Int, frontier: Int) throws -> Range<Int> {
++        guard layers.indices.contains(index), (0...maximumTokens).contains(frontier) else {
++            throw ProbeError("Attention logical frontier is outside its admitted layout")
++        }
++        return max(0, frontier - (layers[index].window ?? frontier))..<frontier
++    }
++
++    static func bytes(_ layer: Layer, tokens: Int, elementBytes: Int) throws -> Int {
++        guard tokens >= 0, elementBytes > 0 else { throw ProbeError("Negative attention byte geometry") }
++        return try [tokens, layer.kvHeads, layer.headDimension, elementBytes, 2].reduce(1) { a, b in
++            let value = a.multipliedReportingOverflow(by: b)
++            guard !value.overflow else { throw ProbeError("Attention state byte count overflow") }
++            return value.partialValue
++        }
++    }
++    static func sum(_ a: Int, _ b: Int) throws -> Int {
++        let value = a.addingReportingOverflow(b)
++        guard a >= 0, b >= 0, !value.overflow else { throw ProbeError("Attention state byte sum overflow") }
++        return value.partialValue
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageCapturedTensorHeaders.swift
+@@ -0,0 +1,69 @@
++import Foundation
++
++struct LayerStageCapturedTensorHeader {
++    let sourceFile: String
++    let data: Data
++}
++
++/// Pure projection of already captured header/index bytes. No file is opened or authenticated.
++enum LayerStageCapturedTensorHeaders {
++    static func parse(manifest: CheckpointManifest, index: Data,
++                      headers: [LayerStageCapturedTensorHeader]) throws -> [LayerStageSourceTensor] {
++        guard (1...32).contains(headers.count), (1...2_097_152).contains(index.count),
++              Set(headers.map(\.sourceFile)).count == headers.count,
++              manifest.files.count == manifest.file_count, (1...64).contains(manifest.files.count),
++              Set(manifest.files.map(\.path)).count == manifest.files.count else {
++            throw ProbeError("Captured header inputs exceed bounds or duplicate files")
++        }
++        try validateWorkerJSON(index)
++        struct Index: Decodable {
++            struct Metadata: Decodable { let total_size: Int }
++            let metadata: Metadata
++            let weight_map: [String: String]
++        }
++        let decoded = try JSONDecoder().decode(Index.self, from: index)
++        let files = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.path, $0) })
++        guard Set(headers.map(\.sourceFile)) == Set(files.keys.filter { $0.hasSuffix(".safetensors") }),
++              (1...4096).contains(decoded.weight_map.count) else { throw ProbeError("Captured index/file coverage differs") }
++        var result: [String: LayerStageSourceTensor] = [:]
++        for capture in headers {
++            guard (1...2_097_152).contains(capture.data.count), let file = files[capture.sourceFile],
++                  file.size_bytes >= 8 + capture.data.count else { throw ProbeError("Invalid captured header size") }
++            try validateWorkerJSON(capture.data)
++            guard let object = try JSONSerialization.jsonObject(with: capture.data) as? [String: Any],
++                  object["__metadata__"] as? [String: String] == ["format": "mlx"] else {
++                throw ProbeError("Captured header format differs")
++            }
++            var spans: [Range<Int>] = []
++            for (name, raw) in object where name != "__metadata__" {
++                guard result[name] == nil, result.count < 4096,
++                      let entry = raw as? [String: Any], Set(entry.keys) == ["dtype", "shape", "data_offsets"],
++                      let shapeValues = entry["shape"] as? [Any],
++                      let offsetValues = entry["data_offsets"] as? [Any], offsetValues.count == 2,
++                      let dtype = entry["dtype"] as? String else { throw ProbeError("Malformed or duplicate captured tensor") }
++                let shape = shapeValues.compactMap { BoundedProbeInput.integer($0) }
++                let offsets = offsetValues.compactMap { BoundedProbeInput.integer($0) }
++                guard shape.count == shapeValues.count, offsets.count == 2,
++                      offsets[0] >= 0, offsets[1] > offsets[0],
++                      offsets[1] <= file.size_bytes - 8 - capture.data.count,
++                      decoded.weight_map[name] == capture.sourceFile else { throw ProbeError("Captured tensor extent/index mismatch") }
++                let layout = try LayerStageTensorLayout(canonicalName: name, shape: shape,
++                    sourceDType: dtype, byteCount: offsets[1] - offsets[0])
++                result[name] = try LayerStageSourceTensor(layout: layout, sourceFile: capture.sourceFile,
++                    sourceOffset: QwenLongPrefillCheckedBytes.sum([8, capture.data.count, offsets[0]]))
++                spans.append(offsets[0]..<offsets[1])
++            }
++            var end = 0
++            for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
++                guard span.lowerBound == end else { throw ProbeError("Captured tensor extents overlap or contain gaps") }
++                end = span.upperBound
++            }
++            guard end == file.size_bytes - 8 - capture.data.count else { throw ProbeError("Captured extents do not cover declared payload") }
++        }
++        guard Set(result.keys) == Set(decoded.weight_map.keys),
++              try QwenLongPrefillCheckedBytes.sum(result.values.map { $0.layout.byteCount }) == decoded.metadata.total_size else {
++            throw ProbeError("Captured tensor coverage or byte total differs from index")
++        }
++        return result.values.sorted { $0.layout.canonicalName < $1.layout.canonicalName }
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageStorageConservation.swift
+@@ -0,0 +1,114 @@
++import Foundation
++
++struct LayerStageStorageConservation: Encodable, Equatable {
++    struct Rank: Encodable, Equatable {
++        let rank: Int
++        let tensorCount: Int
++        let logicalPayloadBytes: Int
++    }
++    let sourceTensorCount: Int
++    let sourcePayloadBytes: Int
++    let excludedTensorCount: Int
++    let excludedPayloadBytes: Int
++    let selectedSourceTensorCount: Int
++    let selectedSourcePayloadBytes: Int
++    let destinationTensorCount: Int
++    let destinationPayloadBytes: Int
++    let additionalReplicaBytes: Int
++    let ranks: [Rank]
++    let fingerprint: String
++    let payloadVerificationEstablished = false
++    let actualAllocationEstablished = false
++
++    static func validate(sources: [LayerStageSourceTensor], mappings: [LayerStageTensorMapping],
++                         excludedSourceNames: [String],
++                         allowedReplication: [LayerStageTiedEmbeddingReplication]) throws -> Self {
++        guard (1...4096).contains(sources.count), mappings.count <= sources.count,
++              Set(sources.map { $0.layout.canonicalName }).count == sources.count,
++              Set(excludedSourceNames).count == excludedSourceNames.count,
++              Set(mappings.map { $0.source.layout.canonicalName }).count == mappings.count,
++              allowedReplication.count <= 1 else { throw ProbeError("Stage source/mapping coverage is duplicated or unbounded") }
++        let byName = Dictionary(uniqueKeysWithValues: sources.map { ($0.layout.canonicalName, $0) })
++        let excluded = Set(excludedSourceNames), selected = Set(mappings.map { $0.source.layout.canonicalName })
++        guard excluded.isSubset(of: Set(byName.keys)), selected.isDisjoint(with: excluded),
++              selected.union(excluded) == Set(byName.keys) else {
++            throw ProbeError("Stage mapping does not exactly partition selected and excluded sources")
++        }
++        var groupBySource: [String: LayerStageTiedEmbeddingReplication] = [:]
++        for group in allowedReplication {
++            let suffixes: Set<String> = ["weight", "scales", "biases"]
++            guard !group.id.isEmpty, group.id.utf8.count <= 128,
++                  group.ingressRank == 0, group.outputRank == 1,
++                  Set(group.sourceNames) == Set(suffixes.map { group.canonicalModule + "." + $0 }),
++                  group.sourceNames.count == 3, Set(group.sourceNames).isSubset(of: selected) else {
++                throw ProbeError("Invalid admitted tied embedding replica group")
++            }
++            for name in group.sourceNames {
++                guard groupBySource.updateValue(group, forKey: name) == nil else {
++                    throw ProbeError("Overlapping tied embedding groups")
++                }
++            }
++        }
++        var destinationKeys = Set<String>(), rankBytes = [0, 0], rankCounts = [0, 0]
++        var replicaBytes = 0
++        for mapping in mappings {
++            let source = mapping.source, name = source.layout.canonicalName
++            guard byName[name] == source, (1...2).contains(mapping.destinations.count) else {
++                throw ProbeError("Mapping changed its source descriptor or destination count")
++            }
++            if let group = groupBySource[name] {
++                let expected = [
++                    LayerStageTensorDestination(rank: group.ingressRank, localName: name,
++                        role: .ingressEmbedding, globalLayerIndex: nil),
++                    LayerStageTensorDestination(rank: group.outputRank, localName: name,
++                        role: .tiedOutputEmbedding, globalLayerIndex: nil),
++                ]
++                guard mapping.replicationGroupID == group.id, mapping.destinations == expected else {
++                    throw ProbeError("Tied embedding is not the exact admitted two-rank replication")
++                }
++                replicaBytes = try QwenLongPrefillCheckedBytes.sum([replicaBytes, source.layout.byteCount])
++            } else {
++                guard mapping.replicationGroupID == nil, mapping.destinations.count == 1,
++                      mapping.destinations[0].role != .tiedOutputEmbedding else {
++                    throw ProbeError("Unadmitted source replication")
++                }
++            }
++            for destination in mapping.destinations {
++                guard (0...1).contains(destination.rank),
++                      (destination.role == .layer
++                        ? destination.globalLayerIndex.map { (0..<128).contains($0) } == true
++                        : destination.globalLayerIndex == nil) else { throw ProbeError("Invalid destination role/index") }
++                _ = try LayerStageTensorLayout(canonicalName: destination.localName,
++                    shape: source.layout.shape, sourceDType: source.layout.sourceDType,
++                    byteCount: source.layout.byteCount)
++                guard destinationKeys.insert("\(destination.rank):\(destination.localName)").inserted else {
++                    throw ProbeError("Stage destination collision")
++                }
++                rankCounts[destination.rank] += 1
++                rankBytes[destination.rank] = try QwenLongPrefillCheckedBytes.sum([
++                    rankBytes[destination.rank], source.layout.byteCount])
++            }
++        }
++        let sum = QwenLongPrefillCheckedBytes.sum
++        let sourceBytes = try sum(sources.map { $0.layout.byteCount })
++        let excludedBytes = try sum(excluded.map { byName[$0]!.layout.byteCount })
++        let selectedBytes = try sum(mappings.map { $0.source.layout.byteCount })
++        let destinationBytes = try sum(rankBytes)
++        guard rankCounts.allSatisfy({ $0 > 0 }), sourceBytes == (try sum([selectedBytes, excludedBytes])),
++              destinationBytes == (try sum([selectedBytes, replicaBytes])) else {
++            throw ProbeError("Stage source/replica byte conservation failed")
++        }
++        let identity = ["layer-stage-storage-conservation-v1",
++            sha256(try canonicalJSONData(sources.sorted { $0.layout.canonicalName < $1.layout.canonicalName })),
++            sha256(try canonicalJSONData(mappings.sorted { $0.source.layout.canonicalName < $1.source.layout.canonicalName })),
++            sha256(try canonicalJSONData(excludedSourceNames.sorted())),
++            sha256(try canonicalJSONData(allowedReplication)), "payloadVerified=false", "allocationVerified=false"]
++        return .init(sourceTensorCount: sources.count, sourcePayloadBytes: sourceBytes,
++            excludedTensorCount: excluded.count, excludedPayloadBytes: excludedBytes,
++            selectedSourceTensorCount: mappings.count, selectedSourcePayloadBytes: selectedBytes,
++            destinationTensorCount: destinationKeys.count, destinationPayloadBytes: destinationBytes,
++            additionalReplicaBytes: replicaBytes,
++            ranks: (0...1).map { Rank(rank: $0, tensorCount: rankCounts[$0], logicalPayloadBytes: rankBytes[$0]) },
++            fingerprint: sha256(Data(identity.joined(separator: "\n").utf8)))
++    }
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/LayerStageTensorMetadata.swift
+@@ -0,0 +1,68 @@
++import Foundation
++
++/// Metadata only. This value owns neither a verified file nor a native array.
++struct LayerStageTensorLayout: Encodable, Equatable {
++    let canonicalName: String
++    let shape: [Int]
++    let sourceDType: String
++    let byteCount: Int
++
++    init(canonicalName: String, shape: [Int], sourceDType: String, byteCount: Int) throws {
++        // Reuse the existing bounded shape/dtype validator without admitting a Qwen profile.
++        try QwenDenseCanonicalTensor(name: canonicalName, shape: shape,
++            sourceDType: sourceDType, byteCount: byteCount).validate()
++        self.canonicalName = canonicalName; self.shape = shape
++        self.sourceDType = sourceDType; self.byteCount = byteCount
++    }
++
++    var identity: String {
++        [canonicalName, sourceDType, shape.map(String.init).joined(separator: ","), String(byteCount)]
++            .joined(separator: "|")
++    }
++}
++
++struct LayerStageSourceTensor: Encodable, Equatable {
++    let layout: LayerStageTensorLayout
++    let sourceFile: String
++    /// Absolute offset, including the eight-byte safetensors prefix and header.
++    let sourceOffset: Int
++    let identity: String
++
++    init(layout: LayerStageTensorLayout, sourceFile: String, sourceOffset: Int) throws {
++        guard (1...256).contains(sourceFile.utf8.count), sourceFile.hasSuffix(".safetensors"),
++              !sourceFile.contains("/"), !sourceFile.contains("\\"),
++              sourceFile.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
++                  || (97...122).contains($0) || [45, 46, 95].contains($0) }),
++              sourceOffset >= 8 else { throw ProbeError("Invalid stage source location") }
++        _ = try QwenLongPrefillCheckedBytes.sum([sourceOffset, layout.byteCount])
++        self.layout = layout; self.sourceFile = sourceFile; self.sourceOffset = sourceOffset
++        self.identity = sha256(Data(["layer-stage-source-tensor-v1", sourceFile,
++            String(sourceOffset), layout.identity].joined(separator: "\n").utf8))
++    }
++}
++
++enum LayerStageTensorRole: String, Codable {
++    case layer, ingressEmbedding, tiedOutputEmbedding, finalNorm, outputProjection
++}
++
++struct LayerStageTensorDestination: Codable, Equatable {
++    let rank: Int
++    let localName: String
++    let role: LayerStageTensorRole
++    let globalLayerIndex: Int?
++}
++
++struct LayerStageTensorMapping: Encodable, Equatable {
++    let source: LayerStageSourceTensor
++    let destinations: [LayerStageTensorDestination]
++    let replicationGroupID: String?
++}
++
++/// Model admission supplies these exact members; generic accounting cannot create a group.
++struct LayerStageTiedEmbeddingReplication: Encodable, Equatable {
++    let id: String
++    let canonicalModule: String
++    let sourceNames: [String]
++    let ingressRank: Int
++    let outputRank: Int
++}
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedRequestStateCheck.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedRequestStateCheck.swift
+@@ -0,0 +1,48 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++
++@_spi(ClusterTesting) public enum WindowedRequestStateCheck {
++    public static func run() throws -> Data {
++        try MLX.withError { native in
++            let start = DispatchTime.now().uptimeNanoseconds
++            let baseline = Memory.activeMemory
++            func check() throws {
++                try native.check()
++                guard DispatchTime.now().uptimeNanoseconds - start < 55_000_000_000,
++                      Memory.activeMemory <= baseline + 64 * 1024 * 1024 else {
++                    throw ProbeError("Windowed fixture exceeds fixed lifetime or native-active envelope")
++                }
++                try QwenResidentResourceEnvironment.require()
++            }
++            do {
++                try check()
++                let groups = try autoreleasepool {
++                    try WindowedStateChronologyCheck.run(check: check)
++                    + WindowedStateFailureCheck.run(check: check)
++                    + WindowedStateLegacyQwenCheck.run(check: check)
++                }
++                Stream.gpu.synchronize(); Stream.cpu.synchronize(); try check()
++                Memory.clearCache(); try check()
++                return try JSONSerialization.data(withJSONObject: [
++                    "fixture": "actual-cbv2-mixed-full-window-state", "passed": groups,
++                    "observedDTypes": ["bfloat16", "float32"], "windowTokens": 4,
++                    "maximumTokens": 32, "maximumChunkTokens": 7,
++                    "exactNativeKVCapacityBytes": 8192, "conservativeBackendReservationBytes": 12288,
++                    "retainedWindowTemporaryBoundBytes": 14336,
++                    "maximumNativeActiveIncrementBytes": 64 * 1024 * 1024,
++                    "sharedStateAndCacheExecuted": true, "actualPrefill2Decode1Probe": true,
++                    "legacyQwenActualForward": true, "gemmaModelExecuted": false,
++                    "registeredWeightsLoaded": false, "outerGemmaAdmissionQualified": false,
++                    "distributedExecutionQualified": false,
++                ], options: [.sortedKeys])
++            } catch {
++                Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                try native.check()
++                Memory.clearCache(); try native.check()
++                throw error
++            }
++        }
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateChronologyCheck.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateChronologyCheck.swift
+@@ -0,0 +1,139 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++
++enum WindowedStateChronologyCheck {
++    static func require(_ value: Bool, _ message: String) throws {
++        try WindowedStateFixtureOwner.require(value, message)
++    }
++
++    /// CPU encoding is independent of row slicing and MLX conversion.
++    static func expectedBytes(layer: Int, range: Range<Int>, values: Bool, constant: Bool) -> Data {
++        let kind = WindowedStateFixtureModel.kinds[layer]
++        var result = Data()
++        for head in 0..<kind.kvHeads {
++            for position in range {
++                for dimension in 0..<kind.headDim {
++                    let value = WindowedStateFixtureModel.value(position: position, head: head,
++                        dimension: dimension, values: values, constant: constant)
++                    if layer == 0 {
++                        var bits = UInt16(value.bitPattern >> 16).littleEndian
++                        withUnsafeBytes(of: &bits) { result.append(contentsOf: $0) }
++                    } else {
++                        var bits = value.bitPattern.littleEndian
++                        withUnsafeBytes(of: &bits) { result.append(contentsOf: $0) }
++                    }
++                }
++            }
++        }
++        return result
++    }
++
++    static func assertSnapshot(_ value: CBv2OwnedStateSnapshot, constant: Bool = false) throws {
++        try require(value.entries.count == 6, "Snapshot contains unexpected recurrent/shared state")
++        for layer in 0..<2 {
++            let kind = WindowedStateFixtureModel.kinds[layer]
++            let start = layer == 0 ? 0 : max(0, value.committedTokens - WindowedStateFixtureModel.window)
++            let range = start..<value.committedTokens
++            let entries = value.entries.filter { $0.localLayerIndex == layer }
++            try require(entries.count == 3, "Snapshot owner coverage differs")
++            for entry in entries {
++                try require(entry.globalLayerIndex == WindowedStateFixtureModel.globals[layer], "Snapshot global mapping differs")
++                if entry.component == "kv.position_offsets" {
++                    var position = Int32(value.committedTokens).littleEndian
++                    let expected = withUnsafeBytes(of: &position) { Data($0) }
++                    try require(entry.bytes == expected && entry.logicalRange == nil && entry.shape == [1], "Position bytes differ")
++                } else {
++                    try require(entry.component == "kv.keys" || entry.component == "kv.values", "Unexpected snapshot component")
++                    let expected = expectedBytes(layer: layer, range: range, values: entry.component == "kv.values", constant: constant)
++                    try require(entry.shape == [1, kind.kvHeads, range.count, kind.headDim]
++                        && entry.logicalRange == range && entry.bytes == expected
++                        && entry.byteCount == expected.count && entry.sha256 == sha256(expected), "Chronological native bytes differ from CPU token ledger")
++                }
++            }
++        }
++    }
++
++    static func run(check: @escaping () throws -> Void) throws -> [String] {
++        weak var full: AnyObject?, window: AnyObject?
++        try autoreleasepool {
++            let owner = try WindowedStateFixtureOwner(check: check)
++            defer { try? owner.close() }
++            full = owner.state.rows[0]; window = owner.state.rows[1]
++            let layout = owner.state.geometry.attentionLayout!
++            try require(layout.exactKVCapacityBytes == 8192 && layout.conservativeKVCapacityBytes == 12288
++                && layout.windowTemporaryBytes == 14336 && owner.state.backend.bytesReserved == 12288,
++                "Actual two-row admission differs from the fixed geometry ledger")
++            var frontier = 0
++            var retained: [(CBv2OwnedStateSnapshot, [Data?])] = []
++            for count in [1, 1, 1, 1, 1, 7, 4, 5] {
++                frontier += count
++                try owner.advance(count)
++                try require(owner.state.backend.bytesInUse == 8192 && owner.state.backend.bytesReserved == 12288,
++                    "Mixed native types differ from exact/reserved row accounting")
++                let snapshot = try owner.snapshot()
++                try require(snapshot.committedTokens == frontier && owner.state.committedTokens == frontier, "Committed frontier differs")
++                try assertSnapshot(snapshot)
++                try require(owner.state.recurrent.spec.layers.isEmpty && owner.state.recurrent.confirmedStateSnapshot() == nil
++                    && owner.state.recurrent.materializedByteCount == 0, "Empty recurrence gained state")
++                if frontier == 5 { retained.append((snapshot, snapshot.entries.map(\.bytes))) }
++                for (prior, bytes) in retained {
++                    try require(prior.entries.map(\.bytes) == bytes, "CPU snapshot mutated with native ring")
++                    try assertSnapshot(prior)
++                }
++                if frontier == 12 {
++                    let before = snapshot.fingerprint, inUse = owner.state.backend.bytesInUse
++                    let reserved = owner.state.backend.bytesReserved
++                    let ids = owner.state.rows.map { ObjectIdentifier($0!) }
++                    // This loop retains metadata only. It neither calls snapshot
++                    // nor accesses cache roots; the next snapshot is outside it.
++                    for _ in 0..<64 {
++                        for (index, row) in owner.state.rows.enumerated() {
++                            let metadata = (row! as! any CBv2ContiguousKVMetadataProviding).cbv2ContiguousMetadata
++                            try owner.state.geometry.attentionLayout!.validate(metadata, layer: index, frontier: frontier)
++                        }
++                    }
++                    try require(owner.state.backend.bytesInUse == inUse && owner.state.backend.bytesReserved == reserved
++                        && owner.state.rows.map { ObjectIdentifier($0!) } == ids, "Metadata inspection changed storage ownership")
++                    try require(try owner.snapshot().fingerprint == before, "Metadata inspection changed native bytes")
++                }
++            }
++            try owner.close()
++        }
++        try require(full == nil && window == nil, "Retired cache rows remained owned")
++        try identities(check: check)
++        return ["actual-prefill2-decode1-type-probe", "mixed-bf16-fp32-full-window",
++            "below-at-after-window-and-large-chunks", "multiple-wraps-cpu-chronology",
++            "metadata-only-inspection", "cpu-snapshot-survives-mutation", "empty-recurrent-and-row-retirement",
++            "range-global-layout-fingerprint-separation"]
++    }
++
++    static func identities(check: @escaping () throws -> Void) throws {
++        let owner = try WindowedStateFixtureOwner(check: check, constant: true)
++        defer { try? owner.close() }
++        try owner.advance(4); let a = try owner.snapshot()
++        try owner.advance(1); let b = try owner.snapshot()
++        let ak = a.entries.first { $0.localLayerIndex == 1 && $0.component == "kv.keys" }!
++        let bk = b.entries.first { $0.localLayerIndex == 1 && $0.component == "kv.keys" }!
++        try require(ak.bytes == bk.bytes && ak.logicalRange != bk.logicalRange && ak.identity != bk.identity,
++            "Equal retained window bytes lost their absolute chronology")
++        let old = owner.state.geometry.attentionLayout!
++        for change in ["global", "layout"] {
++            var geometry = owner.state.geometry
++            let layers = old.layers.enumerated().map { index, layer in
++                LayerAttentionStateLayout.Layer(globalIndex: layer.globalIndex + (change == "global" ? 10 : 0),
++                    kvHeads: layer.kvHeads, headDimension: layer.headDimension, window: layer.window, element: layer.element)
++            }
++            geometry.attentionLayout = try .init(layers: layers, maximumTokens: old.maximumTokens,
++                maximumChunkTokens: change == "layout" ? 6 : old.maximumChunkTokens)
++            let alternative = try CBv2OwnedStateSnapshot.capture(geometry: geometry, rows: owner.state.rows,
++                recurrent: owner.state.recurrent, committedTokens: owner.state.committedTokens,
++                globalLayerIndices: layers.map(\.globalIndex), includeBytes: true, check: check)
++            try require(alternative.entries.map(\.bytes) == b.entries.map(\.bytes)
++                && alternative.fingerprint != b.fingerprint, "Equal bytes lost global/layout identity")
++        }
++        try owner.close()
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFailureCheck.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFailureCheck.swift
+@@ -0,0 +1,97 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++
++enum WindowedStateFailureCheck {
++    static func require(_ value: Bool, _ message: String) throws {
++        try WindowedStateFixtureOwner.require(value, message)
++    }
++
++    static func run(check: @escaping () throws -> Void) throws -> [String] {
++        var passed: [String] = []
++        for fault in ["row-identity", "device-position", "native-dtype", "descriptor-shape", "descriptor-window",
++                      "lost-history", "pending-window-write", "output-validation", "chunk-bound"] {
++            weak var full: AnyObject?, window: AnyObject?
++            try autoreleasepool {
++                let owner = try WindowedStateFixtureOwner(check: check, alterLayout: { layout in
++                    guard fault == "descriptor-shape" || fault == "descriptor-window" else { return layout }
++                    let layers = layout.layers.enumerated().map { index, layer in
++                        LayerAttentionStateLayout.Layer(globalIndex: layer.globalIndex, kvHeads: layer.kvHeads,
++                            headDimension: fault == "descriptor-shape" && index == 1 ? 32 : layer.headDimension,
++                            window: fault == "descriptor-window" && index == 1 ? 5 : layer.window, element: layer.element)
++                    }
++                    return try .init(layers: layers, maximumTokens: layout.maximumTokens, maximumChunkTokens: layout.maximumChunkTokens)
++                })
++                defer { try? owner.close() }
++                full = owner.state.rows[0]; window = owner.state.rows[1]
++                if fault == "lost-history" || fault == "pending-window-write" {
++                    try owner.advance(5)
++                    let row = owner.state.rows[1] as! CBv2WindowedSequenceKV
++                    if fault == "lost-history" {
++                        // Actual destructive writes followed by rollback lose
++                        // two old slots, while the absolute frontier returns to 5.
++                        let kind = WindowedStateFixtureModel.kinds[1]
++                        _ = row.update(keys: WindowedStateFixtureModel.tensor(kind: kind, start: 5, count: 2, dtype: .float32, values: false),
++                            values: WindowedStateFixtureModel.tensor(kind: kind, start: 5, count: 2, dtype: .float32, values: true))
++                        row.rollback(2)
++                        try require(row.absoluteOffset == 5 && row.retainedCount == 2, "Lost-history fixture did not actually destroy old slots")
++                    } else { row.beginSpeculativeWrite() }
++                }
++                var refused = false
++                do {
++                    try owner.advance(fault == "chunk-bound" ? 8 : 1,
++                        dtypes: fault == "native-dtype" ? [.float32, .float32] : WindowedStateFixtureModel.dtypes,
++                        afterEvaluation: {
++                            if fault == "row-identity" {
++                                owner.state.geometry.caches[1].setRows([CBv2WindowedSequenceKV(window: 4, kvHeads: 2, headDim: 64)])
++                            } else if fault == "device-position" {
++                                owner.state.geometry.caches[1].positionOffsets._updateInternal(MLXArray([Int32(0)]))
++                            } else if fault == "output-validation" {
++                                throw ProbeError("Injected fixture output validation failure")
++                            }
++                        })
++                } catch {
++                    let expected: String
++                    switch fault {
++                    case "row-identity", "device-position": expected = "Attention cache lost its owned row or absolute device position"
++                    case "native-dtype", "descriptor-shape": expected = "Attention physical geometry/type differs from observation"
++                    case "descriptor-window", "lost-history", "pending-window-write": expected = "Attention logical chronology/window differs from committed frontier"
++                    case "chunk-bound": expected = "CBv2 state advance exceeds the admitted capacity"
++                    default: expected = "Injected fixture output validation failure"
++                    }
++                    guard let error = error as? ProbeError, error.description == expected else { throw error }
++                    refused = true
++                }
++                try require(refused && owner.state.isFailed && owner.state.isClosed, "Fault did not retire the actual request owner")
++                try owner.close()
++            }
++            try require(full == nil && window == nil, "Failed request retained native row ownership")
++            passed.append("actual-refusal-and-retirement-" + fault)
++        }
++        try cancelled(check: check)
++        passed.append("actual-post-evaluation-cancellation-retirement")
++        return passed
++    }
++
++    static func cancelled(check: @escaping () throws -> Void) throws {
++        var cancelled = false
++        let owner = try WindowedStateFixtureOwner(check: {
++            try check()
++            if cancelled { throw ProbeError("Injected fixture cancellation") }
++        })
++        defer { try? owner.state.retire(failed: true) }
++        var refused = false
++        do { try owner.advance(1, afterEvaluation: { cancelled = true }) }
++        catch {
++            guard let error = error as? ProbeError, error.description == "Injected fixture cancellation" else { throw error }
++            refused = true
++        }
++        try require(refused && owner.state.isClosed && owner.state.isFailed && owner.state.committedTokens == 0
++            && owner.state.rows.isEmpty && owner.state.backend.bytesReserved == 0,
++            "Cancellation committed or retained provisional state")
++        cancelled = false
++        try owner.close()
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFixtureModel.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFixtureModel.swift
+@@ -0,0 +1,64 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++
++/// Fixed synthetic attention inputs, with no registered model or weight receipt.
++enum WindowedStateFixtureModel {
++    static let maximumTokens = 32, maximumChunk = 7, window = 4
++    static let globals = [5, 6]
++    static let kinds: [CBv2LayerKind] = [
++        .init(attention: .full, headDim: 32, kvHeads: 1, queryHeads: 2, modelLayerIndex: 0),
++        .init(attention: .slidingWindow(window), headDim: 64, kvHeads: 2, queryHeads: 4, modelLayerIndex: 1),
++    ]
++    static let dtypes: [DType] = [.bfloat16, .float32]
++
++    static func value(position: Int, head: Int, dimension: Int, values: Bool, constant: Bool) -> Float {
++        // These small integers and halves are exactly representable in BF16.
++        Float((constant ? 0 : position) * 2 + head + (values ? 1 : 0)) + Float(dimension % 2) * 0.5
++    }
++
++    static func tensor(kind: CBv2LayerKind, start: Int, count: Int, dtype: DType,
++                       values: Bool, constant: Bool = false) -> MLXArray {
++        let data = (0..<kind.kvHeads).flatMap { head in
++            (start..<(start + count)).flatMap { position in
++                (0..<kind.headDim).map { dimension in
++                    value(position: position, head: head, dimension: dimension, values: values, constant: constant)
++                }
++            }
++        }
++        return MLXArray(data).reshaped([1, kind.kvHeads, count, kind.headDim]).asType(dtype)
++    }
++
++    static func forward(caches: [any CBv2AttendingLayerCache], count: Int,
++                        dtypes: [DType] = WindowedStateFixtureModel.dtypes, constant: Bool = false) throws -> MLXArray {
++        guard caches.count == kinds.count, dtypes.count == kinds.count else { throw ProbeError("Fixture cache coverage differs") }
++        var result = MLXArray(Float(0))
++        for (index, cache) in caches.enumerated() {
++            let kind = kinds[index], start = Int(cache.positionOffsets.item(Int32.self))
++            guard cache.kind == kind, (0...maximumTokens).contains(start), count > 0,
++                  count <= maximumChunk, start <= maximumTokens - count else { throw ProbeError("Fixture forward exceeds fixed geometry") }
++            let keys = tensor(kind: kind, start: start, count: count, dtype: dtypes[index], values: false, constant: constant)
++            let values = tensor(kind: kind, start: start, count: count, dtype: dtypes[index], values: true, constant: constant)
++            let queries = MLXArray.zeros([1, kind.queryHeads, count, kind.headDim], dtype: dtypes[index])
++            result = result + cache.updateAndAttend(queries: queries, keys: keys, values: values,
++                scale: 1, sinks: nil).sum().asType(.float32)
++        }
++        return result
++    }
++
++    static func geometry(check: () throws -> Void) throws -> CBv2RequestGeometry {
++        try check()
++        let caches: [any CBv2AttendingLayerCache] = kinds.enumerated().map { CBv2LayerCache(layerIndex: $0.offset, kind: $0.element) }
++        let observed = try CBv2NativeKVTypeProbe.run(layerKinds: kinds, caches: caches) { _, count, bound in
++            try check()
++            return try forward(caches: bound, count: count)
++        }
++        try check()
++        guard observed.layerDTypes == dtypes, observed.observations.count == 4,
++              caches.allSatisfy({ $0.rows.isEmpty }) else { throw ProbeError("Fixture actual prefill2/decode1 probe differs") }
++        return try .init(attentionKinds: kinds, caches: caches, observed: observed,
++            globalLayerIndices: globals, maximumTokens: maximumTokens, maximumChunkTokens: maximumChunk)
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFixtureOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateFixtureOwner.swift
+@@ -0,0 +1,64 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++
++/// The test driver supplies only fixed geometry. State, evaluation and retirement
++/// are the real shared owner; no substitute backend or cache implementation.
++final class WindowedStateFixtureOwner {
++    let state: CBv2OwnedRequestState
++    let check: () throws -> Void
++    let constant: Bool
++
++    init(check: @escaping () throws -> Void, constant: Bool = false,
++         alterLayout: ((LayerAttentionStateLayout) throws -> LayerAttentionStateLayout)? = nil) throws {
++        self.check = check; self.constant = constant
++        var geometry = try WindowedStateFixtureModel.geometry(check: check)
++        if let alterLayout { geometry.attentionLayout = try alterLayout(geometry.attentionLayout!) }
++        try check()
++        state = try .init(geometry: geometry, promptCount: 2, outputCount: 30)
++    }
++
++    func advance(_ count: Int, dtypes: [DType] = WindowedStateFixtureModel.dtypes,
++                 afterEvaluation: (() throws -> Void)? = nil) throws {
++        do {
++            try check()
++            _ = try state.run(tokenCount: count, check: check, forward: { caches, _ in
++                try self.check()
++                return try WindowedStateFixtureModel.forward(caches: caches, count: count,
++                    dtypes: dtypes, constant: self.constant)
++            }, validateOutput: { output in
++                guard output.size == 1, output.dtype == .float32, output.item(Float.self).isFinite else {
++                    throw ProbeError("Fixture attention result is not a finite scalar")
++                }
++                try afterEvaluation?()
++            })
++            try check()
++        } catch {
++            try state.retire(failed: true)
++            throw error
++        }
++    }
++
++    func snapshot() throws -> CBv2OwnedStateSnapshot {
++        try check()
++        return try state.snapshot(globalLayerIndices: state.geometry.attentionLayout!.layers.map(\.globalIndex),
++            includeBytes: true, check: check)
++    }
++
++    func close(failed: Bool = false) throws {
++        try state.retire(failed: failed)
++        try Self.require(state.isClosed && state.rows.isEmpty && state.backend.bytesInUse == 0
++            && state.backend.bytesReserved == 0 && state.geometry.caches.allSatisfy({ $0.rows.isEmpty })
++            && state.recurrent.isReleased && state.recurrent.materializedByteCount == 0,
++            "Fixture retained actual state after retirement")
++        try check()
++    }
++
++    static func require(_ value: Bool, _ message: String) throws {
++        if !value { throw ProbeError(message) }
++    }
++
++    deinit { if !state.isClosed { try? state.retire(failed: true) } }
++}
++#endif
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateLegacyQwenCheck.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateLegacyQwenCheck.swift
+@@ -0,0 +1,90 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLLM
++import MLXLMCommon
++import MLXNN
++
++enum WindowedStateLegacyQwenCheck {
++    static func require(_ value: Bool, _ message: String) throws {
++        try WindowedStateFixtureOwner.require(value, message)
++    }
++
++    static func configuration() throws -> Data {
++        // Same proven tiny Qwen geometry, with four layers and MTP disabled.
++        try JSONSerialization.data(withJSONObject: ["model_type": "qwen3_5_text", "hidden_size": 64,
++            "num_hidden_layers": 4, "intermediate_size": 128, "num_attention_heads": 1,
++            "num_key_value_heads": 1, "linear_num_value_heads": 1, "linear_num_key_heads": 1,
++            "linear_key_head_dim": 32, "linear_value_head_dim": 32, "linear_conv_kernel_dim": 4,
++            "vocab_size": 128, "head_dim": 64, "full_attention_interval": 4,
++            "num_experts": 0, "num_experts_per_tok": 0, "mtp_num_hidden_layers": 0,
++            "tie_word_embeddings": false, "max_position_embeddings": 32768] as [String: Any], options: [.sortedKeys])
++    }
++
++    static func run(check: @escaping () throws -> Void) throws -> [String] {
++        let configuration = try configuration()
++        try check()
++        let model = try constructQwenModel(configuration)
++        let parameters = model.parameters().flattened().sorted { $0.0 < $1.0 }
++        try require(parameters.count < 200 && parameters.reduce(0) { $0 + $1.1.nbytes } < 4 * 1024 * 1024,
++            "Tiny Qwen source exceeds fixed fixture envelope")
++        var replacements: [(String, MLXArray)] = []
++        for (name, old) in parameters {
++            try check()
++            let salt = name.utf8.reduce(0) { ($0 + Int($1)) % 31 }
++            let data = (0..<old.size).map { index -> Float in
++                if name.hasSuffix("A_log") { return -1 }
++                if name.contains("norm") { return 1 + Float((index + salt) % 5) * 0.02 }
++                return Float((index + salt) % 17 - 8) * 0.003
++            }
++            replacements.append((name, MLXArray(data).reshaped(old.shape)))
++        }
++        try model.update(parameters: ModuleParameters.unflattened(replacements), verify: [.all])
++        model.freeze(); eval(model); try check()
++        guard let forward = model as? any CBv2PositionedRecurrentLanguageModelForwardable else { throw ProbeError("Tiny Qwen forward contract differs") }
++        func geometry() throws -> CBv2RequestGeometry {
++            try .init(model: model, family: .qwen35, feedForwardKind: "dense", layerCount: 4,
++                vocabularySize: 128, configurationData: configuration, maximumTokens: 8)
++        }
++        let state = try CBv2OwnedRequestState(geometry: geometry(), promptCount: 2, outputCount: 6)
++        defer { if !state.isClosed { try? state.retire(failed: true) } }
++        try require(state.geometry.attentionLayout == nil && state.geometry.recurrent.layers.count == 3
++            && state.geometry.kinds.count == 1, "Legacy Qwen unexpectedly entered attention-only state")
++        let packets: [[Int32]] = [[1, 2], [3], [4]]
++        for tokens in packets {
++            _ = try state.run(tokenCount: tokens.count, check: check, forward: { caches, recurrent in
++                try check()
++                return forward.cbv2Forward(MLXArray(tokens).reshaped([1, tokens.count]),
++                    caches: caches.map { $0 as! any KVCache }, recurrentState: [recurrent], positionIds: nil)
++            }, validateOutput: { output in
++                try require(output.shape == [1, tokens.count, 128]
++                    && output.asType(.float32).asArray(Float.self).allSatisfy(\.isFinite), "Tiny Qwen logits differ from finite output geometry")
++            })
++            let a = try state.snapshot(globalLayerIndices: [0, 1, 2, 3], includeBytes: true, check: check)
++            let b = try WindowedStateLegacySnapshotControl.capture(geometry: state.geometry, rows: state.rows,
++                recurrent: state.recurrent, committedTokens: state.committedTokens,
++                globalLayerIndices: [0, 1, 2, 3], includeBytes: true, check: check)
++            try require(a.fingerprint == b.fingerprint && a.entries.map(\.identity) == b.entries.map(\.identity)
++                && a.entries.map(\.bytes) == b.entries.map(\.bytes) && a.entries.allSatisfy({ $0.logicalRange == nil }),
++                "Legacy actual Qwen v1 snapshot bytes/fingerprint changed")
++        }
++        try state.retire()
++        let missing = try CBv2OwnedRequestState(geometry: geometry(), promptCount: 2, outputCount: 6)
++        defer { try? missing.retire(failed: true) }
++        var refused = false
++        do {
++            _ = try missing.run(tokenCount: 1, check: check, forward: { _, _ in MLXArray(Float(0)) }, validateOutput: { _ in })
++        } catch {
++            guard let error = error as? CBv2RecurrentStateError,
++                  error == .lifecycleViolation("recurrent evaluation did not stage every declared layer") else { throw error }
++            refused = true
++        }
++        try missing.retire(failed: true)
++        try require(refused && missing.isFailed && missing.isClosed && missing.backend.bytesReserved == 0,
++            "Missing nonempty recurrent generation did not refuse and retire")
++        try check()
++        return ["actual-tiny-qwen-full-and-recurrent-forward", "legacy-v1-snapshot-exact-control",
++            "legacy-nonempty-missing-recurrent-refusal"]
++    }
++}
++#endif
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateLegacySnapshotControl.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/WindowedStateLegacySnapshotControl.swift
+@@ -0,0 +1,82 @@
++#if CBV2_WINDOW_STATE_FIXTURE
++import Foundation
++import MLX
++import MLXLMCommon
++
++/// CPU-owned diagnostic snapshots cannot retain a device view across the next
++/// state mutation. Raw bytes are optional; digests always cover logical bytes.
++struct WindowedStateLegacySnapshotControl {
++    struct Entry {
++        let localLayerIndex: Int
++        let globalLayerIndex: Int
++        let component: String
++        let shape: [Int]
++        let dtype: String
++        let byteCount: Int
++        let sha256: String
++        let bytes: Data?
++
++        var identity: String {
++            "\(globalLayerIndex)|\(component)|\(shape)|\(dtype)|\(byteCount)|\(sha256)"
++        }
++    }
++    let committedTokens: Int
++    let entries: [Entry]
++    let fingerprint: String
++}
++
++extension WindowedStateLegacySnapshotControl {
++    /// Shared with the unchanged baseline owner's snapshot hook. Caller first
++    /// proves no open evaluation and validates its own committed state/frontier.
++    /// A full-model baseline uses Array(0..<fullLayerCount); a stage uses its
++    /// descriptor's local-to-global list. No model forward/lifecycle is replaced.
++    static func capture(geometry: CBv2RequestGeometry, rows: [CBv2SequenceKV?],
++                        recurrent: CBv2RecurrentRequestState, committedTokens: Int,
++                        globalLayerIndices: [Int], includeBytes: Bool,
++                        check: () throws -> Void) throws -> WindowedStateLegacySnapshotControl {
++        guard committedTokens > 0,
++            rows.count == geometry.kinds.count, recurrent.spec == geometry.recurrent,
++            !recurrent.isReleased,
++            globalLayerIndices.count == geometry.kinds.count + geometry.recurrent.layers.count,
++            Set(globalLayerIndices).count == globalLayerIndices.count,
++            globalLayerIndices.allSatisfy({ $0 >= 0 }) else {
++            throw ProbeError("CBv2 snapshot needs a complete unique layer mapping and committed frontier")
++        }
++        guard let confirmed = recurrent.confirmedStateSnapshot(),
++            Set(confirmed.keys) == Set(geometry.recurrent.modelLayerIndices) else {
++            throw ProbeError("CBv2 snapshot cannot inspect pending or incomplete recurrent generations")
++        }
++        var entries: [WindowedStateLegacySnapshotControl.Entry] = []
++        func append(_ array: MLXArray, local: Int, component: String) throws {
++            guard globalLayerIndices.indices.contains(local) else { throw ProbeError("Snapshot layer mapping is out of bounds") }
++            let bytes = array.asData().data
++            try check()
++            guard bytes.count == array.nbytes else { throw ProbeError("Snapshot logical byte count differs") }
++            entries.append(.init(localLayerIndex: local, globalLayerIndex: globalLayerIndices[local],
++                component: component, shape: array.shape, dtype: String(describing: array.dtype),
++                byteCount: bytes.count, sha256: sha256(bytes), bytes: includeBytes ? bytes : nil))
++        }
++        for (index, optionalRow) in rows.enumerated() {
++            guard let row = optionalRow, row.absoluteOffset == committedTokens,
++                row.retainedCount == committedTokens, geometry.caches[index].rows.count == 1,
++                geometry.caches[index].rows[0] === row else {
++                throw ProbeError("Snapshot row identity/frontier differs from committed request state")
++            }
++            let snapshot = row.snapshot()
++            let layer = geometry.kinds[index].modelLayerIndex!
++            try append(snapshot.keys, local: layer, component: "kv.keys")
++            try append(snapshot.values, local: layer, component: "kv.values")
++            try append(geometry.caches[index].positionOffsets, local: layer, component: "kv.position_offsets")
++        }
++        for layer in geometry.recurrent.modelLayerIndices {
++            try append(confirmed[layer]!.conv!, local: layer, component: "conv")
++            try append(confirmed[layer]!.ssm!, local: layer, component: "ssm")
++        }
++        entries.sort { ($0.globalLayerIndex, $0.component) < ($1.globalLayerIndex, $1.component) }
++        let fingerprint = sha256(Data((["cbv2-owned-state-v1", "tokens=\(committedTokens)"]
++            + entries.map(\.identity)).joined(separator: "\n").utf8))
++        return .init(committedTokens: committedTokens, entries: entries, fingerprint: fingerprint)
++    }
++}
++
++#endif
+--- a/libs/darkbloom-cluster-worker/Package.swift
++++ b/libs/darkbloom-cluster-worker/Package.swift
+@@ -7,6 +7,7 @@
+     name: "DarkbloomClusterWorker",
+     platforms: [.macOS("26.2")],
+     products: [
++        .executable(name: "WindowedRequestStateCheck", targets: ["WindowedRequestStateCheck"]),
+         .executable(name: "TargetVerificationSessionCheck", targets: ["TargetVerificationSessionCheck"]),
+         .executable(name: "TargetVerificationCheck", targets: ["TargetVerificationCheck"]),
+         .executable(name: "MTPTinyForwardCheck", targets: ["MTPTinyForwardCheck"]),
+@@ -20,6 +21,11 @@
+         .package(path: "../darkbloom-cluster"),
+     ],
+     targets: [
++        .executableTarget(name: "WindowedRequestStateCheck", dependencies: [
++            .product(name: "MLX", package: "mlx-swift"),
++            .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
++            .product(name: "DarkbloomClusterRuntime", package: "darkbloom-cluster"),
++        ], path: "Tests/WindowedRequestStateCheck"),
+         .executableTarget(name: "TargetVerificationSessionCheck", dependencies: [
+             .product(name: "MLX", package: "mlx-swift"),
+             .product(name: "DarkbloomClusterProcess", package: "darkbloom-cluster"),
+--- a/libs/darkbloom-cluster-worker/Tests/WindowedRequestStateCheck/Main.swift
++++ b/libs/darkbloom-cluster-worker/Tests/WindowedRequestStateCheck/Main.swift
+@@ -0,0 +1,46 @@
++import Foundation
++import Darwin
++import MLX
++import DarkbloomClusterProcess
++@_spi(ClusterTesting) import DarkbloomClusterRuntime
++
++/// Private qualification entry. It never loads checkpoint weights or launches peers.
++@main struct WindowedRequestStateMain {
++    static func main() throws {
++        let arguments = Array(CommandLine.arguments.dropFirst())
++        guard arguments == ["run-windowed-state-on-gpu"] || arguments == ["check-arguments"] else {
++            throw NSError(domain: "WindowedRequestStateCheck.arguments", code: 1)
++        }
++        // Keep the process bound through final stdout publication as well as native work.
++        alarm(60)
++        if arguments == ["check-arguments"] {
++            FileHandle.standardOutput.write(Data("{\"argumentsAccepted\":true,\"nativeExecuted\":false}\n".utf8))
++            alarm(0)
++            return
++        }
++        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".darkbloom/cluster-device")
++        let gate = try ClusterDeviceExclusion(directoryURL: directory)
++        try withExtendedLifetime(gate) {
++            let result = try Device.withDefaultDevice(.gpu) {
++                try Stream.withNewDefaultStream(device: .gpu) {
++                    try MLX.withError { native in
++                        do {
++                            let result = try WindowedRequestStateCheck.run()
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize(); try native.check()
++                            Memory.clearCache(); try native.check()
++                            return result
++                        } catch {
++                            Stream.gpu.synchronize(); Stream.cpu.synchronize()
++                            try native.check()
++                            Memory.clearCache(); try native.check()
++                            throw error
++                        }
++                    }
++                }
++            }
++            guard result.count <= 16_384 else { throw NSError(domain: "WindowedRequestStateCheck.output", code: 1) }
++            FileHandle.standardOutput.write(result + Data([10]))
++        }
++        alarm(0)
++    }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/NativeKVTypeProbe.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/NativeKVTypeProbe.swift
+@@ -31,7 +31,54 @@
+         model: any CBv2SteppableModel, layerKinds: [CBv2LayerKind],
+         caches: [any CBv2AttendingLayerCache], token: Int32 = 0
+     ) throws -> Result {
+-        guard token >= 0, !layerKinds.isEmpty, caches.count == layerKinds.count,
++        guard token >= 0 else { throw invalid("probe requires fresh matching model caches") }
++        let recurrentModel = model as? any CBv2RecurrentSteppableModel
++        return try runProbe(layerKinds: layerKinds, caches: caches,
++            recurrentModel: recurrentModel,
++            prepareTokens: { count, check in
++                let tokens = MLXArray(Array(repeating: token, count: count)).reshaped([1, count])
++                try check()
++                return tokens
++            }, forward: { _, _, tokens, transaction in
++                // prepareTokens above always supplies the same legacy token root.
++                guard let tokens else { throw invalid("model probe has no token root") }
++                if let transaction, let recurrentModel {
++                    return recurrentModel.forward(
++                        tokens: tokens, caches: caches, recurrentState: [transaction])
++                }
++                return model.forward(tokens: tokens, caches: caches)
++            })
++    }
++
++    /// Attention-only stage seam for a throwing residual forward. The callback
++    /// runs synchronously with the same temporary rows, native error handler,
++    /// two-token prefill and one-token decode as the model overload. It must
++    /// use the supplied caches and return a root retaining its forward graph.
++    ///
++    /// The caller owns verified input construction/transport, phase binding,
++    /// native admission/deadline and failure cleanup. In particular a later
++    /// stage must validate its actual incoming residual dtype, not infer it
++    /// from embedding metadata. Neither the callback nor native roots are
++    /// retained after this call; Result contains only CPU-owned metadata.
++    public static func run(
++        layerKinds: [CBv2LayerKind], caches: [any CBv2AttendingLayerCache],
++        forward: (Phase, Int, [any CBv2AttendingLayerCache]) throws -> MLXArray
++    ) throws -> Result {
++        try runProbe(layerKinds: layerKinds, caches: caches,
++            recurrentModel: nil, prepareTokens: nil,
++            forward: { phase, count, _, _ in try forward(phase, count, caches) })
++    }
++
++    /// Both entry points share all row recording, native evaluation, recurrent
++    /// transaction handling and result validation. Token preparation remains
++    /// before recurrent bind, matching the original model entry's ordering.
++    private static func runProbe(
++        layerKinds: [CBv2LayerKind], caches: [any CBv2AttendingLayerCache],
++        recurrentModel: (any CBv2RecurrentSteppableModel)?,
++        prepareTokens: ((Int, () throws -> Void) throws -> MLXArray)?,
++        forward: (Phase, Int, MLXArray?, CBv2RecurrentStateEvaluation?) throws -> MLXArray
++    ) throws -> Result {
++        guard !layerKinds.isEmpty, caches.count == layerKinds.count,
+             layerKinds.allSatisfy({ $0.kvHeads > 0 && $0.headDim > 0 }),
+             zip(caches, layerKinds).allSatisfy({ $0.0.rows.isEmpty && $0.0.kind == $0.1 })
+         else { throw invalid("probe requires fresh matching model caches") }
+@@ -44,7 +91,6 @@
+         }
+         defer { for cache in caches { cache.setRows([]) } }
+ 
+-        let recurrentModel = model as? any CBv2RecurrentSteppableModel
+         let recurrent = try recurrentModel?.recurrentStateSpec.map(CBv2RecurrentRequestState.init(spec:))
+         defer { try? recurrent?.release() }
+         var observations: [Observation] = []
+@@ -52,17 +98,10 @@
+             let count = phase == .prefill ? 2 : 1
+             for case let row? in recorders { row.begin(phase: phase, count: count) }
+             try withError { error in
+-                let tokens = MLXArray(Array(repeating: token, count: count)).reshaped([1, count])
+-                try error.check()
++                let tokens = try prepareTokens?(count, { try error.check() })
+                 let transaction = try recurrent?.bind()
+                 defer { try? transaction?.rollback() }
+-                let output: MLXArray
+-                if let transaction, let recurrentModel {
+-                    output = recurrentModel.forward(
+-                        tokens: tokens, caches: caches, recurrentState: [transaction])
+-                } else {
+-                    output = model.forward(tokens: tokens, caches: caches)
+-                }
++                let output = try forward(phase, count, tokens, transaction)
+                 try error.check()
+                 // Validate before allocating/evaluating the forward's graph.
+                 // Shapes and dtypes are graph metadata, not tensor readbacks.
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift
+@@ -0,0 +1,26 @@
++import MLX
++
++/// Scalar/shape metadata only: no array, slice, concatenation, eval or readback.
++/// Inspect under the same serialized request owner that mutates the row.
++public struct CBv2ContiguousKVMetadata: Sendable {
++    public struct Tensor: Sendable {
++        public let shape: [Int]
++        public let dtype: DType
++        public let bytes: Int
++        init(_ array: MLXArray) { shape = array.shape; dtype = array.dtype; bytes = array.nbytes }
++    }
++    public let absoluteOffset: Int
++    public let retainedStart: Int
++    public let retainedCount: Int
++    public let window: Int?
++    public let keys: Tensor?
++    public let values: Tensor?
++    public let retainedChunkKeys: Tensor?
++    public let retainedChunkValues: Tensor?
++    public let speculativeWritePending: Bool
++}
++
++/// Optional introspection; existing row implementations/callers are unaffected.
++public protocol CBv2ContiguousKVMetadataProviding: AnyObject {
++    var cbv2ContiguousMetadata: CBv2ContiguousKVMetadata { get }
++}
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FullSequenceKV.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FullSequenceKV.swift
+@@ -75,7 +75,16 @@
+ /// donates the input buffer when refcount permits, so an append is O(n), not
+ /// O(cache). `update` returns temporal-order zero-copy strided views
+ /// `[..., 0..<retained, :]`; MLX SDPA accepts strided K/V.
+-public final class CBv2FullSequenceKV: CBv2SequenceKV, CBv2InnerStateProviding {
++public final class CBv2FullSequenceKV: CBv2SequenceKV, CBv2InnerStateProviding, CBv2ContiguousKVMetadataProviding {
++    /// No native root escapes and wrapped rings are not concatenated.
++    public var cbv2ContiguousMetadata: CBv2ContiguousKVMetadata {
++        .init(absoluteOffset: absoluteOffset, retainedStart: 0, retainedCount: retainedCount,
++            window: nil, keys: keys.map(CBv2ContiguousKVMetadata.Tensor.init),
++            values: values.map(CBv2ContiguousKVMetadata.Tensor.init),
++            retainedChunkKeys: nil, retainedChunkValues: nil,
++            speculativeWritePending: false)
++    }
++
+ 
+     /// Extra slots allocated beyond the prompt so the first decode steps
+     /// don't immediately grow the buffer.
+--- a/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift
++++ b/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift
+@@ -51,7 +51,16 @@
+ /// `commitSpeculativeWrite()`. A final `rollback(m)` is a pure counter move —
+ /// nothing was destroyed — so after commit the state is value-exactly what
+ /// plain updates of only the confirmed tokens would have produced.
+-public final class CBv2WindowedSequenceKV: CBv2SequenceKV, CBv2InnerStateProviding {
++public final class CBv2WindowedSequenceKV: CBv2SequenceKV, CBv2InnerStateProviding, CBv2ContiguousKVMetadataProviding {
++    /// No native root escapes and wrapped rings are not concatenated.
++    public var cbv2ContiguousMetadata: CBv2ContiguousKVMetadata {
++        .init(absoluteOffset: absoluteOffset, retainedStart: oldestValidPosition, retainedCount: retainedCount,
++            window: window, keys: keys.map(CBv2ContiguousKVMetadata.Tensor.init),
++            values: values.map(CBv2ContiguousKVMetadata.Tensor.init),
++            retainedChunkKeys: borrowableChunkViews.map { CBv2ContiguousKVMetadata.Tensor($0.keys) }, retainedChunkValues: borrowableChunkViews.map { CBv2ContiguousKVMetadata.Tensor($0.values) },
++            speculativeWritePending: speculativeWriteArmed || staged != nil)
++    }
++
+ 
+     /// Window size in tokens == number of physical ring slots.
+     public let window: Int

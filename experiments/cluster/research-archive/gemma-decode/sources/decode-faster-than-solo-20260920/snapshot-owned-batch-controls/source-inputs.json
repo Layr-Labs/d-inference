@@ -1,0 +1,26 @@
+{
+  "schema": "gemma4_owned_snapshot_batch_controls_source_v1",
+  "sourceOnly": true,
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 469,
+      "sha256": "71f119bb42a31b52cc6f2b45002d3ec8c4b2f6fd4f8002431efbb76badd7b471"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 1899,
+      "sha256": "6ace073f5da0d536e4c780dbc7c521a865b906082805e1ee4eccb13792a9799e"
+    },
+    {
+      "path": "owned_process.py",
+      "bytes": 2211,
+      "sha256": "c3910bf16a0fbe4d68ab6349e862ef5a2c92fe64e79a68d2ccfc700daf4fa2bf"
+    },
+    {
+      "path": "run.py",
+      "bytes": 3830,
+      "sha256": "0e32a2531a7eb81b4fe33b43fda62000d72382b1be0ace34453f170aec3d3b56"
+    }
+  ]
+}

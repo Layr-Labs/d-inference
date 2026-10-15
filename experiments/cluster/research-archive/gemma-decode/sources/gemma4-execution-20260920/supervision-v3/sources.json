@@ -1,0 +1,62 @@
+[
+  {
+    "path": "deploy.py",
+    "sha256": "76d84328d8aa1e9622ab7e0b3259abe8a8c02705ede4759676f0ab636a1f1339"
+  },
+  {
+    "path": "run_case.py",
+    "sha256": "09402bf1376cf43eaf7dce4c60769bf5d1fb6ddae26ddeb1dbe7cc8114bb8ba9"
+  },
+  {
+    "path": "prepare_memory.py",
+    "sha256": "948c7d76d2951f4ab98a4345f73f94145173ac35c7b23034fdbca254b7498322"
+  },
+  {
+    "path": "package/benchmark_package.py",
+    "sha256": "8122bab7e2d6ec0b39fd1e8dcadff7213a3d058bd0059132bfea9f005c6bbe56"
+  },
+  {
+    "path": "package/binding_common.py",
+    "sha256": "9b077c9cf918ff58999c4f3c5f49eb5db9dbe40a5965d1c9c1b70013e48a3e41"
+  },
+  {
+    "path": "package/binding_inputs.py",
+    "sha256": "5bc55273dc7b3ae4ce6d9966c09ebedf9c12dcc84bf91bda42993cae3f13dbd0"
+  },
+  {
+    "path": "package/gemma_inputs.py",
+    "sha256": "ae586d23d3789d8f761619f294798071d39e3364a592e505194589b9c8f66457"
+  },
+  {
+    "path": "package/jaccl_startup_stderr.py",
+    "sha256": "42c7f01b36392cb69cf177081fd6cf7a953963fd7cfb92b27ca0e784a5b82f29"
+  },
+  {
+    "path": "package/mtp_journal.py",
+    "sha256": "6c3a2d08b994bcbd0a4941ef01f4cf898b1e04a536dbdf21cd322043aa0bec70"
+  },
+  {
+    "path": "package/native_gate.py",
+    "sha256": "87b53a820d727346df1e957d048ecf0233775df6d9ca146d1bac58d6bed6ccf0"
+  },
+  {
+    "path": "package/reference_resources.py",
+    "sha256": "497f059014a53d3c69f446f7cb6644ca71cbc00c39af7ca2526abcfaa5d7cc28"
+  },
+  {
+    "path": "package/run_benchmark.py",
+    "sha256": "f2debf790073541583ee2ead2d5781e2f11e126a865e800160ed575afa635871"
+  },
+  {
+    "path": "package/target_processes.py",
+    "sha256": "fc2887b87541dd251d6bd1e185bde5c9f16f9f3608ac370dacd6fc85a9979dcb"
+  },
+  {
+    "path": "package/worker_contract.py",
+    "sha256": "9898b44c07337ddfc7949e880deb44ad8ccc9eaa700576c7c6ce008a88feefd6"
+  },
+  {
+    "path": "package/worker_processes.py",
+    "sha256": "b277a0c72a53788a470f0f9634500002c9f7f680fa96fb216c1ebe76e8d784d2"
+  }
+]

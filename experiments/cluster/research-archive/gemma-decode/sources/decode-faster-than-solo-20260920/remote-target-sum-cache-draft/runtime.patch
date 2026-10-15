@@ -1,0 +1,39 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift
+@@ -20,6 +20,7 @@
+     private var attached = false, failed = false
+     private var revision = 0, observedRevision = -1
+     private var verification: [String:Gemma4MTPRemoteTargetBudget.Term] = [:]
++    private var verificationBytes = 0
+     private var observations = 0, minimumFree = Int.max, maximumActive = 0
+     init(budget: Gemma4MTPRemoteTargetBudget, deadline: UInt64) throws {
+         let now = DispatchTime.now().uptimeNanoseconds
+@@ -44,7 +45,7 @@
+     func reservation() throws -> Reservation {
+         try requireLive()
+         return .init(revision:revision,nativeBytes:try QwenLongPrefillCheckedBytes.sum(
+-            [budget.nativeBytes]+verification.values.map(\.allocationBound)),hostBytes:budget.hostBytes)
++            [budget.nativeBytes,verificationBytes]),hostBytes:budget.hostBytes)
+     }
+     func acceptedObservation(_ value: Reservation, os: QwenDenseStageLoadOSObservation,
+                              native: QwenDenseStageLoadNativeObservation) throws {
+@@ -86,7 +87,9 @@
+                 next[item.name] = .init(name:item.name,logicalBytes:item.bytes,allocationBound:bound)
+             }
+         }
+-        verification = next; revision += 1
++        // Cache only the checked structural sum; no observation is retained.
++        let total = try QwenLongPrefillCheckedBytes.sum(next.values.map(\.allocationBound))
++        verification = next; verificationBytes = total; revision += 1
+         // Original owner must check this NEW revision before actual state work.
+         // No per-window/reconcile discount: old views and current graphs overlap.
+     }
+@@ -106,7 +109,7 @@
+         let values = verification.values.sorted { $0.name < $1.name }
+         return .init(budgetSHA256:budget.fingerprint,requestSHA256:budget.requestSHA256,baseTerms:budget.terms,
+             verificationTerms:values,baseNativeBytes:budget.nativeBytes,
+-            verificationNativeBytes:try QwenLongPrefillCheckedBytes.sum(values.map(\.allocationBound)),hostBytes:budget.hostBytes,
++            verificationNativeBytes:verificationBytes,hostBytes:budget.hostBytes,
+             observations:observations,minimumActualFreeBytes:minimumFree,maximumObservedActiveBytes:maximumActive)
+     }
+     func poison() { failed = true }

@@ -1,0 +1,40 @@
+{
+  "schema": "gemma4_o128_budget_correction_sources_v1",
+  "members": [
+    {
+      "path": "HANDOFF.md",
+      "bytes": 2802,
+      "sha256": "72245b9eadd58d6bfe177d896f12e0d1ae4c51968baf6c0a4c8a24b43dfc92f0"
+    },
+    {
+      "path": "Runtime/Gemma4BenchmarkResourceBudget.swift",
+      "bytes": 11224,
+      "sha256": "fa09e49a4cb230f0934d747b39f51d3cdd20a15d47cbb5846d59460d33fd99e9"
+    },
+    {
+      "path": "compose.py",
+      "bytes": 3105,
+      "sha256": "6010f396625b862931499bbd6dcebfc10855e58babcf72f6795805c05b7b026a"
+    },
+    {
+      "path": "expected-sources.json",
+      "bytes": 26533,
+      "sha256": "ba231b55f9c16f8303ed47daebc3422d4d35010bfac4c11991b1033161ab6cd3"
+    },
+    {
+      "path": "integration.json",
+      "bytes": 1734,
+      "sha256": "4560cf7bc711d203ba78f508dbbccc38ab717841acafc759e2c6e034ee17d38a"
+    },
+    {
+      "path": "preimages/Gemma4BenchmarkResourceBudget.swift",
+      "bytes": 10887,
+      "sha256": "08d9d57da1779f756002b349c412fc37e1eadad0a1d381b3496e3ece1bea4fae"
+    },
+    {
+      "path": "runtime.patch",
+      "bytes": 2061,
+      "sha256": "05849035f2d3e0941c5229ee3d52d9d09c03ee1cc95a6fb5e29d92f604c89273"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+--- a/compare.py
++++ b/compare.py
+@@ -44,7 +44,7 @@
+         row=spec[name];n.require(n.digest(inputs.read(row['path']))==row['sha256'],'Declared harness source changed')
+     remote_root=Path(spec['remoteHarness']['path']).parent
+     for row in inputs.json(spec['remoteHarness']['path'])['members']:
+-        raw=inputs.read(remote_root/row['path'])
++        raw=inputs.read(remote_root/row['path'],empty=(row['bytes']==0))
+         n.require(len(raw)==row['bytes'] and n.digest(raw)==row['sha256'],'Remote harness member changed')
+     n.require(args.remote_case.parent==remote_root/'cases','Remote case must belong to exact harness')
+     activation=inputs.json(remote_root/'activation.json');build=inputs.json(activation['buildReceipt'])

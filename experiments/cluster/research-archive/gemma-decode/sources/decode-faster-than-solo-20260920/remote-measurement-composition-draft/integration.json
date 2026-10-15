@@ -1,0 +1,233 @@
+{
+  "schema": "gemma4_remote_measurement_union_v1",
+  "baseSources": {
+    "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/build/remote-control-composition-1/sources.json",
+    "bytes": 85742,
+    "sha256": "2e5d0419c5cce1abaec52526e269ea289e58e86bad3282e9231f67f6d4425e7f"
+  },
+  "workspace": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "authorities": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-budget-correction/source-inputs.json",
+      "bytes": 1184,
+      "sha256": "675f3b4bda026270df3fac1edee12dabd9d71c78a02d5ad7bcaf6b7be81f8445"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-budget-correction/integration.json",
+      "bytes": 1734,
+      "sha256": "4560cf7bc711d203ba78f508dbbccc38ab717841acafc759e2c6e034ee17d38a"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/source-inputs.json",
+      "bytes": 2727,
+      "sha256": "bdbb4bc7071db3e5e288d66813f958c18df0f3437f95406a6527f64a38cb0461"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/integration.json",
+      "bytes": 6208,
+      "sha256": "51840eb14deaba5500f8d42e232c0e325e5c0187a2c7ff05b1f4b166aca3f77e"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-target-sum-cache-draft/source-inputs.json",
+      "bytes": 2918,
+      "sha256": "5fb26a8727bf45af5525d2e6458d5721bba08d4283338558d4f7f1e205dbf526"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-target-sum-cache-draft/integration.json",
+      "bytes": 3148,
+      "sha256": "5a6392b053810c2299a34c9674a172ee96faf954ba020e2f279f1ea598f37956"
+    }
+  ],
+  "sourceManifests": [
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-budget-correction/source-inputs.json",
+      "bytes": 1184,
+      "sha256": "675f3b4bda026270df3fac1edee12dabd9d71c78a02d5ad7bcaf6b7be81f8445"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/source-inputs.json",
+      "bytes": 2727,
+      "sha256": "bdbb4bc7071db3e5e288d66813f958c18df0f3437f95406a6527f64a38cb0461"
+    },
+    {
+      "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-target-sum-cache-draft/source-inputs.json",
+      "bytes": 2918,
+      "sha256": "5fb26a8727bf45af5525d2e6458d5721bba08d4283338558d4f7f1e205dbf526"
+    }
+  ],
+  "layers": [
+    {
+      "name": "mtp-o128-budget-correction",
+      "files": [
+        {
+          "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+          "before": {
+            "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+            "bytes": 10887,
+            "sha256": "08d9d57da1779f756002b349c412fc37e1eadad0a1d381b3496e3ece1bea4fae"
+          },
+          "source": {
+            "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-budget-correction/Runtime/Gemma4BenchmarkResourceBudget.swift",
+            "bytes": 11224,
+            "sha256": "fa09e49a4cb230f0934d747b39f51d3cdd20a15d47cbb5846d59460d33fd99e9"
+          }
+        }
+      ]
+    },
+    {
+      "name": "remote-window-timing-draft",
+      "files": [
+        {
+          "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+          "before": {
+            "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+            "bytes": 9371,
+            "sha256": "6e4a324b710149b2c689ac42e690dba7fbf48c766d30a5b5535674e035f11d2d"
+          },
+          "source": {
+            "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPDriver.swift",
+            "bytes": 14617,
+            "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+          }
+        },
+        {
+          "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+          "before": {
+            "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+            "sha256": "b04f5469f291ee5635c14b20b79e93759243861e9c1d0e5ee8aaed13d0e8428a",
+            "bytes": 12658
+          },
+          "source": {
+            "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4MTPPullTarget.swift",
+            "bytes": 13578,
+            "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+          }
+        },
+        {
+          "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift",
+          "before": {
+            "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift",
+            "bytes": 3482,
+            "sha256": "5759dac4ea19e99fe2d69f4403dabc9806d8c11b8086dab9b06700e63beaacbe"
+          },
+          "source": {
+            "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPRequestEvidence.swift",
+            "bytes": 3532,
+            "sha256": "87786c1f8b96d8c52cd84704960c0d617d9eeb83b40f6f58ec784f63014a2b5d"
+          }
+        },
+        {
+          "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPWindowTiming.swift",
+          "before": null,
+          "source": {
+            "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPWindowTiming.swift",
+            "bytes": 3423,
+            "sha256": "c13e10da29a4687baea2278e883434bfda697a3b71ac9d30ab23ef60fd362e5c"
+          }
+        }
+      ]
+    },
+    {
+      "name": "remote-target-sum-cache-draft",
+      "files": [
+        {
+          "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift",
+          "before": {
+            "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift",
+            "bytes": 6442,
+            "sha256": "29d7a26191705c322d96a412160b20144cced3f1c47dd46dcc33b021a8e99fe2"
+          },
+          "source": {
+            "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-target-sum-cache-draft/Runtime/Gemma4MTPRemoteTargetResources.swift",
+            "bytes": 6603,
+            "sha256": "e580909aaf283898ba55bb1963c2a8867371b0731acd47215f1514fa2151c6d7"
+          }
+        }
+      ]
+    }
+  ],
+  "changes": [
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkResourceBudget.swift",
+        "bytes": 10887,
+        "sha256": "08d9d57da1779f756002b349c412fc37e1eadad0a1d381b3496e3ece1bea4fae"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/mtp-o128-budget-correction/Runtime/Gemma4BenchmarkResourceBudget.swift",
+        "bytes": 11224,
+        "sha256": "fa09e49a4cb230f0934d747b39f51d3cdd20a15d47cbb5846d59460d33fd99e9"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullTarget.swift",
+        "sha256": "b04f5469f291ee5635c14b20b79e93759243861e9c1d0e5ee8aaed13d0e8428a",
+        "bytes": 12658
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4MTPPullTarget.swift",
+        "bytes": 13578,
+        "sha256": "aff36e927b69979e4a57a23164b4fc9446d553f49487a5bd4fd8de983519d102"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPRemoteTargetResources.swift",
+        "bytes": 6442,
+        "sha256": "29d7a26191705c322d96a412160b20144cced3f1c47dd46dcc33b021a8e99fe2"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-target-sum-cache-draft/Runtime/Gemma4MTPRemoteTargetResources.swift",
+        "bytes": 6603,
+        "sha256": "e580909aaf283898ba55bb1963c2a8867371b0731acd47215f1514fa2151c6d7"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPDriver.swift",
+        "bytes": 9371,
+        "sha256": "6e4a324b710149b2c689ac42e690dba7fbf48c766d30a5b5535674e035f11d2d"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPDriver.swift",
+        "bytes": 14617,
+        "sha256": "ee7e3c59ae773e2ddafa69fe592fe33e24aaf215d6292a89decda3cdc215e7f0"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift",
+      "before": {
+        "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRequestEvidence.swift",
+        "bytes": 3482,
+        "sha256": "5759dac4ea19e99fe2d69f4403dabc9806d8c11b8086dab9b06700e63beaacbe"
+      },
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPRequestEvidence.swift",
+        "bytes": 3532,
+        "sha256": "87786c1f8b96d8c52cd84704960c0d617d9eeb83b40f6f58ec784f63014a2b5d"
+      }
+    },
+    {
+      "target": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPWindowTiming.swift",
+      "before": null,
+      "source": {
+        "path": "/Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/remote-window-timing-draft/Runtime/Gemma4RemoteMTPWindowTiming.swift",
+        "bytes": 3423,
+        "sha256": "c13e10da29a4687baea2278e883434bfda697a3b71ac9d30ab23ef60fd362e5c"
+      }
+    }
+  ],
+  "sourceFields": {
+    "mtpOutputBudgetCorrectionSourceManifestSHA256": "675f3b4bda026270df3fac1edee12dabd9d71c78a02d5ad7bcaf6b7be81f8445",
+    "mtpOutputBudgetCorrectionIntegrationSHA256": "4560cf7bc711d203ba78f508dbbccc38ab717841acafc759e2c6e034ee17d38a",
+    "remoteWindowTimingSourceManifestSHA256": "bdbb4bc7071db3e5e288d66813f958c18df0f3437f95406a6527f64a38cb0461",
+    "remoteWindowTimingIntegrationSHA256": "51840eb14deaba5500f8d42e232c0e325e5c0187a2c7ff05b1f4b166aca3f77e",
+    "remoteTargetSumCacheSourceManifestSHA256": "5fb26a8727bf45af5525d2e6458d5721bba08d4283338558d4f7f1e205dbf526",
+    "remoteTargetSumCacheIntegrationSHA256": "5a6392b053810c2299a34c9674a172ee96faf954ba020e2f279f1ea598f37956"
+  }
+}

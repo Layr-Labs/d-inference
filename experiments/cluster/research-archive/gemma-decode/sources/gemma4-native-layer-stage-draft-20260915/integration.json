@@ -1,0 +1,44 @@
+{
+  "schema": "gemma4_native_stage_source_integration_v1",
+  "mainEdited": false,
+  "compiled": false,
+  "modelConstructed": false,
+  "changes": [
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerPrefillPolicy.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "b972803c0dfa5b78ab43bbdaf635372efa3e5c0a76bc3ebbdd47450026852ab2",
+      "bytes": 1848
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStage.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "2f87307622bdd60c653afdd8adaa5c78037b0cf4b617a15f5405050324aeb899",
+      "bytes": 3473
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageForward.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "9ca99fb1163a64de737a92991a9aff7427cb11ba730eb8f8fa0e6188f2458ac7",
+      "bytes": 6082
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4LayerStageLayout.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "70099dc644d5563e89c5f61d8bc448f78f6a17e408cbc5dac72832830edc358b",
+      "bytes": 3503
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift",
+      "baseSHA256": "bf04df8668622c4e164208e5ade09f087113961461e700dd5215b121f55bbef8",
+      "proposedSHA256": "7cc4868dcf11b367e2305f24ac7255e7385f95bf280603b8900c6ec841da274c",
+      "bytes": 101660
+    },
+    {
+      "path": "libs/mlx-swift-lm/Tests/MLXLMTests/Gemma4LayerStagePolicyTests.swift",
+      "baseSHA256": null,
+      "proposedSHA256": "b0537c3f06d606968b76eba6c2330acc48d5cd768c795f9f9e9464748b33df47",
+      "bytes": 8705
+    }
+  ]
+}

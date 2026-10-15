@@ -1,0 +1,20 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkEntry.swift
+@@ -6,8 +6,16 @@
+ @_spi(ClusterTesting) public enum GemmaResidentBenchmark {
+     public static func run(arguments: [String]) throws -> Data {
+         guard arguments.count == 2, ["--describe", "--check-arguments", "--execute", "--qualify-mtp-state",
+-            "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning"].contains(arguments[0]) else {
++            "--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning", "--qualify-small-qmv"].contains(arguments[0]) else {
+             throw ProbeError("Use --describe|--check-arguments|--execute with one Gemma resident benchmark job")
++        }
++        if arguments[0] == "--qualify-small-qmv" {
++            guard ["dense", "gathered"].contains(arguments[1]) else {
++                throw ProbeError("Small QMV qualification requires dense or gathered")
++            }
++            signal(SIGALRM) { _ in Darwin._exit(124) }; alarm(300)
++            defer { alarm(0) }
++            return try GemmaSmallQMVCheck.run(arguments: ["--" + arguments[1]])
+         }
+         let local: Gemma4LocalMTPInput?
+         if ["--describe-local-mtp", "--execute-local-mtp", "--qualify-mtp-conditioning"].contains(arguments[0]) {

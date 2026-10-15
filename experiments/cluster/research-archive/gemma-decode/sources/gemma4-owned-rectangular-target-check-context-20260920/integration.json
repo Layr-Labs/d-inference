@@ -1,0 +1,18 @@
+{
+  "baseManifest": "/Users/developer/DarkbloomDev/cluster-research/gemma4-owned-rectangular-target-draft-20260920/manifest.json",
+  "baseManifestSHA256": "a613272fca14d51ff0a784fc938c44a05b2846899a09e959e4d224be1f85ea00",
+  "overlays": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift",
+      "before": {
+        "sha256": "fe62d1d668972d37035c269a1e64558ba55a2b4dbc00c6ca3b89abbb40bee2f0",
+        "bytes": 2182
+      },
+      "after": {
+        "sha256": "89d495e540384c998bf5db6fd8bb16a14e0d5db836ada688a8f80d4867d71563",
+        "bytes": 2270
+      }
+    }
+  ]
+}

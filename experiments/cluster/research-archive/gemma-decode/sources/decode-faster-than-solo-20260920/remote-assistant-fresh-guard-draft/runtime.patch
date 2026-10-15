@@ -1,0 +1,110 @@
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkGuardInvocation.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4BenchmarkGuardInvocation.swift
+@@ -4,14 +4,14 @@
+ struct Gemma4BenchmarkGuardInvocation {
+     static let schema = "gemma4_invocation_fresh_observation_v1"
+     enum Consumer: Equatable { case entry, owner }
+-    enum Mode: Equatable { case entry, owner, combined }
++    enum Mode: Equatable { case entry, owner, combined, entryOwner }
+     enum Failure: String, Error, CustomStringConvertible {
+         case closed, invalidConfiguration, expired, wrongConsumer, staleObservation, incomplete
+         var description: String { "Gemma guard invocation: " + rawValue }
+     }
+     private let mode: Mode, deadline: UInt64, created: UInt64, maximumAge: UInt64
+     private var uses = 0, closed = false
+-    var expectedUses: Int { mode == .combined ? 3 : 1 }
++    var expectedUses: Int { mode == .combined ? 3 : mode == .entryOwner ? 2 : 1 }
+ 
+     init(mode: Mode, deadline: UInt64, created: UInt64, maximumAge: UInt64) {
+         self.mode = mode; self.deadline = deadline; self.created = created; self.maximumAge = maximumAge
+@@ -25,7 +25,7 @@
+     }
+     func preflight(_ consumer: Consumer, expectedDeadline: UInt64, now: UInt64) throws {
+         try current(expectedDeadline: expectedDeadline, now: now)
+-        let expected: Consumer = mode == .owner || (mode == .combined && uses == 1) ? .owner : .entry
++        let expected: Consumer = mode == .owner || ((mode == .combined || mode == .entryOwner) && uses == 1) ? .owner : .entry
+         guard uses < expectedUses, consumer == expected else { throw Failure.wrongConsumer }
+     }
+     mutating func accept(_ consumer: Consumer, started: UInt64, completed: UInt64,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPAuxiliaryOwner.swift
+@@ -93,13 +93,18 @@
+             throw ProbeError("Local dense projection needs its current summed head-row admission")
+         }
+     }
+-    func checkStandalone() throws {
++    func checkStandalone(observation: Gemma4BenchmarkGuardObservation? = nil) throws {
+         do {
+             guard budget.placement == .remoteAssistant, !primaryAttached else {
+                 throw ProbeError("Local assistant must use the combined target resource inequality")
+             }
+             let value = try reservation()
+-            let os = try QwenResidentResourceEnvironment.observe()
++            // The optional snapshot is borrowed only inside this synchronous
++            // entry→owner guard. Nil retains the original standalone reader.
++            let os: QwenDenseStageLoadOSObservation
++            if let observation {
++                os = try observation.read(for:.owner,deadline:deadline,observationTiming:nil)
++            } else { os = try QwenResidentResourceEnvironment.observe() }
+             let native = QwenDenseStageLoadResources.observeNative()
+             guard os.pressureLevel == 1, native.activeBytes >= 0, native.cacheBytes == 0,
+                   native.peakBytes >= native.activeBytes, native.allocatorLimitBytes > 0 else {
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPRuntime.swift
+@@ -31,7 +31,7 @@
+                             lifetime:lifetime,sidecars:sidecars,guardMetrics:guardMetrics,check:outer)
+                     } else {
+                         report = try Gemma4RemoteMTPAssistantRuntime.execute(input,deadline:deadline,group:group,control:control,
+-                            lifetime:lifetime,check:fresh)
++                            lifetime:lifetime,check:outer)
+                     }
+                     try Gemma4MTPPullNativeFence.join(check:fresh)
+                     guard lifetime.model == nil, lifetime.assistant == nil, lifetime.embedding == nil,
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4RemoteMTPAssistantRuntime.swift
+@@ -22,13 +22,18 @@
+ enum Gemma4RemoteMTPAssistantRuntime {
+     static func execute(_ input: Gemma4RemoteMTPInput, deadline: UInt64, group: Collective,
+         control: Gemma4RemoteMTPCohortControl, lifetime: Gemma4RemoteMTPNativeLifetime,
+-        check: () throws -> Void) throws -> Data {
++        check: (Gemma4BenchmarkGuardObservation?) throws -> Void) throws -> Data {
+         let benchmark = input.benchmark
+         let budget = try Gemma4MTPAuxiliaryBudget(artifact:input.local.assistant,placement:.remoteAssistant,
+             requestSHA256:input.resourceRequestSHA256,maximumFrontier:benchmark.requests[0].finalCommittedTokens,
+             bound:QwenResidentResourceEnvironment.allocationBound)
+         let auxiliary = try Gemma4MTPAuxiliaryOwner(budget:budget,deadline:deadline)
+-        func checked() throws { try check(); try auxiliary.checkStandalone(); try check() }
++        func checked() throws {
++            let observation = Gemma4BenchmarkGuardObservation(mode:.combined,deadline:deadline)
++            defer { observation.close() }
++            try check(observation); try auxiliary.checkStandalone(observation:observation)
++            try check(observation); try observation.finish(deadline:deadline)
++        }
+         try checked()
+         weak var releasedAssistant: Module?
+         weak var releasedEmbedding: Gemma4RegisteredDraftEmbedding?
+--- a/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullAssistant.swift
++++ b/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/Gemma4MTPPullAssistant.swift
+@@ -27,12 +27,20 @@
+         worker = try .init(assistant:assistant,conditioning:conditioning,auxiliary:auxiliary)
+     }
+ 
+-    func run(check: () throws -> Void) throws -> Completion {
++    func run(check: (Gemma4BenchmarkGuardObservation?) throws -> Void) throws -> Completion {
+         guard !started else { throw ProbeError("Remote MTP service cannot restart") }
+         started = true
+         do {
+             return try MLX.withError { native in
+-                func checked() throws { try native.check(); try check(); try auxiliary.checkStandalone(); try native.check() }
++                func checked() throws {
++                    // Each wire/model callback owns a fresh, nonescaping scope.
++                    // No observation survives the return to that operation.
++                    let observation = Gemma4BenchmarkGuardObservation(mode:.entryOwner,deadline:auxiliary.deadline)
++                    defer { observation.close() }
++                    try native.check(); try check(observation)
++                    try auxiliary.checkStandalone(observation:observation); try native.check()
++                    try observation.finish(deadline:auxiliary.deadline)
++                }
+                 func reply(_ kind: Gemma4MTPPullRecord.Kind) throws {
+                     guard let mirror = self.mirror else { throw ProbeError("Remote MTP mirror has no initial seed") }
+                     let value = try mirror.response(kind)

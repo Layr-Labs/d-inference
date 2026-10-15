@@ -1,0 +1,144 @@
+{
+  "schema": "owned-attention-rectangular-overlay-v1",
+  "base": "/Users/developer/DarkbloomDev/cluster-research/gemma4-execution-20260920/build/workspace",
+  "overlays": [
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionTargetVerificationCheck.swift",
+      "before": null,
+      "after": {
+        "sha256": "fe62d1d668972d37035c269a1e64558ba55a2b4dbc00c6ca3b89abbb40bee2f0",
+        "bytes": 2182
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationChronologyCheck.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationChronologyCheck.swift",
+      "before": null,
+      "after": {
+        "sha256": "242b19caf7cc7a978b82e0aaaa08f1e46e52cd25adab8d159e92df6b9d42b3e7",
+        "bytes": 6158
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationFailureCheck.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationFailureCheck.swift",
+      "before": null,
+      "after": {
+        "sha256": "d2aef21323e842833d86fb715f81a9e6441d057d1a0c2510c2e8ac64cdc5498b",
+        "bytes": 5081
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationFixture.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationFixture.swift",
+      "before": null,
+      "after": {
+        "sha256": "af60e1975ec0fa8c1abbd47f9fe3766c2f976b415b9b27fc30b4fadd00de2171",
+        "bytes": 4591
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationPlanCheck.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/AttentionVerificationPlanCheck.swift",
+      "before": null,
+      "after": {
+        "sha256": "8a4263eba83b386be9d517c5a1be81596e2e5250dac4c63c15ef958503f5bd8c",
+        "bytes": 4120
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionTargetVerification.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionTargetVerification.swift",
+      "before": null,
+      "after": {
+        "sha256": "d8c3f70b4082d5118cfc3519d2ef536bafe846b7584bdafb4d6592f471076d72",
+        "bytes": 5104
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationPlan.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationPlan.swift",
+      "before": null,
+      "after": {
+        "sha256": "b17a45085beb18a3eaed3d85346846b1dc048fa18f3d651eb434f2c4e495f2ec",
+        "bytes": 3308
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationValidation.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2AttentionVerificationValidation.swift",
+      "before": null,
+      "after": {
+        "sha256": "4a48e1768a5f11a5ab6ecfec1adaa2da67648453712dd0c3920410094b08f142",
+        "bytes": 3986
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster/Sources/DarkbloomClusterRuntime/CBv2OwnedRequestState.swift",
+      "before": {
+        "sha256": "1faa55297fe92a51113d2c1f50c8d09f64bfc2db94df95f8e16b2f4388a4cc03",
+        "bytes": 13260
+      },
+      "after": {
+        "sha256": "4c7fe32225b229ee6872850d68e689d6e0c5c084fcb2385cb9e766ac26fcb367",
+        "bytes": 16929
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Package.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster-worker/Package.swift",
+      "before": {
+        "sha256": "23ed3bfe3b3ae32d9cc7bc3325ed7ea193e9c0f798043e8dd90824f8b2561144",
+        "bytes": 5050
+      },
+      "after": {
+        "sha256": "ce1399897b2031f359e76a0051a3f597e3657c0e82a60a3896869f4dea0806b9",
+        "bytes": 5531
+      }
+    },
+    {
+      "path": "libs/darkbloom-cluster-worker/Tests/AttentionTargetVerificationCheck/Main.swift",
+      "sourcePath": "proposed/libs/darkbloom-cluster-worker/Tests/AttentionTargetVerificationCheck/Main.swift",
+      "before": null,
+      "after": {
+        "sha256": "a38a9102487c44b1d718cbba5c043359a4bdd21c5d282a2069998141fa395c9b",
+        "bytes": 2176
+      }
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2OwnedRectangularAttention.swift",
+      "sourcePath": "proposed/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2OwnedRectangularAttention.swift",
+      "before": null,
+      "after": {
+        "sha256": "62f49dbc181c70c534efede70ede215c8a5f5af72bb6012ccf50bf93030f0f0c",
+        "bytes": 2401
+      }
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift",
+      "sourcePath": "proposed/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVMetadata.swift",
+      "before": {
+        "sha256": "14b16e0c2ce4bae308d56eaf66dbccd06a0d385659979a5267dfc2b18660f80b",
+        "bytes": 991
+      },
+      "after": {
+        "sha256": "ba6d4db28028aedd4a268ccbd97242126174ec22f9dabe2c9a828e4027b5f8e8",
+        "bytes": 1196
+      }
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift",
+      "sourcePath": "proposed/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift",
+      "before": {
+        "sha256": "aa5a0659eafb28ca0a6bfa19e95c193d12184daa3725b3790e4880eaa675df4a",
+        "bytes": 23511
+      },
+      "after": {
+        "sha256": "8426dae2b2f43ab49ed30638aa30bd279d4b5b1c76d4d1f8561e3f5791e9d1eb",
+        "bytes": 24070
+      }
+    }
+  ]
+}

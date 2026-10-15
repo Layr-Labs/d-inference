@@ -1,0 +1,13 @@
+# Exact ordinary versus owned-batch remote replay
+
+This comparator requires both physical comparisons, exact same124-source native and resource package, independent request UUIDs, exact registered target/assistant/embedding identities and tokenizer bytes, explicit packed projection and batch snapshot scope, current depth/output geometry, phase/control counter joins, and all final token IDs, four full logits rows and360 native state components. The numerical reader, recorded math, snapshot, geometry, timing and binding helpers are unchanged from the qualified O128 predecessor. Tolerance remains zero. Empty declared files retain exact size/hash validation.
+
+Root commands after both sibling physical results pass:
+
+```sh
+python3 -B /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/numerical/check_sources.py
+python3 -B /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/numerical/Tests/run.py --output /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/numerical/cpu-controls-1
+python3 -B /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/numerical/compare.py --ordinary-case /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/local/cases/p128-o128-solo-capture-1 --ordinary-package-manifest /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/local/deployment/package.json --remote-case /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/remote/cases/p128-o128-d2-capture-1 --native-file /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/tiny/deployment/bundle/GemmaResidentBenchmark --prompt-file /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/remote/prompts/prompt-128.json --output /Users/developer/DarkbloomDev/cluster-research/decode-faster-than-solo-20260920/snapshot-owned-batch-harness-draft/numerical/p128-o128-d2-comparison-1.json
+```
+
+Run the final offline replay in root's bounded CPU supervisor (240 seconds); it reads retained sidecars, no hardware. For O128, all512 output IDs and four final frontiers are compared; O16 retains64. The pass is limited to those observed sequences and final rows/state, not all intermediate logits/rollback prefixes. Six synthetic join controls remain unexecuted by the author. No performance/encryption/serving claim.

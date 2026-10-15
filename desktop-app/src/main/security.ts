@@ -51,6 +51,10 @@ const links: Record<string, string> = {
 };
 const linkHosts = ['console.darkbloom.dev', 'docs.darkbloom.dev', 'www.darkbloom.ai', 'github.com'];
 
+// System Settings' Software Update pane, opened for Macs below the minimum macOS.
+export const softwareUpdateURL =
+  'x-apple.systempreferences:com.apple.Software-Update-Settings.extension';
+
 // Resolves a renderer link target to an https URL on an allowlisted host.
 // `link` is the device-link URL from the native backend's snapshot.
 export function externalURL(target: unknown, deviceLinkURL: string | undefined) {

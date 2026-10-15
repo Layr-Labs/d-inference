@@ -127,6 +127,62 @@ describe('reported eligibility', () => {
   });
 });
 
+describe('macOS check', () => {
+  const macos = (result: ReturnType<typeof evaluateEligibility>) =>
+    result.checks.find((check) => check.id === 'macos');
+
+  it('passes macOS 27 or later', () => {
+    for (const version of ['27.0', '27.2.1', '28.0']) {
+      const result = evaluateEligibility(snapshot(), version);
+      expect(result.verdict).toBe('eligible');
+      expect(macos(result)).toEqual({ id: 'macos', label: 'macOS', ok: true, value: version });
+    }
+  });
+
+  it('fails an earlier macOS for new providers and says how to fix it', () => {
+    const result = evaluateEligibility(snapshot(), '26.5');
+    expect(result.verdict).toBe('ineligible');
+    expect(failedChecks(result.checks)).toEqual([
+      {
+        id: 'macos',
+        label: 'macOS',
+        ok: false,
+        value: '26.5',
+        detail:
+          'Darkbloom needs macOS 27 or later for new providers. Update macOS in Software Update.',
+      },
+    ]);
+  });
+
+  it('adds no check when the version is unknown', () => {
+    for (const version of [undefined, '']) {
+      const result = evaluateEligibility(snapshot(), version);
+      expect(result.verdict).toBe('eligible');
+      expect(macos(result)).toBeUndefined();
+    }
+  });
+
+  it('joins a runtime report without one, and leaves the runtime’s own check alone', () => {
+    const checks = [{ id: 'apple_silicon', label: 'Apple silicon', ok: true }];
+    const without = snapshot({ eligibility: { eligible: true, checked_at: 1, checks } });
+    expect(evaluateEligibility(without, '26.5')).toMatchObject({
+      verdict: 'ineligible',
+      checks: [checks[0], { id: 'macos', ok: false, value: '26.5' }],
+    });
+    expect(evaluateEligibility(without, '27.0')).toMatchObject({
+      verdict: 'eligible',
+      checks: [checks[0], { id: 'macos', ok: true, value: '27.0' }],
+    });
+    const own = [{ id: 'macos', label: 'macOS', ok: true, value: '26.5' }];
+    expect(
+      evaluateEligibility(
+        snapshot({ eligibility: { eligible: true, checked_at: 1, checks: own } }),
+        '26.5',
+      ),
+    ).toEqual({ verdict: 'eligible', checks: own });
+  });
+});
+
 describe('scan script', () => {
   const { revealMs, holdMs, exitMs, reducedHoldMs } = scanTiming;
 

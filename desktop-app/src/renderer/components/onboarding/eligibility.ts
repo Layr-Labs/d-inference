@@ -1,5 +1,6 @@
 import type { Snapshot } from '../../../shared/contracts';
 import type { Eligibility, EligibilityCheck } from '../../../shared/eligibility';
+import { supportsNewProviders } from '../../../shared/macos';
 import { gigabytes } from '../../models/facts';
 
 export type Verdict = 'eligible' | 'ineligible' | 'unknown';
@@ -8,9 +9,30 @@ export interface EligibilityResult {
   checks: EligibilityCheck[];
 }
 
-export function evaluateEligibility(snapshot: Snapshot): EligibilityResult {
-  const report = snapshot.eligibility ?? derivedEligibility(snapshot);
+// `macosVersion` comes from the main process. When the report has no macOS check of its own, one
+// is added from it; an unknown version adds none.
+export function evaluateEligibility(snapshot: Snapshot, macosVersion?: string): EligibilityResult {
+  const report = withMacOSCheck(snapshot.eligibility ?? derivedEligibility(snapshot), macosVersion);
   return { verdict: verdictOf(report), checks: report.checks };
+}
+
+function withMacOSCheck(report: Eligibility, version?: string): Eligibility {
+  if (!version || report.checks.some((check) => check.id === 'macos')) return report;
+  const check = macosCheck(version);
+  return { ...report, eligible: report.eligible && !!check.ok, checks: [...report.checks, check] };
+}
+
+// New providers need macOS 27 or later.
+export function macosCheck(version: string): EligibilityCheck {
+  const check = { id: 'macos', label: 'macOS', value: version };
+  return supportsNewProviders(version)
+    ? { ...check, ok: true }
+    : {
+        ...check,
+        ok: false,
+        detail:
+          'Darkbloom needs macOS 27 or later for new providers. Update macOS in Software Update.',
+      };
 }
 
 export const failedChecks = (checks: EligibilityCheck[]) =>

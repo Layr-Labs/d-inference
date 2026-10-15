@@ -7,6 +7,7 @@ import type { CloudData, CoolingData, Snapshot } from '../src/shared/contracts';
 export async function previewBackend(overrides: Partial<BackendState> = {}): Promise<BackendState> {
   return {
     status: { state: 'ready' },
+    system: { macosVersion: '27.0' },
     state: await previewAPI.read<Snapshot>('state'),
     cloud: structuredClone(await previewAPI.read<CloudData>('cloud')),
     network: undefined,

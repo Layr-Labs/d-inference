@@ -12,6 +12,7 @@ import type {
   Route,
   Snapshot,
 } from '../shared/contracts';
+import type { SystemInfo } from '../shared/macos';
 import { submitAction } from './actions';
 import { pageResources } from './data/pageResources';
 import { previewAPI } from './preview';
@@ -29,6 +30,8 @@ export const showsCooling = (route: Route, machine: MachineSelection = null) =>
 export function useBackend(route: Route = 'home', machine: MachineSelection = null) {
   const [status, setStatus] = useState<DesktopStatus>({ state: 'connecting' });
   const [state, setState] = useState<Snapshot>();
+  // Undefined until the main process answers; a version it couldn't read is left unknown.
+  const [system, setSystem] = useState<SystemInfo>();
   const [cloud, setCloud] = useState<CloudData>();
   const [network, setNetwork] = useState<NetworkData>();
   const [cooling, setCooling] = useState<CoolingData>();
@@ -164,6 +167,7 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
       return;
     }
     api.status().then(setStatus);
+    api.system().then(setSystem, () => setSystem({ macosVersion: '' }));
     const offState = api.onState(observeState);
     const offStatus = api.onStatus(setStatus);
     return () => {
@@ -219,6 +223,7 @@ export function useBackend(route: Route = 'home', machine: MachineSelection = nu
   return {
     status,
     state,
+    system,
     cloud,
     network,
     cooling,

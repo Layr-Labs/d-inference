@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   act: vi.fn(),
   read: vi.fn(),
   openExternal: vi.fn(),
+  openSoftwareUpdate: vi.fn().mockResolvedValue(undefined),
   onNavigate: () => () => {},
 }));
 vi.mock('../src/renderer/useBackend', () => ({ isPreview: false, api, useBackend: vi.fn() }));
@@ -61,7 +62,9 @@ describe('eligible Mac', () => {
     expect(within(card).queryByText('64 GB')).not.toBeInTheDocument();
     elapse(revealMs - 1);
     expect(within(card).getByText('64 GB')).toBeVisible();
-    expect(within(card).getAllByRole('img', { name: 'Met' })).toHaveLength(2);
+    // Apple silicon, memory, and macOS 27 from the main process.
+    expect(within(card).getByText('27.0')).toBeVisible();
+    expect(within(card).getAllByRole('img', { name: 'Met' })).toHaveLength(3);
     expect(heading('Checking this Mac…')).toBeVisible();
     elapse(1);
     expect(heading('This Mac is eligible.')).toBeVisible();
@@ -173,6 +176,36 @@ describe('ineligible Mac', () => {
       screen.getByText('Turn System Integrity Protection back on, then check again.'),
     ).toBeVisible();
     expect(screen.queryByText('Unified memory')).not.toBeInTheDocument();
+  });
+});
+
+describe('macOS below 27', () => {
+  it('fails the macOS check and offers Software Update', () => {
+    const done = vi.fn();
+    renderOnboarding(backendWith(snapshot(), { system: { macosVersion: '26.5' } }), done);
+    elapse(revealMs);
+    expect(heading('This Mac isn’t eligible yet.')).toBeVisible();
+    const card = screen.getByRole('region', { name: 'This Mac' });
+    expect(within(card).getByText('26.5')).toBeVisible();
+    expect(
+      screen.getByText(
+        'Darkbloom needs macOS 27 or later for new providers. Update macOS in Software Update.',
+      ),
+    ).toBeVisible();
+    expect(screen.getByText('1 requirement not met')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: /Open Software Update/ }));
+    expect(api.openSoftwareUpdate).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: /Continue setup/ })).not.toBeInTheDocument();
+    expect(heading('Link your account.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Open dashboard/ }));
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('offers Software Update only when macOS is a reason', () => {
+    renderOnboarding(backendWith(eightGBMac()));
+    elapse(revealMs);
+    expect(heading('This Mac isn’t eligible yet.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Open Software Update/ })).not.toBeInTheDocument();
   });
 });
 

@@ -166,9 +166,14 @@ and model metadata uses expandable details.
 This Mac's Overview starts with a health bar: memory from native state, fan
 speed and mode from the cooling resource, and the native `readiness` text shown
 verbatim. When This Mac is not serving, next steps with actions are derived
-from reported facts (runtime connection, required update, provider state,
-downloaded/selected/loaded models, crashed slots, running operations, linking);
-the app does not reimplement admission policy. Cooling is read only while
+from reported facts (CLI connection, required update, provider state,
+downloaded/selected/loaded models, crashed slots, running operations, macOS,
+linking); the app does not reimplement admission policy. Below macOS 27 an
+existing install gets an advisory **Update macOS** step with **Open Software
+Update**, after any step that keeps it from serving; like linking it never
+changes the tone, because the coordinator decides whether the Mac still serves.
+Home shows the same prompt as a notice that can be dismissed until the app is
+next opened. Cooling is read only while
 Cooling or This Mac's Overview is visible, because each read runs
 `darkbloom fan status`. A shared fan glyph spins whenever a fan reports RPM,
 faster as RPM approaches its maximum, on the health bar and the Cooling tab; it
@@ -350,11 +355,27 @@ one can check again, or continue. "Explore the app first", beside the steps,
 leaves for the app from any step once the CLI has delivered a snapshot, so never
 from a first install, and cancels a link in progress.
 
+- **macOS 27.** Darkbloom accepts new providers only on macOS 27 or later; the
+  CLI installer refuses new installs below it. The main process reports
+  `process.getSystemVersion()` through `system()` (`app:system`; empty off
+  macOS), and `supportsNewProviders` in `desktop-app/src/shared/macos.ts`
+  compares its major release, treating an unknown version as supported. When
+  the CLI is `missing` below macOS 27, Install the Darkbloom CLI shows
+  "Darkbloom needs macOS 27 or later" with **Open Software Update** in place of
+  **Install CLI**. A Mac that already has the CLI (connected, broken or
+  incompatible) is an existing provider and carries on. `openSoftwareUpdate()`
+  (`app:software-update`) opens a fixed System Settings URL in the main process;
+  the `openExternal` allowlist is unchanged. `systemIPC.test.ts`,
+  `macosRequirement.test.tsx`, `onboardingInstall.test.tsx`,
+  `onboardingScan.test.tsx` and `readiness.test.ts` cover it.
 - **Eligibility.** The scan reads the optional `Snapshot.eligibility` block
   (`desktop-app/src/shared/eligibility.ts`: `apple_silicon`, `memory`, `macos`,
   `storage`, `security`; `ok: null` means not evaluated). Without it, the
   renderer derives Apple silicon and memory from the snapshot. Memory is only
   known for downloaded models, so a fresh install usually shows "couldn't confirm".
+  When the report has no `macos` check and the main process knows the version,
+  the renderer adds one, failed below macOS 27; an ineligible result with that
+  reason offers **Open Software Update**.
 - **Waitlist.** `{ action: 'waitlist', email, reasons }` takes the failed check
   IDs as reasons and counts only once its operation succeeds.
 - **Autopilot.** "Start serving with Autopilot" sends
@@ -394,6 +415,7 @@ Preview links (`?preview` plus):
 |---|---|
 | `&onboarding=eligible`, `ineligible`, `unknown` | That scan result |
 | `&waitlist=fail` | Runtime rejecting the sign-up |
+| `&macos=26.5` | That macOS version (default `27.0`), in `system()` and the scenarios' `macos` check |
 | `&account=unlinked` | Linking, approved after a few seconds |
 | `&autopilot=unsupported` | Runtime rejecting Autopilot, then the manual fallback |
 
@@ -528,7 +550,7 @@ menu bar item stays available. Passing `--hidden` also starts hidden.
 | `desktop-app/src/main/security.ts` | IPC sender/frame/origin checks, navigation and link allowlists, renderer path guard, CSP, clipboard bounds (electron-free, unit tested) |
 | `desktop-app/src/main/protocol.ts` | privileged `darkbloom://` scheme and renderer file serving |
 | `desktop-app/src/main/window.ts` | the sandboxed main window; close hides |
-| `desktop-app/src/main/ipc.ts` | renderer-callable channels, each gated by `isTrustedSender` |
+| `desktop-app/src/main/ipc.ts` | renderer-callable channels, each gated by `isTrustedSender`, including the macOS version and the fixed Software Update link |
 | `desktop-app/src/main/tray.ts`, `desktop-app/src/main/trayMenu.ts` | menu bar item; the native menu rebuilds only when its state model changes |
 | `desktop-app/src/main/appMenu.ts`, `desktop-app/src/main/notifications.ts`, `desktop-app/src/main/lifecycle.ts` | application menu, failed-operation notification, quit state |
 | `desktop-app/src/main/loginLaunch.ts` | login-item registration and hidden login launch |

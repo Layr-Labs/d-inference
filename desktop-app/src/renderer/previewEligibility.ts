@@ -1,9 +1,11 @@
 import type { Snapshot } from '../shared/contracts';
 import type { EligibilityCheck } from '../shared/eligibility';
+import { macosMajor } from '../shared/macos';
+import { macosCheck } from './components/onboarding/eligibility';
 
 // Development preview only. `?preview&onboarding=eligible|ineligible|unknown` opens onboarding
 // on that scan result; `&waitlist=fail` rejects sign-ups the way a runtime without the
-// action does.
+// action does; `&macos=26.5` reports that macOS version instead of 27.0.
 const scenarios = ['eligible', 'ineligible', 'unknown'] as const;
 export type OnboardingScenario = (typeof scenarios)[number];
 
@@ -12,6 +14,12 @@ export const onboardingScenario: OnboardingScenario | undefined =
   import.meta.env.DEV && params.has('preview')
     ? scenarios.find((scenario) => scenario === params.get('onboarding'))
     : undefined;
+
+// Read when asked, so a test can change the address between calls.
+export function previewMacOSVersion() {
+  const version = new URLSearchParams(globalThis.location?.search).get('macos');
+  return version && macosMajor(version) !== undefined ? version : '27.0';
+}
 
 function freshInstall(snapshot: Snapshot): Snapshot {
   return {
@@ -53,7 +61,7 @@ export function withOnboardingScenario(
         ok: true,
         value: `${snapshot.machine.memory_gb} GB`,
       },
-      { id: 'macos', label: 'macOS', ok: true, value: '26.1' },
+      macosCheck(previewMacOSVersion()),
       { id: 'storage', label: 'Free storage', ok: true, value: '412 GB' },
       { id: 'security', label: 'Security', ok: true, value: 'SIP and Secure Boot on' },
     ]);
@@ -77,7 +85,7 @@ export function withOnboardingScenario(
           detail:
             'This Mac has 8 GB of unified memory; the smallest model on Darkbloom needs 16 GB.',
         },
-        { id: 'macos', label: 'macOS', ok: true, value: '15.6' },
+        macosCheck(previewMacOSVersion()),
         { id: 'storage', label: 'Free storage', ok: true, value: '96 GB' },
         { id: 'security', label: 'Security', ok: true, value: 'SIP and Secure Boot on' },
       ],

@@ -142,7 +142,7 @@ it('opens the link page while a link code is pending', async () => {
   expect(open).toHaveBeenCalledWith('link');
 });
 
-it('explains a disconnected runtime and repairs it through the native installer', async () => {
+it('explains a disconnected CLI and repairs it through the native installer', async () => {
   const install = vi.spyOn(previewAPI, 'install');
   const message = 'Could not connect to the runtime. Update or repair the installation.';
   render(
@@ -153,8 +153,32 @@ it('explains a disconnected runtime and repairs it through the native installer'
   );
   expect(within(health()).getByRole('status')).toHaveTextContent('Connection unavailable');
   expect(health()).toHaveTextContent('Serving status unavailable');
-  fireEvent.click(within(health()).getByRole('button', { name: 'Repair runtime' }));
+  expect(health()).toHaveTextContent('Repair the Darkbloom CLI');
+  fireEvent.click(within(health()).getByRole('button', { name: 'Repair CLI' }));
   expect(install).toHaveBeenCalled();
+});
+
+it('asks an existing install below macOS 27 to update macOS, while it keeps serving', async () => {
+  const open = vi.spyOn(previewAPI, 'openSoftwareUpdate');
+  const backend = await previewBackend({ system: { macosVersion: '26.5' } });
+  const { unmount } = render(<LocalOverview backend={backend} navigate={vi.fn()} />);
+  expect(within(health()).getByRole('status')).toHaveTextContent('Ready to serve');
+  expect(health()).toHaveTextContent('2 models loaded');
+  expect(within(health()).getByRole('heading', { name: 'Next steps' })).toBeVisible();
+  expect(health()).toHaveTextContent(
+    'Update macOSDarkbloom needs macOS 27 or later. Update macOS to keep serving.',
+  );
+  fireEvent.click(within(health()).getByRole('button', { name: 'Open Software Update' }));
+  expect(open).toHaveBeenCalledOnce();
+  unmount();
+  render(
+    <LocalOverview
+      backend={await previewBackend({ system: { macosVersion: '27.0' } })}
+      navigate={vi.fn()}
+    />,
+  );
+  expect(within(health()).queryByRole('heading', { name: 'Next steps' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Open Software Update' })).not.toBeInTheDocument();
 });
 
 it('shows unreported per-Mac earnings as unknown, never as zero', async () => {

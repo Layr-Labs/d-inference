@@ -13,7 +13,10 @@ export function useMacScan(backend: BackendState, active: boolean, onEligible: (
   const [scanned, setScanned] = useState<{ run: number; result: EligibilityResult }>();
   const result = scanned?.run === run.id ? scanned.result : undefined;
   if (active && !result && backend.state && !run.reading)
-    setScanned({ run: run.id, result: evaluateEligibility(backend.state) });
+    setScanned({
+      run: run.id,
+      result: evaluateEligibility(backend.state, backend.system?.macosVersion),
+    });
   const script = useMemo(
     () =>
       active && result

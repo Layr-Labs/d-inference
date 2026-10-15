@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { assessReadiness } from '../src/renderer/features/machines/overview/readiness';
 import { previewAPI } from '../src/renderer/preview';
 import type { DesktopStatus, Snapshot } from '../src/shared/contracts';
@@ -6,8 +6,8 @@ import type { DesktopStatus, Snapshot } from '../src/shared/contracts';
 const connected: DesktopStatus = { state: 'ready' };
 const current = { required: false, available: false };
 const state = () => previewAPI.read<Snapshot>('state');
-const assess = (snapshot: Snapshot, status = connected, update = current) =>
-  assessReadiness({ status, state: snapshot, update });
+const assess = (snapshot: Snapshot, status = connected, update = current, macosVersion = '27.0') =>
+  assessReadiness({ status, state: snapshot, update, macosVersion });
 const ids = (readiness: ReturnType<typeof assess>) => readiness.steps.map((step) => step.id);
 
 it('is ready with no steps while linked models serve', async () => {
@@ -42,23 +42,37 @@ it('advises linking without changing a ready tone', async () => {
   expect(linking.steps[0].actions).toEqual([{ kind: 'link-page', label: 'Open link page' }]);
 });
 
-it('reports only the runtime while disconnected', async () => {
+it('reports only the CLI while disconnected', async () => {
   const snapshot = await state();
   const reconnecting = assess(snapshot, { state: 'connecting' });
   expect(reconnecting.tone).toBe('pending');
-  expect(reconnecting.steps).toEqual([expect.objectContaining({ id: 'runtime', actions: [] })]);
+  expect(reconnecting.steps).toEqual([
+    expect.objectContaining({
+      id: 'runtime',
+      title: 'Reconnecting to the Darkbloom CLI',
+      actions: [],
+    }),
+  ]);
+  expect(assess(snapshot, { state: 'installing' }).steps[0].title).toBe(
+    'Installing the Darkbloom CLI',
+  );
   const broken = assess(snapshot, {
     state: 'error',
     message: 'Update or repair the installation.',
   });
   expect(broken.tone).toBe('blocked');
   expect(broken.steps[0]).toMatchObject({
+    title: 'Repair the Darkbloom CLI',
     detail: 'Update or repair the installation.',
-    actions: [{ kind: 'install', label: 'Repair runtime' }],
+    actions: [{ kind: 'install', label: 'Repair CLI' }],
   });
-  expect(assess(snapshot, { state: 'missing' }).steps[0].actions).toEqual([
-    { kind: 'install', label: 'Install runtime' },
-  ]);
+  expect(assess(snapshot, { state: 'missing' }).steps[0]).toMatchObject({
+    title: 'Install the Darkbloom CLI',
+    detail: 'The app can’t reach the Darkbloom CLI on this Mac.',
+    actions: [{ kind: 'install', label: 'Install CLI' }],
+  });
+  // Nothing is said about macOS while the CLI itself is unavailable.
+  expect(ids(assess(snapshot, { state: 'missing' }, current, '26.5'))).toEqual(['runtime']);
 });
 
 it('offers to start a stopped provider with its selected downloaded models', async () => {
@@ -191,4 +205,48 @@ it('uses current facts instead of authorization event text or processing counts'
       models: snapshot.models.map((model, i) => ({ ...model, loaded: i === 0 })),
     }).summary,
   ).toBe('1 model loaded');
+});
+
+describe('macOS below the minimum for new providers', () => {
+  const below = (snapshot: Snapshot, update = current) =>
+    assess(snapshot, connected, update, '26.5');
+  const macos = {
+    id: 'macos',
+    title: 'Update macOS',
+    detail: 'Darkbloom needs macOS 27 or later. Update macOS to keep serving.',
+    actions: [{ kind: 'software-update', label: 'Open Software Update' }],
+  };
+
+  it('advises updating macOS on an existing install without blocking a serving Mac', async () => {
+    expect(below(await state())).toEqual({
+      tone: 'ready',
+      status: 'Ready to serve',
+      summary: '2 models loaded',
+      steps: [macos],
+    });
+  });
+
+  it('comes after the steps that keep this Mac from serving, before linking', async () => {
+    const stopped = below({ ...(await state()), state: 'stopped', linked: false });
+    expect(stopped).toMatchObject({ tone: 'blocked', status: 'Stopped' });
+    expect(ids(stopped)).toEqual(['start', 'macos', 'link']);
+    const required = below(await state(), { required: true, available: true });
+    expect(required.status).toBe('Update Darkbloom');
+    expect(ids(required)).toEqual(['update', 'macos']);
+    const offline = below({ ...(await state()), provider_status: 'offline' });
+    expect(offline).toMatchObject({ tone: 'pending', status: 'Connecting to the network' });
+    expect(ids(offline)).toEqual(['connection', 'macos']);
+  });
+
+  it('says nothing on macOS 27 or later, or when the version is unknown', async () => {
+    for (const version of ['27.0', '27.1.2', '28.0', '', undefined])
+      expect(
+        assessReadiness({
+          status: connected,
+          state: await state(),
+          update: current,
+          macosVersion: version,
+        }).steps,
+      ).toEqual([]);
+  });
 });

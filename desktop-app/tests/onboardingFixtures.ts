@@ -70,6 +70,7 @@ export function backendWith(
 ): BackendState {
   return {
     status: { state: 'ready' },
+    system: { macosVersion: '27.0' },
     state,
     cloud: undefined,
     network: undefined,

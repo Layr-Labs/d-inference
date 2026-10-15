@@ -4,7 +4,8 @@ import type { Backend } from './backend';
 import { HardwareWatch } from './hardware';
 import type { desktopUpdates } from './updates';
 import type { MainWindow } from './window';
-import { clipboardText, externalURL, isTrustedSender } from './security';
+import type { SystemInfo } from '../shared/macos';
+import { clipboardText, externalURL, isTrustedSender, softwareUpdateURL } from './security';
 
 function installScript() {
   return path.join(
@@ -45,6 +46,15 @@ export function registerIPC(options: {
   });
   handle('app:external', async (target) => {
     await shell.openExternal(externalURL(target, backend.snapshot?.link?.url));
+  });
+  // Elsewhere (a development build on Linux, say) the version isn't macOS's, so it is unknown.
+  handle('app:system', (): SystemInfo => ({
+    macosVersion: process.platform === 'darwin' ? process.getSystemVersion() : '',
+  }));
+  // A fixed System Settings URL: the renderer chooses no part of it, and the external-link
+  // allowlist stays https-only.
+  handle('app:software-update', async () => {
+    await shell.openExternal(softwareUpdateURL);
   });
   const hardware = new HardwareWatch(
     (signal) => backend.openHardwareEvents(signal),

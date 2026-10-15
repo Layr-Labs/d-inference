@@ -64,6 +64,7 @@ it('uses revision-checked native settings and never restarts the provider automa
   const backend: BackendState = {
     state,
     status: { state: 'ready' },
+    system: { macosVersion: '27.0' },
     cloud: undefined,
     network: undefined,
     cooling: undefined,

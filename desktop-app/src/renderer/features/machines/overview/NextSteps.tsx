@@ -2,6 +2,7 @@ import type { Route } from '../../../../shared/contracts';
 import type { BackendState } from '../../../useBackend';
 import { api } from '../../../useBackend';
 import { Button } from '../../../components/UI';
+import { openSoftwareUpdate } from '../../../softwareUpdate';
 import type { ReadinessStep, StepAction } from './readiness';
 import styles from './overview.module.css';
 
@@ -18,11 +19,12 @@ export function NextSteps({
     if (action.kind === 'route') navigate(action.route);
     else if (action.kind === 'act') void backend.act(action.action);
     else if (action.kind === 'link-page') void api?.openExternal('link');
+    else if (action.kind === 'software-update') openSoftwareUpdate();
     else
       void api
         ?.install()
         .catch(() =>
-          backend.setError('Runtime installation failed. Check your connection and retry.'),
+          backend.setError('Darkbloom CLI installation failed. Check your connection and retry.'),
         );
   };
   const disabled = (action: StepAction) =>

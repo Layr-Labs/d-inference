@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop macOS 27 requirement
+
+- The desktop app no longer offers **Install CLI** to a new Mac below macOS 27: onboarding shows "Darkbloom needs macOS 27 or later" with **Open Software Update**, *Check this Mac* fails a macOS check below 27, and a Mac that already runs the CLI on an older macOS keeps serving with an **Update macOS** next step on This Mac and a dismissible prompt on Home. This Mac's next steps now say "CLI" instead of "runtime".
+
 ## Unreleased — desktop onboarding order and exit
 
 - Make **Install the Darkbloom CLI** the first onboarding step, then check the Mac, link the Darkbloom account and start. It offers **Install CLI**, **Repair CLI** or **Update CLI** with the reason, and the install starts only when you click; while an install you started runs it shows the progress. Nothing later is reachable until the CLI is connected; setup then moves on to the check, and an already installed CLI opens at the check. An ineligible Mac stops at the check with its reasons and the waitlist and is never asked to link. An eligible Mac then links its account: the browser opens only from **Open link page**, and an in-progress link has a Cancel button. An already linked Mac goes from the check straight to Start, and a start on an unlinked Mac returns to linking. **Explore the app first** now leaves onboarding from any step once the CLI is connected, instead of only the last one. The local-only choice under Advanced is removed from onboarding; local models stay available in the app.

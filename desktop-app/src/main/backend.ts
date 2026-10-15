@@ -76,13 +76,19 @@ export class Backend extends EventEmitter {
   // Releases require Darkbloom's Developer ID; opt-in previews require their
   // compiled-in review signer and dedicated bundled-API identifier.
   private async verifyRuntime(binary: string) {
-    if (this.packaged)
+    if (!this.packaged) return;
+    try {
       await execute('/usr/bin/codesign', [
         '--verify',
         '--strict',
         this.preview?.requirement || runtimeRequirement,
         binary,
       ]);
+    } catch {
+      // The binary exists (realpath resolved it). A runtime that can't be verified, including
+      // when codesign itself is unavailable, is untrusted, never a missing install.
+      throw new Error('Runtime signature verification failed');
+    }
   }
   private status(value: DesktopStatus) {
     this.current = value;

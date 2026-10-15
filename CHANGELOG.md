@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop preview external links
+
+- In the browser development preview (`?preview`), *Read the guide*, *Terms of Service*, *Privacy*, *Account & payouts*, *Troubleshooting guide* and *Open browser* now open their pages in a new tab instead of doing nothing; link destinations move to `src/shared/externalLinks.ts`, shared with the main process, whose https and host checks are unchanged. The signed app was not affected.
+
 ## Unreleased — desktop hardware load
 
 - Serve real whole-machine load to the desktop app over the authenticated loopback control API: per-core CPU load with the chip's tier and cluster layout (including M5 Super cores), GPU utilization and memory, ANE activity, memory use and pressure, thermal state, and Darkbloom's share of GPU time. Sampling runs in the desktop API process only while the app is looking, without root, and never reaches heartbeats, logs or the coordinator.

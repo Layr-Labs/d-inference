@@ -21,7 +21,7 @@ export function previewLink(
   return {
     ...snapshot,
     link: {
-      url: 'https://darkbloom.dev/link',
+      url: 'https://console.darkbloom.dev/link',
       code: 'KXQF-7M2P',
       expires_at: Date.now() / 1000 + 900,
       state: 'pending',

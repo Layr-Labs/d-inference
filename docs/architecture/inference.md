@@ -32,12 +32,18 @@ calibrated prefill, and no MTP. These internal paths do not register a model or
 expose an HTTP route. `NemotronSuperLocalLoad` owns an unpublished load transaction,
 checks the pinned config, reserves the conservative SDK quote and preserves
 charges on native completion faults. `NemotronSuperPromptContract` renders the
-pinned literal text template and rejects conflicting reasoning controls. Its
-text entry rejects tools, schemas and media until their request paths are wired.
+pinned template with reference `apply_chat_template` semantics: request-order tool
+schemas and tool-call arguments, Python `str`/`strip`/`json.dumps` filters, and the
+processor's `<img>`, one `<image>` per feature, `</img>` expansion. It rejects
+conflicting reasoning controls; `NemotronSuperRequestPlan` resolves those controls,
+the shared tool-choice policy and the response-format instruction once per
+request. A generated golden corpus pins rendered text and token IDs.
 `NemotronSuperVisionSubmission` preserves causal attention and absent position
-state when translating admitted SDK features. `NemotronSuperLocalOutput` buffers
-bounded output until native channel parsing, tool validation and response-format
-validation finish. The unregistered `runValidatedText` binding connects rendered tool/schema prompts
+state when translating admitted SDK features. `NemotronSuperLocalOutput` applies the
+reference `ultra_v3` reasoning split in `NemotronSuperReasoningChannel`, streams
+reasoning and plain content, and withholds tool calls and JSON content until the
+shared tool and response-format validators pass; output stays bounded. The
+unregistered `runValidatedText` binding connects rendered tool/schema prompts
 to withheld output validation after native retirement. It rejects truncation and
 missing/error terminals. Causal vision submission is exercised by a synthetic
 fixture through the real bridge, including RADIO/projector preparation, generation
@@ -49,7 +55,9 @@ composite in `NemotronSuperRecurrentAdapter`, a serial causal adapter with expli
 scalar-cache-offset positioning. It rejects explicit position tensors, packed rows
 and mismatched state/cache counts; the generic Nemotron type is not widened. Sources:
 `provider-swift/Sources/ProviderCore/Inference/Vision/NemotronSuperVisionSubmission.swift`,
-`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperLocalOutput.swift`.
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperLocalOutput.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Streaming/NemotronSuperReasoningChannel.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperRequestPlan.swift`.
 Sources:
 `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/NemotronSuperLocalLoad.swift`,
 `provider-swift/Sources/ProviderCore/Inference/Prompting/NemotronSuperPromptContract.swift`,

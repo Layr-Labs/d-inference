@@ -18,9 +18,12 @@ if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF_TYPE:-}" = branch ]; t
   validation_only=false
   RELEASE_VERSION_OVERRIDE=
 fi
+# staging is a third environment (DBLM-771). It is dispatch-only: no push or tag
+# trigger resolves to staging, so a master push still publishes exactly one dev
+# release. Auto-publishing staging on a master push is a deferred decision.
 case "$release_environment" in
-  dev|prod) ;;
-  *) echo '::error::Release environment must be dev or prod' >&2; exit 1 ;;
+  dev|prod|staging) ;;
+  *) echo '::error::Release environment must be dev, prod or staging' >&2; exit 1 ;;
 esac
 case "$validation_only" in
   true|false) ;;
@@ -34,6 +37,10 @@ if [ "$validation_only" = true ] && {
 fi
 if [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" == *-dev.* ]]; then
   echo '::error::-dev tags are unsupported; dev releases come from master pushes or workflow_dispatch with environment=dev' >&2
+  exit 1
+fi
+if [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" == *-staging.* ]]; then
+  echo '::error::-staging tags are unsupported; staging releases come from workflow_dispatch with environment=staging' >&2
   exit 1
 fi
 if [ "$release_environment" = prod ] && [ "$GITHUB_REF_TYPE" != tag ]; then
@@ -56,6 +63,14 @@ if [ "$release_environment" = dev ]; then
     exit 1
   fi
   release_version="${release_version}-dev.${GITHUB_RUN_NUMBER}"
+fi
+if [ "$release_environment" = staging ]; then
+  # Every staging build carries a staging marker that SemVer orders by run number.
+  if [[ ! "${GITHUB_RUN_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
+    echo '::error::A staging release requires GITHUB_RUN_NUMBER' >&2
+    exit 1
+  fi
+  release_version="${release_version}-staging.${GITHUB_RUN_NUMBER}"
 fi
 # Validate before writing workflow outputs, including manual version overrides.
 ./scripts/check-release-version.sh "$release_version"

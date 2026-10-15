@@ -7,6 +7,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "https://api.darkbloom.dev"
         case .dev: return "https://api.dev.darkbloom.dev"
+        case .staging: return "https://api.staging.darkbloom.dev"
         }
     }
 
@@ -15,6 +16,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "wss://api.darkbloom.dev/ws/provider"
         case .dev: return "wss://api.dev.darkbloom.dev/ws/provider"
+        case .staging: return "wss://api.staging.darkbloom.dev/ws/provider"
         }
     }
 
@@ -24,6 +26,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "https://models.darkbloom.ai"
         case .dev: return "https://models.darkbloom.ai"
+        case .staging: return "https://models.darkbloom.ai"
         }
     }
 
@@ -32,6 +35,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "darkbloom"
         case .dev: return "darkbloom-dev"
+        case .staging: return "darkbloom-staging"
         }
     }
 
@@ -40,6 +44,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "darkbloom-enclave"
         case .dev: return "darkbloom-enclave-dev"
+        case .staging: return "darkbloom-enclave-staging"
         }
     }
 
@@ -48,6 +53,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "Darkbloom.app"
         case .dev: return "Darkbloom Dev.app"
+        case .staging: return "Darkbloom Staging.app"
         }
     }
 
@@ -56,6 +62,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "Darkbloom"
         case .dev: return "Darkbloom Dev"
+        case .staging: return "Darkbloom Staging"
         }
     }
 
@@ -64,6 +71,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return ".darkbloom"
         case .dev: return ".darkbloom-dev"
+        case .staging: return ".darkbloom-staging"
         }
     }
 
@@ -72,6 +80,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return ".config/darkbloom"
         case .dev: return ".config/darkbloom-dev"
+        case .staging: return ".config/darkbloom-staging"
         }
     }
 
@@ -80,6 +89,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return [".config/eigeninference"]
         case .dev: return []
+        case .staging: return []
         }
     }
 
@@ -88,6 +98,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "io.darkbloom.provider"
         case .dev: return "io.darkbloom.provider.dev"
+        case .staging: return "io.darkbloom.provider.staging"
         }
     }
 
@@ -96,6 +107,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "io.darkbloom.watchdog"
         case .dev: return "io.darkbloom.watchdog.dev"
+        case .staging: return "io.darkbloom.watchdog.staging"
         }
     }
 
@@ -104,6 +116,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "com.darkbloom.provider"
         case .dev: return "com.darkbloom.provider.dev"
+        case .staging: return "com.darkbloom.provider.staging"
         }
     }
 
@@ -113,6 +126,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "dev.darkbloom.provider"
         case .dev: return "dev.darkbloom.provider.dev"
+        case .staging: return "dev.darkbloom.provider.staging"
         }
     }
 
@@ -121,6 +135,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return 8000
         case .dev: return 8001
+        case .staging: return 8002
         }
     }
 
@@ -130,6 +145,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "io.darkbloom"
         case .dev: return "io.darkbloom.dev"
+        case .staging: return "io.darkbloom.staging"
         }
     }
 
@@ -140,6 +156,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "darkbloom"
         case .dev: return "darkbloom-dev"
+        case .staging: return "darkbloom-staging"
         }
     }
 
@@ -150,6 +167,7 @@ extension BuildEnvironment {
         switch self {
         case .prod: return "main"
         case .dev: return "darkbloom-dev"
+        case .staging: return "darkbloom-staging"
         }
     }
 }

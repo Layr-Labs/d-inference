@@ -1,6 +1,6 @@
 # Build The Provider, Retained Console And Landing
 
-> Last updated: 2026-10-14
+> Last updated: 2026-10-15
 
 Build the provider, its source-matched native resources, and the independent
 landing site from this repository. The existing console snapshot and its build,
@@ -108,8 +108,13 @@ see [resource and release tooling checks](test.md#focused-tooling-checks).
 ## Dev Build Identity
 
 A dev release build (`DARKBLOOM_RELEASE_ENVIRONMENT=dev`) has its own install
-identity, so it runs beside a production provider on the same Mac. The only
-declaration of the values is `provider-swift/identity/provider-identity.json`.
+identity, so it runs beside a production provider on the same Mac. A `staging`
+release build (`DARKBLOOM_RELEASE_ENVIRONMENT=staging`) is a third environment
+with the same shape as dev: its own `darkbloom-staging` identity and the staging
+coordinator, built from the same source. It is dispatch-only and does not
+publish until its infra and `STAGING_RELEASE_KEY` exist (see
+[provider-release.md](../operations/provider-release.md)). The only declaration
+of the values is `provider-swift/identity/provider-identity.json`.
 `scripts/generate-provider-identity.py` generates the Swift `BuildEnvironment`
 properties (`provider-swift/Sources/ProviderBuildEnvironment/Identity.generated.swift`)
 and the table below from it; run the script after you change the JSON.
@@ -118,27 +123,27 @@ tests use the production values.
 
 <!-- BEGIN provider identity: generated from provider-swift/identity/provider-identity.json by scripts/generate-provider-identity.py; do not edit -->
 
-| Field | Production | Dev |
-|---|---|---|
-| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` |
-| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` |
-| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
-| `cliName` | `darkbloom` | `darkbloom-dev` |
-| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` |
-| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` |
-| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` |
-| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` |
-| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` |
-| `legacyConfigDirectoryNames` | `.config/eigeninference` | none |
-| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` |
-| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` |
-| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` |
-| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` |
-| `defaultLocalPort` | `8000` | `8001` |
-| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` |
-| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` |
-| `modelRevisionRef` | `main` | `darkbloom-dev` |
-| `releaseVersionMarker` | versions without it | `-dev.` |
+| Field | Production | Dev | Staging |
+|---|---|---|---|
+| `coordinatorHTTPURL` | `https://api.darkbloom.dev` | `https://api.dev.darkbloom.dev` | `https://api.staging.darkbloom.dev` |
+| `coordinatorWebSocketURL` | `wss://api.darkbloom.dev/ws/provider` | `wss://api.dev.darkbloom.dev/ws/provider` | `wss://api.staging.darkbloom.dev/ws/provider` |
+| `modelCDNURL` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` | `https://models.darkbloom.ai` |
+| `cliName` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `enclaveName` | `darkbloom-enclave` | `darkbloom-enclave-dev` | `darkbloom-enclave-staging` |
+| `appBundleName` | `Darkbloom.app` | `Darkbloom Dev.app` | `Darkbloom Staging.app` |
+| `appDisplayName` | `Darkbloom` | `Darkbloom Dev` | `Darkbloom Staging` |
+| `installDirectoryName` | `.darkbloom` | `.darkbloom-dev` | `.darkbloom-staging` |
+| `configDirectoryName` | `.config/darkbloom` | `.config/darkbloom-dev` | `.config/darkbloom-staging` |
+| `legacyConfigDirectoryNames` | `.config/eigeninference` | none | none |
+| `launchAgentLabel` | `io.darkbloom.provider` | `io.darkbloom.provider.dev` | `io.darkbloom.provider.staging` |
+| `watchdogAgentLabel` | `io.darkbloom.watchdog` | `io.darkbloom.watchdog.dev` | `io.darkbloom.watchdog.staging` |
+| `logSubsystem` | `com.darkbloom.provider` | `com.darkbloom.provider.dev` | `com.darkbloom.provider.staging` |
+| `serviceLogSubsystem` | `dev.darkbloom.provider` | `dev.darkbloom.provider.dev` | `dev.darkbloom.provider.staging` |
+| `defaultLocalPort` | `8000` | `8001` | `8002` |
+| `keychainServicePrefix` | `io.darkbloom` | `io.darkbloom.dev` | `io.darkbloom.staging` |
+| `encryptedCacheNamespace` | `darkbloom` | `darkbloom-dev` | `darkbloom-staging` |
+| `modelRevisionRef` | `main` | `darkbloom-dev` | `darkbloom-staging` |
+| `releaseVersionMarker` | versions without it | `-dev.` | `-staging.` |
 
 <!-- END provider identity -->
 

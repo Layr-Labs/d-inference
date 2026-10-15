@@ -33,16 +33,21 @@ DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbl
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
 INSTALL_TEST_MODE=0
 
-# A dev release (version X.Y.Z-dev.N) installs as its own provider beside the
-# production provider. The two identities share no name and no path, so a dev
-# install never reads, moves or deletes production files, and the reverse.
-# Nothing may use these names or paths before this function runs.
+# A dev release (version X.Y.Z-dev.N) or a staging release (X.Y.Z-staging.N)
+# installs as its own provider beside the production provider. The identities
+# share no name and no path, so one install never reads, moves or deletes
+# another's files. Nothing may use these names or paths before this function runs.
 select_provider_identity() {
     case "$1" in
         *-dev.*)
             PROVIDER_LABEL="Darkbloom Dev"
             CLI_NAME="darkbloom-dev"
             ENCLAVE_NAME="darkbloom-enclave-dev"
+            ;;
+        *-staging.*)
+            PROVIDER_LABEL="Darkbloom Staging"
+            CLI_NAME="darkbloom-staging"
+            ENCLAVE_NAME="darkbloom-enclave-staging"
             ;;
         *)
             PROVIDER_LABEL="Darkbloom"

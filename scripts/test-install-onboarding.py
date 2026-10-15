@@ -8,7 +8,8 @@ import unittest
 
 from provider_release_identity import DOCUMENT, identity
 
-DEV_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarker"] + "12"
+DEV_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarkers"]["dev"] + "12"
+STAGING_RELEASE = "0.9.20" + DOCUMENT["releaseVersionMarkers"]["staging"] + "12"
 
 
 class InstallerOnboardingTests(unittest.TestCase):
@@ -98,6 +99,13 @@ echo "next installation phase"
             with self.subTest(version=version):
                 output, _ = self.run_setup(version, release=DEV_RELEASE)
                 self.assertIn(identity(DEV_RELEASE)["cliName"] + " login", output)
+                self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
+
+    def test_staging_release_names_the_staging_cli(self):
+        for version in ("27.0", "26.5"):
+            with self.subTest(version=version):
+                output, _ = self.run_setup(version, release=STAGING_RELEASE)
+                self.assertIn(identity(STAGING_RELEASE)["cliName"] + " login", output)
                 self.assertNotIn(identity("0.9.20")["cliName"] + " login", output)
 
     def test_legacy_setup_never_attempts_anonymous_enrollment_or_fallback(self):

@@ -22,7 +22,9 @@ export function runtimeStep(status: DesktopStatus): ReadinessStep {
     return {
       id: 'runtime',
       title:
-        status.state === 'installing' ? 'Installing the runtime' : 'Reconnecting to the runtime',
+        status.state === 'installing'
+          ? 'Installing the Darkbloom CLI'
+          : 'Reconnecting to the Darkbloom CLI',
       detail:
         status.state === 'installing'
           ? 'This can take a few minutes.'
@@ -32,9 +34,9 @@ export function runtimeStep(status: DesktopStatus): ReadinessStep {
   const missing = status.state === 'missing';
   return {
     id: 'runtime',
-    title: missing ? 'Install the Darkbloom runtime' : 'Repair the Darkbloom runtime',
-    detail: status.message || 'The app can’t reach the runtime on this Mac.',
-    actions: [{ kind: 'install', label: missing ? 'Install runtime' : 'Repair runtime' }],
+    title: missing ? 'Install the Darkbloom CLI' : 'Repair the Darkbloom CLI',
+    detail: status.message || 'The app can’t reach the Darkbloom CLI on this Mac.',
+    actions: [{ kind: 'install', label: missing ? 'Install CLI' : 'Repair CLI' }],
   };
 }
 
@@ -43,6 +45,17 @@ export const operationStep = (operation: Operation): ReadinessStep => ({
   title: operationLabel(operation),
   detail: 'Wait for it to finish.',
   actions: [],
+});
+
+// Shown on This Mac and Home while an existing provider runs a macOS release below the minimum
+// for new providers.
+export const updateMacOSDetail = 'Darkbloom needs macOS 27 or later. Update macOS to keep serving.';
+
+export const macosStep = (): ReadinessStep => ({
+  id: 'macos',
+  title: 'Update macOS',
+  detail: updateMacOSDetail,
+  actions: [{ kind: 'software-update', label: 'Open Software Update' }],
 });
 
 export function updateStep(available: boolean): ReadinessStep {

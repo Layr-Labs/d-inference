@@ -13,6 +13,7 @@ function backend(): BackendState {
   return {
     status: { state: 'ready' },
     state: undefined,
+    system: undefined,
     cloud: undefined,
     cooling: undefined,
     release: undefined,

@@ -1,8 +1,10 @@
-import { Download, LoaderCircle, RotateCw, X } from 'lucide-react';
+import { Download, LoaderCircle, RefreshCw, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import type { DesktopStatus } from '../../../shared/contracts';
+import { supportsNewProviders } from '../../../shared/macos';
 import type { BackendState } from '../../useBackend';
 import { api } from '../../useBackend';
+import { openSoftwareUpdate } from '../../softwareUpdate';
 import { GetHelp } from '../Help';
 import { Button, Notice } from '../UI';
 
@@ -46,6 +48,37 @@ export function RuntimeSetup({
 }: {
   backend: BackendState;
   returningUser?: boolean;
+}) {
+  // New providers need macOS 27 or later. A Mac that already has the CLI (any status but
+  // missing), or a returning user reinstalling it, is an existing provider and carries on; the
+  // coordinator decides whether it serves.
+  const version = backend.system?.macosVersion;
+  if (!returningUser && backend.status.state === 'missing' && !supportsNewProviders(version))
+    return <MacOSRequired version={version!} />;
+  return <InstallCLI backend={backend} returningUser={returningUser} />;
+}
+
+function MacOSRequired({ version }: { version: string }) {
+  return (
+    <>
+      <h2>Darkbloom needs macOS 27 or later</h2>
+      <p>
+        New Macs can join Darkbloom on macOS 27 or later. This Mac runs macOS {version}. Update
+        macOS, then reopen Darkbloom.
+      </p>
+      <Button variant="primary" disabled={!api} onClick={openSoftwareUpdate}>
+        <RefreshCw size={16} /> Open Software Update
+      </Button>
+    </>
+  );
+}
+
+function InstallCLI({
+  backend,
+  returningUser,
+}: {
+  backend: BackendState;
+  returningUser: boolean;
 }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);

@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   act: vi.fn(),
   read: vi.fn(),
   openExternal: vi.fn(),
+  openSoftwareUpdate: vi.fn().mockResolvedValue(undefined),
   onNavigate: () => () => {},
 }));
 vi.mock('../src/renderer/useBackend', () => ({ isPreview: false, api, useBackend: vi.fn() }));
@@ -29,8 +30,8 @@ const button = (name: string | RegExp) => screen.queryByRole('button', { name })
 
 // Renders onboarding against a backend that can move between statuses, as the main process
 // reports them.
-function renderWith(status: DesktopStatus, state?: Snapshot) {
-  let backend: BackendState = backendWith(state, { status });
+function renderWith(status: DesktopStatus, state?: Snapshot, macosVersion = '27.0') {
+  let backend: BackendState = backendWith(state, { status, system: { macosVersion } });
   const done = vi.fn();
   const view = render(<Onboarding backend={backend} done={done} />);
   const update = (next: DesktopStatus, nextState: Snapshot | undefined = backend.state) => {
@@ -185,5 +186,61 @@ describe('install step', () => {
     update({ state: 'ready' });
     expect(heading('Link your account.')).toBeVisible();
     expect(heading('Link your account.')).toHaveFocus();
+  });
+});
+
+describe('macOS below 27', () => {
+  it('asks a new Mac to update macOS instead of installing the CLI', () => {
+    const { update } = renderWith(
+      { state: 'missing', message: 'Install the Darkbloom CLI to connect this Mac.' },
+      undefined,
+      '26.5',
+    );
+    expect(heading('Install the Darkbloom CLI')).toBeNull();
+    expect(heading('Darkbloom needs macOS 27 or later')).toBeVisible();
+    expect(
+      screen.getByText(
+        'New Macs can join Darkbloom on macOS 27 or later. This Mac runs macOS 26.5. Update macOS, then reopen Darkbloom.',
+      ),
+    ).toBeVisible();
+    expect(currentStep()).toHaveTextContent('Install CLI');
+    expect(button(/Install CLI/)).toBeNull();
+    expect(button(/Link account/)).toBeNull();
+    expect(button(/Explore the app first/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Open Software Update/ }));
+    expect(api.openSoftwareUpdate).toHaveBeenCalledOnce();
+    expect(api.install).not.toHaveBeenCalled();
+    // Still blocked when the main process reports the CLI missing again.
+    update({ state: 'missing' });
+    expect(heading('Darkbloom needs macOS 27 or later')).toBeVisible();
+    expect(button(/Install CLI/)).toBeNull();
+  });
+
+  it('offers the install as usual on macOS 27 or later, or when the version is unknown', () => {
+    for (const version of ['27.0', '28.1', '']) {
+      renderWith({ state: 'missing' }, undefined, version);
+      expect(heading('Install the Darkbloom CLI')).toBeVisible();
+      expect(screen.getByRole('button', { name: /Install CLI/ })).toBeEnabled();
+      expect(button(/Open Software Update/)).toBeNull();
+      cleanup();
+    }
+  });
+
+  it('lets a Mac that already has the CLI carry on: connected, broken or outdated', () => {
+    renderWith({ state: 'ready' }, snapshot({ linked: false }), '26.5');
+    expect(heading('Put this Mac to work.')).toBeVisible();
+    expect(currentStep()).toHaveTextContent('Check this Mac');
+    cleanup();
+    renderWith(
+      { state: 'error', message: 'Could not connect to the Darkbloom CLI.' },
+      undefined,
+      '26.5',
+    );
+    expect(heading('Install the Darkbloom CLI')).toBeVisible();
+    expect(screen.getByRole('button', { name: /Repair CLI/ })).toBeEnabled();
+    cleanup();
+    renderWith({ state: 'incompatible' }, undefined, '26.5');
+    expect(screen.getByRole('button', { name: /Update CLI/ })).toBeEnabled();
+    expect(button(/Open Software Update/)).toBeNull();
   });
 });

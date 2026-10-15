@@ -4,7 +4,7 @@ import { previewInsights } from './previewInsights';
 import { publicOrFixture } from './previewNetwork';
 import { previewLink, withPreviewAccount } from './previewAccount';
 import { previewModelAction, simulateAutopilot, withPreviewAutopilot } from './previewAutopilot';
-import { previewWaitlist, withOnboardingScenario } from './previewEligibility';
+import { previewMacOSVersion, previewWaitlist, withOnboardingScenario } from './previewEligibility';
 import { previewRequestHistory, previewSamples } from './previewActivity';
 import { previewHardwareLoad, previewHardwareStream } from './previewHardware';
 import { previewResources } from './previewResources';
@@ -87,6 +87,10 @@ export const previewAPI: DesktopAPI = {
     const url = target === 'link' ? snapshot.link?.url : externalLinks[target];
     if (url) window.open(url, '_blank', 'noopener');
   },
+  async system() {
+    return { macosVersion: previewMacOSVersion() };
+  },
+  async openSoftwareUpdate() {},
   async updateStatus() {
     return { state: 'idle' };
   },

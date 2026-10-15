@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — desktop macOS 27 requirement
+
+- The desktop app no longer offers **Install CLI** to a new Mac below macOS 27: onboarding shows "Darkbloom needs macOS 27 or later" with **Open Software Update**, *Check this Mac* fails a macOS check below 27, and a Mac that already runs the CLI on an older macOS keeps serving with an **Update macOS** next step on This Mac and a dismissible prompt on Home. This Mac's next steps now say "CLI" instead of "runtime".
+
 ## Unreleased — desktop CLI install progress
 
 - On a Mac without the Darkbloom CLI, the desktop app's setup shows **Install the Darkbloom CLI**; the install starts only when you click **Install CLI**. It then shows each step in plain language (“Downloading the CLI… 42%”, “Verifying the CLI’s signature…”, “Setting up device verification…”) with **Cancel**. If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**.

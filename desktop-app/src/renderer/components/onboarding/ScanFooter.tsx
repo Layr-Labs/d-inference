@@ -1,5 +1,6 @@
-import { ArrowRight, RotateCw } from 'lucide-react';
+import { ArrowRight, RefreshCw, RotateCw } from 'lucide-react';
 import type { CSSProperties } from 'react';
+import { openSoftwareUpdate } from '../../softwareUpdate';
 import { Button } from '../UI';
 import { failedChecks } from './eligibility';
 import { scanTiming } from './scanScript';
@@ -53,9 +54,16 @@ export function ScanFooter({
       </button>
     </div>
   );
+  const reasons = failedChecks(result.checks).map((check) => check.id);
   return result.verdict === 'ineligible' ? (
     <>
-      {waitlist && <WaitlistForm reasons={failedChecks(result.checks).map((check) => check.id)} />}
+      {/* An older macOS is the one reason this Mac can fix itself. */}
+      {reasons.includes('macos') && (
+        <Button variant="primary" onClick={openSoftwareUpdate}>
+          <RefreshCw size={16} /> Open Software Update
+        </Button>
+      )}
+      {waitlist && <WaitlistForm reasons={reasons} />}
       {links}
     </>
   ) : (

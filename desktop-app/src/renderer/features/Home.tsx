@@ -1,8 +1,12 @@
 import { Pause, Play } from 'lucide-react';
+import { useState } from 'react';
 import type { BackendState } from '../useBackend';
 import { api, isPreview } from '../useBackend';
 import type { Route } from '../../shared/contracts';
-import { Button, Header } from '../components/UI';
+import { supportsNewProviders } from '../../shared/macos';
+import { Button, Header, Notice } from '../components/UI';
+import { openSoftwareUpdate } from '../softwareUpdate';
+import { updateMacOSDetail } from './machines/overview/readinessSteps';
 import { ContributionMetrics } from './home/ContributionMetrics';
 import { ChipStage } from './home/chip/ChipStage';
 import { FleetSummary } from './home/FleetSummary';
@@ -28,6 +32,8 @@ export function Home({
       : state.state === 'draining'
         ? 'Finishing requests'
         : null;
+  const [macosPrompt, dismissMacOSPrompt] = useMacOSPrompt();
+  const outdated = !supportsNewProviders(backend.system?.macosVersion);
   return (
     <div className={styles.dashboard}>
       <Header
@@ -42,6 +48,12 @@ export function Home({
           </Button>
         }
       />
+      {outdated && macosPrompt && (
+        <Notice onClose={dismissMacOSPrompt}>
+          {updateMacOSDetail}
+          <Button onClick={openSoftwareUpdate}>Open Software Update</Button>
+        </Notice>
+      )}
       <NetworkMilestone network={backend.network} />
       <ContributionMetrics activity={state.activity} explore={() => navigate('analysis')} />
       <div className={styles.activity}>
@@ -82,4 +94,26 @@ export function Home({
       )}
     </div>
   );
+}
+
+// Dismissing the macOS prompt hides it until Darkbloom is next opened; This Mac's next steps
+// keep it in view meanwhile.
+const dismissedKey = 'darkbloom.macos-prompt-dismissed';
+function useMacOSPrompt(): [boolean, () => void] {
+  const [shown, setShown] = useState(() => {
+    try {
+      return sessionStorage.getItem(dismissedKey) !== '1';
+    } catch {
+      return true;
+    }
+  });
+  const dismiss = () => {
+    setShown(false);
+    try {
+      sessionStorage.setItem(dismissedKey, '1');
+    } catch {
+      // Without storage it is dismissed until Home is next shown.
+    }
+  };
+  return [shown, dismiss];
 }

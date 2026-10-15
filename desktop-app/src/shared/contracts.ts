@@ -1,6 +1,7 @@
 import type { AutopilotAction, AutopilotPolicyAction, AutopilotStatus } from './autopilot';
 import type { Eligibility, WaitlistAction } from './eligibility';
 import type { HardwareSample } from './hardware';
+import type { SystemInfo } from './macos';
 export type { HardwareLoad, HardwareSample, HardwareTopology } from './hardware';
 export const protocolVersion = 1;
 export type Route =
@@ -294,6 +295,10 @@ export interface DesktopAPI {
       'console' | 'docs' | 'community' | 'github' | 'slack' | 'x' | 'terms' | 'privacy' | 'link',
   ): Promise<void>;
   copy(text: string): Promise<void>;
+  // This Mac's macOS version, read by the main process.
+  system(): Promise<SystemInfo>;
+  // Opens System Settings at Software Update; the URL is fixed in the main process.
+  openSoftwareUpdate(): Promise<void>;
   updateStatus(): Promise<GUIUpdate>;
   checkUpdate(): Promise<GUIUpdate>;
   applyUpdate(): Promise<void>;

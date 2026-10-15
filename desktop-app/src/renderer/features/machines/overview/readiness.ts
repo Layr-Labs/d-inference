@@ -1,13 +1,22 @@
 import type { Action, DesktopStatus, Route, Snapshot } from '../../../../shared/contracts';
+import { supportsNewProviders } from '../../../../shared/macos';
 import { operationLabel } from '../../../components/operations/labels';
-import { runtimeStep, operationStep, updateStep, linkStep, providerStep } from './readinessSteps';
+import {
+  runtimeStep,
+  operationStep,
+  updateStep,
+  linkStep,
+  providerStep,
+  macosStep,
+} from './readinessSteps';
 
 export type ReadinessTone = 'ready' | 'pending' | 'blocked';
 export type StepAction =
   | { kind: 'route'; route: Route; label: string }
   | { kind: 'act'; action: Action; label: string }
   | { kind: 'install'; label: string }
-  | { kind: 'link-page'; label: string };
+  | { kind: 'link-page'; label: string }
+  | { kind: 'software-update'; label: string };
 export interface ReadinessStep {
   id: string;
   title: string;
@@ -26,12 +35,20 @@ export interface ReadinessFacts {
   status: DesktopStatus;
   state: Snapshot;
   update: { required: boolean; available: boolean };
+  // From the main process; undefined until it answers.
+  macosVersion?: string;
 }
 
 const lifecycle: Action['action'][] = ['start', 'switch', 'stop', 'restart', 'update'];
 // Next steps from reported facts only; admission and routing policy stay with
-// the runtime and coordinator. Linking is advice: it never changes the tone.
-export function assessReadiness({ status, state, update }: ReadinessFacts): Readiness {
+// the runtime and coordinator. Linking and updating macOS are advice: they never change the
+// tone (the coordinator decides whether a Mac below the minimum macOS still serves).
+export function assessReadiness({
+  status,
+  state,
+  update,
+  macosVersion,
+}: ReadinessFacts): Readiness {
   if (status.state !== 'ready') {
     const step = runtimeStep(status);
     return {
@@ -62,9 +79,10 @@ export function assessReadiness({ status, state, update }: ReadinessFacts): Read
         ? 'pending'
         : 'ready';
   if (operation && tone !== 'ready') steps.unshift(operationStep(operation));
+  if (!supportsNewProviders(macosVersion)) steps.push(macosStep());
   if (!state.linked) steps.push(linkStep(state));
   const loaded = state.models.filter((model) => model.serving && model.loaded);
-  const primary = steps.find((step) => !['link', 'operation'].includes(step.id));
+  const primary = steps.find((step) => !['link', 'operation', 'macos'].includes(step.id));
   const statusLabel =
     tone === 'ready'
       ? 'Ready to serve'

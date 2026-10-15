@@ -30,6 +30,7 @@ export function HealthBar({
       required: releaseStatus(installed, latest, minimum) === 'required',
       available: updateAvailable(installed, latest, minimum),
     },
+    macosVersion: backend.system?.macosVersion,
   });
   return (
     <section className={styles.health} aria-label="Health">

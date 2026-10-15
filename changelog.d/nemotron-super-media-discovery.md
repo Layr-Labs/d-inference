@@ -14,3 +14,11 @@ it is disabled by default. Full-checkpoint quality, full image formats, shared-s
 publication and native speculative MTP remain unqualified. Portable fixture
 harnesses preserve reproducible continuation and require measured admission
 and reservation calibration before enabling serving.
+
+The opt-in Super owner hook now also serves text. Prompts match the reference
+chat template and tokenizer byte for byte on a 30-case golden corpus (tool
+schemas in request order, tool-call history, images with `<img>` placeholder
+spans, reasoning on/off). Reasoning follows the reference `ultra_v3` parser:
+`enable_thinking` defaults on and streams `reasoning_content`. Text requests
+return validated `tool_calls` and validated `response_format` JSON. Image
+requests still refuse tools and structured output.

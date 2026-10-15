@@ -440,6 +440,10 @@ reproduce isolated native SDK/provider checks from the pinned gitlinks on a new
 Apple Silicon machine. They include the original 88-shard checksum verifier and
 require separate full-checkpoint admission/reservation calibration. Tiny fixture
 passes do not qualify the shipping provider, MTP speed or full image support.
+Prompt parity uses a committed golden corpus from
+`scripts/nemotron-qualification/prompt_golden.py`; token-ID checks run only when
+`NEMOTRON_SUPER_REFERENCE_DIR` names the pinned tokenizer and template, and
+otherwise skip with that instruction.
 
 ## Related
 

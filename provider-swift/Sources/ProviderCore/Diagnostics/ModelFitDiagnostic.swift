@@ -6,11 +6,13 @@ import Foundation
 /// assigned model doesn't fit its RAM ("Insufficient memory (X GB free, need Y
 /// GB)"). This turns the raw numbers into an operator-facing verdict.
 ///
-/// Delegates to `ModelLoadAdmission` — the SAME arithmetic the running provider
-/// uses in `ProviderLoop.availableMemoryGb()` / `ensureModelLoaded` — so the
-/// verdict `doctor` prints can never drift from what the daemon enforces at load
-/// time. (Before, this modelled an older `weights × 2.0` / `free × 0.7` gate
-/// that no longer matches the runtime.)
+/// Uses `ModelLoadAdmission`'s arithmetic with the supplied memory inputs.
+/// `DoctorRunner` prefers a fresh paired daemon load budget and includes
+/// resident, busy, and eviction-aware context when available. Without that
+/// budget pair, it falls back to an independent current-memory sample.
+/// The verdict describes that snapshot, not a guaranteed future load outcome:
+/// the daemon can evict idle models, reclaim cache, resample memory, and apply
+/// reservation and post-load gates before serving.
 public enum ModelFitDiagnostic {
     private static let gib = 1024.0 * 1024.0 * 1024.0
 

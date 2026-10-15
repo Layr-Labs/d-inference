@@ -84,6 +84,6 @@ struct DecisionJSONTests {
         #expect(falsy.allSatisfy { !$0.isPythonTruthy })
         let truthy: [DecisionJSON] = [.bool(true), .integer("-1"), .float(0.5), .string(" "),
                                        .array([.null]), .object([.init(key: "k", value: .null)])]
-        #expect(truthy.allSatisfy(\.isPythonTruthy))
+        #expect(truthy.allSatisfy { $0.isPythonTruthy })
     }
 }

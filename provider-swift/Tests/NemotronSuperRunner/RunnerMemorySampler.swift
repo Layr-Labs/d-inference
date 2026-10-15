@@ -17,6 +17,8 @@ actor RunnerMemorySampler {
         var mlxActivePlusCache: UInt64 = 0
         var charged: UInt64 = 0
         var byKind: [RunnerChargeKind: UInt64] = [:]
+        /// Max over samples of media_ingress + media + kv held at the same time.
+        var requestHeld: UInt64 = 0
     }
 
     private struct LiveCharge {
@@ -38,6 +40,9 @@ actor RunnerMemorySampler {
     private let log: RunnerEventLog
     private let interval: Duration
     private var window: Window
+    private var windowEpoch = 0
+    private var issuedSamples = 0
+    private var appliedSample = 0
     private var live: [String: LiveCharge] = [:]
     private var loop: Task<Void, Never>?
     private var context: @Sendable () async -> [String: RunnerJSON] = { [:] }
@@ -76,7 +81,7 @@ actor RunnerMemorySampler {
         return .object([
             "memory": RunnerProcessMemory.snapshot(),
             "ledger": Self.ledger(sample.ledger),
-            "charges": Self.charges(sample.rows),
+            "charges": Self.charges(sample.rows, ledgerCharged: sample.ledger.totalOwnedBytes),
             "window": windowJSON(),
             "context": .object(await context()),
             "t_s": .seconds(log.elapsed),
@@ -89,14 +94,22 @@ actor RunnerMemorySampler {
         let closing = windowJSON()
         let kernelReset = RunnerProcessMemory.resetPeaks()
         window = Window(start: log.elapsed)
+        windowEpoch += 1
         _ = await observe()
         return .object(["closed_window": closing, "kernel_interval_reset": .bool(kernelReset)])
     }
 
     private func observe() async -> Sample {
+        issuedSamples += 1
+        let sequence = issuedSamples, epoch = windowEpoch
+        // Rows first: the synchronous reads below then describe the same moment.
+        let rows = await budget.runnerChargeRows(ballastID: Self.ballastID)
         let sample = Sample(footprint: RunnerProcessMemory.footprint(), mlx: Memory.snapshot(),
-            ledger: budget.memoryHeadroomSnapshot(),
-            rows: await budget.runnerChargeRows(ballastID: Self.ballastID))
+            ledger: budget.memoryHeadroomSnapshot(), rows: rows)
+        // Reentrant observers can resume out of order; a stale or pre-reset
+        // sample must not reopen a retired charge or leak into a new window.
+        guard sequence > appliedSample, epoch == windowEpoch else { return sample }
+        appliedSample = sequence
         let footprint = sample.footprint?.current ?? 0
         let active = UInt64(max(0, sample.mlx.activeMemory))
         let cache = UInt64(max(0, sample.mlx.cacheMemory))
@@ -105,9 +118,12 @@ actor RunnerMemorySampler {
         window.mlxActive = max(window.mlxActive, active)
         window.mlxActivePlusCache = max(window.mlxActivePlusCache, active + cache)
         window.charged = max(window.charged, sample.ledger.totalOwnedBytes)
-        for (kind, bytes) in Self.sums(sample.rows) {
+        let sums = Self.sums(sample.rows)
+        for (kind, bytes) in sums {
             window.byKind[kind] = max(window.byKind[kind] ?? 0, bytes)
         }
+        let held = [RunnerChargeKind.mediaIngress, .media, .kv].reduce(UInt64(0)) { $0 &+ (sums[$1] ?? 0) }
+        window.requestHeld = max(window.requestHeld, held)
         trackLifetimes(sample.rows, footprint: footprint, active: active)
         return sample
     }
@@ -142,7 +158,7 @@ actor RunnerMemorySampler {
     private func windowJSON() -> RunnerJSON {
         let footprint = RunnerProcessMemory.footprint()
         return .object([
-            "seconds": .seconds(log.elapsed - window.start), "samples": .int(Int64(window.samples)),
+            "seconds": .seconds(log.elapsed - window.start), "samples": .count(window.samples),
             "sampled_max_phys_footprint": .bytes(window.footprint),
             "kernel_max_phys_footprint": .optional(footprint?.intervalMax),
             "mlx_peak": .bytes(Memory.peakMemory),
@@ -151,6 +167,7 @@ actor RunnerMemorySampler {
             "sampled_max_ledger_charged": .bytes(window.charged),
             "sampled_max_charge_by_kind": .object(Dictionary(uniqueKeysWithValues:
                 window.byKind.map { ($0.key.rawValue, RunnerJSON.bytes($0.value)) })),
+            "sampled_max_request_charges_held": .bytes(window.requestHeld),
         ])
     }
 
@@ -160,9 +177,13 @@ actor RunnerMemorySampler {
         }
     }
 
-    private static func charges(_ rows: [RunnerChargeRow]) -> RunnerJSON {
+    /// `unattributed` is ledger charge outside these rows (e.g. native engine owners).
+    private static func charges(_ rows: [RunnerChargeRow], ledgerCharged: UInt64) -> RunnerJSON {
         let complete = rows.allSatisfy { $0.bytes != nil }
+        let attributed = rows.reduce(UInt64(0)) { $0 &+ ($1.bytes ?? 0) }
         return .object([
+            "unattributed_bytes": complete && ledgerCharged >= attributed
+                ? .bytes(ledgerCharged - attributed) : .null,
             "rows": .array(rows.map {
                 ["id": .string($0.id), "kind": .string($0.kind.rawValue), "bytes": .optional($0.bytes)]
             }),
@@ -181,7 +202,7 @@ actor RunnerMemorySampler {
             "activation_reserve": .bytes(value.activationReserveBytes),
             "system_available": .bytes(value.systemAvailableBytes),
             "commitment_debt": .bytes(value.commitmentDebtBytes),
-            "owners": .int(Int64(value.ownerCount)), "closing_owners": .int(Int64(value.closingOwnerCount)),
+            "owners": .count(value.ownerCount), "closing_owners": .count(value.closingOwnerCount),
             "usage_mlx_active": .bytes(value.activeBytes), "usage_mlx_cache": .bytes(value.cacheBytes),
         ]
     }

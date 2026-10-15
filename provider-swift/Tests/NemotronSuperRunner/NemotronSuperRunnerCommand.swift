@@ -34,7 +34,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
     var backendAllowanceGib = 2.0
     @Option(help: "Override the per-token fp16 KV rate used for request reservations.")
     var kvBytesPerToken: Int?
-    @Option(help: "Process budget cap fraction (default: the provider's resolved default).")
+    @Option(help: "Process budget cap fraction; may only lower the provider default (0.90).")
     var capFraction: Double?
     @Option(help: "Memory/ledger sampling interval, milliseconds.")
     var sampleIntervalMs = 50
@@ -60,6 +60,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         guard kvCapacityGib >= 1, backendAllowanceGib > 0, sampleIntervalMs >= 5, verifyParallelism >= 1,
             (0...65535).contains(port), (0...65535).contains(diagnosticsPort)
         else { throw ValidationError("invalid capacity, allowance, sampling or port value") }
+        if let capFraction, !(capFraction > 0 && capFraction <= UnifiedMemoryCap.defaultCapFraction) {
+            throw ValidationError("--cap-fraction must be in (0, \(UnifiedMemoryCap.defaultCapFraction)]")
+        }
         guard engineEnv.allSatisfy({ $0.contains("=") }) else {
             throw ValidationError("--engine-env entries must be KEY=VALUE")
         }
@@ -75,12 +78,12 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             let inputs = try RunnerCheckpointInputs(directory: URL(fileURLWithPath: checkpoint, isDirectory: true),
                 templateURL: template.map { URL(fileURLWithPath: $0) })
             log.emit("preflight", ["checkpoint": inputs.json, "settings": settings.json])
-            try isolation.writeReady(["preflight": inputs.json])
+            try isolation.writePreflight(inputs.json)
             return
         }
         log.emit("runner.start", ["pid": .int(Int64(getpid())), "mode": synthetic ? "synthetic" : "checkpoint",
             "build_configuration": .string(Self.buildConfiguration), "settings": settings.json,
-            "isolation": isolation.description, "sample_interval_ms": .bytes(sampleIntervalMs)])
+            "isolation": isolation.json, "sample_interval_ms": .count(sampleIntervalMs)])
 
         let budget = GlobalKVCacheBudget(capFraction: capFraction)
         let sampler = RunnerMemorySampler(budget: budget, log: log, interval: .milliseconds(sampleIntervalMs))
@@ -100,7 +103,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
                 "shutdown_requested": .bool(await shutdown.requested),
                 "outstanding_charged_bytes": .bytes(outstanding), "memory": RunnerProcessMemory.snapshot()])
             await sampler.stop()
-            throw ExitCode(outstanding == 0 ? 2 : 3)
+            throw ExitCode(outstanding == 0 ? Exit.loadFailedRetired : Exit.retainedOwnership)
         }
         let loadSeconds = RunnerJSON.seconds(ContinuousClock.now - loadStart)
         let loadWindow = await sampler.resetPeaks()
@@ -118,33 +121,48 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
             "state_dir": .string(isolation.stateDirectory.path),
             "auth_token_file": .string(isolation.authTokenFile.path),
             "events_file": .string(isolation.eventsFile.path), "identity": serving.identity,
-            "settings": settings.json, "sample_interval_ms": .bytes(sampleIntervalMs),
+            "settings": settings.json, "sample_interval_ms": .count(sampleIntervalMs),
             "load_seconds": loadSeconds, "load_phases": phases.json,
         ]
-        do {
-            let (inferencePort, diagnosticsPort) = try await server.start(port: port,
-                diagnosticsPort: diagnosticsPort, defaultMaxTokens: defaultMaxTokens,
-                status: { readyFields.merging(["context": .object(await server.contextFields)]) },
-                onFailure: { await shutdown.request(.failure($0)) })
-            let ready = readyFields.merging([
-                "base_url": .string("http://127.0.0.1:\(inferencePort)"),
-                "diagnostics_url": .string("http://127.0.0.1:\(diagnosticsPort)"),
-            ])
-            try isolation.writeReady(ready)
-            log.emit("serve.ready", ["base_url": .string("http://127.0.0.1:\(inferencePort)"),
-                "diagnostics_url": .string("http://127.0.0.1:\(diagnosticsPort)")])
-        } catch {
-            await shutdown.request(.failure("listener start failed: \(error)"))
+        var servedCleanly = true
+        if await shutdown.requested {
+            log.emit("serve.skipped", ["reason": "shutdown requested during load"])
+        } else {
+            do {
+                let (inferencePort, diagnosticsPort) = try await server.start(port: port,
+                    diagnosticsPort: diagnosticsPort, defaultMaxTokens: defaultMaxTokens,
+                    status: { readyFields.merging(["context": .object(await server.contextFields)]) },
+                    onFailure: { await shutdown.request(.failure($0)) })
+                let ready = readyFields.merging([
+                    "base_url": .string("http://127.0.0.1:\(inferencePort)"),
+                    "diagnostics_url": .string("http://127.0.0.1:\(diagnosticsPort)"),
+                ])
+                try isolation.writeReady(ready)
+                log.emit("serve.ready", ["base_url": .string("http://127.0.0.1:\(inferencePort)"),
+                    "diagnostics_url": .string("http://127.0.0.1:\(diagnosticsPort)")])
+            } catch {
+                await shutdown.request(.failure("listener start failed: \(error)"))
+            }
         }
 
         let reason = await shutdown.wait()
+        if case .failure = reason { servedCleanly = false }
         log.emit("shutdown.begin", reason.json.asFields)
         let drained = await server.drain(timeout: .seconds(drainTimeoutSeconds))
+        if case .object(let fields) = drained, case .bool(true)? = fields["timed_out"] { servedCleanly = false }
         log.emit("shutdown.drained", drained.asFields)
         let clean = await retire(serving, budget: budget, log: log, sampler: sampler)
         await sampler.stop()
-        log.emit("runner.exit", ["code": clean ? 0 : 3])
-        if !clean { throw ExitCode(3) }
+        let code = !clean ? Exit.retainedOwnership : servedCleanly ? 0 : Exit.servingFailed
+        log.emit("runner.exit", ["code": .count(Int(code))])
+        if code != 0 { throw ExitCode(code) }
+    }
+
+    /// 0: retired cleanly after serving; see super-runner.md#shutdown.
+    private enum Exit {
+        static let loadFailedRetired: Int32 = 2
+        static let retainedOwnership: Int32 = 3
+        static let servingFailed: Int32 = 4
     }
 
     private func load(settings: RunnerLoadSettings, isolation: RunnerIsolation, budget: GlobalKVCacheBudget,
@@ -162,8 +180,9 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         }
         await shutdown.setLoadCancellation { task.cancel() }
         if await shutdown.requested { task.cancel() }
-        defer { Task { await shutdown.setLoadCancellation(nil) } }
-        return try await task.value
+        let result = await task.result
+        await shutdown.setLoadCancellation(nil)
+        return try result.get()
     }
 
     /// Retirement is clean only when the owner retired natively and the process
@@ -193,7 +212,7 @@ struct NemotronSuperRunnerCommand: AsyncParsableCommand {
         return RunnerLoadSettings(maxContextLength: maxContext, defaultMaxTokens: defaultMaxTokens,
             kvCapacityBytes: Int(kvCapacityGib * 1_073_741_824),
             backendAllowanceBytes: Int(backendAllowanceGib * 1_073_741_824),
-            kvBytesPerTokenOverride: kvBytesPerToken, engineEnvironment: environment,
+            kvBytesPerTokenOverride: kvBytesPerToken, capFraction: capFraction, engineEnvironment: environment,
             verifyParallelism: verifyParallelism)
     }
 

@@ -31,7 +31,7 @@ enum RunnerCheckpointLoad {
         // weightsBytes is an upper bound (all checkpoint tensors, MTP included);
         // the builder only requires it to cover the installed resident payload.
         let sizing = SlotSizingSnapshot(weightsBytes: tensorBytes,
-            fp16KVBytesPerToken: settings.kvBytesPerTokenOverride ?? facts.fp16KVBytesPerToken,
+            fp16KVBytesPerToken: try settings.kvBytesPerToken(configured: facts.fp16KVBytesPerToken),
             maxContextLength: settings.maxContextLength, defaultMaxTokens: settings.defaultMaxTokens)
         let transaction = NemotronSuperLocalLoad(budget: budget)
         let bridge: EngineV2Bridge
@@ -46,13 +46,19 @@ enum RunnerCheckpointLoad {
             log.emit("load.transaction", ["phase": .string(String(describing: await transaction.phase))])
             throw error
         }
-        let template = templateBytes
-        let hook = try await transaction.runnerOwner().map {
-            try NemotronSuperLocalImageHTTP(owner: $0, templateBytes: template)
+        let hook: NemotronSuperLocalImageHTTP?
+        do {
+            hook = try await transaction.runnerOwner().map {
+                try NemotronSuperLocalImageHTTP(owner: $0, templateBytes: templateBytes)
+            }
+        } catch {
+            // Nothing has been served; retire the loaded owner before failing.
+            try? await transaction.closeAfterDrain()
+            throw error
         }
         let identity = inputs.json.merging([
             "mode": "checkpoint", "checkpoint_dir": .string(directory.path),
-            "shards_verified": .bytes(shardCount), "load_quote_bytes": .bytes(quote),
+            "shards_verified": .count(shardCount), "load_quote_bytes": .bytes(quote),
             "checkpoint_tensor_bytes": .bytes(tensorBytes),
             "fp16_kv_bytes_per_token": .bytes(sizing.fp16KVBytesPerToken), "image_hook": .bool(hook != nil),
         ])
@@ -94,7 +100,7 @@ enum RunnerCheckpointLoad {
             while try await group.next() != nil {
                 done += 1
                 if done % 8 == 0 || done == names.count {
-                    log.emit("load.verify_progress", ["verified": .bytes(done), "total": .bytes(names.count)])
+                    log.emit("load.verify_progress", ["verified": .count(done), "total": .count(names.count)])
                 }
                 if let name = pending.popFirst() { try submit(name) }
             }

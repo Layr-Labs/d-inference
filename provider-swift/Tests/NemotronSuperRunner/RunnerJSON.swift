@@ -23,6 +23,7 @@ enum RunnerJSON: Encodable, Sendable, ExpressibleByStringLiteral, ExpressibleByI
 
     static func bytes(_ value: UInt64) -> RunnerJSON { .int(Int64(clamping: value)) }
     static func bytes(_ value: Int) -> RunnerJSON { .int(Int64(value)) }
+    static func count(_ value: Int) -> RunnerJSON { .int(Int64(value)) }
     static func seconds(_ value: Duration) -> RunnerJSON {
         let (whole, attoseconds) = value.components
         return .double(Double(whole) + Double(attoseconds) / 1e18)

@@ -19,6 +19,7 @@ actor RunnerShutdown {
 
     private let log: RunnerEventLog
     private var reason: Reason?
+    private var signals = 0
     private var waiters: [CheckedContinuation<Reason, Never>] = []
     private var cancelLoad: (@Sendable () -> Void)?
     private var signalSources: [any DispatchSourceSignal] = []
@@ -43,13 +44,15 @@ actor RunnerShutdown {
     var requested: Bool { reason != nil }
 
     func request(_ next: Reason) {
-        guard reason == nil else {
-            if case .signal = next {
+        if case .signal = next {
+            signals += 1
+            if signals > 1 {
                 log.emit("runner.forced_exit", next.json.merging(["retirement": "unverified"]).asFields)
-                exit(EXIT_FAILURE)
+                // _exit: no atexit handlers or static destructors while GPU work may be live.
+                _exit(EXIT_FAILURE)
             }
-            return
         }
+        guard reason == nil else { return }
         reason = next
         log.emit("shutdown.requested", next.json.asFields)
         cancelLoad?()

@@ -67,23 +67,22 @@ final class RunnerServer: @unchecked Sendable {
     private static func serve(_ name: String, _ app: some ApplicationProtocol, bind: RunnerBind,
                               onFailure: @escaping @Sendable (String) async -> Void) -> Task<Void, Never> {
         Task {
+            var failure: String?
             do { try await app.runService(gracefulShutdownSignals: []) } catch is CancellationError {
-                return
-            } catch {
-                await bind.failed("\(name) listener: \(error)")
-                await onFailure("\(name) listener stopped: \(error)")
-                return
-            }
-            if !Task.isCancelled { await onFailure("\(name) listener exited") }
+            } catch { failure = "\(name) listener stopped: \(error)" }
+            if failure == nil, !Task.isCancelled { failure = "\(name) listener exited" }
+            // Settles a waiter that never saw onServerRunning; a no-op once bound.
+            await bind.failed(failure ?? "\(name) listener cancelled")
+            if let failure { await onFailure(failure) }
         }
     }
 
     var contextFields: [String: RunnerJSON] {
         get async {
             [
-                "http_active_responses": .bytes(tracker.activeCount),
-                "text_acquired": .bytes(await admission.active),
-                "bridge_active_requests": .bytes(await serving.bridge.activeRequestCount()),
+                "http_active_responses": .count(tracker.activeCount),
+                "text_acquired": .count(await admission.active),
+                "bridge_active_requests": .count(await serving.bridge.activeRequestCount()),
                 "ballast_bytes": .bytes(await ballast.bytes),
             ]
         }
@@ -106,7 +105,7 @@ final class RunnerServer: @unchecked Sendable {
         let running = lock.withLock { tasks }
         for task in running { task.cancel() }
         for task in running { await task.value }
-        _ = await ballast.set(0, budget: budget)
+        await ballast.releaseAll(budget: budget)
         return RunnerJSON.object(fields).merging([
             "seconds": .seconds(ContinuousClock.now - start), "timed_out": .bool(timedOut),
         ])
@@ -148,6 +147,11 @@ actor RunnerTextAdmission {
 
 actor RunnerBallast {
     private(set) var bytes: UInt64 = 0
+
+    func releaseAll(budget: GlobalKVCacheBudget) async {
+        await budget.release(requestID: RunnerMemorySampler.ballastID)  // no-op when none is held
+        bytes = 0
+    }
 
     func set(_ requested: UInt64, budget: GlobalKVCacheBudget) async -> RunnerJSON {
         if bytes > 0 {

@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import MLX
 import MLXLMCommon
@@ -64,15 +63,11 @@ enum RunnerSyntheticFixture {
             bytes.append(payload)
             let url = directory.appendingPathComponent(name)
             try bytes.write(to: url)
-            files[name] = try ModelOptTensorFile(url: url, sha256: sha256(bytes))
+            files[name] = try ModelOptTensorFile(url: url, sha256: runnerSHA256(bytes))
         }
         let index = try JSONSerialization.data(withJSONObject: ["weight_map": map], options: [.sortedKeys])
         try index.write(to: directory.appendingPathComponent("model.safetensors.index.json"))
-        return try ModelOptCheckpointSource(indexData: index, indexSHA256: sha256(index), files: files)
-    }
-
-    static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return try ModelOptCheckpointSource(indexData: index, indexSHA256: runnerSHA256(index), files: files)
     }
 
     private static func scalar(_ value: Float) -> Tensor {

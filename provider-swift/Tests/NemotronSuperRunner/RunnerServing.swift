@@ -8,18 +8,30 @@ struct RunnerLoadSettings: Sendable {
     let kvCapacityBytes: Int
     let backendAllowanceBytes: Int
     let kvBytesPerTokenOverride: Int?
+    /// nil keeps the provider's resolved default; validated never to exceed it.
+    let capFraction: Double?
     /// The only runtime-policy environment the engine sees (A/B switches).
     let engineEnvironment: [String: String]
     let verifyParallelism: Int
 
+    /// The override may only raise the per-token reservation rate.
+    func kvBytesPerToken(configured: Int) throws -> Int {
+        guard let override = kvBytesPerTokenOverride else { return configured }
+        guard override >= configured else {
+            throw RunnerFailure.checkpoint("--kv-bytes-per-token \(override) is below the configured rate \(configured)")
+        }
+        return override
+    }
+
     var json: RunnerJSON {
         [
-            "max_context_length": .bytes(maxContextLength), "default_max_tokens": .bytes(defaultMaxTokens),
+            "max_context_length": .count(maxContextLength), "default_max_tokens": .count(defaultMaxTokens),
             "kv_capacity_bytes": .bytes(kvCapacityBytes),
             "backend_allowance_bytes": .bytes(backendAllowanceBytes),
             "kv_bytes_per_token_override": kvBytesPerTokenOverride.map { .bytes($0) } ?? .null,
+            "cap_fraction": capFraction.map { .double($0) } ?? .null,
             "engine_environment": .object(engineEnvironment.mapValues { .string($0) }),
-            "shard_verify_parallelism": .bytes(verifyParallelism),
+            "shard_verify_parallelism": .count(verifyParallelism),
         ]
     }
 }

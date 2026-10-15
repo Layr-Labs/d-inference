@@ -40,7 +40,9 @@ struct RunnerIsolation {
             try manager.createDirectory(at: child, withIntermediateDirectories: false,
                 attributes: [.posixPermissions: 0o700])
         }
-        let removed = ProcessInfo.processInfo.environment.keys.filter(isCredentialShaped).sorted()
+        let removed = ProcessInfo.processInfo.environment.keys.filter {
+            isCredentialShaped($0) || weakensReserve($0)
+        }.sorted()
         for key in removed { unsetenv(key) }
         let overrides = [
             "HOME": home.path, "CFFIXED_USER_HOME": home.path, "TMPDIR": temporary.path + "/",
@@ -63,28 +65,39 @@ struct RunnerIsolation {
             removedEnvironmentKeys: removed)
     }
 
+    /// The cap fraction comes only from the validated --cap-fraction option.
+    private static func weakensReserve(_ key: String) -> Bool { key == "DARKBLOOM_MEM_CAP_FRACTION" }
+
     private static func isCredentialShaped(_ key: String) -> Bool {
         let upper = key.uppercased()
         return credentialMarkers.contains { upper.contains($0) }
             || servicePrefixes.contains { upper.hasPrefix($0) }
     }
 
-    var description: RunnerJSON {
-        [
-            "state_dir": .string(stateDirectory.path),
-            "home": .string(ProcessInfo.processInfo.environment["HOME"] ?? ""),
+    var json: RunnerJSON {
+        let environment = ProcessInfo.processInfo.environment
+        return [
+            "state_dir": .string(stateDirectory.path), "home": .string(environment["HOME"] ?? ""),
             "removed_environment_keys": .array(removedEnvironmentKeys.map { .string($0) }),
+            "darkbloom_environment": .object(environment.filter { $0.key.hasPrefix("DARKBLOOM_") }
+                .mapValues { .string($0) }),
             "provider_config": "none", "coordinator_connection": "none",
             "discovery_record": "none",
         ]
     }
 
     /// Atomically publish a ready file only after both loopback listeners bound.
-    func writeReady(_ value: RunnerJSON) throws {
-        let staging = readyFile.appendingPathExtension("partial")
+    func writeReady(_ value: RunnerJSON) throws { try publish(value, at: readyFile) }
+
+    func writePreflight(_ value: RunnerJSON) throws {
+        try publish(value, at: stateDirectory.appendingPathComponent("runner-preflight.json"))
+    }
+
+    private func publish(_ value: RunnerJSON, at url: URL) throws {
+        let staging = url.appendingPathExtension("partial")
         try value.encoded(pretty: true).write(to: staging)
-        guard rename(staging.path, readyFile.path) == 0 else {
-            throw RunnerFailure.isolation("cannot publish ready file (errno \(errno))")
+        guard rename(staging.path, url.path) == 0 else {
+            throw RunnerFailure.isolation("cannot publish \(url.lastPathComponent) (errno \(errno))")
         }
     }
 }

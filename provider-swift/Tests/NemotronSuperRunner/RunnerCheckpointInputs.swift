@@ -1,7 +1,12 @@
+import CryptoKit
 import Foundation
 import MLXLMCommon
 @testable import MLXVLM
 @testable import ProviderCore
+
+func runnerSHA256(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
 
 /// Identity and configuration inputs of a checkpoint directory, checked before
 /// any shard is read: pinned index, pinned template, parseable Super image
@@ -18,7 +23,7 @@ struct RunnerCheckpointInputs {
     init(directory: URL, templateURL: URL?) throws {
         configData = try Data(contentsOf: directory.appendingPathComponent("config.json"))
         indexData = try Data(contentsOf: directory.appendingPathComponent("model.safetensors.index.json"))
-        indexSHA256 = RunnerSyntheticFixture.sha256(indexData)
+        indexSHA256 = runnerSHA256(indexData)
         guard indexSHA256 == NemotronSuperCheckpointPin.index else {
             throw RunnerFailure.checkpoint("model.safetensors.index.json is not the pinned index")
         }
@@ -43,13 +48,13 @@ struct RunnerCheckpointInputs {
 
     var json: RunnerJSON {
         [
-            "config_sha256": .string(RunnerSyntheticFixture.sha256(configData)),
+            "config_sha256": .string(runnerSHA256(configData)),
             "config_bytes": .bytes(configData.count), "index_sha256": .string(indexSHA256),
-            "index_pinned": true, "template_sha256": .string(RunnerSyntheticFixture.sha256(templateBytes)),
-            "shards": .bytes(inventory.shards.count), "tensors": .bytes(inventory.entries.count),
-            "mtp_tensors": .bytes(inventory.entries(for: .mtp).count),
+            "index_pinned": true, "template_sha256": .string(runnerSHA256(templateBytes)),
+            "shards": .count(inventory.shards.count), "tensors": .count(inventory.entries.count),
+            "mtp_tensors": .count(inventory.entries(for: .mtp).count),
             "fp16_kv_bytes_per_token": .bytes(facts.fp16KVBytesPerToken),
-            "eos_token_ids": .array(facts.eosTokenIDs.sorted().map { .bytes($0) }),
+            "eos_token_ids": .array(facts.eosTokenIDs.sorted().map { .count($0) }),
         ]
     }
 }

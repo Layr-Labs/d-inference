@@ -42,8 +42,6 @@ enum RunnerProcessMemory {
             UnsafeMutableRawPointer(bitPattern: UInt(FOOTPRINT_INTERVAL_RESET))) == 0
     }
 
-    static var intervalResetSupported: Bool { rlimitControl != nil }
-
     static func snapshot() -> RunnerJSON {
         let mlx = Memory.snapshot()
         var value: [String: RunnerJSON] = [

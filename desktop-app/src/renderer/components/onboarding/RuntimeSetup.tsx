@@ -1,4 +1,4 @@
-import { Download, LoaderCircle } from 'lucide-react';
+import { Download, LoaderCircle, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import type { DesktopStatus } from '../../../shared/contracts';
 import type { BackendState } from '../../useBackend';
@@ -47,10 +47,17 @@ export function RuntimeSetup({
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const { state, message } = backend.status;
+  // The app installs a missing backend by itself; while it does, offer only a way out, never a
+  // second install.
+  const installing = state === 'installing';
+  // The last install failed: `message` names the step that failed and the installer's reason.
+  const failed = !installing && !!backend.status.installFailed;
   const copy = returningUser
-    ? returning[state === 'missing' || state === 'incompatible' ? state : 'failed']
+    ? returning[
+        state === 'missing' || state === 'incompatible' ? state : installing ? 'missing' : 'failed'
+      ]
     : undefined;
-  const action = copy ? copy.action : actions[state];
+  const action = installing ? undefined : failed ? 'Retry' : copy ? copy.action : actions[state];
   async function install() {
     try {
       setError('');
@@ -71,22 +78,24 @@ export function RuntimeSetup({
           : 'Darkbloom needs its backend, a background service that serves models on this Mac. It installs once and updates automatically.'}
       </p>
       {error && <Notice>{error}</Notice>}
-      {/* One live region for both the progress and the reason, so each change is announced. */}
+      {/* One live region for the progress and the reason, so each change is announced. */}
       <p className="install-status" role="status">
         {!action && <LoaderCircle className="spin" size={14} aria-hidden="true" />}
         {message ||
-          (action
-            ? ''
-            : state === 'installing'
-              ? 'Installing the backend…'
-              : 'Connecting to the backend…')}
+          (action ? '' : installing ? 'Installing the backend…' : 'Connecting to the backend…')}
       </p>
-      {action && (
-        <Button variant="primary" disabled={!api || pending} onClick={() => void install()}>
-          <Download size={16} /> {action}
+      {installing ? (
+        <Button disabled={!api} onClick={() => void api?.cancelInstall()}>
+          <X size={16} /> Cancel
         </Button>
+      ) : (
+        action && (
+          <Button variant="primary" disabled={!api || pending} onClick={() => void install()}>
+            {failed ? <RotateCw size={16} /> : <Download size={16} />} {action}
+          </Button>
+        )
       )}
-      {error && (
+      {(error || failed) && (
         <p>
           <GetHelp />
         </p>

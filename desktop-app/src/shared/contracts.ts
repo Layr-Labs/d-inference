@@ -274,6 +274,8 @@ export type Resource =
 export interface DesktopStatus {
   state: 'connecting' | 'ready' | 'missing' | 'incompatible' | 'error' | 'installing';
   message?: string;
+  // The last install failed; `message` names the step and the installer's reason.
+  installFailed?: boolean;
 }
 export interface GUIUpdate {
   state: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'unconfigured';
@@ -285,6 +287,8 @@ export interface DesktopAPI {
   act(action: Action): Promise<Operation>;
   status(): Promise<DesktopStatus>;
   install(): Promise<void>;
+  // Stops an in-progress install; the status then reports it as cancelled.
+  cancelInstall(): Promise<void>;
   openExternal(
     target:
       'console' | 'docs' | 'community' | 'github' | 'slack' | 'x' | 'terms' | 'privacy' | 'link',

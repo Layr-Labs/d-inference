@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased — desktop automatic backend install
+
+- The desktop app now installs its backend by itself the first time it opens on a Mac without one. It shows each step in plain language (“Downloading the backend… 42%”, “Verifying the backend’s signature…”, “Setting up device verification…”). If the install stops, the app keeps the failing step and the installer’s reason on screen with **Retry**. An install in progress can be cancelled.
 ## Unreleased — desktop help and next steps
 
 - Add **Help** to the desktop sidebar, linking the guide, the Darkbloom Slack and GitHub Discussions, and offer **Get help** next to failures: failed operation notifications, an unreachable runtime, failed sign-in (beside **Try again**), and a failed runtime install or repair.

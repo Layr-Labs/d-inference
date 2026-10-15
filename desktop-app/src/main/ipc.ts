@@ -6,7 +6,8 @@ import type { desktopUpdates } from './updates';
 import type { MainWindow } from './window';
 import { clipboardText, externalURL, isTrustedSender } from './security';
 
-function installScript() {
+// The bundled copy of scripts/install.sh, the installer the CLI install path uses.
+export function installScript() {
   return path.join(
     app.isPackaged ? process.resourcesPath : app.getAppPath(),
     app.isPackaged ? 'bootstrap' : 'resources',
@@ -40,6 +41,7 @@ export function registerIPC(options: {
     if (smokeTest) throw new Error('Installation is disabled in UI smoke tests');
     return backend.install(installScript());
   });
+  handle('backend:cancelInstall', () => backend.cancelInstall());
   handle('app:copy', (text) => {
     clipboard.writeText(clipboardText(text));
   });

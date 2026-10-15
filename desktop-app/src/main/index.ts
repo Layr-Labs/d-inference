@@ -2,8 +2,8 @@ import { app } from 'electron';
 import path from 'node:path';
 import type { Route } from '../shared/contracts';
 import { installApplicationMenu } from './appMenu';
-import { Backend } from './backend';
-import { registerIPC } from './ipc';
+import { autoInstallEnabled, Backend } from './backend';
+import { installScript, registerIPC } from './ipc';
 import { prepareQuit } from './lifecycle';
 import { initializeLoginItem, launchedHidden } from './loginLaunch';
 import { failedOperationNotifier } from './notifications';
@@ -28,7 +28,21 @@ const preview =
         previewTeam,
       )
     : undefined;
-const backend = new Backend(app.isPackaged, preview);
+// A release build installs a missing runtime on its first connection attempt, so dragging the
+// app to Applications and opening it is the whole setup. Backend owns the trigger because it
+// classifies "missing" and keeps the one install in flight that the renderer's button shares.
+const backend = new Backend(
+  app.isPackaged,
+  preview,
+  autoInstallEnabled({
+    packaged: app.isPackaged,
+    preview: !!previewTeam,
+    smokeTest: uiSmokeTest,
+    env: process.env,
+  })
+    ? installScript()
+    : undefined,
+);
 if (uiSmokeTest)
   backend.current = { state: 'missing', message: 'UI smoke test: native backend disabled.' };
 const devURL = !app.isPackaged ? process.env.DARKBLOOM_DEV_URL : undefined;

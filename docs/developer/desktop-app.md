@@ -531,6 +531,43 @@ See [provider releases](../operations/provider-release.md) and
 [coordinator deployment](../operations/coordinator-deploy.md) for the independently
 authorized release/deploy procedures.
 
+## Runtime installation
+
+Users drag the app to Applications and open it. A release build then installs a
+missing runtime by itself: when `Backend.watch` finds no `~/.darkbloom/bin/darkbloom`
+on its first connection attempt, it runs the bundled installer
+(`Contents/Resources/bootstrap/install-runtime.sh`, a copy of `scripts/install.sh`)
+with `COORD_URL=https://api.darkbloom.dev` and no terminal, so it never prompts.
+Nothing can run while the DMG downloads, mounts or is dragged, so first launch is
+the earliest moment.
+
+- **When.** Once per launch, in packaged builds only (`autoInstallEnabled` in
+  `desktop-app/src/main/backend.ts`). The signed preview refuses installs, `--ui-smoke-test`
+  never touches the system, and development opts in with
+  `DARKBLOOM_DESKTOP_AUTO_INSTALL=1`. A failed or cancelled install stays failed until
+  the user clicks Retry, Install or Repair; reconnect attempts keep its message.
+- **One installer.** The automatic install and the renderer's Install, Repair and
+  Next steps buttons share one in-flight install; a second request joins it.
+- **Progress.** `desktop-app/src/main/installProgress.ts` maps the installer's step
+  headers (`→ [1/5]` … `→ [5/5]`, the hash/signature lines and the System Settings
+  prompt) to plain `{ state: 'installing', message }` statuses such as "Downloading
+  the backend… 42%" and "Setting up device verification…". User-facing text calls the
+  runtime "the backend", since people already installed Darkbloom. Only the current
+  output line is buffered (8 KB).
+- **Failure.** The status sets `installFailed: true` and its message keeps the step and
+  the installer's last `✗ …` or `Error: …` line ("Couldn't install the backend while
+  downloading it: …"), with URL queries, credential-looking values and long tokens
+  removed. A fresh install that fails stays `missing`; a failed update of an existing
+  runtime is `error`. `RuntimeSetup` shows the reason with **Retry**, and while
+  installing shows the progress and **Cancel**, never a second Install button.
+- **Cancel.** `DesktopAPI.cancelInstall()` (`backend:cancelInstall`) stops the
+  installer's process group (including `curl`). Quitting the app does the same. The
+  installer stages and verifies the new app before its atomic swap, so cancelling
+  normally leaves an existing runtime in place.
+- **MDM before macOS 27.** The installer opens the enrollment profile and System Settings
+  itself; the app shows "Finish device verification in System Settings". There is no
+  installer flag to defer this yet, so an explained in-app step needs one.
+
 ## Launch at login
 
 The first packaged launch registers the app as a macOS login item (the default
@@ -556,6 +593,7 @@ menu bar item stays available. Passing `--hidden` also starts hidden.
 | `desktop-app/src/main/loginLaunch.ts` | login-item registration and hidden login launch |
 | `desktop-app/src/main/updates.ts`, `desktop-app/src/main/updateFeed.ts` | GUI self-update and the build-time feed contract |
 | `desktop-app/src/main/backend.ts` | runtime discovery, signature checks and the native API client |
+| `desktop-app/src/main/installProgress.ts` | installer output: bounded line reader, plain-language steps, sanitized failure reason |
 | `desktop-app/src/main/hardware.ts` | `HardwareWatch`: the reference-counted hardware SSE client, hardware event parser and size guard |
 | `desktop-app/src/main/sse.ts` | server-sent event framing (`splitFrames`, `frameData`) shared by the state and hardware streams |
 

@@ -1,9 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { InstallTranscript, lineReader } from './installProgress';
 import {
   protocolVersion,
   type Action,
@@ -20,6 +21,7 @@ const runtimeRequirement =
   '-R=anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"';
 // `desktop ensure` may wait for a launchd bootout, one restart, and the new API's version.
 const ensureTimeoutMs = 90_000;
+const installTimeoutMs = 10 * 60_000;
 const resources = new Set<Resource>([
   'state',
   'cloud',
@@ -71,9 +73,19 @@ export class Backend extends EventEmitter {
   snapshot?: Snapshot;
   private connection?: ReturnType<typeof validateDiscovery>;
   private stopped = false;
+  // At most one install runs; the renderer's button and the automatic install share it.
+  private installation?: Promise<void>;
+  private installer?: ChildProcess;
+  private cancelled = false;
+  // Automatic install runs once per launch; any install attempt uses it up.
+  private installAttempted = false;
+  // A failed or cancelled install stays on screen until the next attempt.
+  private installOutcome?: DesktopStatus;
+  /** `autoInstallScript`: the bundled installer to run when the runtime is missing, if enabled. */
   constructor(
     private packaged: boolean,
     private preview?: PreviewRuntime,
+    private autoInstallScript?: string,
   ) {
     super();
   }
@@ -96,6 +108,8 @@ export class Backend extends EventEmitter {
       ]);
   }
   private status(value: DesktopStatus) {
+    // Reconnecting to a still-missing runtime must not hide why its install stopped.
+    if (value.state === 'missing' && this.installOutcome) value = this.installOutcome;
     this.current = value;
     this.emit('status', value);
   }
@@ -193,8 +207,10 @@ export class Backend extends EventEmitter {
   async watch() {
     while (!this.stopped) {
       try {
-        if (!this.connection) {
+        // An install connects when it finishes; meanwhile its progress owns the status.
+        if (!this.connection && !this.installation) {
           await this.connect();
+          this.autoInstall();
         }
         if (this.connection) {
           const response = await fetch(
@@ -235,34 +251,153 @@ export class Backend extends EventEmitter {
       await new Promise((resolve) => setTimeout(resolve, this.connection ? 250 : 5000));
     }
   }
-  async install(script: string) {
+  // First launch of a release build: install a missing runtime without waiting for a click.
+  private autoInstall() {
+    if (
+      !this.autoInstallScript ||
+      this.preview ||
+      this.installAttempted ||
+      this.stopped ||
+      this.current.state !== 'missing'
+    )
+      return;
+    void this.install(this.autoInstallScript).catch(() => {});
+  }
+  install(script: string): Promise<void> {
     if (this.preview)
-      throw new Error('Rebuild the local preview to update its bundled desktop API.');
-    this.status({ state: 'installing', message: 'Installing the verified Swift runtime…' });
+      return Promise.reject(
+        new Error('Rebuild the local preview to update its bundled desktop API.'),
+      );
+    this.installAttempted = true;
+    this.installation ??= this.runInstall(script).finally(() => {
+      this.installation = undefined;
+    });
+    return this.installation;
+  }
+  /** Stops an in-progress install; the runtime stays as it was. */
+  cancelInstall() {
+    if (!this.installer) return;
+    this.cancelled = true;
+    killGroup(this.installer);
+  }
+  private async runInstall(script: string) {
+    this.installOutcome = undefined;
+    this.cancelled = false;
+    const transcript = new InstallTranscript();
+    this.status({ state: 'installing', message: 'Preparing to install the backend…' });
+    let existing: string | undefined;
     try {
-      let existing: string | undefined;
       try {
         existing = await realpath(this.binary);
       } catch {}
       if (existing) {
         await this.verifyRuntime(existing);
-        await execute(existing, ['update'], { timeout: 10 * 60_000, maxBuffer: 256_000 });
+        this.status({ state: 'installing', message: 'Updating the backend…' });
+        await this.runInstaller(existing, ['update'], process.env, transcript);
       } else
-        await execute('/bin/bash', [script], {
-          timeout: 10 * 60_000,
-          maxBuffer: 256_000,
-          env: { ...process.env, COORD_URL: 'https://api.darkbloom.dev' },
-        });
-      await this.connect();
-    } catch {
-      this.status({
-        state: 'error',
-        message: 'Installation failed. Check your connection and retry.',
-      });
+        await this.runInstaller(
+          '/bin/bash',
+          [script],
+          { ...process.env, COORD_URL: 'https://api.darkbloom.dev' },
+          transcript,
+        );
+    } catch (error) {
+      // A runtime that never got installed is still missing (Install retries); a failed
+      // update of an existing one needs a repair.
+      const state = existing ? 'error' : 'missing';
+      if (error instanceof InstallCancelled) {
+        this.installOutcome = {
+          state,
+          message: existing ? 'Backend update cancelled.' : 'Backend installation cancelled.',
+        };
+        this.status(this.installOutcome);
+        return;
+      }
+      this.installOutcome = {
+        state,
+        message: transcript.failure(
+          error instanceof Error && error.message === 'timeout',
+          existing ? 'update' : 'install',
+        ),
+        installFailed: true,
+      };
+      this.status(this.installOutcome);
       throw new Error('Runtime installation failed');
     }
+    this.status({ state: 'installing', message: 'Backend installed. Starting it…' });
+    await this.connect();
   }
+  // Runs the installer without a terminal (it then never prompts), publishing its steps as
+  // they print. Only the current line is buffered; a reason for failing is kept by the transcript.
+  private runInstaller(
+    command: string,
+    args: string[],
+    env: NodeJS.ProcessEnv,
+    transcript: InstallTranscript,
+  ) {
+    return new Promise<void>((resolve, reject) => {
+      // Its own process group, so cancelling also stops curl and other children.
+      const child = spawn(command, args, {
+        env,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      this.installer = child;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killGroup(child);
+      }, installTimeoutMs);
+      const onLine = (line: string) => {
+        const message = transcript.observe(line);
+        if (message && !this.cancelled) this.status({ state: 'installing', message });
+      };
+      const readers = [child.stdout, child.stderr].map((stream) => {
+        const reader = lineReader(onLine);
+        stream?.setEncoding('utf8');
+        stream?.on('data', (chunk: string) => reader.push(chunk));
+        return reader;
+      });
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        if (this.installer === child) this.installer = undefined;
+        readers.forEach((reader) => reader.end());
+        if (this.cancelled) reject(new InstallCancelled());
+        else if (timedOut) reject(new Error('timeout'));
+        else if (error) reject(error);
+        else resolve();
+      };
+      child.once('error', finish);
+      child.once('close', (code) =>
+        finish(code === 0 ? undefined : new Error(`Installer exited with ${code}`)),
+      );
+    });
+  }
+  // Quitting stops an install: with the app gone it could neither report nor finish cleanly.
   stop() {
     this.stopped = true;
+    this.cancelInstall();
   }
 }
+function killGroup(child: ChildProcess) {
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    child.kill('SIGTERM');
+  }
+}
+/**
+ * Whether a missing runtime is installed on launch without a click: release builds only. The
+ * signed preview refuses installs, smoke tests never touch the system, and development opts in
+ * with DARKBLOOM_DESKTOP_AUTO_INSTALL=1.
+ */
+export function autoInstallEnabled(options: {
+  packaged: boolean;
+  preview: boolean;
+  smokeTest: boolean;
+  env: NodeJS.ProcessEnv;
+}) {
+  if (options.preview || options.smokeTest) return false;
+  return options.packaged || options.env.DARKBLOOM_DESKTOP_AUTO_INSTALL === '1';
+}
+class InstallCancelled extends Error {}
